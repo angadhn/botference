@@ -1344,12 +1344,34 @@
     return { start, end: at, query: s.slice(i, at) };
   }
 
+  // What can be typed in a composer here, one line each: the /help popup and
+  // the autocomplete menu both read this. It is the controller's own table
+  // (core/botference.py COMMAND_HELP, the rows scoped "plugin"), which the
+  // companion relays live on the `models` event as `commands`; this copy is
+  // what the drawer knows before the bridge has spoken, or if it never does.
+  // Only the commands this drawer itself acts on are here — anything else
+  // typed with a "/" goes to the bots as an ordinary message about the page.
+  const FALLBACK_COMMANDS = [
+    {"cmd": "@claude", "args": "<msg>", "hint": "Send to Claude only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "@codex", "args": "<msg>", "hint": "Send to Codex only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "@all", "args": "<msg>", "hint": "Send to both bots", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
+  ];
+  // the plugin's share of a table (live or fallback), in the table's order
+  function pluginCommands(list) {
+    const rows = (Array.isArray(list) && list.length) ? list : FALLBACK_COMMANDS;
+    return rows.filter(r => r && r.cmd && (!Array.isArray(r.scope) || r.scope.indexOf('plugin') !== -1));
+  }
+  // …and its slash commands, in the menu's shape: the word without the "/"
+  function slashList(list) {
+    return pluginCommands(list).filter(r => r.cmd[0] === '/')
+      .map(r => ({ cmd: r.cmd.slice(1), args: r.args || '', hint: r.hint || '' }));
+  }
   // The slash command being typed at the START of a composer, or null. Only
   // the first word of the box, only when it begins with "/", so a "/" in prose
   // ("either/or") is left alone — same discipline as MENTION_OPENER.
-  const SLASH_COMMANDS = [
-    { cmd: 'lasso', hint: 'your pages, chats and files — or paste a link' },
-  ];
+  const SLASH_COMMANDS = slashList();
   function slashToken(text, caret) {
     const s = String(text == null ? '' : text);
     const at = Math.max(0, Math.min(Number(caret) || 0, s.length));
@@ -1357,9 +1379,29 @@
     if (!m || /\S/.test(s.slice(at))) return null;   // caret must be at the end of the command word
     return { start: 0, end: at, query: m[1] };
   }
-  function slashCandidates(query) {
+  // `list` is the live command table when the drawer has one; without it the
+  // fallback copy answers. A bare "/" offers every command.
+  function slashCandidates(query, list) {
     const q = String(query || '').toLowerCase();
-    return SLASH_COMMANDS.filter(c => c.cmd.indexOf(q) === 0);
+    return slashList(list).filter(c => c.cmd.indexOf(q) === 0);
+  }
+  // A typed "/help" (or just "help") is for the reader, not the bots
+  const HELP_CMD = /^\/?help$/i;
+  // the one-line hint for an @handle, when the table has a row for it
+  function mentionHint(handle, list) {
+    const row = pluginCommands(list).find(r => r.cmd === '@' + handle);
+    return row ? row.hint || '' : '';
+  }
+  // the popup's rows, grouped in the table's own order: [{name, rows}]
+  function helpGroups(list) {
+    const out = [];
+    for (const r of pluginCommands(list)) {
+      const name = r.group || '';
+      let g = out.find(x => x.name === name);
+      if (!g) out.push(g = { name, rows: [] });
+      g.rows.push({ cmd: r.cmd, args: r.args || '', hint: r.hint || '' });
+    }
+    return out;
   }
 
   // Who can be summoned: whatever agents the drawer knows about, plus @all,
@@ -1765,6 +1807,10 @@
       newchat: { confirm: false, busy: '', err: '', open: false, list: null, loading: false },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
+      // the command table the /help popup and the slash menu read (null =
+      // the fallback copy); helpOpen/helpFrom = the popup, and the composer
+      // it was asked for from, which gets the focus back when it closes
+      commands: null, helpOpen: false, helpFrom: '',
       focused: null,
       // a page with no highlights has no Comments to open on
       tab: CAPS.highlights ? 'comments' : 'chat',
@@ -2025,6 +2071,7 @@
         pop: shadow.querySelector('.popover.models'),
         exportpick: shadow.querySelector('.popover.exportpick'),
         projpick: shadow.querySelector('.popover.projpick'),
+        helppop: shadow.querySelector('.popover.helppop'),
         madefrom: shadow.querySelector('.hdr .madefrom'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
@@ -2153,6 +2200,7 @@ ${markPickHtml()}
   <div class="popover models" role="dialog" aria-label="Models" hidden></div>
   <div class="popover exportpick" role="menu" aria-label="Export to Obsidian" hidden></div>
   <div class="popover projpick" role="menu" aria-label="File in a council project" hidden></div>
+  <div class="popover helppop" role="dialog" aria-label="Commands" hidden></div>
   <nav class="tabs">
     <button class="tab on" data-tab="comments" type="button">Comments<span class="count">0</span></button>
     <button class="tab" data-tab="chat" type="button">Page chat</button>
@@ -3059,10 +3107,10 @@ ${bubbleShellHtml()}`;
       menu.innerHTML = m.items.map((h, i) => m.slash
         ? `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
            aria-selected="${i === m.index}" data-act="mention" data-handle="${esc(h)}"
-           data-target="${esc(m.target)}"><span class="mname">/${esc(h)}</span><span class="mhint">${esc((SLASH_COMMANDS.find(c => c.cmd === h) || {}).hint || '')}</span></button>`
+           data-target="${esc(m.target)}"><span class="mname">/${esc(h)}</span> <span class="mhint">${esc((slashList(D.commands).find(c => c.cmd === h) || {}).hint || '')}</span></button>`
         : `<button class="mrow${i === m.index ? ' on' : ''}" type="button" role="option"
            aria-selected="${i === m.index}" data-act="mention" data-handle="${esc(h)}"
-           data-target="${esc(m.target)}">${mentionMark(h)}<span class="mname">@${esc(h)}</span></button>`).join('');
+           data-target="${esc(m.target)}">${mentionMark(h)}<span class="mname">@${esc(h)}</span>${mentionHint(h, D.commands) ? ` <span class="mhint">${esc(mentionHint(h, D.commands))}</span>` : ''}</button>`).join('');
       menu.hidden = false;
     }
 
@@ -3078,7 +3126,10 @@ ${bubbleShellHtml()}`;
       if (!tok) {
         // "/la…" at the start of the box: the same menu offers the commands
         tok = slashToken(ta.value, ta.selectionStart);
-        items = tok ? slashCandidates(tok.query).map(c => c.cmd) : [];
+        // a command already typed in full needs no menu: Enter then sends it
+        // (so "/help" + Enter opens the popup at once, as in the council)
+        items = tok ? slashCandidates(tok.query, D.commands).map(c => c.cmd)
+          .filter(c => c !== tok.query.toLowerCase()) : [];
         slash = !!tok;
       }
       // nothing matches what is being typed: the menu goes away and the typing
@@ -5800,6 +5851,7 @@ ${bubbleShellHtml()}`;
         D.models.effort = r.effort || null;
         D.models.verbosity = r.verbosity || '';
         D.models.bridge = r.bridge || '';
+        if (Array.isArray(r.commands) && r.commands.length) D.commands = r.commands;
         // …and one too old to have keys at all leaves the billing row out
         ingestKeys(r.keys);
         D.models.err = false;
@@ -5822,6 +5874,44 @@ ${bubbleShellHtml()}`;
       if (!r || r.ok === false) return;
       ingestKeys(r.keys);
       if (D.modelsOpen) syncModels();
+    }
+
+    // ---- the /help popup ---------------------------------------------------
+    // What can be typed in a box here, one line each, from the command table
+    // (live on the `models` event, else the fallback). Every composer — page
+    // chat, a comment thread, the library — takes the same few commands: a
+    // /lasso typed in a thread still attaches to the page's chat, which is
+    // where the bots read it from.
+    function paintHelp() {
+      const pop = D.el.helppop;
+      if (!pop) return;
+      pop.innerHTML = `<div class="help-head"><span class="pop-head">Commands</span>
+        <button class="help-x" type="button" data-act="help-close" aria-label="Close" title="Close (Esc)">×</button></div>` +
+        helpGroups(D.commands).map(g => `<div class="help-group">${g.name ? `<div class="help-gname">${esc(g.name)}</div>` : ''}` +
+          g.rows.map(r => `<div class="help-row"><code>${esc(r.cmd)}${r.args ? ` <span class="help-args">${esc(r.args)}</span>` : ''}</code>` +
+            `<span class="help-hint">${esc(r.hint)}</span></div>`).join('') + `</div>`).join('') +
+        `<div class="help-foot">Type / or @ in any box for suggestions</div>`;
+    }
+    function openHelp(target) {
+      if (!D.mounted || !D.el.helppop) return;
+      if (D.modelsOpen) closeModels();
+      D.helpOpen = true;
+      D.helpFrom = target || '';
+      closeMention();
+      paintHelp();
+      D.el.helppop.hidden = false;
+      const x = D.el.helppop.querySelector('.help-x');
+      if (x) x.focus();
+    }
+    // Esc events a layer has already answered (see api.escape)
+    const escUsed = new WeakSet();
+    function closeHelp() {
+      if (!D.helpOpen) return;
+      D.helpOpen = false;
+      if (D.el.helppop) D.el.helppop.hidden = true;
+      const box = D.helpFrom && composerBox(D.helpFrom);
+      D.helpFrom = '';
+      if (box) box.focus();
     }
 
     function closeModels() {
@@ -6037,6 +6127,7 @@ ${bubbleShellHtml()}`;
     const ACTS = {
       'close': () => close(),
       'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
+      'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'typing': (btn) => setTyping(btn.dataset.typing),
@@ -6357,6 +6448,12 @@ ${bubbleShellHtml()}`;
 
       // popover: any in-drawer click outside it dismisses it (the gear's own
       // click is the toggle and must not be eaten here)
+      // …and the /help popup the same way: a click anywhere else closes it
+      D.shadow.addEventListener('mousedown', e => {
+        if (!D.helpOpen || !e.target.closest) return;
+        if (e.target.closest('.popover.helppop')) return;
+        closeHelp();
+      }, true);
       D.shadow.addEventListener('mousedown', e => {
         if (!D.modelsOpen || !e.target.closest) return;
         if (e.target.closest('.popover') || e.target.closest('[data-act="models"]')) return;
@@ -6591,6 +6688,8 @@ ${bubbleShellHtml()}`;
         }
         if (e.key === 'Escape') {
           e.stopPropagation();
+          // already spent by content.js's handler (drawer.escape closed a layer)
+          if (escUsed.has(e)) return;
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
           if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
@@ -6606,6 +6705,7 @@ ${bubbleShellHtml()}`;
             return;
           }
           if (D.light) closeLight();
+          else if (D.helpOpen) closeHelp();
           else if (D.projOpen) closeProjPick();
           else if (D.exportOpen) closeExportPick();
           else if (D.modelsOpen) closeModels();
@@ -6825,6 +6925,15 @@ ${bubbleShellHtml()}`;
         // has and offers the matches above this composer. Nothing is sent to
         // anybody, nothing is stored, and the box empties the way it does for
         // a send — because the words have been acted on.
+        // `/help` opens the popup of what can be typed here. Nothing is sent
+        // and nothing is stored; the box empties because it was acted on.
+        if (HELP_CMD.test(text)) {
+          delete D.drafts[target];
+          const box = composerBox(target);
+          if (box) box.value = '';
+          openHelp(target);
+          return;
+        }
         if (LASSO_CMD.test(text)) {
           delete D.drafts[target];
           const box = composerBox(target);
@@ -10510,6 +10619,11 @@ ${bubbleShellHtml()}`;
         if (ev.effort !== undefined) D.models.effort = ev.effort;
         if (ev.verbosity) D.models.verbosity = ev.verbosity;
         if (ev.bridge) D.models.bridge = ev.bridge;
+        // the command table rides the same broadcast (chat.mjs modelsEvent)
+        if (Array.isArray(ev.commands) && ev.commands.length) {
+          D.commands = ev.commands;
+          if (D.helpOpen) paintHelp();
+        }
         // which auth each agent bills, and whether there is a key to bill —
         // the companion's own setting, and the only thing that can settle a
         // billing switch waiting on a key
@@ -10831,7 +10945,7 @@ ${bubbleShellHtml()}`;
       },
       // One Esc, one layer. content.js's document-level handler asks this
       // first, so a lightbox closes instead of the whole drawer.
-      escape: () => {
+      escape: (ev) => {
         // innermost layer first: the overlap chooser sits over the page, above
         // even a lightbox in the reader's attention, and closing it must not
         // take the drawer with it
@@ -10839,6 +10953,10 @@ ${bubbleShellHtml()}`;
         // …then a bubble, which is over the page in the same way and is only
         // ever up while the panel is shut
         if (bubbleOpen()) { hideBubble(); return true; }   // the front-most one
+        // …then the /help popup, which is a layer over the drawer. The same
+        // key then reaches the drawer's own listener with nothing left open,
+        // which would close the drawer — so the event is marked as used up.
+        if (D.helpOpen) { closeHelp(); if (ev) escUsed.add(ev); return true; }
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's
@@ -10882,6 +11000,7 @@ ${bubbleShellHtml()}`;
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
+    FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs
     tagHue,                                                 // test/tags.test.mjs
     splitEnvelopes, agentOf,                                // test/envelope.test.mjs
     splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs

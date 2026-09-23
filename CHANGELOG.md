@@ -2,6 +2,17 @@
 
 ## 2026-09-23
 
+- **`/help` in the browser is a popup.** On the council page and in the
+  plugin's Discuss drawer, typing `/help` (or just `help`) and sending it
+  opens a short list — each command and one line saying what it does —
+  instead of a long message, and nothing reaches the bots. Esc, a click
+  outside or × closes it. The council page has a `?` button in the header
+  for the same list, and its autocomplete menu now shows each command's
+  one-line hint. In the drawer, typing `/` offers every command it takes
+  (`/lasso`, `/help`), each with its hint, and the `@claude` / `@codex` /
+  `@all` rows say what they do. All of these, and the terminal's `/help`,
+  are drawn from one table in the controller (`COMMAND_HELP`), sent to the
+  browsers with the autocomplete lists, so they cannot drift apart.
 - **New models.** `claude-opus-5-5` (Anthropic Opus 5.5, released 2026-09-22:
   Fable-5.1-class results at roughly 40% lower cost; its own default effort is
   medium) and `gpt-6-sol` / `gpt-6-luna` (OpenAI, same day; Sol is the large

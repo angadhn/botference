@@ -2495,3 +2495,21 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   color: var(--done-line); cursor: help;
 }
 .reply .chkstamp.warn { color: var(--ready-line) }
+
+/* ── the /help popup: what can be typed here, one line each ────────────── */
+.popover.helppop { min-width: 0; width: min(340px, calc(100% - 24px)); max-height: 70vh;
+  overflow-y: auto; padding: 8px 12px 10px }
+.help-head { display: flex; align-items: center; justify-content: space-between; gap: 8px }
+.help-head .pop-head { margin: 0 }
+.help-x { border: 0; background: none; color: var(--muted); cursor: pointer;
+  font: 18px/1 var(--sans); width: 28px; height: 28px; border-radius: 6px; padding: 0 }
+.help-x:hover, .help-x:focus-visible { color: var(--fg); background: color-mix(in srgb, var(--fg) 8%, transparent) }
+.help-gname { margin: 8px 0 3px; font: 600 12px/1.3 var(--sans); color: var(--muted) }
+.help-row { display: grid; grid-template-columns: minmax(96px, 42%) 1fr; gap: 8px;
+  padding: 3px 0; align-items: baseline; font: 12px/1.4 var(--sans) }
+.help-row code { font: 12px/1.4 var(--mono); color: var(--fg); background: none; padding: 0;
+  overflow-wrap: anywhere }
+.help-args { color: var(--muted) }
+.help-hint { color: var(--fg) }
+.help-foot { margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--card-line);
+  font: 12px/1.4 var(--sans); color: var(--muted) }

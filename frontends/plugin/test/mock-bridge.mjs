@@ -99,6 +99,13 @@ const completionContext = () => emit({
     '/effort @claude ': EFFORT.claude,
     '/effort @codex ': EFFORT.codex,
   },
+  // a slice of core/botference.py COMMAND_HELP, in its shape
+  commands: [
+    { cmd: '@claude', args: '<msg>', hint: 'Send to Claude only', group: 'Talking to the bots', scope: ['tui', 'council', 'plugin'] },
+    { cmd: '/lasso', args: '<words|path|link>', hint: 'Find your pages, chats and files — or paste a link', group: 'Talking to the bots', scope: ['tui', 'council', 'plugin'] },
+    { cmd: '/status', args: '', hint: 'How full each bot\'s memory is', group: 'Models', scope: ['tui', 'council'] },
+    { cmd: '/help', args: '', hint: 'This list', group: 'Help', scope: ['tui', 'council', 'plugin'] },
+  ],
 });
 const touch = id => sessions.find(s => s.session_id === id)
   || (sessions.push({ session_id: id, title: 'Untitled', entries: 0 }), sessions[sessions.length - 1]);

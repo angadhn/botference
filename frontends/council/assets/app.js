@@ -34,7 +34,7 @@
     attach: $('attach'), file: $('file'), attStrip: $('att-strip'),
     lassoStrip: $('lasso-strip'),
     routeRow: $('route-row'),
-    toast: $('toast'), sync: $('sync'),
+    toast: $('toast'), sync: $('sync'), helpBtn: $('help-btn'),
   };
   const esc = s => String(s ?? '').replace(/[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -197,6 +197,45 @@
     claude: ['claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
   };
+  // The command table the /help popup and the autocomplete hints read: a
+  // mirror of core/botference.py COMMAND_HELP (the council rows), used until
+  // the bridge's completion_context carries the live one as `commands`.
+  const FALLBACK_COMMANDS = [
+    {"cmd": "@claude", "args": "<msg>", "hint": "Send to Claude only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "@codex", "args": "<msg>", "hint": "Send to Codex only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "@all", "args": "<msg>", "hint": "Send to both bots", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council"]},
+    {"cmd": "/watch", "args": "<url> [question]", "hint": "Gemini watches a YouTube video and reports back", "group": "Talking to the bots", "scope": ["tui", "council"]},
+    {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "/lead", "args": "@claude|@codex", "hint": "Choose who writes the plan", "group": "Planning", "scope": ["tui", "council"]},
+    {"cmd": "/draft", "args": "[rounds]", "hint": "Write implementation-plan.md, with review rounds (default 2)", "group": "Planning", "scope": ["tui", "council"]},
+    {"cmd": "/finalize", "args": "", "hint": "Answer review comments, write the final plan", "group": "Planning", "scope": ["tui", "council"]},
+    {"cmd": "/model", "args": "[@claude|@codex <id>]", "hint": "Show or change a bot's model", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/effort", "args": "[@claude|@codex <level>]", "hint": "Show or change how hard a bot thinks", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/current-model", "args": "", "hint": "Show both models and effort levels", "group": "Models", "aliases": ["/current"], "scope": ["tui", "council"]},
+    {"cmd": "/status", "args": "", "hint": "How full each bot's memory is, who leads, sessions", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/relay", "args": "@claude|@codex|@both", "hint": "Restart a bot fresh, with a summary of the chat so far", "group": "Models", "aliases": ["/tag", "/relay-claude", "/relay-codex", "/relay-both"], "scope": ["tui", "council"]},
+    {"cmd": "/autorelay", "args": "[on|off]", "hint": "Restart a bot by itself at 50% memory (on by default)", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/compact", "args": "@claude [instructions]", "hint": "Claude Code's own /compact (needs --claude-interactive)", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/goal", "args": "@claude <objective>", "hint": "Claude Code's own /goal (needs --claude-interactive)", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/auth", "args": "[claude|codex|all]", "hint": "Check the bots are signed in", "group": "Models", "scope": ["tui", "council"]},
+    {"cmd": "/new", "args": "[title]", "hint": "Start a fresh chat (this one is saved)", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/resume", "args": "[latest|number|title|id]", "hint": "Switch to a saved chat, in any project", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/rename", "args": "<name>", "hint": "Name this chat", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/adopt", "args": "[<id-prefix>]", "hint": "Carry on a Claude Code chat from outside here", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/file", "args": "[<project-id>]", "hint": "File this chat under a project", "group": "Chat", "aliases": ["/add-to-project"], "scope": ["tui", "council"]},
+    {"cmd": "/delete", "args": "[<id-prefix>]", "hint": "Delete a saved chat (asks first)", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/archive", "args": "[<id-prefix>|list]", "hint": "Put a saved chat away (can be undone)", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/unarchive", "args": "[<id-prefix>]", "hint": "Bring an archived chat back", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/projects", "args": "", "hint": "List your projects", "group": "Projects", "scope": ["tui", "council"]},
+    {"cmd": "/project", "args": "[open <id>|clear|create <title>|…]", "hint": "Open, show, create or tidy projects", "group": "Projects", "scope": ["tui", "council"]},
+    {"cmd": "/verify", "args": "[on|off]", "hint": "When they agree, the other bot checks the sources", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/agents", "args": "[on|off]", "hint": "Let Claude use helper agents (off by default)", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/notify", "args": "[on|off]", "hint": "Desktop notice when the bots finish", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/allow-host", "args": "[<domain>]", "hint": "Let the bots fetch from a website", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/permissions", "args": "", "hint": "Where the bots may write files", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
+  ];
   // fallback completion context: the bridge emits completion_context exactly
   // once at startup, so a client that connects after the server's history was
   // wiped (chat switch) or front-trimmed (long chat) never receives it — and
@@ -225,6 +264,7 @@
       '/effort @claude ': ['low', 'medium', 'high', 'xhigh', 'max'],
       '/effort @codex ': ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     },
+    commands: FALLBACK_COMMANDS,
   };
   const FALLBACK_EFFORT = {
     claude: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -2701,7 +2741,7 @@
       const sel = `class="opt${compMode === 'mention' ? ' mention' : ''}${i === compSel ? ' sel' : ''}" role="option" aria-selected="${i === compSel}" data-i="${i}"`;
       return compMode === 'mention'
         ? `<div ${sel}>${MARKS[c] ? avatarHtml(c) : '<span class="avatar" aria-hidden="true">@</span>'}<span class="mname">@${esc(c)}</span></div>`
-        : `<div ${sel}><code>${esc(c)}</code></div>`;
+        : `<div ${sel}><code>${esc(c)}</code>${hintFor(c) ? `<span class="chint">${esc(hintFor(c))}</span>` : ''}</div>`;
     }).join('');
     els.complete.hidden = false;
   }
@@ -2738,6 +2778,72 @@
     const o = e.target.closest('[data-i]');
     if (o) { e.preventDefault(); acceptCompletion(Number(o.dataset.i)); }
   });
+
+  // ── the /help popup ──────────────────────────────────────────────────────
+  // Typing /help (or just "help") opens a short list of what can be typed
+  // here — command and one line each — instead of sending anything. The rows
+  // are the controller's own table (COMMAND_HELP, carried in
+  // completion_context as `commands`), the council's share of it; the same
+  // rows give the autocomplete menu its one-line hints.
+  const HELP_RE = /^\/?help$/i;
+  const helpRows = () => ((state.ctx && Array.isArray(state.ctx.commands) && state.ctx.commands.length)
+    ? state.ctx.commands : FALLBACK_COMMANDS)
+    .filter(r => r && r.cmd && (!Array.isArray(r.scope) || r.scope.includes('council')));
+  // the one-line hint for a completion ("/model @claude" → /model's row)
+  function hintFor(text) {
+    const first = String(text || '').trim().split(/\s+/)[0].toLowerCase();
+    if (!first) return '';
+    const row = helpRows().find(r => r.cmd === first || (r.aliases || []).includes(first))
+      || (/^\/relay-/.test(first) ? helpRows().find(r => r.cmd === '/relay') : null);
+    return row ? row.hint : '';
+  }
+  let helpEl = null, helpReturn = null;
+  const helpOpen = () => !!(helpEl && !helpEl.hidden);
+  function renderHelp() {
+    if (!helpEl) return;
+    const groups = [];
+    for (const r of helpRows()) {
+      let g = groups.find(x => x.name === (r.group || ''));
+      if (!g) groups.push(g = { name: r.group || '', rows: [] });
+      g.rows.push(r);
+    }
+    helpEl.querySelector('.help-body').innerHTML = groups.map(g =>
+      `<section class="help-group">${g.name ? `<h3>${esc(g.name)}</h3>` : ''}` +
+      g.rows.map(r => `<div class="help-row"><code>${esc(r.cmd)}${r.args ? ` <span class="help-args">${esc(r.args)}</span>` : ''}</code>` +
+        `<span class="help-hint">${esc(r.hint)}</span></div>`).join('') +
+      `</section>`).join('');
+  }
+  function openHelp() {
+    if (!helpEl) {
+      helpEl = document.createElement('div');
+      helpEl.id = 'help-pop';
+      helpEl.hidden = true;
+      helpEl.innerHTML = `<div class="help-card" role="dialog" aria-modal="true" aria-labelledby="help-title">
+        <div class="help-head"><b id="help-title">Commands</b>
+          <button type="button" class="help-x" aria-label="close">×</button></div>
+        <div class="help-body"></div>
+        <div class="help-foot">Type / or @ in the box for suggestions · Esc closes</div></div>`;
+      // a click on the dimmed backdrop (not the card) closes it
+      helpEl.addEventListener('mousedown', e => { if (e.target === helpEl) closeHelp(); });
+      helpEl.querySelector('.help-x').addEventListener('click', closeHelp);
+      helpEl.addEventListener('keydown', e => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeHelp(); }
+      });
+      document.body.appendChild(helpEl);
+    }
+    helpReturn = document.activeElement;
+    renderHelp();
+    helpEl.hidden = false;
+    helpEl.querySelector('.help-x').focus();
+  }
+  function closeHelp() {
+    if (!helpOpen()) return;
+    helpEl.hidden = true;
+    const back = helpReturn && helpReturn.isConnected ? helpReturn : els.input;
+    helpReturn = null;
+    if (back && back.focus) back.focus();
+  }
+  if (els.helpBtn) els.helpBtn.addEventListener('click', () => (helpOpen() ? closeHelp() : openHelp()));
 
   // ── the pill row: who the next message is for ────────────────────────────
   //
@@ -3022,6 +3128,16 @@
 
   function submit() {
     const text = els.input.value.trim();
+    // "/help" is for the reader, not the bots: it opens the popup and is
+    // never sent. Anything attached stays attached for the next message.
+    if (HELP_RE.test(text)) {
+      els.input.value = '';
+      autosize();
+      refreshCompletions();
+      syncSend();
+      openHelp();
+      return;
+    }
     const ready = state.atts.filter(a => a.status === 'ok');
     if (!text && !ready.length) return;
     if (state.atts.some(a => a.status === 'up')) { toast('still uploading…'); return; }
@@ -3240,7 +3356,9 @@
         break;
       }
       case 'completion_context':
-        state.ctx = { global: ev.global || [], scoped: ev.scoped || {} };
+        state.ctx = { global: ev.global || [], scoped: ev.scoped || {},
+          commands: (Array.isArray(ev.commands) && ev.commands.length) ? ev.commands : FALLBACK_COMMANDS };
+        if (helpOpen()) renderHelp();
         renderModelSwitcher();
         break;
       case 'ready':
@@ -3422,6 +3540,7 @@
   }
 
   document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && helpOpen()) { closeHelp(); return; }
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) closeSide();
     if (e.key === 'Escape') closeAgents();
   });
@@ -3448,5 +3567,7 @@
     // the typewriter: the setting, the switch, and the drain's own clock —
     // exposed so a test can step it rather than wait on wall time
     typingPref, setTyping, renderTyping, typeDrain, shownText,
+    // the /help popup and the hints the autocomplete shows
+    openHelp, closeHelp, helpOpen, helpRows, hintFor,
   };
 })();

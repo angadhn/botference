@@ -683,6 +683,96 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.equal(doc.documentElement.getAttribute('data-theme'), null);
 });
 
+test('/help opens a popup of commands (one line each) and never reaches the bridge (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  const w = new GlobalWindow({ url: 'http://localhost/', width: 1280, height: 900 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  const html = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'index.html'), 'utf8');
+  doc.write(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+  const posts = [];
+  w.fetch = async (url, opts) => {
+    posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  w.EventSource = class { constructor() { } close() { } };
+  w.WebSocket = class { constructor() { } close() { } send() { } };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
+  const C = w.__council;
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done', count: 0 });
+  const inputPosts = () => posts.filter(p => p.url === '/input');
+
+  // before any completion_context: the fallback table already has the rows,
+  // and the terminal-only /quit is not among them
+  assert.ok(C.helpRows().some(r => r.cmd === '/model'));
+  assert.ok(!C.helpRows().some(r => r.cmd === '/quit'), '/quit is terminal-only');
+  assert.equal(C.hintFor('/model @claude'), C.helpRows().find(r => r.cmd === '/model').hint);
+  // …and that fallback IS the controller's council rows (core/botference.py
+  // COMMAND_HELP), so the popup cannot drift from the terminal's /help
+  let py = null;
+  try {
+    py = JSON.parse(execFileSync('python3', ['-c',
+      'import json,sys; sys.path.insert(0, sys.argv[1]); import botference as b; ' +
+      'print(json.dumps([{k: r[k] for k in ("cmd","args","hint","group")} for r in b.command_help("council")]))',
+      path.join(HOME, 'core')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch { /* no python: tests/test_command_help.py holds the table itself */ }
+  if (py) {
+    // JSON-compare: objects from the vm realm are never deep-equal by prototype
+    assert.equal(JSON.stringify(C.helpRows().map(r => ({ cmd: r.cmd, args: r.args, hint: r.hint, group: r.group }))),
+      JSON.stringify(py));
+  }
+
+  const input = doc.getElementById('input');
+  for (const typed of ['/help', 'help', '  /HELP ']) {
+    input.value = typed;
+    input.dispatchEvent(new w.Event('input'));
+    C.submit();
+    await new Promise(r => setTimeout(r, 10));
+    const pop = doc.getElementById('help-pop');
+    assert.ok(pop && !pop.hasAttribute('hidden'), `popup opens for ${JSON.stringify(typed)}`);
+    assert.equal(inputPosts().length, 0, `${JSON.stringify(typed)} is not sent to the bridge`);
+    assert.equal(input.value, '', 'the box empties, as for a send');
+    // Esc closes it
+    doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.ok(pop.hasAttribute('hidden'), 'Esc closes it');
+  }
+
+  // the live table replaces the fallback: rows come from completion_context
+  C.handle({ type: 'completion_context', global: ['/status'], scoped: {}, commands: [
+    { cmd: '/status', args: '', hint: 'live status hint', group: 'Models', scope: ['tui', 'council'] },
+    { cmd: '/quit', args: '', hint: 'leave', group: 'Help', scope: ['tui'] },
+    { cmd: '/help', args: '', hint: 'This list', group: 'Help', scope: ['tui', 'council', 'plugin'] },
+  ] });
+  C.openHelp();
+  const pop = doc.getElementById('help-pop');
+  const rows = [...pop.querySelectorAll('.help-row')].map(r => [...r.children].map(c => c.textContent.trim()).join(' '));
+  assert.deepEqual(rows, ['/status live status hint', '/help This list']);
+  assert.deepEqual([...pop.querySelectorAll('.help-group h3')].map(h => h.textContent), ['Models', 'Help']);
+  // the × closes it; so does a click on the backdrop
+  pop.querySelector('.help-x').click();
+  assert.ok(pop.hasAttribute('hidden'), '× closes it');
+  doc.getElementById('help-btn').click();
+  assert.ok(!pop.hasAttribute('hidden'), 'the ? button opens it');
+  pop.dispatchEvent(new w.MouseEvent('mousedown', { bubbles: true }));
+  assert.ok(pop.hasAttribute('hidden'), 'a click outside the card closes it');
+
+  // the autocomplete menu shows the one-line hint beside a command
+  input.value = '/sta';
+  input.dispatchEvent(new w.Event('input'));
+  assert.match(doc.getElementById('complete').textContent, /live status hint/);
+
+  // …and a real command still goes through untouched
+  input.value = '/status';
+  input.dispatchEvent(new w.Event('input'));
+  C.submit();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(inputPosts().pop().body, { bridge: 'b1', text: '/status', attachments: [] });
+});
+
 // ---------------------------------------------------------------- uploads
 
 const PNG = Buffer.concat([

@@ -1471,7 +1471,7 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
 | `/parallel <prompt>` | **Both bots answer at once**, neither seeing the other's reply. The word may sit anywhere in the prompt (`what do you make of this? /parallel`). Each bot has the whole chat up to your prompt; both replies land in the shared history and each sees the other's on its next turn. No bot-to-bot thread follows — the point is two independent readings. A YouTube link is still watched by Gemini first. See [Summoned build agents and /parallel](#summoned-build-agents-and-parallel). |
 | `/lasso <words>` | **Search everything you have already read and said** — the pages you have annotated in the browser, your past council chats, and any folders you have named — and offer the matches. Nothing is attached until you say so. `/lasso <path>` attaches a file of your own directly; `/lasso attach <n>` (or `all`) takes one of the offers; `/lasso detach <n>` takes one off; bare `/lasso` lists what this chat is carrying. See [Lasso](#lasso). |
-| `/help` | Show the command reference. |
+| `/help` | Show the command reference. In the browser — the council page and the plugin's Discuss drawer — `/help` (or just `help`) opens a small popup instead: each command with one line saying what it does, and nothing is sent to the bots. Close it with Esc, a click outside, or ×. The council page also has a `?` button in the header that opens the same popup. |
 | `/quit` | Exit without writing files. |
 
 ![/help output showing commands, messaging, aliases, and workflow](docs/images/help-commands.png)
@@ -1613,8 +1613,11 @@ matters. A forty-page transcript pasted into every turn would bury the turn.
 In the browser, the same thing lives in the companion's drawer: type `/lasso`
 in any composer and the matches appear above it as chips, with what is attached
 shown as small chips with a ✕ from then on. Typing a bare `/` opens the same
-menu the `@` does, with `/lasso` in it, so it is not a command you have to
-already know. One line above the chips says what happened — `lasso · 3 matches
+menu the `@` does, with every command the drawer takes (`/lasso`, `/help`) and
+one line saying what each does, so it is not a command you have to already
+know. The `@claude`, `@codex` and `@all` rows carry a line too. The terminal
+`/help`, the council popup and these menus all read one table in the
+controller (`COMMAND_HELP` in `core/botference.py`), so they cannot disagree. One line above the chips says what happened — `lasso · 3 matches
 for "fat tails"`, `lasso · fetched "Rockets, part 1" (angadh.com)`, or
 `lasso · nothing matched "…" — try other words, or paste a link or a file path`.
 

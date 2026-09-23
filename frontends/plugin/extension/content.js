@@ -3019,7 +3019,7 @@
       if (e.shiftKey) drawer.hideAllBubbles(); else drawer.hideBubble();
       return;
     }
-    if (drawer.isOpen() && !drawer.escape()) { drawer.close(); }
+    if (drawer.isOpen() && !drawer.escape(e)) { drawer.close(); }
   }, true);
 
   // ---- the bots changed this project's files ------------------------------

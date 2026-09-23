@@ -1005,8 +1005,13 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       options: scopedList('/effort') || cachedList('effort'),
     };
   };
+  // the controller's command table (core/botference.py COMMAND_HELP), which
+  // the drawer's /help popup and slash menu read; null until the bridge has
+  // announced it, and the drawer keeps a fallback copy for that silence
+  const commandTable = () => ((lastCtx && Array.isArray(lastCtx.commands) && lastCtx.commands.length)
+    ? lastCtx.commands : null);
   const modelsEvent = () => ({ type: 'models', current: modelSnapshotWithPrefs(),
-    status: statusSnapshot(), effort: effortSnapshot() });
+    status: statusSnapshot(), effort: effortSnapshot(), commands: commandTable() });
 
   function handle(ev) {
     if (ev.type === 'ready') { onBridgeReady(); return; }
@@ -1025,6 +1030,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       if (Object.keys(patch).length) {
         try { saveAgents(patch); } catch { /* a cache, not a record */ }
       }
+      // …and tell the drawers what can be typed, the moment it is known
+      if (commandTable()) emit(modelsEvent());
       return;
     }
     if (ev.type === 'status') {
@@ -1532,7 +1539,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // "unknown yet" rather than an empty picker. `status` alone stays strictly
     // the bridge's: there is no such thing as a preferred context gauge.
     models: () => ({ current: modelSnapshotWithPrefs(), options: modelOptions(),
-      status: statusSnapshot(), effort: effortSnapshot() }),
+      status: statusSnapshot(), effort: effortSnapshot(), commands: commandTable() }),
     // only the page whose turn is actually running can interrupt it
     interrupt(url) {
       if (!current || !available || current.job.url !== url) return false;

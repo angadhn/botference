@@ -53,6 +53,8 @@
                      half a handle typed (screenshot state)
     ?mention=slash   the same menu opened by a "/" instead: the commands, each
                      with a line saying what it does (screenshot state)
+    ?help=1          "/help" sent from the page chat: the commands popup, open
+                     (screenshot state)
     ?gdocs=1         pretend to be a Google Doc: the url, the " - Google Docs"
                      tab title, a canvas-painted body with no article text, and
                      a stubbed /export?format=txt. Exercises the site-adapter
@@ -4767,7 +4769,7 @@ async function selftest() {
   press(ata, 'ArrowDown');
   check('…arrow keys move the selection',
     !!mrows()[1] && mrows()[1].classList.contains('on') && !mrows()[0].classList.contains('on'));
-  const second = mrows()[1].textContent.trim();
+  const second = mrows()[1].querySelector('.mname').textContent.trim();
   press(ata, 'Tab');
   check('Tab completes the highlighted one', ata.value === second + ' ');
 
@@ -10441,7 +10443,7 @@ async function selftestLasso() {
     check('typing “/la” opens the menu with the commands in it',
       !!menu && !menu.hidden && /\/lasso/.test(menu.textContent || ''));
     check('…with one line saying what it does',
-      !!menu && /your pages, chats and files — or paste a link/.test(menu.textContent || ''));
+      !!menu && /your pages, chats and files — or paste a link/i.test(menu.textContent || ''));
     tbox.dispatchEvent(new KeyboardEvent('keydown',
       { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
     await sleep(80);
@@ -10452,6 +10454,47 @@ async function selftestLasso() {
     })());
     tbox.value = '';
     tbox.dispatchEvent(new Event('input', { bubbles: true }));
+
+    // ---- a bare "/" offers EVERY command the drawer takes, each with a line ----
+    tbox.focus();
+    tbox.value = '/';
+    tbox.setSelectionRange(1, 1);
+    tbox.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(100);
+    const allMenu = S.querySelector('.pane[data-pane="comments"] .card .composer .mentions');
+    check('a bare “/” lists /lasso and /help, each with its hint',
+      !!allMenu && !allMenu.hidden && /\/lasso/.test(allMenu.textContent) && /\/help/.test(allMenu.textContent)
+      && [...allMenu.querySelectorAll('.mrow')].every(r => (r.querySelector('.mhint') || {}).textContent));
+
+    // ---- /help opens a popup of what can be typed, and is never sent ----
+    const threadBefore = (RECORD.threads || []).map(t => (t.msgs || []).length).join(',');
+    tbox.value = '/help';
+    tbox.dispatchEvent(new Event('input', { bubbles: true }));
+    tbox.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'Enter', bubbles: true, composed: true, cancelable: true }));
+    await sleep(120);
+    const helpPop = S.querySelector('.popover.helppop');
+    check('“/help” opens the commands popup', !!helpPop && !helpPop.hidden);
+    check('…listing each command with one line', !!helpPop
+      && /@claude/.test(helpPop.textContent) && /\/lasso/.test(helpPop.textContent)
+      && helpPop.querySelectorAll('.help-row .help-hint').length >= 4);
+    check('…and not the terminal-only ones', !!helpPop && !/\/quit/.test(helpPop.textContent));
+    check('…nothing was said to anybody, and the box is empty',
+      (RECORD.threads || []).map(t => (t.msgs || []).length).join(',') === threadBefore
+      && tbox.value === '');
+    helpPop.dispatchEvent(new KeyboardEvent('keydown',
+      { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+    await sleep(60);
+    check('Esc closes it', helpPop.hidden);
+    check('…and only it: the drawer stays open', d.isOpen());
+    tbox.value = 'help';
+    tbox.dispatchEvent(new Event('input', { bubbles: true }));
+    hit(S.querySelector('.pane[data-pane="comments"] .card .composer .send'), 'Send');
+    await sleep(80);
+    check('plain “help” opens it too', !helpPop.hidden);
+    hit(helpPop.querySelector('[data-act="help-close"]'), '×');
+    await sleep(60);
+    check('the × closes it', helpPop.hidden);
 
     check('nothing threw', window.__bfpErrors.length === 0);
   } catch (e) { check('threw: ' + (e && e.message), false); }
@@ -12888,6 +12931,18 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         log('lasso: a pasted link, ' + (LASSO === 'web' ? 'fetched' : 'refused')
           + ' (screenshot state)');
       }, 300);
+    }
+    // ?help=1 — the /help popup, open (screenshot state)
+    if (Q.get('help') === '1') {
+      setTimeout(() => {
+        d.open('chat');
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('help: no composer');
+        ta.value = '/help';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
+        log('help: the commands popup, open (screenshot state)');
+      }, 250);
     }
     if (Q.get('mention') === '1' || Q.get('mention') === 'slash') {
       const slash = Q.get('mention') === 'slash';

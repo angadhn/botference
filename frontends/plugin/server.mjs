@@ -461,11 +461,14 @@ const controlAll = text => { for (const c of allChats()) c.control(text); };
 // what the agents panel renders: the bridge's own model/effort/occupancy, plus
 // the one setting the companion owns (verbosity). Assembled in one place so
 // GET /models and every `models` broadcast agree field for field.
-const EMPTY_MODELS = { current: null, options: null, status: null, effort: null };
+const EMPTY_MODELS = { current: null, options: null, status: null, effort: null, commands: null };
 function modelsPayload() {
   const m = chat ? chat.models() : EMPTY_MODELS;
   return {
     current: m.current, options: m.options, status: m.status, effort: m.effort,
+    // what can be typed in the drawer (the controller's command table), for
+    // its /help popup and slash menu; null until the bridge has announced it
+    commands: m.commands || null,
     verbosity: store.readConfig().verbosity,
     // which auth each agent will spawn with — status only, never the key
     keys: keys.status(),

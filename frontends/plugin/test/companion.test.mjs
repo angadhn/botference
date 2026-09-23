@@ -206,6 +206,8 @@ async function main() {
       // effort is the exception: the child's argparse defaults are knowable
       // before it exists, and no bridge event ever reports the live level
       effort: { current: { claude: 'medium', codex: 'medium' }, options: null },
+      // the command table, likewise, is the bridge's to announce
+      commands: null,
       verbosity: 'short',
       // which auth each agent would spawn with — status, never key material
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
@@ -894,6 +896,16 @@ async function main() {
     assert.deepEqual(r.json.effort.options.claude, ['low', 'medium', 'high', 'xhigh', 'max']);
     assert.ok(r.json.effort.options.codex.includes('ultra'));
     assert.equal(r.json.verbosity, 'short');
+    // …and so does the command table the drawer's /help popup and slash menu
+    // read: passed through as the bridge sent it, hints and scopes intact
+    const lasso = (r.json.commands || []).find(c => c.cmd === '/lasso');
+    assert.ok(lasso && lasso.hint && lasso.scope.includes('plugin'), 'the command table passes through');
+  });
+
+  await test('the models broadcast carries the command table too', () => {
+    const ev = stream.events.filter(e => e.type === 'models' && e.commands).pop();
+    assert.ok(ev, 'a models event with commands was broadcast');
+    assert.ok(ev.commands.some(c => c.cmd === '/help'));
   });
 
   await test('the bridge status event broadcast a models event', () => {
@@ -4022,7 +4034,7 @@ async function main() {
     assert.equal(health.json.bridge, 'disabled');
     const models = await GET(off.base, '/models');
     assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null,
-      effort: null, verbosity: 'short',
+      effort: null, commands: null, verbosity: 'short',
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
       bridge: 'disabled' });
     const effort = await POST(off.base, '/effort', { agent: 'claude', level: 'high' });

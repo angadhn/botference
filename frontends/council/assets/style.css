@@ -652,6 +652,9 @@ main { position: relative }
 #complete .opt.mention .avatar { width: 22px; height: 22px; flex: none;
   color: var(--author, var(--muted)) }
 #complete .opt.mention .mname { font: 600 .88rem var(--sans) }
+/* the one-line hint beside a command (from the controller's command table) */
+#complete .opt .chint { margin-left: auto; padding-left: .9rem; color: var(--muted);
+  font: .76rem var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 #complete .opt.sel, #complete .opt:hover {
   background: color-mix(in srgb, var(--accent) 9%, var(--card)) }
 
@@ -942,4 +945,37 @@ body.agents-open #agents-panel { transform: translateX(0) }
   flex: none; font-size: .68rem; letter-spacing: .04em; text-transform: uppercase;
   padding: .05rem .38rem; border-radius: 999px;
   border: 1px solid var(--ok); color: var(--ok); cursor: help;
+}
+
+/* ── the /help popup: command + one line each ── */
+#help-btn { border: 1px solid var(--card-line); background: var(--card); color: var(--muted);
+  width: 30px; height: 30px; border-radius: 50%; padding: 0; flex: none;
+  font: 600 .85rem var(--sans); line-height: 1 }
+#help-btn:hover { color: var(--accent); border-color: var(--accent) }
+#help-pop { position: fixed; inset: 0; z-index: 40; display: flex;
+  align-items: center; justify-content: center; padding: 16px;
+  background: color-mix(in srgb, var(--fg) 22%, transparent) }
+#help-pop[hidden] { display: none }
+#help-pop .help-card { width: min(560px, 100%); max-height: min(80vh, 640px);
+  display: flex; flex-direction: column; background: var(--card); color: var(--fg);
+  border: 1px solid var(--card-line); border-radius: 14px; box-shadow: var(--shadow) }
+#help-pop .help-head { display: flex; align-items: center; justify-content: space-between;
+  padding: .7rem .7rem .5rem 1.1rem; border-bottom: 1px solid var(--card-line);
+  font: 600 .95rem var(--sans); color: var(--heading) }
+#help-pop .help-x { border: 0; background: none; color: var(--muted); font-size: 1.3rem;
+  line-height: 1; width: 34px; height: 34px; border-radius: 8px; padding: 0 }
+#help-pop .help-x:hover { color: var(--fg); background: color-mix(in srgb, var(--fg) 7%, transparent) }
+#help-pop .help-body { overflow-y: auto; padding: .3rem 1.1rem .8rem }
+#help-pop .help-group h3 { margin: .8rem 0 .25rem; font: 600 .68rem var(--sans);
+  text-transform: uppercase; letter-spacing: .06em; color: var(--muted) }
+#help-pop .help-row { display: grid; grid-template-columns: minmax(8.5rem, 40%) 1fr;
+  gap: .8rem; padding: .22rem 0; align-items: baseline; font: .84rem/1.4 var(--sans) }
+#help-pop .help-row code { background: none; padding: 0; font: .8rem var(--mono);
+  color: var(--fg); overflow-wrap: anywhere }
+#help-pop .help-args { color: var(--muted) }
+#help-pop .help-hint { color: var(--fg) }
+#help-pop .help-foot { padding: .55rem 1.1rem .7rem; border-top: 1px solid var(--card-line);
+  font: .72rem var(--sans); color: var(--muted) }
+@media (max-width: 480px) {
+  #help-pop .help-row { grid-template-columns: 1fr; gap: 0; padding: .3rem 0 }
 }

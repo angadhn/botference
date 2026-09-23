@@ -187,6 +187,48 @@ const AGENTS = ['claude', 'codex'];
     [['article', 'Articles'], ['pdf', 'PDFs'], ['gdocs', 'Docs']]);
 }
 
+// ---- the command table: slash menu, @ hints and the /help popup ------------
+// One table (core/botference.py COMMAND_HELP) feeds the terminal /help, the
+// council popup and this drawer. The drawer's fallback copy must be exactly
+// the controller's "plugin" rows, or the two would drift in silence.
+{
+  eq('slash: a bare "/" offers every command the drawer takes',
+    D.slashCandidates('').map(c => c.cmd), ['lasso', 'help']);
+  eq('slash: …and typing filters them', D.slashCandidates('he').map(c => c.cmd), ['help']);
+  ok('slash: each one carries its one-line hint',
+    D.slashCandidates('').every(c => c.hint && c.hint.length <= 62 && !/\n/.test(c.hint)));
+  // a live table from the companion replaces the fallback, filtered to "plugin"
+  const live = [
+    { cmd: '/lasso', args: '', hint: 'live lasso', group: 'A', scope: ['plugin'] },
+    { cmd: '/status', args: '', hint: 'not here', group: 'A', scope: ['tui', 'council'] },
+    { cmd: '/help', args: '', hint: 'This list', group: 'B', scope: ['plugin'] },
+    { cmd: '@claude', args: '<msg>', hint: 'Claude only', group: 'A', scope: ['plugin'] },
+  ];
+  eq('slash: the live table wins, and only its plugin rows count',
+    D.slashCandidates('', live).map(c => [c.cmd, c.hint]), [['lasso', 'live lasso'], ['help', 'This list']]);
+  eq('mention: an @handle gets its hint from the table', D.mentionHint('claude', live), 'Claude only');
+  eq('mention: …and one with no row gets none', D.mentionHint('gemini', live), '');
+  eq('help: the popup groups rows in the table\'s order',
+    D.helpGroups(live).map(g => [g.name, g.rows.map(r => r.cmd)]),
+    [['A', ['/lasso', '@claude']], ['B', ['/help']]]);
+  for (const t of ['/help', 'help', 'HELP', '/Help']) ok(`help: “${t}” opens the popup`, D.HELP_CMD.test(t));
+  for (const t of ['/help me', 'helpful', '/helper', 'please help']) ok(`help: “${t}” is a message`, !D.HELP_CMD.test(t));
+
+  // the fallback IS the controller's plugin rows
+  const { execFileSync } = await import('node:child_process');
+  let py = null;
+  try {
+    py = JSON.parse(execFileSync('python3', ['-c',
+      'import json,sys; sys.path.insert(0, sys.argv[1]); import botference as b; ' +
+      'print(json.dumps([{k: r[k] for k in ("cmd","args","hint","group")} for r in b.command_help("plugin")]))',
+      path.join(here, '..', '..', '..', 'core')], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch { /* no python here: the table test lives in tests/test_command_help.py */ }
+  if (py) {
+    eq('table: the drawer\'s fallback is the controller\'s plugin rows',
+      D.FALLBACK_COMMANDS.map(r => ({ cmd: r.cmd, args: r.args, hint: r.hint, group: r.group })), py);
+  }
+}
+
 fs.rmSync(process.env.BOTFERENCE_PROJECT_ROOT, { recursive: true, force: true });
 
 console.log(`\nmentions: ${pass} passed, ${fail} failed`);

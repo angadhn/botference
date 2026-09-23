@@ -270,6 +270,179 @@ _TARGETED_COMMANDS = (
     "/lead", "/relay", "/tag", "/model", "/effort", "/compact", "/goal",
 )
 
+# ── The command table: one place every /help and every autocomplete reads ──
+#
+# Each row is one command as a reader would look it up: `cmd` (what is typed
+# first), `args` (the rest, in the usual <required> [optional] notation),
+# `hint` (ONE short plain line — the browser popup and the plugin's
+# autocomplete show only this), `scope` (where typing it does something:
+# "tui" = the terminal, "council" = the council web page, "plugin" = the
+# browser plugin's Discuss drawer), `group` (the heading it sits under) and
+# optionally `aliases` and `detail` (extra lines the terminal's /help prints
+# under the hint). The terminal /help, the council popup and the plugin
+# popup/autocomplete are all rendered from this list, so they cannot drift.
+#
+# The plugin runs its own composer: what the reader types there is wrapped as
+# a message about the page, so only the commands the drawer itself handles
+# (the @mentions, /lasso, /help) carry the "plugin" scope.
+_ALL = ("tui", "council")
+_EVERYWHERE = ("tui", "council", "plugin")
+
+COMMAND_HELP: list[dict] = [
+    # Talking to the bots
+    {"cmd": "@claude", "args": "<msg>", "group": "Talking to the bots",
+     "hint": "Send to Claude only", "scope": _EVERYWHERE},
+    {"cmd": "@codex", "args": "<msg>", "group": "Talking to the bots",
+     "hint": "Send to Codex only", "scope": _EVERYWHERE},
+    {"cmd": "@all", "args": "<msg>", "group": "Talking to the bots",
+     "hint": "Send to both bots", "scope": _EVERYWHERE,
+     "detail": ["A message with no tag goes to both first, then to whoever"
+                " you last tagged"]},
+    {"cmd": "/parallel", "args": "<prompt>", "group": "Talking to the bots",
+     "hint": "Both answer at once, neither seeing the other's reply",
+     "scope": _ALL,
+     "detail": ["The word may sit anywhere in the prompt."
+                " No bot-to-bot thread follows"]},
+    {"cmd": "/watch", "args": "<url> [question]", "group": "Talking to the bots",
+     "hint": "Gemini watches a YouTube video and reports back",
+     "scope": _ALL},
+    {"cmd": "/lasso", "args": "<words|path|link>", "group": "Talking to the bots",
+     "hint": "Find your pages, chats and files — or paste a link",
+     "scope": _EVERYWHERE,
+     "detail": [
+         "/lasso <path> attaches a file of your own directly",
+         "/lasso attach <n|all> | /lasso detach <n> | /lasso — take an offer,"
+         " take one off, or list what this chat carries",
+         "Attachments are files the bots read when they need them",
+     ]},
+    {"cmd": "/lead", "args": "@claude|@codex", "group": "Planning",
+     "hint": "Choose who writes the plan", "scope": _ALL},
+    {"cmd": "/draft", "args": "[rounds]", "group": "Planning",
+     "hint": "Write implementation-plan.md, with review rounds (default 2)",
+     "scope": _ALL},
+    {"cmd": "/finalize", "args": "", "group": "Planning",
+     "hint": "Answer review comments, write the final plan",
+     "scope": _ALL},
+
+    # Models
+    {"cmd": "/model", "args": "[@claude|@codex <id>]", "group": "Models",
+     "hint": "Show or change a bot's model", "scope": _ALL},
+    {"cmd": "/effort", "args": "[@claude|@codex <level>]", "group": "Models",
+     "hint": "Show or change how hard a bot thinks", "scope": _ALL,
+     "detail": ["claude: low|medium|high|xhigh|max;"
+                " codex: low|medium|high|xhigh|max|ultra"]},
+    {"cmd": "/current-model", "args": "", "aliases": ["/current"], "group": "Models",
+     "hint": "Show both models and effort levels", "scope": _ALL},
+    {"cmd": "/status", "args": "", "group": "Models",
+     "hint": "How full each bot's memory is, who leads, sessions",
+     "scope": _ALL},
+    {"cmd": "/relay", "args": "@claude|@codex|@both", "group": "Models",
+     "aliases": ["/tag", "/relay-claude", "/relay-codex", "/relay-both"],
+     "hint": "Restart a bot fresh, with a summary of the chat so far",
+     "scope": _ALL,
+     "detail": ["@both: one shared summary, both restart from it at once"]},
+    {"cmd": "/autorelay", "args": "[on|off]", "group": "Models",
+     "hint": "Restart a bot by itself at 50% memory (on by default)",
+     "scope": _ALL},
+    {"cmd": "/compact", "args": "@claude [instructions]", "group": "Models",
+     "hint": "Claude Code's own /compact (needs --claude-interactive)",
+     "scope": _ALL},
+    {"cmd": "/goal", "args": "@claude <objective>", "group": "Models",
+     "hint": "Claude Code's own /goal (needs --claude-interactive)",
+     "scope": _ALL},
+    {"cmd": "/auth", "args": "[claude|codex|all]", "group": "Models",
+     "hint": "Check the bots are signed in", "scope": _ALL},
+
+    # Chat
+    {"cmd": "/new", "args": "[title]", "group": "Chat",
+     "hint": "Start a fresh chat (this one is saved)", "scope": _ALL,
+     "detail": ["/new --project <id> files it there; --inbox leaves it unfiled"]},
+    {"cmd": "/resume", "args": "[latest|number|title|id]", "group": "Chat",
+     "hint": "Switch to a saved chat, in any project", "scope": _ALL},
+    {"cmd": "/rename", "args": "<name>", "group": "Chat",
+     "hint": "Name this chat", "scope": _ALL},
+    {"cmd": "/adopt", "args": "[<id-prefix>]", "group": "Chat",
+     "hint": "Carry on a Claude Code chat from outside here", "scope": _ALL},
+    {"cmd": "/file", "args": "[<project-id>]", "group": "Chat",
+     "aliases": ["/add-to-project"],
+     "hint": "File this chat under a project", "scope": _ALL},
+    {"cmd": "/delete", "args": "[<id-prefix>]", "group": "Chat",
+     "hint": "Delete a saved chat (asks first)", "scope": _ALL},
+    {"cmd": "/archive", "args": "[<id-prefix>|list]", "group": "Chat",
+     "hint": "Put a saved chat away (can be undone)", "scope": _ALL},
+    {"cmd": "/unarchive", "args": "[<id-prefix>]", "group": "Chat",
+     "hint": "Bring an archived chat back", "scope": _ALL},
+    {"cmd": "/projects", "args": "", "group": "Projects",
+     "hint": "List your projects", "scope": _ALL},
+    {"cmd": "/project", "args": "[open <id>|clear|create <title>|…]", "group": "Projects",
+     "hint": "Open, show, create or tidy projects", "scope": _ALL,
+     "detail": [
+         "/project open <id> | clear | current | create <title> | create-from-chat"
+         " | activate-build",
+         "/project assign [<chat-id>] <project-id> — file this chat or a saved one",
+         "/project unfile [<chat-id>] — back to Inbox; nothing is deleted",
+         "/project contents [<project-id>] — its chats and its folder",
+         "/project github [<project-id>] [<repo>] — push the folder to a new"
+         " private GitHub repo (asks first)",
+         "/project archive <id> | /project unarchive <id> — tuck away or bring back",
+     ]},
+
+    # Settings
+    {"cmd": "/verify", "args": "[on|off]", "group": "Settings",
+     "hint": "When they agree, the other bot checks the sources", "scope": _ALL},
+    {"cmd": "/agents", "args": "[on|off]", "group": "Settings",
+     "hint": "Let Claude use helper agents (off by default)", "scope": _ALL},
+    {"cmd": "/notify", "args": "[on|off]", "group": "Settings",
+     "hint": "Desktop notice when the bots finish", "scope": _ALL},
+    {"cmd": "/allow-host", "args": "[<domain>]", "group": "Settings",
+     "hint": "Let the bots fetch from a website", "scope": _ALL},
+    {"cmd": "/permissions", "args": "", "group": "Settings",
+     "hint": "Where the bots may write files", "scope": _ALL},
+
+    # Help
+    {"cmd": "/help", "args": "", "group": "Help",
+     "hint": "This list", "scope": _EVERYWHERE},
+    {"cmd": "/quit", "args": "", "aliases": ["/exit"], "group": "Help",
+     "hint": "Leave without writing files", "scope": ("tui",)},
+]
+
+
+def command_help(scope: str | None = None) -> list[dict]:
+    """COMMAND_HELP as plain JSON-ready dicts, optionally only one scope's."""
+    out = []
+    for row in COMMAND_HELP:
+        if scope and scope not in row["scope"]:
+            continue
+        item = {k: v for k, v in row.items() if k != "scope"}
+        item["scope"] = list(row["scope"])
+        out.append(item)
+    return out
+
+
+def render_command_help(scope: str = "tui") -> list[str]:
+    """The /help text lines for one scope, grouped, from COMMAND_HELP."""
+    lines: list[str] = []
+    group = None
+    for row in command_help(scope):
+        if row["group"] != group:
+            if group is not None:
+                lines.append("")
+            group = row["group"]
+            lines.append(f"{group}:")
+        head = row["cmd"] + (f" {row['args']}" if row["args"] else "")
+        aliases = row.get("aliases") or []
+        if aliases:
+            head += f" (also {', '.join(aliases)})"
+        if len(head) <= 22:
+            lines.append(f"  {head:<22} — {row['hint']}")
+        else:
+            lines.append(f"  {head}")
+            lines.append(f"  {'':<22} — {row['hint']}")
+        for d in row.get("detail") or []:
+            lines.append(f"  {'':<24} {d}")
+    return lines
+
+
 # /project subcommands, surfaced to autocomplete as scoped completions
 _PROJECT_SUBCOMMANDS = (
     "open", "clear", "current", "create", "create-from-chat",
@@ -306,6 +479,9 @@ def get_completion_context() -> dict:
     """
     return {
         "global": get_slash_commands(),
+        # the command table itself, so the browser /help popups and the
+        # plugin's autocomplete read the same rows the terminal /help does
+        "commands": command_help(),
         "scoped": {
             "/project ": list(_PROJECT_SUBCOMMANDS),
             "/model @claude ": _known_claude_models(),
@@ -3560,87 +3736,14 @@ class Botference:
     # ── /help ─────────────────────────────────────────────
 
     def _show_help(self, ui: UIPort) -> None:
-        self._add_room_entry(ui, "system", "\n".join([
-            "Chat lifecycle:",
-            "  /new [title]        — Start a fresh chat here (current one is saved)",
-            "                        /new --project <id> files it there; --inbox leaves it unfiled",
-            "  /adopt [<id-prefix>] — Continue a native Claude Code chat here (picker; Codex gets a handoff)",
-            "  /file [<project-id>] — File this chat under a project, which becomes active"
-            " (picker without args; alias /add-to-project)",
-            "  /rename <name>      — Name this chat for future /resume lookup",
-            "  /resume [latest|number|title|id] — Switch to a saved chat, in any project"
-            " (works mid-chat; current chat is auto-saved; the chat's project becomes active)",
-            "  /delete [<id-prefix>] — Delete a saved chat (picker + confirm)",
-            "  /archive [<id-prefix>|list] — Archive a saved chat (reversible; picker without args)",
-            "  /unarchive [<id-prefix>] — Restore an archived chat (picker without args)",
-            "",
-            "Projects:",
-            "  /projects          — List project folders under projects/",
-            "  /project [open <id>|clear|current|create <title>|create-from-chat|activate-build]",
-            "                     — Set, show, or create the active project context",
-            "  /project assign [<session-id-prefix>] <project-id>",
-            "                     — File this chat (the project becomes active) or a saved one"
-            " (you stay where you are)",
-            "  /project unfile [<session-id-prefix>]",
-            "                     — Take a chat out of its project (back to Inbox;"
-            " nothing is deleted)",
-            "  /project contents [<project-id>]",
-            "                     — What is in a project: its chats and its folder (read-only)",
-            "  /project github [<project-id>] [<repo-name>]",
-            "                     — Push the project folder to a NEW PRIVATE GitHub repo"
-            " (asks first; uses your gh login)",
-            "  /project archive <id> | /project unarchive <id>",
-            "                     — Tuck a project away (nothing is deleted) or bring it back",
-            "",
-            "Planning:",
-            "  /lead @claude|@codex — Set who writes the plan (auto-set when the bots agree on a writer)",
-            "  /draft [rounds]     — Update implementation-plan.md with 0/1/2+ AI review rounds (default: 2)",
-            "  /finalize           — Address reviewer comments, write final plan, create checkpoint.md",
-            "",
-            "Session management:",
-            "  /relay @claude|@codex|@both — Reset session(s) with structured handoff",
-            "                     — @both: one shared handoff (authored by the healthiest",
-            "                       agent), both sessions restart from it in parallel",
-            "  /autorelay [on|off] — Auto-relay a model at 50% context (on by default; persists)",
-            "  /compact @claude [instructions] — Send native Claude Code /compact (requires --claude-interactive)",
-            "  /goal @claude <objective> — Send native Claude Code /goal (requires --claude-interactive)",
-            "  /permissions        — Show current planner write roots and runtime grants",
-            "  /status             — Show context %, lead, mode, sessions",
-            "  /notify [on|off]    — Desktop notification when the bots finish (persists)",
-            "  /agents [on|off]    — Grant/revoke Claude's subagent (Task) tool (off by default, per-chat; Claude may suggest it)",
-            "  /verify [on|off]    — When the bots converge, the OTHER one checks the final claims",
-            "                       against the sources (not the discussion). On by default, per-chat",
-            "  /allow-host [<domain>] — Let the bots fetch a site (sandbox allowlist; no args lists grants)",
-            "  /parallel <prompt>  — Both bots answer at once, neither seeing the other's reply;",
-            "                      the word may sit anywhere in the prompt. No bot-to-bot thread follows",
-            "  /watch <url> [question] — Have Gemini watch a YouTube video, post what it saw,"
-            " and let the bots discuss it",
-            "  /lasso <words>      — Search everything you have read and said (annotated pages,"
-            " past chats, your own folders) and offer the matches",
-            "  /lasso <path>       — Attach a file of your own to this chat, directly",
-            "  /lasso attach <n|all> | /lasso detach <n> | /lasso"
-            "                     — Take one of the offers, take one off, or list what this"
-            " chat is carrying. Attachments are FILES the bots read on demand;"
-            " a bot may ask for a search with a `lasso:` line and still attaches nothing",
-            "  /auth [claude|codex|all] — Check local CLI auth status",
-            "  /model [@claude|@codex <id>] — Show or set the model for a participant",
-            "  /effort [@claude|@codex <level>] — Show or set reasoning effort",
-            "                      (claude: low|medium|high|xhigh|max; codex: low|medium|high|xhigh|max|ultra)",
-            "  /current-model (or /current) — Show both loaded models and effort levels",
-            "  /help               — Show this help",
-            "  /quit | /exit       — Exit without writing files",
-            "",
-            "Messaging:",
-            "  @claude <msg>       — Send to Claude only",
-            "  @codex <msg>        — Send to Codex only",
-            "  @all <msg>          — Send to both",
-            "  <msg>               — Auto-routed (first message → @all, then sticky)",
+        # Rendered from COMMAND_HELP — the same rows the browser popups and
+        # the plugin's autocomplete show — plus the terminal's own notes.
+        self._add_room_entry(ui, "system", "\n".join(
+            render_command_help("tui") + [
             "",
             "Typing while Claude is working steers its current turn (read after",
             "its next tool call, like Claude Code). Codex can't be steered —",
             "messages typed during its turns queue for the next turn.",
-            "",
-            "Aliases: /relay-claude, /relay-codex, /relay-both, /tag @claude, /tag @codex",
             "",
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
             "",
