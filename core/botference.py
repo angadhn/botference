@@ -34,6 +34,7 @@ from cli_adapters import (
     add_granted_network_host,
     granted_network_hosts,
     is_credit_error,
+    is_safeguard_refusal,
     normalize_claude_transport,
     normalize_write_roots,
     planner_write_config,
@@ -1593,6 +1594,11 @@ class Botference:
         # (core/summon.py); reset with _gemini_asks.
         self._summons: dict[str, int] = {}
         self._summon_seq: int = 0
+        # model -> the error text of a first turn that failed to start (so the
+        # safeguard fallback can read it after _start_model_session returns None)
+        self._last_start_error: dict[str, str] = {}
+        # Claude models already tried this user turn after a safeguard refusal
+        self._safeguard_tried: set[str] = set()
         # ---- lasso (core/lasso.py) ------------------------------------
         # What this chat has had brought INTO it: past discussions, pages the
         # user annotated in the browser, papers out of their own folders. Each
@@ -5220,6 +5226,7 @@ class Botference:
 
         if resp.exit_code not in (0, -1):
             detail = resp.text.strip() or f"{model} exited with code {resp.exit_code}"
+            self._last_start_error[model] = resp.text
             self._add_room_entry(ui, "system", f"Error starting {model}: {detail}")
             self._maybe_credit_fallback_hint(model, resp.text, ui)
             self._models_initialized.discard(model)
@@ -5631,6 +5638,7 @@ class Botference:
         # to Gemini, and of build agents — the budget is per turn, not per chat
         self._gemini_asks = {}
         self._summons = {}
+        self._safeguard_tried = set()
 
         prefix = f"{route} " if parsed.target else f"(→{route}) "
         if parsed.parallel:
@@ -6006,9 +6014,74 @@ class Botference:
         # into this turn (bridge submit → steer_active).
         self._active_steer_model = model
         try:
-            return await self._send_to_model_inner(model, message, ui)
+            resp = await self._send_to_model_inner(model, message, ui)
+            while model == "claude" and self._safeguard_refused(resp):
+                if not self._switch_claude_after_refusal(ui):
+                    break
+                resp = await self._send_to_model_inner(model, message, ui)
+            return resp
         finally:
             self._active_steer_model = ""
+
+    # ── the model's own safety filter said no ─────────────────
+
+    def _safeguard_fallbacks(self) -> list[str]:
+        """Claude models to fall back to, in order, when the running one's
+        safeguards refuse an ordinary message. From `safeguard_fallback` in
+        context-budgets.json; Opus 5.5 then Opus 5 by default."""
+        default = ["claude-opus-5-5", "claude-opus-5"]
+        try:
+            data = json.loads(
+                (self.paths.botference_home / "context-budgets.json").read_text(encoding="utf-8"))
+            val = data.get("safeguard_fallback")
+            if isinstance(val, list) and all(isinstance(x, str) for x in val):
+                return [x for x in val if x] or default
+        except (OSError, ValueError, AttributeError):
+            pass
+        return default
+
+    def _safeguard_refused(self, resp: Optional[AdapterResponse]) -> bool:
+        text = resp.text if resp is not None else self._last_start_error.pop("claude", "")
+        return is_safeguard_refusal(text)
+
+    def _switch_claude_after_refusal(self, ui: UIPort) -> bool:
+        """Move this chat's Claude to the next fallback model and say so.
+
+        The message was declined by the model's own safety filter, which is
+        specific to that model: Claude Code's error says as much ("can't
+        respond to this message with Fable 5.1"). The chat's Claude switches
+        to the next model on the list and the turn is retried once per model.
+        Returns False when the list is exhausted.
+        """
+        current = str(getattr(self.claude, "model", "") or "")
+        self._safeguard_tried.add(current.split("[")[0])
+        nxt = next((m for m in self._safeguard_fallbacks()
+                    if m.split("[")[0] not in self._safeguard_tried), None)
+        if nxt is None:
+            self._add_room_entry(
+                ui, "system",
+                "Claude's safeguards declined this message on every model on the "
+                "fallback list. Rephrase, or pick a model with /model @claude.",
+            )
+            return False
+        self._safeguard_tried.add(nxt)
+        self.claude.model = nxt
+        if "claude" not in self._models_initialized:
+            self._models_initialized.discard("claude")
+        note = (f"[{current or 'Claude'}'s safeguards declined the last message — "
+                f"this happens with ordinary topics. Claude now runs on {nxt} "
+                "in this chat and is retrying that message.]")
+        self._add_room_entry(
+            ui, "system",
+            f"{current or 'Claude'}'s safeguards declined that message (this "
+            f"happens with ordinary topics). Switching this chat's Claude to "
+            f"{nxt} and retrying. To keep it: it is saved with the chat; the "
+            "plugin's agents panel can also set it as a standing preference.",
+        )
+        self.transcript.add("system", note)
+        ui.set_status(self.status_snapshot())
+        self._persist_session()
+        return True
 
     async def _send_to_model_inner(
         self, model: str, message: str, ui: UIPort,

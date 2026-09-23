@@ -2,6 +2,16 @@
 
 ## 2026-09-23
 
+- **When Fable's safeguards decline an ordinary message, Claude falls back to
+  Opus 5.5 and retries — automatically.** Claude Code reports these as "Fable
+  5.1's safeguards flagged this message … can't respond to this message with
+  Fable 5.1", and a restart cannot help, because the page text goes back in on
+  every turn. Now the chat's Claude switches to the next model on
+  `safeguard_fallback` in `context-budgets.json` (Opus 5.5, then Opus 5), says
+  so in the chat, and retries the same message; the choice is saved with the
+  chat. Also: `/fresh @claude` and `/relay @codex` typed into the plugin's
+  chat box are commands now, with a one-line receipt, not messages sent to
+  the bots.
 - **`/fresh @claude|@codex|@both` — restart a bot with no memory of this
   chat.** `/relay` restarts a bot *with* a summary of the chat so far, which
   is the right thing when memory is full and the wrong thing when the chat

@@ -699,6 +699,29 @@ def is_credit_error(text: str) -> bool:
     return any(pat in lowered for pat in _CREDIT_ERROR_PATTERNS)
 
 
+_SAFEGUARD_REFUSAL_PATTERNS = (
+    "safeguards flagged this message",
+    "can't respond to this message with",
+    "cannot respond to this message with",
+    '"stop_reason": "refusal"',
+    "stop_reason=refusal",
+)
+
+
+def is_safeguard_refusal(text: str) -> bool:
+    """True if *text* is the CLI reporting that the model's own safety filter
+    declined the message (Claude Code's "Fable 5.1's safeguards flagged this
+    message … can't respond to this message with Fable 5.1").
+
+    This is the model refusing, not the bot; a different Claude model can
+    usually answer the same message, which is what the fallback does.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(pat in lowered for pat in _SAFEGUARD_REFUSAL_PATTERNS)
+
+
 def _delta_from_cumulative(current: int, previous: int) -> int:
     """Convert cumulative token counters into a last-turn delta."""
     if current <= 0:

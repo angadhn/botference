@@ -1565,6 +1565,22 @@ async function main() {
   const chatOf = async url =>
     (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.page_chat;
 
+  await test('a typed /fresh @claude is a command to the bridge, not a message to the bots', async () => {
+    const url = 'https://ledger.test/2026/typed-fresh';
+    await sameMs(url, []);
+    const before = inputs(logFile).length;
+    const r = await POST(base, '/reply', { url, thread_id: '__page__', text: '/fresh @claude' });
+    assert.equal(r.json.control, '/fresh @claude');
+    await waitFor(() => inputs(logFile).length > before, 'the control turn reached the bridge');
+    const sent = inputs(logFile).slice(before);
+    assert.deepEqual(sent, ['/fresh @claude'], 'bare command, no envelope');
+    const chat = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.page_chat;
+    assert.equal(chat[0].text, '/fresh @claude');
+    assert.equal(chat[1].author, 'botference');
+    assert.match(chat[1].text, /clean memory/);
+    assert.ok(!chat.some(m => m.author === 'claude'), 'no bot was asked anything');
+  });
+
   await test('editing your message RESENDS it: later replies are set aside, the new text goes out', async () => {
     const me = (await GET(base, '/whoami')).json.handle;
     const url = 'https://ledger.test/2026/edit-resends';

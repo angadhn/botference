@@ -3795,6 +3795,26 @@ export function handler(req, res) {
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
+      // `/fresh @claude` or `/relay @codex` typed into the chat box is a
+      // command to the bridge, not a message about the page: it goes to every
+      // child as a control turn, the reader sees it and a one-line receipt,
+      // and no bot is asked anything.
+      const ctl = /^\/(fresh|relay)\s+@?(claude|codex|both|all)\s*$/i.exec(text.trim());
+      if (ctl) {
+        const who = ctl[2].toLowerCase() === 'all' ? 'both' : ctl[2].toLowerCase();
+        const line = `/${ctl[1].toLowerCase()} @${who}`;
+        const msg = store.appendMsg(page, target, { author: me.handle, text: line, route: '' });
+        if (!msg) return fail(res, 404, 'unknown thread');
+        const receipt = ctl[1].toLowerCase() === 'fresh'
+          ? `${who} restarting with a clean memory — the next message is all it will know; say the context again.`
+          : `${who} relaying — a fresh session with a summary of the chat so far.`;
+        store.appendMsg(page, target, { author: 'botference', text: receipt });
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+        if (NO_AGENTS || !anyRunning()) return ok(res, { msg, control: line, queued: false });
+        controlAll(line);
+        return ok(res, { msg, control: line, queued: true });
+      }
       // read the thread BEFORE this message joins it: the sticky address is who
       // the reader was talking to up to now, and appendMsg is one line below
       const route = addressOf(target, text, data.route, store.msgsOf(page, target), page);

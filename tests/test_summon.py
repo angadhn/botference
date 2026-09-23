@@ -405,3 +405,65 @@ class TestFreshRestart:
         c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
         await c.handle_input("/fresh", ui)
         assert any("Usage: /fresh" in t for sp, t in ui.room_entries if sp == "system")
+
+
+# ── the model's own safety filter said no → fall back to Opus 5.5 ──
+
+
+REFUSAL = ("API Error: Fable 5.1's safeguards flagged this message "
+           "(https://www.anthropic.com/legal/aup). This sometimes happens with safe, "
+           "normal conversations. Claude Code can't respond to this message with Fable 5.1.")
+
+
+@pytest.mark.asyncio
+class TestSafeguardFallback:
+    async def test_a_refused_resume_switches_to_opus_5_5_and_retries(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("first turn fine"), _ok(REFUSAL), _ok("Entry vehicles: the answer.")],
+            tmp_path=tmp_path,
+        )
+        claude.model = "claude-fable-5-1[1m]"
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("@claude hypersonic glide vehicle entry dynamics?", ui)
+        assert claude.model == "claude-opus-5-5"
+        assert len(claude.resume_calls) == 2, "the message was retried once on the new model"
+        assert "safeguards declined" in claude.resume_calls[1]
+        assert "Entry vehicles: the answer." in [t for sp, t in ui.room_entries if sp == "claude"]
+        notices = [t for sp, t in ui.room_entries if sp == "system" and "Switching this chat's Claude to claude-opus-5-5" in t]
+        assert len(notices) == 1
+        # saved with the chat
+        assert c._session_payload()["claude"]["model"] == "claude-opus-5-5"
+
+    async def test_a_refused_first_turn_is_retried_too(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[AdapterResponse(text=REFUSAL, exit_code=1), _ok("Fine on Opus.")],
+            tmp_path=tmp_path,
+        )
+        claude.model = "claude-fable-5-1"
+        await c.handle_input("@claude entry corridor design", ui)
+        assert claude.model == "claude-opus-5-5"
+        assert len(claude.send_calls) == 2
+        assert "Fine on Opus." in [t for sp, t in ui.room_entries if sp == "claude"]
+
+    async def test_the_list_runs_out(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok(REFUSAL), _ok(REFUSAL), _ok(REFUSAL), _ok("never")],
+            tmp_path=tmp_path,
+        )
+        claude.model = "claude-fable-5-1"
+        await c.handle_input("@claude hello", ui)
+        # fable → opus-5-5 → opus-5, then stop
+        assert claude.model == "claude-opus-5"
+        assert len(claude.send_calls) + len(claude.resume_calls) == 3
+        assert any("every model on the fallback list" in t for sp, t in ui.room_entries if sp == "system")
+
+    async def test_codex_and_ordinary_errors_are_left_alone(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("Error: something else broke")],
+            codex_responses=[_ok(REFUSAL)],
+            tmp_path=tmp_path,
+        )
+        claude.model = "claude-fable-5-1"
+        await c.handle_input("@all hi", ui)
+        assert claude.model == "claude-fable-5-1"
+        assert len(claude.send_calls) == 1 and len(codex.send_calls) == 1
