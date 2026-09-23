@@ -1355,6 +1355,7 @@
     {"cmd": "@claude", "args": "<msg>", "hint": "Send to Claude only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "@codex", "args": "<msg>", "hint": "Send to Codex only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "@all", "args": "<msg>", "hint": "Send to both bots", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
+    {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
@@ -2615,12 +2616,29 @@ ${bubbleShellHtml()}`;
       // number, and a thread with nothing to hide is offered no control
       const byHand = plan.collapsed || !foldable(units) ? null : collapsePlan(units, FOLD_SHUT);
       const out = [];
+      // Messages set aside by an edit (store.supersedeAfter) fold under one
+      // line, "before the edit", in the place they were: kept, not deleted.
+      let aside = [], asideCount = 0;
+      const flushAside = () => {
+        if (!aside.length) return;
+        const n = asideCount;
+        out.push(`<details class="superseded"><summary>before the edit · ${n} message${n === 1 ? '' : 's'} set aside</summary>${aside.join('')}</details>`);
+        aside = []; asideCount = 0;
+      };
       for (let i = 0; i < units.length; i++) {
         if (plan.collapsed && i === plan.from) out.push(moreHtml(target, plan.hidden));
         else if (byHand && byHand.collapsed && i === byHand.from) out.push(foldHtml(target, byHand.hidden));
         if (plan.collapsed && i >= plan.from && i < plan.to) continue;
-        out.push(unitHtml(target, units[i], kids));
+        const html = unitHtml(target, units[i], kids);
+        if (units[i].every(m => m.superseded)) {
+          aside.push(html);
+          asideCount += units[i].filter(m => m.kind !== 'tools').length;
+          continue;
+        }
+        flushAside();
+        out.push(html);
       }
+      flushAside();
       return out.join('');
     }
 

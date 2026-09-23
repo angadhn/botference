@@ -1123,6 +1123,23 @@ export function msgsOf(page, threadId) {
 // is skipped, so an older payload that sends neither field resolves exactly as
 // it always did. A tie nothing can break goes to the FIRST match and says so
 // (ambiguous), leaving the caller free to warn instead of silently guessing.
+// The reader rewrote a message of theirs and the conversation restarts from
+// it: everything after it in the thread is set aside — kept, readable, folded
+// under "before the edit" in the drawer — and marked with the ts of the
+// message whose edit retired it. Returns how many were set aside.
+export function supersedeAfter(msgs, msg) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  const i = list.indexOf(msg);
+  if (i < 0) return 0;
+  let n = 0;
+  for (const m of list.slice(i + 1)) {
+    if (!m || m.superseded) continue;
+    m.superseded = msg.ts;
+    n++;
+  }
+  return n;
+}
+
 export function resolveMsg(msgs, { ts, author, kind } = {}) {
   const list = Array.isArray(msgs) ? msgs : [];
   let hits = list.filter(m => m && m.ts === ts);

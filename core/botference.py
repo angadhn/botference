@@ -300,7 +300,8 @@ COMMAND_HELP: list[dict] = [
                 " you last tagged"]},
     {"cmd": "/parallel", "args": "<prompt>", "group": "Talking to the bots",
      "hint": "Both answer at once, neither seeing the other's reply",
-     "scope": _ALL,
+     # the plugin too: the controller lifts the word out of any message text
+     "scope": ("tui", "council", "plugin"),
      "detail": ["The word may sit anywhere in the prompt."
                 " No bot-to-bot thread follows"]},
     {"cmd": "/watch", "args": "<url> [question]", "group": "Talking to the bots",
@@ -7164,7 +7165,15 @@ class Botference:
     def interrupt(self, ui: UIPort) -> None:
         """Record that the user interrupted the active turn."""
         self._add_room_entry(ui, "system", "Interrupted current turn.")
-        self.transcript.add("system", "[Interrupted current turn]")
+        # The bots see this next turn. The message they were answering was
+        # not answered; it is in the history in full — say so, or the next
+        # turn asks the user to send it again.
+        self.transcript.add(
+            "system",
+            "[Interrupted current turn — the user's last message above was "
+            "not answered. It is complete as written; take it up on your next "
+            "turn unless the user says otherwise.]",
+        )
         self._persist_session()
 
     def _resolve_lead(self) -> Optional[str]:

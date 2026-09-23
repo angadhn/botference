@@ -204,7 +204,7 @@
     {"cmd": "@claude", "args": "<msg>", "hint": "Send to Claude only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "@codex", "args": "<msg>", "hint": "Send to Codex only", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "@all", "args": "<msg>", "hint": "Send to both bots", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
-    {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council"]},
+    {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/watch", "args": "<url> [question]", "hint": "Gemini watches a YouTube video and reports back", "group": "Talking to the bots", "scope": ["tui", "council"]},
     {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/lead", "args": "@claude|@codex", "hint": "Choose who writes the plan", "group": "Planning", "scope": ["tui", "council"]},

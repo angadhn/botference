@@ -193,7 +193,7 @@ const AGENTS = ['claude', 'codex'];
 // the controller's "plugin" rows, or the two would drift in silence.
 {
   eq('slash: a bare "/" offers every command the drawer takes',
-    D.slashCandidates('').map(c => c.cmd), ['lasso', 'help']);
+    D.slashCandidates('').map(c => c.cmd), ['parallel', 'lasso', 'help']);
   eq('slash: …and typing filters them', D.slashCandidates('he').map(c => c.cmd), ['help']);
   ok('slash: each one carries its one-line hint',
     D.slashCandidates('').every(c => c.hint && c.hint.length <= 62 && !/\n/.test(c.hint)));

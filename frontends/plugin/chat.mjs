@@ -151,8 +151,23 @@ export function routedAgents(text, untaggedAll = false, routeHint = '') {
 
 // prior msgs of the thread, so a bot that just /resume'd (or was never in this
 // thread) still knows what it is replying into
-const historyLines = msgs => (msgs || []).slice(-HISTORY_MAX)
-  .map(m => `${m.author}: ${String(m.text || '').slice(0, 1000)}`).join('\n');
+// A bot's earlier reply is context and may be cut short; the READER's own
+// words are the conversation and travel whole (up to a generous cap). Either
+// way a cut announces itself — a 12,000-character write-up once reached a bot
+// as a 1,000-character stub with nothing to say it was one, and the bot
+// answered the stub.
+const HISTORY_BOT_CHARS = 1000;
+const HISTORY_READER_CHARS = 20000;
+const BOT_AUTHORS = new Set(['claude', 'codex', 'gemini', 'agent']);
+const historyLine = m => {
+  const text = String(m.text || '');
+  const cap = BOT_AUTHORS.has(String(m.author || '').toLowerCase())
+    ? HISTORY_BOT_CHARS : HISTORY_READER_CHARS;
+  if (text.length <= cap) return `${m.author}: ${text}`;
+  return `${m.author}: ${text.slice(0, cap)} [… ${text.length - cap} more characters cut here; `
+    + 'the full text is in the room history above]';
+};
+const historyLines = msgs => (msgs || []).slice(-HISTORY_MAX).map(historyLine).join('\n');
 
 // ---- the library turn ----------------------------------------------------
 // The archive is a directory of JSON on this machine, and the agents can read
@@ -412,7 +427,7 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext, attachContext, webContext }) {
+  blogContext, attachContext, webContext, edited }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -622,14 +637,20 @@ export function envelope({ url, title, target, text, quote, history,
   // conclude in a strikeout. Never on page chat (no quote, nothing to confine
   // to) and never on a library or summary turn (neither writes anything).
   const discipline = String(quote || '').trim() ? `${SPAN_DISCIPLINE}\n` : '';
+  // the reader rewrote this message after an earlier version was answered;
+  // those answers are set aside and this version is the one to answer
+  const redo = edited
+    ? '[The user EDITED this message after you answered an earlier version. '
+      + 'Your earlier replies to it are set aside. Answer this version afresh.]\n'
+    : '';
   const body = target === PAGE_CHAT
-    ? `${who} asked about this page:\n${prior}${text}\n\nReply in this turn.\n${how}`
+    ? `${who} asked about this page:\n${prior}${redo}${text}\n\nReply in this turn.\n${how}`
     : `The user highlighted this passage:\n> ${String(quote || '').replace(/\n/g, '\n> ')}\n\n`
       + where
       + struck
       + nearby
       + discipline
-      + `${prior}${wrote}\n${text}\n\n`
+      + `${prior}${wrote}\n${redo}${text}\n\n`
       + `Your reply text is posted directly into the comment thread.\n${how}`;
   const doc = docxDigest ? `\n[comments on this document]\n${docxDigest}` : '';
   // The OTHER offer, and the exact opposite register from `struck` above. That
@@ -1372,6 +1393,9 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // a link pasted into THIS message that the bots' sandbox refuses, and
         // the digest the companion fetched for them (server.mjs summon)
         webContext: job.webContext || '',
+        // the reader rewrote this message after the bots had answered an
+        // earlier version (server.mjs POST /edit): answer THIS one afresh
+        edited: !!job.edited,
         pageNumber: job.pageNumber || 0, mark: job.mark || '',
         // the archive's own directory, absolute: the CLIs run with the work dir
         // as cwd, so a relative path would point somewhere else entirely

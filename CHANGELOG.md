@@ -2,6 +2,20 @@
 
 ## 2026-09-23
 
+- **Editing your message resends it.** Saving an edit to one of your own
+  messages in the browser plugin restarts the conversation from there, the way
+  other chat tools do: the replies that came after the old version fold into
+  one line, "before the edit · n messages set aside" (kept, not deleted), and
+  the new text goes back to the same bots, who are told it is an edit. A save
+  that changes nothing, or a ticked checkbox, is a plain rewrite.
+- **A long message is never silently cut.** The plugin used to hand the bots
+  each earlier message clipped to 1,000 characters with nothing to say so; a
+  12,000-character write-up reached a bot as its first paragraph and the bot
+  answered that. Your own messages now travel whole (up to 20,000 characters),
+  bots' earlier replies stay short, and any cut ends with `[… N more
+  characters cut here; the full text is in the room history above]`. After
+  you press stop, the bots are also told the last message was not answered and
+  is complete as written, instead of asking you to send it again.
 - **`/help` in the browser is a popup.** On the council page and in the
   plugin's Discuss drawer, typing `/help` (or just `help`) and sending it
   opens a short list — each command and one line saying what it does —

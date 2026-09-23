@@ -3820,7 +3820,7 @@ export function handler(req, res) {
     });
   }
   if (req.method === 'POST' && url === '/edit') {
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
       const me = authorOf(req, res);
       if (!me) return;
       const page = pageOf(res, data);
@@ -3835,14 +3835,38 @@ export function handler(req, res) {
       // the bots' words are theirs, and so is every other human's: you may
       // only rewrite what you wrote
       if (msg.author !== me.handle) return fail(res, 403, 'not your message');
-      msg.text = String(data.text || '');
+      const text = String(data.text || '');
+      const changed = text !== String(msg.text || '');
+      msg.text = text;
       // The code has moved, so what it once printed is a claim about a message
       // that no longer exists. Results (and their directories) go with the
       // edit rather than hanging under a block they were never run from.
       store.deleteRuns(store.pageKey(page.url), store.clearRuns(msg));
+      // Editing your message RESENDS it, the way every chat tool does: the
+      // conversation restarts from that point. What the bots said after the
+      // old version is set aside (folded, not deleted) and the new version goes
+      // back to the same address. `resend: false` is the plain rewrite — a
+      // ticked checkbox, a fixed link — and a save that changed nothing is one
+      // too, whatever the flag says.
+      const resend = changed && data.resend !== false && data.resend !== 'false'
+        && !msg.kind && String(text).trim();
+      let setAside = 0;
+      if (resend) {
+        setAside = store.supersedeAfter(msgs, msg);
+        msg.edited = new Date().toISOString();
+      }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
-      ok(res, { msg, ...(found.ambiguous ? { ambiguous: true } : {}) });
+      if (!resend) {
+        return ok(res, { msg, ...(found.ambiguous ? { ambiguous: true } : {}) });
+      }
+      const target = data.thread_id || store.PAGE_CHAT;
+      const before = msgs.slice(0, msgs.indexOf(msg));
+      const route = addressOf(target, text, msg.route || data.route, before, page);
+      const summoned = await summon(page, target, text,
+        { routeHint: route, addressed: true, edited: true }, me);
+      ok(res, { msg, resent: true, set_aside: setAside, ...summoned,
+        ...(found.ambiguous ? { ambiguous: true } : {}) });
     });
   }
   // Ticking a checkbox in a message — usually a BOT's message, which is the

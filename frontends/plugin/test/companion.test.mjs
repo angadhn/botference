@@ -871,7 +871,7 @@ async function main() {
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     const mine = page.threads[0].msgs[1];
     const bot = page.threads[0].msgs[3];
-    const okEdit = await POST(base, '/edit', { url: PAGE1, thread_id: t1.id, ts: mine.ts, text: 'Second thought, revised.' });
+    const okEdit = await POST(base, '/edit', { url: PAGE1, thread_id: t1.id, ts: mine.ts, text: 'Second thought, revised.', resend: false });
     assert.equal(okEdit.json.msg.text, 'Second thought, revised.');
     const denied = await POST(base, '/edit', { url: PAGE1, thread_id: t1.id, ts: bot.ts, text: 'nope' });
     assert.equal(denied.status, 403);
@@ -1565,6 +1565,36 @@ async function main() {
   const chatOf = async url =>
     (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json.page_chat;
 
+  await test('editing your message RESENDS it: later replies are set aside, the new text goes out', async () => {
+    const me = (await GET(base, '/whoami')).json.handle;
+    const url = 'https://ledger.test/2026/edit-resends';
+    const t0 = new Date(Date.now() - 5000).toISOString();
+    const t1 = new Date(Date.now() - 4000).toISOString();
+    await sameMs(url, [
+      { author: me, ts: t0, text: '@claude first version of my question', route: '@claude ' },
+      { author: 'claude', ts: t1, text: 'an answer to the first version' },
+    ]);
+    const before = inputs(logFile).length;
+    const r = await POST(base, '/edit', { url, thread_id: '__page__', ts: t0, author: me,
+      text: '@claude second version, much longer and clearer' });
+    assert.equal(r.json.resent, true, 'the edit was resent');
+    assert.equal(r.json.set_aside, 1, 'the old answer was set aside');
+    await waitFor(() => inputs(logFile).length > before, 'a new turn went to the bridge');
+    const sent = inputs(logFile).slice(before).join('\n');
+    assert.ok(/second version, much longer/.test(sent), 'the new text went out');
+    assert.ok(/EDITED this message/.test(sent), 'the bots are told it is an edit');
+    const chat = await chatOf(url);
+    const old = chat.find(m => m.ts === t1);
+    assert.equal(old.superseded, t0, 'the set-aside answer points at the edit');
+    const mine = chat.find(m => m.ts === t0);
+    assert.equal(mine.text, '@claude second version, much longer and clearer');
+    assert.ok(mine.edited, 'the edited message is stamped');
+    // a save that changes nothing is a plain rewrite, not a resend
+    const same = await POST(base, '/edit', { url, thread_id: '__page__', ts: t0, author: me,
+      text: '@claude second version, much longer and clearer' });
+    assert.ok(!same.json.resent);
+  });
+
   await test('a tools summary and the answer share a ts: /edit and /tick take the answer', async () => {
     const me = (await GET(base, '/whoami')).json.handle;
     const url = 'https://ledger.test/2026/tools-collision';
@@ -1578,14 +1608,14 @@ async function main() {
     assert.equal(ticked.json.text, 'the answer\n- [x] the real box', 'the answer was ticked');
     assert.ok(!('ambiguous' in ticked.json), 'the tools/answer split is not a tie');
     const edited = await POST(base, '/edit',
-      { url, thread_id: '__page__', ts, text: 'revised answer', author: me });
+      { url, thread_id: '__page__', ts, text: 'revised answer', author: me, resend: false });
     assert.equal(edited.json.msg.text, 'revised answer');
     let chat = await chatOf(url);
     assert.equal(chat[0].text, 'Explored · 2 steps\n- [ ] not this box', 'the tools row is untouched');
     assert.equal(chat[1].text, 'revised answer');
     // and kind:"tools" is how you ask for the other one on purpose
     const onTools = await POST(base, '/edit',
-      { url, thread_id: '__page__', ts, text: 'Explored · 3 steps', author: me, kind: 'tools' });
+      { url, thread_id: '__page__', ts, text: 'Explored · 3 steps', author: me, kind: 'tools', resend: false });
     assert.equal(onTools.json.msg.kind, 'tools');
     chat = await chatOf(url);
     assert.equal(chat[0].text, 'Explored · 3 steps');

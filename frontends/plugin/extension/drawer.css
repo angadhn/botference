@@ -1822,6 +1822,12 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 /* Reddit-style: set in from the left with a rail down the side, so the eye
    reads "this belongs to the message above" before it reads a word. The
    rail and the tint are the agent's own plum (--agent), picked per theme. */
+/* what an edit set aside: folded in place, one quiet line, readable on open */
+details.superseded { margin: 4px 0; opacity: .75 }
+details.superseded > summary { cursor: pointer; font: 500 .78rem var(--sans); color: var(--muted); padding: 2px 0; list-style: none }
+details.superseded > summary::before { content: '▸ '; }
+details.superseded[open] > summary::before { content: '▾ '; }
+details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8px }
 .kids {
   margin: 2px 0 8px 14px; padding-left: 10px;
   border-left: 2px solid color-mix(in srgb, var(--agent) 38%, transparent);

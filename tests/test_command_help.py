@@ -62,7 +62,7 @@ def test_quit_is_terminal_only_and_plugin_gets_what_the_drawer_handles():
     plugin = {r["cmd"] for r in command_help("plugin")}
     assert "/quit" not in council and "/quit" not in plugin
     assert "/help" in council and "/help" in plugin
-    assert plugin == {"@claude", "@codex", "@all", "/lasso", "/help"}
+    assert plugin == {"@claude", "@codex", "@all", "/parallel", "/lasso", "/help"}
 
 
 def test_completion_context_carries_commands():
