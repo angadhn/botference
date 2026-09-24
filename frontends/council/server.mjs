@@ -861,6 +861,17 @@ export function handler(req, res) {
     });
     return;
   }
+  // a checklist tick: the item's text and its new state, to the bridge, which
+  // flips it in the shared transcript so the bots see where the reader is
+  if (req.method === 'POST' && url === '/tick') {
+    readBody(req, res, 4000, data => {
+      const bridge = bridgeForPost(data);
+      const text = String(data.text || '').slice(0, 1000);
+      const ok = text && bridge && bridge.send({ type: 'tick', text, checked: !!data.checked });
+      res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
+    });
+    return;
+  }
   if (req.method === 'POST' && url === '/permission') {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);

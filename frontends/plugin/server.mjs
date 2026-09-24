@@ -3910,6 +3910,10 @@ export function handler(req, res) {
       msg.text = text;
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      // …and the bots hear about it: the ticked item, by its text
+      const items = text.split('\n').map(l => /^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]\s+(.*?)\s*$/.exec(l)).filter(Boolean);
+      const item = items[data.index] ? items[data.index][1] : '';
+      if (item) for (const c of allChats()) { try { if (typeof c.tick === 'function') c.tick(item, !!data.checked); } catch { } }
       ok(res, { text, ...(found.ambiguous ? { ambiguous: true } : {}) });
     });
   }

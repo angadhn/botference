@@ -1285,6 +1285,9 @@
     if (li && li.classList) li.classList.toggle('done', box.checked);
     recordTicks(body.getAttribute('data-ticks'), body);
     renderTasks(); // the panel's copy is the same state — keep it honest
+    // …and the tick reaches the bots: the controller flips the item in the
+    // shared transcript and leaves them a note (Botference.record_tick)
+    post('/tick', { text: box.getAttribute('aria-label') || '', checked: !!box.checked });
   });
 
   function updateEmpty() {

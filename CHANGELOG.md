@@ -2,6 +2,22 @@
 
 ## 2026-09-24
 
+- **Ticks reach the bots.** A checkbox ticked in a chat lived only in that
+  browser: the bots never saw it, another device did not show it, and a bot
+  re-issuing its list re-opened everything you had closed. Now a tick flips
+  the `- [ ]` in the message that carries the item — in the shared transcript
+  and the saved history — and leaves the bots a one-line note for their next
+  turn. Council and plugin both.
+- **Creating a project inside an established chat no longer moves the chat.**
+  `/new-project` in a chat the bots have already spoken in creates the project
+  and leaves the chat where it is (the notice says how to move it); only a
+  fresh chat is filed automatically. A knee-injury chat was once dragged under
+  a rocket-guidance project this way.
+- **Verification sources are the room's, not the lens's.** The check-the-claims
+  turn named the active project's files as sources whatever the chat was
+  about, and untouched template files (`PROJECT.md` all TODO) with them. Now a
+  project's files count only when the conversation has mentioned the project
+  or one of its files, and template files never do.
 - **Build agents run until they are done.** The summoned agent had a 15-minute
   cap; a real build often needs longer, and a sub-agent cut off mid-task
   reports nothing useful. No cap by default now (the reader can press stop);

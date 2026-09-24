@@ -534,3 +534,67 @@ class TestProjectNoMatch:
         note = [t for sp, t in ui.room_entries if sp == "system"][-1]
         assert note.startswith("⚠ No project matched")
         assert "/new-project hypersonic space vehicles" in note
+
+
+# ── ticks reach the bots; projects and sources stay in their lane ──
+
+
+@pytest.mark.asyncio
+class TestTicksReachTheBots:
+    async def test_a_tick_flips_the_item_and_leaves_a_note(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[_ok("Plan:\n- [ ] Book the MRI\n- [ ] Ask about the meniscus"), _ok("Noted.")],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude what next?", ui)
+        assert c.record_tick("Book the MRI", True, ui) is True
+        claude_entry = [e for e in c.transcript.entries if e.speaker == "claude"][-1]
+        assert "- [x] Book the MRI" in claude_entry.text
+        assert "- [ ] Ask about the meniscus" in claude_entry.text
+        shown = [r for r in c._room_history if r.speaker == "claude"][-1]
+        assert "- [x] Book the MRI" in shown.text
+        assert c.transcript.entries[-1].text == "[User ticked: Book the MRI]"
+        # the next turn carries both the flipped list and the note
+        await c.handle_input("@claude go on", ui)
+        assert "[User ticked: Book the MRI]" in claude.resume_calls[-1]
+        # untick works, and an unknown item is a no-op
+        assert c.record_tick("Book the MRI", False, ui) is True
+        assert any("- [ ] Book the MRI" in e.text for e in c.transcript.entries if e.speaker == "claude")
+        assert not any("- [x] Book the MRI" in e.text for e in c.transcript.entries)
+        assert c.record_tick("Something never listed", True, ui) is False
+
+
+@pytest.mark.asyncio
+class TestProjectCreationLeavesEstablishedChats:
+    async def test_a_fresh_chat_is_filed_an_established_one_is_not(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        (tmp_path / "projects").mkdir(exist_ok=True)
+        await c.handle_input("/new-project Fresh Thing", ui)
+        assert c.session_project_id == "fresh-thing"
+        c2, claude2, codex2, ui2 = _make_botference(tmp_path=tmp_path)
+        await c2.handle_input("@claude my knee hurts", ui2)
+        await c2.handle_input("/new-project Rocket Landing", ui2)
+        assert c2.session_project_id == ""
+        assert c2.active_project_id == ""
+        note = [t for sp, t in ui2.room_entries if sp == "system"][-1]
+        assert "stays where it is" in note and "/assign-project rocket-landing" in note
+
+
+@pytest.mark.asyncio
+class TestVerificationSourcesStayInLane:
+    async def test_project_files_count_only_when_the_room_touched_them(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        (tmp_path / "projects").mkdir(exist_ok=True)
+        await c.handle_input("/new-project Pdg", ui)
+        root = tmp_path / "projects" / "pdg"
+        (root / "notes.md").write_text("Açıkmeşe lossless convexification notes")
+        # PROJECT.md as written by botference is a template — never a source
+        assert c._is_template_project_file(root / "PROJECT.md")
+        assert not c._is_template_project_file(root / "notes.md")
+        # the room has not mentioned the project: nothing from it is a source
+        await c.handle_input("@claude how is my knee?", ui)
+        assert "Project Pdg" not in c._verification_sources()
+        # …until it does
+        await c.handle_input("@claude look at notes.md in the pdg folder", ui)
+        src = c._verification_sources()
+        assert "Project Pdg" in src and "notes.md" in src and "PROJECT.md" not in src

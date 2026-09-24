@@ -846,6 +846,12 @@ async def main() -> None:
             turn_queue.interrupt()
             continue
 
+        if msg.get("type") == "tick":
+            # a checklist tick in the chat: flip the item in the shared
+            # transcript and tell the bots (Botference.record_tick)
+            botference.record_tick(str(msg.get("text", "")), bool(msg.get("checked")), bridge)
+            continue
+
         if msg.get("type") == "permission_response":
             bridge.resolve_permission_request(bool(msg.get("allow")))
             continue

@@ -1571,6 +1571,13 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // the bridge's: there is no such thing as a preferred context gauge.
     models: () => ({ current: modelSnapshotWithPrefs(), options: modelOptions(),
       status: statusSnapshot(), effort: effortSnapshot(), commands: commandTable() }),
+    // a checklist tick in a message: the bridge flips it in the shared
+    // transcript and tells the bots (core/botference.py record_tick)
+    tick(text, checked) {
+      if (!available) return false;
+      send({ type: 'tick', text: String(text || ''), checked: !!checked });
+      return true;
+    },
     // only the page whose turn is actually running can interrupt it
     interrupt(url) {
       if (!current || !available || current.job.url !== url) return false;

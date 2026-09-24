@@ -4453,6 +4453,25 @@ class Botference:
             )
             return
 
+        # A chat the bots have already spoken in is ABOUT something; creating a
+        # project from inside it is usually "set up the next thing", not "this
+        # conversation belongs there". Filing it anyway drags the new project's
+        # files into this chat's prompts and verification sources — a knee
+        # chat was once told to check its claims against a rocket-guidance
+        # task list this way. So: a fresh chat is filed; an established one is
+        # not, and the notice says how to move it if that was the intent.
+        established = any(e.speaker in ("claude", "codex") for e in self.transcript.entries)
+        if established:
+            self._add_room_entry(
+                ui,
+                "system",
+                f"Created project {project.title} ({project.id}). This chat stays "
+                f"where it is — it already has a conversation in it. To move it "
+                f"there: /assign-project {project.id}. To start a chat in it: "
+                f"/new, then /open-project {project.id}.",
+            )
+            self._sync_project_ui(ui)
+            return
         self._activate_project(project, ui)
         self._add_room_entry(
             ui,
@@ -5962,12 +5981,13 @@ class Botference:
         except OSError:
             pass
         project = self._active_project()
-        if project is not None:
+        if project is not None and self._project_in_play(project):
             files = []
             try:
                 files = sorted(
                     p.name for p in project.root.iterdir()
                     if p.is_file() and not p.name.startswith(".")
+                    and not self._is_template_project_file(p)
                 )[:20]
             except OSError:
                 files = []
@@ -5977,6 +5997,47 @@ class Botference:
                     + ", ".join(files)
                 )
         return "\n\n".join(parts)
+
+    @staticmethod
+    def _is_template_project_file(path: Path) -> bool:
+        """PROJECT.md / TASKS.md as botference wrote them, never edited.
+
+        A file that still says TODO in every section is not a source anything
+        can be checked against, and naming it sends the checker off to read a
+        template and report that it is one.
+        """
+        if path.name not in ("PROJECT.md", "TASKS.md"):
+            return False
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return True
+        body = re.sub(r"^#.*$|^\*\*\w+:\*\*.*$", "", text, flags=re.M)
+        words = [w for w in re.findall(r"[A-Za-z]+", body) if w.lower() not in ("todo", "tasks")]
+        return len(words) < 8
+
+    def _project_in_play(self, project: ProjectInfo, window: int = 30) -> bool:
+        """Has this conversation actually touched the project?
+
+        The lens (active_project_id) follows the reader between projects; the
+        conversation does not. A source is only a source if the room has
+        mentioned the project, its folder or one of its files — otherwise the
+        checker is handed an unrelated project's paperwork.
+        """
+        recent = self.transcript.entries[-window:]
+        if not recent:
+            return False
+        needles = {project.id.lower(), project.title.lower(), f"projects/{project.id}".lower()}
+        try:
+            needles.update(p.name.lower() for p in project.root.iterdir() if p.is_file())
+        except OSError:
+            pass
+        needles.discard("")
+        for e in recent:
+            low = e.text.lower()
+            if any(n in low for n in needles if len(n) >= 3):
+                return True
+        return False
 
     async def _run_verification_turn(
         self, speaker: str, resp: "AdapterResponse", ui: UIPort,
@@ -7359,6 +7420,59 @@ class Botference:
             self._relay_boundary[model] = self.transcript.entries[-1].turn_index
         else:
             self._relay_boundary[model] = -1
+
+    _TASK_LINE_RE = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]\s+(.*?)\s*$")
+
+    def record_tick(self, text: str, checked: bool, ui: UIPort) -> bool:
+        """The user ticked (or unticked) a checklist item in the chat.
+
+        Until now a tick lived only in the browser that made it: the bots never
+        saw it, the next device did not show it, and a bot re-issuing its list
+        happily re-opened everything the reader had closed. Now the tick flips
+        the `- [ ]` in the message that carries the item — in the shared
+        transcript AND the display history — and leaves a one-line note the
+        bots read on their next turn. Returns False when no message holds the
+        item (the frontend keeps its own copy either way).
+        """
+        want = " ".join(str(text or "").split()).lower()
+        if not want:
+            return False
+
+        def flip(body: str) -> str | None:
+            lines = body.split("\n")
+            for i in range(len(lines) - 1, -1, -1):
+                m = self._TASK_LINE_RE.match(lines[i])
+                if m and " ".join(m.group(3).split()).lower() == want:
+                    lines[i] = f"{m.group(1)}[{'x' if checked else ' '}] {m.group(3)}"
+                    return "\n".join(lines)
+            return None
+
+        hit = False
+        for e in reversed(self.transcript.entries):
+            if e.speaker in ("claude", "codex", "user", "agent"):
+                new = flip(e.text)
+                if new is not None:
+                    e.text = new
+                    hit = True
+                    break
+        for r in reversed(self._room_history):
+            if r.speaker in ("claude", "codex", "user", "agent"):
+                new = flip(r.text)
+                if new is not None:
+                    self._room_history[self._room_history.index(r)] = DisplayRecord(
+                        speaker=r.speaker, text=new, meta=r.meta)
+                    break
+        if not hit:
+            return False
+        short = text.strip()
+        if len(short) > 120:
+            short = short[:117] + "…"
+        self.transcript.add(
+            "system",
+            f"[User {'ticked' if checked else 'unticked'}: {short}]",
+        )
+        self._persist_session()
+        return True
 
     def interrupt(self, ui: UIPort) -> None:
         """Record that the user interrupted the active turn."""
