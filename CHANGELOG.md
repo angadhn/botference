@@ -2,6 +2,13 @@
 
 ## 2026-09-24
 
+- **`TASKS.md` is never a verification source.** Rounds in the rocket chat
+  kept ending with a check that "confirmed" a claim by quoting the project's
+  task list — a file the bots had written minutes earlier. The claim restated
+  by the hand that wrote it is not evidence. The checking bot is no longer
+  handed `TASKS.md` or `PROJECT.md`, and is told in as many words that a task
+  list, a plan, a build report or a generated page is not a source: a claim
+  only such a file supports is "not checkable", with what would settle it.
 - **Ticks reach the bots.** A checkbox ticked in a chat lived only in that
   browser: the bots never saw it, another device did not show it, and a bot
   re-issuing its list re-opened everything you had closed. Now a tick flips

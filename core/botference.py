@@ -5984,9 +5984,13 @@ class Botference:
         if project is not None and self._project_in_play(project):
             files = []
             try:
+                # TASKS.md and PROJECT.md are the bots' own bookkeeping — a
+                # claim "confirmed by TASKS.md" is the claim restated by the
+                # hand that wrote it. Never a source, template or not.
                 files = sorted(
                     p.name for p in project.root.iterdir()
                     if p.is_file() and not p.name.startswith(".")
+                    and p.name not in ("TASKS.md", "PROJECT.md")
                     and not self._is_template_project_file(p)
                 )[:20]
             except OSError:

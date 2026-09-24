@@ -453,7 +453,12 @@ def verification_preamble(claims: str, sources: str) -> str:
         "- not checkable from these sources — and say what would settle it.\n"
         "Under 150 words. No new proposals, no plan, no next steps, no room "
         "footer. If a source named here is a file path, read it before "
-        "answering."
+        "answering.\n"
+        "What is NOT a source: anything the bots wrote in this chat — a task "
+        "list (TASKS.md), a plan, a build agent's report, a generated page or "
+        "figure. Those are the claims restated, not evidence for them. A claim "
+        "that only such a file supports is 'not checkable from these sources'; "
+        "say what original material would settle it."
     )
 
 

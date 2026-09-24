@@ -596,5 +596,8 @@ class TestVerificationSourcesStayInLane:
         assert "Project Pdg" not in c._verification_sources()
         # …until it does
         await c.handle_input("@claude look at notes.md in the pdg folder", ui)
+        (root / "TASKS.md").write_text("- [x] Reproduce Fig 5 with quantitative checks\n- [ ] Explain the fuel bias\n")
         src = c._verification_sources()
-        assert "Project Pdg" in src and "notes.md" in src and "PROJECT.md" not in src
+        assert "Project Pdg" in src and "notes.md" in src
+        # the bots' own bookkeeping is never evidence
+        assert "PROJECT.md" not in src and "TASKS.md" not in src
