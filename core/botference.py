@@ -2570,6 +2570,17 @@ class Botference:
                 for entry in payload.get("room_history", []) or []
                 if isinstance(entry, dict)
             ]
+            # Agent card ids are "<session>:agent:<n>" and n restarts at 1 in a
+            # new bridge process — so a resumed chat's next summon must count
+            # on from the cards already saved, or its card REPLACES an old one
+            # (same id, same card kind) and a finished build vanishes from the
+            # history. Seen on 2026-09-24: two runs, one card.
+            seqs = []
+            for rec in self._room_history:
+                m = re.search(r":agent:(\d+)$", str((rec.meta or {}).get("id", "")))
+                if m:
+                    seqs.append(int(m.group(1)))
+            self._summon_seq = max(seqs, default=0)
             self._ff_writer_votes = {
                 str(model): str(vote)
                 for model, vote in (payload.get("writer_votes", {}) or {}).items()

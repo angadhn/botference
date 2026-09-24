@@ -261,6 +261,27 @@ class TestSummonInChat:
         assert len(stamps) == 1
         assert "index.html" in stamps[0]
 
+    async def test_a_resumed_chat_counts_on_from_its_saved_cards(self, tmp_path):
+        builder = MockAdapter([_ok("built once")])
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path, summoner_reply="summon: build it", builder=builder,
+        )
+        await c.handle_input("@claude go", ui)
+        payload = c._session_payload()
+        # a fresh bridge process restores the chat and a second summon happens
+        c2, claude2, codex2, _ = _make_botference(
+            claude_responses=[_ok("summon: build more"), _ok("Open it.")], tmp_path=tmp_path,
+        )
+        c2._restore_from_payload(payload)
+        c2._models_initialized = set()
+        ui2 = MetaUI()
+        c2._make_builder = lambda spec: MockAdapter([_ok("built twice")])  # type: ignore[method-assign]
+        await c2.handle_input("@claude again", ui2)
+        cards = [r for r in c2._room_history if r.meta and r.meta["card"] == "report"]
+        assert len(cards) == 2, "the second run's card did not replace the first"
+        assert cards[0].meta["id"] != cards[1].meta["id"]
+        assert [r.meta["status"] for r in cards] == ["done", "done"]
+
     async def test_restore_keeps_the_agent_card(self, tmp_path):
         builder = MockAdapter([_ok("built")])
         c, claude, codex, ui, made = _bot_with_summon(
