@@ -2,6 +2,10 @@
 
 ## 2026-09-24
 
+- **Tables render in the plugin.** A bot comparing two things writes a
+  markdown table; the drawer drew it as one paragraph of pipes. It now draws
+  a real table, scrolling sideways in the narrow column, as the council page
+  already did.
 - **`TASKS.md` is never a verification source.** Rounds in the rocket chat
   kept ending with a check that "confirmed" a claim by quoting the project's
   task list — a file the bots had written minutes earlier. The claim restated

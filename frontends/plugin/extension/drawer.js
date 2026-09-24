@@ -851,6 +851,21 @@
   const isBlockStart = l =>
     FENCE.test(l) || BULLET.test(l) || NUMBER.test(l) || HEADING.test(l) ||
     MATH_BLOCK.test(l) || !l.trim();
+  // GFM tables, as the council page draws them (assets/app.js): a header row
+  // with |, a delimiter row of ---, then body rows until a line without |.
+  // A bot comparing two things writes a table; without this it came out as
+  // one paragraph of pipes.
+  const splitRow = line => {
+    let s = line.trim();
+    if (s.startsWith('|')) s = s.slice(1);
+    if (s.endsWith('|')) s = s.slice(0, -1);
+    return s.split('|').map(c => c.trim());
+  };
+  const isDelimRow = line =>
+    /^[\s|:-]+$/.test(line) && line.includes('-') && line.includes('|') &&
+    splitRow(line).every(c => /^:?-+:?$/.test(c));
+  const isTableStart = (lines, i) =>
+    lines[i].includes('|') && i + 1 < lines.length && isDelimRow(lines[i + 1]);
 
   // The tick index a click reports back to the companion: the 0-based ordinal
   // of the checkbox WITHIN ITS MESSAGE, counted in document order. Reset per
@@ -915,6 +930,30 @@
         continue;
       }
 
+      if (isTableStart(lines, i)) {
+        const align = splitRow(lines[i + 1]).map(c =>
+          /^:-+:$/.test(c) ? 'center' : /^-+:$/.test(c) ? 'right' : '');
+        const wrap = mk('div', 'tbl-wrap');
+        const table = wrap.appendChild(mk('table'));
+        const row = (parent, tag, cells) => {
+          const tr = parent.appendChild(mk('tr'));
+          cells.forEach((c, k) => {
+            const cell = tr.appendChild(mk(tag));
+            if (align[k]) cell.setAttribute('style', 'text-align:' + align[k]);
+            mdInline(c, cell);
+          });
+        };
+        row(table.appendChild(mk('thead')), 'th', splitRow(line));
+        const tbody = table.appendChild(mk('tbody'));
+        let j = i + 2;
+        while (j < lines.length && lines[j].includes('|') && lines[j].trim()) {
+          row(tbody, 'td', splitRow(lines[j])); j++;
+        }
+        frag.appendChild(wrap);
+        i = j;
+        continue;
+      }
+
       if (BULLET.test(line) || NUMBER.test(line)) {
         const ordered = !BULLET.test(line);
         const list = mk(ordered ? 'ol' : 'ul', 'md-list');
@@ -929,7 +968,7 @@
           i++;
           let txt = ordered ? m[2] : m[1];
           // lazy continuation: a wrapped item keeps flowing into the same <li>
-          while (i < lines.length && !isBlockStart(lines[i])) txt += ' ' + lines[i++].trim();
+          while (i < lines.length && !isBlockStart(lines[i]) && !isTableStart(lines, i)) txt += ' ' + lines[i++].trim();
           const task = TASK.exec(txt);
           const li = list.appendChild(mk('li'));
           if (!task) { mdInline(txt, li); continue; }
@@ -952,7 +991,7 @@
       }
 
       const buf = [];
-      while (i < lines.length && !isBlockStart(lines[i])) buf.push(lines[i++]);
+      while (i < lines.length && !isBlockStart(lines[i]) && !isTableStart(lines, i)) buf.push(lines[i++]);
       mdInline(buf.join('\n'), frag.appendChild(mk('p', 'md-p')));
     }
     if (held.spans.length) substituteMath(frag, held.spans);

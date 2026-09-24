@@ -2084,6 +2084,11 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
   font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
   color: var(--muted);
 }
+/* markdown tables: a real <table>, scrolling sideways in the narrow column */
+.ctext .tbl-wrap { overflow-x: auto; margin: 6px 0 8px; max-width: 100% }
+.ctext table { border-collapse: collapse; font: 12px/1.45 var(--sans) }
+.ctext th, .ctext td { border: 1px solid var(--line, var(--muted)); padding: 3px 8px; text-align: left; vertical-align: top }
+.ctext th { font-weight: 600; color: var(--heading); white-space: nowrap; background: color-mix(in srgb, var(--muted) 10%, transparent) }
 .md-list { margin: 4px 0 8px; padding-left: 20px }
 .md-list li { margin: 2px 0 }
 .md-list li::marker { color: var(--muted) }
