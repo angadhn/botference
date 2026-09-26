@@ -132,6 +132,14 @@
 //                                         (POST /delete-page) — `current` says
 //                                         the deleted page is the one we are on
 //   onInterrupt()
+//   onTranscribeStatus()                → {ok, model} | {ok:false, reason}  (GET /transcribe)
+//                                         can this machine turn speech into
+//                                         text? The mic buttons stay hidden
+//                                         unless it says yes
+//   onTranscribe({audio_b64, mime})     → {ok, text, seconds} | {ok:false,error}
+//                                         (POST /transcribe) one recorded clip,
+//                                         as base64 JSON (the background worker
+//                                         only carries JSON, not a Blob)
 //   onJump(threadId)                    quote clicked: scroll page to highlight
 //   onFocus(threadId|null)              card focused/blurred: tint the highlight
 //   onModels()                          → {ok, current, options, status, bridge,
@@ -1558,6 +1566,54 @@
     '<path d="M1.8 4.2a1 1 0 0 1 1-1h3.2l1.4 1.6h4.8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/>' +
     '<path d="M8 7.4v4M6 9.4h4"/></svg>';
 
+  // ---- dictation: the pure parts (test/mic.test.mjs) ----------------------
+  // A microphone, drawn in the same 16px line style as the other icons.
+  const MIC_SVG =
+    '<svg class="pico" viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="none" ' +
+    'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="5.8" y="1.6" width="4.4" height="7.8" rx="2.2"/>' +
+    '<path d="M3.4 7.4a4.6 4.6 0 0 0 9.2 0M8 12v2.4M5.8 14.4h4.4"/></svg>';
+  const MIC_TYPES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  const MIC_MAX_MS = 15 * 60 * 1000;
+  // The first recording format this browser can make, in order of preference
+  // (Chrome and Firefox: webm/opus; Safari on iPhone and Mac: mp4). '' means
+  // let the browser choose.
+  function pickAudioMime(MR) {
+    if (!MR || typeof MR.isTypeSupported !== 'function') return '';
+    for (const m of MIC_TYPES) { try { if (MR.isTypeSupported(m)) return m; } catch (_) { /* next */ } }
+    return '';
+  }
+  // A data: URL's payload — what FileReader.readAsDataURL gives, minus the
+  // "data:audio/webm;base64," in front
+  const dataUrlPayload = u => { const t = String(u || ''); const i = t.indexOf(','); return i < 0 ? '' : t.slice(i + 1); };
+  function blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(dataUrlPayload(fr.result));
+      fr.onerror = () => reject(fr.error || new Error('could not read the recording'));
+      fr.readAsDataURL(blob);
+    });
+  }
+  // Dictated words put where the caret was (replacing a selection), with a
+  // space either side when they would otherwise run into the text around them.
+  function spliceDictation(value, start, end, text) {
+    const v = String(value || ''), t = String(text || '').trim();
+    let a = Number.isInteger(start) ? Math.max(0, Math.min(start, v.length)) : v.length;
+    let b = Number.isInteger(end) ? Math.max(a, Math.min(end, v.length)) : a;
+    if (!t) return { value: v, caret: b };
+    const before = v.slice(0, a), after = v.slice(b);
+    const pre = before && !/\s$/.test(before) ? ' ' : '';
+    const post = after && !/^\s/.test(after) ? ' ' : '';
+    return { value: before + pre + t + post + after, caret: (before + pre + t).length };
+  }
+  // The sentence a failure to open the microphone deserves
+  function micErrorText(e) {
+    const n = e && e.name;
+    if (n === 'NotAllowedError' || n === 'SecurityError') return 'microphone permission was refused';
+    if (n === 'NotFoundError') return 'no microphone found';
+    return 'could not start the microphone';
+  }
+
   function create(opts) {
     opts = opts || {};
     const cb = name => (...args) => (typeof opts[name] === 'function' ? opts[name](...args) : undefined);
@@ -2101,6 +2157,8 @@
       attach(host);
 
       D.host = host; D.shadow = shadow; D.mounted = true;
+      // a bubble has a composer too, and can be up with the panel never opened
+      micStatus();
       D.el = {
         panel: shadow.querySelector('.panel'),
         title: shadow.querySelector('.hdr .title'),
@@ -3037,14 +3095,147 @@ ${bubbleShellHtml()}`;
         + `${s.ok ? '✓' : '⚠'} ${esc(s.label)}</span>`;
     }
 
+    // ---- dictation ---------------------------------------------------------
+    // Every composer (page chat, a comment thread, a bubble, the library)
+    // carries a mic: tap to record, tap again to stop, and the words whisper
+    // heard land in THAT composer's box for editing — never sent on their own.
+    // Tap/tap rather than hold-to-talk, which is unreliable on iPhone. The
+    // state is one object because only one recording can be running.
+    const MIC = { ok: false, target: null, mode: '', rec: null, stream: null,
+      chunks: [], timer: null, cancelled: false, box: null, caret: null, asked: 0 };
+    const micHint = mode => mode === 'recording' ? 'recording… tap to stop' : 'transcribing…';
+    function micHtml(target) {
+      const mode = MIC.target === target ? MIC.mode : '';
+      const title = mode === 'recording' ? 'tap to stop and transcribe'
+        : mode === 'transcribing' ? 'transcribing…' : 'tap to dictate — tap again to stop';
+      return `<button class="mic${mode ? ' ' + mode : ''}" data-act="mic" data-target="${esc(target)}" type="button" aria-label="dictate" aria-pressed="${mode === 'recording'}" title="${title}"${MIC.ok ? '' : ' hidden'}>${MIC_SVG}</button>`;
+    }
+    // repaint just the mic buttons (and the hint beside the live one), so a
+    // recording starting or stopping does not rebuild the whole drawer
+    function paintMic() {
+      if (!D.mounted) return;
+      D.shadow.querySelectorAll('.composer').forEach(c => {
+        const b = c.querySelector('button.mic');
+        if (!b) return;
+        const tmp = document.createElement('div');
+        tmp.innerHTML = micHtml(b.getAttribute('data-target'));
+        const fresh = tmp.firstChild;
+        b.replaceWith(fresh);
+        const mode = MIC.target === fresh.getAttribute('data-target') ? MIC.mode : '';
+        c.classList.toggle('dictating', !!mode);
+        const h = c.querySelector('.crow > .hint');
+        if (h) {
+          if (mode) { if (h.dataset.idle == null) h.dataset.idle = h.textContent; h.textContent = micHint(mode); }
+          else if (h.dataset.idle != null) { h.textContent = h.dataset.idle; delete h.dataset.idle; }
+        }
+      });
+    }
+    // A page with no microphone API — plain http that is not localhost, or an
+    // old browser — never shows the button, whatever the companion says.
+    const micCapable = () => typeof navigator !== 'undefined' && !!navigator.mediaDevices
+      && typeof navigator.mediaDevices.getUserMedia === 'function'
+      && typeof MediaRecorder === 'function';
+    async function micStatus() {
+      // mount() and open() both ask, and the first opening does both at once
+      const now = Date.now();
+      if (MIC.asked && now - MIC.asked < 2000) return MIC.ok;
+      MIC.asked = now;
+      let ok = false;
+      if (micCapable()) {
+        try { const r = await cb('onTranscribeStatus')(); ok = !!(r && r.ok); } catch (_) { ok = false; }
+      }
+      if (ok !== MIC.ok) { MIC.ok = ok; paintMic(); }
+      return ok;
+    }
+    function micRelease() {
+      clearTimeout(MIC.timer); MIC.timer = null;
+      if (MIC.stream) { for (const tr of MIC.stream.getTracks()) { try { tr.stop(); } catch (_) { /* gone */ } } }
+      MIC.stream = null; MIC.rec = null;
+    }
+    function micSet(target, mode) { MIC.target = mode ? target : null; MIC.mode = mode; paintMic(); }
+    async function micStart(target) {
+      // where the words will go: the caret as it is at the tap (the mousedown
+      // guard below keeps the box focused, so it is still meaningful)
+      const box = composerBox(target);
+      MIC.box = box || null;
+      MIC.caret = box ? [box.selectionStart, box.selectionEnd] : null;
+      let stream;
+      // inside the tap itself: iPhone grants the microphone only to a gesture
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch (e) { note(target, micErrorText(e), true); return; }
+      const mime = pickAudioMime(MediaRecorder);
+      let rec;
+      try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+      catch (_) {
+        for (const tr of stream.getTracks()) { try { tr.stop(); } catch (__) { /* gone */ } }
+        note(target, 'this browser cannot record audio', true); return;
+      }
+      Object.assign(MIC, { rec, stream, chunks: [], cancelled: false });
+      rec.addEventListener('dataavailable', e => { if (e.data && e.data.size) MIC.chunks.push(e.data); });
+      rec.addEventListener('stop', () => micFinish(target, rec, mime));
+      rec.start();
+      MIC.timer = setTimeout(() => micStop(), MIC_MAX_MS);
+      micSet(target, 'recording');
+    }
+    function micStop(cancel) {
+      if (!MIC.rec) return false;
+      MIC.cancelled = !!cancel;
+      try { MIC.rec.stop(); } catch (_) { micRelease(); micSet(null, ''); }
+      return true;
+    }
+    async function micFinish(target, rec, mime) {
+      const chunks = MIC.chunks; MIC.chunks = [];
+      const cancelled = MIC.cancelled;
+      micRelease();
+      if (cancelled) { micSet(null, ''); return; }
+      const type = (chunks[0] && chunks[0].type) || rec.mimeType || mime || 'audio/webm';
+      const blob = new Blob(chunks, { type });
+      if (!blob.size) { micSet(null, ''); note(target, 'nothing was recorded', true); return; }
+      micSet(target, 'transcribing');
+      let r;
+      try { r = await cb('onTranscribe')({ audio_b64: await blobToBase64(blob), mime: blob.type || type }); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      micSet(null, '');
+      if (!r || r.ok === false) { note(target, (r && r.error) || 'transcription failed', true); return; }
+      const text = String(r.text || '').trim();
+      if (!text) { note(target, 'no speech was heard', true); return; }
+      micInsert(target, text);
+    }
+    function micInsert(target, text) {
+      const box = composerBox(target);
+      if (!box) {
+        // the composer is not on screen right now: the words join its draft
+        D.drafts[target] = spliceDictation(D.drafts[target] || '', null, null, text).value;
+        return;
+      }
+      // the same box as at the tap: its live caret. A box render() rebuilt in
+      // the meantime has lost the caret, so the words go at the end.
+      const same = box === MIC.box;
+      const [a, b] = same ? [box.selectionStart, box.selectionEnd] : [null, null];
+      const out = spliceDictation(box.value, a, b, text);
+      box.value = out.value;
+      D.drafts[target] = out.value;
+      box.focus();
+      try { box.setSelectionRange(out.caret, out.caret); } catch (_) { /* not a textarea */ }
+      // the ordinary typing path: has-draft, the @-menu, the pill row
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      MIC.box = null; MIC.caret = null;
+    }
+    function micTap(target) {
+      if (MIC.mode === 'transcribing') return;
+      if (MIC.rec) { micStop(); return; }
+      micStart(target);
+    }
+
     function composerHtml(target, label, extra, hint, pills) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
-      return `${lassoHtml(target)}<div class="composer${draft.trim() ? ' has-draft' : ''}" data-target="${esc(target)}">
+      const dict = MIC.target === target && MIC.mode;
+      return `${lassoHtml(target)}<div class="composer${draft.trim() ? ' has-draft' : ''}${dict ? ' dictating' : ''}" data-target="${esc(target)}">
         ${pills ? routesHtml(target) : ''}
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
-        <div class="crow"><span class="hint">${esc(hint || HINT)}</span>${extra || ''}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
+        <div class="crow"><span class="hint">${esc(dict ? micHint(dict) : (hint || HINT))}</span>${extra || ''}${micHtml(target)}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
     }
 
@@ -6201,6 +6392,7 @@ ${bubbleShellHtml()}`;
       'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
       'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
+      'mic': (btn, target) => micTap(target),
       'fresh': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent, 'fresh'); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'typing': (btn) => setTyping(btn.dataset.typing),
@@ -6522,6 +6714,12 @@ ${bubbleShellHtml()}`;
       // popover: any in-drawer click outside it dismisses it (the gear's own
       // click is the toggle and must not be eaten here)
       // …and the /help popup the same way: a click anywhere else closes it
+      // tapping a mic must not take the focus out of its box: the Send row
+      // folds away when the composer loses focus (drawer.css), and the caret
+      // is where the dictated words go
+      D.shadow.addEventListener('mousedown', e => {
+        if (e.target && e.target.closest && e.target.closest('button.mic')) e.preventDefault();
+      }, true);
       D.shadow.addEventListener('mousedown', e => {
         if (!D.helpOpen || !e.target.closest) return;
         if (e.target.closest('.popover.helppop')) return;
@@ -6763,6 +6961,8 @@ ${bubbleShellHtml()}`;
           e.stopPropagation();
           // already spent by content.js's handler (drawer.escape closed a layer)
           if (escUsed.has(e)) return;
+          // a recording in progress is the innermost layer: Esc throws it away
+          if (MIC.rec) { e.preventDefault(); micStop(true); return; }
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
           if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
@@ -9442,6 +9642,9 @@ ${bubbleShellHtml()}`;
       // mount() can now REFUSE — there is no stylesheet to be had, so there is
       // no drawer. Everything below reads D.el, which is empty in that case.
       if (!D.mounted) return D;
+      // can the companion turn speech into text? asked at every opening, so a
+      // model installed since shows its mic without a reload
+      micStatus();
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
@@ -11024,6 +11227,7 @@ ${bubbleShellHtml()}`;
         // innermost layer first: the overlap chooser sits over the page, above
         // even a lightbox in the reader's attention, and closing it must not
         // take the drawer with it
+        if (MIC.rec) { micStop(true); if (ev) escUsed.add(ev); return true; }
         if (picksOpen()) { hidePicks(); return true; }
         // …then a bubble, which is over the page in the same way and is only
         // ever up while the panel is shut
@@ -11081,6 +11285,7 @@ ${bubbleShellHtml()}`;
     splitMore, stripMore, MORE_MARK,                        // test/more.test.mjs
     whereParts, nthWord, whereText,                        // test/where.test.mjs
     routeWordOf, KINDS, KIND_NAME,                          // test/mentions.test.mjs
+    pickAudioMime, dataUrlPayload, blobToBase64, spliceDictation, micErrorText, MIC_TYPES, // test/mic.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

@@ -32,6 +32,7 @@ import { attachWs } from '../review/ws.mjs';
 // both. Only the MODE is the council's own (see COUNCIL_MODES below).
 import * as keys from '../shared/keys.mjs';
 import { isLocalDirect } from '../shared/local.mjs';
+import { transcribeRequest, whisperStatus } from '../shared/transcribe.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -859,6 +860,18 @@ export function handler(req, res) {
       const ok = bridge && bridge.send({ type: 'interrupt' });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });
+    return;
+  }
+  // the mic button: a recorded clip in, its words out (frontends/shared/transcribe.mjs)
+  if (req.method === 'POST' && url === '/transcribe') {
+    readBody(req, res, 16 * 1024 * 1024, async data => {
+      const r = await transcribeRequest(data);
+      res.writeHead(r.status, JSON_HEAD).end(JSON.stringify(r.body));
+    });
+    return;
+  }
+  if (req.method === 'GET' && url === '/transcribe') {
+    res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...whisperStatus() }));
     return;
   }
   // a checklist tick: the item's text and its new state, to the bridge, which

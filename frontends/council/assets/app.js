@@ -32,6 +32,7 @@
     input: $('input'), send: $('send'), stop: $('stop'), complete: $('complete'),
     queueNote: $('queue-note'),
     attach: $('attach'), file: $('file'), attStrip: $('att-strip'),
+    mic: $('mic'),
     lassoStrip: $('lasso-strip'),
     routeRow: $('route-row'),
     toast: $('toast'), sync: $('sync'), helpBtn: $('help-btn'),
@@ -3230,6 +3231,130 @@
     else setBusy(true);
   }
 
+  // ── dictation: tap the mic to record, tap again to stop. The clip goes to
+  // POST /transcribe (whisper, on the machine running the server) and the
+  // words land at the caret for editing — never sent on their own. Tap/tap,
+  // not hold-to-talk: holding is unreliable in iOS Safari. ──
+  const DICT_MAX_MS = 15 * 60 * 1000;
+  const dict = { rec: null, stream: null, chunks: [], timer: null, cancelled: false, busy: false, hint: '' };
+  function dictMime() {
+    const MR = window.MediaRecorder;
+    if (!MR || typeof MR.isTypeSupported !== 'function') return '';
+    for (const m of ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']) {
+      try { if (MR.isTypeSupported(m)) return m; } catch { }
+    }
+    return ''; // let the browser choose
+  }
+  function blobToB64(blob) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => { const s = String(fr.result || ''); resolve(s.slice(s.indexOf(',') + 1)); };
+      fr.onerror = () => reject(fr.error || new Error('could not read the recording'));
+      fr.readAsDataURL(blob);
+    });
+  }
+  function insertAtCaret(el, text) {
+    text = String(text || '').trim();
+    if (!text) return;
+    const v = el.value;
+    const a = typeof el.selectionStart === 'number' ? el.selectionStart : v.length;
+    const b = typeof el.selectionEnd === 'number' ? el.selectionEnd : a;
+    const before = v.slice(0, a), after = v.slice(b);
+    const pre = before && !/\s$/.test(before) ? ' ' : '';
+    const post = after && !/^\s/.test(after) ? ' ' : '';
+    el.value = before + pre + text + post + after;
+    const at = (before + pre + text).length;
+    try { el.setSelectionRange(at, at); } catch { }
+  }
+  function dictHint(text) {
+    const h = document.querySelector('.composer-hint');
+    if (!h) return;
+    if (text) { if (!h.classList.contains('live')) dict.hint = h.textContent; h.textContent = text; h.classList.add('live'); }
+    else { h.textContent = dict.hint || h.textContent; h.classList.remove('live'); }
+  }
+  function dictUi(mode) { // '' | 'recording' | 'transcribing'
+    if (!els.mic) return;
+    els.mic.classList.toggle('recording', mode === 'recording');
+    els.mic.classList.toggle('transcribing', mode === 'transcribing');
+    els.mic.setAttribute('aria-pressed', mode === 'recording' ? 'true' : 'false');
+    els.mic.title = mode === 'recording' ? 'tap to stop and transcribe'
+      : mode === 'transcribing' ? 'transcribing…' : 'tap to dictate — tap again to stop';
+    dictHint(mode === 'recording' ? 'recording… tap to stop' : mode === 'transcribing' ? 'transcribing…' : '');
+  }
+  function dictRelease() {
+    clearTimeout(dict.timer); dict.timer = null;
+    if (dict.stream) { for (const tr of dict.stream.getTracks()) { try { tr.stop(); } catch { } } }
+    dict.stream = null; dict.rec = null;
+  }
+  async function dictStart() {
+    let stream;
+    try {
+      // must run inside the tap itself: iOS only grants the mic to a gesture
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const n = e && e.name;
+      toast(n === 'NotAllowedError' || n === 'SecurityError' ? 'microphone permission was refused'
+        : n === 'NotFoundError' ? 'no microphone found' : 'could not start the microphone');
+      return;
+    }
+    const mime = dictMime();
+    let rec;
+    try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+    catch { for (const tr of stream.getTracks()) tr.stop(); toast('this browser cannot record audio'); return; }
+    Object.assign(dict, { rec, stream, chunks: [], cancelled: false });
+    rec.addEventListener('dataavailable', e => { if (e.data && e.data.size) dict.chunks.push(e.data); });
+    rec.addEventListener('stop', () => dictFinish(rec, mime));
+    rec.start();
+    dict.timer = setTimeout(() => dictStop(), DICT_MAX_MS);
+    dictUi('recording');
+  }
+  function dictStop(cancel = false) {
+    if (!dict.rec) return;
+    dict.cancelled = cancel;
+    try { dict.rec.stop(); } catch { dictRelease(); dictUi(''); }
+  }
+  async function dictFinish(rec, mime) {
+    const chunks = dict.chunks; dict.chunks = [];
+    const cancelled = dict.cancelled;
+    dictRelease();
+    if (cancelled) { dictUi(''); return; }
+    const type = (chunks[0] && chunks[0].type) || rec.mimeType || mime || 'audio/webm';
+    const blob = new Blob(chunks, { type });
+    if (!blob.size) { dictUi(''); toast('nothing was recorded'); return; }
+    dict.busy = true; dictUi('transcribing');
+    try {
+      const r = await post('/transcribe', { audio_b64: await blobToB64(blob), mime: blob.type || type, lang: 'en' });
+      if (!r) toast('transcription failed: no reply from the server');
+      else if (!r.ok) toast(r.error || 'transcription failed');
+      else if (!String(r.text || '').trim()) toast('no speech was heard');
+      else {
+        insertAtCaret(els.input, r.text);
+        autosize(); syncSend(); refreshCompletions();
+        els.input.focus();
+      }
+    } catch (e) { toast((e && e.message) || 'transcription failed'); }
+    finally { dict.busy = false; dictUi(''); }
+  }
+  async function dictInit() {
+    if (!els.mic) return;
+    els.mic.hidden = true;
+    // no mic API: an http page that is not localhost, or an old browser
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function'
+      || typeof window.MediaRecorder !== 'function') return;
+    try {
+      const r = await fetch('/transcribe', { method: 'GET' });
+      const j = r && r.status === 200 ? await r.json() : null;
+      if (j && j.ok) els.mic.hidden = false;
+    } catch { }
+  }
+  if (els.mic) {
+    els.mic.addEventListener('click', () => {
+      if (dict.busy) return;
+      if (dict.rec) dictStop(); else dictStart();
+    });
+    dictInit();
+  }
+
   // ── no-auth warning banner (server started with --no-auth) ──
   els.bannerX.addEventListener('click', () => {
     els.banner.hidden = true;
@@ -3565,6 +3690,8 @@
   }
 
   document.addEventListener('keydown', e => {
+    // Esc while dictating throws the recording away (no request is made)
+    if (e.key === 'Escape' && dict.rec) { e.preventDefault(); dictStop(true); toast('dictation cancelled'); return; }
     if (e.key === 'Escape' && helpOpen()) { closeHelp(); return; }
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) closeSide();
     if (e.key === 'Escape') closeAgents();
@@ -3594,5 +3721,7 @@
     typingPref, setTyping, renderTyping, typeDrain, shownText,
     // the /help popup and the hints the autocomplete shows
     openHelp, closeHelp, helpOpen, helpRows, hintFor,
+    // dictation
+    dict, dictMime, insertAtCaret, dictInit,
   };
 })();

@@ -618,6 +618,21 @@ main { position: relative }
   align-items: center; justify-content: center; border-radius: 50%; color: var(--muted) }
 #attach svg { width: 17px; height: 17px }
 #attach:hover { color: var(--accent) }
+/* dictation mic: same round quiet button as attach; red pulse while
+   recording, a spinner ring while the clip is being transcribed */
+#mic { flex: none; width: 34px; height: 34px; padding: 0; display: flex; position: relative;
+  align-items: center; justify-content: center; border-radius: 50%; color: var(--muted) }
+#mic[hidden] { display: none }
+#mic svg { width: 17px; height: 17px }
+#mic:hover { color: var(--accent) }
+#mic.recording { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent) }
+#mic.recording::after { content: ''; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--bad); animation: micpulse 1.1s ease-in-out infinite }
+@keyframes micpulse { 50% { opacity: .2; transform: scale(.7) } }
+#mic.transcribing { color: var(--accent); cursor: progress }
+#mic.transcribing::before { content: ''; position: absolute; inset: 2px; border-radius: 50%;
+  border: 2px solid transparent; border-top-color: currentColor; animation: spin .8s linear infinite }
+.composer-hint.live { color: var(--fg) }
 #input { display: block; width: 100%; border: 0; background: none; resize: none;
   color: var(--fg); font: 16px/1.55 var(--sans); padding: .85rem 1rem .3rem;
   max-height: 9.8rem; overflow-y: auto }
@@ -899,6 +914,7 @@ body.agents-open #agents-panel { transform: translateX(0) }
   .msg.user { max-width: 92% }
   #statusbar { gap: .6rem }
   .composer-hint { visibility: hidden }
+  .composer-hint.live { visibility: visible }
   #jump { bottom: calc(8rem + env(safe-area-inset-bottom, 0px)) }
   .chat-col { padding: 0 .9rem }
   #complete { left: .9rem; right: .9rem }

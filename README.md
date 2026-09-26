@@ -438,6 +438,24 @@ export BOTFERENCE_TUNNEL_URL=https://council.example.com   # printed as the shar
 Without `BOTFERENCE_TUNNEL`, `--share` uses a quick tunnel with a
 random `trycloudflare.com` URL.
 
+### Dictation
+
+Every message box — in the council web page and in the Discuss drawer
+(page chat, comment threads, the library) — has a **mic button**. Tap it
+to start recording, tap it again to stop (Esc throws the recording
+away). The recording is turned into text on your Mac by whisper (the
+Homebrew `whisper-cpp` package), and the words land in the box where
+your cursor was, for you to edit before sending — nothing is sent on its
+own. The speech-to-text model lives in `~/.botference/models`; if there
+is none there, Superwhisper's copy is used when it is installed. Nothing
+leaves the machine. The button only shows when the Mac has a model.
+
+It works from a phone over the tunnel, because the tunnel address is
+HTTPS and browsers only allow the microphone on HTTPS pages (and on
+`localhost`). On a plain-`http` address the button stays hidden. The
+first tap asks for microphone permission; on an iPhone, Safari may ask
+again in later visits.
+
 ## Discuss (`botference discuss`)
 
 The web annotator: discuss any page on the open web with Claude and

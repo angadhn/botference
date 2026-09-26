@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-09-26
+
+- **Dictate a message.** Every message box in the council web page and in
+  the Discuss drawer has a mic button: tap to record, tap again to stop,
+  and whisper turns the recording into text on your Mac — nothing leaves
+  the machine. The words land in the box where your cursor was, to edit
+  before sending; Esc throws a recording away. Works from the phone over
+  the tunnel (HTTPS); the button hides itself where the microphone is not
+  allowed or no speech-to-text model is installed.
+
 ## 2026-09-24
 
 - **Tables render in the plugin.** A bot comparing two things writes a

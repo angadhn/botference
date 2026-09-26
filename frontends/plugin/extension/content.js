@@ -2812,6 +2812,20 @@
         if (!r.ok) return failure(r);
         return { ok: true };
       },
+      // the mic buttons: can this machine transcribe (GET /transcribe), and one
+      // recorded clip in, its words out. The clip travels as base64 inside
+      // JSON because the background worker's messages carry JSON, not a Blob.
+      onTranscribeStatus: async () => {
+        const r = await api('GET', '/transcribe');
+        if (!r.ok) return failure(r);
+        return (r.data && r.data.ok) ? { ok: true, model: r.data.model } : { ok: false, reason: (r.data && r.data.reason) || '' };
+      },
+      onTranscribe: async ({ audio_b64, mime }) => {
+        const r = await api('POST', '/transcribe', { audio_b64, mime, lang: 'en' });
+        if (!r.ok) return failure(r);
+        if (!r.data || r.data.ok === false) return { ok: false, error: (r.data && r.data.error) || 'transcription failed' };
+        return { ok: true, text: r.data.text || '', seconds: r.data.seconds };
+      },
       onReconnect: () => bg({ t: 'reconnect' }),
       // The quote clicked: go to the mark. On a PDF the mark may be on a page
       // that has not been rendered yet — a strikeout minted for page 2 out of a

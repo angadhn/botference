@@ -3250,3 +3250,105 @@ test('a Gemini video report is its own message — folded, with the watcher’s 
   msg.querySelector('[data-act="gemini-more"]').click();
   assert.ok(msg.querySelector('.body').classList.contains('clipped'));
 });
+
+// ---------------------------------------------------------------- dictation
+
+// a fake page for the mic: GET /transcribe answers `status`, POST /transcribe
+// answers with `text`; MediaRecorder and getUserMedia are minimal fakes that
+// hand back one chunk of "audio" when stopped
+async function mkMicHarness(t, { status = { ok: true, model: 'm' }, text = 'hello there' } = {}) {
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  const w = new GlobalWindow({ url: 'http://localhost/', width: 1280, height: 900 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  const html = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'index.html'), 'utf8');
+  doc.write(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+  const posts = [];
+  const gets = [];
+  w.fetch = async (url, opts) => {
+    if (url === '/transcribe' && (!opts || opts.method === 'GET')) {
+      gets.push(url);
+      return { status: 200, json: async () => status };
+    }
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
+    posts.push({ url, body });
+    if (url === '/transcribe') return { status: 200, json: async () => ({ ok: true, text, seconds: 1, took_ms: 5, model: 'm' }) };
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  w.EventSource = class { constructor() { } close() { } };
+  w.WebSocket = class { constructor() { } close() { } send() { } };
+  const rec = { gum: 0, stopped: 0, mimes: [] };
+  const track = { stop() { rec.stopped++; } };
+  Object.defineProperty(w.navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia: async c => { rec.gum++; assert.equal(c && c.audio, true); return { getTracks: () => [track] }; } },
+  });
+  w.MediaRecorder = class extends w.EventTarget {
+    static isTypeSupported(m) { return m === 'audio/mp4'; } // like iOS Safari
+    constructor(stream, opts) { super(); this.mimeType = (opts && opts.mimeType) || ''; rec.mimes.push(this.mimeType); this.state = 'inactive'; }
+    start() { this.state = 'recording'; }
+    stop() {
+      this.state = 'inactive';
+      const ev = new w.Event('dataavailable');
+      ev.data = new w.Blob(['fake-audio'], { type: 'audio/mp4' });
+      this.dispatchEvent(ev);
+      this.dispatchEvent(new w.Event('stop'));
+    }
+  };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
+  await new Promise(r => setTimeout(r, 20)); // the status GET settles
+  return { w, doc, C: w.__council, posts, gets, rec };
+}
+const until = async (pred, ms = 2000) => {
+  const t0 = Date.now();
+  while (!pred()) { if (Date.now() - t0 > ms) throw new Error('timed out'); await new Promise(r => setTimeout(r, 10)); }
+};
+
+test('dictation: tap, tap posts the clip to /transcribe and the words land at the caret (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, posts, gets, rec } = await mkMicHarness(t, { text: 'dictated words' });
+  const mic = doc.getElementById('mic');
+  const input = doc.getElementById('input');
+  assert.deepEqual(gets, ['/transcribe'], 'status asked once on load');
+  assert.equal(mic.hidden, false, 'mic shows when the server can transcribe');
+  input.value = 'before after';
+  input.setSelectionRange(6, 6); // caret right after "before"
+  mic.click();
+  await until(() => mic.classList.contains('recording'));
+  assert.equal(rec.gum, 1);
+  assert.deepEqual([...rec.mimes], ['audio/mp4'], 'first supported type in the preference list');
+  assert.match(doc.querySelector('.composer-hint').textContent, /recording… tap to stop/);
+  mic.click();
+  await until(() => posts.some(p => p.url === '/transcribe'));
+  const p = posts.find(p => p.url === '/transcribe');
+  assert.equal(p.body.mime, 'audio/mp4');
+  assert.equal(Buffer.from(p.body.audio_b64, 'base64').toString(), 'fake-audio');
+  await until(() => !mic.classList.contains('transcribing'));
+  assert.equal(input.value, 'before dictated words after');
+  assert.equal(rec.stopped, 1, 'the mic track is released');
+  assert.equal(posts.filter(p => p.url === '/input').length, 0, 'never sent on its own');
+  assert.equal(doc.getElementById('send').disabled, false);
+  assert.doesNotMatch(doc.querySelector('.composer-hint').textContent, /recording|transcribing/);
+});
+
+test('dictation: Esc while recording throws the clip away; no request (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, posts, rec } = await mkMicHarness(t);
+  const mic = doc.getElementById('mic');
+  mic.click();
+  await until(() => mic.classList.contains('recording'));
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(mic.classList.contains('recording'), false);
+  assert.equal(posts.filter(p => p.url === '/transcribe').length, 0);
+  assert.equal(rec.stopped, 1);
+  assert.equal(doc.getElementById('input').value, '');
+});
+
+test('dictation: the mic stays hidden when the server cannot transcribe (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc } = await mkMicHarness(t, { status: { ok: false, reason: 'no whisper model' } });
+  assert.equal(doc.getElementById('mic').hidden, true);
+});

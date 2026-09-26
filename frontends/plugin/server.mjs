@@ -39,6 +39,7 @@ import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
 import * as run from './run.mjs';
 import * as keys from '../shared/keys.mjs';
+import { transcribeRequest, whisperStatus } from '../shared/transcribe.mjs';
 import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
@@ -4773,6 +4774,16 @@ export function handler(req, res) {
       controlAll(`/relay @${agent}`);
       ok(res, { queued: true });
     });
+  }
+  // the mic button: a recorded clip in, its words out (frontends/shared/transcribe.mjs)
+  if (req.method === 'POST' && url === '/transcribe') {
+    return readBody(req, res, async data => {
+      const r = await transcribeRequest(data);
+      res.writeHead(r.status, JSON_HEAD).end(JSON.stringify(r.body));
+    });
+  }
+  if (req.method === 'GET' && url === '/transcribe') {
+    return ok(res, whisperStatus());
   }
   // the no-summary restart: a bot that has gone wrong (stuck refusing an
   // ordinary topic, say) comes back knowing only what is sent next
