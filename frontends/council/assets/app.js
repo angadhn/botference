@@ -17,7 +17,7 @@
     newChatMenu: $('new-chat-menu'),
     newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
     projects: $('projects'), theme: $('theme-toggle'), typing: $('typing-toggle'),
-    conn: $('st-conn'), stCtx: $('st-ctx'),
+    conn: $('st-conn'), stCtx: $('st-ctx'), stTitle: $('st-title'),
     agentCards: $('agent-cards'), agentsBody: $('agents-body'),
     agentsPanel: $('agents-panel'), agentsToggle: $('agents-toggle'),
     apFacts: $('ap-facts'), relayBoth: $('relay-both'), autoRelay: $('autorelay-toggle'),
@@ -223,7 +223,7 @@
     {"cmd": "/auth", "args": "[claude|codex|all]", "hint": "Check the bots are signed in", "group": "Models", "scope": ["tui", "council"]},
     {"cmd": "/new", "args": "[title]", "hint": "Start a fresh chat (this one is saved)", "group": "Chat", "scope": ["tui", "council"]},
     {"cmd": "/resume", "args": "[latest|number|title|id]", "hint": "Switch to a saved chat, in any project", "group": "Chat", "scope": ["tui", "council"]},
-    {"cmd": "/rename", "args": "<name>", "hint": "Name this chat", "group": "Chat", "scope": ["tui", "council"]},
+    {"cmd": "/rename", "args": "<name>|auto", "hint": "Name this chat (auto: a short title from the model)", "group": "Chat", "scope": ["tui", "council"]},
     {"cmd": "/adopt", "args": "[<id-prefix>]", "hint": "Carry on a Claude Code chat from outside here", "group": "Chat", "scope": ["tui", "council"]},
     {"cmd": "/file", "args": "[<project-id>]", "hint": "File this chat under a project", "group": "Chat", "aliases": ["/add-to-project"], "scope": ["tui", "council"]},
     {"cmd": "/delete", "args": "[<id-prefix>]", "hint": "Delete a saved chat (asks first)", "group": "Chat", "scope": ["tui", "council"]},
@@ -3474,6 +3474,13 @@
           if (ev.claude_pct != null) bits.push(`C ${Math.round(ev.claude_pct)}%`);
           if (ev.codex_pct != null) bits.push(`X ${Math.round(ev.codex_pct)}%`);
           els.stCtx.textContent = bits.join(' · ');
+        }
+        // the chat's name, in the header and on the browser tab — the one
+        // thing that tells five open tabs apart on a phone
+        if ('title' in ev) {
+          const t = String(ev.title || '').trim();
+          if (els.stTitle) els.stTitle.textContent = t;
+          document.title = t ? `${t} · council` : 'council';
         }
         // authoritative current model per agent (additive fields; older
         // bridges omit them and the switcher just shows "—")

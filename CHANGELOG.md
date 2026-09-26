@@ -2,6 +2,15 @@
 
 ## 2026-09-26
 
+- **Short chat titles, shown on the phone.** A chat used to be titled with
+  its whole first message, which filled a phone header with nothing legible
+  and left five open tabs indistinguishable. Now, once a chat has its first
+  exchange, a small model names it in two to four words in the background
+  ("Powered Descent Reproduction"); the header, the chat list and the browser
+  tab show that name. `/rename <name>` still wins; `/rename auto` asks for a
+  fresh one. Until the name arrives, the first five words stand in. On a phone
+  the header shows the name instead of the context percentages, which live in
+  the agents panel.
 - **Dictate a message.** Every message box in the council web page and in
   the Discuss drawer has a mic button: tap to record, tap again to stop,
   and whisper turns the recording into text on your Mac — nothing leaves

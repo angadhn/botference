@@ -601,3 +601,50 @@ class TestVerificationSourcesStayInLane:
         assert "Project Pdg" in src and "notes.md" in src
         # the bots' own bookkeeping is never evidence
         assert "PROJECT.md" not in src and "TASKS.md" not in src
+
+
+# ── short titles ──────────────────────────────────────────
+
+
+class TestShortTitles:
+    def test_the_models_answer_is_cleaned(self):
+        from botference import _clean_auto_title, _short_fallback_title
+        assert _clean_auto_title('"Powered Descent Reproduction."') == "Powered Descent Reproduction"
+        assert _clean_auto_title("Title: Knee Injury Plan\n") == "Knee Injury Plan"
+        assert _clean_auto_title("one two three four five six") == "one two three four"
+        assert _clean_auto_title("") == ""
+        assert _short_fallback_title("@all This is a research paper from NASA JPL that sits") == "This is a research paper…"
+        assert _short_fallback_title("hello there") == "hello there"
+
+
+@pytest.mark.asyncio
+class TestTitlePrecedence:
+    async def test_custom_then_auto_then_first_words(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude I was climbing the other day and my knee popped badly", ui)
+        assert c._session_title() == "I was climbing the other…"
+        assert ui.statuses[-1].title == "I was climbing the other…"
+        c.auto_title = "Knee Injury"
+        assert c._session_title() == "Knee Injury"
+        assert c._session_payload()["auto_title"] == "Knee Injury"
+        c.custom_title = "left knee"
+        assert c._session_title() == "left knee"
+        # a mock adapter never spawns the model
+        assert c._auto_title_wanted() is False
+
+    async def test_rename_auto_asks_the_model(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude hello there", ui)
+        asked = []
+        async def fake(prompt):
+            asked.append(prompt); return " Hello Chat \n"
+        c._generate_auto_title = fake  # type: ignore[method-assign]
+        await c.handle_input("/rename auto", ui)
+        assert asked and "hello there" in asked[0] and "Claude says hi" in asked[0]
+        assert c.auto_title == "Hello Chat"
+        assert c._session_title() == "Hello Chat"
+        assert any("Session renamed to: Hello Chat" in t for sp, t in ui.room_entries if sp == "system")
+        # restored with the chat
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c2._restore_from_payload(c._session_payload())
+        assert c2._session_title() == "Hello Chat"

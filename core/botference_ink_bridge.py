@@ -348,6 +348,7 @@ class InkBridge:
             "codex_model": status.codex_model,
             "claude_effort": status.claude_effort,
             "codex_effort": status.codex_effort,
+            "title": status.title,
             "observe": status.observe_enabled,
             "auto_relay": status.auto_relay,
             "claude_last_relay_at": status.claude_last_relay_at,

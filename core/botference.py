@@ -398,8 +398,8 @@ COMMAND_HELP: list[dict] = [
      "detail": ["/new --project <id> files it there; --inbox leaves it unfiled"]},
     {"cmd": "/resume", "args": "[latest|number|title|id]", "group": "Chat",
      "hint": "Switch to a saved chat, in any project", "scope": _ALL},
-    {"cmd": "/rename", "args": "<name>", "group": "Chat",
-     "hint": "Name this chat", "scope": _ALL},
+    {"cmd": "/rename", "args": "<name>|auto", "group": "Chat",
+     "hint": "Name this chat (auto: a short title from the model)", "scope": _ALL},
     {"cmd": "/adopt", "args": "[<id-prefix>]", "group": "Chat",
      "hint": "Carry on a Claude Code chat from outside here", "scope": _ALL},
     {"cmd": "/file", "args": "[<project-id>]", "group": "Chat",
@@ -1426,6 +1426,42 @@ def _clean_session_title(text: str) -> str:
     return title[:_SESSION_TITLE_MAX]
 
 
+_AUTO_TITLE_WORDS = 4
+_AUTO_TITLE_CHARS = 40
+
+
+def _clean_auto_title(text: str) -> str:
+    """A model's answer to "title this in two or three words", made safe.
+
+    Quotes, trailing punctuation and a leading "Title:" go; more than four
+    words is cut to four; anything over forty characters is cut at a word.
+    Empty when there is nothing usable, so the caller keeps the fallback.
+    """
+    t = " ".join(str(text or "").split())
+    t = re.sub(r"^(?:title\s*[:\-]\s*)", "", t, flags=re.I).strip()
+    t = t.strip("\"'`*_ .:;!-—–").strip()
+    words = t.split()
+    if not words:
+        return ""
+    t = " ".join(words[:_AUTO_TITLE_WORDS])
+    if len(t) > _AUTO_TITLE_CHARS:
+        t = t[:_AUTO_TITLE_CHARS].rsplit(" ", 1)[0].strip() or t[:_AUTO_TITLE_CHARS]
+    return t
+
+
+def _short_fallback_title(text: str) -> str:
+    """The first few words of the first message, for a chat that has not been
+    titled yet — five words, then an ellipsis. The full sentence was the old
+    title, and on a phone it filled the whole header with nothing legible."""
+    words = " ".join(str(text or "").split()).split()
+    if not words:
+        return ""
+    words = [re.sub(r"^[/@]\S*$", "", w) for w in words]
+    words = [w for w in words if w]
+    head = " ".join(words[:5])
+    return head + ("…" if len(words) > 5 else "")
+
+
 def _project_title_from_session_title(title: str) -> str:
     cleaned = _clean_session_title(title)
     if not cleaned or cleaned == "Untitled session":
@@ -1640,6 +1676,10 @@ class Botference:
         # (core/summon.py); reset with _gemini_asks.
         self._summons: dict[str, int] = {}
         self._summon_seq: int = 0
+        # A two-to-four-word title a small model wrote for this chat once it
+        # had its first exchange (see _auto_title_task). /rename overrides it.
+        self.auto_title: str = ""
+        self._auto_title_inflight: bool = False
         # model -> the error text of a first turn that failed to start (so the
         # safeguard fallback can read it after _start_model_session returns None)
         self._last_start_error: dict[str, str] = {}
@@ -1708,6 +1748,7 @@ class Botference:
             codex_model=getattr(self.codex, "model", None),
             claude_effort=getattr(self.claude, "effort", None),
             codex_effort=getattr(self.codex, "reasoning_effort", None),
+            title=self._session_title(),
             observe_enabled=self.observe,
             auto_relay=self.auto_relay,
             claude_last_relay_at=self._last_relay.get("claude", {}).get("at") or None,
@@ -2291,16 +2332,91 @@ class Botference:
         )
 
     def _session_title(self) -> str:
+        """What the chat is called: your name for it, else the short title a
+        model wrote, else the first few words of the first message."""
         if self.custom_title:
             return self.custom_title
+        if self.auto_title:
+            return self.auto_title
         for entry in self.transcript.entries:
             if entry.speaker != "user":
                 continue
-            text = _clean_session_title(entry.text)
+            text = _short_fallback_title(entry.text)
             if text:
                 return text
-        task = _clean_session_title(self.task)
+        task = _short_fallback_title(self.task)
         return task if task else "Untitled session"
+
+    # ── the short title ───────────────────────────────────
+
+    def _auto_title_wanted(self) -> bool:
+        if self.custom_title or self.auto_title or self._auto_title_inflight:
+            return False
+        if os.environ.get("BOTFERENCE_AUTO_TITLE", "").lower() in ("off", "0", "no"):
+            return False
+        # a real Claude CLI only — a test's mock adapter must not spawn one
+        if not isinstance(self.claude, (ClaudeAdapter, ClaudeInteractiveTmuxAdapter)):
+            return False
+        has_user = any(e.speaker == "user" for e in self.transcript.entries)
+        has_bot = any(e.speaker in ("claude", "codex") for e in self.transcript.entries)
+        return has_user and has_bot
+
+    def _auto_title_prompt(self) -> str:
+        first_user = next((e.text for e in self.transcript.entries if e.speaker == "user"), "")
+        first_bot = next((e.text for e in self.transcript.entries if e.speaker in ("claude", "codex")), "")
+        first_bot = RoomFooter.strip_footer(first_bot)
+        return (
+            "Give a two- or three-word title for this conversation, the way a "
+            "folder or a browser tab would be named. Reply with the title only: "
+            "no quotes, no punctuation, no explanation.\n\n"
+            f"User: {first_user[:700]}\n\nAssistant: {first_bot[:700]}"
+        )
+
+    async def _generate_auto_title(self, prompt: str) -> str:
+        """One cheap Claude call. Overridden in tests."""
+        proc = await asyncio.create_subprocess_exec(
+            "claude", "-p", "--model", "haiku", "--effort", "low", "--tools", "",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL, cwd=str(self.paths.project_root),
+        )
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(prompt.encode("utf-8")), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return out.decode("utf-8", errors="replace").strip().splitlines()[-1] if out.strip() else ""
+
+    async def _auto_title_task(self, ui: UIPort, *, force: bool = False) -> None:
+        """Name the chat in a few words, once it has something to be about.
+
+        Runs after the first exchange, in the background, and again only on
+        `/rename auto`. The chat list, the header and the browser tab all read
+        the result; a name you gave with /rename always wins over it.
+        """
+        if not force and not self._auto_title_wanted():
+            return
+        self._auto_title_inflight = True
+        try:
+            title = _clean_auto_title(await self._generate_auto_title(self._auto_title_prompt()))
+        except Exception:
+            title = ""
+        finally:
+            self._auto_title_inflight = False
+        if not title or self.custom_title:
+            return
+        self.auto_title = title
+        self._persist_session()
+        try:
+            ui.set_status(self.status_snapshot())
+            self._sync_project_ui(ui)
+        except Exception:
+            pass
+
+    def _kick_auto_title(self, ui: UIPort) -> None:
+        if self._auto_title_wanted():
+            asyncio.create_task(self._auto_title_task(ui))
 
     def _session_payload(self) -> dict:
         return {
@@ -2309,6 +2425,7 @@ class Botference:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "custom_title": self.custom_title,
+            "auto_title": self.auto_title,
             "title": self._session_title(),
             "system_prompt": self.system_prompt,
             "task": self.task,
@@ -2525,6 +2642,7 @@ class Botference:
             self.custom_title = _clean_session_title(
                 str(payload.get("custom_title", "") or "")
             )
+            self.auto_title = _clean_auto_title(str(payload.get("auto_title", "") or ""))
             self.system_prompt = str(payload.get("system_prompt", self.system_prompt))
             self.task = str(payload.get("task", self.task))
             self.lead = str(payload.get("lead", "auto"))
@@ -3013,6 +3131,16 @@ class Botference:
             return
 
         if parsed.kind is InputKind.RENAME:
+            if parsed.body.strip().lower() == "auto":
+                # a fresh short title from the model, dropping any name given
+                self.custom_title = ""
+                self.auto_title = ""
+                if not any(e.speaker in ("claude", "codex") for e in self.transcript.entries):
+                    self._add_room_entry(ui, "system", "Nothing to name yet — the chat has no reply in it.")
+                    return
+                await self._auto_title_task(ui, force=True)
+                self._add_room_entry(ui, "system", f"Session renamed to: {self._session_title()}")
+                return
             self._rename_session(parsed.body, ui)
             return
 
@@ -5784,6 +5912,7 @@ class Botference:
         if parsed.parallel:
             await self._send_parallel(body, ui)
             await self._drain_pending_auto_relays(ui)
+            self._kick_auto_title(ui)
             return
         for model in targets:
             resp = await self._send_to_model(model, body, ui)
@@ -5823,6 +5952,8 @@ class Botference:
         # Thread/round is complete — safe to drain anything that crossed the
         # threshold during it, so the relay lands before the next turn.
         await self._drain_pending_auto_relays(ui)
+        # …and the chat can be named now that it is about something
+        self._kick_auto_title(ui)
 
     @staticmethod
     def _response_output_tokens(resp: AdapterResponse) -> int:

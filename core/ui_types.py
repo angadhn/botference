@@ -36,6 +36,8 @@ class StatusSnapshot:
     # the level each model is thinking at alongside the model itself.
     claude_effort: Optional[str] = None
     codex_effort: Optional[str] = None
+    # what the chat is called — the header and the browser tab show it
+    title: str = ""
     observe_enabled: bool = True
     auto_relay: bool = True
     # Relay provenance: when each model's session was last relayed and which
