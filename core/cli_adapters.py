@@ -243,6 +243,15 @@ _DEFAULT_PLAN_ALLOWED_HOSTS = (
     "*.wikipedia.org",
     "wikimedia.org",
     "*.wikimedia.org",
+    # Public planetary-science and space-imagery archives (US-government
+    # works, public domain): Mars terrain for renders, mission images for
+    # pages. Take one away for a workspace with `/allow-host remove <host>`.
+    "hirise-pds.lpl.arizona.edu",
+    "planetarymaps.usgs.gov",
+    "astrogeology.usgs.gov",
+    "pds-imaging.jpl.nasa.gov",
+    "images-api.nasa.gov",
+    "images-assets.nasa.gov",
     # Sites the user has papers/reviews built around (capture + re-render
     # tasks need to fetch the originals).
     "ai-2040.com",
@@ -313,7 +322,45 @@ def add_granted_network_host(host: str) -> list[str]:
         path = _granted_hosts_file()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(hosts, indent=1) + "\n", encoding="utf-8")
+    blocked = blocked_network_hosts()
+    if host in blocked:
+        _write_blocked_hosts([h for h in blocked if h != host])
     return hosts
+
+
+def _blocked_hosts_file() -> Path:
+    return _granted_hosts_file().with_name("blocked-hosts.json")
+
+
+def blocked_network_hosts() -> list[str]:
+    """Hosts the user took away for this workspace — defaults included."""
+    try:
+        data = json.loads(_blocked_hosts_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [str(h) for h in data if isinstance(h, str) and h] if isinstance(data, list) else []
+
+
+def _write_blocked_hosts(hosts: list[str]) -> None:
+    path = _blocked_hosts_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(hosts, indent=1) + "\n", encoding="utf-8")
+
+
+def remove_network_host(host: str) -> tuple[list[str], list[str]]:
+    """Take a host away for this workspace: a grant is dropped, a default is
+    blocked. Returns (granted, blocked) afterwards."""
+    hosts = granted_network_hosts()
+    if host in hosts:
+        hosts = [h for h in hosts if h != host]
+        path = _granted_hosts_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(hosts, indent=1) + "\n", encoding="utf-8")
+    blocked = blocked_network_hosts()
+    if host in _DEFAULT_PLAN_ALLOWED_HOSTS and host not in blocked:
+        blocked.append(host)
+        _write_blocked_hosts(blocked)
+    return hosts, blocked
 
 
 def _plan_allowed_hosts() -> list[str]:
@@ -325,7 +372,8 @@ def _plan_allowed_hosts() -> list[str]:
     for host in granted_network_hosts():
         if host not in base:
             base.append(host)
-    return base
+    blocked = set(blocked_network_hosts())
+    return [h for h in base if h not in blocked]
 
 
 @dataclass(frozen=True)

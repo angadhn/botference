@@ -33,6 +33,8 @@ from cli_adapters import (
     ToolSummary,
     add_granted_network_host,
     granted_network_hosts,
+    remove_network_host,
+    blocked_network_hosts,
     is_credit_error,
     is_safeguard_refusal,
     normalize_claude_transport,
@@ -445,8 +447,8 @@ COMMAND_HELP: list[dict] = [
      "hint": "Let Claude use helper agents (off by default)", "scope": _ALL},
     {"cmd": "/notify", "args": "[on|off]", "group": "Settings",
      "hint": "Desktop notice when the bots finish", "scope": _ALL},
-    {"cmd": "/allow-host", "args": "[<domain>]", "group": "Settings",
-     "hint": "Let the bots fetch from a website", "scope": _ALL},
+    {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "group": "Settings",
+     "hint": "Let the bots fetch from a website (remove: take one away)", "scope": _ALL},
     {"cmd": "/permissions", "args": "", "group": "Settings",
      "hint": "Where the bots may write files", "scope": _ALL},
 
@@ -3241,16 +3243,23 @@ class Botference:
         raw = body.strip()
         if not raw:
             granted = granted_network_hosts()
+            blocked = blocked_network_hosts()
             lines = ["Bot network access is limited to an allowlist."]
             lines.append(
                 "Granted for this workspace: "
                 + (", ".join(granted) if granted else "(none beyond the defaults)")
             )
-            lines.append("Grant a new site with /allow-host <domain> "
-                         "(e.g. /allow-host example.org — applies from the "
-                         "bots' next turn).")
+            if blocked:
+                lines.append("Defaults switched off here: " + ", ".join(blocked))
+            lines.append("Grant a site with /allow-host <domain>; take one away "
+                         "with /allow-host remove <domain> (defaults included). "
+                         "Either applies from the bots' next turn.")
             self._show_room_notice(ui, "system", "\n".join(lines))
             return
+        removing = False
+        if raw.lower().startswith(("remove ", "off ", "deny ")):
+            removing = True
+            raw = raw.split(None, 1)[1].strip()
         host = raw.lower()
         # accept a pasted URL: keep just the hostname
         host = re.sub(r"^[a-z]+://", "", host).split("/")[0].split("?")[0]
@@ -3260,6 +3269,15 @@ class Botference:
                 ui, "system",
                 f"'{raw}' does not look like a domain. "
                 "Usage: /allow-host <domain>  (e.g. example.org or *.example.org)",
+            )
+            return
+        if removing:
+            granted, blocked = remove_network_host(host)
+            self._add_room_entry(
+                ui, "system",
+                f"Took {host} away — applies from each bot's next turn. "
+                + (f"Defaults switched off here: {', '.join(blocked)}. " if blocked else "")
+                + f"Granted this workspace: {', '.join(granted) or '(none beyond the defaults)'}",
             )
             return
         granted = add_granted_network_host(host)

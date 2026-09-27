@@ -2,6 +2,13 @@
 
 ## 2026-09-27
 
+- **Mars terrain and NASA imagery hosts are allowed by default; any host can
+  be taken away.** The public planetary-science archives (HiRISE, USGS
+  Astrogeology, PDS imaging, the NASA image library) join the built-in
+  allowlist, so a render or a page can fetch real terrain and mission images
+  without a grant. `/allow-host remove <domain>` takes a host away for this
+  workspace, defaults included; `/allow-host <domain>` gives it back. Bare
+  `/allow-host` lists both.
 - **Build agents can render with Blender.** A summoned agent's Blender crashed
   at start-up: the macOS sandbox hides the GPU from everything inside it, and
   Blender's only GPU backend here is Metal. Build agents now run `blender` outside

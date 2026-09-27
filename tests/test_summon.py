@@ -662,3 +662,41 @@ class TestTitlePrecedence:
         c2, _, _, _ = _make_botference(tmp_path=tmp_path)
         c2._restore_from_payload(c._session_payload())
         assert c2._session_title() == "Hello Chat"
+
+
+
+# ── network hosts: defaults, grants, and taking one away ──
+
+
+class TestHostAllowlist:
+    def test_defaults_include_the_planetary_archives_and_can_be_switched_off(self, tmp_path, monkeypatch):
+        import cli_adapters as ca
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
+        hosts = ca._plan_allowed_hosts()
+        assert "hirise-pds.lpl.arizona.edu" in hosts and "images-api.nasa.gov" in hosts
+        granted, blocked = ca.remove_network_host("hirise-pds.lpl.arizona.edu")
+        assert blocked == ["hirise-pds.lpl.arizona.edu"] and granted == []
+        assert "hirise-pds.lpl.arizona.edu" not in ca._plan_allowed_hosts()
+        assert "planetarymaps.usgs.gov" in ca._plan_allowed_hosts(), "only the named one goes"
+        ca.add_granted_network_host("hirise-pds.lpl.arizona.edu")
+        assert ca.blocked_network_hosts() == []
+        assert "hirise-pds.lpl.arizona.edu" in ca._plan_allowed_hosts()
+        ca.add_granted_network_host("example.org")
+        assert "example.org" in ca._plan_allowed_hosts()
+        ca.remove_network_host("example.org")
+        assert "example.org" not in ca._plan_allowed_hosts()
+
+
+@pytest.mark.asyncio
+class TestAllowHostRemove:
+    async def test_the_command_takes_a_default_away(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/allow-host remove planetarymaps.usgs.gov", ui)
+        note = [t for sp, t in ui.room_entries if sp == "system"][-1]
+        assert note.startswith("Took planetarymaps.usgs.gov away")
+        import cli_adapters as ca
+        assert "planetarymaps.usgs.gov" not in ca._plan_allowed_hosts()
+        await c.handle_input("/allow-host", ui)
+        assert "Defaults switched off here: planetarymaps.usgs.gov" in [t for sp, t in ui.room_entries if sp == "system"][-1]

@@ -236,7 +236,7 @@
     {"cmd": "/verify", "args": "[on|off]", "hint": "When they agree, the other bot checks the sources", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/agents", "args": "[on|off]", "hint": "Let Claude use helper agents (off by default)", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/notify", "args": "[on|off]", "hint": "Desktop notice when the bots finish", "group": "Settings", "scope": ["tui", "council"]},
-    {"cmd": "/allow-host", "args": "[<domain>]", "hint": "Let the bots fetch from a website", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "hint": "Let the bots fetch from a website (remove: take one away)", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/permissions", "args": "", "hint": "Where the bots may write files", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
