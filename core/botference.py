@@ -3736,6 +3736,14 @@ class Botference:
                 network_access=config.codex_network_access,
             )
         else:
+            settings = json.loads(json.dumps(config.claude_settings))
+            if spec.get("unsandboxed_commands"):
+                # Claude Code's own escape for tools that need the hardware:
+                # these run outside Seatbelt (GPU visible), everything else
+                # stays sandboxed
+                sb = settings.setdefault("sandbox", {})
+                have = list(sb.get("excludedCommands") or [])
+                sb["excludedCommands"] = have + [c for c in spec["unsandboxed_commands"] if c not in have]
             adapter = ClaudeAdapter(
                 model=spec["model"],
                 tools=["Read", "Glob", "Grep", "Bash", "Write", "Edit",
@@ -3745,7 +3753,7 @@ class Botference:
                 debug_log_path=getattr(self.claude, "debug_log_path", ""),
                 cwd=config.claude_cwd,
                 add_dirs=list(config.claude_add_dirs),
-                settings=dict(config.claude_settings),
+                settings=settings,
             )
         if cap is None:
             adapter.timeout = None
@@ -3816,6 +3824,7 @@ class Botference:
             history=self._recent_room_history_text(),
             artifacts_dir=self._artifacts_dir_display(),
             project_root=str(self.paths.project_root),
+            unsandboxed=spec.get("unsandboxed_commands") or [],
         )
         adapter = self._make_builder(spec)
         started = time.monotonic()

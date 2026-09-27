@@ -1686,6 +1686,10 @@ away. The report enters the shared history in the agent's own name, and the
 summoner is woken once to tell you what to open. The other bot sees the
 report like any other message, attributed to the agent, not the summoner.
 
+Hardware: a build agent runs `blender` outside its sandbox so it can use the GPU
+(`unsandboxed_commands` under `builder` in `context-budgets.json`); everything else
+it does stays sandboxed.
+
 Rules: one summon per bot per user turn; a build runs until it is done (no
 time cap by default — set `timeout_s` under `builder` in `context-budgets.json`
 if you want one) and reports as failed if it dies; a summon inside the

@@ -101,6 +101,20 @@ class TestBuilderSpec:
         a2 = c._make_builder(summon.builder_spec("claude", tmp_path))
         assert a2.timeout == 600
 
+    def test_blender_runs_outside_the_builders_sandbox(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_BUILDER_MODEL", raising=False)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        spec = summon.builder_spec("claude", tmp_path)
+        assert spec["unsandboxed_commands"] == ["blender *"]
+        a = c._make_builder(spec)
+        assert "blender *" in a.settings["sandbox"]["excludedCommands"]
+        assert a.settings["sandbox"]["enabled"] is True, "the rest stays sandboxed"
+        p = summon.builder_prompt(brief="b", summoner="claude", history="", artifacts_dir="x",
+                                  project_root="/w", unsandboxed=spec["unsandboxed_commands"])
+        assert "`blender *`" in p and "not through a shell script" in p
+        # the bots' own sessions are untouched
+        assert "excludedCommands" not in json.dumps(c.claude.settings or {})
+
     def test_labels(self):
         assert summon.builder_label({"model": "claude-opus-5-5", "effort": "high"}) == "Claude Opus 5.5 (high)"
         assert summon.builder_label({"model": "gpt-6-sol", "effort": "xhigh"}) == "GPT-6 Sol (xhigh)"

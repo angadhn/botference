@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 2026-09-27
+
+- **Build agents can render with Blender.** A summoned agent's Blender crashed
+  at start-up: the macOS sandbox hides the GPU from everything inside it, and
+  Blender's only GPU backend here is Metal. Build agents now run `blender` outside
+  their sandbox (Claude Code's `excludedCommands`; the list is
+  `unsandboxed_commands` under `builder` in `context-budgets.json`), everything
+  else stays sandboxed, and the brief tells them to call it directly rather than
+  through a shell script, which would stay sandboxed. The bots' own sessions are
+  unchanged.
+
 ## 2026-09-26
 
 - **Short chat titles, shown on the phone.** A chat used to be titled with

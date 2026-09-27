@@ -40,6 +40,12 @@ DEFAULT_BUILDER = {
     "model": "claude-opus-5-5",
     "effort": "high",
     "timeout_s": 0,
+    # Commands a build agent runs OUTSIDE its sandbox. The macOS sandbox hides
+    # the GPU from everything inside it, and Blender's only GPU backend here
+    # is Metal, so a render inside the sandbox crashes at start-up. Listing a
+    # command here is the documented Claude Code way out (sandbox
+    # excludedCommands); keep the list to tools that need the hardware.
+    "unsandboxed_commands": ["blender *"],
 }
 
 #: One summon per bot per user turn. A bot that wants more should say so and
@@ -130,6 +136,8 @@ def builder_spec(summoner: str, botference_home: Path | None = None) -> dict:
         spec["timeout_s"] = max(0, int(spec.get("timeout_s") or 0))
     except (TypeError, ValueError):
         spec["timeout_s"] = 0
+    raw = spec.get("unsandboxed_commands")
+    spec["unsandboxed_commands"] = [str(x) for x in raw if str(x).strip()] if isinstance(raw, list) else []
     return spec
 
 
@@ -150,7 +158,7 @@ def builder_label(spec: dict) -> str:
 
 def builder_prompt(
     *, brief: str, summoner: str, history: str, artifacts_dir: str,
-    project_root: str, deliverables_note: str = "",
+    project_root: str, deliverables_note: str = "", unsandboxed: list[str] | None = None,
 ) -> str:
     """The whole of what the build agent is told.
 
@@ -165,6 +173,12 @@ def builder_prompt(
         "you build it. You have one turn and nobody will answer questions, so "
         "decide and proceed. Do not summon anyone yourself.",
         f"--- The brief (from {who}) ---\n{brief}",
+        ("--- Hardware ---\n"
+         "These commands run outside your sandbox, with the GPU: "
+         + ", ".join(f"`{c}`" for c in unsandboxed) + ". Call them directly "
+         "(not through a shell script or `sh run.sh`, which stays sandboxed "
+         "and sees no GPU). Everything else is sandboxed as usual."
+         if unsandboxed else ""),
         "--- Where things go ---\n"
         f"Working directory: {project_root}\n"
         f"Save the deliverable under `{artifacts_dir}/` (create it if needed). "
