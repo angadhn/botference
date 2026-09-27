@@ -1322,7 +1322,41 @@
     if (wasPinned) pinBottom();
     else els.jump.hidden = false;
   }
-  els.chat.addEventListener('scroll', () => { if (atBottom()) els.jump.hidden = true; });
+  els.chat.addEventListener('scroll', () => { if (atBottom()) els.jump.hidden = true; rememberScroll(); });
+  // ── where you were, across a reload ────────────────────────────────
+  // A phone evicts a background tab and reloads it on return; the replay
+  // would land at the bottom, wherever you had been reading. So the place is
+  // written to sessionStorage (this tab only) as you scroll and when the tab
+  // hides, and put back once the same chat's replay has landed — unless you
+  // were at the bottom, where "the bottom" is the right answer anyway.
+  const SCROLL_KEY = 'council-scroll';
+  let scrollMemoTimer = null;
+  function rememberScroll() {
+    if (!state.currentSid || replayBuffer || state.inServerReplay) return;
+    if (scrollMemoTimer) return;
+    scrollMemoTimer = setTimeout(() => {
+      scrollMemoTimer = null;
+      try {
+        sessionStorage.setItem(SCROLL_KEY, JSON.stringify({
+          sid: state.currentSid, top: els.chat.scrollTop, atBottom: atBottom(),
+          n: els.transcript.children.length, at: Date.now(),
+        }));
+      } catch { }
+    }, 250);
+  }
+  function recallScroll() {
+    let memo = null;
+    try { memo = JSON.parse(sessionStorage.getItem(SCROLL_KEY) || 'null'); } catch { }
+    if (!memo || memo.sid !== state.currentSid || memo.atBottom) return false;
+    // the same transcript, give or take a few live messages — otherwise the
+    // offsets mean nothing and the bottom is the honest landing
+    if (Math.abs((memo.n || 0) - els.transcript.children.length) > 3) return false;
+    els.chat.scrollTop = memo.top;
+    els.jump.hidden = atBottom();
+    return true;
+  }
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { scrollMemoTimer = null; rememberScroll(); } });
+  window.addEventListener('pagehide', () => { if (scrollMemoTimer) { clearTimeout(scrollMemoTimer); scrollMemoTimer = null; } rememberScroll(); });
   els.jump.addEventListener('click', () => pinBottom());
   // late layout shifts (image loads, font swaps) re-assert the bottom as
   // long as the user hasn't deliberately scrolled up (jump pill hidden)
@@ -1905,7 +1939,9 @@
     card = document.createElement('div');
     card.className = 'msg agent';
     card.dataset.agentId = String(meta.id);
-    card.dataset.start = String(Date.now());
+    // the controller's own start time when it has one (a reload must not
+    // reset a 40-minute build to 0:00); this page's clock only as a fallback
+    card.dataset.start = String(Number(meta.started_at) > 0 ? Math.round(Number(meta.started_at) * 1000) : Date.now());
     card.innerHTML = '<div class="agent-head"></div><div class="agent-brief" hidden></div>' +
       '<div class="agent-tools"></div><div class="body"></div>' + copyBtnHtml;
     const parent = findSummonParent(meta);
@@ -3569,9 +3605,9 @@
           break;
         }
         // a resuming bridge keeps buffering until its live 'ready';
-        // otherwise land pinned at the very bottom and re-assert after
-        // layout settles
-        if (!replayBuffer) settleBottom();
+        // otherwise land where the reader was before the reload, or pinned
+        // at the very bottom, re-asserted after layout settles
+        if (!replayBuffer) { if (!recallScroll()) settleBottom(); }
         break;
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;

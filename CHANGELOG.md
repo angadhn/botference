@@ -2,6 +2,13 @@
 
 ## 2026-09-27
 
+- **A phone coming back to a chat keeps its place and its clocks.** iOS evicts
+  a background tab and reloads it on return; the reload landed at the bottom
+  and every working agent's clock restarted at 0:00. Now the agent card
+  carries the controller's own start time, so the clock reads 41:12 after a
+  reload in both the council page and the plugin; and the council remembers
+  where you were reading (per tab) and puts you back there after the replay,
+  unless you were at the bottom.
 - **Mars terrain and NASA imagery hosts are allowed by default; any host can
   be taken away.** The public planetary-science archives (HiRISE, USGS
   Astrogeology, PDS imaging, the NASA image library) join the built-in

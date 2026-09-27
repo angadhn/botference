@@ -3823,6 +3823,10 @@ class Botference:
             "brief": brief,
             "status": "working",
             "elapsed_s": 0,
+            # wall-clock start (epoch seconds): a page reloaded mid-build — a
+            # phone coming back to the tab — restarts its clock from here, not
+            # from zero
+            "started_at": time.time(),
         }
         self._add_room_entry(
             ui, "agent",

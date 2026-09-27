@@ -1327,6 +1327,11 @@
   // took, from the controller's own `elapsed_s` — never from clocks here.
   function agentStatus(a) {
     const s = String((a && a.status) || 'working');
+    const started = Number(a && a.started_at) || 0;
+    if (s === 'working' && started > 0) {
+      const t = Math.max(0, Math.floor(Date.now() / 1000 - started));
+      return 'working… ⏱ ' + Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+    }
     const secs = Math.max(0, Math.floor(Number((a && a.elapsed_s)) || 0));
     const mmss = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
     return s === 'working' ? 'working…'
@@ -2550,7 +2555,7 @@ ${bubbleShellHtml()}`;
         `<span class="when">${esc(when(r.ts))}</span></span>` +
         `<span class="agent-sub">` +
         (a.summoned_by ? `<span class="aby">summoned by ${esc(cap(a.summoned_by))}</span><span class="sep">·</span>` : '') +
-        `<span class="astatus ${esc(status)}">${status === 'working' ? '<span class="spin">◐</span> ' : ''}${esc(agentStatus(a))}</span></span>`;
+        `<span class="astatus ${esc(status)}"${status === 'working' && Number(a.started_at) > 0 ? ` data-started="${esc(String(a.started_at))}"` : ''}>${status === 'working' ? '<span class="spin">◐</span> ' : ''}${esc(agentStatus(a))}</span></span>`;
       const brief = a.brief
         ? `<div class="abrief" title="${esc(String(a.brief))}"><span class="abrief-k">brief:</span> ${esc(String(a.brief))}</div>` : '';
       // the report, or — while it works — its live text typed into the card
@@ -2750,6 +2755,24 @@ ${bubbleShellHtml()}`;
       flushAside();
       return out.join('');
     }
+
+    // ---- the clock on a working agent card --------------------------------
+    // The controller says when the build started; the card counts from there,
+    // so a tab that was evicted and reloaded shows 41:12, not 0:00.
+    setInterval(() => {
+      // the drawer lives in a shadow root: query that, not the page
+      const root = (D && D.shadow) || document;
+      const els = root.querySelectorAll('.astatus[data-started]');
+      for (const el of els) {
+        const started = Number(el.getAttribute('data-started')) || 0;
+        if (!started) continue;
+        const t = Math.max(0, Math.floor(Date.now() / 1000 - started));
+        const txt = 'working… ⏱ ' + Math.floor(t / 60) + ':' + String(t % 60).padStart(2, '0');
+        const spin = el.querySelector('.spin');
+        el.textContent = txt;
+        if (spin) el.prepend(spin, ' ');
+      }
+    }, 1000);
 
     // ---- the typewriter ---------------------------------------------------
     // WHAT THIS IS NOT: artificial slowness. The bridge hands us text in
