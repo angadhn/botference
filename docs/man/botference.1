@@ -60,8 +60,10 @@ means anyone with the URL can drive your agents, which can read and write
 files on this machine; URLs leak (link previews, chat logs) \- prefer the
 default password. \fB\-\-port\fR \fIN\fR picks the web port (default
 4187). The web server runs one bridge session per open chat, so browser
-tabs on different chats are concurrent sessions (COUNCIL_MAX_CHATS caps
-the pool, default 4); do not open the same session in the TUI and the
+tabs on different chats are concurrent sessions. There is no open-chat
+limit: past COUNCIL_MAX_CHATS live bridges (default 4) idle, unwatched
+chats are parked, and a chat you open is never refused; do not open the
+same session in the TUI and the
 browser at once.
 A mic button in the message box records speech (tap to start, tap to
 stop) and whisper turns it into text on this machine, placed in the box
@@ -390,7 +392,8 @@ argument; /archive list shows what is already archived.
 creates a project and files this chat under it. Every /project verb is also
 a hyphenated command: /open-project, /assign-project, /unfile-project,
 /clear-project, /current-project, /project-contents, /project-github,
-/archive-project, /unarchive-project, /project-from-chat, /activate-build.
+/archive-project, /unarchive-project, /delete-project, /project-from-chat,
+/activate-build.
 .TP
 .B /project unfile [<session-id-prefix>]
 Take a chat out of its project without deleting anything: the transcript,
@@ -425,6 +428,16 @@ Tuck a project away or bring it back. Only the \fIstatus\fR field in
 \fIprojects/portfolio.json\fR changes \(em the folder and its chats are
 untouched. Archived projects sort last and collapse into a closed
 "Archived" section in the web council sidebar.
+.TP
+.B /project delete <id>
+Delete a project \fBand every chat filed in it\fR, permanently. A confirm
+names the project, the number of chats and the folder
+\fIprojects/<id>/\fR; on "Delete project and N chats" the folder, its
+\fIprojects/portfolio.json\fR row, its \fIsession-index.json\fR rows and
+each chat's session file are removed. Deleting the project you are in
+rolls into a fresh Inbox chat. With no picker to confirm, only the exact
+id is accepted. Alias: \fB/delete-project\fR. The web council sidebar
+offers it as "delete project..." in each project block.
 .TP
 .B /lead /draft /finalize
 Planning: set (or let the bots vote on) the plan writer, draft

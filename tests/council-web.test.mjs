@@ -465,6 +465,27 @@ test('bridge pool: a projects snapshot from one bridge fans out to every tab, re
   await c2.next(e => e.type === 'replay_done');
 });
 
+test('bridge pool: there is no open-chat limit — past COUNCIL_MAX_CHATS a watched chat still opens', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  // park threshold of 1: every bridge below is watched, so none can be parked
+  const s = await startServer({ env: { COUNCIL_MAX_CHATS: '1' } });
+  t.after(s.stop);
+  const a = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => a.close());
+  const helloA = await a.next(e => e.type === 'hello');
+  await a.next(e => e.type === 'replay_done');
+  const seen = new Set([helloA.bridge_id]);
+  for (const sid of ['sidC0001', 'sidC0002']) {
+    const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: `/ws?chat=${sid}` });
+    t.after(() => c.close());
+    const hello = await c.next(e => e.type === 'hello');
+    assert.equal(hello.chat, sid, `${sid} opens on its own bridge`);
+    assert.ok(!seen.has(hello.bridge_id), 'a new bridge, not the fallback');
+    seen.add(hello.bridge_id);
+    assert.ok(!c.events.some(e => e.type === 'route_error'), 'no "limit reached" refusal');
+  }
+});
+
 test('bridge pool: an unknown chat id falls back to the primary bridge with a route_error', async t => {
   const { wsConnect } = await import('./fixtures/ws-client.mjs');
   const s = await startServer();
@@ -2057,6 +2078,7 @@ test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link r
   assert.equal(wsUrls.length, n + 1, 'the unknown id is attempted against the server');
   assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=does-not-exist$/);
   C.handle({ type: 'route_error', error: 'chat not found' });
+  assert.equal(w.location.hash, '#/chat/sidA', 'the refused id leaves the URL at once');
   C.handle({ type: 'hello', bridge_id: 'b1' });
   C.handle(projects('sidA'));
   C.handle({ type: 'replay_done' });
@@ -2199,6 +2221,15 @@ test('sidebar projects: archived ones collapse into their own section; archive/u
   doc.querySelector('[data-act="proj-archive"]').click();
   await new Promise(r => setTimeout(r, 5));
   assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project archive live', attachments: [] } });
+
+  // both live and archived projects offer delete, in red; one click only
+  // sends the command and the controller's confirm card does the asking
+  const del = doc.querySelector('.proj[data-pid="old"] [data-act="proj-delete"]');
+  assert.ok(del && del.classList.contains('danger'), 'archived project: red delete');
+  assert.ok(doc.querySelector('.proj[data-pid="live"] [data-act="proj-delete"]'), 'live project: delete too');
+  del.click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project delete old', attachments: [] } });
 });
 
 test('sidebar New split button: chat starts a chat, project takes a title inline',
@@ -2921,6 +2952,37 @@ test('sidebar chat row: "remove from project" unfiles it — the safe way out of
     'the filing goes; the chat does not');
   assert.equal(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'), null,
     'and starts scrolling again once it is closed');
+});
+
+test('sidebar: Recent rows carry the same ⋯ menu; only the tapped copy of a chat opens',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({
+    ...FILING_PROJECTS,
+    inbox_session_count: 1,
+    inbox_sessions: [{ session_id: 'inb00001', title: 'Loose thought', updated_at: '2026-01-01T00:00:00Z', active: false }],
+  });
+  const recent = doc.querySelectorAll('.sess-row .sess.recent');
+  assert.equal(recent.length, 2, 'Recent rows are chat rows now');
+  assert.match(recent[0].querySelector('.chip').textContent, /Demo project/, 'the chip stays');
+  // abc12345 is listed twice: in Recent and in p1's block (expanded)
+  const mores = doc.querySelectorAll('.row-more[data-sid="abc12345"]');
+  assert.equal(mores.length, 2);
+  mores[0].click();  // the Recent copy
+  assert.equal(doc.querySelectorAll('.row-menu').length, 1, 'one menu, not both copies');
+  assert.ok(doc.querySelector('.sess-row.menu-open .sess.recent'), 'and it is the Recent row that opened');
+  assert.equal(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'), null,
+    "the project's scroller is not told a menu is open inside it");
+  assert.deepEqual([...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act),
+    ['unfile', 'archive', 'delete'], 'a filed chat offers Remove from project');
+  doc.querySelector('.row-menu [data-act="delete"]').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(sent(posts), ['/delete abc12345']);
+  // an Inbox chat in Recent has nothing to be removed from
+  doc.querySelector('.row-more[data-sid="inb00001"]').click();
+  assert.deepEqual([...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act),
+    ['archive', 'delete']);
 });
 
 test('sidebar: a project’s contents are a request, never part of the per-turn payload',

@@ -529,6 +529,7 @@ class TestProjectVerbAliases:
             "/project-github lff": "github lff",
             "/archive-project lff": "archive lff",
             "/unarchive-project lff": "unarchive lff",
+            "/delete-project lff": "delete lff",
             "/project-from-chat": "create-from-chat",
             "/activate-build": "activate-build",
         }

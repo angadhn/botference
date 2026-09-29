@@ -178,6 +178,8 @@ body.side-collapsed #side { margin-left: -272px }
   background: color-mix(in srgb, var(--fg) 7%, transparent) }
 .sess.recent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .sess-cmd { color: var(--muted); font-size: .75rem }
+.sess-cmd.danger { color: var(--bad) }
+.sess-cmd.danger:hover { background: color-mix(in srgb, var(--bad) 12%, transparent); color: var(--bad) }
 /* chat row: title button + ⋯ actions (archive / delete) */
 .sess-row { position: relative; display: flex; align-items: center }
 .sess-row .sess { flex: 1; min-width: 0 }

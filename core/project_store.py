@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -545,6 +546,69 @@ class ProjectStore:
                 return
             data["sessions"] = kept
             self._write_json(path, data)
+
+    def delete_project(self, project_id: str) -> list[str]:
+        """Remove a project for good: its folder, its portfolio.json row and
+        every session-index.json row filing a chat under it.
+
+        The chats' own session files are the caller's to delete (they live in
+        the session store, not here); anything under projects/<id>/ — a
+        project-local sessions/ dir included — goes with the folder. Only a
+        direct child of projects/ is ever removed, and a symlinked project
+        folder loses the link, never what it points at.
+
+        Returns the session ids whose index rows pointed at the project.
+        Raises ValueError for an id that is not a plain folder name.
+        """
+        project_id = str(project_id).strip()
+        if (not project_id or project_id in (".", "..")
+                or "/" in project_id or "\\" in project_id):
+            raise ValueError(f"not a project id: {project_id!r}")
+        root = self.projects_root / project_id
+        if root.is_symlink():
+            root.unlink()
+        elif root.exists():
+            if root.resolve().parent != self.projects_root.resolve():
+                raise ValueError(f"{root} is not inside {self.projects_root}")
+            shutil.rmtree(root)
+
+        portfolio = self.projects_root / "portfolio.json"
+        if portfolio.exists():
+            with file_lock(portfolio):
+                data = _load_json(portfolio)
+                projects = data.get("projects")
+                if isinstance(projects, list):
+                    kept = [
+                        raw for raw in projects
+                        if not (isinstance(raw, dict)
+                                and str(raw.get("id") or raw.get("slug") or "").strip()
+                                == project_id)
+                    ]
+                    if len(kept) != len(projects):
+                        data["projects"] = kept
+                        self._write_json(portfolio, data)
+
+        dropped: list[str] = []
+        index = self.projects_root / "session-index.json"
+        if index.exists():
+            with file_lock(index):
+                data = _load_json(index)
+                sessions = data.get("sessions")
+                if isinstance(sessions, list):
+                    kept = []
+                    for raw in sessions:
+                        if (isinstance(raw, dict)
+                                and str(raw.get("project") or raw.get("project_id") or "").strip()
+                                == project_id):
+                            sid = str(raw.get("session_id") or raw.get("id") or "").strip()
+                            if sid:
+                                dropped.append(sid)
+                            continue
+                        kept.append(raw)
+                    if len(kept) != len(sessions):
+                        data["sessions"] = kept
+                        self._write_json(index, data)
+        return dropped
 
     def _upsert_portfolio_entry(self, entry: dict[str, Any]) -> None:
         path = self.projects_root / "portfolio.json"

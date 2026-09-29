@@ -229,6 +229,7 @@ _SLASH_COMMANDS = {
     "/project-github": InputKind.PROJECT,
     "/archive-project": InputKind.PROJECT,
     "/unarchive-project": InputKind.PROJECT,
+    "/delete-project": InputKind.PROJECT,
     "/project-from-chat": InputKind.PROJECT,
     "/activate-build": InputKind.PROJECT,
     "/adopt": InputKind.ADOPT,
@@ -277,6 +278,7 @@ _PROJECT_VERB_ALIASES = {
     "/project-github": "github",
     "/archive-project": "archive",
     "/unarchive-project": "unarchive",
+    "/delete-project": "delete",
     "/project-from-chat": "create-from-chat",
     "/activate-build": "activate-build",
 }
@@ -429,7 +431,7 @@ COMMAND_HELP: list[dict] = [
          "Every verb is also a command of its own: /new-project <title>,"
          " /open-project <id>, /assign-project, /unfile-project, /clear-project,"
          " /project-contents, /project-github, /archive-project, /unarchive-project,"
-         " /project-from-chat, /activate-build",
+         " /delete-project, /project-from-chat, /activate-build",
          "/project open <id> | clear | current | create <title> | create-from-chat"
          " | activate-build",
          "/project assign [<chat-id>] <project-id> — file this chat or a saved one",
@@ -438,7 +440,11 @@ COMMAND_HELP: list[dict] = [
          "/project github [<project-id>] [<repo>] — push the folder to a new"
          " private GitHub repo (asks first)",
          "/project archive <id> | /project unarchive <id> — tuck away or bring back",
+         "/project delete <id> — delete the project folder and every chat filed"
+         " in it (asks first; cannot be undone)",
      ]},
+    {"cmd": "/delete-project", "args": "<id>", "group": "Projects",
+     "hint": "Delete a project and every chat in it (asks first)", "scope": _ALL},
 
     # Settings
     {"cmd": "/verify", "args": "[on|off]", "group": "Settings",
@@ -500,7 +506,7 @@ def render_command_help(scope: str = "tui") -> list[str]:
 _PROJECT_SUBCOMMANDS = (
     "open", "clear", "current", "create", "create-from-chat",
     "assign", "unfile", "contents", "github",
-    "archive", "unarchive", "activate-build",
+    "archive", "unarchive", "delete", "activate-build",
 )
 
 # Known effort levels (passed through to the underlying CLI)
@@ -2400,13 +2406,16 @@ class Botference:
         if not force and not self._auto_title_wanted():
             return
         self._auto_title_inflight = True
+        asked_for = self.session_id
         try:
             title = _clean_auto_title(await self._generate_auto_title(self._auto_title_prompt()))
         except Exception:
             title = ""
         finally:
             self._auto_title_inflight = False
-        if not title or self.custom_title:
+        # the chat may have been left (/new, /resume, /delete) while the model
+        # thought; its title must not land on whichever chat is open now
+        if not title or self.custom_title or self.session_id != asked_for:
             return
         self.auto_title = title
         self._persist_session()
@@ -4038,6 +4047,7 @@ class Botference:
             "Use /project open <id> to switch context, /project clear for Inbox/global.",
             "Use /project create <title> or /project create-from-chat to add one.",
             "Use /project archive <id> to tuck one away (reversible with unarchive).",
+            "Use /project delete <id> to delete one and every chat in it (asks first).",
         ])
         self._add_room_entry(ui, "system", "\n".join(lines))
 
@@ -4102,6 +4112,10 @@ class Botference:
 
         if action == "github":
             await self._publish_project_to_github(value, ui)
+            return
+
+        if action == "delete":
+            await self._delete_project(value, ui)
             return
 
         if action in ("archive", "unarchive"):
@@ -4214,6 +4228,90 @@ class Botference:
                 f"chats are untouched — /project unarchive {project.id} "
                 "restores it.",
             )
+
+    async def _delete_project(self, query: str, ui: UIPort) -> None:
+        """Delete a project AND every chat filed in it, after a confirm.
+
+        The irreversible sibling of /project archive: the folder
+        projects/<id>/ is removed, its portfolio.json row and session-index
+        rows go, and each filed chat's session file is deleted. If you are
+        sitting in one of those chats it rolls into a fresh Inbox chat, the
+        way /delete does. Without a picker to confirm, only the exact id is
+        accepted (a prefix or a title match is too easy to get wrong here).
+        """
+        query = query.strip()
+        if not query:
+            self._add_room_entry(ui, "system", "Usage: /project delete <project-id>")
+            return
+        project = self.project_store.get(query)
+        if not project:
+            self._add_room_entry(
+                ui, "system",
+                f"No project matched '{query}'.\n\n"
+                "Run /projects to list available projects.",
+            )
+            return
+
+        chats = self._project_tagged_summaries(project, limit=100000)
+        chat_ids = [s.session_id for s in chats]
+        n = len(chat_ids)
+        noun = "chat" if n == 1 else "chats"
+        folder = self._relative_project_path(project.root)
+
+        request_choice = getattr(ui, "request_choice", None)
+        if request_choice is not None:
+            confirm = await request_choice(
+                f"Delete project “{project.title}” AND its {n} {noun} permanently? "
+                f"The folder {folder}/ and every chat filed in it will be removed. "
+                "This cannot be undone.",
+                [f"Delete project and {n} {noun}", "Cancel"],
+            )
+            if confirm != 0:
+                self._add_room_entry(ui, "system", "Project delete cancelled.")
+                return
+        elif query.lower() != project.id.lower():
+            self._add_room_entry(
+                ui, "system",
+                "No picker available to confirm — pass the project's full id: "
+                f"/project delete {project.id}",
+            )
+            return
+
+        current_filed_here = (
+            self.session_id in chat_ids or self.session_project_id == project.id
+        )
+        for sid in chat_ids:
+            if sid == self.session_id:
+                continue  # rolled over below, without re-persisting it
+            self.session_store.delete(sid)
+            self.project_store.dissociate_session(sid)
+        if current_filed_here:
+            self.session_store.delete(self.session_id)
+            self.project_store.dissociate_session(self.session_id)
+        try:
+            self.project_store.delete_project(project.id)
+        except (OSError, ValueError) as exc:
+            self._sync_project_ui(ui)
+            self._add_room_entry(
+                ui, "system",
+                f"Deleted {n} {noun} from {project.title}, but the folder "
+                f"{folder}/ could not be removed: {exc}",
+            )
+            return
+
+        done = f"Deleted project “{project.title}” and {n} {noun}."
+        if self.active_project_id == project.id:
+            self.active_project_id = ""
+        if current_filed_here:
+            # The chat we're in went with the project: start over in Inbox
+            # (never "inherit" a project that no longer exists).
+            self.session_project_id = ""
+            self._start_new_chat(
+                "", ui, filing="", persist_old=False, lead_note=done,
+            )
+            return
+        self._sync_project_ui(ui)
+        self._add_room_entry(ui, "system", done)
 
     def _assign_session_to_project(self, arg: str, ui: UIPort) -> None:
         """File a chat into a project.
@@ -6902,6 +7000,7 @@ class Botference:
 
     def _start_new_chat(
         self, title: str, ui: UIPort, *, filing: str | None = None,
+        persist_old: bool = True, lead_note: str = "",
     ) -> None:
         """Persist the current chat and start a fresh one in place.
 
@@ -6911,15 +7010,25 @@ class Botference:
         user is standing inside a project when they ask for a new chat — but
         it is written into ``session_project_id`` once, here, and never
         re-derived on later saves. Both model sessions start clean.
+
+        *persist_old* False skips saving the outgoing chat — /delete passes
+        it, or a chat filed in a project would be written straight back to
+        disk under the id it just deleted. *lead_note* is a system line shown
+        before "Started a new chat", so the transcript reads in the order
+        things happened ("Deleted this chat …", then "Started a new chat").
         """
         old_label = self._session_title()
-        had_content = bool(self.transcript.entries)
-        self._persist_session()
+        had_content = persist_old and bool(self.transcript.entries)
+        if persist_old:
+            self._persist_session()
 
         self.session_id = str(uuid.uuid4())
         self.created_at = iso_now()
         self.updated_at = self.created_at
         self.custom_title = _clean_session_title(title) if title.strip() else ""
+        # The model-written short title belongs to the chat just left; keeping
+        # it would name the fresh chat (header, tab, sidebar) after the old one.
+        self.auto_title = ""
         # Stamp the filing exactly once (see the docstring). A named project
         # also moves the lens, so the new chat opens with that project's files
         # and plan already in context — the whole point of "+ new chat" inside
@@ -6960,6 +7069,8 @@ class Botference:
         ui.set_mode(self.mode)
         ui.set_status(self.status_snapshot())
         self._sync_project_ui(ui)
+        if lead_note:
+            self._add_room_entry(ui, "system", lead_note)
         note = "Started a new chat"
         if self.custom_title:
             note += f": {self.custom_title}"
@@ -7086,16 +7197,11 @@ class Botference:
         if target_id == self.session_id:
             # The chat we're sitting in is gone — roll into a fresh one
             # without re-persisting the old id.
-            self._restoring_session = True
-            try:
-                self.transcript = Transcript()
-                self.custom_title = ""
-                self._models_initialized = set()
-            finally:
-                self._restoring_session = False
-            self._start_new_chat("", ui)
-            self._add_room_entry(
-                ui, "system", f"Deleted this chat ({target_label}).",
+            # without re-persisting the old id (persist_old=False: a chat
+            # filed in a project would otherwise be saved straight back).
+            self._start_new_chat(
+                "", ui, persist_old=False,
+                lead_note=f"Deleted this chat ({target_label}).",
             )
         else:
             self._sync_project_ui(ui)

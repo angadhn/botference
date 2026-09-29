@@ -18,7 +18,8 @@
 // Env:    PORT, BOTFERENCE_PROJECT_ROOT, BOTFERENCE_HOME, BOTFERENCE_PYTHON_BIN,
 //         COUNCIL_CLAUDE_MODEL/EFFORT, COUNCIL_OPENAI_MODEL/EFFORT,
 //         BOTFERENCE_COUNCIL_SYSTEM_FILE/TASK_FILE,
-//         COUNCIL_MAX_CHATS (bridge-pool cap, default 4),
+//         COUNCIL_MAX_CHATS (open chats kept before idle ones are parked,
+//                            default 4 — never a limit on how many you open),
 //         COUNCIL_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
 import http from 'node:http';
 import fs from 'node:fs';
@@ -200,7 +201,11 @@ function acquireLock() {
 // transcript) and its own subscriber sets. Consecutive text deltas of one
 // stream are coalesced in the history, so replay stays small after long turns.
 const HISTORY_MAX = 4000;
-const MAX_BRIDGES = Math.max(1, Number(process.env.COUNCIL_MAX_CHATS) || 4);
+// Not a cap: past this many live bridges, opening another chat first parks
+// the least-recently-used idle, unwatched one (its process exits; reopening
+// it respawns and replays from disk). If every bridge is busy or watched, the
+// new chat opens anyway — refusing a chat the user clicked is never right.
+const PARK_BRIDGES_AT = Math.max(1, Number(process.env.COUNCIL_MAX_CHATS) || 4);
 const bridges = new Map(); // bridge id -> Bridge
 let nextBridgeSeq = 1;
 let primaryId = null;      // the bridge sid-less connections attach to
@@ -528,16 +533,14 @@ function reapIdleBridge() {
 }
 // Resolve the bridge a connection with ?chat=<sid> should attach to,
 // spawning one when that chat has no live bridge yet. On refusal (unknown
-// chat, pool full) the connection falls back to the primary bridge and the
-// client is told why via a route_error event.
+// chat) the connection falls back to the primary bridge and the client is
+// told why via a route_error event. There is no open-chat limit.
 function attachTarget(sid) {
   if (!sid) return { bridge: ensurePrimary() };
   const live = findBySid(sid);
   if (live) return { bridge: live };
   if (sessionKnownMissing(sid)) return { bridge: ensurePrimary(), error: 'chat not found' };
-  if (bridges.size >= MAX_BRIDGES && !reapIdleBridge()) {
-    return { bridge: ensurePrimary(), error: `open-chat limit reached (${MAX_BRIDGES}) — close another chat tab first` };
-  }
+  if (bridges.size >= PARK_BRIDGES_AT) reapIdleBridge();
   return { bridge: spawnBridge(sid) };
 }
 // Resolve which bridge a POST addresses: explicit bridge id first (what the

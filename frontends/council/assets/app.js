@@ -233,6 +233,7 @@
     {"cmd": "/new-project", "args": "<title>", "hint": "Create a project and file this chat under it", "group": "Projects", "scope": ["tui", "council"]},
     {"cmd": "/open-project", "args": "<id or title>", "hint": "Make an existing project current", "group": "Projects", "scope": ["tui", "council"]},
     {"cmd": "/project", "args": "[open <id>|clear|create <title>|…]", "hint": "Open, show, create or tidy projects", "group": "Projects", "aliases": ["/assign-project", "/unfile-project", "/clear-project", "/current-project", "/project-contents", "/project-github", "/archive-project", "/unarchive-project", "/project-from-chat", "/activate-build"], "scope": ["tui", "council"]},
+    {"cmd": "/delete-project", "args": "<id>", "hint": "Delete a project and every chat in it (asks first)", "group": "Projects", "scope": ["tui", "council"]},
     {"cmd": "/verify", "args": "[on|off]", "hint": "When they agree, the other bot checks the sources", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/agents", "args": "[on|off]", "hint": "Let Claude use helper agents (off by default)", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/notify", "args": "[on|off]", "hint": "Desktop notice when the bots finish", "group": "Settings", "scope": ["tui", "council"]},
@@ -256,7 +257,8 @@
       '/goal @claude', '/goal @codex',
       '/projects', '/project', '/new-project', '/open-project', '/assign-project',
       '/unfile-project', '/clear-project', '/current-project', '/project-contents',
-      '/project-github', '/archive-project', '/unarchive-project', '/project-from-chat',
+      '/project-github', '/archive-project', '/unarchive-project', '/delete-project',
+      '/project-from-chat',
       '/activate-build', '/adopt', '/new', '/file', '/add-to-project',
       '/delete', '/archive', '/unarchive',
       '/draft', '/finalize', '/resume', '/rename', '/permissions',
@@ -266,7 +268,7 @@
     ],
     scoped: {
       '/project ': ['open', 'clear', 'current', 'create', 'create-from-chat',
-        'assign', 'archive', 'unarchive', 'activate-build'],
+        'assign', 'archive', 'unarchive', 'delete', 'activate-build'],
       '/model @claude ': FALLBACK_MODELS.claude,
       '/model @codex ': FALLBACK_MODELS.codex,
       '/effort @claude ': ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -338,7 +340,8 @@
     openContents: new Set(),
     contents: {},              // pid -> {loading, err, files:[…]}
     lastActivePid: null,       // active project at the last 'projects' event
-    menuSid: null,         // chat row whose ⋯ actions menu is open
+    menuKey: null,         // '<place>:<sid>' of the chat row whose ⋯ menu is open
+                           // (a chat shows in Recent AND its project: one opens)
     archOpen: false,       // "Archived" projects section expanded?
     // has this chat already been asked where it should be filed? Set by the
     // new-chat dropdown (the user answered up front) and by the first-send
@@ -2301,13 +2304,23 @@
   // commonest reason to want a chat out of a project's list is that it was
   // filed in the wrong project — and deleting a chat over that is a loss with
   // no cause.
-  function chatRow(s, pid) {
+  //
+  // *place* names where the row is drawn ('recent', or 'p:<project id>'): the
+  // same chat appears in Recent and in its project block, and the open menu is
+  // keyed by place + id so only the row that was tapped opens. *chip* is the
+  // Recent list's project label; *pid* is the project the chat is filed in
+  // (empty for Inbox), which is what offers "Remove from project".
+  const menuKeyOf = (place, sid) => `${place}:${sid}`;
+  function chatRow(s, pid, { place = 'p:' + (pid || ''), chip = '' } = {}) {
     const sid = esc(s.session_id);
-    const open = state.menuSid === s.session_id;
+    const key = menuKeyOf(place, s.session_id);
+    const open = state.menuKey === key;
+    const recent = place === 'recent';
     return `<div class="sess-row${open ? ' menu-open' : ''}">
-      <button class="sess${s.active ? ' active' : ''}" data-act="resume" data-sid="${sid}">
-        ${esc(s.title || s.session_id.slice(0, 8))}<span class="when">${relTime(s.updated_at)}</span></button>
-      <button class="row-more" data-act="menu" data-sid="${sid}" aria-haspopup="true"
+      <button class="sess${recent ? ' recent' : ''}${s.active ? ' active' : ''}" data-act="resume" data-sid="${sid}">
+        ${esc(s.title || s.session_id.slice(0, 8))}${
+          chip ? `<span class="chip">${esc(chip)}</span> ` : ''}<span class="when">${relTime(s.updated_at)}</span></button>
+      <button class="row-more" data-act="menu" data-sid="${sid}" data-menu="${esc(key)}" aria-haspopup="true"
         aria-expanded="${open}" aria-label="actions for ${esc(s.title || s.session_id.slice(0, 8))}">⋯</button>
       ${open ? `<div class="row-menu" role="menu">
         ${pid ? `<button role="menuitem" data-act="unfile" data-sid="${sid}">Remove from project</button>` : ''}
@@ -2399,7 +2412,8 @@
     // menu's last item ("Delete…") was cut in half. So while a menu is open in
     // THIS project, the box stops scrolling and shows everything. The list
     // re-renders on every menu toggle anyway, so there is nothing to preserve.
-    const menuHere = (pr.sessions || []).some(x => x.session_id === state.menuSid);
+    const menuHere = (pr.sessions || []).some(
+      x => state.menuKey === menuKeyOf('p:' + pr.id, x.session_id));
     html += `<div class="proj-chats${menuHere ? ' menu-open' : ''}">`;
     for (const s of pr.sessions || []) html += chatRow(s, pr.id);
     if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
@@ -2429,23 +2443,26 @@
     html += archived
       ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
       : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
+    // The irreversible one, last and in red. One click only sends the
+    // command: the controller answers with a confirm card naming the folder
+    // and how many chats go with it, the same way Delete… on a chat does.
+    html += `<button class="sess sess-cmd danger" data-act="proj-delete" data-pid="${pid}">🗑 delete project…</button>`;
     return html + '</div></div>';
   }
   // Flat newest-first shortlist across Inbox + every project, so finding a
   // chat never requires remembering which project it lives in. Rows carry a
-  // small project chip; no ⋯ menu here — manage a chat from its project block.
+  // small project chip and the same ⋯ menu as the project block's rows, so a
+  // recent chat can be archived or deleted without hunting for its project.
   function recentRows(p) {
     const rows = [];
-    for (const s of p.inbox_sessions || []) rows.push({ s, chip: 'Inbox' });
+    for (const s of p.inbox_sessions || []) rows.push({ s, chip: 'Inbox', pid: '' });
     for (const pr of p.projects || []) {
       if ((pr.status || 'active') !== 'active') continue;
-      for (const s of pr.sessions || []) rows.push({ s, chip: pr.title || pr.id });
+      for (const s of pr.sessions || []) rows.push({ s, chip: pr.title || pr.id, pid: pr.id });
     }
     rows.sort((a, b) => String(b.s.updated_at || '').localeCompare(String(a.s.updated_at || '')));
-    return rows.slice(0, 8).map(({ s, chip }) => `
-      <button class="sess recent${s.active ? ' active' : ''}" data-act="resume" data-sid="${esc(s.session_id)}">
-        ${esc(s.title || s.session_id.slice(0, 8))}<span class="chip">${esc(chip)}</span>
-        <span class="when">${relTime(s.updated_at)}</span></button>`).join('');
+    return rows.slice(0, 8)
+      .map(({ s, chip, pid }) => chatRow(s, pid, { place: 'recent', chip })).join('');
   }
   function renderProjects() {
     const p = state.projects;
@@ -2479,7 +2496,7 @@
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const act = b.dataset.act;
-    if (act !== 'menu' && state.menuSid) { state.menuSid = null; renderProjects(); }
+    if (act !== 'menu' && state.menuKey) { state.menuKey = null; renderProjects(); }
     if (act === 'toggle') {
       const pid = b.dataset.pid;
       if (state.openProjects.has(pid)) state.openProjects.delete(pid);
@@ -2496,7 +2513,8 @@
       return;
     }
     if (act === 'menu') {
-      state.menuSid = state.menuSid === b.dataset.sid ? null : b.dataset.sid;
+      const key = b.dataset.menu || b.dataset.sid;
+      state.menuKey = state.menuKey === key ? null : key;
       renderProjects();
       return;
     }
@@ -2516,6 +2534,11 @@
     }
     if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
     if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
+    if (act === 'proj-delete') {
+      // the controller's confirm card does the asking (folder + chat count)
+      sendInput('/project delete ' + b.dataset.pid);
+      toast('confirm the delete in the chat');
+    }
     if (act === 'unfile') {
       // the chat itself is untouched — only its filing goes, and /file puts it
       // back, so there is nothing here to confirm
@@ -2536,7 +2559,7 @@
   });
   // a tap anywhere else dismisses an open row menu
   document.addEventListener('click', e => {
-    if (state.menuSid && !e.target.closest('.sess-row')) { state.menuSid = null; renderProjects(); }
+    if (state.menuKey && !e.target.closest('.sess-row')) { state.menuKey = null; renderProjects(); }
   });
   // New chat, up front: "file in <project> / just a chat". Asking BEFORE the
   // chat exists is the whole point — a chat's project used to be decided by
@@ -3409,11 +3432,15 @@
         if (ev.noauth && !localStorage.getItem('council-noauth-dismissed')) els.banner.hidden = false;
         break;
       case 'route_error':
-        // the chat this tab asked for could not be attached (unknown id,
-        // open-chat limit): we are on the fallback bridge — say so and let
+        // the chat this tab asked for could not be attached (unknown id):
+        // we are on the fallback bridge — say so and let
         // the next 'projects' event correct the URL. Remember the refused id
         // so routeHash doesn't immediately re-ask for it (toast loop).
         state.routeErrorSid = state.pendingSwitch || hashSid() || null;
+        // put the URL back now: switchTo already wrote the refused id into
+        // it, and a hash naming one chat over a header and transcript of
+        // another is exactly the mismatch this toast is apologising for
+        if (state.currentSid) syncHash(state.currentSid);
         toast(ev.error || 'chat not found — showing the current chat');
         state.pendingSwitch = null;
         state.resuming = false;

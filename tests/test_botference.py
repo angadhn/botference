@@ -6737,6 +6737,48 @@ class TestChatLifecycle:
         assert c.transcript.entries == []
         assert not (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
 
+    async def test_delete_current_filed_chat_clears_title_and_stays_gone(self, tmp_path):
+        """Deleting the chat you're in (filed in a project, named by the
+        small model) must not leave its name in the header/tab, must not be
+        saved straight back to disk, and says "Deleted" before "Started"."""
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("/project open spaceship-engineering", ui)
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("/file spaceship-engineering", ui)
+        c.auto_title = "Anna Gat Childhood"
+        c._persist_session()
+        old_id = c.session_id
+        ui.choice_responses.append(0)  # confirm
+        await c.handle_input(f"/delete {old_id[:8]}", ui)
+
+        assert c.session_id != old_id
+        assert c.auto_title == ""
+        assert c._session_title() != "Anna Gat Childhood"
+        assert ui.statuses[-1].title != "Anna Gat Childhood"
+        assert not (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
+        index = json.loads(
+            (tmp_path / "projects" / "session-index.json").read_text()
+        )
+        assert all(e["session_id"] != old_id for e in index["sessions"])
+        system = [t for sp, t in ui.room_entries if sp == "system"]
+        deleted = next(i for i, t in enumerate(system) if t.startswith("Deleted this chat"))
+        started = next(i for i, t in enumerate(system) if t.startswith("Started a new chat"))
+        assert deleted < started
+        assert "is saved" not in system[started]
+
+    async def test_new_chat_drops_previous_auto_title(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        c.auto_title = "Knee Injury"
+        await c.handle_input("/new", ui)
+        assert c.auto_title == ""
+        assert ui.statuses[-1].title != "Knee Injury"
+
     async def test_delete_picker_lists_recent_chats(self, tmp_path):
         first, _, _, ui1 = _make_botference(
             claude_responses=[_ok("reply")], tmp_path=tmp_path,
@@ -6938,6 +6980,130 @@ class TestProjectArchive:
         assert any("Usage: /project archive" in t for _, t in ui.room_entries)
         await c.handle_input("/project archive nope", ui)
         assert any("No project matched" in t for _, t in ui.room_entries)
+
+
+@pytest.mark.asyncio
+class TestProjectDelete:
+    """/project delete removes the folder, its portfolio + index rows and
+    every chat filed in it — after a confirm naming all of that."""
+
+    async def _project_with_chats(self, tmp_path, n=2):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        _add_project(tmp_path, "keeper", "Keeper")
+        ids = []
+        for i in range(n):
+            c, _, _, ui = _make_botference(
+                claude_responses=[_ok(f"reply {i}")], tmp_path=tmp_path,
+            )
+            await c.handle_input("@claude hello", ui)
+            await c.handle_input("/file spaceship-engineering", ui)
+            ids.append(c.session_id)
+        other, _, _, oui = _make_botference(
+            claude_responses=[_ok("kept")], tmp_path=tmp_path,
+        )
+        await other.handle_input("@claude hi", oui)
+        await other.handle_input("/file keeper", oui)
+        return ids, other.session_id
+
+    async def test_store_delete_project_removes_folder_and_rows(self, tmp_path):
+        _add_project(tmp_path, "alpha", "Alpha")
+        _add_project(tmp_path, "beta", "Beta")
+        store = ProjectStore(tmp_path)
+        store.set_status("alpha", "active", title="Alpha")
+        store.set_status("beta", "active", title="Beta")
+        store.associate_session("alpha", "s1")
+        store.associate_session("beta", "s2")
+        assert store.delete_project("alpha") == ["s1"]
+        assert not (tmp_path / "projects" / "alpha").exists()
+        assert (tmp_path / "projects" / "beta" / "PROJECT.md").exists()
+        portfolio = json.loads((tmp_path / "projects" / "portfolio.json").read_text())
+        assert [p["id"] for p in portfolio["projects"]] == ["beta"]
+        assert store.session_index_map() == {"s2": "beta"}
+        with pytest.raises(ValueError):
+            store.delete_project("../work")
+        with pytest.raises(ValueError):
+            store.delete_project("")
+
+    async def test_store_delete_project_unlinks_a_symlink_only(self, tmp_path):
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("x", encoding="utf-8")
+        (tmp_path / "projects").mkdir()
+        (tmp_path / "projects" / "linked").symlink_to(outside)
+        ProjectStore(tmp_path).delete_project("linked")
+        assert not (tmp_path / "projects" / "linked").exists()
+        assert (outside / "keep.txt").exists()
+
+    async def test_delete_confirms_then_removes_everything(self, tmp_path):
+        ids, kept_id = await self._project_with_chats(tmp_path)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(0)
+        await c.handle_input("/project delete spaceship-engineering", ui)
+
+        prompt, options = ui.choice_requests[-1]
+        assert "Spaceship Engineering" in prompt and "2 chats" in prompt
+        assert "projects/spaceship-engineering/" in prompt
+        assert "cannot be undone" in prompt
+        assert options == ["Delete project and 2 chats", "Cancel"]
+        sessions = tmp_path / "work" / "sessions"
+        for sid in ids:
+            assert not (sessions / f"{sid}.json").exists()
+        assert (sessions / f"{kept_id}.json").exists()
+        assert not (tmp_path / "projects" / "spaceship-engineering").exists()
+        assert c.project_store.get("spaceship-engineering") is None
+        index = c.project_store.session_index_map()
+        assert index == {kept_id: "keeper"}
+        assert any("Deleted project “Spaceship Engineering” and 2 chats." in t
+                   for _, t in ui.room_entries)
+
+    async def test_cancel_keeps_everything(self, tmp_path):
+        ids, _ = await self._project_with_chats(tmp_path, n=1)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.choice_responses.append(1)
+        await c.handle_input("/delete-project spaceship-engineering", ui)
+        assert options_of(ui) == ["Delete project and 1 chat", "Cancel"]
+        assert (tmp_path / "projects" / "spaceship-engineering").is_dir()
+        assert (tmp_path / "work" / "sessions" / f"{ids[0]}.json").exists()
+
+    async def test_deleting_the_project_you_are_in_rolls_into_inbox(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("reply")], tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude hello", ui)
+        await c.handle_input("/file spaceship-engineering", ui)
+        old_id = c.session_id
+        ui.choice_responses.append(0)
+        await c.handle_input("/project delete spaceship-engineering", ui)
+
+        assert c.session_id != old_id
+        assert c.session_project_id == "" and c.active_project_id == ""
+        assert not (tmp_path / "work" / "sessions" / f"{old_id}.json").exists()
+        system = [t for sp, t in ui.room_entries if sp == "system"]
+        deleted = next(i for i, t in enumerate(system) if t.startswith("Deleted project"))
+        started = next(i for i, t in enumerate(system) if t.startswith("Started a new chat"))
+        assert deleted < started
+
+    async def test_headless_needs_the_full_id(self, tmp_path):
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        ui.request_choice = None  # type: ignore[assignment]
+        await c.handle_input("/project delete spaceship", ui)
+        assert (tmp_path / "projects" / "spaceship-engineering").is_dir()
+        assert any("full id" in t for _, t in ui.room_entries)
+        await c.handle_input("/project delete spaceship-engineering", ui)
+        assert not (tmp_path / "projects" / "spaceship-engineering").exists()
+
+    async def test_unknown_project_and_missing_arg_are_reported(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/project delete", ui)
+        assert any("Usage: /project delete" in t for _, t in ui.room_entries)
+        await c.handle_input("/project delete nope", ui)
+        assert any("No project matched" in t for _, t in ui.room_entries)
+
+
+def options_of(ui):
+    return ui.choice_requests[-1][1]
 
 
 class TestPruneEmpty:
