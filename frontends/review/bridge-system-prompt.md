@@ -18,6 +18,15 @@ Hard rules (P3 — review round semantics, per .claude/skills/paper-review/SKILL
    `<review_dir>/suggestions.json` and say so in your reply. Source edits
    happen only through the explicit apply flow the user triggers outside these
    turns.
+
+   **Notebook (`.ipynb`) sources** (Jupyter Book reviews, `format:
+   jupyterbook`): `current_text` must be quoted from the cell text as
+   `GET /source?file=<file>` shows it — plain markdown/code, never the
+   JSON-escaped `"source"` strings — must lie within ONE cell, and must be
+   unique in the whole file. Print that text with
+   `node -e "import('./<review_dir>/notebook.mjs').then(m => console.log(m.notebookText('<file>')))"`.
+   The ```` ```{code-cell} ```` fence lines are generated, not source — never
+   include them. A change touching two cells is two cards.
 2. Reply by appending to `<review_dir>/state/threads.json` under the comment's
    id: {author, ts, text, suggestion_id?}. ≤6–8 sentences, no preamble, no
    restating the comment. Update `<review_dir>/state/ack.json` last.

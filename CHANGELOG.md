@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## 2026-09-29
+
+- **Review a Jupyter Book.** `botference review` now recognises a repo with
+  `_toc.yml` (format `jupyterbook`): chapters come from `_toc.yml` in book
+  order (`root:` then every `file:`, extension optional), the masthead from
+  `_config.yml`'s `title:`, and figure dirs from wherever the chapters'
+  images live. Notebook chapters render from a text view of their cells
+  (code cells as code blocks, stored PNG outputs inline); MyST figures,
+  notes/tips/admonitions, margins, `{math}` blocks and roles render
+  approximately. Comments, bot and human suggestion cards and Apply →
+  Commit → Revert work as for LaTeX: a suggestion quotes the cell text, an
+  accepted one rewrites just that cell's `source` (outputs, metadata and
+  formatting untouched), and a span crossing two cells is flagged, never
+  guessed. Heading suggestions on Markdown and notebook pages now work too.
+- **Deleting the chat you are in no longer leaves its name behind.** The
+  fresh chat you land in kept the deleted chat's model-written short title,
+  so the header, the browser tab and the sidebar still named it; a chat filed
+  in a project was also saved straight back to disk under the id it had just
+  deleted. `/new` had the same stale-title bug. Now a new chat starts
+  untitled, the deleted chat stays deleted, a short title that arrives after
+  you have moved on is dropped instead of landing on the wrong chat, and the
+  transcript reads in order: "Deleted this chat (…)", then "Started a new
+  chat". A tab refused a chat it asked for puts its URL back at once rather
+  than naming one chat over another's transcript.
+- **No open-chat limit in the web council.** Opening a fifth chat used to
+  toast "open-chat limit reached (4) — close another chat tab first". Now a
+  chat you click always opens. Each open chat still has its own bridge
+  process; past `COUNCIL_MAX_CHATS` (default 4) the least-recently-used idle,
+  unwatched one is parked (it respawns from disk when reopened), and when
+  every chat is busy or watched the new one opens anyway.
+- **Recent rows have the ⋯ menu.** The Recent shortlist at the top of the
+  sidebar offers the same Remove from project / Archive / Delete… menu as a
+  project's own rows (Remove from project only for a chat that is filed).
+  A chat listed in both places opens only the menu you tapped.
+- **Delete a whole project.** `/project delete <id>` (alias
+  `/delete-project`) removes the project folder, its `portfolio.json` and
+  `session-index.json` rows and every chat filed in it, after a confirm that
+  names the folder and the chat count ("Delete project and 3 chats"). Without
+  a picker only the exact id is accepted. Deleting the project you are in
+  rolls into a fresh Inbox chat. The web sidebar has a red "🗑 delete
+  project…" in every project block, live or archived.
+
 ## 2026-09-27
 
 - **A phone coming back to a chat keeps its place and its clocks.** iOS evicts

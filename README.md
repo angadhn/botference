@@ -161,8 +161,12 @@ script you actually invoked.
 
 ## Document Review (paper-review)
 
-Botference ships a Google-Docs-style review interface for LaTeX (and
-Markdown) sources: the paper renders as commentable HTML, margin
+Botference ships a Google-Docs-style review interface for LaTeX,
+Markdown and Jupyter Book sources (a repo with `_config.yml` + `_toc.yml`:
+chapters as `.ipynb` notebooks and/or MyST `.md`, in `_toc.yml` order;
+each notebook is reviewed and edited cell by cell through a plain-text
+view of its cells, and MyST directives render approximately): the paper
+renders as commentable HTML, margin
 comments become bot turns when you tag `@claude`/`@codex`/`@all`, bots
 reply in threads and post accept/reject suggestion cards, and accepted
 changes are applied to the sources deterministically with separate
@@ -344,8 +348,11 @@ address bar is a shareable per-chat link; opening it reopens that chat
 agent bridge per open chat**, so browser tabs on different chats are
 truly concurrent sessions behind the same tunnel — message away in one
 tab while another chat's turn runs; tabs on the *same* chat share one
-live stream. `COUNCIL_MAX_CHATS` caps the pool (default 4; idle,
-unwatched chats are parked automatically when the cap is hit).
+live stream. There is no limit on how many chats you open: past
+`COUNCIL_MAX_CHATS` live bridges (default 4) the least-recently-used
+idle, unwatched chat is parked (its process exits and it respawns from
+disk when reopened), and when every chat is busy or watched the new one
+opens anyway.
 
 At the top of that panel sits **tasks** — the checklist from the newest
 message that has one, whoever wrote it, kept in view while the chat
@@ -386,7 +393,8 @@ affordance sends the same slash command the TUI takes — one code path:
 - **New** is a split control — `＋ New` with `chat` / `project` stacked
   beside it. `chat` runs `/new`; `project` opens an inline title field
   and sends `/project create <title>`.
-- Each chat row has a **⋯** menu offering three different-sized ways out of
+- Each chat row — in a project block and in the **Recent** shortlist at the
+  top — has a **⋯** menu offering three different-sized ways out of
   a list, safest first: **Remove from project** (`/project unfile <id>` —
   the chat is untouched, only its filing goes, so it lands in Inbox),
   **Archive** (`/archive <id>` — it leaves every listing, every byte
@@ -405,6 +413,10 @@ affordance sends the same slash command the TUI takes — one code path:
   (`/project archive <id>`); archived projects collapse into an
   **Archived** section at the bottom of the sidebar, closed by default,
   where **↩ unarchive project** brings one back.
+- Every project block, live or archived, ends with a red **🗑 delete
+  project…** (`/project delete <id>`). It removes the folder and every chat
+  filed in it, so the controller asks first in the transcript, naming the
+  folder and the chat count.
 
 ```bash
 botference plan --web       # serve locally, open the printed URL
@@ -830,7 +842,7 @@ many run at once (default 3; `1` is the old one-at-a-time behaviour),
 and spare agents are retired after `bridge_idle_ms` of quiet (default 15
 minutes) so an afternoon of reading does not leave processes lying
 around. The web council has had the same arrangement for a while —
-`COUNCIL_MAX_CHATS`, one bridge per open chat.
+one bridge per open chat, idle ones parked past `COUNCIL_MAX_CHATS`.
 
 ### Discuss your blog draft
 
@@ -1469,11 +1481,12 @@ handoff (no footer, no mention) simply returns the floor to you.
 | `/fresh @claude\|@codex\|@both` | **Restart a bot with no memory of this chat.** For a session that has gone wrong — a bot stuck refusing an ordinary topic, or answering a question three turns old. Nothing is carried over: it sees only what you send next, so say the context again. The other bot keeps its memory and is told. In the browser plugin, type it into any chat box or use the `fresh` button beside `relay` in the agents panel. **Separately and automatically:** when Claude Code reports that the running model's *safeguards* declined a message (Fable 5.1 does this on some ordinary technical topics; the error names the model), this chat's Claude switches to the next model in `safeguard_fallback` in `context-budgets.json` — Opus 5.5, then Opus 5 — and retries the same message, with a note in the chat. |
 | `/relay @claude\|@codex\|@both` | Tear down a model's session, generate a structured handoff, and restart that model immediately in the current botference process. Useful when context is getting long. `@both` (alias `@all`, `/relay-both`) resets both agents at once, token-efficiently: the agent with the most context headroom authors **one** shared handoff, both fresh sessions bootstrap from it, and the restarts run in parallel. Falls back to the free mechanical handoff when both agents are too degraded to author one. |
 | `/autorelay [on\|off]` | Toggle **auto-relay**. When a model's context occupancy crosses 50% of its window, botference relays it automatically (same handoff machinery as `/relay`) before its next turn — never mid-turn or mid free-form thread. On by default; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. In the web council, a toggle in the agents panel mirrors this. No argument flips the current state. |
-| `/new-project <title>` | Create a project and file this chat under it. Every `/project` verb is also a command of its own, which reads better as a command than as a menu: `/open-project <id>`, `/assign-project`, `/unfile-project`, `/clear-project`, `/current-project`, `/project-contents`, `/project-github`, `/archive-project`, `/unarchive-project`, `/project-from-chat`, `/activate-build`. A bare `/project <words>` that matches no project now says so loudly and shows the `/new-project` line to create it. |
+| `/new-project <title>` | Create a project and file this chat under it. Every `/project` verb is also a command of its own, which reads better as a command than as a menu: `/open-project <id>`, `/assign-project`, `/unfile-project`, `/clear-project`, `/current-project`, `/project-contents`, `/project-github`, `/archive-project`, `/unarchive-project`, `/delete-project`, `/project-from-chat`, `/activate-build`. A bare `/project <words>` that matches no project now says so loudly and shows the `/new-project` line to create it. |
 | `/projects` | List project folders under `projects/` and show the active project marker, status, priority, chat count, and next action when known. |
 | `/project [open <id>\|clear\|current\|create <title>\|create-from-chat]` | Set, clear, show, or create the current project context. The status bar and Projects panel show the selected project; `Inbox` means no project is selected. |
 | `/project assign [<session-id-prefix>] <project-id>` | File a chat under a project. Filing **this** chat moves the active context with it, because being filed into a project and then left looking at another project's plan files would be nonsense. A chat remembers its own project: once filed, saving it while some other project is open never moves it. Filing **another** saved chat rewrites that chat's session JSON (and the project index) while you stay where you are; if that chat is open in another botference process, that process wins on its next save. |
 | `/project archive <id>` / `/project unarchive <id>` | Tuck a project away, or bring it back. Nothing moves on disk and nothing is deleted: only the `status` field in `projects/portfolio.json` flips to `archived`. Archived projects sort last everywhere and collapse into the closed **Archived** section at the bottom of the web sidebar; archiving the *active* project drops the room back to Inbox. |
+| `/project delete <id>` (alias `/delete-project`) | **Delete a project and every chat filed in it, for good.** A confirm names the project, how many chats go with it and the folder (`projects/<id>/`) that will be removed; nothing happens until you pick "Delete project and N chats". The folder, its `projects/portfolio.json` row, its `session-index.json` rows and each filed chat's session file are all removed. If you are in one of those chats you land in a fresh Inbox chat. Without a picker (headless), only the exact project id is accepted. In the web sidebar, "🗑 delete project…" in the project block (live or archived) sends this. Chats already archived with `/archive` are not touched. |
 | `/adopt [<id-prefix>]` | Continue a pre-existing **native Claude Code** chat inside the council. Opens a picker of recent `claude` sessions for the current folder; the adopted chat becomes the room's Claude session (full native memory), Claude writes a handoff into the shared transcript, and Codex joins from that brief. Run it from a fresh chat in the folder where the original conversation happened. Under `--claude-interactive`, the tmux pane launches as `claude --resume <that chat>` — botference becomes the steering layer over the real, attachable Claude Code session (watch it with `tmux attach -rt botference-claude-…`). |
 | `/new [title]` / `/new --project <id> [title]` / `/new --inbox [title]` | Start a fresh chat in place — the current chat is saved and stays resumable. With no flag the new chat inherits the project you are standing in. `--project <id>` files it under that project from birth (and opens that project's files), `--inbox` keeps it deliberately unfiled even while a project is open. A chat's filing is written once, here or by `/file`; later saves never re-file it based on whatever project happens to be open. |
 | `/file [<project-id>]` | File the current chat under a project, which becomes the active project (same as `/project open`, plus the filing). With no args, opens the arrow-key project picker (including "create a new project from this chat"). Alias: `/add-to-project`. |

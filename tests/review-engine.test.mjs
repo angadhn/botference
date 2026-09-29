@@ -1519,3 +1519,225 @@ test('launcher: --upgrade-only on a directory that was never set up says so, and
   assert.match(r.stderr, /--setup/);
   assert.ok(!fs.existsSync(path.join(dir, 'review')), 'and it did not quietly set one up');
 });
+
+// ------------------------------------------------------------ Jupyter Book
+// format: jupyterbook — a _toc.yml-driven book whose chapters are .ipynb
+// and/or MyST .md. Every notebook is reviewed through its TEXT PROJECTION
+// (markdown cells verbatim, code cells as ```{code-cell} fences): /source
+// serves it, the browser matches against it, apply edits exactly one cell.
+
+// nbformat-shaped JSON (sorted keys, 1-space indent, list-of-lines sources)
+const nbJson = (cells, indent = 1) => JSON.stringify({
+  cells, metadata: { kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' } },
+  nbformat: 4, nbformat_minor: 2,
+}, null, indent) + '\n';
+const lines = s => s.split(/(?<=\n)/);
+const LECTURE1 = nbJson([
+  { cell_type: 'markdown', metadata: {}, source: lines('# Elliptic Orbits\n\nThis lecture introduces the ellipse.') },
+  { cell_type: 'markdown', metadata: {}, source: lines(
+    '(sec:ellipse)=\n## The Ellipse\n\nThe eccentricity vector ${\\bf e}$ points to periapsis, as {numref}`fig-orbit` shows.\n' +
+    '```{figure} ./imgs/orbit.png\n---\nwidth: 75%\nname: fig-orbit\n---\nAn elliptic orbit with its focus.\n```\n' +
+    '````{margin}\n```{note}\nThe vector $\\bf h$ is constant.\n```\n````\n' +
+    'Closing words for the first lecture.') },
+  { cell_type: 'code', execution_count: 1, id: 'c0ffee', metadata: { tags: ['hide-input'] },
+    outputs: [{ data: { 'image/png': PNG.toString('base64') + '\n', 'text/plain': ['<Figure>'] },
+      metadata: {}, output_type: 'display_data' }],
+    source: lines('import numpy as np\nr = np.linspace(0, 1, 10)') },
+  { cell_type: 'markdown', metadata: {}, source: lines('Epilogue of lecture one.') },
+]);
+// VS Code shape: 4-space indent, single-string sources
+const LECTURE2 = nbJson([
+  { cell_type: 'markdown', metadata: {}, source: '# Hyperbolic Orbits\n\nEscape needs positive energy.\n' },
+  { cell_type: 'code', execution_count: null, metadata: {}, outputs: [], source: 'print("v_inf")' },
+], 4);
+const BOOK = {
+  '_config.yml': 'title: Mini Orbits Book\nauthor: Test\nexecute:\n  execute_notebooks: force\n',
+  '_toc.yml': `format: jb-book
+root: intro
+parts:
+  - caption: Orbits
+    chapters:
+    - file: ch1/lecture1
+    - file: ch2/lecture2.ipynb
+  - caption: Extras
+    chapters:
+    - file: notes/extra
+    - url: https://example.org
+    - file: nowhere/ghost
+`,
+  'intro.md': '# Welcome\n\nA tiny book for review tests.\n',
+  'notes/extra.md': '# Extra Notes\n\n```{tip} Remember\nPractice every week.\n```\n',
+  'ch1/lecture1.ipynb': LECTURE1,
+  'ch1/imgs/orbit.png': PNG,
+  'ch2/lecture2.ipynb': LECTURE2,
+};
+
+test('jupyterbook: projection offsets, and editNotebook rewrites exactly one cell and nothing else', async t => {
+  const N = await import(path.join(ENGINE, 'notebook.mjs'));
+  const nb = JSON.parse(LECTURE1);
+  const { text, cells } = N.projectNotebook(nb);
+  assert.equal(cells.length, 4);
+  cells.forEach(c => assert.equal(text.slice(c.start, c.end), [].concat(nb.cells[c.index].source).join(''),
+    `cell ${c.index} offsets cover its source`));
+  assert.match(text, /\n\n```\{code-cell\} python\nimport numpy as np\nr = np\.linspace\(0, 1, 10\)\n```\n\nEpilogue/);
+  assert.doesNotMatch(text, /data:image/, 'the /source projection never carries outputs');
+  assert.match(N.projectNotebook(nb, { withOutputs: true }).text, /```\n\n!\[\]\(data:image\/png;base64,iVBOR[^)\s]+\)\n\nEpilogue/);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-nb-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const f1 = path.join(dir, 'l1.ipynb'), f2 = path.join(dir, 'l2.ipynb');
+  fs.writeFileSync(f1, LECTURE1);
+  fs.writeFileSync(f2, LECTURE2);
+  const at = text.indexOf('points to periapsis');
+  const e = N.editNotebook(f1, at, at + 'points to periapsis'.length, 'aims at the periapsis');
+  assert.ok(e.ok, e.reason);
+  const before = JSON.parse(LECTURE1), after = JSON.parse(e.after);
+  assert.match(after.cells[1].source.join(''), /\$\{\\bf e\}\$ aims at the periapsis, as/);
+  after.cells[1].source = before.cells[1].source;
+  assert.deepEqual(after, before, 'outputs, metadata, ids and every other cell untouched');
+  const diff = LECTURE1.split('\n').filter((l, i) => l !== e.after.split('\n')[i]);
+  assert.equal(diff.length, 1, 'exactly one line of the file changed (1-space indent, trailing newline kept)');
+  assert.equal(e.after.split('\n').length, LECTURE1.split('\n').length);
+  assert.ok(e.after.endsWith('}\n'));
+  // an edit that adds a line keeps nbformat's list-of-lines shape
+  const e2 = N.editNotebook(f1, cells[3].start, cells[3].end, 'Epilogue.\nWith a second line.');
+  assert.deepEqual(JSON.parse(e2.after).cells[3].source, ['Epilogue.\n', 'With a second line.']);
+
+  // single-string sources + 4-space indent stay that way
+  const p2 = N.projectNotebook(JSON.parse(LECTURE2));
+  const at2 = p2.text.indexOf('positive energy');
+  const e3 = N.editNotebook(f2, at2, at2 + 'positive'.length, 'non-negative');
+  assert.ok(e3.ok, e3.reason);
+  assert.equal(JSON.parse(e3.after).cells[0].source, '# Hyperbolic Orbits\n\nEscape needs non-negative energy.\n');
+  assert.equal(e3.after, LECTURE2.replace('needs positive energy', 'needs non-negative energy'));
+
+  // refused: crossing a cell boundary, or touching the generated fence
+  const cross = N.editNotebook(f1, cells[0].end - 5, cells[1].start + 5, 'x');
+  assert.equal(cross.ok, false);
+  assert.match(cross.reason, /crosses a notebook cell boundary/);
+  const fence = text.indexOf('```{code-cell}');
+  const onFence = N.editNotebook(f1, fence, fence + 5, 'x');
+  assert.equal(onFence.ok, false);
+  assert.match(onFence.reason, /scaffolding/);
+  assert.equal(fs.readFileSync(f1, 'utf8'), LECTURE1, 'editNotebook never writes');
+});
+
+test('jupyterbook: detect reads _toc.yml order, _config.yml title and chapter-local figure dirs', async t => {
+  const dir = scaffold('jb-detect', BOOK);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const out = runDetect(dir);
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  assert.equal(cfg.format, 'jupyterbook');
+  assert.deepEqual(cfg.sections, [
+    { file: 'intro.md', title: 'Welcome' },
+    { file: 'ch1/lecture1.ipynb', title: 'Elliptic Orbits' },
+    { file: 'ch2/lecture2.ipynb', title: 'Hyperbolic Orbits' },
+    { file: 'notes/extra.md', title: 'Extra Notes' },
+  ], 'root first, then file: entries in book order; url: ignored');
+  assert.equal(cfg.title, 'Mini Orbits Book');
+  assert.deepEqual(cfg.figures_dirs, ['ch1/imgs']);
+  assert.equal(cfg.bib, undefined);
+  assert.match(out, /format:\s+jupyterbook/);
+  assert.match(out, /"nowhere\/ghost" not found on disk.*skipped/);
+  assert.match(out, /Jupyter Book: 4 chapters from _toc\.yml \(2 notebooks, 2 markdown\)/);
+  assert.match(out, /rendered approximately/);
+  assert.match(out, /figures:\s+1 referenced, 1 resolved/);
+});
+
+test('jupyterbook: build renders notebooks + MyST, the server serves the projection, apply edits one cell', async t => {
+  const dir = scaffold('jb-build', BOOK);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  runDetect(dir);
+  installEngine(dir);
+  const buildOut = runBuild(dir);
+  assert.match(buildOut, /figures: 1\/1 resolved/);
+  assert.doesNotMatch(buildOut, /Could not convert TeX math/, '\\bf math is rewritten before pandoc');
+  assert.deepEqual(htmlPages(dir), ['00-welcome.html', '01-elliptic-orbits.html',
+    '02-hyperbolic-orbits.html', '03-extra-notes.html']);
+
+  const l1 = readSite(dir, '01-elliptic-orbits.html');
+  assert.match(l1, /<header class="masthead" data-cid="paper-title">Mini Orbits Book<\/header>/);
+  assert.match(l1, /<figure>\s*<img src="\.\.\/\.\.\/ch1\/imgs\/orbit\.png"[^>]*id="fig-orbit"/, 'figure directive → image, path rebased');
+  assert.match(l1, /<figcaption[^>]*>An elliptic orbit with its focus\.<\/figcaption>/);
+  assert.match(l1, /<blockquote>\s*<p><strong>Note<\/strong><\/p>\s*<p>The vector <math/, '{margin}{note} → blockquote');
+  assert.match(l1, /<h2 id="sec:ellipse">The Ellipse<\/h2>/, '(label)= attaches to the next heading');
+  assert.doesNotMatch(l1, /\(sec:ellipse\)=|\{figure\}|\{margin\}|\{note\}|\{numref\}|```/, 'no raw MyST scaffolding left');
+  assert.match(l1, /as fig-orbit shows\./, 'roles become their plain target');
+  assert.match(l1, /<pre class="sourceCode python"><code class="sourceCode python">/, 'code cell → code block');
+  assert.match(l1, /<img src="data:image\/png;base64,/, 'the stored PNG output renders');
+  assert.match(l1, /Closing words for the first lecture\./);
+  assert.match(readSite(dir, '03-extra-notes.html'), /<blockquote>\s*<p><strong>Remember<\/strong><\/p>\s*<p>Practice every week\.<\/p>/);
+  const sj = readSite(dir, 'suggestions.js');
+  const meta = JSON.parse(sj.slice(sj.indexOf('window.BUILD_META=') + 18).replace(/;\s*$/, ''));
+  assert.equal(meta.format, 'jupyterbook');
+  assert.equal(meta.sections[1].file, 'ch1/lecture1.ipynb');
+
+  const N = await import(path.join(dir, 'review', 'notebook.mjs'));
+  const projection = N.notebookText(path.join(dir, 'ch1', 'lecture1.ipynb'));
+  await withServer(dir, async base => {
+    const j = await (await fetch(`${base}/source?file=${encodeURIComponent('ch1/lecture1.ipynb')}`)).json();
+    assert.equal(j.ok, true);
+    assert.equal(j.text, projection, '/source serves the text projection, not raw JSON');
+    assert.doesNotMatch(j.text, /"cell_type"/);
+    const md = await (await fetch(`${base}/source?file=notes%2Fextra.md`)).json();
+    assert.equal(md.text, BOOK['notes/extra.md'], 'markdown chapters are served verbatim');
+    const fig = await fetch(`${base}/ch1/imgs/orbit.png`);
+    assert.equal(fig.status, 200);
+    assert.equal(fig.headers.get('content-type'), 'image/png');
+  });
+
+  // apply: a card quoted from the projection lands in one markdown cell
+  fs.writeFileSync(path.join(dir, 'review', 'suggestions.json'), JSON.stringify([
+    { id: 'nb1', type: 'rewrite', section: '01-elliptic-orbits', author: 'claude', source_file: 'ch1/lecture1.ipynb',
+      current_text: 'Closing words for the first lecture.', proposed_text: 'Closing words for lecture one.' },
+    { id: 'nb2', type: 'rewrite', section: '01-elliptic-orbits', author: 'claude', source_file: 'ch1/lecture1.ipynb',
+      current_text: 'introduces the ellipse.\n\n(sec:ellipse)=\n## The Ellipse', proposed_text: 'x' },
+    { id: 'nb3', type: 'rewrite', section: '01-elliptic-orbits', author: 'claude', source_file: 'ch1/lecture1.ipynb',
+      current_text: 'r = np.linspace(0, 1, 10)', proposed_text: 'r = np.linspace(0, 1, 50)' },
+  ]));
+  const { ApplyEngine } = await import(path.join(dir, 'review', 'apply.mjs'));
+  const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'review', 'review.config.json'), 'utf8'));
+  const eng = new ApplyEngine({ reviewDir: path.join(dir, 'review'), cfg });
+  const r = eng.apply(['nb1', 'nb2', 'nb3']);
+  assert.deepEqual(r.applied, ['nb1', 'nb3']);
+  assert.equal(r.flagged.length, 1);
+  assert.equal(r.flagged[0].id, 'nb2');
+  assert.match(r.flagged[0].reason, /crosses a notebook cell boundary/);
+  const nbFile = path.join(dir, 'ch1', 'lecture1.ipynb');
+  const now = fs.readFileSync(nbFile, 'utf8');
+  const cells = JSON.parse(now).cells;
+  assert.match(cells[1].source.at(-1), /^Closing words for lecture one\.$/);
+  assert.equal(cells[2].source.join(''), 'import numpy as np\nr = np.linspace(0, 1, 50)', 'code cells are editable too');
+  assert.deepEqual(cells[2].outputs, JSON.parse(LECTURE1).cells[2].outputs, 'outputs untouched');
+  const changed = LECTURE1.split('\n').filter((l, i) => l !== now.split('\n')[i]);
+  assert.equal(changed.length, 2, 'two cards, two changed lines, nothing else');
+  // the round reverts through git exactly like a text source
+  const rv = eng.revert();
+  assert.equal(rv.ok, true, rv.reason);
+  assert.equal(fs.readFileSync(nbFile, 'utf8'), LECTURE1);
+});
+
+test('jupyterbook: a heading suggestion on a markdown/notebook page locks onto its "#" line', async () => {
+  // headingMarkdown lives inside review.js's IIFE; evaluate its exact source
+  const js = fs.readFileSync(path.join(ENGINE, 'assets', 'review.js'), 'utf8');
+  const fn = /\n {2}function headingMarkdown\([\s\S]*?\n {2}\}\n/.exec(js);
+  assert.ok(fn, 'review.js defines headingMarkdown');
+  const headingMarkdown = new Function(`${fn[0]}; return headingMarkdown;`)();
+  const N = await import(path.join(ENGINE, 'notebook.mjs'));
+  const src = N.projectNotebook(JSON.parse(LECTURE1)).text;
+  const h = headingMarkdown(src, 'The  Ellipse');
+  assert.deepEqual(h, { current: '## The Ellipse', head: '## ', tail: '' });
+  assert.deepEqual(headingMarkdown('# A\n\n### Methods {#sec-m}\n', 'Methods'),
+    { current: '### Methods {#sec-m}', head: '### ', tail: ' {#sec-m}' }, 'an attribute block survives the rename');
+  assert.equal(headingMarkdown('# Twice\n\n## Twice\n', 'Twice'), null, 'ambiguous → null (never guessed)');
+  assert.equal(headingMarkdown(src, 'Nope'), null);
+  // the rebuilt proposal applies as an ordinary unique span of the projection
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-nbh-'));
+  const f = path.join(dir, 'l1.ipynb');
+  fs.writeFileSync(f, LECTURE1);
+  const at = src.indexOf(h.current);
+  const e = N.editNotebook(f, at, at + h.current.length, `${h.head}The Conic${h.tail}`);
+  fs.rmSync(dir, { recursive: true, force: true });
+  assert.ok(e.ok, e.reason);
+  assert.equal(JSON.parse(e.after).cells[1].source[1], '## The Conic\n');
+});

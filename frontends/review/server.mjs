@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
 import { ApplyEngine } from './apply.mjs';
+import { projectNotebook } from './notebook.mjs';
 import { attachWs } from './ws.mjs';
 import { createDiscuss, baseOf, mergeThreads } from './discuss.mjs';
 
@@ -851,6 +852,11 @@ export function handler(req, res) {
     if (!isInside(f, ROOT)) { res.writeHead(403, JSON_HEAD).end('{"ok":false}'); return; }
     fs.readFile(f, 'utf8', (err, text) => {
       if (err) { res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not found"}'); return; }
+      // a notebook's text stand-in: the same projection apply.mjs edits
+      if (want.endsWith('.ipynb')) {
+        try { text = projectNotebook(JSON.parse(text)).text; }
+        catch { res.writeHead(422, JSON_HEAD).end('{"ok":false,"error":"not valid notebook JSON"}'); return; }
+      }
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, file: want, text }));
     });
     return;

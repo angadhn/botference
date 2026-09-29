@@ -755,6 +755,19 @@
     }
     return null;
   }
+  // markdown/MyST heading line whose text is `title`: `## Title` (optionally
+  // with a trailing `{#id}` attribute). The whole line is the unique span;
+  // head/tail rebuild it around the new words. Null when absent or ambiguous.
+  function headingMarkdown(src, title) {
+    const want = String(title).replace(/\s+/g, ' ').trim();
+    const hits = [];
+    for (const m of String(src).matchAll(/^(#{1,6}[ \t]+)(.*?)([ \t]*\{[^}\n]*\})?[ \t]*$/gm)) {
+      if (m[2].replace(/\s+/g, ' ').trim() === want) hits.push(m);
+    }
+    if (hits.length !== 1) return null;
+    const m = hits[0];
+    return { current: m[0], head: m[1], tail: m[3] || '' };
+  }
   // widen `quote` with its surrounding block text, word by word on alternating
   // sides, until it matches the source exactly once
   function widenToUnique(src, quote, context) {
@@ -806,8 +819,9 @@
     const src = await fetchSource(file);
     if (src == null) return { ok: false, reason: `could not read ${file} from the server` };
     if (isHeading) {
-      const h = headingMacro(src, el.textContent.trim());
-      if (!h) return { ok: false, reason: `could not find the \\section{…} macro for this heading in ${file}` };
+      const md = META.format === 'markdown' || META.format === 'jupyterbook';
+      const h = (md && headingMarkdown(src, el.textContent.trim())) || headingMacro(src, el.textContent.trim());
+      if (!h) return { ok: false, reason: md ? `could not find a unique "# …" line for this heading in ${file}` : `could not find the \\section{…} macro for this heading in ${file}` };
       return { ok: true, kind: 'heading', source_file: file, current_text: h.current,
         display_text: el.textContent.trim(), head: h.head, tail: h.tail, locked: h.current };
     }

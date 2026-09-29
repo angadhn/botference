@@ -7,7 +7,7 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | key | notes |
 |---|---|
 | `slug` | short project id; keys browser storage and exports |
-| `format` | `latex` · `markdown` — selects the renderer |
+| `format` | `latex` · `markdown` · `jupyterbook` — selects the renderer (see *Jupyter Books* below) |
 | `main` | master file (LaTeX: the `\documentclass` file; paper title is parsed from it each build) |
 | `title` | optional masthead override; wins over the `\title{}` parse. When the master has no `\title{}`, detect derives one (markdown H1, else the humanized folder name) so the masthead is never blank — edit it to rename. Set `"title": false` to render no masthead at all |
 | `sections` | ordered `[{file, title, split?}]`. A LaTeX file containing **two or more `\section` commands is auto-split at build time** into one page per section (single-file papers): content between `\begin{document}` and the first `\section` becomes an Abstract/Front Matter page, and each chunk is re-wrapped with the preamble so `\newcommand` macros keep working. The split is recomputed from the source every build (nothing stored); set `"split": false` on an entry to opt out |
@@ -21,6 +21,14 @@ Built per `.claude/skills/paper-review/design.md`, P1+P2 scope. All document-spe
 | `discuss` | **unified comment store** (optional): `{"companion": "http://127.0.0.1:4189", "base"?: "https://paper.example", "poll_ms"?: 5000}`. Off unless this block **or** the environment says otherwise — the review hub sets the env for every paper it starts, so a hosted paper has it on by default without a line in this file. See below |
 
 Figure handling at build: every `<img>` src is resolved against the repo root and each figure dir with LaTeX `\graphicspath` semantics, probing `.png/.jpg/.jpeg/.svg/.gif/.webp/.pdf` for extensionless `\includegraphics` refs. PDF-only and missing figures render as labeled placeholders instead of broken images. `tikzpicture` environments (which pandoc drops) are compiled to SVG at build time — `documentclass[tikz]{standalone}` + the paper's preamble minus page-layout packages, via `pdflatex` then `pdftocairo -svg` (or `dvisvgm --pdf`) — cached by content hash under `site/tikz/`; the wrapping figure/caption/label stay with pandoc so global numbering and refs are unaffected, and a compile failure or missing toolchain degrades to a placeholder plus a build warning, never a broken build.
+
+## Jupyter Books (`format: jupyterbook`)
+
+Detect picks this format when the repo has a `_toc.yml` (checked before LaTeX/markdown). `sections` is book order — `root:` then every `file:` entry, `url:`/`glob:` ignored — each resolved as given, then `.ipynb`, then `.md` (missing entries are skipped with a note); a section's title is its first `# ` heading. The masthead `title` comes from `_config.yml`'s `title:` (else the folder name), `bib` from its `bibtex_bibfiles:`, and `figures_dirs` from the directories the chapters' referenced images (`![…](…)`, `{figure}`, `<img src>`, resolved against each chapter's own directory) live in — nested chapter-local dirs such as `orbital-mechanics/Lecture3/imgs` are fine.
+
+- **Text projection.** Every notebook has one text stand-in (`notebook.mjs` `projectNotebook`): markdown and raw cells verbatim, code cells as ```` ```{code-cell} <kernelspec language> ```` fences, cells joined by a blank line. `GET /source` returns it for a `.ipynb`, the browser matches selections against it, and cards quote it (`current_text` is plain cell text, never JSON-escaped).
+- **Apply.** `apply.mjs` finds `current_text` exactly once in the projection (drift/ambiguity flagged as for text sources), then `editNotebook` maps the span to ONE cell and rewrites only that cell's `source` value in place — list-of-lines or single-string form kept, the file's indentation and trailing newline kept, outputs/metadata/ids and every other byte untouched. A span crossing a cell boundary or touching the generated fence lines is flagged `needs_manual_resolution`. Commit/Revert are unchanged (git-tracked file writes).
+- **Rendering (approximate).** `.md` chapters render from the file, notebooks from the projection plus stored `image/png`/`image/jpeg` outputs as inline data-URI images (build only — never in `/source`). `mystToPandoc` rewrites MyST scaffolding for pandoc's markdown reader, leaving prose byte-identical: `(label)=` targets attach to the next heading as `{#label}` (else drop), `{figure}` → `![caption](path){#name}`, `{note}`/`{tip}`/`{warning}`/`{important}`/`{admonition} Title`… → blockquote with a bold title, `{margin}`/`{sidebar}` unwrapped, `{math}` → `$$…$$` (`aligned` when it has `&`/`\\`), `{code-cell}` → a plain code block, `{numref}`/`{ref}`/`{eq}`/`{cite}` roles → their target text, `[](label)` → a link titled from the target heading, `$$…$$ (label)` suffixes dropped, `\bf`/`\rm` font switches → `\mathbf`/`\mathrm`, and relative image paths rebased to the repo root. Fences nest by backtick count. Directives it does not know are unwrapped (content kept).
 
 ## How to review
 
@@ -71,7 +79,7 @@ A human — including the owner — can propose text, not only ask a bot to. On 
 - **headings** — anchors on the enclosing LaTeX macro (`\section{Introduction}` → `\section{New Title}`), never the bare word, which is ambiguous everywhere it also appears in prose;
 - **the paper title** — targets `\title{…}` in the master, or, when the masthead comes from the config's `title` key (papers with no `\title{}`), that JSON key.
 
-If no unique anchor can be found the composer fails **there**, with the reason, and saves nothing. Failing at compose time is acceptable; failing silently at Apply time is not. `build.mjs` publishes what the browser needs for this in `BUILD_META`: `sections` (slug → source file) and `title_source`.
+If no unique anchor can be found the composer fails **there**, with the reason, and saves nothing. Failing at compose time is acceptable; failing silently at Apply time is not. `build.mjs` publishes what the browser needs for this in `BUILD_META`: `sections` (slug → source file), `title_source`, and `format` (the config's format; on `markdown`/`jupyterbook` builds a heading anchors on its whole `## Title` line — optional trailing `{#id}` kept as `tail` — before falling back to the LaTeX macro finder).
 
 ## Presence (in memory only)
 

@@ -6,6 +6,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Jupyter Book sections: notebook text projection + MyST preprocessing
+import { sectionSource, mystToPandoc } from './notebook.mjs';
 
 const REVIEW = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(REVIEW, '..');
@@ -258,6 +260,14 @@ const RENDERERS = {
     preprocess: s => s,
     pandocArgs: ['-f', 'markdown', '-t', 'html', '--mathml', '--citeproc', ...bibArgs, '--wrap=none'],
   },
+  // Jupyter Book: .ipynb chapters render from their text projection, .md
+  // chapters as-is; MyST directive scaffolding is rewritten to pandoc markdown
+  // (approximate rendering — prose passes through byte-identical)
+  jupyterbook: {
+    preprocess: (s, slug, sec) => mystToPandoc(s, { baseDir: path.posix.dirname(sec.file) }),
+    read: s => sectionSource(ROOT, s.file),
+    pandocArgs: ['-f', 'markdown', '-t', 'html', '--mathml', ...(bibArgs.length ? ['--citeproc', ...bibArgs] : []), '--wrap=none'],
+  },
 };
 const renderer = RENDERERS[CFG.format];
 if (!renderer) throw new Error(`no renderer for format "${CFG.format}"`);
@@ -341,9 +351,10 @@ if (CFG.title) {
 if (!PAPER_TITLE && CFG.title !== false) {
   // Never render a blank masthead: fall back to the first markdown H1,
   // else the humanized folder name. Set "title": false to opt out.
-  if (CFG.format === 'markdown' && SECTIONS.length) {
+  if ((CFG.format === 'markdown' || CFG.format === 'jupyterbook') && SECTIONS.length) {
     try {
-      const first = fs.readFileSync(path.join(ROOT, SECTIONS[0].file), 'utf8');
+      const first = CFG.format === 'jupyterbook' ? sectionSource(ROOT, SECTIONS[0].file)
+        : fs.readFileSync(path.join(ROOT, SECTIONS[0].file), 'utf8');
       const h1 = /^#\s+(.+)$/m.exec(first);
       if (h1) PAPER_TITLE = h1[1].trim()
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -392,9 +403,9 @@ for (const f of fs.readdirSync(path.join(REVIEW, 'assets'))) {
   fs.copyFileSync(path.join(REVIEW, 'assets', f), path.join(OUT, 'assets', f));
 }
 const built = SECTIONS.map(s => {
-  const raw = s.source ?? fs.readFileSync(path.join(ROOT, s.file), 'utf8');
+  const raw = s.source ?? (renderer.read ? renderer.read(s) : fs.readFileSync(path.join(ROOT, s.file), 'utf8'));
   const tmp = path.join(OUT, `.${s.slug}.tmp`);
-  fs.writeFileSync(tmp, renderer.preprocess(raw, s.slug));
+  fs.writeFileSync(tmp, renderer.preprocess(raw, s.slug, s));
   const html = execFileSync('pandoc', [...renderer.pandocArgs, tmp], { cwd: ROOT, encoding: 'utf8' });
   fs.unlinkSync(tmp);
   return { s, html: postprocess(html) };
@@ -452,7 +463,7 @@ try {
 const meta = { site_version: 3, slug: CFG.slug, built_at: new Date().toISOString(), source_commit: git,
   legacy_keys: CFG.legacy_storage_keys || [], suggestion_ids: cards.map(c => c.id),
   sections: SECTIONS.map(s => ({ slug: s.slug, file: s.file, title: s.title })),
-  title_source: TITLE_SOURCE };
+  title_source: TITLE_SOURCE, format: CFG.format };
 fs.writeFileSync(path.join(OUT, 'suggestions.js'),
   'window.SUGGESTIONS=' + JSON.stringify(cards) + ';\nwindow.BUILD_META=' + JSON.stringify(meta) + ';');
 fs.writeFileSync(path.join(OUT, 'index.html'), `<meta http-equiv="refresh" content="0;url=${SECTIONS[0].slug}.html">`);

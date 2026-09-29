@@ -12,6 +12,8 @@ import { execFileSync } from 'node:child_process';
 // whitespace-tolerant span matching, shared with the browser (review.js)
 import SpanMatch from './assets/span-match.js';
 const { findSpans } = SpanMatch;
+// notebooks: spans are matched against the text projection, edits land in one cell
+import { notebookText, editNotebook } from './notebook.mjs';
 
 export class ApplyEngine {
   constructor({ reviewDir, cfg }) {
@@ -92,13 +94,20 @@ export class ApplyEngine {
     const file = path.resolve(this.root, card.source_file);
     if (!file.startsWith(this.root + path.sep)) return { ok: false, reason: 'source_file escapes the repo' };
     if (!fs.existsSync(file)) return { ok: false, reason: `${card.source_file} not found` };
-    const text = fs.readFileSync(file, 'utf8');
+    const isNb = file.endsWith('.ipynb');
+    let text;
+    try { text = isNb ? notebookText(file) : fs.readFileSync(file, 'utf8'); }
+    catch { return { ok: false, reason: `${card.source_file} ${isNb ? 'is not valid notebook JSON' : 'could not be read'}` }; }
     // whitespace-tolerant: cards carry single-spaced spans, LaTeX wraps lines;
     // matching normalizes \s+ runs, the replacement uses true raw offsets
     const spans = findSpans(text, card.current_text, 10);
     if (spans.length === 0) return { ok: false, reason: 'span not found — source drifted since the card was written' };
     if (spans.length > 1) return { ok: false, reason: `span ambiguous (${spans.length}${spans.length === 10 ? '+' : ''} matches)` };
     const { start, end } = spans[0];
+    if (isNb) {
+      const e = editNotebook(file, start, end, card.proposed_text ?? '');
+      return e.ok ? { ok: true, file, after: e.after } : { ok: false, reason: e.reason };
+    }
     return { ok: true, file, after: text.slice(0, start) + (card.proposed_text ?? '') + text.slice(end) };
   }
 

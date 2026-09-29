@@ -7,6 +7,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import { fileURLToPath } from 'node:url';
+
+// Jupyter Book helpers live with the engine (frontends/review/notebook.mjs)
+const { tocSections, bookConfig, imageRefs, sectionSource } =
+  await import(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'frontends', 'review', 'notebook.mjs'));
 
 const ROOT = path.resolve(process.argv[2] || process.cwd());
 const cfgFile = path.join(ROOT, 'review', 'review.config.json');
@@ -42,7 +47,47 @@ function sectionTitle(file, fallback) {
   return (m && m[1].trim()) || fallback;
 }
 
-if (main) {
+if (fs.existsSync(path.join(ROOT, '_toc.yml'))) {
+  // Jupyter Book: _toc.yml gives the chapters in book order
+  cfg.format = 'jupyterbook';
+  const { sections, missing } = tocSections(ROOT);
+  if (!sections.length) {
+    console.error(`_toc.yml found in ${ROOT} but none of its entries resolve to a .ipynb/.md file`);
+    process.exit(1);
+  }
+  cfg.sections = sections;
+  for (const m of missing) notes.push(`_toc.yml entry "${m}" not found on disk (tried as given, .ipynb, .md) — skipped`);
+  const book = bookConfig(ROOT);
+  cfg.title = book.title || prettify(ROOT);
+  if (!book.title) notes.push(`no title in _config.yml — masthead titled "${cfg.title}" from the folder name`);
+  const bib = book.bib.filter(b => fs.existsSync(path.join(ROOT, b)));
+  if (bib.length) cfg.bib = bib;
+  // figure dirs: wherever the referenced images actually live
+  const figDirs = new Set();
+  let referenced = 0, resolved = 0;
+  for (const s of sections) {
+    let text = '';
+    try { text = sectionSource(ROOT, s.file); } catch { continue; }
+    for (const r of imageRefs(text, path.posix.dirname(s.file))) {
+      referenced++;
+      try { if (fs.statSync(path.join(ROOT, r)).isFile()) { resolved++; const d = path.posix.dirname(r); if (d !== '.') figDirs.add(d); } } catch { }
+    }
+  }
+  if (!figDirs.size) {
+    for (const s of sections) {
+      for (const d of ['imgs', 'images', 'figures', 'Figures', 'img']) {
+        const cand = path.posix.join(path.posix.dirname(s.file), d);
+        if (fs.existsSync(path.join(ROOT, cand))) figDirs.add(cand.replace(/^\.\//, ''));
+      }
+    }
+  }
+  if (!figDirs.size) figDirs.add('Figures');
+  cfg.figures_dirs = [...figDirs].sort();
+  figStats = { referenced, resolved };
+  const nNb = sections.filter(s => s.file.endsWith('.ipynb')).length;
+  notes.push(`Jupyter Book: ${sections.length} chapters from _toc.yml (${nNb} notebooks, ${sections.length - nNb} markdown) — ${sections.map(s => path.basename(s.file)).join(', ')}`);
+  notes.push('MyST directives (figure, note/tip/admonition, margin, math, roles) are rendered approximately; notebook cells are reviewed through a text projection');
+} else if (main) {
   cfg.format = 'latex';
   cfg.main = main;
   const mainSrc = stripComments(read(path.join(ROOT, main)));

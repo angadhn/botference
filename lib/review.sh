@@ -8,7 +8,7 @@
 # Engine files owned by $BOTFERENCE_HOME/frontends/review/. --upgrade
 # refreshes exactly these (plus assets/*) and never touches the
 # per-project files: review.config.json, state/, suggestions.json, site/.
-REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs discuss.mjs submit.mjs init-config.mjs ws.mjs bridge-system-prompt.md SCHEMA.md"
+REVIEW_ENGINE_FILES="build.mjs server.mjs chat.mjs apply.mjs discuss.mjs submit.mjs init-config.mjs ws.mjs notebook.mjs bridge-system-prompt.md SCHEMA.md"
 
 review_usage() {
   cat <<'HELP'
@@ -52,7 +52,7 @@ Options:
                CLI is missing)
   --no-agents  Serve without the agent bridge (comments only)
   --upgrade    Refresh engine files (build/server/chat/apply/discuss/
-               submit/init-config/ws .mjs, bridge-system-prompt.md, SCHEMA.md,
+               submit/init-config/ws/notebook .mjs, bridge-system-prompt.md, SCHEMA.md,
                assets/*) from the framework copy — never touches
                review.config.json, state/, suggestions.json, or site/ — and
                then goes on to build and serve as usual
@@ -271,7 +271,7 @@ run_review_mode() {
   elif [ "$review_dir/review.config.json" -nt "$stamp" ] || [ "$review_dir/build.mjs" -nt "$stamp" ]; then
     need_build=true
   elif [ -n "$(find "$dir" \( -name .git -o -path "$review_dir" \) -prune -o -type f \
-      \( -name '*.tex' -o -name '*.md' -o -name '*.bib' \) -newer "$stamp" -print 2>/dev/null | head -1)" ]; then
+      \( -name '*.tex' -o -name '*.md' -o -name '*.bib' -o -name '*.ipynb' \) -newer "$stamp" -print 2>/dev/null | head -1)" ]; then
     need_build=true
   fi
   if $upgrade; then need_build=true; fi   # new assets are only on the page once it is rebuilt
