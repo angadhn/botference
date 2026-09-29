@@ -1,6 +1,22 @@
 # CHANGELOG
 
-## 2026-09-29
+## 2026-09-30
+
+- **Discuss a Jupyter Book on its real pages.** A locally served Jupyter Book
+  (`_build/html` behind `python -m http.server` or `sphinx-autobuild`) can now
+  be declared in `blog_sites` like a Jekyll site (`kind: "jupyterbook"`, or
+  left out: a `_toc.yml` beside `_config.yml` is recognised). Each page is
+  mapped to its notebook or MyST file through `_toc.yml` (plus files outside
+  the toc at their own path; `index.html` and `/` are the toc's `root:`), and
+  the bots propose changes as suggestion cards in the drawer: an accepted one
+  rewrites exactly one cell's `source` and leaves the rest of the `.ipynb`
+  byte for byte as it was; a card that spans two cells or a code-cell fence
+  goes to needs-manual with the reason. The census ignores `_build/`,
+  `.jupyter_cache/`, `.ipynb_checkpoints/` and `__pycache__/`. An optional
+  per-site `rebuild` command (e.g. `jupyter-book build .`) runs after an
+  accepted change, debounced and one at a time, and the tab reloads when it
+  finishes; without one the drawer says to rebuild by hand. No git, no publish,
+  exactly as for a blog.
 
 - **Review a Jupyter Book.** `botference review` now recognises a repo with
   `_toc.yml` (format `jupyterbook`): chapters come from `_toc.yml` in book

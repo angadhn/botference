@@ -3090,6 +3090,15 @@
     lastBlogFilesAt = ev.at || '';
     if (ev.page_changed) { reloadForArtifact(); return; }
     if (!drawer) return;
+    // a Jupyter Book with a rebuild command: the reload is held until the
+    // owner's build has run (server.mjs holdForRebuild), and the two moments
+    // either side of it are said in one line each
+    if (ev.rebuilding) { drawer.note(null, 'the source changed — rebuilding the book; this tab reloads when the build is done'); return; }
+    if (ev.rebuilt && !ev.rebuild_ok) {
+      drawer.note(null, `the book did not rebuild — the page is the old build.${ev.rebuild_tail ? ` ${String(ev.rebuild_tail).split('\n').pop()}` : ''} (full output in the companion log)`);
+      return;
+    }
+    if (ev.rebuilt) return;
     const n = ev.count || 0;
     drawer.note(null, `the bots changed ${n} file${n === 1 ? '' : 's'} in this site — not this post`);
   }

@@ -44,6 +44,7 @@ import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as suggest from './suggest.mjs';
+import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
 import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
@@ -356,7 +357,9 @@ function checkFileText(page) {
     if (!file) return '';
     const st = fs.statSync(file);
     if (!st.isFile() || st.size > CHECK_FILE_MAX) return '';
-    return checks.plainText(fs.readFileSync(file, 'utf8'));
+    // blog.sourceText: a notebook is checked against its text projection,
+    // never its JSON
+    return checks.plainText(blog.sourceText(file));
   } catch { return ''; }
 }
 function checksFor(page, text) {
@@ -583,7 +586,8 @@ function noteBlogTurnStart(url) {
     blog: true,
     dir: bg.root,
     source: bg.source_path,
-    before: blog.scanSite(bg.root),
+    kind: bg.kind,
+    before: blog.scanSite(bg.root, bg.kind),
     // markdown, presented to the diff as one block per paragraph — see
     // blog.mdDoc: collateral.mjs finds its blocks in HTML tags, and raw
     // markdown has none, so an unblocked file diffs as one enormous region.
@@ -618,7 +622,9 @@ function sourceSnapshot(file) {
   try {
     const st = fs.statSync(file);
     if (!st.isFile() || st.size > collateral.SNAPSHOT_MAX) return '';
-    return fs.readFileSync(file, 'utf8');
+    // a notebook's snapshot is its text projection (blog.sourceText), so the
+    // diff sees cell text and never a JSON reformat
+    return blog.sourceText(file);
   } catch { return ''; }
 }
 
@@ -780,7 +786,7 @@ function reportProjectChanges(ev) {
 function reportBlogChanges(url, seen, ev) {
   const bg = blogOf(url);
   if (!bg || !bg.confirmed || bg.root !== seen.dir) return;   // un-confirmed mid-turn
-  const changed = workspace.diffScans(seen.before, blog.scanSite(seen.dir));
+  const changed = workspace.diffScans(seen.before, blog.scanSite(seen.dir, seen.kind || bg.kind));
   if (!changed.length) return;
   const own = path.relative(seen.dir, seen.source).split(path.sep).join('/');
   const payload = {
@@ -794,13 +800,17 @@ function reportBlogChanges(url, seen, ev) {
     page_changed: changed.includes(own),
     // …and whether anything under assets/ moved, which is the other half of
     // "the page looks different now": a picture was placed or replaced
-    assets_changed: changed.some(rel => (bg.assets || []).some(a => rel.startsWith(`${a}/`))),
+    assets_changed: changed.some(rel => (bg.assets || []).some(a => rel.startsWith(`${a}/`))
+      || (bg.images || []).includes(rel)),
     files: changed.slice(0, workspace.CHANGED_LIST_MAX),
     at: new Date().toISOString(),
   };
   // an image placed in the post is a change to the page as surely as a
   // rewritten paragraph is, and the reader wants to look at it
   if (payload.assets_changed) payload.page_changed = true;
+  // a book whose builder does not rebuild itself: the reload waits for the
+  // owner's rebuild command instead of landing on the old build
+  holdForRebuild(url, bg, payload);
   if (changed.includes(own)) {
     // …and the edits nobody commented on, diffed on the SOURCE. The threads it
     // opens carry markdown wording, which anchors on the rendered page for
@@ -2141,7 +2151,7 @@ function suggestTargetOf(res, data) {
 // `collateral` is deliberately absent from this payload: nothing here was
 // discovered by a diff. The change is the card the reader just pressed.
 function announceBlogWrite(url, bg, before) {
-  const changed = workspace.diffScans(before, blog.scanSite(bg.root));
+  const changed = workspace.diffScans(before, blog.scanSite(bg.root, bg.kind));
   if (!changed.length) return;
   const own = path.relative(bg.root, bg.source_path).split(path.sep).join('/');
   const payload = {
@@ -2157,7 +2167,52 @@ function announceBlogWrite(url, bg, before) {
     files: changed.slice(0, workspace.CHANGED_LIST_MAX),
     at: new Date().toISOString(),
   };
+  holdForRebuild(url, bg, payload);
   publishChanges(url, payload);
+}
+
+// --- rebuilding a book ------------------------------------------------------
+// Jekyll rebuilds itself, so a Jekyll payload goes out as it is and the tab
+// reloads onto jekyll's fresh render. jupyter-book does not: the page under
+// _build/html stays the OLD build until something runs the builder. So where
+// the reader's own row names a `rebuild` command (blog.rebuildOf — the owner's
+// command, never a bot's, never git), the census's reload is HELD: the
+// payload goes out now saying `rebuilding` (the drawer says so in one line),
+// the build runs in the root (rebuild.mjs — debounced, one at a time per
+// root, output to the companion log, never blocking anything), and when it
+// ends a second `blog-files` carries the reload the first one held back —
+// or, if the build failed, says so and reloads nothing.
+//
+// A row with no `rebuild` is left exactly as a Jekyll payload: the census
+// still reloads the tab, and the drawer's source card tells the reader that
+// the book is rebuilt by hand.
+const rebuilder = createRebuilder({
+  log: line => console.log(line.length > 600 ? `${line.slice(0, 600)}…` : line),
+  delayMs: Math.max(0, Number(process.env.PLUGIN_REBUILD_DEBOUNCE_MS) || 1500),
+});
+function holdForRebuild(url, bg, payload) {
+  if (!bg || !bg.rebuild || !payload || !payload.count) return;
+  const wanted = !!payload.page_changed;
+  payload.page_changed = false;
+  payload.rebuilding = true;
+  rebuilder.schedule({ root: bg.root, rebuild: bg.rebuild }, res => {
+    publishChanges(url, {
+      type: 'blog-files',
+      url,
+      root: bg.root,
+      serve_origin: bg.serve_origin,
+      source: payload.source,
+      count: payload.count,
+      files: payload.files,
+      rebuilt: true,
+      rebuild_ok: !!res.ok,
+      // a failed build left the old pages in place: reloading onto them
+      // would show the reader nothing new and say nothing about why
+      page_changed: wanted && !!res.ok,
+      ...(res.ok ? {} : { rebuild_tail: (res.tail || []).slice(-4).join('\n').slice(0, 800) }),
+      at: new Date().toISOString(),
+    });
+  });
 }
 
 // --- running a python block ------------------------------------------------
@@ -2829,7 +2884,12 @@ export function handler(req, res) {
       const added = blog.addSite({
         serve_origin: String(data.serve_origin || ''),
         root: String(data.root || ''),
-        kind: String(data.kind || 'jekyll'),
+        // no kind said → blog.addSite reads it off the tree (a _toc.yml
+        // beside _config.yml is a Jupyter Book)
+        kind: String(data.kind || ''),
+        // the owner's rebuild command, for a kind whose builder does not
+        // rebuild itself; refused for any other kind, and for git/gh
+        rebuild: String(data.rebuild || ''),
       });
       if (!added.ok) return fail(res, 400, added.error);
       forgetBlogPages();
@@ -2878,7 +2938,7 @@ export function handler(req, res) {
       const card = store.findCardIn(msg, data.id);
       if (!card) return fail(res, 404, 'unknown suggestion');
       if (card.state !== 'open') return fail(res, 409, `that suggestion is already ${card.state}`);
-      const before = blog.scanSite(bg.root);
+      const before = blog.scanSite(bg.root, bg.kind);
       const r = suggest.applyCard(bg.source_path, card);
       if (!r.ok) {
         store.setCardState(card, 'needs-manual', { reason: r.reason, detail: r.detail });
@@ -2930,7 +2990,7 @@ export function handler(req, res) {
       const { page, bg, msg } = at;
       const open = (msg.suggestions || []).filter(c => c.state === 'open');
       if (!open.length) return fail(res, 409, 'there is nothing left to accept here');
-      const before = blog.scanSite(bg.root);
+      const before = blog.scanSite(bg.root, bg.kind);
       const out = suggest.applyStack(bg.source_path, open);
       for (const id of out.applied) store.setCardState(store.findCardIn(msg, id), 'applied');
       if (out.stopped) {

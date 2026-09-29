@@ -10448,3 +10448,220 @@ test asserts no page-chat tail reaches those turns.
   tooltip, the marker off the words, an ordinary turn unbadged, the badge
   surviving a streamed answer exactly once, and a bot merely quoting the marker
   mid-reply not being badged.
+
+## Amendment (2026-09-30): Jupyter Book source pages
+
+The reader teaches a course out of a Jupyter Book. They build it, serve
+`_build/html` locally, and read the chapter the way their students will —
+and then, exactly as with a blog post, they want to comment on a paragraph
+and have the change land in the SOURCE. For a book that source is usually a
+`.ipynb`: JSON, with the prose in cell `source` arrays, which no amount of
+unique-span matching on raw text can edit safely. They asked, explicitly, for
+**no separate review interface**: the real rendered pages, the same drawer,
+the same cards.
+
+So a Jupyter Book is now a second **kind** of blog source page. Everything
+the 2026-08-29 amendments promise about a blog root holds for it word for
+word — registration is a declaration plus a confirmation, mapping is a read of
+the repo, the bridge child has the repo writable and git denied, the bots
+PROPOSE and the reader accepts, the turn-end census drives the reload, and
+there is no publish. What is new is how a book is read, how a notebook is
+written, and that a book has to be rebuilt.
+
+### 1. What is new, in one table
+
+| | Jekyll (`kind: "jekyll"`) | Jupyter Book (`kind: "jupyterbook"`) |
+|---|---|---|
+| recognised by | `_config.yml` or `_posts/` | `_toc.yml` **beside** `_config.yml` |
+| served by | `jekyll serve` | any static server over `_build/html` (`python -m http.server`, `sphinx-autobuild`) |
+| the mapping | front matter, permalink templates, conventions, slug | `_toc.yml` entries → `/<path>.html`; `root:` → `/`; else a file at its own path |
+| the source | markdown | a notebook (read as its **text projection**) or a MyST `.md` |
+| an accepted card writes | the unique span, in place | **one cell's `source`**, surgically; every other byte kept |
+| a card that cannot be placed | drift, ambiguity | drift, ambiguity, **crosses a cell / touches a fence** |
+| census also skips | — | `_build/`, `.jupyter_cache/`, `.ipynb_checkpoints/`, `__pycache__/` |
+| pictures | under `assets/` | beside the chapter (the dirs its images are in) |
+| rebuild | jekyll rebuilds itself | **optional** owner's `rebuild` command, run by the companion |
+| git, publish | never | never |
+
+### 2. Registration
+
+```json
+"blog_sites": [{ "serve_origin": "http://localhost:8000",
+                 "root": "/Users/me/SpacecraftDynamics", "kind": "jupyterbook",
+                 "rebuild": "/Users/me/opt/anaconda3/bin/jupyter-book build ." }]
+```
+
+- **The kind is read off the tree when nobody says.** `POST /blog-site`
+  without `kind` (and `blog.addSite` without one) calls `blog.detectKind`:
+  a `_toc.yml` beside `_config.yml` is a book, anything else is checked as
+  Jekyll. A config row with no `kind` is read the same way. An unknown kind
+  is refused at `addSite` rather than quietly read as Jekyll.
+- **The fourth field.** `normalizeSite` still keeps exactly
+  `serve_origin`, `root`, `kind` — plus `rebuild` for a kind whose
+  `KIND_RULES` row says `rebuild: true`, which today is only
+  `jupyterbook`. It is dropped for Jekyll (and refused at `addSite` with a
+  sentence: jekyll rebuilds itself). It cannot touch the other columns: a
+  book row is `git: false, suggest: true` whatever else it carries.
+- **`blog_roots` is unchanged.** The confirmation card asks the same
+  question, and for a book it also says whether the companion will rebuild
+  after an accept or the reader must.
+
+### 3. Mapping is a read of `_toc.yml`
+
+`blog.bookIndexOf(root)` walks the toc with the review engine's own walker
+(`frontends/review/notebook.mjs` `tocSections`, **imported, not copied**, the
+same way `suggest.mjs` imports `span-match.js`). Each entry
+`a/b/c` (`.ipynb` or `.md`, extension optional) is served at
+`/a/b/c.html` and — for a dirhtml build — `/a/b/c/`; the `root:` entry is also
+`/`, which is what `index.html` normalizes to and what jupyter-book's
+`index.html` redirects to. Checked against a real build (SpacecraftDynamics,
+jupyter-book 0.15.1): every chapter lands at exactly that path under
+`_build/html/`.
+
+jupyter-book also builds the notebooks and markdown files **not** in the toc
+(a README, an old problem set). `blog.resolveBookPath` finds those at their
+own path — a FACT about the tree, the same shape as the passthrough — and
+answers `mapped_by: 'path'`.
+
+**Ambiguity is kept.** `a/b.ipynb` beside `a/b.md` is two sources for one
+page, and Sphinx does not promise which it built: the answer is `{doc: null,
+why}` naming both. Nothing under `_build/`, a dot directory or a cache is ever
+a source. A built page opened straight off the disk
+(`file:///…/book/_build/html/a/b/c.html`) is mapped back through the same
+table; it is a photocopy, so `same_file` is false.
+
+The index is cached on the mtimes of `_toc.yml`, `_config.yml` and the
+directories the chapters live in — the mapping depends only on the toc and on
+which files exist, so accepting a card (which moves a notebook's own mtime)
+does not re-read the book.
+
+### 4. Notebooks: the projection is the text, one cell is the write
+
+**Every read of a page's source goes through one door**, `blog.sourceText`,
+and for a `.ipynb` that is the review engine's `projectNotebook`: markdown
+cells verbatim, each code cell as a ```` ```{code-cell} <lang> ```` fence
+around its source, cells joined by one blank line, no outputs. It is used for
+the claim checker's `now reads` file text, the collateral snapshot (dormant
+under suggest mode, and kept honest anyway), and — in `suggest.mjs` — for
+`resolveSpan`. That is also the text the envelope tells the bots they are
+quoting.
+
+**Every write of a notebook goes through `editNotebook`**, the review
+engine's cell-surgical writer: the span resolved on the projection is mapped
+back to one cell, that cell's `source` value is rewritten in the shape the
+file already uses (string or list of lines, its own indentation, ASCII or
+not), the result is parsed back and compared before anything is written, and
+every other byte of the file is left as it was. A span that **crosses a cell
+boundary** or **covers the generated fence lines** is refused by that writer,
+and `applyCard` turns the refusal into `{ok: false, reason: 'cell', detail}` —
+a fourth reason beside drift and ambiguity, landing on the card as
+`needs-manual` with the writer's own sentence ("span crosses a notebook cell
+boundary (cells 2, 3) — split it into one suggestion per cell"). A `.md`
+chapter takes the existing text path unchanged.
+
+**The envelope** (`blog.bookBlock`) is the Jekyll one with three things said
+differently: the page is a jupyter-book build, not a jekyll render; a
+notebook's text is its projection and **a proposal must quote text within one
+cell** (two cells are two blocks); pictures go beside the chapter with a
+relative path. The book's style — `_config.yml`, `_static/` — is on the same
+"leave alone unless the reader asks in so many words" list as Jekyll's
+`_config.yml` and `_layouts/`, and for the same reason the envelope says what
+happens when they do ask: a card can only change this page's own source, so
+such a file is written directly and shown in the turn-end census. That is the
+existing Jekyll design, spelled out; there is no third mode.
+
+### 5. The census and the reload
+
+`blog.scanSite(dir, kind)` skips `KIND_RULES[kind].skip` on top of
+`SKIP_DIRS` — for a book `_build/`, `.jupyter_cache/`, `.ipynb_checkpoints/`,
+`__pycache__/` (dot directories were already skipped). The build output moves
+wholesale on every rebuild and is never an edit. The source-file gate
+(`sourceInRoot`, `passthroughFor`) takes the same list.
+
+`page_changed` fires when the page's own source moved, or — `bg.images`, the
+repo paths of the pictures the page references (`notebook.mjs imageRefs`) —
+one of its pictures did, or anything moved under the directories those
+pictures sit in (`bg.assets`).
+
+### 6. Rebuild: the one thing a book needs that a blog does not
+
+The mechanism deliberately never waits for a builder, because `jekyll serve`
+rebuilds itself. jupyter-book builds once and exits, so without help the tab
+would reload onto the old build. **The optional `rebuild` command** closes
+that gap, under these rules:
+
+- **The owner's command, off the config row, and nowhere else.** No request,
+  reply or card can name one. `blog.rebuildOf` refuses anything over one
+  short line, and anything that mentions `git` or `gh` as a word — the
+  companion has no publishing code path and the rebuild is not allowed to
+  become one by accident.
+- **`rebuild.mjs`**, not `blog.mjs`, runs it: `blog.mjs` keeps its promise
+  that every function in it reads (asserted in the suite). `/bin/sh -c`, in the
+  root, with the companion's own environment — which is why the README says
+  to give the builder by its absolute path.
+- **Debounced (1.5 s), one at a time per root.** An accept-all is one build. A
+  change that lands during a build queues exactly one more, because the build
+  in flight may have read the file first. Output goes to the companion log,
+  line-prefixed `[rebuild <root>]`; a build is killed after 30 minutes.
+- **The reload is held, not raced.** When the census (a turn's, or an
+  accept's) finds a change on a root with a `rebuild`, the `blog-files`
+  payload goes out with `page_changed: false, rebuilding: true` — the drawer
+  says so in one line — and when the build ends a second `blog-files` carries
+  `rebuilt: true, rebuild_ok` and the reload the first one held back. A failed
+  build reloads nothing and names its last output line in the drawer.
+- **Absent, nothing runs**, and the census reloads the tab as for Jekyll; the
+  source card and the confirmation card both say the reader rebuilds by hand.
+- **Git stays denied for the bots regardless**, and the bots are told not to
+  run the build themselves.
+
+### 7. Files
+
+`blog.mjs` (`isJupyterBookRoot`, `detectKind`, `KIND_RULES.jupyterbook` with
+its `rebuild` and `skip` columns, `kindLabel`, `skipDirsFor`, `rebuildOf`,
+`bookIndexOf`, `resolveBookPath`, `sourceText`, `bookBlock`, the shared
+`siteBase`/`docRecord`), `rebuild.mjs` (new: the scheduler), `suggest.mjs`
+(notebook-aware read and `editNotebook` write), `server.mjs` (`sourceText`
+at the checker and the snapshot, `kind` into every census, `images` into
+`page_changed`, `holdForRebuild`, `POST /blog-site` kind detection and
+`rebuild`), `extension/content.js` (the `rebuilding` / failed-build lines),
+`extension/drawer.js` (the book's source card and confirmation card).
+`frontends/review/notebook.mjs` is imported and unchanged.
+
+### 8. Testing
+
+`test/blog.test.mjs` 54 → **81**, against a **synthetic** book in a temp dir
+(nbformat-shaped notebooks with list-of-lines sources and stored outputs, a
+twin `.ipynb`/`.md`, a file outside the toc, `_static/`, and a `_build/` full
+of the built copy): kind detection and registration without a kind; the
+rebuild row kept for a book, dropped for Jekyll, refused when it names git;
+the nested chapter in four spellings, the root page as `/`, `index.html` and
+its own name, the ambiguity, the off-toc path, `_build/` and checkpoints never
+a source; the page record's notebook, pictures and kind; a built page off the
+disk; the projection; the envelope. Then the writes: a card on a markdown
+cell leaves the file **byte-identical** outside the one line it changed; a
+cross-cell card and a fence-touching card are refused and write nothing; a
+code cell's text changes with its stored output untouched; a sweep lands in
+document order; a `.md` chapter takes the old path. The census skips
+`_build/` and the caches but counts `_static/`. The scheduler builds once for
+a burst, queues exactly one more behind a running build, and reports a
+failure with its tail. And the companion end against the mock bridge:
+registration with no kind, `/blog-page`, the envelope and the lift, an accept
+writing one cell then **one** rebuild (`echo run >> built.flag`) then the
+reload, a cross-cell card going to needs-manual, a `_build/` write being no
+change and no build, and a replaced picture rebuilding and reloading.
+
+Trialled against the reader's real book, with a throwaway workspace and
+nothing written into the book: 30 toc chapters, no missing or ambiguous
+entries; `/orbital-mechanics/Lecture3/Lecture3.html` →
+`orbital-mechanics/Lecture3/Lecture3.ipynb` with its `imgs/`; a dry-run edit
+resolving inside markdown cell 2 and changing only that cell; a cross-cell
+span refused; the census of 332 files carrying nothing from `_build/`. And
+live, end to end short of Accept: `_build/html` served by
+`python -m http.server`, a companion on this code with the mock bridge,
+`POST /blog-site` with no kind registering it as a book, `/blog-page` mapping
+the chapter, a turn's envelope carrying the one-cell rule, and a ```` ```suggest ````
+card lifted `open` — the notebook's hash unchanged throughout.
+
+Not done: the drawer's book cards have no harness pose yet (the Jekyll poses
+are unchanged); the rebuild is per root and a book with
+`execute_notebooks: force` re-runs every notebook on every rebuild.

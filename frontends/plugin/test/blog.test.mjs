@@ -720,6 +720,440 @@ console.log('\ncompanion — blog source pages');
   events.close();
 }
 
+// =========================================================================
+// A Jupyter Book: the same mechanism, a second kind. The book is SYNTHETIC
+// (a temp dir, like the Jekyll one): the reader's real book is never read or
+// written here. See SPEC.md "Jupyter Book source pages".
+console.log('\nblog — a Jupyter Book');
+
+// A notebook the way jupyter/nbformat writes one: one-space indent, list-of-
+// lines sources, a stored output, metadata — so a byte comparison after an
+// edit means something.
+function notebook(cells) {
+  return JSON.stringify({
+    cells: cells.map((c, i) => (c.code != null
+      ? { cell_type: 'code', execution_count: 1, id: `c${i}`, metadata: {},
+        outputs: [{ name: 'stdout', output_type: 'stream', text: ['42\n'] }],
+        source: c.code.split(/(?<=\n)/) }
+      : { cell_type: 'markdown', id: `c${i}`, metadata: {}, source: c.md.split(/(?<=\n)/) })),
+    metadata: { kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
+      language_info: { name: 'python' } },
+    nbformat: 4, nbformat_minor: 5,
+  }, null, 1) + '\n';
+}
+const CH1 = notebook([
+  { md: '# Elliptic Orbits\n\n![fig](imgs/orbit.png)\n\nThe eccentricity vector points at periapsis.' },
+  { md: 'The mass saving is the whole argument and it is not a small one.\nA second line of the same cell.' },
+  { code: 'import numpy as np\nprint(42)' },
+  { md: 'A closing cell, left alone by every test in this file.' },
+]);
+
+function book(tag, { extra = {} } = {}) {
+  const root = tmp(tag);
+  const w = (rel, text) => {
+    const p = path.join(root, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text);
+    return p;
+  };
+  w('_config.yml', 'title: A Test Book\nauthor: Nobody\n');
+  w('_toc.yml', [
+    'format: jb-book',
+    'root: intro',
+    'parts:',
+    '  - caption: Part one',
+    '    chapters:',
+    '    - file: part1/ch1/ch1      ',
+    '    - file: part1/notes.md',
+    '    - file: twins/t',
+    '',
+  ].join('\n'));
+  w('intro.md', '# Welcome\n\nThe front page of the book.\n');
+  w('part1/ch1/ch1.ipynb', CH1);
+  w('part1/ch1/imgs/orbit.png', 'not really a png');
+  w('part1/notes.md', '# Notes\n\nSome MyST notes.\n');
+  w('twins/t.ipynb', notebook([{ md: '# Twin notebook' }]));
+  w('twins/t.md', '# Twin markdown\n');
+  w('extra/loose.ipynb', notebook([{ md: '# Not in the toc' }]));
+  w('_static/custom.css', 'body { color: black; }\n');
+  // the build output and the caches: what the reader is LOOKING at, and what
+  // nothing may map to or count
+  w('_build/html/index.html', '<meta http-equiv="Refresh" content="0; url=intro.html" />');
+  w('_build/html/intro.html', '<h1>Welcome</h1>');
+  w('_build/html/part1/ch1/ch1.html', '<h1>Elliptic Orbits</h1>');
+  w('_build/.jupyter_cache/global.db', 'x');
+  w('part1/ch1/.ipynb_checkpoints/ch1-checkpoint.ipynb', CH1);
+  w('part1/__pycache__/x.pyc', 'x');
+  fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+  for (const [rel, text] of Object.entries(extra)) w(rel, text);
+  return root;
+}
+
+await test('a _toc.yml beside _config.yml is a Jupyter Book; a Jekyll tree is not', async () => {
+  assert.equal(blog.detectKind(book('kind')), 'jupyterbook');
+  assert.equal(blog.isJupyterBookRoot(book('kind2')), true);
+  assert.equal(blog.detectKind(jekyll('kind-j')), 'jekyll');
+  const half = tmp('half-book');
+  fs.writeFileSync(path.join(half, '_toc.yml'), 'root: intro\n');
+  assert.equal(blog.isJupyterBookRoot(half), false, 'a toc with no _config.yml is not a book');
+  assert.equal(blog.detectKind(half), '');
+});
+
+await test('registration reads the kind off the tree when the caller does not say', async () => {
+  const root = book('reg-book');
+  const r = blog.addSite({ serve_origin: 'http://localhost:8123', root });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.site.kind, 'jupyterbook');
+  const j = blog.addSite({ serve_origin: 'http://localhost:8124', root: jekyll('reg-j') });
+  assert.equal(j.site.kind, 'jekyll', 'no toc, no book');
+  const wrong = blog.addSite({ serve_origin: 'http://localhost:8125', root: jekyll('reg-j2'), kind: 'jupyterbook' });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.error, /_toc\.yml/);
+  assert.equal(blog.addSite({ serve_origin: 'http://localhost:8126', root, kind: 'hugo' }).ok, false,
+    'an unknown kind is refused, not quietly read as Jekyll');
+  blog.removeSite('http://localhost:8123');
+  blog.removeSite('http://localhost:8124');
+});
+
+await test('a rebuild command is kept for a book, dropped for Jekyll, refused if it names git', async () => {
+  const root = book('rebuild-row');
+  const r = blog.addSite({ serve_origin: 'http://localhost:8127', root, rebuild: 'jupyter-book build .' });
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.site.rebuild, 'jupyter-book build .');
+  assert.deepEqual(Object.keys(r.site).sort(), ['kind', 'rebuild', 'root', 'serve_origin'],
+    'three fields and the rebuild command — nothing else survives');
+  for (const bad of ['jupyter-book build . && git commit -am x', 'gh pages', '/usr/bin/git push', 'a\nb']) {
+    const x = blog.addSite({ serve_origin: 'http://localhost:8128', root, rebuild: bad });
+    assert.equal(x.ok, false, `refused: ${JSON.stringify(bad)}`);
+  }
+  const j = blog.addSite({ serve_origin: 'http://localhost:8129', root: jekyll('rebuild-j'), rebuild: 'make' });
+  assert.equal(j.ok, false, 'jekyll rebuilds itself; a rebuild on its row is a mistake said out loud');
+  assert.equal(blog.rebuildOf('jekyll', 'make').cmd, '');
+  assert.equal(blog.gitAllowed('jupyterbook'), false);
+  assert.equal(blog.suggestMode('jupyterbook'), true);
+  assert.deepEqual(blog.deniedCommands('jupyterbook'), ['git', 'gh']);
+  blog.removeSite('http://localhost:8127');
+});
+
+{
+  const root = book('map-book');
+  const map = p => blog.resolvePath(root, p, 'jupyterbook');
+
+  await test('a nested chapter maps from its built url to its notebook, in every spelling', async () => {
+    for (const p of ['/part1/ch1/ch1.html', '/part1/ch1/ch1/', '/part1/ch1/ch1', '/part1/ch1/ch1.html?x=1#sec']) {
+      const r = map(p);
+      assert.ok(r.doc, `${p}: ${r.why}`);
+      assert.equal(r.doc.rel, 'part1/ch1/ch1.ipynb', p);
+      assert.equal(r.how, 'toc');
+    }
+    assert.equal(r0(map('/part1/notes.html')), 'part1/notes.md', 'an entry written with its extension');
+  });
+
+  await test('the root page answers for /, index.html and its own name', async () => {
+    for (const p of ['/', '/index.html', '/intro.html']) assert.equal(r0(map(p)), 'intro.md', p);
+  });
+
+  await test('a notebook and a markdown file with one stem are ambiguous, not resolved by luck', async () => {
+    const r = map('/twins/t.html');
+    assert.equal(r.doc, null);
+    assert.match(r.why, /twins\/t\.ipynb/);
+    assert.match(r.why, /twins\/t\.md/);
+  });
+
+  await test('a page built from a file outside the toc is found at its own path', async () => {
+    const r = map('/extra/loose.html');
+    assert.equal(r.doc.rel, 'extra/loose.ipynb');
+    assert.equal(r.how, 'path');
+  });
+
+  await test('the build output, a dot directory and a missing page map to nothing', async () => {
+    assert.equal(map('/_build/html/part1/ch1/ch1.html').doc, null, '_build/ is the photocopy');
+    assert.equal(map('/part1/ch1/.ipynb_checkpoints/ch1-checkpoint.html').doc, null);
+    assert.equal(map('/genindex.html').doc, null);
+    assert.match(map('/nope.html').why, /no notebook or markdown/);
+    for (const doc of blog.bookIndexOf(root).docs) assert.ok(!doc.rel.startsWith('_build/'));
+  });
+
+  await test('the page record names the notebook, its pictures and the kind', async () => {
+    blog.addSite({ serve_origin: 'http://localhost:8130', root });
+    const p = blog.blogPageFor('http://localhost:8130/part1/ch1/ch1.html');
+    assert.equal(p.kind, 'jupyterbook');
+    assert.equal(p.kind_label, 'Jupyter Book');
+    assert.equal(p.source_path, path.join(root, 'part1', 'ch1', 'ch1.ipynb'));
+    assert.equal(p.notebook, true);
+    assert.deepEqual(p.assets, ['part1/ch1/imgs'], 'pictures sit beside the chapter');
+    assert.deepEqual(p.images, ['part1/ch1/imgs/orbit.png']);
+    assert.equal(p.suggest_mode, true);
+    assert.equal(p.git_allowed, false);
+    assert.equal(p.rebuild, '', 'no rebuild command declared');
+  });
+
+  await test('a built page opened off the disk maps back to its notebook too', async () => {
+    const p = blog.blogPageFor('file://' + path.join(root, '_build', 'html', 'part1', 'ch1', 'ch1.html'));
+    assert.ok(p, 'a page of the declared book');
+    assert.equal(p.rel, 'part1/ch1/ch1.ipynb');
+    assert.ok(!p.same_file, 'the built page is a photocopy, not its own source');
+    blog.removeSite('http://localhost:8130');
+  });
+
+  await test('the notebook reads as its text projection, not its JSON', async () => {
+    const text = blog.sourceText(path.join(root, 'part1', 'ch1', 'ch1.ipynb'));
+    assert.ok(text.startsWith('# Elliptic Orbits'), text.slice(0, 60));
+    assert.match(text, /```\{code-cell\} python\nimport numpy as np\nprint\(42\)\n```/);
+    assert.ok(!/"cell_type"|"outputs"/.test(text), 'no JSON in the projection');
+    assert.equal(blog.sourceText(path.join(root, 'part1', 'notes.md')), '# Notes\n\nSome MyST notes.\n',
+      'a markdown chapter is its own text');
+  });
+
+  await test('the envelope tells the bots about cells, style files and the rebuild', async () => {
+    const p = { ...blog.blogPageFor('file://' + path.join(root, '_build', 'html', 'part1', 'ch1', 'ch1.html')) };
+    blog.addSite({ serve_origin: 'http://localhost:8131', root });
+    const page = blog.blogPageFor('http://localhost:8131/part1/ch1/ch1.html');
+    const block = blog.blogBlock(page);
+    assert.match(block, /WITHIN ONE CELL/);
+    assert.match(block, /\{code-cell\}/);
+    assert.match(block, /_config\.yml and _static\//, 'the book\'s style is named as leave-alone-unless-asked');
+    assert.match(block, /_build\//);
+    assert.match(block, /DO NOT RUN GIT/);
+    assert.match(block, /rebuilds the book themselves/, 'no rebuild command: the reader rebuilds by hand');
+    assert.ok(!/Jekyll|jekyll/.test(block), 'no jekyll story on a book');
+    assert.ok(block.includes(page.source_path));
+    const md = blog.blogBlock(blog.blogPageFor('http://localhost:8131/part1/notes.html'));
+    assert.ok(!/WITHIN ONE CELL/.test(md), 'a markdown chapter has no cells to stay inside');
+    assert.ok(p);
+    blog.removeSite('http://localhost:8131');
+  });
+}
+function r0(r) { return r && r.doc ? r.doc.rel : `(none: ${r && r.why})`; }
+
+{
+  const suggest = await import(path.join(PLUGIN, 'suggest.mjs'));
+  const root = book('apply-book');
+  const NB = path.join(root, 'part1', 'ch1', 'ch1.ipynb');
+
+  await test('a card on a notebook markdown cell changes that cell and not one other byte', async () => {
+    fs.writeFileSync(NB, CH1);
+    const r = suggest.applyCard(NB, { state: 'open',
+      current: 'The mass saving is the whole argument and it is not a small one.',
+      proposed: 'The mass saving is the whole argument, and it is not small.' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.equal(r.cell, 1);
+    const after = fs.readFileSync(NB, 'utf8');
+    assert.equal(after, CH1.replace('whole argument and it is not a small one.', 'whole argument, and it is not small.'),
+      'byte-identical outside the one line that changed: outputs, ids, metadata, indentation');
+    const a = JSON.parse(CH1).cells;
+    const b = JSON.parse(after).cells;
+    assert.deepEqual(b.map((c, i) => JSON.stringify(c) === JSON.stringify(a[i])), [true, false, true, true]);
+  });
+
+  await test('a card whose span crosses two cells is refused and writes nothing', async () => {
+    fs.writeFileSync(NB, CH1);
+    const r = suggest.applyCard(NB, { state: 'open',
+      current: 'points at periapsis.\n\nThe mass saving is the whole argument',
+      proposed: 'something else' });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'cell');
+    assert.match(r.detail, /cell boundary/);
+    assert.equal(fs.readFileSync(NB, 'utf8'), CH1);
+  });
+
+  await test('…and so is one that touches a code-cell fence', async () => {
+    fs.writeFileSync(NB, CH1);
+    const r = suggest.applyCard(NB, { state: 'open',
+      current: '```{code-cell} python\nimport numpy as np', proposed: 'import numpy' });
+    assert.equal(r.ok, false);
+    assert.equal(r.reason, 'cell');
+    assert.equal(fs.readFileSync(NB, 'utf8'), CH1);
+  });
+
+  await test('a code cell\'s own text can be changed, and the output stays as stored', async () => {
+    fs.writeFileSync(NB, CH1);
+    const r = suggest.applyCard(NB, { state: 'open', current: 'print(42)', proposed: 'print(6 * 7)' });
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const cell = JSON.parse(fs.readFileSync(NB, 'utf8')).cells[2];
+    assert.deepEqual(cell.source, ['import numpy as np\n', 'print(6 * 7)']);
+    assert.deepEqual(cell.outputs, JSON.parse(CH1).cells[2].outputs);
+  });
+
+  await test('a sweep over a notebook lands cell by cell, in document order', async () => {
+    fs.writeFileSync(NB, CH1);
+    const out = suggest.applyStack(NB, [
+      { id: 'b', state: 'open', current: 'A closing cell, left alone', proposed: 'A closing cell, now edited' },
+      { id: 'a', state: 'open', current: 'points at periapsis', proposed: 'points toward periapsis' },
+    ]);
+    assert.deepEqual(out.applied, ['a', 'b']);
+    assert.equal(out.stopped, null);
+    const text = blog.sourceText(NB);
+    assert.match(text, /points toward periapsis/);
+    assert.match(text, /A closing cell, now edited/);
+  });
+
+  await test('a markdown chapter takes the existing text path unchanged', async () => {
+    const md = path.join(root, 'part1', 'notes.md');
+    const r = suggest.applyCard(md, { state: 'open', current: 'Some MyST notes.', proposed: 'Some better notes.' });
+    assert.equal(r.ok, true);
+    assert.equal(fs.readFileSync(md, 'utf8'), '# Notes\n\nSome better notes.\n');
+  });
+}
+
+await test('the census skips _build/, the caches and the checkpoints', async () => {
+  const root = book('census-book');
+  const seen = [...blog.scanSite(root, 'jupyterbook').keys()];
+  assert.ok(seen.includes('part1/ch1/ch1.ipynb'));
+  assert.ok(seen.includes('part1/ch1/imgs/orbit.png'));
+  assert.ok(seen.includes('_static/custom.css'), 'the book\'s style is a source, and a change to it counts');
+  for (const bad of ['_build/', '.ipynb_checkpoints/', '__pycache__/', '.jupyter_cache']) {
+    assert.ok(!seen.some(p => p.includes(bad)), `${bad} is build output, not an edit`);
+  }
+  assert.deepEqual([...blog.scanSite(root).keys()].sort(), seen.sort(), 'and the kind is read off the tree when not said');
+});
+
+await test('the rebuild scheduler runs one build for a burst of changes, one at a time', async () => {
+  const { createRebuilder } = await import(path.join(PLUGIN, 'rebuild.mjs'));
+  const root = book('sched-book');
+  const lines = [];
+  const rb = createRebuilder({ log: l => lines.push(l), delayMs: 60 });
+  const site = { root, rebuild: 'echo run >> built.flag' };
+  const results = [];
+  for (let i = 0; i < 4; i++) rb.schedule(site, r => results.push(r));
+  await waitFor(() => results.length === 4, 'the build to report to every waiter');
+  assert.equal(fs.readFileSync(path.join(root, 'built.flag'), 'utf8'), 'run\n', 'four requests, one build');
+  assert.ok(results.every(r => r.ok && r.code === 0));
+  // a change while a build runs queues exactly one more
+  const slow = { root, rebuild: 'sleep 0.3; echo run >> built.flag' };
+  const more = [];
+  rb.schedule(slow, r => more.push(r));
+  await waitFor(() => rb.busy(root) && lines.some(l => l.includes('sleep 0.3')), 'the slow build to start');
+  rb.schedule(slow, r => more.push(r));
+  rb.schedule(slow, r => more.push(r));
+  await waitFor(() => more.length === 3 && !rb.busy(root), 'both builds to finish');
+  assert.equal(fs.readFileSync(path.join(root, 'built.flag'), 'utf8'), 'run\nrun\nrun\n',
+    'the one in flight plus exactly one after it');
+  const bad = [];
+  rb.schedule({ root, rebuild: 'echo broken >&2; exit 3' }, r => bad.push(r));
+  await waitFor(() => bad.length, 'the failing build');
+  assert.equal(bad[0].ok, false);
+  assert.equal(bad[0].code, 3);
+  assert.deepEqual(bad[0].tail, ['broken'], 'the output rides the result for the drawer');
+  assert.ok(lines.some(l => l.includes('FAILED')), 'and the companion log says so');
+});
+
+// The companion end, for a book: registration without a kind, the mapping on
+// the wire, the envelope, an accepted card writing one cell, and the owner's
+// rebuild command running once before the reload.
+console.log('\ncompanion — a Jupyter Book');
+
+{
+  const root = book('srv-book');
+  const ORIGIN = 'http://localhost:4077';
+  const PAGE = `${ORIGIN}/part1/ch1/ch1.html`;
+  const NB = path.join(root, 'part1', 'ch1', 'ch1.ipynb');
+  const FLAG = path.join(root, 'built.flag');
+  const workspaceRoot = tmp('srv-book-companion');
+  const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const { base } = await startServer({
+    root: workspaceRoot,
+    env: {
+      PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
+      MOCK_BRIDGE_LOG: logFile,
+      PLUGIN_REBUILD_DEBOUNCE_MS: '100',
+    },
+  });
+  const events = listen(base);
+  await sleep(120);
+  const says = lines => `[mock:says:${lines.join('\\n')}]`;
+  const pageMsgs = async () => ((await GET(base, '/page?url=' + enc(PAGE))).json || {}).page_chat || [];
+  let turnN = 0;
+  async function turn(blocks) {
+    const tag = `booknote-${++turnN}`;
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: '@claude ' + says([tag, '', ...blocks]) });
+    return waitFor(async () => (await pageMsgs())
+      .find(m => m.author === 'claude' && String(m.text || '').startsWith(tag)), `the answer to ${tag}`);
+  }
+
+  await test('POST /blog-site with no kind registers a book, rebuild command and all', async () => {
+    const r = await POST(base, '/blog-site', { serve_origin: ORIGIN, root, rebuild: 'echo run >> built.flag' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.site.kind, 'jupyterbook');
+    assert.equal(r.json.site.rebuild, 'echo run >> built.flag');
+    const bad = await POST(base, '/blog-site', { serve_origin: ORIGIN, root, rebuild: 'git push' });
+    assert.equal(bad.status, 400, 'a rebuild command that names git is refused at the door');
+    await POST(base, '/blog-root', { root, confirm: true });
+  });
+
+  await test('GET /blog-page maps the chapter to its notebook', async () => {
+    const r = await GET(base, '/blog-page?url=' + enc(PAGE));
+    assert.equal(r.json.blog.rel, 'part1/ch1/ch1.ipynb');
+    assert.equal(r.json.blog.kind, 'jupyterbook');
+    assert.equal(r.json.blog.rebuild, 'echo run >> built.flag');
+    assert.equal(r.json.blog.confirmed, true);
+  });
+
+  let msg = null;
+  await test('a turn carries the notebook rules and lifts the cards', async () => {
+    await POST(base, '/page', { url: PAGE, title: 'Elliptic Orbits', site: 'localhost' });
+    msg = await turn(['```suggest', 'current: points at periapsis.', 'proposed: points toward periapsis.',
+      'why: direction, not location', '```']);
+    const t = inputs(logFile).find(x => x.includes('booknote-1'));
+    assert.match(t, /book chapter/);
+    assert.match(t, /WITHIN ONE CELL/);
+    assert.ok(t.includes(NB));
+    assert.equal(msg.suggestions.length, 1);
+    assert.equal(fs.readFileSync(NB, 'utf8'), CH1, 'the turn moved nothing');
+    assert.ok(!fs.existsSync(FLAG), 'and nothing was rebuilt for a turn that changed nothing');
+  });
+
+  await test('accepting it writes one cell, rebuilds ONCE, then reloads', async () => {
+    const before = events.of('blog-files').length;
+    const r = await POST(base, '/suggest-accept', { url: PAGE, ts: msg.ts, author: 'claude', id: msg.suggestions[0].id });
+    assert.equal(r.json.applied, true, JSON.stringify(r.json));
+    assert.equal(fs.readFileSync(NB, 'utf8'), CH1.replace('points at periapsis.', 'points toward periapsis.'));
+    const first = await waitFor(() => events.of('blog-files').slice(before)[0], 'the held event');
+    assert.equal(first.rebuilding, true);
+    assert.equal(first.page_changed, false, 'the reload waits for the build');
+    const done = await waitFor(() => events.of('blog-files').slice(before).find(e => e.rebuilt), 'the build');
+    assert.equal(done.rebuild_ok, true);
+    assert.equal(done.page_changed, true, 'and then the tab reloads onto the new build');
+    assert.equal(fs.readFileSync(FLAG, 'utf8'), 'run\n', 'one accepted card, one rebuild');
+  });
+
+  await test('a cross-cell card goes to needs-manual and writes nothing', async () => {
+    // two markdown cells, one boundary between them — a span a bot might
+    // well write, and one no single cell can hold
+    const m = await turn(['```suggest', 'current: toward periapsis.', '', 'The mass saving is the whole argument',
+      'proposed: x', 'why: crosses', '```']);
+    assert.equal(m.suggestions[0].state, 'open', JSON.stringify(m.suggestions));
+    const now = fs.readFileSync(NB, 'utf8');
+    const r = await POST(base, '/suggest-accept', { url: PAGE, ts: m.ts, author: 'claude', id: m.suggestions[0].id });
+    assert.equal(r.json.applied, false);
+    assert.equal(r.json.card.state, 'needs-manual');
+    assert.equal(r.json.card.reason, 'cell');
+    assert.equal(fs.readFileSync(NB, 'utf8'), now);
+  });
+
+  await test('a rebuild writing _build/ is not a change', async () => {
+    const before = events.of('blog-files').length;
+    const built = path.join(root, '_build', 'html', 'part1', 'ch1', 'ch1.html');
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__',
+      text: `@claude [mock:write:${built}] pretend the book rebuilt` });
+    await waitFor(() => inputs(logFile).some(t => t.includes('pretend the book rebuilt')), 'the turn');
+    await sleep(500);
+    assert.equal(events.of('blog-files').length, before, '_build/ moves on every build');
+    assert.equal(fs.readFileSync(FLAG, 'utf8'), 'run\n', 'and it does not set off another build');
+  });
+
+  await test('a picture the chapter uses, replaced in a turn, rebuilds and reloads', async () => {
+    const before = events.of('blog-files').length;
+    const img = path.join(root, 'part1', 'ch1', 'imgs', 'orbit.png');
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: `@claude [mock:write:${img}] redraw the figure` });
+    const done = await waitFor(() => events.of('blog-files').slice(before).find(e => e.rebuilt), 'the build');
+    assert.equal(done.page_changed, true);
+    assert.equal(fs.readFileSync(FLAG, 'utf8'), 'run\nrun\n');
+  });
+
+  events.close();
+}
+
 // --- done ----------------------------------------------------------------
 cleanup();
 await sleep(200);

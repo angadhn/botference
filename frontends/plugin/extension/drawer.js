@@ -4528,9 +4528,12 @@ ${bubbleShellHtml()}`;
           <div class="confirmq">Is this your site?</div>
           <p class="confirmp">This page ${b.same_file ? 'is a file in' : 'is being served from'} <code class="rootpath">${esc(repo)}</code>${
             b.rel ? ` — ${b.same_file ? 'the file itself is' : 'rendered from'} <code class="rootpath">${esc(b.rel)}</code>` : ''}.</p>
-          <p class="confirmp">Say yes and the bots may edit that post and its images when you ask
-            them to, in the source rather than in the page. They will never commit or push anything:
-            you publish your site yourself.</p>
+          <p class="confirmp">Say yes and the bots may ${b.kind === 'jupyterbook'
+            ? 'propose changes to that chapter and edit its images when you ask them to, in the notebook or MyST source rather than in the built page. '
+              + (b.rebuild ? `After an accepted change the companion runs <code>${esc(b.rebuild)}</code> in the book.`
+                : 'Nothing rebuilds the book for you: run <code>jupyter-book build .</code> yourself after accepting a change, or add a rebuild command to the site’s config row.')
+              + ' They will never commit or push anything: you publish your book yourself.'
+            : 'edit that post and its images when you ask them to, in the source rather than in the page. They will never commit or push anything: you publish your site yourself.'}</p>
           <div class="confirmacts">
             <button class="pbtn yes" data-act="blogroot-yes" type="button">Yes, that is my site</button>
             <button class="pbtn no" data-act="blogroot-no" type="button">No, leave this page alone</button>
@@ -4553,6 +4556,20 @@ ${bubbleShellHtml()}`;
           <div class="blogline">Editing this file: <code class="blogpath" title="${esc(b.source_path)}">${esc(b.rel)}</code></div>
           <div class="blognote">This page is its own source — comments change the file you are
             looking at, and the tab reloads.${b.git_allowed ? '' : ' Nothing is ever committed or pushed — you publish it yourself.'}</div>
+        </div>`;
+      }
+      // A chapter of a Jupyter Book: the source is a notebook (or MyST
+      // markdown), and jupyter-book does not rebuild itself — so the card
+      // says whether the companion runs the owner's rebuild command or the
+      // reader has to rebuild by hand.
+      if (b.kind === 'jupyterbook') {
+        const rebuilt = b.rebuild
+          ? `The book is rebuilt (<code>${esc(b.rebuild)}</code>) and this tab reloads when it is done.`
+          : 'Rebuild the book yourself (<code>jupyter-book build .</code>) and reload to see an accepted change — no rebuild command is set for this book.';
+        return `<div class="card blogsrc book">
+          <div class="blogline">Editing the source: <code class="blogpath" title="${esc(b.source_path)}">${esc(b.rel)}</code></div>
+          <div class="blognote">Comments here change the ${b.notebook ? 'notebook, one cell at a time' : 'MyST source'}, not the page. ${rebuilt}${
+            b.git_allowed ? '' : ' Nothing is ever committed or pushed — you publish it yourself.'}</div>
         </div>`;
       }
       return `<div class="card blogsrc">

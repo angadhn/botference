@@ -42,7 +42,21 @@
 //
 // THIS MODULE WRITES EXACTLY ONE THING: the markdown file a card names, and
 // only when `applyCard` is called with a span that resolved uniquely.
+//
+// ── A NOTEBOOK IS NOT TEXT, SO IT IS READ AS ITS PROJECTION ───────────────
+// A Jupyter Book chapter is often a `.ipynb`: JSON, with the prose in cell
+// `source` arrays. Every read here goes through the review engine's text
+// projection of it (notebook.mjs `projectNotebook`: markdown cells verbatim,
+// code cells as ```{code-cell} fences, one blank line between cells) — which
+// is exactly the text the bots are told they are quoting — and every write
+// goes through its cell-surgical writer (`editNotebook`), which rewrites ONE
+// cell's `source` value and leaves every other byte of the file (outputs,
+// metadata, ids, the tool's own formatting) as it was. A span that crosses a
+// cell boundary or touches the generated fence lines is refused by that
+// writer, and here that refusal is one more reason a card goes needs-manual,
+// alongside drift and ambiguity. Nothing is written in that case.
 import fs from 'node:fs';
+import { projectNotebook, editNotebook } from '../review/notebook.mjs';
 // The review engine's matcher, imported and not forked. See the header.
 import SpanMatch from '../review/assets/span-match.js';
 // the one spelling of "close the hole a lifted block leaves" — store.mjs owns
@@ -211,9 +225,14 @@ export function resolveSpan(text, current) {
   return { ok: true, start: spans[0].start, end: spans[0].end };
 }
 
+const isNotebook = file => /\.ipynb$/i.test(String(file || ''));
 const readFile = file => {
-  try { return { ok: true, text: fs.readFileSync(file, 'utf8') }; }
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); }
   catch { return { ok: false, reason: 'gone', detail: 'the source file could not be read' }; }
+  if (!isNotebook(file)) return { ok: true, text: raw };
+  try { return { ok: true, text: projectNotebook(JSON.parse(raw)).text }; }
+  catch { return { ok: false, reason: 'gone', detail: 'the notebook is not valid JSON any more' }; }
 };
 
 /**
@@ -237,6 +256,17 @@ export function applyCard(file, card) {
   const at = resolveSpan(read.text, card.current);
   if (!at.ok) return at;
   const after = read.text.slice(0, at.start) + String(card.proposed ?? '') + read.text.slice(at.end);
+  if (isNotebook(file)) {
+    // the span is an address in the PROJECTION; editNotebook maps it back to
+    // one cell's source and refuses a span that is not inside one cell
+    let nb = null;
+    try { nb = editNotebook(file, at.start, at.end, String(card.proposed ?? '')); }
+    catch (e) { return { ok: false, reason: 'gone', detail: `the notebook could not be read: ${String(e.message || e)}` }; }
+    if (!nb.ok) return { ok: false, reason: 'cell', detail: nb.reason };
+    try { fs.writeFileSync(file, nb.after); }
+    catch (e) { return { ok: false, reason: 'gone', detail: `the notebook could not be written: ${String(e.message || e)}` }; }
+    return { ok: true, before: read.text, after, start: at.start, end: at.end, cell: nb.cell };
+  }
   try { fs.writeFileSync(file, after); }
   catch (e) { return { ok: false, reason: 'gone', detail: `the source file could not be written: ${String(e.message || e)}` }; }
   return { ok: true, before: read.text, after, start: at.start, end: at.end };

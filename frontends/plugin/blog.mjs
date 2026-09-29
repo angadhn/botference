@@ -61,6 +61,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
+// The review engine's Jupyter Book reader, imported and not forked: the same
+// text projection of a notebook (markdown cells verbatim, code cells as
+// ```{code-cell} fences), the same cell-surgical writer, the same _toc.yml
+// walker. frontends/review/notebook.mjs is self-contained on purpose (the
+// review engine copies it into a paper repo), so it is imported from where it
+// lives rather than moved.
+import { projectNotebook, tocSections, imageRefs, firstHeading } from '../review/notebook.mjs';
 
 const isDir = p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } };
 const isFile = p => { try { return fs.statSync(p).isFile(); } catch { return false; } };
@@ -112,6 +119,26 @@ export function isJekyllRoot(dir) {
     || isDir(path.join(dir, '_posts'));
 }
 
+/**
+ * Does this directory look like a Jupyter Book? `_toc.yml` beside
+ * `_config.yml` is the pair jupyter-book itself requires to build.
+ */
+export function isJupyterBookRoot(dir) {
+  if (!dir || !isDir(dir)) return false;
+  return isFile(path.join(dir, '_toc.yml')) && isFile(path.join(dir, '_config.yml'));
+}
+
+/**
+ * The kind a root is, read off the tree when nobody said: a table of contents
+ * makes it a book, anything else is a Jekyll site. `''` for a directory that
+ * is neither, which is what registration refuses.
+ */
+export function detectKind(dir) {
+  if (isJupyterBookRoot(dir)) return 'jupyterbook';
+  if (isJekyllRoot(dir)) return 'jekyll';
+  return '';
+}
+
 // ---- registration ---------------------------------------------------------
 // Two records, deliberately separate, exactly as a council root is:
 //
@@ -145,8 +172,26 @@ const originOf = v => {
 // key, and `normalizeSite` keeps exactly three fields off a config row, so a
 // restored or hand-edited config.json can move the path and cannot turn the
 // mode off.
+//
+// `rebuild` is the third column, and it is a different sort of rule: not a
+// power withheld from the bots but a fact about the builder. `jekyll serve`
+// rebuilds itself on every save, so a Jekyll row has nothing to run and any
+// `rebuild` key on one is dropped. jupyter-book builds once and exits, so a
+// book's row MAY name the command the owner runs by hand (`jupyter-book build
+// .`) and the companion runs it after a change to the sources (rebuild.mjs —
+// this file still starts nothing). It is the owner's own command, never a
+// bot's, it may not mention git or gh (`rebuildOf`), and it cannot touch the
+// other two columns: a row carrying one is still `git:false, suggest:true`.
+//
+// `skip` is what the census and the source-file gate ignore ON TOP OF
+// SKIP_DIRS for this kind — a book's build output and caches move on every
+// rebuild and must never count as an edit or be mistaken for a page.
 const KIND_RULES = {
-  jekyll: { git: false, suggest: true, label: 'Jekyll' },
+  jekyll: { git: false, suggest: true, rebuild: false, label: 'Jekyll', skip: [] },
+  jupyterbook: {
+    git: false, suggest: true, rebuild: true, label: 'Jupyter Book',
+    skip: ['_build', '.jupyter_cache', '.ipynb_checkpoints', '__pycache__'],
+  },
 };
 const KINDS = new Set(Object.keys(KIND_RULES));
 
@@ -178,16 +223,53 @@ export function deniedCommands(kind) {
   return gitAllowed(kind) ? [] : [...DENIED_COMMANDS];
 }
 
+/** The human name of a kind, for the drawer and the envelope. */
+export function kindLabel(kind) {
+  return (KIND_RULES[String(kind || '')] || KIND_RULES.jekyll).label;
+}
+
+/** The directories the census and the source gate skip for this kind. */
+export function skipDirsFor(kind) {
+  const extra = (KIND_RULES[String(kind || '')] || KIND_RULES.jekyll).skip || [];
+  return extra.length ? new Set([...SKIP_DIRS, ...extra]) : SKIP_DIRS;
+}
+
+export const REBUILD_MAX = 400;
+/**
+ * A row's rebuild command, validated: '' for a kind whose builder rebuilds
+ * itself, for anything that is not one short line, and — the reason this is a
+ * function — for anything that names git or gh as a word. The companion has
+ * no publishing code path, and the owner's rebuild command is not allowed to
+ * become one by accident. `{error}` says why a command was refused.
+ */
+export function rebuildOf(kind, value) {
+  const rule = KIND_RULES[String(kind || '')] || KIND_RULES.jekyll;
+  const cmd = String(value == null ? '' : value).trim();
+  if (!cmd) return { cmd: '' };
+  if (!rule.rebuild) return { cmd: '', error: `a ${rule.label} site rebuilds itself — it takes no rebuild command` };
+  if (cmd.length > REBUILD_MAX || /[\r\n]/.test(cmd)) return { cmd: '', error: 'a rebuild command is one short line' };
+  if (/(^|[^\w-])(git|gh)(?!\w)/.test(cmd)) {
+    return { cmd: '', error: 'a rebuild command may not run git or gh — nothing Discuss runs publishes the site' };
+  }
+  return { cmd };
+}
+
 function normalizeSite(row) {
   if (!row || typeof row !== 'object') return null;
   const origin = originOf(row.serve_origin || row.origin);
   const root = realish(String(row.root || ''));
   if (!origin || !root || !path.isAbsolute(root)) return null;
-  // three fields, always these three: anything else a config row carries is
-  // dropped here rather than read, which is what makes the kind's rules
-  // un-overridable from config
-  const kind = KINDS.has(String(row.kind || '')) ? String(row.kind) : 'jekyll';
-  return { serve_origin: origin, root, kind };
+  // three fields, always these three — plus, for a kind whose builder does not
+  // rebuild itself, the owner's `rebuild` command (see KIND_RULES). Anything
+  // else a config row carries is dropped here rather than read, which is what
+  // makes the kind's rules un-overridable from config. A row with no kind at
+  // all is read off the tree (a _toc.yml makes it a book).
+  const kind = KINDS.has(String(row.kind || '')) ? String(row.kind)
+    : (row.kind ? 'jekyll' : (detectKind(root) || 'jekyll'));
+  const out = { serve_origin: origin, root, kind };
+  const rb = rebuildOf(kind, row.rebuild);
+  if (rb.cmd) out.rebuild = rb.cmd;
+  return out;
 }
 
 /** Every declared site, normalized, newest declaration of an origin winning. */
@@ -209,13 +291,22 @@ export function listSites() {
  * that is not one, and a typo in a path must fail loudly here rather than
  * quietly at the first turn.
  */
-export function addSite({ serve_origin, root, kind = 'jekyll' } = {}) {
-  const s = normalizeSite({ serve_origin, root, kind });
+export function addSite({ serve_origin, root, kind = '', rebuild = '' } = {}) {
+  // no kind said → read it off the tree: a _toc.yml beside _config.yml is a
+  // Jupyter Book, anything else is taken for Jekyll (and checked as one)
+  const said = String(kind || '');
+  if (said && !KINDS.has(said)) return { ok: false, error: `unknown kind of site: ${said}` };
+  const s = normalizeSite({ serve_origin, root, kind: said || detectKind(realish(String(root || ''))) || 'jekyll', rebuild });
   if (!s) return { ok: false, error: 'a site needs an http(s) origin and an absolute path' };
   if (!isDir(s.root)) return { ok: false, error: `no such directory: ${s.root}` };
-  if (!isJekyllRoot(s.root)) {
+  if (s.kind === 'jupyterbook' && !isJupyterBookRoot(s.root)) {
+    return { ok: false, error: `${s.root} has no _toc.yml beside a _config.yml — that is not a Jupyter Book` };
+  }
+  if (s.kind === 'jekyll' && !isJekyllRoot(s.root)) {
     return { ok: false, error: `${s.root} has no _config.yml and no _posts/ — that is not a Jekyll site` };
   }
+  const rb = rebuildOf(s.kind, rebuild);
+  if (rb.error) return { ok: false, error: rb.error };
   const kept = listSites().filter(x => x.serve_origin !== s.serve_origin);
   saveConfig({ blog_sites: [...kept, s] });
   forgetIndex(s.root);
@@ -560,9 +651,10 @@ function stampOf(root, dirs) {
  * `bySlug` is the fallback, and it keeps EVERY document that claims a slug so
  * an ambiguous one can be reported as ambiguous rather than resolved by luck.
  */
-export function indexOf(root) {
+export function indexOf(root, kind) {
   const key = realish(root);
   if (!key || !isDir(key)) return { docs: [], byPath: new Map(), bySlug: new Map(), cfg: { collections: {} } };
+  if ((kind || detectKind(key)) === 'jupyterbook') return bookIndexOf(key);
   const cfg = readSiteConfig(key);
   const dirs = docDirs(key, cfg);
   const stamp = stampOf(key, dirs);
@@ -617,9 +709,10 @@ function mtimesOf(root, docs) {
  * which file the reader means is exactly what this whole module exists to
  * prevent.
  */
-export function resolvePath(root, urlPath) {
+export function resolvePath(root, urlPath, kind) {
+  if ((kind || detectKind(realish(root))) === 'jupyterbook') return resolveBookPath(root, urlPath);
   const p = normPath(urlPath);
-  const index = indexOf(root);
+  const index = indexOf(root, 'jekyll');
   const hit = index.byPath.get(p);
   if (hit) return { doc: hit, how: hit.permalink ? 'permalink' : 'convention' };
   // the slug fallback: the last real segment of the address, matched against
@@ -642,6 +735,184 @@ export function resolvePath(root, urlPath) {
     };
   }
   return { doc: null, why: `no markdown source in this repo renders at ${p}` };
+}
+
+// ---- a Jupyter Book ---------------------------------------------------
+//
+// A book is mapped the way jupyter-book itself lays it out, which is simpler
+// than Jekyll and has no templates to expand: `_toc.yml` names every chapter
+// by its path in the repo (`file: orbital-mechanics/Lecture3/Lecture3`,
+// extension optional), and Sphinx writes each one to the SAME path under
+// `_build/html/` with `.html` on the end. So a chapter `a/b/c.ipynb` (or
+// `.md`) is served at `/a/b/c.html` — and at `/a/b/c/` for a dirhtml build —
+// and the toc's `root:` entry is also the book's front page, which is what
+// `index.html` redirects to.
+//
+// The toc is the authority, read by the review engine's own walker
+// (notebook.mjs `tocSections`), and never a guess from the url. The one
+// fallback is a FACT rather than a guess, the same shape as the passthrough:
+// jupyter-book builds every notebook and markdown file under the root, not
+// only the ones in the toc (a README, an old problem set), and such a page is
+// at its own path. A url whose path names a file that is there is that file.
+//
+// AMBIGUITY is kept exactly as Jekyll's slug rule keeps it: `a/b.ipynb` and
+// `a/b.md` side by side are two sources for one page, and Sphinx itself does
+// not promise which one it built. That is reported, with both paths, and
+// never resolved by luck.
+
+const BOOK_EXTS = ['.ipynb', '.md'];
+const BOOK_RE = /\.(ipynb|md)$/i;
+
+// the toc's `root:` entry, as written (extension optional)
+function tocRootName(key) {
+  try {
+    const m = /^\s*root\s*:\s*(.+?)\s*$/m.exec(fs.readFileSync(path.join(key, '_toc.yml'), 'utf8'));
+    return m ? m[1].replace(/\s+#.*$/, '').replace(/^(['"])(.*)\1$/, '$2').replace(/^\.\//, '').replace(BOOK_RE, '') : '';
+  } catch { return ''; }
+}
+
+// a repo-relative path is fit to be a book's source: no dot segments, no dot
+// directories, nothing under the build output or the caches
+function bookRelOk(rel) {
+  const skip = skipDirsFor('jupyterbook');
+  const segs = String(rel || '').split('/');
+  if (!segs.length || segs.some(x => !x || x === '.' || x === '..')) return false;
+  return !segs.slice(0, -1).some(x => x.startsWith('.') || skip.has(x));
+}
+
+// every source that answers for one stem (`a/b/c`), the files that exist
+const twinsOf = (key, stem) => BOOK_EXTS.map(e => stem + e).filter(r => isFile(path.join(key, r)));
+
+function bookDoc(key, rel, { title = '', kind = 'chapter' } = {}) {
+  const stem = rel.replace(BOOK_RE, '');
+  return {
+    rel,
+    path: path.join(key, rel),
+    kind,
+    collection: '',
+    slug: slugify(path.posix.basename(stem)),
+    title: title || '',
+    categories: [],
+    year: '', month: '', day: '',
+    permalink: '',
+    published: true,
+    dir: path.posix.dirname(rel),
+    base: path.posix.basename(stem),
+    stem,
+  };
+}
+
+// cached like the Jekyll index, on a cheaper stamp: the mapping depends only
+// on the toc, the config and WHICH files exist — so the stamp is those two
+// files' mtimes plus the mtimes of the directories the chapters live in (a
+// file created, renamed or removed moves its directory). An edit inside a
+// notebook moves none of them, so accepting a card does not re-read the book.
+function bookStamp(key, dirs) {
+  const parts = [];
+  for (const d of ['_toc.yml', '_config.yml', ...dirs]) {
+    try { parts.push(`${d}:${Math.round(fs.statSync(path.join(key, d)).mtimeMs)}`); } catch { parts.push(`${d}:-`); }
+  }
+  return parts.join('|');
+}
+
+/**
+ * {docs, byPath, ambiguous, bySlug, missing, rootDoc} for one book. `byPath`
+ * is the toc's own answer; `ambiguous` maps a url to the twin sources that
+ * both claim it.
+ */
+export function bookIndexOf(root) {
+  const key = realish(root);
+  const ck = `${key}|jupyterbook`;
+  const hit = indexCache.get(ck);
+  if (hit && hit.stamp === bookStamp(key, hit.dirs)) return hit.index;
+  let toc = { sections: [], missing: [] };
+  try { toc = tocSections(key); } catch { /* no readable toc is a book with nothing in it */ }
+  const rootName = tocRootName(key);
+  const docs = [];
+  const byPath = new Map();
+  const ambiguous = new Map();
+  const bySlug = new Map();
+  let rootDoc = null;
+  for (const sec of toc.sections) {
+    const rel = String(sec.file || '').replace(/\\/g, '/');
+    if (!BOOK_RE.test(rel) || !bookRelOk(rel)) continue;
+    const isRoot = !!rootName && rel.replace(BOOK_RE, '') === rootName;
+    const doc = bookDoc(key, rel, { title: sec.title, kind: isRoot ? 'root' : 'chapter' });
+    doc.urls = [normPath(`/${doc.stem}.html`), normPath(`/${doc.stem}/`)];
+    if (isRoot) { doc.urls.push('/'); rootDoc = doc; }
+    docs.push(doc);
+    const twins = twinsOf(key, doc.stem);
+    for (const u of doc.urls) {
+      if (twins.length > 1) { ambiguous.set(u, twins); continue; }
+      const had = byPath.get(u);
+      if (had && had !== doc) { ambiguous.set(u, [had.rel, doc.rel]); byPath.delete(u); continue; }
+      if (!ambiguous.has(u)) byPath.set(u, doc);
+    }
+    if (doc.slug) bySlug.set(doc.slug, [...(bySlug.get(doc.slug) || []), doc]);
+  }
+  const dirs = [...new Set(docs.map(d => d.dir))];
+  const index = { docs, byPath, ambiguous, bySlug, missing: toc.missing || [], rootDoc,
+    cfg: { collections: {} }, root: key, kind: 'jupyterbook' };
+  indexCache.set(ck, { stamp: bookStamp(key, dirs), dirs, index });
+  return index;
+}
+
+/**
+ * Which notebook or markdown file a url of a built book renders from. Same
+ * contract as `resolvePath`: `{doc, how}` with `how` 'toc' | 'path', or
+ * `{doc: null, why}`.
+ */
+export function resolveBookPath(root, urlPath) {
+  const key = realish(root);
+  const p = normPath(urlPath);
+  const index = bookIndexOf(key);
+  const twinWhy = rels => `${rels.length} files in this book render at ${p} `
+    + `(${rels.join(', ')}) — rename or remove one of them and rebuild`;
+  if (index.ambiguous.has(p)) return { doc: null, why: twinWhy(index.ambiguous.get(p)) };
+  const hit = index.byPath.get(p);
+  if (hit) return { doc: hit, how: 'toc' };
+  if (p === '/') return { doc: null, why: 'the book’s _toc.yml names no root: chapter that exists' };
+  // not in the toc: a page jupyter-book built from a file at its own path
+  const stem = p.replace(/^\/+/, '').replace(/\.html?$/i, '').replace(/\/+$/, '');
+  if (!stem || !bookRelOk(`${stem}.md`)) {
+    return { doc: null, why: `no notebook or markdown in this book renders at ${p}` };
+  }
+  const twins = twinsOf(key, stem);
+  if (twins.length > 1) return { doc: null, why: twinWhy(twins) };
+  if (twins.length === 1) {
+    const rel = twins[0];
+    const doc = bookDoc(key, rel, { title: firstHeading(key, rel) || '', kind: 'page' });
+    doc.urls = [normPath(`/${stem}.html`), normPath(`/${stem}/`)];
+    return { doc, how: 'path' };
+  }
+  return { doc: null, why: `no notebook or markdown in this book renders at ${p}` };
+}
+
+/**
+ * A page's source as TEXT — the one door every reader of a blog source goes
+ * through (the bots' `current:` spans, the claim checker, the collateral diff).
+ * A notebook is JSON, so it is read as the review engine's text projection
+ * (`projectNotebook`): markdown cells verbatim, code cells as ```{code-cell}
+ * fences, cells joined by one blank line — the text the bots are told they are
+ * quoting. Everything else is read as it is. Throws on a missing or unreadable
+ * file; the callers each have their own way of saying so.
+ */
+export function sourceText(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  return /\.ipynb$/i.test(String(file)) ? projectNotebook(JSON.parse(raw)).text : raw;
+}
+
+// The images a book page references (repo-relative, existing, inside the
+// root), and the directories they sit in — a book keeps its pictures beside
+// the chapter (`Lecture3/imgs/`) rather than under one site-wide assets/.
+function bookAssets(key, doc) {
+  let text = '';
+  try { text = sourceText(doc.path); } catch { /* no text, no pictures */ }
+  const images = [...new Set(imageRefs(text, doc.dir === '.' ? '.' : doc.dir))]
+    .filter(r => bookRelOk(r) && isFile(path.join(key, r)));
+  const dirs = [...new Set(images.map(r => path.posix.dirname(r)).filter(d => d && d !== '.'))];
+  if (!dirs.length && doc.dir && doc.dir !== '.') dirs.push(doc.dir);
+  return { assets: dirs, images };
 }
 
 // ---- a file of the repo that IS the page ---------------------------------
@@ -693,7 +964,8 @@ export function filePathOf(url) {
  * (`SKIP_DIRS` — `_site/` above all), every dot directory (`.git/` included),
  * dot-segments, and any file that is not one of `SOURCE_RE`.
  */
-export function sourceInRoot(root, abs) {
+export function sourceInRoot(root, abs, kind) {
+  const skip = skipDirsFor(kind);
   const r = realish(root);
   const f = realish(abs);
   if (!r || !f) return { why: 'no such file' };
@@ -706,7 +978,7 @@ export function sourceInRoot(root, abs) {
   for (const s of segs.slice(0, -1)) {
     if (s === '.' || s === '..') return { why: 'that path walks out of the repository' };
     if (s.startsWith('.')) return { why: `${s}/ is a dot directory, not a page of the site` };
-    if (SKIP_DIRS.has(s)) return { why: `${s}/ is build output or site machinery, not a page` };
+    if (skip.has(s)) return { why: `${s}/ is build output or site machinery, not a page` };
   }
   const name = segs[segs.length - 1];
   if (!SOURCE_RE.test(name)) {
@@ -721,7 +993,7 @@ export function sourceInRoot(root, abs) {
  * relative path in the source tree. `null` when nothing is there — the
  * markdown resolver's answer stands in that case, which is nearly always.
  */
-export function passthroughFor(root, urlPath) {
+export function passthroughFor(root, urlPath, kind) {
   let p = String(urlPath || '');
   try { p = decodeURIComponent(p); } catch { /* keep it raw rather than throw */ }
   p = p.replace(/^\/+/, '');
@@ -729,7 +1001,7 @@ export function passthroughFor(root, urlPath) {
   if (p.split('/').some(s => s === '.' || s === '..' || !s)) return null;
   const r = realish(root);
   if (!r) return null;
-  const hit = sourceInRoot(r, path.join(r, p));
+  const hit = sourceInRoot(r, path.join(r, p), kind);
   return hit.rel ? hit : null;
 }
 
@@ -744,20 +1016,23 @@ function fileBlogPage(abs) {
   let hit = null;
   for (const s of listSites()) {
     if (!isDir(s.root)) continue;
-    const r = sourceInRoot(s.root, f);
+    // a BUILT page of a book opened straight off the disk
+    // (file:///…/book/_build/html/a/b/c.html): the photocopy, mapped back to
+    // its notebook through the same table the served address uses
+    if (s.kind === 'jupyterbook') {
+      const built = path.join(realish(s.root), '_build', 'html');
+      const rel = path.relative(built, f);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel) && /\.html?$/i.test(rel)) {
+        return builtBookPage(s, `/${rel.split(path.sep).join('/')}`);
+      }
+    }
+    const r = sourceInRoot(s.root, f, s.kind);
     if (r.rel) { site = s; hit = r; break; }
   }
   if (!site) return null;
-  const state = rootState(site.root);
   return {
-    serve_origin: site.serve_origin,
-    root: site.root,
-    kind: site.kind,
+    ...siteBase(site, `/${hit.rel}`),
     url_path: `/${hit.rel}`,
-    confirmed: state === 'yes',
-    declined: state === 'no',
-    git_allowed: gitAllowed(site.kind),
-    suggest_mode: suggestMode(site.kind),
     source_path: hit.path,
     rel: hit.rel,
     title: path.basename(hit.rel),
@@ -769,6 +1044,57 @@ function fileBlogPage(abs) {
     via: 'file',
     assets: assetDirs(site.root).map(d => path.relative(site.root, d)),
   };
+}
+
+// The record for a url path of a declared site, once the site is known —
+// shared by the served address and a book's built page opened off the disk.
+function siteBase(site, urlPath) {
+  const state = rootState(site.root);
+  const rule = KIND_RULES[site.kind] || KIND_RULES.jekyll;
+  return {
+    serve_origin: site.serve_origin,
+    root: site.root,
+    kind: site.kind,
+    kind_label: rule.label,
+    url_path: normPath(urlPath),
+    confirmed: state === 'yes',
+    declined: state === 'no',
+    // said on the wire as well as in the code, so the drawer can promise it in
+    // the same words the confirmation card asks in
+    git_allowed: gitAllowed(site.kind),
+    // …and the same for the other promise: on this page the bots propose and
+    // the reader accepts. The drawer draws the source card differently for it,
+    // and it must not have to infer the mode from the absence of something.
+    suggest_mode: suggestMode(site.kind),
+    // …and, for a kind whose builder does not rebuild itself, whether the
+    // companion will (the owner's `rebuild` command) or the reader must. ''
+    // on a Jekyll site, where the question does not arise.
+    rebuild: site.rebuild || '',
+    rebuilds_itself: !rule.rebuild,
+  };
+}
+
+// A mapped document's half of the record.
+function docRecord(site, doc, how) {
+  const extra = site.kind === 'jupyterbook'
+    ? bookAssets(realish(site.root), doc)
+    : { assets: assetDirs(site.root).map(d => path.relative(site.root, d)) };
+  return {
+    source_path: doc.path,
+    rel: doc.rel,
+    title: doc.title,
+    doc_kind: doc.kind,
+    mapped_by: how,
+    ...(/\.ipynb$/i.test(doc.rel) ? { notebook: true } : {}),
+    ...extra,
+  };
+}
+
+function builtBookPage(site, urlPath) {
+  const base = { ...siteBase(site, urlPath), via: 'file' };
+  const r = resolveBookPath(site.root, urlPath);
+  if (!r.doc) return { ...base, source_path: '', rel: '', why: r.why };
+  return { ...base, ...docRecord(site, r.doc, r.how) };
 }
 
 // ---- the page record's answer --------------------------------------------
@@ -789,26 +1115,11 @@ export function blogPageFor(url) {
   if (!site) return null;
   let u = null;
   try { u = new URL(String(url)); } catch { return null; }
-  const state = rootState(site.root);
-  const base = {
-    serve_origin: site.serve_origin,
-    root: site.root,
-    kind: site.kind,
-    url_path: normPath(u.pathname),
-    confirmed: state === 'yes',
-    declined: state === 'no',
-    // said on the wire as well as in the code, so the drawer can promise it in
-    // the same words the confirmation card asks in
-    git_allowed: gitAllowed(site.kind),
-    // …and the same for the other promise: on this page the bots propose and
-    // the reader accepts. The drawer draws the source card differently for it,
-    // and it must not have to infer the mode from the absence of something.
-    suggest_mode: suggestMode(site.kind),
-  };
+  const base = siteBase(site, u.pathname);
   if (!isDir(site.root)) {
     return { ...base, source_path: '', rel: '', why: `the repo is gone: ${site.root}` };
   }
-  const r = resolvePath(site.root, u.pathname);
+  const r = resolvePath(site.root, u.pathname, site.kind);
   // THE PASSTHROUGH. A file that exists at this exact relative path in the
   // source tree was copied through by jekyll, so it is the page and there is
   // nothing to map. It answers where the markdown resolver found nothing —
@@ -817,7 +1128,7 @@ export function blogPageFor(url) {
   // guess. It never beats a permalink or a convention match: those are the
   // document's own word about where it is served.
   if (!r.doc || r.how === 'slug') {
-    const thru = passthroughFor(site.root, u.pathname);
+    const thru = passthroughFor(site.root, u.pathname, site.kind);
     if (thru) {
       return {
         ...base,
@@ -832,15 +1143,7 @@ export function blogPageFor(url) {
     }
   }
   if (!r.doc) return { ...base, source_path: '', rel: '', why: r.why };
-  return {
-    ...base,
-    source_path: r.doc.path,
-    rel: r.doc.rel,
-    title: r.doc.title,
-    doc_kind: r.doc.kind,
-    mapped_by: r.how,
-    assets: assetDirs(site.root).map(d => path.relative(site.root, d)),
-  };
+  return { ...base, ...docRecord(site, r.doc, r.how) };
 }
 
 /** The asset directories this repo actually has, absolute. */
@@ -855,7 +1158,10 @@ export function assetDirs(root) {
 // BECAUSE the bots edited the source. Counting them would make every turn a
 // change and every change a reload loop.
 
-export function scanSite(dir) {
+export function scanSite(dir, kind) {
+  // a book's `_build/` (and its caches) on top of Jekyll's list: the build
+  // output is rewritten wholesale by every rebuild and is never an edit
+  const skip = skipDirsFor(kind || detectKind(dir));
   const out = new Map();
   if (!dir || !isDir(dir)) return out;
   const stack = [{ abs: dir, rel: '', depth: 0 }];
@@ -868,7 +1174,7 @@ export function scanSite(dir) {
       const abs = path.join(cur.abs, e.name);
       const rel = cur.rel ? `${cur.rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (SKIP_DIRS.has(e.name) || cur.depth + 1 > 12) continue;
+        if (skip.has(e.name) || cur.depth + 1 > 12) continue;
         stack.push({ abs, rel, depth: cur.depth + 1 });
         continue;
       }
@@ -947,6 +1253,7 @@ export function sourceDoc(text, name) {
  */
 export function blogBlock(blog) {
   if (!blog || !blog.source_path) return '';
+  if (blog.kind === 'jupyterbook' && !blog.same_file) return bookBlock(blog);
   const dirs = (blog.assets || []).length ? blog.assets : ['assets'];
   const assets = dirs.map(a => `${blog.root}/${a}/`).join(', ');
   const first = `${blog.root}/${dirs[0]}/`;
@@ -1010,3 +1317,76 @@ export function blogBlock(blog) {
     + `report an edit as done.\n`;
 }
 
+// The same envelope for a chapter of a Jupyter Book. Every rule that is a
+// property of the ROOT is word for word the Jekyll one — you do not edit the
+// file, you propose; the directory is the sandbox's boundary and not your
+// job; leave the machinery alone unless asked in so many words; never run git
+// — and three things are said differently because the document is different:
+//
+//   · the page is a jupyter-book BUILD under _build/html, not a jekyll render;
+//   · a notebook is JSON, and what the bots quote is its text projection, in
+//     which a proposal must stay inside ONE cell (suggest.applyCard writes one
+//     cell's `source` and refuses anything that crosses a cell or touches the
+//     generated ```{code-cell} fence lines);
+//   · pictures sit beside the chapter, referenced by a relative path, and the
+//     book's style lives in _config.yml and _static/ — which are "leave alone
+//     unless asked", exactly as Jekyll's _config.yml and _layouts/ are.
+function bookBlock(blog) {
+  const nb = /\.ipynb$/i.test(String(blog.rel || ''));
+  const dirs = (blog.assets || []).length ? blog.assets : [];
+  const imgAt = dirs.length ? dirs.map(a => `${blog.root}/${a}/`).join(', ') : `${blog.root}/`;
+  const first = dirs.length ? `${blog.root}/${dirs[0]}/` : `${blog.root}/`;
+  const rebuilt = blog.rebuild
+    ? `the companion rebuilds the book (\`${blog.rebuild}\`) and their tab reloads when the build is done`
+    : `the reader rebuilds the book themselves (\`jupyter-book build .\`) and reloads — nothing rebuilds it for them`;
+  return `[book chapter: ${blog.url_path} · source ${blog.source_path}]\n`
+    + `The reader is looking at this chapter of their Jupyter Book as BUILT by jupyter-book into `
+    + `_build/html/ and served locally at ${blog.serve_origin}${blog.url_path}. The built HTML is a `
+    + `photocopy — every build throws it away and editing it achieves nothing. The document is the `
+    + `${nb ? 'notebook' : 'MyST markdown file'} named above; READ it before you change anything.\n`
+    + (nb
+      ? `A .ipynb file is JSON. Do not read or quote the JSON: the text you work from — and the text `
+        + `the companion matches your proposals against — is the notebook's TEXT PROJECTION: every `
+        + `markdown cell verbatim, every code cell as a \`\`\`{code-cell} fence around its source, cells `
+        + `separated by one blank line. Stored outputs are not in it and cannot be edited: they are `
+        + `regenerated when the book is built. EVERY PROPOSAL MUST QUOTE TEXT FROM WITHIN ONE CELL — `
+        + `never a passage that runs from one cell into the next, and never the \`\`\`{code-cell} fence `
+        + `lines themselves. A change that touches two cells is two blocks, one per cell. A proposal `
+        + `that crosses a cell is refused and the reader is told why.\n`
+      : '')
+    + `Quotes in this conversation come from the RENDERED page, so the wording you are given is the `
+    + `prose without its MyST markup (roles like {eq}\`L3_1\`, directives, labels). Find the matching `
+    + `passage in the source yourself and quote it back EXACTLY as the file has it.\n`
+    + `YOU DO NOT EDIT THIS FILE. You propose a change and the reader accepts or refuses it; the `
+    + `block below says how a proposal is written. Nothing you say moves a single byte of the `
+    + `chapter until the reader presses Accept.\n`
+    + `WHERE YOU MAY WRITE — and you will normally write NOTHING AT ALL: ${blog.source_path} is `
+    + `in the sandbox's writable scope because a directory is the only boundary an OS sandbox `
+    + `understands, not because editing it is your job. Do not edit it. The one thing that is `
+    + `still a real write is a PICTURE — an image file cannot be proposed as a passage of text — `
+    + `so the image files this chapter uses under ${imgAt} are yours to place and change directly, `
+    + `while the markdown LINE that references a new picture is proposed like every other line. `
+    + `New images go beside the chapter (under ${first}) and are referenced with a path RELATIVE to `
+    + `the chapter, matching however the other images in it are written; existing ones may be `
+    + `edited with whatever image tools this machine has (\`sips\` on macOS, ImageMagick's `
+    + `\`magick\`/\`convert\` where it is installed — check before you rely on one).\n`
+    + `WHAT YOU MUST LEAVE ALONE unless the reader asks in so many words: every OTHER chapter and `
+    + `notebook, _toc.yml, _config.yml and _static/ (the book's configuration and its style), `
+    + `the environment files, and _build/ (that is the build output — never edit it, never commit `
+    + `it, never run the build yourself). A proposal can only ever change this chapter's own `
+    + `source; if the reader does ask in so many words for a change to the book's style or `
+    + `configuration, that file is written directly and they are shown it when your turn ends. `
+    + `The whole repository is technically writable because a directory is the only boundary the `
+    + `sandbox has; this paragraph is the rest of the boundary, and the reader is shown every file `
+    + `that moved when your turn ends.\n`
+    + `DO NOT RUN GIT IN THIS REPOSITORY. No \`git add\`, no \`git commit\`, no \`git push\`, no `
+    + `branch, checkout, stash, reset, tag or \`gh\` command — not to "save" your work, not to `
+    + `tidy up, not even if the reader's words sound like they might want it. This is the `
+    + `reader's published book and they put it live themselves, by their own route. Your `
+    + `whole job ends at the working files. (The CLI is configured to refuse these commands as `
+    + `well; this paragraph is why, so you do not waste the turn discovering it.) If the reader `
+    + `asks you to publish, tell them Discuss does not do that and they publish it themselves.\n`
+    + `When the reader accepts a proposal the companion changes ${nb ? 'that one cell of the notebook' : 'that passage of the file'}, `
+    + `${rebuilt}. That is the only way this page changes, and it is not something you do — so `
+    + `never report an edit as done.\n`;
+}

@@ -897,6 +897,65 @@ nothing to switch off. (Paper review is the deliberate opposite and still
 commits and pushes: a paper under review is a shared working copy; your
 blog is your published name.)
 
+#### A Jupyter Book
+
+The same works for a **Jupyter Book**: open the built book in the browser —
+what your readers see — highlight, comment, chat, and the bots propose
+changes to the **notebook or MyST file** the page was built from. You
+accept or refuse each one in the drawer; an accepted change rewrites
+exactly one cell of the notebook (outputs, metadata and formatting are left
+byte for byte as they were), and a proposal that would span two cells, or
+touch a code cell's fence, is refused on its card rather than guessed at.
+There is no separate review page — it is your real book.
+
+Serve the build locally. Either of these, from the book's root:
+
+```sh
+python -m http.server 8000 --directory _build/html    # after `jupyter-book build .`
+```
+
+or, if you would rather the book rebuild itself on every save,
+`sphinx-autobuild` (`pip install sphinx-autobuild`) — which needs a Sphinx
+`conf.py`, and `jupyter-book config sphinx .` writes one into the book's
+root, so that is a new file in your repo:
+
+```sh
+jupyter-book config sphinx . && sphinx-autobuild . _build/html --port 8000
+```
+
+and declare it in `.botference/plugin/config.json` (a `_toc.yml` beside
+`_config.yml` is recognised as a book, so `kind` may be left out):
+
+```json
+"blog_sites": [{ "serve_origin": "http://localhost:8000",
+                 "root": "/Users/you/SpacecraftDynamics", "kind": "jupyterbook",
+                 "rebuild": "/Users/you/opt/anaconda3/bin/jupyter-book build ." }]
+```
+
+Addresses are mapped by reading `_toc.yml`: a chapter
+`orbital-mechanics/Lecture3/Lecture3` is the page
+`/orbital-mechanics/Lecture3/Lecture3.html`, the `root:` entry is also `/`
+and `index.html`, and a notebook or markdown file that is not in the toc
+is found at its own path. A notebook and a markdown file with the same
+name side by side are reported as ambiguous, not picked between.
+
+**Rebuilding.** Jekyll rebuilds itself; jupyter-book does not. The
+optional `rebuild` is the command you would type yourself, and after an
+accepted change (or a picture the bots replaced) the companion runs it in
+the book's root — once for a burst of changes, one build at a time, with
+its output in the companion's log — and the tab reloads when it has
+finished. Give the builder by its absolute path: the companion may not be
+running with your shell's `PATH`. A rebuild command may not mention `git`
+or `gh`. Without one, nothing rebuilds for you: run `jupyter-book build .`
+after accepting, then reload (or serve with `sphinx-autobuild`, which
+rebuilds on save — leave `rebuild` out then). If your `_config.yml` says
+`execute_notebooks: force`, every build re-runs every notebook, so a
+rebuild takes as long as that does.
+
+The book's style (`_config.yml`, `_static/`) and every other chapter are
+left alone unless you ask for a change there in so many words, and the
+bots never run git in the book either.
+
 ### The question vault: what you read, asked back
 
 Everything else in Discuss is a record of having understood something
