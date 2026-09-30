@@ -1703,12 +1703,17 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .sgacts .rebtn:not([disabled]):hover { color: var(--accent) }
 .sgacts .rebtn.no { color: var(--muted) }
 .sgnote { margin-top: 5px; font: 12px/1.45 var(--sans); color: var(--muted) }
-/* ACCEPTED — the file really did change, and the page has reloaded showing it */
+/* ACCEPTED — the file really did change, and the page has reloaded showing it.
+   Green all round, not just the edge: after a sweep of ten cards the reader is
+   scanning for what is still open, and the done ones must read as done at a
+   glance rather than by their note. Tinted, not dimmed, so the diff stays
+   legible as the record of what changed. */
 .sgcard.done {
-  border-left-color: color-mix(in srgb, var(--done) 70%, var(--card-line));
-  opacity: .8;
+  border-color: color-mix(in srgb, var(--done-line) 55%, var(--card-line));
+  border-left-color: var(--done-line);
+  background: color-mix(in srgb, var(--done) 55%, var(--rail));
 }
-.sgcard.done .sgnote { color: color-mix(in srgb, var(--done) 65%, var(--fg)) }
+.sgcard.done .sgnote { color: color-mix(in srgb, var(--done-line) 80%, var(--fg)) }
 /* TURNED DOWN — kept visible, because the reader is entitled to see what they
    said no to, and the bot has been told the same thing */
 .sgcard.passed { opacity: .55; border-left-color: var(--card-line) }
