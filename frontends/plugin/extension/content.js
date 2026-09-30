@@ -3108,9 +3108,49 @@
   // set __BFP_NO_RELOAD and the reloads are counted instead of performed.
   function reloadForArtifact() {
     if (window.__BFP_NO_RELOAD) { reloadsAsked++; return; }
+    saveResume();
     try { location.reload(); } catch (_) { /* nothing else to try */ }
   }
   let reloadsAsked = 0;
+
+  // ---- keeping the reader's place across a self-reload ----------------------
+  // A reload after an accepted card is the page catching up with its own
+  // source; it is not the reader going somewhere. So what they had — the
+  // drawer up, on which tab, scrolled to where, and the page scrolled to where
+  // — is written down just before the reload and put back just after it.
+  // sessionStorage: this tab only, gone when the tab closes, and the record
+  // is consumed on first read so a later plain reload starts fresh.
+  const RESUME_KEY = () => 'bfp:resume:' + URL_NOW;
+  const RESUME_MAX_MS = 2 * 60 * 1000;
+  function saveResume() {
+    try {
+      const rec = { at: Date.now(), y: window.scrollY || 0,
+        open: !!(drawer && drawer.isOpen()),
+        tab: drawer && drawer.currentTab ? drawer.currentTab() : null,
+        panes: drawer && drawer.scrollState ? drawer.scrollState() : null };
+      sessionStorage.setItem(RESUME_KEY(), JSON.stringify(rec));
+    } catch (_) { /* no storage: the reload just starts at the top */ }
+  }
+  function consumeResume() {
+    let rec = null;
+    try {
+      const raw = sessionStorage.getItem(RESUME_KEY());
+      if (raw) { sessionStorage.removeItem(RESUME_KEY()); rec = JSON.parse(raw); }
+    } catch (_) { return; }
+    if (!rec || !rec.at || Date.now() - rec.at > RESUME_MAX_MS) return;
+    // the page scroll: now, and again once the page has laid out for real
+    // (fonts, images, MathJax) — the browser's own restoration is unreliable
+    // after a programmatic reload and does nothing for the drawer
+    const put = () => { try { window.scrollTo(0, rec.y || 0); } catch (_) { /* ignore */ } };
+    put();
+    window.addEventListener('load', () => { put(); setTimeout(put, 300); }, { once: true });
+    if (!rec.open) return;
+    activate(false).then(d => {
+      if (!d) return;
+      d.open(rec.tab || undefined);
+      if (d.restoreScroll) d.restoreScroll(rec.panes);
+    });
+  }
 
   // ---- background messages -----------------------------------------------------
   alive(() => chrome.runtime.onMessage.addListener(
@@ -3280,6 +3320,7 @@
   function boot() {
     watchSpaNavigation();
     consumeAutoOpen();
+    consumeResume();
     loadPageComments();
     loadTrackChanges();
     startLiveness();

@@ -2,6 +2,13 @@
 
 ## 2026-09-30
 
+- **An accepted card no longer loses your place.** When a page reloads itself
+  after the source changed (an accepted suggestion, a placed picture), the
+  drawer came back shut and the page at the top. Now the tab writes down
+  where you were — the page scroll, whether the drawer was open, which tab,
+  and how far each pane was scrolled — just before the reload, and puts it
+  all back just after. Per tab, consumed on first read, ignored after two
+  minutes, so a plain reload still starts fresh.
 - **Discuss a Jupyter Book on its real pages.** A locally served Jupyter Book
   (`_build/html` behind `python -m http.server` or `sphinx-autobuild`) can now
   be declared in `blog_sites` like a Jekyll site (`kind: "jupyterbook"`, or

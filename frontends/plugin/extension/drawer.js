@@ -11295,6 +11295,22 @@ ${bubbleShellHtml()}`;
       },
       isOpen: () => D.opened,
       isPagesOpen: () => D.view === 'pages',
+      // Where the reader is inside the drawer, for a page that is about to
+      // reload itself (content.js reloadForArtifact): the tab and each pane's
+      // scroll offset. restoreScroll applies them now and again after the
+      // record has loaded and painted, which moves the panes under them.
+      currentTab: () => D.tab,
+      scrollState: () => (D.mounted ? { comments: D.el.comments.scrollTop, chat: D.el.chat.scrollTop } : { comments: 0, chat: 0 }),
+      restoreScroll: s => {
+        if (!s) return D;
+        const put = () => {
+          if (!D.mounted) return;
+          if (s.comments != null) D.el.comments.scrollTop = s.comments;
+          if (s.chat != null) D.el.chat.scrollTop = s.chat;
+        };
+        put(); setTimeout(put, 250); setTimeout(put, 900);
+        return D;
+      },
       // Is anything on this page waiting on the bots? content.js polls the
       // record while this is true — a wait is exactly the state a lost event
       // strands, and the only one worth spending requests on.
