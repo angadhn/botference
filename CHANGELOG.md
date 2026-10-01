@@ -12,6 +12,30 @@
   sent — and it comes down the moment the card is accepted, rejected or goes
   to needs-manual. Clicking it opens the drawer on that card. It follows the
   existing track-changes switch.
+- **Previews for proposals written in markdown.** A card quotes the source,
+  so a passage with links, bold, MyST roles or list numbers in it was never
+  found on the page and showed nothing. It is now looked for again with the
+  markup taken off. If it still cannot be found (a MyST list of empty
+  `[](label)` links, whose words are other headings' titles) and the card
+  was made in a comment, the strike is shown over that comment's passage
+  instead, marked as approximate, and the card says so in one line. Display
+  only: what Accept changes is decided exactly as before.
+- **Maths and pictures in proposed edits.** Formulas in a suggestion card
+  are now typeset, in the card and in the preview on the page, and a
+  changed formula is struck and inserted whole instead of being diffed
+  half-way through. A card that adds a picture (`![alt](path)` or a MyST
+  figure) shows the picture: from the served site if it is there, otherwise
+  read from the source folder by the companion (new owner-only
+  `GET /blog-image`), otherwise the source line with a note that the
+  picture is not reachable yet.
+
+- **Proposals that quote a code block or a MyST directive.** A suggestion
+  whose passage contained its own ``` line (a `{figure}`, a `{note}`, a
+  code cell) ended at that line: the card came out unreadable and the rest
+  of the block spilled into the reply. A block opened with four backticks
+  (````suggest) now ends only at four, and the bots are told to use that
+  form for such passages; the ordinary three-backtick block also copes, by
+  pairing up the fences inside it.
 
 ## 2026-09-30
 

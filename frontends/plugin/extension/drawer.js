@@ -778,6 +778,109 @@
     }
   }
 
+  // ---- word diffs, with formulas and pictures as wholes -------------------
+  // Word-level LCS. Both sides are one passage, so the quadratic table is
+  // small — and anything unreasonable falls back to the stacked pair the
+  // callers draw instead, rather than being diffed at any cost.
+  const DIFF_WORDS_MAX = 220;
+  // The pictures half lives in anchor.js (imageRefs), beside plainOf, which
+  // needs the same answer to keep a picture whole on the page. Asked lazily:
+  // anchor.js loads before this file in the page, and a node test that wants
+  // pictures puts BFPAnchor on the global first.
+  const imageRefsOf = s => {
+    const A = root.BFPAnchor;
+    return A && A.imageRefs ? A.imageRefs(s) : [];
+  };
+  // Every span of `s` that must never be cut: each formula (scanMath) and each
+  // picture reference, in order, never overlapping — a $…$ inside a figure's
+  // caption belongs to the figure.
+  function atomsOf(src) {
+    const s = String(src == null ? '' : src);
+    const pics = imageRefsOf(s).map(r => ({ start: r.start, end: r.end, raw: r.raw, pic: r }));
+    const maths = scanMath(s).filter(m => !pics.some(p => m.start < p.end && m.end > p.start))
+      .map(m => ({ start: m.start, end: m.end, raw: m.raw, math: m }));
+    return pics.concat(maths).sort((a, b) => a.start - b.start);
+  }
+  // The words of `s`, split on whitespace — except that a formula or a
+  // picture is ONE word however many spaces are inside it, so a diff strikes
+  // or inserts `$\frac{a}{b}$` whole and never draws half of one struck. The
+  // atoms are held as NUL placeholders (no whitespace inside) for the split,
+  // then given back their source, so a token is always real text.
+  //
+  // Whitespace between words is never diffed, and every run is re-joined with
+  // a single space. Diffing the gaps as tokens is what makes a word diff
+  // render as "beenhad ingone": the space ends up inside one side of the
+  // change and the two runs collide.
+  function diffTokens(src) {
+    const s = String(src == null ? '' : src);
+    const atoms = atomsOf(s);
+    let text = s;
+    if (atoms.length) {
+      const parts = [];
+      let at = 0;
+      atoms.forEach((a, n) => { parts.push(s.slice(at, a.start), '\u0000' + n + '\u0000'); at = a.end; });
+      parts.push(s.slice(at));
+      text = parts.join('');
+    }
+    return text.trim().split(/\s+/).filter(Boolean)
+      .map(w => w.replace(MATH_TOKEN_G, (_, n) => atoms[+n].raw));
+  }
+  function wordDiff(a, b) {
+    const A = diffTokens(a), B = diffTokens(b);
+    if (!A.length || !B.length || A.length > DIFF_WORDS_MAX || B.length > DIFF_WORDS_MAX) return null;
+    const n = A.length, m = B.length;
+    const L = new Uint16Array((n + 1) * (m + 1));
+    const at = (i, j) => i * (m + 1) + j;
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        L[at(i, j)] = A[i] === B[j] ? L[at(i + 1, j + 1)] + 1
+          : Math.max(L[at(i + 1, j)], L[at(i, j + 1)]);
+      }
+    }
+    const ops = [];           // {t:'=' | '-' | '+', s} — s is a run of words
+    const push = (t, w) => {
+      const last = ops[ops.length - 1];
+      if (last && last.t === t) last.s += ' ' + w; else ops.push({ t, s: w });
+    };
+    let i = 0, j = 0;
+    while (i < n && j < m) {
+      if (A[i] === B[j]) { push('=', A[i]); i++; j++; }
+      else if (L[at(i + 1, j)] >= L[at(i, j + 1)]) { push('-', A[i]); i++; }
+      else { push('+', B[j]); j++; }
+    }
+    while (i < n) push('-', A[i++]);
+    while (j < m) push('+', B[j++]);
+    const kept = ops.filter(o => o.t === '=').reduce((s, o) => s + o.s.length, 0);
+    // nothing recognisably shared: two different sentences, not an edit —
+    // a diff of those is confetti, and the stacked pair is the honest read
+    if (kept < Math.min(String(a).trim().length, String(b).trim().length) * 0.2) return null;
+    return ops;
+  }
+
+  // A suggestion's text as card HTML: escaped, with each formula and each
+  // picture left as an inert SLOT carrying its source (and showing it, so a
+  // drawer that never hydrates still reads true). fillCardSlots turns the
+  // slots into a typeset formula and an <img> after the render, through DOM
+  // calls — the no-HTML-string rule of the message path holds here too.
+  function richHtml(src) {
+    const s = String(src == null ? '' : src);
+    const atoms = atomsOf(s);
+    if (!atoms.length) return esc(s);
+    let out = '', at = 0;
+    for (const a of atoms) {
+      out += esc(s.slice(at, a.start));
+      if (a.math) {
+        out += `<span class="sgslot sgmath" data-tex="${esc(a.math.tex)}" data-display="${a.math.display ? 1 : 0}"`
+          + ` data-raw="${esc(a.raw)}">${esc(a.raw)}</span>`;
+      } else {
+        out += `<span class="sgslot sgfig" data-src="${esc(a.pic.src)}" data-alt="${esc(a.pic.alt)}"`
+          + ` data-cap="${esc(a.pic.caption || '')}" data-raw="${esc(a.raw)}">${esc(a.raw)}</span>`;
+      }
+      at = a.end;
+    }
+    return out + esc(s.slice(at));
+  }
+
   function mdInline(text, out) {
     let s = String(text == null ? '' : text);
     for (let guard = 0; guard < 500; guard++) {
@@ -1652,7 +1755,13 @@
     // carry) inline markup — the control does not render at all when it is
     // empty, because a toggle for a thing that is not on the page is clutter
     // in the one pane the reader came to for their comments.
-    const TC = { on: opts.trackChanges !== false, threads: [] };
+    //
+    // `approx` is the open suggestion cards whose on-page preview stands on
+    // their THREAD's passage, because the source wording they quote is not
+    // on the page as written (anchor.js paintProposal, fallback 2). The card
+    // says so in one line, so the strike on the page is not mistaken for the
+    // words the accept will replace.
+    const TC = { on: opts.trackChanges !== false, threads: [], approx: [] };
 
     // THE COMMENTS THE DOCUMENT ARRIVED WITH. On a PDF opened in the plugin's
     // own viewer, content.js reports what the FILE already carries — Acrobat
@@ -3669,46 +3778,8 @@ ${bubbleShellHtml()}`;
       }
       return '';
     };
-    // Word-level LCS. Both sides are one passage, so the quadratic table is
-    // small — and anything unreasonable falls back to the stacked pair below
-    // rather than being diffed at any cost.
-    const DIFF_WORDS_MAX = 220;
-    // words only — the whitespace between them is never diffed, and every run
-    // is re-joined with a single space. Diffing the gaps as tokens is what
-    // makes a word diff render as "beenhad ingone": the space ends up inside
-    // one side of the change and the two runs collide.
-    const words = s => String(s).trim().split(/\s+/).filter(Boolean);
-    function wordDiff(a, b) {
-      const A = words(a), B = words(b);
-      if (!A.length || !B.length || A.length > DIFF_WORDS_MAX || B.length > DIFF_WORDS_MAX) return null;
-      const n = A.length, m = B.length;
-      const L = new Uint16Array((n + 1) * (m + 1));
-      const at = (i, j) => i * (m + 1) + j;
-      for (let i = n - 1; i >= 0; i--) {
-        for (let j = m - 1; j >= 0; j--) {
-          L[at(i, j)] = A[i] === B[j] ? L[at(i + 1, j + 1)] + 1
-            : Math.max(L[at(i + 1, j)], L[at(i, j + 1)]);
-        }
-      }
-      const ops = [];           // {t:'=' | '-' | '+', s} — s is a run of words
-      const push = (t, w) => {
-        const last = ops[ops.length - 1];
-        if (last && last.t === t) last.s += ' ' + w; else ops.push({ t, s: w });
-      };
-      let i = 0, j = 0;
-      while (i < n && j < m) {
-        if (A[i] === B[j]) { push('=', A[i]); i++; j++; }
-        else if (L[at(i + 1, j)] >= L[at(i, j + 1)]) { push('-', A[i]); i++; }
-        else { push('+', B[j]); j++; }
-      }
-      while (i < n) push('-', A[i++]);
-      while (j < m) push('+', B[j++]);
-      const kept = ops.filter(o => o.t === '=').reduce((s, o) => s + o.s.length, 0);
-      // nothing recognisably shared: two different sentences, not an edit —
-      // a diff of those is confetti, and the stacked pair is the honest read
-      if (kept < Math.min(String(a).trim().length, String(b).trim().length) * 0.2) return null;
-      return ops;
-    }
+    // (wordDiff and its tokenizer live at module scope now, beside scanMath:
+    // a formula or a picture is ONE token, and the node tests drive it.)
     // The same suggested-edit idiom the review engine uses: struck-through
     // where words left, the accepted tint where they arrived. On any doubt —
     // no shared words, a passage too long to diff — the two are simply stacked
@@ -7956,6 +8027,66 @@ ${bubbleShellHtml()}`;
           .catch(() => { delete D.figLoading[k]; });
       });
       loadFiles(scope);
+      fillCardSlots(scope);
+    }
+
+    // The slots richHtml left in a suggestion card, filled. A formula is
+    // typeset by mathNode, exactly as in a message (and keeps its source on
+    // failure). A picture is first asked of the page's OWN server — the
+    // served site, which is where a Jekyll asset already is — and, when that
+    // fails (a Jupyter Book copies pictures to _images/ at build time, and a
+    // picture a bot has only just written is not built at all), of the
+    // companion, which reads it straight off the source tree
+    // (GET /blog-image, owner-only, back through the background worker as a
+    // data: url like every other figure here). Neither: the source stays, with
+    // one quiet line saying the picture is not reachable yet.
+    function fillCardSlots(scope) {
+      scope.querySelectorAll('.sgslot.sgmath[data-tex]').forEach(el => {
+        const node = mathNode({ tex: el.getAttribute('data-tex'), raw: el.getAttribute('data-raw') || '',
+          display: el.getAttribute('data-display') === '1' });
+        node.classList.add('sgmath-done');
+        el.replaceWith(node);
+      });
+      scope.querySelectorAll('.sgslot.sgfig[data-src]').forEach(el => {
+        const src = el.getAttribute('data-src');
+        const img = mk('img', 'sgfig-img');
+        img.alt = el.getAttribute('data-alt') || '';
+        img.setAttribute('data-src', src);
+        const raw = el.getAttribute('data-raw') || src;
+        const cap = el.getAttribute('data-cap') || '';
+        const k = 'blog|' + src;
+        const giveUp = () => {
+          if (!img.parentNode) return;
+          const c = img.nextElementSibling;
+          if (c && c.classList.contains('sgfig-cap')) c.remove();
+          const box = mk('span', 'sgfig-miss');
+          box.appendChild(document.createTextNode(raw));
+          box.appendChild(mk('span', 'sgfig-note')).textContent = 'picture not reachable yet — not built or not served';
+          img.parentNode.replaceChild(box, img);
+        };
+        // a miss is remembered for half a minute, so a render storm does not
+        // ask twice a second for a picture the build has not made yet
+        const miss = D.sgMiss || (D.sgMiss = {});
+        if (miss[k] && Date.now() - miss[k] < 30000) { el.replaceWith(img); giveUp(); return; }
+        let tried = false;
+        img.addEventListener('error', () => {
+          if (tried) { miss[k] = Date.now(); giveUp(); return; }
+          tried = true;
+          Promise.resolve(cb('onBlogImage')(src)).then(r => {
+            if (!r || r.ok === false || !r.data_url) { miss[k] = Date.now(); giveUp(); return; }
+            D.figs[k] = r.data_url;
+            img.src = r.data_url;
+          }).catch(giveUp);
+        });
+        let served = '';
+        try { served = new URL(src, location.href).href; } catch { /* left empty: straight to the companion */ }
+        el.replaceWith(img);
+        // a MyST figure's caption is words the page will show under it
+        if (cap) img.insertAdjacentElement('afterend', mk('span', 'sgfig-cap')).textContent = cap;
+        if (D.figs[k]) { tried = true; img.src = D.figs[k]; }
+        else if (served && /^https?:/.test(served)) img.src = served;
+        else img.dispatchEvent(new Event('error'));
+      });
     }
 
     // …and the same trick for a picture the bots SAVED rather than plotted:
@@ -9176,18 +9307,20 @@ ${bubbleShellHtml()}`;
       const prop = String(card.proposed || '');
       if (!prop.trim()) {
         return `<div class="wasnow" data-deleted="1"><div class="wnstack"><div class="wnrow">`
-          + `<span class="wnlab">cut</span><span class="wnval"><del>${esc(cur)}</del></span>`
+          + `<span class="wnlab">cut</span><span class="wnval"><del>${richHtml(cur)}</del></span>`
           + `</div></div></div>`;
       }
       const ops = wordDiff(cur, prop);
       if (ops) {
+        // each run through richHtml, so a formula in it is typeset and a
+        // picture drawn — whole, because the diff never split one
         return `<div class="wasnow"><div class="wndiff">${ops.map(o => o.t === '='
-          ? esc(o.s) : o.t === '-' ? `<del>${esc(o.s)}</del>` : `<ins>${esc(o.s)}</ins>`)
+          ? richHtml(o.s) : o.t === '-' ? `<del>${richHtml(o.s)}</del>` : `<ins>${richHtml(o.s)}</ins>`)
           .join(' ')}</div></div>`;
       }
       return `<div class="wasnow" data-stacked="1"><div class="wnstack">`
-        + `<div class="wnrow"><span class="wnlab">now</span><span class="wnval">${esc(cur)}</span></div>`
-        + `<div class="wnrow"><span class="wnlab">proposed</span><span class="wnval">${esc(prop)}</span></div>`
+        + `<div class="wnrow"><span class="wnlab">now</span><span class="wnval">${richHtml(cur)}</span></div>`
+        + `<div class="wnrow"><span class="wnlab">proposed</span><span class="wnval">${richHtml(prop)}</span></div>`
         + `</div></div>`;
     }
 
@@ -9225,7 +9358,12 @@ ${bubbleShellHtml()}`;
         return `<div class="sgcard passed">${why}${diff}`
           + `<div class="sgnote">Turned down — the post is unchanged.</div></div>`;
       }
-      return `<div class="sgcard" data-sg="${esc(id)}">${why}${diff}
+      // previewed on the page, but at the comment's passage rather than its
+      // own — said here, once, so the strike is read as "about here"
+      const approx = TC.on && TC.approx.indexOf(id) !== -1
+        ? `<div class="sgnote" data-approx="1">Shown on the page at the comment's passage; `
+          + `the edit is to the source behind it.</div>` : '';
+      return `<div class="sgcard" data-sg="${esc(id)}">${why}${diff}${approx}
         <div class="sgacts">
           <button class="rebtn" type="button" data-act="sg-yes" data-target="${esc(target)}"
             data-ts="${esc(ts)}" data-sg="${esc(id)}" ${busy ? 'disabled' : ''}
@@ -11132,10 +11270,12 @@ ${bubbleShellHtml()}`;
       // {on, threads} — the reader's switch for the on-page track changes and
       // the threads it applies to. Re-rendered in place, like setReviewHost.
       setTrackChanges: tc => {
-        const before = TC.on + '|' + TC.threads.join(',');
+        const key = () => TC.on + '|' + TC.threads.join(',') + '|' + TC.approx.join(',');
+        const before = key();
         Object.assign(TC, tc || {});
         TC.threads = (TC.threads || []).slice();
-        if (before !== TC.on + '|' + TC.threads.join(',')) render();
+        TC.approx = (TC.approx || []).map(String);
+        if (before !== key()) render();
         return D;
       },
       trackChangesOn: () => !!TC.on,
@@ -11360,6 +11500,7 @@ ${bubbleShellHtml()}`;
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
+    diffTokens, wordDiff, richHtml,                         // test/math.test.mjs (suggestion cards)
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
     nestMsgs, agentStatus, isAgentCard,                     // test/collapse.test.mjs (summoned agents)
     COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,

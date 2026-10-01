@@ -142,6 +142,133 @@ await test('a reply cannot carry more than CARDS_MAX proposals', async () => {
 });
 
 // =========================================================================
+console.log('\nsuggest — a passage with fences of its own (store.fencedBlocks)');
+
+// The block that broke it, live: a MyST figure swapped in a Jupyter Book
+// chapter, both fields quoting the directive's opener and neither its closer.
+// The old regex closed on `current:`'s first ``` and the rest leaked as prose.
+const FIGURE = [
+  'current: ```{figure} images/L1-two-body-full-details.png',
+  '---',
+  'height: 350px',
+  'name: L1-two-body-full-details',
+  '---',
+  'proposed: ```{figure} images/L1-two-body-full-details-vector.png',
+  '---',
+  'height: 350px',
+  'name: L1-two-body-full-details',
+  '---',
+  'why: Swap the hand-drawn Fig. 1 for the electronically drawn version.',
+].join('\n');
+
+await test('three backticks: a quoted ```{figure} opener does not end the block', async () => {
+  const { cards, text } = suggest.liftSuggestions('Swapping the figure.\n\n' + fence(FIGURE) + '\n\nThat is all.');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].state, 'open', cards[0].error);
+  assert.ok(cards[0].current.startsWith('```{figure} images/L1-two-body-full-details.png\n---'));
+  assert.ok(cards[0].proposed.includes('full-details-vector.png'));
+  assert.equal(cards[0].why, 'Swap the hand-drawn Fig. 1 for the electronically drawn version.');
+  assert.equal(text, 'Swapping the figure.\n\nThat is all.', 'nothing of the block is left in the words');
+});
+
+await test('three backticks: whole directives, opener and closer, in both fields', async () => {
+  const body = [
+    'current: ```{figure} a.png',
+    'name: a',
+    '```',
+    'proposed: ```{figure} b.png',
+    'name: a',
+    '```',
+    'why: the vector one',
+  ].join('\n');
+  const { cards, text } = suggest.liftSuggestions('Before.\n\n' + fence(body) + '\n\nAfter.');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].state, 'open', cards[0].error);
+  assert.equal(cards[0].current, '```{figure} a.png\nname: a\n```');
+  assert.equal(cards[0].proposed, '```{figure} b.png\nname: a\n```');
+  assert.equal(text, 'Before.\n\nAfter.');
+});
+
+await test('three backticks: a ```python code block inside the passage', async () => {
+  const body = [
+    'current: Run it:',
+    '',
+    '```python',
+    'print(1)',
+    '```',
+    'proposed: Run it:',
+    '',
+    '```python',
+    'print(2)',
+    '```',
+    'why: off by one',
+  ].join('\n');
+  const { cards, text } = suggest.liftSuggestions(fence(body) + '\n\nDone.');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].state, 'open', cards[0].error);
+  assert.equal(cards[0].current, 'Run it:\n\n```python\nprint(1)\n```');
+  assert.equal(cards[0].proposed, 'Run it:\n\n```python\nprint(2)\n```');
+  assert.equal(text, 'Done.');
+});
+
+const fence4 = body => '````suggest\n' + body + '\n````';
+
+await test('four backticks: any ``` inside is content, and the lift takes it all', async () => {
+  const body = [
+    'current: ```{figure} a.png',
+    '```',
+    'proposed: ```{figure} b.png',
+    'why: the vector one',
+  ].join('\n');
+  const { cards, text } = suggest.liftSuggestions('Here.\n\n' + fence4(body) + '\n\nAnd a code block after:\n\n```js\nx\n```');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].state, 'open', cards[0].error);
+  assert.equal(cards[0].current, '```{figure} a.png\n```');
+  assert.equal(cards[0].proposed, '```{figure} b.png', 'odd inner fences are fine at four backticks');
+  assert.equal(text, 'Here.\n\nAnd a code block after:\n\n```js\nx\n```',
+    'the seam heals and the prose after it — fences and all — is untouched');
+});
+
+await test('four backticks: the FIGURE block that broke it', async () => {
+  const { cards, text } = suggest.liftSuggestions('A.\n\n' + fence4(FIGURE) + '\n\nB.');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].state, 'open', cards[0].error);
+  assert.equal(text, 'A.\n\nB.');
+});
+
+await test('no inner fences: closes exactly where it always did', async () => {
+  const { cards, text } = suggest.liftSuggestions('X ```suggest\ncurrent: a\nproposed: b\nwhy: c``` Y');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].why, 'c', 'a mid-line ``` still closes a block with no inner fence');
+  assert.equal(text, 'X  Y');
+});
+
+await test('two blocks in one reply, one nested and one plain, both lifted', async () => {
+  const { cards, text } = suggest.liftSuggestions([
+    'Two things.', '', fence(FIGURE), '', 'and', '', fence('current: a\nproposed: b\nwhy: c'), '', 'End.',
+  ].join('\n'));
+  assert.equal(cards.length, 2);
+  assert.deepEqual(cards.map(c => c.state), ['open', 'open']);
+  assert.equal(cards[1].current, 'a');
+  assert.equal(text, 'Two things.\n\nand\n\nEnd.');
+});
+
+await test('an unterminated block is not a block, and does not swallow the next one', async () => {
+  const lone = 'Oops.\n\n```suggest\ncurrent: a\nproposed: b';
+  const one = suggest.liftSuggestions(lone);
+  assert.equal(one.cards.length, 0);
+  assert.equal(one.text, lone, 'left as it was written');
+  const two = suggest.liftSuggestions('```suggest\ncurrent: lost\n\n' + fence('current: a\nproposed: b\nwhy: c'));
+  assert.equal(two.cards.length, 1);
+  assert.equal(two.cards[0].current, 'a', 'the well-formed block after it still reads');
+  assert.equal(two.text, '```suggest\ncurrent: lost');
+});
+
+await test('the envelopes teach the four-backtick form', async () => {
+  assert.match(suggest.suggestBlock(), /````suggest/);
+});
+
+// =========================================================================
 console.log('\nsuggest — finding the passage (the review engine\'s rule)');
 
 const DOC = [

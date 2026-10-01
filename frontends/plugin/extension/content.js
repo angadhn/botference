@@ -429,6 +429,10 @@
   let registered = false;
   let orphans = {};       // threadId -> bool
   let locs = {};          // threadId -> {start,end}
+  // …and the text those offsets are offsets INTO: a fallback preview asked
+  // for later, against a fresh index, may use them only if the page still
+  // reads exactly the same (proposalNear)
+  let locsRaw = '';
   // threadId -> {was, unique, long} for a READY thread whose passage a bot
   // rewrote: what the wording used to be, and whether the new wording sits
   // somewhere unambiguous enough to show the change inline. Rebuilt from the
@@ -1090,6 +1094,7 @@
       if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: [] });
       Anchor.unpaintProposal(null);
       proposalCards();
+      noteApprox();
       return;
     }
     // RECONCILE, not just add: a thread can vanish from the record between two
@@ -1119,6 +1124,7 @@
     const index = freshIndex();
     const nextOrphans = {};
     locs = {};
+    locsRaw = index.raw;
     tracks = {};
     for (const t of threads) {
       const r = Anchor.locate(index.raw, t);
@@ -1158,7 +1164,8 @@
     // the same (mended) index — last, so a proposal's marks sit innermost and
     // a click on its words reaches the card rather than a thread under it
     const cards = proposalCards();
-    if (trackChanges) Anchor.paintProposals(index, cards);
+    if (trackChanges) Anchor.paintProposals(index, cards, proposalNear(index));
+    noteApprox();
 
     // Tell the server only about anchors whose verdict actually changed — and
     // only where a local verdict is worth anything.
@@ -1321,20 +1328,162 @@
     for (const t of PAGE.threads || []) take(t.id, t.msgs);
     return out;
   }
+  // The passage each THREAD card may fall back to when its own wording is not
+  // on the page as written (anchor.js paintProposal, fallback 2): its
+  // thread's, as located this pass. Page-chat cards have no thread and get
+  // nothing. Offsets are only good against the string they were taken from,
+  // so against any other index each thread is asked again — the same two
+  // questions the repaint asks, nothing more, and no verdict is recorded.
+  function proposalNear(index) {
+    const out = {};
+    const same = index && index.raw === locsRaw;
+    const byId = Object.create(null);
+    for (const t of (PAGE && PAGE.threads) || []) byId[t.id] = t;
+    for (const cid of Object.keys(propWhere)) {
+      const target = propWhere[cid].target;
+      if (target === PAGE_TARGET || orphans[target]) continue;
+      let at = same ? locs[target] : null;
+      if (!at && !same && byId[target]) {
+        const r = Anchor.locate(index.raw, byId[target]);
+        at = r.ok ? r : relocateRewritten(byId[target], index.raw);
+      }
+      if (at) out[cid] = { start: at.start, end: at.end };
+    }
+    return out;
+  }
+  // Which previews stand on a thread's passage rather than their own, told to
+  // the drawer so the card can say so. Asked of the page itself after every
+  // paint and unpaint, so the note cannot outlive the mark it is about —
+  // and, since that is also the moment a fresh <ins> exists, the one place
+  // its formulas and pictures are drawn (dressProposals).
+  function noteApprox() {
+    dressProposals();
+    if (drawer) drawer.setTrackChanges({ approx: Anchor.approxProposalIds() });
+  }
+
+  // ---- a proposal's formulas and pictures, drawn on the page --------------
+  // anchor.js puts the proposed wording into its <ins> as TEXT (with its
+  // maths and picture references kept whole, plainOf keepImages). Here that
+  // text is drawn: each formula typeset, each picture shown.
+  //
+  // MATH is KaTeX — the extension's own copy, already loaded into this world
+  // by the manifest for the drawer — rendered as MathML only (`output:
+  // 'mathml'`). The drawer's KaTeX stylesheet lives in its shadow root and
+  // must not leak into the page; MathML needs no stylesheet at all, the
+  // browser lays it out natively. A formula KaTeX refuses stays as its TeX.
+  //
+  // PICTURES are asked of the served site first (the page's own origin, so a
+  // Jekyll asset is simply there), then of the companion (GET /blog-image,
+  // the source tree, as a data: url). Neither: the source text stays with a
+  // short note. Bounded in size, so a full-width figure does not shove the
+  // paragraph off screen.
+  //
+  // Still display only by the same door: everything here is inside the
+  // <ins>, which buildTextIndex skips and the snapshot removes. The <ins>
+  // keeps its attributes (the approximate flag included) untouched.
+  const blogImgCache = Object.create(null);
+  function blogImage(src) {
+    const k = String(src || '');
+    if (!blogImgCache[k]) {
+      blogImgCache[k] = api('GET', '/blog-image?url=' + encodeURIComponent(URL_NOW)
+        + '&src=' + encodeURIComponent(k)).then(r => (r && r.ok && r.data && r.data.data_url)
+        ? { ok: true, data_url: r.data.data_url }
+        : (delete blogImgCache[k], { ok: false })).catch(() => (delete blogImgCache[k], { ok: false }));
+    }
+    return blogImgCache[k];
+  }
+  function dressProposals() {
+    const D = window.BFPDrawer;
+    for (const ins of document.querySelectorAll('ins.bfp-prop-ins[data-bfp-prop]:not([data-bfp-dressed])')) {
+      ins.setAttribute('data-bfp-dressed', '1');
+      const text = ins.textContent;
+      const pics = Anchor.imageRefs(text).map(r => ({ start: r.start, end: r.end, pic: r }));
+      const maths = (D && D.scanMath ? D.scanMath(text) : [])
+        .filter(m => !pics.some(p => m.start < p.end && m.end > p.start))
+        .map(m => ({ start: m.start, end: m.end, math: m }));
+      const atoms = pics.concat(maths).sort((a, b) => a.start - b.start);
+      if (!atoms.length) continue;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const a of atoms) {
+        if (a.start > at) frag.appendChild(document.createTextNode(text.slice(at, a.start)));
+        frag.appendChild(a.math ? pageMath(a.math) : pagePicture(a.pic));
+        at = a.end;
+      }
+      if (at < text.length) frag.appendChild(document.createTextNode(text.slice(at)));
+      ins.textContent = '';
+      ins.appendChild(frag);
+    }
+  }
+  function pageMath(m) {
+    const el = document.createElement('span');
+    const K = window.katex;
+    try {
+      if (!K || !K.render) throw new Error('katex unavailable');
+      K.render(m.tex, el, { displayMode: m.display, output: 'mathml', throwOnError: true,
+        strict: 'ignore', trust: false });
+    } catch { el.textContent = m.raw; }
+    return el;
+  }
+  function pagePicture(r) {
+    const img = document.createElement('img');
+    img.alt = r.alt || '';
+    img.setAttribute('title', r.alt || r.src);
+    const st = img.style;
+    st.setProperty('display', 'block', 'important');
+    st.setProperty('max-width', 'min(100%, 520px)', 'important');
+    st.setProperty('max-height', '360px', 'important');
+    st.setProperty('height', 'auto', 'important');
+    st.setProperty('margin', '6px 0', 'important');
+    st.setProperty('outline', '2px solid rgba(45, 145, 85, .95)', 'important');
+    st.setProperty('outline-offset', '2px', 'important');
+    const miss = () => {
+      // the captioned box, when there is one, goes with the picture
+      const gone = img.parentNode && img.parentNode.getAttribute('data-bfp-fig') ? img.parentNode : img;
+      if (!gone.parentNode) return;
+      const t = document.createElement('span');
+      t.textContent = r.raw + ' (picture not reachable yet)';
+      gone.parentNode.replaceChild(t, gone);
+    };
+    let tried = false;
+    img.addEventListener('error', () => {
+      if (tried) { miss(); return; }
+      tried = true;
+      blogImage(r.src).then(x => { if (x && x.ok) img.src = x.data_url; else miss(); });
+    });
+    let served = '';
+    try { served = new URL(r.src, location.href).href; } catch { /* straight to the companion */ }
+    if (/^https?:/.test(served)) img.src = served;
+    else setTimeout(() => img.dispatchEvent(new Event('error')), 0);
+    if (!r.caption) return img;
+    // a MyST figure's caption is words the page will show under it
+    const box = document.createElement('span');
+    box.setAttribute('data-bfp-fig', '1');
+    box.style.setProperty('display', 'block', 'important');
+    const cap = document.createElement('span');
+    cap.textContent = r.caption;
+    cap.style.setProperty('display', 'block', 'important');
+    cap.style.setProperty('font-style', 'italic', 'important');
+    box.appendChild(img);
+    box.appendChild(cap);
+    return box;
+  }
   // Put the previews right outside a re-anchor: the switch, a refused answer.
   function syncProposals() {
     const cards = proposalCards();
-    if (!CAPS.highlights) { Anchor.unpaintProposal(null); return; }
-    Anchor.syncProposals(cards, trackChanges, document.body);
+    if (!CAPS.highlights) { Anchor.unpaintProposal(null); noteApprox(); return; }
+    Anchor.syncProposals(cards, trackChanges, document.body, proposalNear);
+    noteApprox();
   }
   // The cards one answer is about, taken down NOW rather than when the record
   // comes back, so a preview never sits beside a card that has moved on.
   function unpaintAnswered(threadId, ts, id) {
-    if (id) { Anchor.unpaintProposal(id); return; }
+    if (id) { Anchor.unpaintProposal(id); noteApprox(); return; }
     for (const cid of Object.keys(propWhere)) {
       const w = propWhere[cid];
       if (w.target === threadId && w.ts === String(ts)) Anchor.unpaintProposal(cid);
     }
+    noteApprox();
   }
 
   // The switch itself, thrown from the drawer's Comments tab. Persisted per
@@ -1673,8 +1822,10 @@
     for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
     Anchor.unpaintProposal(null);
     propWhere = {};
+    noteApprox();
     pendingSel = null;
     locs = {};
+    locsRaw = '';
     orphans = {};
     tracks = {};
     PAGE = { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
@@ -2249,6 +2400,11 @@
         if (!r.ok) return failure(r);
         return { ok: true, data_url: r.data && r.data.data_url, mime: r.data && r.data.mime };
       },
+
+      // A picture a suggestion card proposes, read off the source tree when
+      // the served site has not got it yet (fillCardSlots asks the site
+      // first). Same route out as every other figure here.
+      onBlogImage: src => blogImage(src),
 
       onRunFigure: async (target, runId, name) => {
         const url = target === LIBRARY_TARGET ? LIBRARY_URL : URL_NOW;

@@ -257,6 +257,119 @@
     return { ok: true, start: scored[0].s.start, end: scored[0].s.end, unique: false, score: scored[0].score };
   }
 
+  // ---- source markup, read the way the page shows it ----------------------
+  // A suggestion card quotes the SOURCE (`current` is what the file holds),
+  // and on a blog or a book the source is markdown: `[the Earth](earth.md)`
+  // on disk is "the Earth" on the page, `**must**` is "must", a MyST
+  // {ref}`gravity` is "gravity". Searched for as written, a marked-up passage
+  // is simply not on the page, and the preview had nothing to stand on.
+  //
+  // So: the same passage with its inline markup taken off, as near to the
+  // rendered words as a regex can get without a markdown parser. Links keep
+  // their text, emphasis and code keep their words, a role keeps its content
+  // (or, for `text <target>`, its text), and the line furniture a renderer
+  // turns into layout — list numbers, bullets, heading hashes, quote bars —
+  // goes, because the browser draws those and they are never text nodes.
+  // Then whitespace is folded, exactly as `normalize` would.
+  //
+  // Two things are NOT text and are handled as wholes, never reached into:
+  //
+  //   · MATH ($…$, $$…$$, \(…\), \[…\]) is left exactly as written, every
+  //     character. `x_1` would otherwise lose an underscore to the emphasis
+  //     rule and `a*b*c` an asterisk pair. The page shows typeset maths, so a
+  //     passage with a formula in it still will not locate — the caller's
+  //     fallback is for that — but the PROPOSAL shown after it keeps its TeX
+  //     intact, which is what lets it be typeset (content.js dressProposals).
+  //   · PICTURES (imageRefs: `![alt](src)` and a MyST {figure}/{image}
+  //     fence). A picture has no text on the page, so for locating it is
+  //     nothing (a figure keeps its caption, which IS text). With
+  //     `{keepImages: true}` — the proposal's form — it is kept whole, so the
+  //     page can draw the picture rather than its alt text.
+  //
+  // It is deliberately NOT clever about what it cannot see. An empty-text
+  // MyST link, `[](content.Some-Label)`, renders as the target heading's
+  // title, which lives in another file; it comes out as nothing here, the
+  // search fails, and the caller falls back to something it can stand on.
+  // Pure, so the node tests hold it to its word.
+  //
+  // The math spotter is a small regex, not drawer.js's scanMath: this file has
+  // to load in node on its own. It errs towards "that is maths" only where a
+  // $ is closed on the same line with no space inside either end, which is
+  // the money case scanMath works hardest at, near enough.
+  const MATH_LITE = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?=[^\s$])[^$\n]*?[^\s$\\]\$(?!\d)/g;
+  const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
+  // the fence may open mid-line (a word diff re-joins tokens with spaces) but
+  // must CLOSE on a line of its own, as MyST requires
+  const MYST_FIG = /(`{3,}|:{3,})\{(figure|image)\}[ \t]+(\S+)[^\n]*\n(?:([\s\S]*?)\n)??[ \t]*\1[ \t]*(?=\n|$)/g;
+
+  // Every picture referenced in `text`, in order, never overlapping:
+  // {start, end, raw, src, alt, caption, kind: 'md'|'myst'}. A MyST fence's
+  // alt is its `:alt:` option, else its caption (the body without options).
+  function imageRefs(text) {
+    const s = String(text == null ? '' : text);
+    const out = [];
+    let m;
+    MYST_FIG.lastIndex = 0;
+    while ((m = MYST_FIG.exec(s))) {
+      const body = (m[4] || '').split('\n');
+      const alt = (body.map(l => /^\s*:alt:\s*(.*)$/.exec(l)).find(Boolean) || [])[1] || '';
+      const caption = body.filter(l => !/^\s*:[\w-]+:/.test(l)).join(' ').replace(/\s+/g, ' ').trim();
+      out.push({ start: m.index, end: m.index + m[0].length, raw: m[0], src: m[3],
+        alt: (alt || caption).trim(), caption, kind: 'myst' });
+    }
+    MD_IMAGE.lastIndex = 0;
+    while ((m = MD_IMAGE.exec(s))) {
+      const at = m.index, to = at + m[0].length;
+      if (out.some(r => at < r.end && to > r.start)) continue;   // inside a fence
+      out.push({ start: at, end: to, raw: m[0], src: m[2], alt: m[1].trim(), caption: '', kind: 'md' });
+    }
+    return out.sort((a, b) => a.start - b.start);
+  }
+
+  function plainOf(md, opts) {
+    const keep = !!(opts && opts.keepImages);
+    let s = String(md == null ? '' : md);
+    // the wholes, swapped for placeholders no markup rule below can match
+    // (\u0001 is never typed, and none of the patterns touch it)
+    const held = [];
+    const hold = raw => '\u0001' + (held.push(raw) - 1) + '\u0001';
+    const pics = imageRefs(s);
+    if (pics.length) {
+      const parts = [];
+      let at = 0;
+      for (const r of pics) {
+        parts.push(s.slice(at, r.start), keep ? hold(r.raw) : (r.kind === 'myst' ? ' ' + r.caption + ' ' : ''));
+        at = r.end;
+      }
+      parts.push(s.slice(at));
+      s = parts.join('');
+    }
+    s = s.replace(MATH_LITE, hold);
+    // line furniture, per line, before the lines are folded together
+    s = s.split('\n').map(line => line
+      .replace(/^\s{0,3}#{1,6}\s+/, '')
+      .replace(/^\s*(?:>\s*)+/, '')
+      .replace(/^\s*(?:\d+[.)]|[-*+])\s+/, '')).join('\n');
+    s = s
+      // {role}`text <target>` keeps the text; {role}`x` keeps x
+      .replace(/\{[\w:.-]+\}`([^`]*?)\s*<[^`>]*>`/g, '$1')
+      .replace(/\{[\w:.-]+\}`([^`]*)`/g, '$1')
+      // [text](url) keeps its words; [text][ref] too
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/!?\[([^\]]*)\]\[[^\]]*\]/g, '$1')
+      // inline code keeps its words, backticks gone
+      .replace(/`+([^`]*?)`+/g, '$1')
+      // strong before emphasis, so ** is never read as two *s
+      .replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, '$1')
+      .replace(/__(?=\S)([\s\S]*?\S)__/g, '$1')
+      .replace(/\*(?=\S)([^*]*?\S)\*/g, '$1')
+      // an underscore inside a word is a snake_case name, not emphasis
+      .replace(/(^|[^\w])_(?=\S)([^_]*?\S)_(?![\w])/g, '$1$2');
+    // folded, THEN the wholes put back: a $$ block or a figure fence keeps its
+    // own line breaks, which is what its renderer needs
+    return s.replace(/\s+/g, ' ').trim().replace(/\u0001(\d+)\u0001/g, (_, n) => held[+n]);
+  }
+
   // ---- DOM adapters ------------------------------------------------------
   // (guarded: the pure core above must import cleanly in node)
 
@@ -325,6 +438,11 @@
   const PROP_CLASS = 'bfp-prop';
   const PROP_INS_CLASS = 'bfp-prop-ins';
   const PROP_LINE = 'rgba(217, 119, 87, .7)';
+  // …and the flag on a preview that stands on its THREAD's passage because its
+  // own could not be found (paintProposal, fallback 2). Same marks, same
+  // classes — so every unpaint, sweep and click treats it identically — and
+  // one attribute that says "this is where the comment is, not the edit".
+  const APPROX_ATTR = 'data-bfp-prop-approx';
 
   // ---- the OTHER mark: a strikeout ----------------------------------------
   // Adobe's second tool, and the reason a PDF's selection pill has two. A
@@ -933,22 +1051,56 @@
   // struck marks wrap the page's own words, so they are unwrapped (never
   // removed) wherever thread marks are. The index is mended exactly as
   // paintOffsets mends it, so later locates against it stay true.
+  //
+  // Two fallbacks, in this order, for a `current` the page does not show as
+  // written — a markdown source, where the file says `[text](url)` and the
+  // page says "text":
+  //
+  //   1. the same passage with its markup off (plainOf), held to the same
+  //      exactly-once rule. Found, it is the real place; the proposed wording
+  //      is shown with its markup off too, since the page will render it so.
+  //   2. `near`, a {start, end} in this index: the passage of the THREAD the
+  //      card was made in, as the caller located it this pass. The strike
+  //      goes over the comment's passage and the proposal after it, and both
+  //      say APPROXIMATE (APPROX_ATTR, and in their titles) — what is struck
+  //      is where the conversation was, not provably the words the accept
+  //      would replace. Display only, and only that: nothing reads these
+  //      offsets back, and the accept (suggest.mjs) finds its own place in
+  //      the source exactly as it always did. A card with no thread (the
+  //      page chat) has no `near`, and stays in the drawer.
   const propSel = (tag, cls, id) => tag + '.' + cls + (id == null ? '[data-bfp-prop]'
     : '[data-bfp-prop="' + String(id).replace(/["\\]/g, '\\$&') + '"]');
 
-  function paintProposal(index, card) {
+  function paintProposal(index, card, near) {
     if (!index || !card || !card.id || card.state !== 'open') return null;
     const id = String(card.id);
     if (document.querySelector(propSel('mark', PROP_CLASS, id))) return null;
     const current = String(card.current == null ? '' : card.current);
     if (!current.trim()) return null;
-    const r = locate(index.raw, { quote: current });
-    if (!r.ok || !r.unique) return null;
+    let proposed = String(card.proposed == null ? '' : card.proposed).trim();
+    let r = locate(index.raw, { quote: current });
+    let approx = false;
+    if (!r.ok || !r.unique) {
+      // 1. the passage as the page would render it
+      const plain = plainOf(current);
+      r = plain && plain !== normalize(current) ? locate(index.raw, { quote: plain }) : { ok: false };
+      if (r.ok && r.unique) proposed = plainOf(proposed, { keepImages: true });
+      // 2. the comment's own passage, marked as an approximation
+      else if (near && near.end > near.start && near.start >= 0 && near.end <= index.raw.length) {
+        r = { ok: true, unique: true, start: near.start, end: near.end };
+        proposed = plainOf(proposed, { keepImages: true });
+        approx = true;
+      } else return null;
+    }
+    const title = approx
+      ? 'proposed change (approximate position) — click to open the suggestion'
+      : 'proposed change — click to open the suggestion';
     const marks = wrapOffsets(index, r.start, r.end, doc => {
       const el = doc.createElement('mark');
       el.className = PROP_CLASS;
       el.setAttribute('data-bfp-prop', id);
-      el.setAttribute('title', 'proposed change — click to open the suggestion');
+      if (approx) el.setAttribute(APPROX_ATTR, '1');
+      el.setAttribute('title', title);
       const st = el.style;
       // a <mark>'s own yellow is the browser's, not ours: put it out, and let
       // whatever is under the words (a thread's tint, or the page) show
@@ -963,7 +1115,6 @@
       return el;
     });
     if (!marks.length) return null;
-    const proposed = String(card.proposed == null ? '' : card.proposed).trim();
     let ins = null;
     // a deletion proposes nothing, and shows as nothing but the strike
     if (proposed) {
@@ -972,7 +1123,8 @@
       ins.className = PROP_INS_CLASS;
       ins.setAttribute('data-bfp-prop', id);
       ins.setAttribute('aria-hidden', 'true');
-      ins.setAttribute('title', 'proposed change — click to open the suggestion');
+      if (approx) ins.setAttribute(APPROX_ATTR, '1');
+      ins.setAttribute('title', title);
       ins.textContent = proposed;
       const st = ins.style;
       st.setProperty('text-decoration-line', 'underline', 'important');
@@ -991,15 +1143,28 @@
       st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
       last.parentNode.insertBefore(ins, last.nextSibling);
     }
-    return { marks, ins };
+    return { marks, ins, approx };
   }
 
   // Every OPEN card of `cards` that can be placed, painted against one index.
   // Cards in any other state are skipped: applied, rejected and needs-manual
   // are answered, and unreadable never had a passage. Returns the ids painted.
-  function paintProposals(index, cards) {
+  // `near` is card id -> {start, end}, the thread passages paintProposal may
+  // fall back to. ONE approximate preview per passage: a thread holding three
+  // cards that cannot be placed would otherwise stack three proposals after
+  // one strike, which says nothing about any of them — the first is shown
+  // and the rest stay in the drawer.
+  function paintProposals(index, cards, near) {
     const out = [];
-    for (const c of cards || []) if (paintProposal(index, c)) out.push(String(c.id));
+    const taken = Object.create(null);
+    for (const c of cards || []) {
+      let at = near && c && near[String(c.id)];
+      if (at && taken[at.start + ':' + at.end]) at = null;
+      const r = paintProposal(index, c, at);
+      if (!r) continue;
+      if (r.approx) taken[at.start + ':' + at.end] = true;
+      out.push(String(c.id));
+    }
     return out;
   }
 
@@ -1039,15 +1204,29 @@
     return seen;
   }
 
+  // …and the ones of those standing on a thread's passage rather than their
+  // own (paintProposal's second fallback), for the drawer's note on the card.
+  function approxProposalIds() {
+    const seen = [];
+    for (const el of document.querySelectorAll(propSel('mark', PROP_CLASS) + '[' + APPROX_ATTR + ']')) {
+      const id = el.getAttribute('data-bfp-prop');
+      if (id && seen.indexOf(id) === -1) seen.push(id);
+    }
+    return seen;
+  }
+
   // Unpaint everything, then (when `on`) paint the open cards against a
   // FRESH index of `rootEl` — the one call for a caller that has no index of
-  // its own in hand (the track-changes switch, a refused accept).
-  function syncProposals(cards, on, rootEl) {
+  // its own in hand (the track-changes switch, a refused accept). `nearFor`,
+  // if given, is asked for the fallback passages against THAT index, since
+  // offsets from any other index are offsets into a different string.
+  function syncProposals(cards, on, rootEl, nearFor) {
     unpaintProposal(null);
     if (!on) return [];
     const open = (cards || []).filter(c => c && c.state === 'open');
     if (!open.length) return [];
-    return paintProposals(buildTextIndex(rootEl || document.body), open);
+    const index = buildTextIndex(rootEl || document.body);
+    return paintProposals(index, open, nearFor ? nearFor(index) : null);
   }
 
   function scrollTo(id) {
@@ -1072,18 +1251,18 @@
   const api = {
     // pure
     normIndex, normalize, findSpans, buildAnchor, locate, tailOverlap, headOverlap,
-    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX, occurrenceAt, ORD_MAX,
+    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX, occurrenceAt, ORD_MAX, plainOf, imageRefs,
     // dom
     buildTextIndex, offsetsFromRange, sectionOf,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
     marksAtPoint,
     markResolved, markAddressed, markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,
-    paintProposal, paintProposals, unpaintProposal, proposalIds, syncProposals,
+    paintProposal, paintProposals, unpaintProposal, proposalIds, approxProposalIds, syncProposals,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
     DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS, STRIKE_CLASS,
-    PROP_CLASS, PROP_INS_CLASS, PROP_LINE,
+    PROP_CLASS, PROP_INS_CLASS, PROP_LINE, APPROX_ATTR,
     STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

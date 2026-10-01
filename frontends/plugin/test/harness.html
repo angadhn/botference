@@ -274,8 +274,18 @@
                      whole-page spell-check answered in page chat with SIX
                      cards, which is the case the turn-end collateral diff
                      would have collapsed into one summary note and which a
-                     suggestion stack must never be. `&selftest=1` on any of
-                     the three.
+                     suggestion stack must never be. `?suggest=approx` is
+                     the on-page preview of cards whose `current` is markdown
+                     source: one placed by its rendered words, one (a MyST
+                     topic list of empty-text links) shown approximately at
+                     its thread's passage with a note on the card, and a
+                     page-chat card that cannot be placed at all.
+                     `?suggest=rich` is maths and pictures in proposals: a
+                     formula typeset in the card and on the page, a changed
+                     formula diffed whole, a MyST figure the served site has
+                     not got (fetched from the fake companion), a picture the
+                     site serves, and one nobody has (the note).
+                     `&selftest=1` on any of the five.
     ?filein=1        the "File this page in…" picker, open, on an ORDINARY page
                      (an arXiv PDF, not a project artifact): the council's
                      projects with a peek at each one's recent chats and files,
@@ -1485,6 +1495,62 @@ if (SUGGEST === 'sweep') {
         sgCard('w5', 'Aragon were relegated in April', 'Aragón were relegated in April', 'the accent is in the club\'s own name'),
         sgCard('w6', 'eleven games without a win', 'eleven matches without a win', '"matches" everywhere else in the piece'),
       ] },
+  ]);
+}
+
+// ?suggest=approx — the preview of a card whose `current` is the SOURCE's
+// markdown, which the page does not show as written. Three cards, one per
+// rule (anchor.js paintProposal): marked-up words that ARE on the page once
+// once the markup is off (placed exactly, proposal shown plain); a MyST topic
+// list of empty-text links, whose rendered words are other headings' titles
+// (no place of its own, so shown at its thread's passage, flagged
+// approximate); and the same in PAGE CHAT, which has no thread to stand on
+// and stays in the drawer.
+if (SUGGEST === 'approx') {
+  RECORD.threads[1].msgs = RECORD.threads[1].msgs.concat([
+    { author: 'angadh', ts: iso(6), text: '@claude tighten this, and drop the topic list.' },
+    { author: 'claude', ts: iso(5), text: 'Two changes.',
+      suggestions: [
+        sgCard('sp1', 'Nothing had gone [wrong](matches.md#one). Nothing had gone **right** either.',
+          'Nothing had gone *wrong*; nothing had gone right either.', 'one sentence, not two'),
+        sgCard('sp2', 'In this report we cover:\n1. [](content.Oversight-Failures)\n2. [](content.Relegation)',
+          '', 'the list repeats the headings directly below it'),
+      ] },
+  ]);
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(4), text: '@claude anything else?' },
+    { author: 'claude', ts: iso(3), text: 'One.',
+      suggestions: [sgCard('sp3', 'See {ref}`content.Nowhere-On-This-Page`.', '', 'a dangling cross-reference')] },
+  ]);
+}
+
+// ?suggest=rich — maths and pictures in a proposal. Cards in a thread, all
+// placed exactly on the page: a formula added (typeset in the <ins> as
+// MathML), a MyST figure the served site does not have (the harness server
+// 404s it; the fake /blog-image answers it), and a markdown picture the site
+// DOES serve beside one nobody has. In page chat, a card whose current is a
+// formula the page cannot show: drawer-only, and its diff must strike and
+// insert each formula whole.
+if (SUGGEST === 'rich') {
+  RECORD.threads[1].msgs = RECORD.threads[1].msgs.concat([
+    { author: 'angadh', ts: iso(6), text: '@claude quantify it, and add the table.' },
+    { author: 'claude', ts: iso(5), text: 'Three changes.',
+      suggestions: [
+        sgCard('sr1', 'called it a structural failure of oversight',
+          'called it a failure of oversight, at $p < 0.05$ by its own test', 'say how sure'),
+        sgCard('sr2', 'Nothing had gone right either.',
+          'Nothing had gone right either.\n\n```{figure} figs/fresh.png\n:alt: the league table\nThe league table after week one.\n```',
+          'show the table'),
+        sgCard('sr3', 'It is a description of the plan.',
+          'It is a description of the plan. ![the badge](../extension/icons/icon48.png) ![gone](/assets/missing.png)',
+          'two pictures'),
+      ] },
+  ]);
+  RECORD.page_chat = RECORD.page_chat.concat([
+    { author: 'angadh', ts: iso(4), text: '@claude and the rate?' },
+    { author: 'claude', ts: iso(3), text: 'One.',
+      suggestions: [sgCard('sr4', 'the rate is $r = 0.1$ per game',
+        'the rate is $r = \\frac{1}{10}$ per game', 'a fraction reads better')] },
   ]);
 }
 
@@ -2836,6 +2902,15 @@ function companion(method, path, body) {
   // the reader's website repository is theirs and Discuss never commits to it.
   if (route === '/blog-page') {
     return { ok: true, status: 200, data: { ok: true, blog: BLOG_PAGE } };
+  }
+  // a suggestion's picture off the source tree: only the one the ?suggest=rich
+  // pose's figure names exists "on disk"; everything else is not there
+  if (route === '/blog-image') {
+    const src = new URLSearchParams(String(path).split('?')[1] || '').get('src');
+    if (src !== 'figs/fresh.png') return { ok: false, status: 404, error: 'no such picture under this site' };
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#8db"/></svg>';
+    return { ok: true, status: 200, data: { ok: true, mime: 'image/svg+xml',
+      data_url: 'data:image/svg+xml;base64,' + btoa(svg) } };
   }
   if (route === '/blog-root') {
     blogRootAnswers.push(!!(body && body.confirm));
@@ -12330,7 +12405,7 @@ async function selftestSuggest() {
   const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
   const hit = hitter(check);
   const d = window.__bfp.drawer, S = d.shadow;
-  const pane = SUGGEST === '1' ? 'comments' : 'chat';
+  const pane = SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' ? 'comments' : 'chat';
   const all = sel => S.querySelectorAll('.pane[data-pane="' + pane + '"] ' + sel);
   const one = sel => all(sel)[0];
   const txt = sel => (one(sel) || {}).textContent || '';
@@ -12366,6 +12441,65 @@ async function selftestSuggest() {
     check('a passage that cannot be placed says so', !!all('.sgcard.manual').length);
     check('…with the reason on it', /not in the source any more/.test(txt('.sgcard.manual')));
     check('…and says the post is unchanged', /unchanged/.test(txt('.sgcard.manual')));
+  } else if (SUGGEST === 'approx') {
+    const pm = id => [...document.querySelectorAll('mark.bfp-prop[data-bfp-prop="' + id + '"]')];
+    const pi = id => document.querySelector('ins.bfp-prop-ins[data-bfp-prop="' + id + '"]');
+    const words = id => pm(id).map(m => m.textContent).join('');
+    const card = id => one('.sgcard[data-sg="' + id + '"]');
+    await until(() => pm('sp2').length, 2000);
+    check('marked-up words are placed by what the page shows', words('sp1') === 'Nothing had gone wrong. Nothing had gone right either.');
+    check('…exactly, not approximately', pm('sp1').length && !pm('sp1').some(m => m.hasAttribute('data-bfp-prop-approx')));
+    check('…and the proposal is shown without its markup', (pi('sp1') || {}).textContent === 'Nothing had gone wrong; nothing had gone right either.');
+    check('a topic list of empty links stands on its thread\'s passage',
+      words('sp2') === 'called it a structural failure of oversight');
+    check('…flagged approximate, mark by mark',
+      pm('sp2').length && pm('sp2').every(m => m.getAttribute('data-bfp-prop-approx') === '1'
+        && /approximate/.test(m.getAttribute('title') || '')));
+    check('…a deletion, so the strike alone', !pi('sp2'));
+    check('a page-chat card with no place of its own is not on the page', !pm('sp3').length && !pi('sp3'));
+    check('the approximate card says where it is shown',
+      !!card('sp2') && /comment's passage/.test((card('sp2').querySelector('.sgnote[data-approx]') || {}).textContent || ''));
+    check('…and the exact one does not', !!card('sp1') && !card('sp1').querySelector('.sgnote[data-approx]'));
+    check('nothing approximate entered the text the threads anchor on',
+      window.BFPAnchor.locate(window.BFPAnchor.buildTextIndex(document.body).raw,
+        { quote: 'called it a structural failure of oversight' }).unique === true);
+    check('rejecting the approximate one is a click', hit(card('sp2') && card('sp2').querySelector('[data-act="sg-no"]'), 'sg-no'));
+    await until(() => !pm('sp2').length, 2000);
+    check('…its preview comes down', !pm('sp2').length);
+    check('…and its note with it', !all('.sgnote[data-approx]').length);
+    check('…while the exact one stays', words('sp1') === 'Nothing had gone wrong. Nothing had gone right either.');
+  } else if (SUGGEST === 'rich') {
+    const pi = id => document.querySelector('ins.bfp-prop-ins[data-bfp-prop="' + id + '"]');
+    const card = id => S.querySelector('.sgcard[data-sg="' + id + '"]');
+    await until(() => pi('sr1') && pi('sr2') && pi('sr3'), 2000);
+    check('a formula in a proposal is typeset on the page', !!(pi('sr1') && pi('sr1').querySelector('math')));
+    check('…and its TeX is not left showing', pi('sr1') && !pi('sr1').textContent.includes('$'));
+    const fresh = await until(() => { const i = pi('sr2') && pi('sr2').querySelector('img'); return i && /^data:image\/svg/.test(i.src) && i; }, 4000);
+    check('a figure the site has not built is drawn from the companion', !!fresh);
+    check('…bounded in size', !!fresh && /520px/.test(fresh.style.getPropertyValue('max-width')));
+    check('…with its caption under it', /The league table after week one\./.test(pi('sr2').textContent));
+    const badge = await until(() => { const i = pi('sr3') && pi('sr3').querySelector('img'); return i && i.complete && i.naturalWidth > 0 && i; }, 4000);
+    check('a picture the site serves is drawn straight from it', !!badge && /icon48\.png$/.test(badge.src));
+    await until(() => pi('sr3') && /not reachable/.test(pi('sr3').textContent), 4000);
+    check('a picture nobody has stays as its source, with a note',
+      !!pi('sr3') && /!\[gone\]\(\/assets\/missing\.png\) \(picture not reachable yet\)/.test(pi('sr3').textContent));
+    check('none of it entered the text the threads anchor on',
+      !/league table|picture not reachable/.test(window.BFPAnchor.buildTextIndex(document.body).raw));
+    check('the card typesets the formula', !!(card('sr1') && card('sr1').querySelector('.wasnow .katex, .wasnow .md-math:not(.raw)')));
+    check('…and leaves no slot behind', !S.querySelector('.sgslot'));
+    const cfig = await until(() => { const i = card('sr2') && card('sr2').querySelector('img.sgfig-img'); return i && /^data:/.test(i.src) && i; }, 4000);
+    check('the card draws the figure', !!cfig);
+    check('…and its caption', !!cfig && /league table after week one/.test((cfig.nextElementSibling || {}).textContent || ''));
+    await until(() => card('sr3') && card('sr3').querySelector('.sgfig-note'), 4000);
+    check('the card draws the served picture and says which one is missing',
+      !!(card('sr3') && card('sr3').querySelector('img.sgfig-img[data-src$="icon48.png"]'))
+      && /not reachable/.test((card('sr3').querySelector('.sgfig-note') || {}).textContent || ''));
+    const chat = S.querySelector('.pane[data-pane="chat"] .sgcard[data-sg="sr4"]');
+    check('a changed formula is struck whole and inserted whole',
+      !!chat && chat.querySelectorAll('.wndiff del .md-math').length === 1
+      && chat.querySelectorAll('.wndiff ins .md-math').length === 1
+      && !/\$/.test((chat.querySelector('.wndiff') || {}).textContent || '$'));
+    check('…and a card that cannot be placed is not on the page', !pi('sr4'));
   } else if (SUGGEST === 'states') {
     check('every state is drawn', all('.sgcard').length === 4);
     check('the accepted one says it landed', /Applied to the post/.test(txt('.sgcard.done')));
@@ -12724,7 +12858,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // …and where the pose is a suggestion stack, the pane it is IN: a stack
     // written into a thread is in the margin, a whole-page sweep is in chat
     if (BLOG && Q.get('selftest') !== '1') {
-      setTimeout(() => d.open(SUGGEST === '1' ? 'comments' : 'chat'), 300);
+      setTimeout(() => d.open(SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' ? 'comments' : 'chat'), 300);
     }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)

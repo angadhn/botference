@@ -1671,6 +1671,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   text-transform: uppercase; letter-spacing: .04em;
 }
 .wasnow .wnval { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere }
+/* a suggestion's picture, drawn (fillCardSlots) — bounded, so a full-width
+   figure is a thumbnail in the margin and not a wall; struck, it is dimmed */
+.sgfig-img { display: block; max-width: 100%; max-height: 220px; margin: 4px 0;
+  border-radius: 3px; background: var(--bg) }
+.wasnow del .sgfig-img { opacity: .45 }
+.sgfig-cap { display: block; font: italic 12px/1.4 var(--sans) }
+.wasnow ins:has(> .sgfig-img), .wasnow del:has(> .sgfig-img) { background: none; padding: 0 }
+.sgfig-miss { overflow-wrap: anywhere }
+.sgfig-note { display: block; font: 11px/1.4 var(--sans); color: var(--muted) }
 .wasnow .wnrow:first-child .wnval { color: var(--muted); text-decoration: line-through }
 
 /* ── suggested edits: what the bots propose to do to the post ───────────── */

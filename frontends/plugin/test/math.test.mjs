@@ -18,6 +18,9 @@ import { renderNote } from '../export.mjs';
 
 const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
+// anchor.js first and on the global, as in the page: the drawer asks it for
+// picture references (imageRefs) when it tokenizes a suggestion for a diff
+globalThis.BFPAnchor = require(path.join(here, '..', 'extension', 'anchor.js'));
 const D = require(path.join(here, '..', 'extension', 'drawer.js'));
 
 let pass = 0, fail = 0;
@@ -179,6 +182,39 @@ const texOf = s => D.scanMath(s).map(m => m.tex);
   ok('export escapes no dollar', !note.includes('\\$'), note);
   ok('a bot reply keeps its maths and its money alike',
     note.includes('In short, $E = mc^2$ and $5 is still $5.'), note);
+}
+
+// ---- suggestion cards: a formula or a picture is ONE token -----------------
+{
+  eq('diffTokens: plain words', D.diffTokens('  a  b\nc '), ['a', 'b', 'c']);
+  eq('diffTokens: a formula with spaces inside is one token',
+    D.diffTokens('so $a + b = c$ holds'), ['so', '$a + b = c$', 'holds']);
+  eq('diffTokens: display math over lines is one token',
+    D.diffTokens('x $$\n\\int_0^1 f \\, dx\n$$ y'), ['x', '$$\n\\int_0^1 f \\, dx\n$$', 'y']);
+  eq('diffTokens: punctuation stays glued to its formula', D.diffTokens('is $x^2$.'), ['is', '$x^2$.']);
+  eq('diffTokens: money is still words', D.diffTokens('the $5 fee'), ['the', '$5', 'fee']);
+  eq('diffTokens: a markdown picture is one token',
+    D.diffTokens('see ![the orbit, drawn](figs/o.png) here'), ['see', '![the orbit, drawn](figs/o.png)', 'here']);
+  eq('diffTokens: a MyST figure fence is one token',
+    D.diffTokens('A\n```{figure} o.png\n:name: o\nThe orbit.\n```\nB'),
+    ['A', '```{figure} o.png\n:name: o\nThe orbit.\n```', 'B']);
+
+  const ops = D.wordDiff('the force is $F = m a$ here', 'the force is $F = \\frac{dp}{dt}$ here');
+  eq('wordDiff: a changed formula is struck and inserted WHOLE', ops,
+    [{ t: '=', s: 'the force is' }, { t: '-', s: '$F = m a$' }, { t: '+', s: '$F = \\frac{dp}{dt}$' }, { t: '=', s: 'here' }]);
+  const same = D.wordDiff('so $a + b$ holds', 'so $a + b$ holds true');
+  eq('wordDiff: an unchanged formula is kept whole', same, [{ t: '=', s: 'so $a + b$ holds' }, { t: '+', s: 'true' }]);
+  const pic = D.wordDiff('Orbits are ellipses.', 'Orbits are ellipses. ![An ellipse](/assets/e.png)');
+  eq('wordDiff: an added picture is one insertion', pic,
+    [{ t: '=', s: 'Orbits are ellipses.' }, { t: '+', s: '![An ellipse](/assets/e.png)' }]);
+
+  const h = D.richHtml('a <b> $x_1$ and ![p](/i.png) end');
+  ok('richHtml: text is escaped', h.includes('a &lt;b&gt; '), h);
+  ok('richHtml: a formula is a slot carrying its TeX and showing its source',
+    /<span class="sgslot sgmath" data-tex="x_1" data-display="0" data-raw="\$x_1\$">\$x_1\$<\/span>/.test(h), h);
+  ok('richHtml: a picture is a slot carrying its path', /class="sgslot sgfig" data-src="\/i\.png" data-alt="p"/.test(h), h);
+  ok('richHtml: display math is flagged', /data-display="1"/.test(D.richHtml('$$y$$')));
+  eq('richHtml: plain text is just escaped', D.richHtml('a & b'), 'a &amp; b');
 }
 
 // ---- report -----------------------------------------------------------------

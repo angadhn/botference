@@ -7351,6 +7351,18 @@ why: the double negative reads as a hedge
 - **EVERY block in the reply counts**, and this is the one place the convention
   differs from the question vault's last-block-wins. A typo sweep is ten small
   proposals; they are not alternatives, they are the answer.
+- **A passage with a fence of its own** (a code block, a MyST `{figure}` /
+  `{note}` / `{code-cell}` directive) cannot end the block early.
+  `store.fencedBlocks` scans instead of the old first-```` ``` ````-wins regex:
+  a block opened with four or more backticks closes only at a line of at least
+  as many backticks, CommonMark's rule, and the envelope tells bots to use
+  ````` ````suggest ````` whenever the passage has a ```` ``` ```` line. A
+  three-backtick block still works: inner fence lines are counted (the count
+  restarting at each `current:` / `proposed:` / `why:` line, since a quoted
+  directive often stops before its own closer), and a bare ```` ``` ```` closes
+  the block only at an even count. With no inner fence it closes exactly where
+  it always did. Found live: a figure swap in a Jupyter Book chapter came out
+  unreadable with half the directive leaked into the reply.
 
 Capped at 30 cards a reply. A block that will not parse still comes off the
 words and still becomes a card — a buttonless one saying what was wrong.
@@ -8284,7 +8296,8 @@ implemented once:
   server.mjs; `readKey`/`writeKey` in drawer.js (five preferences, ten identical
   try/catch shells, and the code said so three times); `store.clipTo` imported
   by workspace.mjs instead of copied; `store.fenceRe(name)` for the two
-  ```suggest / ```question block regexes.
+  ```suggest / ```question block regexes (since replaced by the
+  fence-length-aware scanner `store.fencedBlocks`, see suggest mode §2).
 - `test/harness.mjs` — the runner, poller, throwaway root, companion boot and
   JSON-over-HTTP that **nine** suites each had a private copy of. The `test()`
   runner was byte-identical in all nine; the SSE `listen()` helper was
@@ -10702,9 +10715,8 @@ Display only; nothing is written anywhere until Accept.
   (needs-manual), so the preview never points at a place the accept would not
   write. Located with `Anchor.locate` (whitespace-tolerant, quote- and
   dash-folded) against the same index the threads are located on. A `current`
-  that is markdown source the page renders differently (emphasis markers, a
-  link's URL) or that spans MathJax (skipped by the index) simply does not
-  locate, and paints nothing.
+  that is markdown source the page renders differently gets two more tries
+  (§9); one that spans MathJax (skipped by the index) still does not locate.
 
 The interface does not change: no new switch, no new tab, no drawer colour or
 layout touched. The in-body marks are the whole of the visible change (plus
@@ -10799,7 +10811,8 @@ skip; `wrapOffsets` split out of `paintOffsets`; `paintProposal`,
 `extension/content.js` (`propWhere`, `proposalCards`, `syncProposals`,
 `unpaintAnswered`; `reanchorAll`, `forgetPage`, the switch, the three suggest
 callbacks, the snapshot, `withoutWasMarkup`, the click handler),
-`extension/drawer.js` (`focusSuggestion`), `extension/drawer.css`
+`extension/drawer.js` (`focusSuggestion`; §9: `TC.approx` and the card
+note), `extension/drawer.css`
 (`.sgcard.tasksrc` added to the existing flash rule).
 
 ### 8. Testing
@@ -10821,6 +10834,137 @@ unreadable, an answered card comes down and its neighbour stays; a card gone
 from the record is swept; `paintProposals` paints only open cards; the switch
 off takes previews down and on puts them back.
 
-Not done: no harness pose for the click-through or the drawer flash; the
-locate is literal against rendered text, so a `current` written in markdown
-syntax the page renders differently does not preview.
+Not done: no harness pose for the click-through or the drawer flash.
+
+### 9. Addendum (same day): a `current` written in markdown
+
+Seen on a Jupyter Book chapter the same afternoon: a card deleting a MyST
+topic list — `In this lecture we cover the following topics: 1.
+[](content.Gravitational-Force-and-Newton's-Second-Law) 2. …` — sat in the
+drawer and nothing showed on the page, while its thread's highlight painted
+fine. A card quotes the SOURCE; the page shows the source rendered. An
+empty-text MyST link is the worst case: its words on the page are another
+heading's title, which is in another file. So `paintProposal(index, card,
+near)` now tries, in order, and stops at the first that holds:
+
+1. `current` as written, exactly once (unchanged).
+2. **`Anchor.plainOf(current)`, exactly once** — a small pure function, the
+   passage with its inline markup off: `[text](url)`, `![alt](src)` and
+   `[text][ref]` keep their text; `**x**`, `__x__`, `*x*`, `_x_` their words
+   (an underscore inside a word is snake_case, not emphasis); a MyST role
+   `` {role}`x` `` keeps `x`, and `` {role}`text <target>` `` keeps `text`;
+   inline-code backticks go; list numbers, bullets, heading hashes and quote
+   bars at a line's start go (the browser draws those, they are never text
+   nodes); whitespace folds. When this placed it, the `<ins>` shows
+   `plainOf(proposed)`, since that is how the page will render it. Same
+   exactly-once rule, same guarantee as before: a real place.
+3. **`near`: the passage of the THREAD the card was made in**, as located this
+   pass (content.js `proposalNear`: `locs[target]` when the index reads the
+   same text as the repaint's, else the thread re-located against the fresh
+   index — `Anchor.locate`, then `relocateRewritten`; orphaned threads give
+   nothing). The strike goes over the comment's passage and `plainOf(proposed)`
+   after it, and every mark and the `<ins>` carry
+   **`data-bfp-prop-approx="1"`** (`Anchor.APPROX_ATTR`) with the title
+   "proposed change (approximate position) — click to open the suggestion".
+   A page-chat card has no thread, gets no `near`, and stays drawer-only.
+   **One approximate preview per passage** (`paintProposals`): a thread whose
+   several cards all fall back would otherwise stack proposals after one
+   strike; the first is shown, the rest stay in the drawer.
+
+The approximate range is display only and reported nowhere as the place the
+accept would write: nothing reads it back, and the accept (`suggest.mjs`)
+finds its own place in the source exactly as before. The marks are the same
+elements with the same classes, so `unpaintProposal`, `proposalIds`,
+`syncProposals` (which now takes `nearFor(index)`, asked against ITS fresh
+index), `unpaintAnswered`, the click-through and the `buildTextIndex` skip of
+the `<ins>` treat them identically. `Anchor.approxProposalIds()` reads the
+flagged ids off the page; content.js `noteApprox()` passes them to the drawer
+as `setTrackChanges({approx})` after every paint and unpaint (re-anchor,
+`syncProposals`, `unpaintAnswered`, `forgetPage`, the no-highlights branch),
+and an open card in that list carries one muted `.sgnote[data-approx]` line:
+"Shown on the page at the comment's passage; the edit is to the source behind
+it." — shown only while track changes is on.
+
+Tests: `test/prop.test.mjs` 55 → 93 (plainOf case by case; fallback 1 placing
+marked-up words exactly with the proposal shown plain and still refusing a
+twice-present one; fallback 2 on the thread passage, flagged, nested in the
+thread mark, the `<ins>` out of the index, unpaint restoring the DOM, an exact
+hit winning over `near`, an out-of-range `near` refused; one approximate
+preview per passage; `syncProposals` asking `nearFor` against its own index).
+Harness **`?suggest=approx&selftest=1`** (17/17): a markdown-link-and-bold
+`current` placed by its rendered words with the proposal shown plain; a MyST
+topic list of empty links at its thread's passage, flagged, the drawer note on
+that card and not the other; a page-chat card unplaced; Reject takes the
+approximate preview and its note down and leaves the exact one.
+
+### 10. Addendum (same day): maths and pictures in a proposal
+
+A card's `current`/`proposed` is source, and two kinds of source are not
+words: a formula and a picture. Both were shown as their source text, in the
+card and in the page's `<ins>`.
+
+**One rule underneath both: a formula or a picture is ONE thing.** Never
+reached into, never split, never diffed in half.
+
+- `Anchor.imageRefs(text)` (pure, anchor.js) — every picture reference,
+  `![alt](src)` and a MyST `{figure}`/`{image}` fence (backtick or colon; may
+  open mid-line, must close on its own line), as `{start, end, raw, src, alt,
+  caption, kind}`. A fence's alt is its `:alt:`, else its caption; an image
+  inside a figure's caption belongs to the figure.
+- `Anchor.plainOf` leaves every formula (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`,
+  a small regex — this file must load in node alone) **exactly as written**,
+  and holds pictures whole: for LOCATING a picture is nothing (it has no text
+  on the page; a figure keeps its caption), and with `{keepImages: true}` —
+  what `paintProposal` uses for the proposal on both fallbacks — it is kept
+  whole, so the page can draw it.
+- drawer.js `diffTokens` / `wordDiff` (moved to module scope, exported): the
+  word split holds each formula (`scanMath`) and picture (`imageRefs`, asked
+  of `BFPAnchor` lazily) as a NUL placeholder, so `$F = m a$` → `$F =
+  \frac{dp}{dt}$` is one deletion and one insertion. `rewriteHtml`'s diffs
+  get the same tokens.
+
+**In the card.** `sgDiffHtml` draws every value and every diff run through
+`richHtml`: escaped text, with each formula and picture an inert
+`.sgslot` showing its source. `fillCardSlots` (run from `loadFigures`, i.e.
+after every render's `decorateRuns`) fills them through DOM calls: a formula
+by the message path's `mathNode` (KaTeX, source on failure); a picture as
+`img.sgfig-img` (bounded, 220px tall at most; dimmed when struck), with a
+figure's caption under it. The picture is asked of **the served site first**
+(`new URL(src, location.href)` — where a Jekyll `/assets/…` already is), then
+of **the companion**: new owner-only `GET /blog-image?url=<page>&src=<ref>`
+(`blog.imagePathFor`: site-absolute from the root, relative from the source
+file's directory, real path inside the root, picture extensions only, 12 MB
+cap) answered as a data: url through the background worker (`onBlogImage`),
+the same way every other figure reaches the drawer. A Jupyter Book needs the
+second route — Sphinx copies pictures to `_images/`, and a picture a bot has
+just written is not built at all. Neither: the source stays, with "picture not
+reachable yet — not built or not served" under it; a miss is remembered for
+30 s so a render storm does not re-ask.
+
+**On the page.** content.js `dressProposals` (from `noteApprox`, so after
+every paint) redraws a fresh `<ins>`'s text: formulas with the extension's own
+KaTeX (already in the content-script world for the drawer) as **MathML only**
+(`output: 'mathml'`) — the KaTeX stylesheet lives in the drawer's shadow root
+and must not leak into the page, and MathML needs none; pictures as a bounded
+`<img>` (min(100%, 520px) × 360px, a green outline in `INS_LINE`), caption
+under a figure, served site then companion, else `<source> (picture not
+reachable yet)`. Everything stays inside the `<ins>`, so the index skip, the
+snapshot strip, the approximate flag and the unpaint are unchanged. Display
+only; the accept path never asks for a picture.
+
+Not done: a formula in `current` still does not locate (the page shows
+MathJax/KaTeX output, not TeX) — that is what §9's thread fallback is for.
+`plainOf`'s math regex is coarser than `scanMath` about money.
+
+Tests: `prop.test.mjs` 93 → 108 (`plainOf` keeps maths byte for byte and
+pictures whole on request, money is not maths; `imageRefs` case by case);
+`math.test.mjs` +18 (`diffTokens` atoms, `wordDiff` striking and inserting a
+formula and a picture whole, `richHtml` slots); `blog.test.mjs` +1
+(`/blog-image`: absolute and relative, missing, not a picture, outside the
+root, a url, not a blog page). Harness **`?suggest=rich&selftest=1`**
+(18/18): MathML in the `<ins>` with no TeX left, a figure fetched from the
+fake companion with its caption, a served picture drawn straight from the
+site, a missing one left as source with the note, none of it in the text
+index; in the card the formula typeset, no slot left, figure and caption, the
+served picture and the missing note; a page-chat formula change struck and
+inserted whole, and not on the page.

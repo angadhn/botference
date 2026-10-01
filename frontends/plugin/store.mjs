@@ -1610,13 +1610,111 @@ export const liftLines = (text, lines) => {
 //
 // Two conventions use one — ```suggest (suggest.mjs) and ```question
 // (questions.mjs) — and each had the regex written out, identical but for the
-// word. A factory, so the next one cannot invent a third spelling of "tolerate
-// the trailing spaces a model leaves after the fence word" or forget that the
-// flags must be `gi` (global, because a reply may carry several).
+// word. One scanner, so the next one cannot invent a third spelling of
+// "tolerate the trailing spaces a model leaves after the fence word".
 //
-// The capture group is the block's BODY, without either fence line.
-export const fenceRe = name =>
-  new RegExp('```[ \\t]*' + String(name) + '[ \\t]*\\r?\\n([\\s\\S]*?)```', 'gi');
+// IT WAS A REGEX, AND THE REGEX CLOSED AT THE FIRST ``` IT MET. That held
+// until a bot proposed swapping a MyST figure in a Jupyter Book chapter and
+// quoted, correctly, the directive's own opening fence:
+//
+//     ```suggest
+//     current: ```{figure} images/L1-two-body-full-details.png
+//     ---
+//     height: 350px
+//     ---
+//     proposed: ```{figure} images/L1-two-body-full-details-vector.png
+//     …
+//     ```
+//
+// The block ended on `current:`'s first three backticks, the card came out
+// unreadable, and `{figure} images/…` and everything after it leaked into the
+// reply as prose. A Jupyter Book page is MADE of fenced directives ({figure},
+// {note}, {math}, {code-cell}), so this was going to be the common case, not
+// the odd one. Two rules now, one per fence length:
+//
+//   FOUR OR MORE BACKTICKS — CommonMark's own rule. ````suggest closes only at
+//     a line holding nothing but at least as many backticks (and whitespace).
+//     Any ``` inside is content. This is what the envelope tells a bot to write
+//     when its passage has a fence line of its own, because it is exact.
+//
+//   THREE — what every bot wrote before, and what most still will. A ``` line
+//     inside the block is counted, and a bare ``` closes the block only when
+//     the count before it is EVEN: an inner opener (```{figure}, ```python,
+//     also after a `current:`/`proposed:` key) and its closer cancel out. The
+//     count restarts at every key line of the block (`keys`), because a model
+//     quoting a directive very often stops before its closing fence — the
+//     example above has two openers and no closers, and it is still one block.
+//     With no inner fence in it the block closes where the regex closed it:
+//     the first ```, even mid-line.
+//
+// An opener that never closes is not a block — exactly as before — and the
+// scan resumes just after it, so a second, well-formed block later in the
+// reply is not swallowed into the first. A line that opens another block of
+// the same name ends the search for the first one's closer for the same
+// reason.
+//
+// Returns `[{ block, body, index }]` in reply order: `block` is the whole
+// thing as written (what the lift splices out), `body` is between the fence
+// lines, `index` is where `block` starts.
+const escapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function fencedBlocks(text, name, { keys = [] } = {}) {
+  const src = String(text == null ? '' : text);
+  const word = escapeRe(name);
+  const openRe = new RegExp('(?<!`)(`{3,})[ \\t]*' + word + '[ \\t]*\\r?\\n', 'gi');
+  const sameRe = new RegExp('^[ \\t]*`{3,}[ \\t]*' + word + '[ \\t]*$', 'i');
+  const keyRe = keys.length
+    ? new RegExp('^\\s*(?:' + keys.map(escapeRe).join('|') + ')\\s*:\\s*', 'i') : null;
+  const out = [];
+  let m;
+  while ((m = openRe.exec(src))) {
+    const ticks = m[1].length;
+    const from = m.index + m[0].length;
+    const close = fenceClose(src, from, ticks, sameRe, keyRe);
+    if (!close) { openRe.lastIndex = from; continue; }
+    out.push({ block: src.slice(m.index, close.end), body: src.slice(from, close.at), index: m.index });
+    openRe.lastIndex = close.end;
+  }
+  return out;
+}
+// Where the block opened at `from` closes: `{ at, end }` — the body stops at
+// `at`, the block at `end` — or null if it never does.
+function fenceClose(src, from, ticks, sameRe, keyRe) {
+  const longRe = new RegExp('^[ \\t]*`{' + ticks + ',}[ \\t]*$');
+  let odd = false;
+  for (let s = from; s < src.length;) {
+    let e = src.indexOf('\n', s);
+    if (e < 0) e = src.length;
+    const line = src.slice(s, e).replace(/\r$/, '');
+    const next = e + 1;
+    if (ticks > 3) {
+      if (longRe.test(line)) return { at: s, end: s + line.length };
+      s = next; continue;
+    }
+    if (sameRe.test(line)) return null;
+    let rest = line;
+    let off = 0;
+    const k = keyRe && keyRe.exec(line);
+    if (k) { odd = false; rest = line.slice(k[0].length); off = k[0].length; }
+    const f = /^([ \t]*)(`{3,})(.*)$/.exec(rest);
+    if (f) {
+      const info = f[3];
+      if (/^[{\w]/.test(info)) { odd = !odd; s = next; continue; }  // an inner opener
+      if (!info.trim()) {                                             // a bare fence
+        if (!odd) return { at: s + off, end: s + line.length };
+        odd = false; s = next; continue;
+      }
+      // "``` and then words" — closes where the old regex closed it
+      if (!odd) { const at = s + off + f[1].length; return { at, end: at + f[2].length }; }
+      s = next; continue;
+    }
+    if (!odd) {
+      const i = line.indexOf('```');
+      if (i >= 0) return { at: s + i, end: s + i + 3 };
+    }
+    s = next;
+  }
+  return null;
+}
 
 export const healSeam = text =>
   String(text == null ? '' : text).replace(/\n{3,}/g, '\n\n').trim();

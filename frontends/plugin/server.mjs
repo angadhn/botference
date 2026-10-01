@@ -2857,6 +2857,28 @@ export function handler(req, res) {
     if (!bg) return ok(res, { blog: null });
     return ok(res, { blog: bg });
   }
+  // GET /blog-image?url=<page>&src=<ref> — a picture a suggestion card refers
+  // to, read off the page's SOURCE tree (blog.imagePathFor: inside the root,
+  // pictures only) and answered as a data: url for the drawer and the page's
+  // proposal preview. Only asked when the served site has not got the file
+  // (not built yet, or a Jupyter Book's _images/ copy). Display only; the
+  // accept path never comes here. OWNER-ONLY, like /files.
+  if (req.method === 'GET' && url === '/blog-image') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(String(req.url || '').split('?')[1] || '');
+    const u = q.get('url') || '';
+    const bg = u ? blogOf(store.normUrl(u)) : null;
+    if (!bg) return fail(res, 404, 'not a blog page');
+    const hit = blog.imagePathFor(bg, q.get('src') || '');
+    if (!hit) return fail(res, 404, 'no such picture under this site');
+    return fs.readFile(hit, (err, buf) => {
+      if (err) return fail(res, 404, 'no such picture');
+      if (buf.length > 12 * 1024 * 1024) return fail(res, 413, 'picture too large to preview');
+      const ext = path.extname(hit).slice(1).toLowerCase();
+      const mime = ext === 'svg' ? 'image/svg+xml' : ext === 'jpg' ? 'image/jpeg' : 'image/' + ext;
+      return ok(res, { mime, bytes: buf.length, data_url: `data:${mime};base64,${buf.toString('base64')}` });
+    });
+  }
   // GET /blog-sites — every site the owner has declared, and whether each
   // repo has been vouched for. What the drawer's registration card lists.
   if (req.method === 'GET' && url === '/blog-sites') {

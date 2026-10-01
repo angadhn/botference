@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { DIR, unwrapLine, fenceRe } from './store.mjs';
+import { DIR, unwrapLine, fencedBlocks } from './store.mjs';
 
 export const VAULT_FILE = path.join(DIR, 'questions.json');
 
@@ -511,14 +511,14 @@ export function duplicateOf(vault, card) {
 // that shows its working and then writes the card has written one card, and
 // the one it meant is the last one. `why:` may run over several lines; every
 // other field is one line.
-const FENCE_RE = fenceRe('question');
+const blocksIn = src => fencedBlocks(src, 'question');
 const OPT_RE = /^\s*([A-E])[).:]\s*(.+)$/;
 const TRUE_FALSE = ['True', 'False'];
 
 export function parseCardBlock(text) {
   const src = String(text == null ? '' : text);
   let body = '';
-  for (const m of src.matchAll(FENCE_RE)) body = m[1];
+  for (const b of blocksIn(src)) body = b.body;
   if (!body) return { ok: false, error: 'no ```question block in the reply' };
 
   const lines = body.split(/\r?\n/);
@@ -710,13 +710,13 @@ export const reviseRefusedBlock = (fault, id, minted = []) =>
 export function parseCardRevision(text) {
   const src = String(text == null ? '' : text);
   let hit = null;
-  for (const m of src.matchAll(FENCE_RE)) {
-    const parsed = parseCardBlock(m[0]);
-    const id = parsed.ok ? parsed.revises : revisesIn(m[1]);
+  for (const { block, body } of blocksIn(src)) {
+    const parsed = parseCardBlock(block);
+    const id = parsed.ok ? parsed.revises : revisesIn(body);
     if (!id) continue;
     hit = parsed.ok
-      ? { id, block: m[0], ok: true, card: parsed.card }
-      : { id, block: m[0], ok: false, error: parsed.error };
+      ? { id, block, ok: true, card: parsed.card }
+      : { id, block, ok: false, error: parsed.error };
   }
   return hit;
 }

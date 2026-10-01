@@ -897,6 +897,32 @@ export function resolveBookPath(root, urlPath) {
  * quoting. Everything else is read as it is. Throws on a missing or unreadable
  * file; the callers each have their own way of saying so.
  */
+// A picture a suggestion card refers to, as a file on disk — or null. The
+// drawer asks the served site first and only comes here when that fails (a
+// Jupyter Book copies pictures to _images/ at build time; a picture a bot
+// has just written is not built at all). Resolved the way the bots are told
+// to write it (blockFor / bookBlock): site-absolute (`/assets/x.png`) from the
+// ROOT, relative from the page's SOURCE directory. Two fences, both kept on
+// the resolved real path: inside the root (no `..`, no symlink out), and a
+// picture by extension — this answers with bytes off the owner's disk.
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|avif|bmp)$/i;
+export function imagePathFor(bg, src) {
+  if (!bg || !bg.root || !src) return null;
+  let ref = String(src).trim();
+  if (/^[a-z][\w+.-]*:/i.test(ref) || ref.startsWith('//')) return null;   // a url, not a path
+  ref = ref.split(/[?#]/)[0];
+  try { ref = decodeURIComponent(ref); } catch { return null; }
+  if (!IMAGE_EXT.test(ref)) return null;
+  const root = realish(bg.root);
+  const base = ref.startsWith('/') ? root : path.dirname(realish(String(bg.source_path || root)));
+  const abs = path.resolve(base, ref.replace(/^\/+/, ''));
+  let real;
+  try { real = fs.realpathSync(abs); } catch { return null; }
+  const rel = path.relative(root, real);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  return real;
+}
+
 export function sourceText(file) {
   const raw = fs.readFileSync(file, 'utf8');
   return /\.ipynb$/i.test(String(file)) ? projectNotebook(JSON.parse(raw)).text : raw;
@@ -1352,7 +1378,9 @@ function bookBlock(blog) {
         + `regenerated when the book is built. EVERY PROPOSAL MUST QUOTE TEXT FROM WITHIN ONE CELL — `
         + `never a passage that runs from one cell into the next, and never the \`\`\`{code-cell} fence `
         + `lines themselves. A change that touches two cells is two blocks, one per cell. A proposal `
-        + `that crosses a cell is refused and the reader is told why.\n`
+        + `that crosses a cell is refused and the reader is told why. A passage with a \`\`\` line in `
+        + `it (a code cell, a {figure} or {note} directive) goes in a FOUR-backtick block: `
+        + `\`\`\`\`suggest … \`\`\`\`.\n`
       : '')
     + `Quotes in this conversation come from the RENDERED page, so the wording you are given is the `
     + `prose without its MyST markup (roles like {eq}\`L3_1\`, directives, labels). Find the matching `

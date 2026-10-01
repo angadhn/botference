@@ -61,7 +61,7 @@ import { projectNotebook, editNotebook } from '../review/notebook.mjs';
 import SpanMatch from '../review/assets/span-match.js';
 // the one spelling of "close the hole a lifted block leaves" — store.mjs owns
 // it, because three other conventions in the reply do exactly the same thing
-import { healSeam, fenceRe } from './store.mjs';
+import { healSeam, fencedBlocks } from './store.mjs';
 const { findSpans } = SpanMatch;
 
 // ---- the block a bot writes ----------------------------------------------
@@ -90,8 +90,11 @@ export const SUGGEST_FENCE = 'suggest';
 // sentence. So a cut must be SAID: `proposed: (delete)`. An empty value is
 // refused, visibly, rather than silently deleting the reader's prose.
 export const DELETE_MARK = '(delete)';
-const FENCE_RE = fenceRe(SUGGEST_FENCE);
-const KEY_RE = /^\s*(current|from|proposed|to|why|because|reason)\s*:\s*(.*)$/i;
+const KEYS = ['current', 'from', 'proposed', 'to', 'why', 'because', 'reason'];
+const KEY_RE = new RegExp('^\\s*(' + KEYS.join('|') + ')\\s*:\\s*(.*)$', 'i');
+// the field names go to the scanner too: a key line restarts its count of the
+// inner fences a quoted passage carries (store.fencedBlocks says why)
+const blocksIn = src => fencedBlocks(src, SUGGEST_FENCE, { keys: KEYS });
 
 export const CURRENT_MAX = 4000;
 export const PROPOSED_MAX = 6000;
@@ -185,13 +188,13 @@ export function liftSuggestions(text) {
   const cards = [];
   let out = src;
   let dropped = 0;
-  for (const m of src.matchAll(FENCE_RE)) {
+  for (const { block, body } of blocksIn(src)) {
     // The splice runs per block and the seam is closed ONCE, at the end
     // (`healSeam`, store.mjs) — a reply carrying ten cards is one hole after
     // ten cuts, not ten trims of a text still being cut.
-    if (cards.length >= CARDS_MAX) { dropped++; out = out.split(m[0]).join(''); continue; }
-    const parsed = parseSuggestBlock(m[1]);
-    out = out.split(m[0]).join('');
+    if (cards.length >= CARDS_MAX) { dropped++; out = out.split(block).join(''); continue; }
+    const parsed = parseSuggestBlock(body);
+    out = out.split(block).join('');
     cards.push(parsed.ok
       ? { id: newId(), state: 'open', current: parsed.current, proposed: parsed.proposed,
         ...(parsed.deletes ? { deletes: true } : {}), why: parsed.why }
@@ -332,6 +335,9 @@ export function suggestBlock() {
     + '    proposed: <what it should say instead>\n'
     + '    why: <one line — what this fixes>\n'
     + '    ```\n\n'
+    + 'IF THE PASSAGE HAS A ``` LINE OF ITS OWN (a fenced code block, a MyST directive such as '
+    + '```{figure}), open and close your block with FOUR backticks instead — ````suggest … ```` — '
+    + 'so the block does not end at the passage\'s fence.\n'
     + 'READ the source file first and copy `current:` out of it verbatim, including its markdown. '
     + 'The passage must appear EXACTLY ONCE in the file: that is how the companion finds the place '
     + 'to change. If the wording you want to fix occurs more than once, widen it — take in the '

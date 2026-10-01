@@ -439,6 +439,24 @@ console.log('\ncompanion — blog source pages');
     assert.deepEqual(r.json.blog.assets, ['assets']);
   });
 
+  // a suggestion card's picture, when the served site has not got it: read
+  // off the source tree, inside the root, pictures only
+  await test('GET /blog-image answers a picture under the site, and nothing else', async () => {
+    const q = src => GET(base, '/blog-image?url=' + enc(POST_URL) + '&src=' + enc(src));
+    const r = await q('/assets/images/balloon.png');
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.mime, 'image/png');
+    assert.match(r.json.data_url, /^data:image\/png;base64,/);
+    const rel = await q('../assets/images/balloon.png');
+    assert.equal(rel.status, 200, 'relative to the SOURCE directory (_posts/)');
+    assert.equal((await q('/assets/images/missing.png')).status, 404);
+    assert.equal((await q('/_config.yml')).status, 404, 'not a picture');
+    assert.equal((await q('../../../../../../etc/hosts.png')).status, 404, 'never out of the root');
+    assert.equal((await q('https://example.com/x.png')).status, 404, 'a url is not a path');
+    const off = await GET(base, '/blog-image?url=' + enc('https://example.com/a') + '&src=' + enc('/x.png'));
+    assert.equal(off.status, 404, 'not a blog page');
+  });
+
   await test('an unconfirmed repo keeps the comment and summons nobody', async () => {
     await POST(base, '/page', { url: POST_URL, title: 'Space balloons', site: 'localhost' });
     const r = await POST(base, '/reply', { url: POST_URL, thread_id: '__page__', text: '@claude tighten this' });
