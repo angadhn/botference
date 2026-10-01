@@ -1140,8 +1140,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // one that explains why a bot's reply was an error and then an answer:
       // the controller switched models after the running one's safeguards
       // declined the message (botference.py _switch_claude_after_refusal).
+      // …and the one that says a bot never started or never answered
+      // (_start_model_session / _send_to_model_inner: "Error starting codex:
+      // …", "Error from codex: …"). Without it the reader tagged a bot, the
+      // spinner never came, and nothing anywhere said why — seen 2026-10-01
+      // when every @codex turn on a book page died at start and the drawer
+      // stayed silent.
       const notice = speaker === 'system'
-        && /safeguards declined|Switching this chat's Claude|every model on the fallback list/.test(String(ev.text || ''));
+        && /safeguards declined|Switching this chat's Claude|every model on the fallback list|^Error (starting|from) (claude|codex)\b/.test(String(ev.text || ''));
       const author = speaker.startsWith('claude') ? 'claude'
         : speaker.startsWith('codex') ? 'codex'
           : speaker.startsWith('gemini') ? 'gemini'
