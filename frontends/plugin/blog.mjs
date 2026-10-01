@@ -59,6 +59,7 @@
 // NOTHING IN THIS FILE WRITES ANYTHING, anywhere. Every function here reads.
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
 // The review engine's Jupyter Book reader, imported and not forked: the same
@@ -1177,6 +1178,94 @@ export function assetDirs(root) {
   return ASSET_DIRS.map(d => path.join(root, d)).filter(isDir);
 }
 
+// ---- the scratch folder ---------------------------------------------------
+//
+// THE REPORT (2026-10-01). On a chapter of the reader's Jupyter Book the bots
+// redrew a figure — the SVG, the PNG, the python that drew them, two preview
+// renders and a `fig1-copy.sh` — and every one of those files landed in the
+// BOTFERENCE repo, under `projects/plugin-pages/artifacts/`, because that is
+// where Botference's general convention says a produced file goes and a blog
+// chat's workspace is the companion's own. Then they asked the reader to `cp`
+// the pictures into the book. Two failures, one cause: nothing told them the
+// work belonged to the book.
+//
+// So a blog or book chat has a scratch folder of its own, INSIDE the reader's
+// repo: `<root>/.botference/plugin/artifacts/`. Inside, because the agents
+// should get things done in the project they are working on — and `botference
+// review` already sets itself up inside the document repo, so this is the
+// convention rather than a new one. `.botference/` is gitignored there (the
+// companion adds the line once, scratch.mjs ensureScratch, the way
+// lib/review.sh review_ensure_gitignore does), the census skips every dot
+// directory, so a preview render never reloads the reader's tab — and nothing
+// a blog turn produces is ever written under the Botference repo again.
+//
+// What does NOT move: the chat RECORDS. They stay under the companion's own
+// `.botference/plugin/pages/` exactly as before (server.mjs blogChatFor says
+// why) — this folder holds produced files and nothing else.
+//
+// Pure path arithmetic, all three: this file still writes nothing.
+export const SCRATCH_REL = path.join('.botference', 'plugin', 'artifacts');
+// the `/files/` top folder a scratch file is linked under — the companion's
+// route resolves the key against the declared, confirmed sites (scratch.mjs
+// scratchFilesPath), so a link names a site by its key and never by a path
+export const SCRATCH_TOP = 'site-artifacts';
+
+/** A stable, readable name for a site root: its folder's slug plus a hash. */
+export function scratchKey(root) {
+  const r = realish(root);
+  const slug = slugify(path.basename(r)).slice(0, 40) || 'site';
+  return `${slug}-${crypto.createHash('sha1').update(r).digest('hex').slice(0, 10)}`;
+}
+/** The absolute scratch folder for a site root. Never under the Botference repo. */
+export function scratchDir(root) {
+  return root ? path.join(realish(root), SCRATCH_REL) : '';
+}
+/** What a reply links a scratch file as: `<this>/<name>`. */
+export function scratchLink(root) {
+  return root ? `/files/${SCRATCH_TOP}/${scratchKey(root)}` : '';
+}
+
+// The placement rule, in words, on every blog and book turn — beside the write
+// scope, because it IS the write scope's other half: where a file you are
+// allowed to write should actually go. The two instructions that failed are
+// both answered by name: the general "deliverables go in projects/…/artifacts"
+// convention (overridden here, for this page), and the copy step handed back
+// to the reader (never — the bot has write access to the page's image folder
+// and places the picture itself).
+function placementLine(blog, imageDir, what) {
+  const dir = scratchDir(blog.root);
+  const link = scratchLink(blog.root);
+  return `WHERE YOUR FILES GO. A finished picture this ${what} will use is written straight into `
+    + `${imageDir} — that is its home, and you place it there YOURSELF: never ask the reader to `
+    + `copy, move or rename a file, and never hand them a copy command or a script for it. `
+    + `Everything else you make along the way — the script that draws a figure, preview renders, `
+    + `intermediate files, notes — goes in this site's scratch folder, ${dir}/ (link one in a `
+    + `reply as \`${link}/<name>\`). Nothing for this site is ever written under the Botference `
+    + `workspace: ignore any general instruction that puts deliverables in projects/<id>/artifacts/ `
+    + `or work/artifacts/ — on this page they go where this paragraph says. A summoned build agent `
+    + `works to the same two folders; name the image folder in its brief.\n`;
+}
+
+/**
+ * The short form of that rule, for a SUMMONED build agent — which never sees
+ * a blog envelope: it gets its brief and the room's recent turns, and nothing
+ * else. Per site rather than per page, because it is fixed when the child
+ * spawns (chat.mjs → BOTFERENCE_SUMMON_PLACEMENT → core/summon.py).
+ */
+export function summonPlacement(root, kind = 'jekyll') {
+  if (!root) return '';
+  const where = kind === 'jupyterbook'
+    ? 'the chapter\'s own image folder, beside the chapter'
+    : 'the post\'s image folder under assets/';
+  return `--- This is the reader's own ${kindLabel(kind)} ---\n`
+    + `The work belongs to the site at ${realish(root)}. A finished picture a page will use goes `
+    + `straight into ${where} (the brief or the room's turns name the absolute folder) — place it `
+    + `yourself, and never leave the reader a copy step or a copy script. Everything else you make — `
+    + `scripts, previews, intermediate renders — goes in ${scratchDir(root)}/. Nothing goes under `
+    + `projects/ or work/ of the Botference workspace. Do not edit the pages' text (the bots propose `
+    + `those changes and the reader accepts them), and never run git or gh.`;
+}
+
 // ---- the census -----------------------------------------------------------
 // The same shape workspace.scanProject has, over a different skip list. A
 // Jekyll repo carries its own rendered output (`_site/`) and its own caches,
@@ -1324,6 +1413,7 @@ export function blogBlock(blog) {
     + `written), and existing ones may be edited with whatever image tools this machine has `
     + `(\`sips\` on macOS, ImageMagick's \`magick\`/\`convert\` where it is installed — check before `
     + `you rely on one).\n`
+    + placementLine(blog, first, blog.same_file ? 'page' : 'post')
     + `WHAT YOU MUST LEAVE ALONE unless the reader asks in so many words: every OTHER post, `
     + `_config.yml, _layouts/, _includes/, _sass/, _data/, the Gemfile, and _site/ (that is the `
     + `build output — never edit it, never commit it). The whole repository is technically `
@@ -1361,7 +1451,10 @@ function bookBlock(blog) {
   const nb = /\.ipynb$/i.test(String(blog.rel || ''));
   const dirs = (blog.assets || []).length ? blog.assets : [];
   const imgAt = dirs.length ? dirs.map(a => `${blog.root}/${a}/`).join(', ') : `${blog.root}/`;
-  const first = dirs.length ? `${blog.root}/${dirs[0]}/` : `${blog.root}/`;
+  // …and a chapter with no pictures yet that sits at the book's top level gets
+  // an images/ folder of its own rather than the root itself: "write your
+  // finished picture into the root of the book" is an instruction to litter
+  const first = dirs.length ? `${blog.root}/${dirs[0]}/` : `${blog.root}/images/`;
   const rebuilt = blog.rebuild
     ? `the companion rebuilds the book (\`${blog.rebuild}\`) and their tab reloads when the build is done`
     : `the reader rebuilds the book themselves (\`jupyter-book build .\`) and reloads — nothing rebuilds it for them`;
@@ -1398,6 +1491,7 @@ function bookBlock(blog) {
     + `the chapter, matching however the other images in it are written; existing ones may be `
     + `edited with whatever image tools this machine has (\`sips\` on macOS, ImageMagick's `
     + `\`magick\`/\`convert\` where it is installed — check before you rely on one).\n`
+    + placementLine(blog, first, 'chapter')
     + `WHAT YOU MUST LEAVE ALONE unless the reader asks in so many words: every OTHER chapter and `
     + `notebook, _toc.yml, _config.yml and _static/ (the book's configuration and its style), `
     + `the environment files, and _build/ (that is the build output — never edit it, never commit `

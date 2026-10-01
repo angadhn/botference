@@ -304,7 +304,7 @@ def subagents_note(model: str) -> str:
 # -- Deliverables ------------------------------------------------------------
 
 
-def deliverables_note() -> str:
+def deliverables_note(artifacts_dir: str = "", artifacts_link: str = "") -> str:
     """Deliverables are built by a summoned agent, never in the chat.
 
     The bots shape the work with the reader; a fresh agent with a clean brief
@@ -328,11 +328,34 @@ def deliverables_note() -> str:
         "if the work needs several, say so and let the user decide. Ordinary "
         "code edits in a repository under discussion are yours to make; a "
         "deliverable the reader opens is not.\n"
-        "Deliverables live inside the current project's folder "
-        "(`projects/<project-id>/artifacts/`), or under `work/artifacts/` "
-        "when this chat has no project yet, and reach the user as the link "
-        "`/files/<path relative to the workspace root>`. Never spin up "
-        "ad-hoc HTTP servers or throwaway tunnels for a deliverable."
+        + (where_override(artifacts_dir, artifacts_link) if artifacts_dir else
+           "Deliverables live inside the current project's folder "
+           "(`projects/<project-id>/artifacts/`), or under `work/artifacts/` "
+           "when this chat has no project yet, and reach the user as the link "
+           "`/files/<path relative to the workspace root>`. ")
+        + "Never spin up ad-hoc HTTP servers or throwaway tunnels for a "
+        "deliverable."
+    )
+
+
+def where_override(artifacts_dir: str, artifacts_link: str = "") -> str:
+    """Where deliverables go when the caller fixed the folder.
+
+    The browser plugin's blog and book lanes do (BOTFERENCE_PLAN_ARTIFACTS_DIR):
+    the work belongs to the reader's own site, so its scratch lives in that
+    repo, a finished picture goes straight into the page's image folder, and
+    nothing for the site is ever written under this workspace's projects/ or
+    work/. Each turn's own context names the page's image folder.
+    """
+    link = (f" and reach the user as the link `{artifacts_link}/<name>`"
+            if artifacts_link else "")
+    return (
+        "In this chat the work belongs to the reader's own site. Scratch "
+        f"and intermediate files live in `{artifacts_dir}/`{link}; a "
+        "finished picture a page will use goes straight into that page's "
+        "image folder, which the turn's own context names — placed by you or "
+        "the build agent, never left for the reader to copy. Nothing for this "
+        "site is written under `projects/` or `work/` of this workspace. "
     )
 
 

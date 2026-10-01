@@ -1069,14 +1069,18 @@ console.log('\ncompanion — a Jupyter Book');
   const FLAG = path.join(root, 'built.flag');
   const workspaceRoot = tmp('srv-book-companion');
   const logFile = path.join(workspaceRoot, 'bridge.jsonl');
+  const envFile = path.join(workspaceRoot, 'bridge-env.jsonl');
   const { base } = await startServer({
     root: workspaceRoot,
     env: {
       PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
       MOCK_BRIDGE_LOG: logFile,
+      MOCK_ENV_DUMP: envFile,
       PLUGIN_REBUILD_DEBOUNCE_MS: '100',
     },
   });
+  const spawnScope = () => ((fs.existsSync(envFile) ? fs.readFileSync(envFile, 'utf8')
+    .split('\n').filter(Boolean).map(l => JSON.parse(l)) : [])[0] || {}).scope || {};
   const events = listen(base);
   await sleep(120);
   const says = lines => `[mock:says:${lines.join('\\n')}]`;
@@ -1160,13 +1164,81 @@ console.log('\ncompanion — a Jupyter Book');
     assert.equal(fs.readFileSync(FLAG, 'utf8'), 'run\n', 'and it does not set off another build');
   });
 
+  // ---- where the turn's produced files go (blog.mjs "the scratch folder") ----
+  // THE REPORT: a redrawn figure, its script and its previews landed in the
+  // Botference repo under projects/plugin-pages/artifacts/, and the reader was
+  // asked to cp the pictures into the book.
+  const SCRATCH = blog.scratchDir(root);
+
+  await test('the book child is told its artifacts folder is the book\u2019s own scratch', async () => {
+    const sc = await waitFor(() => (spawnScope().BOTFERENCE_PLAN_ARTIFACTS_DIR ? spawnScope() : null),
+      'the spawn env');
+    assert.equal(sc.BOTFERENCE_PLAN_ARTIFACTS_DIR, SCRATCH);
+    assert.equal(sc.BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS, root, 'inside the write root: nothing widened');
+    for (const not of [workspaceRoot, path.resolve(PLUGIN, '..', '..')]) {
+      assert.ok(path.relative(not, SCRATCH).startsWith('..'), `never under ${not}`);
+    }
+    assert.equal(sc.BOTFERENCE_PLAN_ARTIFACTS_LINK, blog.scratchLink(root));
+    assert.match(sc.BOTFERENCE_SUMMON_PLACEMENT, /never leave the reader a copy step/,
+      'a summoned build agent gets the placement rule too');
+    assert.ok(fs.statSync(SCRATCH).isDirectory(), 'the folder is made');
+    assert.match(fs.readFileSync(path.join(root, '.gitignore'), 'utf8'), /^\.botference\/$/m,
+      '…and gitignored in the reader\u2019s repo');
+    assert.ok(!fs.existsSync(path.join(workspaceRoot, 'projects', 'plugin-pages', 'artifacts')),
+      'and nothing of the book\u2019s in the companion workspace');
+  });
+
+  await test('the envelope names the chapter\u2019s image folder and the scratch folder', async () => {
+    const t = inputs(logFile).find(x => x.includes('booknote-1'));
+    assert.ok(t.includes(`${root}/part1/ch1/imgs/`), 'the absolute image folder');
+    assert.ok(t.includes(`${SCRATCH}/`), 'the absolute scratch folder');
+    assert.match(t, /never ask the reader to copy/);
+  });
+
+  await test('/files/ serves a scratch file under the site\u2019s key', async () => {
+    fs.writeFileSync(path.join(SCRATCH, 'preview.png'), 'preview');
+    const r = await request(base, 'GET', `${blog.scratchLink(root)}/preview.png`);
+    assert.equal(r.status, 200, JSON.stringify(r).slice(0, 300));
+  });
+
+  await test('turn-end places a proposed picture from scratch, and says so in the census', async () => {
+    const before = events.of('blog-files').length;
+    const prepared = path.join(workspaceRoot, 'orbit-v2.png');
+    fs.writeFileSync(prepared, 'the redrawn orbit');
+    const target = path.join(root, 'part1', 'ch1', 'imgs', 'orbit-v2.png');
+    assert.ok(!fs.existsSync(target));
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: '@claude '
+      + `[mock:copy:${prepared}|${path.join(SCRATCH, 'orbit-v2.png')}] `
+      + says(['placenote', '', '```suggest', 'current: imgs/orbit.png', 'proposed: imgs/orbit-v2.png',
+        'why: the redrawn figure', '```']) });
+    const ev = await waitFor(() => events.of('blog-files').slice(before).find(e => e.placed), 'the census');
+    assert.equal(fs.readFileSync(target, 'utf8'), 'the redrawn orbit', 'copied into the chapter\u2019s folder');
+    assert.deepEqual(ev.placed.map(p => p.rel), ['part1/ch1/imgs/orbit-v2.png']);
+    assert.equal(ev.placed_note, 'placed part1/ch1/imgs/orbit-v2.png from scratch');
+    assert.ok(ev.files.includes('part1/ch1/imgs/orbit-v2.png'), 'counted like any file that moved');
+    assert.ok(!ev.files.some(f => f.startsWith('.botference')), 'the scratch folder is never a change');
+  });
+
+  await test('…and never over a picture the book already has', async () => {
+    const own = path.join(root, 'part1', 'ch1', 'imgs', 'orbit.png');
+    const was = fs.readFileSync(own, 'utf8');
+    const prepared = path.join(workspaceRoot, 'orbit-draft.png');
+    fs.writeFileSync(prepared, 'a draft');
+    await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: '@claude '
+      + `[mock:copy:${prepared}|${path.join(SCRATCH, 'orbit.png')}] `
+      + says(['keepnote', '', '```suggest', 'current: imgs/orbit-v2.png', 'proposed: imgs/orbit.png', '```']) });
+    await waitFor(async () => (await pageMsgs()).find(m => String(m.text || '').startsWith('keepnote')), 'the turn');
+    await sleep(400);
+    assert.equal(fs.readFileSync(own, 'utf8'), was);
+  });
+
   await test('a picture the chapter uses, replaced in a turn, rebuilds and reloads', async () => {
     const before = events.of('blog-files').length;
     const img = path.join(root, 'part1', 'ch1', 'imgs', 'orbit.png');
     await POST(base, '/reply', { url: PAGE, thread_id: '__page__', text: `@claude [mock:write:${img}] redraw the figure` });
     const done = await waitFor(() => events.of('blog-files').slice(before).find(e => e.rebuilt), 'the build');
     assert.equal(done.page_changed, true);
-    assert.equal(fs.readFileSync(FLAG, 'utf8'), 'run\nrun\n');
+    assert.match(fs.readFileSync(FLAG, 'utf8'), /^(run\n){3,}$/, 'one more build (the placed picture made one too)');
   });
 
   events.close();

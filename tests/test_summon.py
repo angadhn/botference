@@ -132,6 +132,78 @@ class TestBuilderSpec:
         assert "[User said:]" in p
 
 
+# ── a browser-plugin blog/book lane fixes the artifacts folder ──
+
+
+class TestSiteArtifactsOverride:
+    """BOTFERENCE_PLAN_ARTIFACTS_DIR (frontends/plugin/chat.mjs, blog lanes).
+
+    A redrawn textbook figure once landed in the Botference repo under
+    projects/plugin-pages/artifacts/; on a blog or book lane the folder is
+    the site's own scratch, and the builder and the room are told so.
+    """
+
+    def test_the_override_replaces_projects_artifacts(self, tmp_path, monkeypatch):
+        site = tmp_path / "book"
+        scratch = site / ".botference" / "plugin" / "artifacts"
+        monkeypatch.setenv("BOTFERENCE_PLAN_ARTIFACTS_DIR", str(scratch))
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c._artifacts_dir_display() == str(scratch)
+        assert not str(c._artifacts_dir_display()).startswith(str(c.paths.project_root / "projects"))
+
+    def test_a_relative_override_is_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_PLAN_ARTIFACTS_DIR", "relative/dir")
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        assert c._artifacts_dir_display() in ("work/artifacts",) or \
+            c._artifacts_dir_display().startswith("projects/")
+
+    def test_the_builder_prompt_carries_the_placement_rule(self):
+        p = summon.builder_prompt(
+            brief="redraw fig 1", summoner="claude", history="",
+            artifacts_dir="/r/book/.botference/plugin/artifacts", project_root="/r/book",
+            deliverables_note="--- This is the reader's own Jupyter Book ---\nplace it yourself",
+            artifacts_link="/files/site-artifacts/book-abc",
+        )
+        assert "Working directory: /r/book" in p
+        assert "/r/book/.botference/plugin/artifacts/" in p
+        assert "not a finished picture" in p
+        assert "place it yourself" in p
+        assert "artifact: its absolute path" in p
+        assert "/files/site-artifacts/book-abc/<name>" in p
+
+    def test_the_deliverables_note_names_the_site_folder(self):
+        from room_prompts import deliverables_note
+        plain = deliverables_note()
+        assert "projects/<project-id>/artifacts/" in plain
+        site = deliverables_note("/r/book/.botference/plugin/artifacts", "/files/site-artifacts/k")
+        assert "/r/book/.botference/plugin/artifacts/" in site
+        assert "projects/<project-id>/artifacts/" not in site
+        assert "never left for the reader to copy" in site
+        assert "/files/site-artifacts/k/<name>" in site
+        assert "tunnels" in site
+
+    @pytest.mark.asyncio
+    async def test_a_summon_on_a_site_lane_gets_the_site_folder(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_BUILDER_MODEL", raising=False)
+        site = tmp_path / "book"
+        site.mkdir()
+        scratch = site / ".botference" / "plugin" / "artifacts"
+        monkeypatch.setenv("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", str(site))
+        monkeypatch.setenv("BOTFERENCE_PLAN_ARTIFACTS_DIR", str(scratch))
+        monkeypatch.setenv("BOTFERENCE_PLAN_ARTIFACTS_LINK", "/files/site-artifacts/book-k")
+        monkeypatch.setenv("BOTFERENCE_SUMMON_PLACEMENT", "PLACEMENT RULE HERE")
+        builder = MockAdapter([_ok("Built it.")])
+        c, _, _, ui, _ = _bot_with_summon(
+            tmp_path, summoner_reply="Enough.\nsummon: redraw figure 1", builder=builder,
+        )
+        await c.handle_input("@claude redraw it", ui)
+        prompt = builder.send_calls[0]
+        assert str(scratch) in prompt
+        assert "PLACEMENT RULE HERE" in prompt
+        assert "projects/plugin-pages" not in prompt
+        assert "/files/site-artifacts/book-k/<name>" in prompt
+
+
 # ── the controller runs the agent ─────────────────────────
 
 

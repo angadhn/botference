@@ -824,8 +824,21 @@ const activeSessionOf = ev => {
 //             keeps an ordinary web page's chat exactly as write-less as it
 //             was. It also switches the command gate on: with no sites root
 //             the permission branch below denies everything, as it always did.
+//   artifactsDir  Where this child's PRODUCED files go, absolute — on a blog
+//             or book lane only, `<site root>/.botference/plugin/artifacts/`
+//             (blog.mjs scratchDir). It leaves as BOTFERENCE_PLAN_ARTIFACTS_DIR
+//             and replaces the controller's `projects/<id>/artifacts/`: the
+//             folder a summoned build agent saves into and the room's
+//             deliverables note names. '' everywhere else, which keeps every
+//             other bridge's artifacts exactly where they were. It must lie
+//             inside `writeRoot` — it is a destination, not a widening.
+//   artifactsLink  How a reply links a file in that folder (`/files/site-
+//             artifacts/<key>`), as BOTFERENCE_PLAN_ARTIFACTS_LINK.
+//   summonNote  The placement rule in short (blog.mjs summonPlacement), as
+//             BOTFERENCE_SUMMON_PLACEMENT, for the build agent a `summon:`
+//             line starts — it sees no envelope, only its brief.
 export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '',
-  sitesRoot = '', denyBash = [] }) {
+  sitesRoot = '', denyBash = [], artifactsDir = '', artifactsLink = '', summonNote = '' }) {
   let proc = null;
   let available = false;      // a live child we can write to
   let ready = false;          // bridge is between turns
@@ -935,7 +948,16 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // in it. The controller turns this into claude's `permissions.deny`
         // plus a deny on writes into `.git/` — defence in depth behind the
         // real guarantee, which is that the companion has no publish code.
-        ...(denyBash.length ? { BOTFERENCE_PLAN_DENY_BASH: denyBash.join(',') } : {}) }),
+        ...(denyBash.length ? { BOTFERENCE_PLAN_DENY_BASH: denyBash.join(',') } : {}),
+        // …and, on a blog or book lane, where produced files go and how they
+        // are linked (see `artifactsDir` above). Only with a write root: a
+        // destination outside any writable folder would be an instruction the
+        // sandbox refuses.
+        ...(writeRoot && artifactsDir
+          ? { BOTFERENCE_PLAN_ARTIFACTS_DIR: artifactsDir,
+            ...(artifactsLink ? { BOTFERENCE_PLAN_ARTIFACTS_LINK: artifactsLink } : {}),
+            ...(summonNote ? { BOTFERENCE_SUMMON_PLACEMENT: summonNote } : {}) }
+          : {}) }),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     available = true;

@@ -7169,6 +7169,12 @@ the style the post already uses) or **edited** with whatever the machine has —
 `sips`, ImageMagick — which the envelope names rather than assumes. No image
 editor was built and none should be.
 
+*(Amended 2026-10-01, "a site turn's files live in the site": a finished
+picture goes straight into the page's image folder, placed by the bot; the
+scripts and previews behind it go in `<root>/.botference/plugin/artifacts/`;
+nothing a blog or book turn produces is written under the Botference
+workspace.)*
+
 ### 5. The loop closes at the turn boundary
 
 Turn-start takes a census of the repo and a snapshot of the source file;
@@ -11018,3 +11024,95 @@ new file drawn from the fake companion, no text struck; a card whose picture
 the page does not show is not previewed anywhere; the card's side-by-side
 pair with both pictures and both paths; the unreachable pair's notes; the
 click-through flash; Reject restoring the page's picture exactly.
+
+## Amendment (2026-10-01): a site turn's files live in the site
+
+**The report.** On a chapter of the reader's Jupyter Book the bots redrew a
+figure. Every file of it — the SVG, the PNG, the python that drew them, two
+preview renders and a `fig1-copy.sh` — landed in the *Botference* repo under
+`projects/plugin-pages/artifacts/`, and the bots then asked the reader to
+`cp` the pictures into the book. Two failures, one cause. A blog chat's
+working root is the companion's own workspace (the records belong there, §4
+of the blog amendment), Botference's general convention says a produced file
+goes in `projects/<id>/artifacts/`, and nothing said otherwise. A summoned
+build agent sees no envelope at all, so it could only follow the convention.
+
+**The rule, in one sentence: the Botference repo holds nothing that belongs to
+the reader's site.**
+
+### 1. Where things go
+
+| What | Where |
+|---|---|
+| a finished picture the page will use | the page's image folder, as the resolver gives it (`docRecord` → `assets`: beside the chapter for a book, `assets/…` for Jekyll; `<root>/images/` for a top-level chapter with none yet), named absolutely in the envelope |
+| everything else — the script that drew it, previews, intermediate renders, notes | the site's scratch folder, `<root>/.botference/plugin/artifacts/` (`blog.scratchDir`) |
+| the chat records (pages/*.json, snapshots, decision logs) | unchanged: the companion's own `.botference/plugin/` |
+
+The scratch folder is **inside the reader's repo**, deliberately: the agents
+get the work done in the project they are working on, and `botference review`
+already sets itself up inside the document repo, so this is the convention and
+not a new one. It is inside the write root, so it widens nothing. The
+companion makes it when the site's child is created and makes sure
+`.botference/` is in the repo's `.gitignore` — appending the one line when no
+form of it is there, never duplicating it, the rule `lib/review.sh`'s
+`review_ensure_gitignore` keeps (`scratch.ensureGitignore`). The census skips
+every dot directory, so a preview render never reloads the tab.
+
+A scratch file is linked as `/files/site-artifacts/<key>/<name>` — `<key>` is
+the root's folder slug plus a hash (`blog.scratchKey`), resolved against the
+**declared and confirmed** sites only (`scratch.scratchFilesPath`), segments
+checked after decoding as `workspace.filesSegs` checks the other three top
+folders. Owner-only, like the rest of `/files/`.
+
+### 2. What the bots are told
+
+Every blog and book envelope carries a `WHERE YOUR FILES GO` paragraph beside
+the write scope: the absolute image folder, the absolute scratch folder and its
+link form, *you place it there yourself — never ask the reader to copy, move or
+rename a file, never hand them a copy script*, and the general
+`projects/<id>/artifacts/` convention named and overridden for this page.
+
+The controller is told too, because the convention lives there
+(`chat.mjs createChat` → spawn env, blog lanes only):
+
+- `BOTFERENCE_PLAN_ARTIFACTS_DIR` — the scratch folder. `_artifacts_dir_display`
+  returns it instead of `projects/plugin-pages/artifacts`, so the room's
+  deliverables note names it (`room_prompts.where_override`) and a summoned
+  build agent saves there.
+- `BOTFERENCE_PLAN_ARTIFACTS_LINK` — the `/files/site-artifacts/<key>` base.
+- `BOTFERENCE_SUMMON_PLACEMENT` — the placement rule in short
+  (`blog.summonPlacement`), handed to the build agent as its "where things go"
+  note, with the book root (the first write root, its real cwd) as its working
+  directory and its report naming files by absolute path.
+
+### 3. The safety net at turn-end
+
+A model that half-follows the rule — draws the figure in scratch, proposes
+`images/fig1.png` on a card, stops — would leave a card that previews nothing
+and a copy for the reader to make. So at turn-end on a blog or book page,
+before the census (`reportBlogChanges` → `scratch.placeFromScratch`): for each
+**open** card of the turn that **proposes** a picture (`![]()`, a MyST
+{figure}/{image} fence, `<img src>`, or a passage that is nothing but one
+picture's path — the server twin of `anchor.js imageRefs`), resolved
+site-absolute from the root or relative from the source's folder, inside the
+root, not through a dot directory or the build output — if the book has no
+such file and the scratch folder has one of the same name (newest wins), it is
+copied into place. **Never over an existing file** (`COPYFILE_EXCL`): a picture
+the book has is the reader's. The placement is counted like any other file
+that moved, and the `blog-files` event carries `placed` and `placed_note`
+("placed images/x.png from scratch"), which the drawer adds to its line.
+
+### 4. Migration
+
+None. Scratch from before this change under the Botference repo's
+`projects/plugin-pages/artifacts/` is left where it is (it is gitignored) and
+can be deleted by hand.
+
+### Tests
+
+`test/scratch.test.mjs` (derivation, the gitignore line, picture refs, the
+copy present / absent / never-overwrite, refused paths, the `/files/` key,
+both envelopes, the summon rule); `test/blog.test.mjs` (the book child's spawn
+env, the envelope, `/files/` serving scratch, turn-end placement end to end);
+`tests/test_summon.py` (the override in the controller, the builder prompt, the
+deliverables note).

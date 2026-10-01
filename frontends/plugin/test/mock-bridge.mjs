@@ -45,8 +45,12 @@ if (process.env.MOCK_ENV_DUMP) {
   // website repo is theirs to publish, so a blog child is born with git and gh
   // denied (cli_adapters._plan_denied_commands turns this into claude's
   // permissions.deny). Same field, same reason: it is part of the scope.
+  // …and, on a blog or book lane, where the child's PRODUCED files go (the
+  // site's own scratch folder, blog.mjs scratchDir) and the placement rule a
+  // summoned build agent is handed — the controller reads all three at spawn.
   for (const k of ['BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS', 'BOTFERENCE_PLAN_DENY_BASH',
-    'BOTFERENCE_PROJECT_ROOT']) {
+    'BOTFERENCE_PROJECT_ROOT', 'BOTFERENCE_PLAN_ARTIFACTS_DIR', 'BOTFERENCE_PLAN_ARTIFACTS_LINK',
+    'BOTFERENCE_SUMMON_PLACEMENT']) {
     if (k in process.env) scope[k] = process.env[k];
   }
   try {

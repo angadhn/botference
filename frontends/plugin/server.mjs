@@ -44,6 +44,7 @@ import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as suggest from './suggest.mjs';
+import * as scratch from './scratch.mjs';
 import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
 import * as sites from './sites.mjs';
@@ -307,6 +308,24 @@ function blogChatFor(root, kind = 'jekyll') {
     // post inside it is the envelope's instruction plus the turn-end census,
     // and blog.mjs says so out loud.
     writeRoot: root,
+    // …and where the turn's PRODUCED files go, which is not where its records
+    // go. The records stay in this companion's workspace (the paragraph above);
+    // a figure, the script that drew it and its preview renders belong to the
+    // book, so they go in the book's own scratch folder,
+    // `<root>/.botference/plugin/artifacts/` (blog.mjs scratchDir — made here,
+    // with `.botference/` gitignored in the reader's repo, scratch.mjs). It is
+    // inside the write root already, so it widens nothing; what it changes is
+    // the controller's idea of "the artifacts folder" — the one a summoned
+    // build agent is told to save into, and the one the room's deliverables
+    // note names — which would otherwise be `projects/plugin-pages/artifacts/`
+    // in THIS repo. That is the report blog.mjs opens its scratch section
+    // with: a redrawn figure landing in the Botference repo, and a copy script
+    // handed to the reader.
+    artifactsDir: scratch.ensureScratch(root),
+    artifactsLink: blog.scratchLink(root),
+    // …and the placement rule in short, for the one participant that never
+    // sees a blog envelope: a summoned build agent (core/summon.py).
+    summonNote: blog.summonPlacement(root, kind),
   });
   blogChats.set(root, c);
   return c;
@@ -786,6 +805,13 @@ function reportProjectChanges(ev) {
 function reportBlogChanges(url, seen, ev) {
   const bg = blogOf(url);
   if (!bg || !bg.confirmed || bg.root !== seen.dir) return;   // un-confirmed mid-turn
+  // THE SAFETY NET, before the census, so what it places is counted like any
+  // other file that moved: a picture a card of this turn proposes, missing
+  // from the book, present by name in the scratch folder, is copied into place
+  // — never over an existing file (scratch.mjs says why at length).
+  let placed = [];
+  try { placed = scratch.placeFromScratch(bg, seen.cards || []); } catch { placed = []; }
+  if (placed.length) console.log(`[blog] ${scratch.placedNote(placed)} (${bg.root})`);
   const changed = workspace.diffScans(seen.before, blog.scanSite(seen.dir, seen.kind || bg.kind));
   if (!changed.length) return;
   const own = path.relative(seen.dir, seen.source).split(path.sep).join('/');
@@ -803,6 +829,10 @@ function reportBlogChanges(url, seen, ev) {
     assets_changed: changed.some(rel => (bg.assets || []).some(a => rel.startsWith(`${a}/`))
       || (bg.images || []).includes(rel)),
     files: changed.slice(0, workspace.CHANGED_LIST_MAX),
+    // …and what the companion placed itself, said in the census in the
+    // reader's words, so a picture that appeared in the book is never a
+    // mystery: "placed images/x.png from scratch"
+    ...(placed.length ? { placed, placed_note: scratch.placedNote(placed) } : {}),
     at: new Date().toISOString(),
   };
   // an image placed in the post is a change to the page as surely as a
@@ -1329,6 +1359,11 @@ function onChatEvent(ev) {
           const lifted = suggest.liftSuggestions(ev.msg.text);
           if (lifted.cards.length) {
             ev.msg = { ...ev.msg, text: lifted.text, suggestions: lifted.cards };
+            // …and remembered on the turn, for the safety net at turn-end
+            // (reportBlogChanges → scratch.placeFromScratch): a picture a card
+            // proposes that the book has not got, but the scratch folder has
+            const seen = turnScans.get(ev.url);
+            if (seen && seen.blog) seen.cards = [...(seen.cards || []), ...lifted.cards];
           }
         }
       }
@@ -3524,8 +3559,11 @@ export function handler(req, res) {
   if (req.method === 'GET' && url.startsWith('/files/')) {
     if (notOwner(req, res)) return;
     const rel = url.slice('/files/'.length);
-    const hit = workspace.filesPaths(rel)[0];
-    if (!hit) return fail(res, 403, 'no such file under work/, projects/ or sites/');
+    // a blog or book turn's scratch file first (`/files/site-artifacts/<key>/…`,
+    // scratch.scratchFilesPath — the key matched against confirmed sites only),
+    // then the workspace's own three top folders
+    const hit = scratch.scratchFilesPath(rel) || workspace.filesPaths(rel)[0];
+    if (!hit) return fail(res, 403, 'no such file under work/, projects/, sites/ or a site\u2019s scratch folder');
     const q = new URLSearchParams(String(req.url || '').split('?')[1] || '');
     return fs.readFile(hit, (err, buf) => {
       if (err) return fail(res, 404, 'no such file');

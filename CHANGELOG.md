@@ -2,6 +2,17 @@
 
 ## 2026-10-01
 
+- **A blog or book's files stay in the blog or book.** Pictures the bots
+  make for a Jekyll post or a Jupyter Book chapter now go straight into that
+  page's image folder, placed by the bots themselves — no more copy scripts
+  handed back to you. Their scratch (the script that drew a figure, preview
+  renders, drafts) goes in `.botference/plugin/artifacts/` inside your site's
+  repo, which the companion gitignores for you; summoned build agents are
+  told the same. If a card proposes a picture that was left in scratch, it is
+  copied into place when the turn ends (never over an existing file) and the
+  change notice says so. Nothing for your site is written into the
+  Botference folder any more. Older scratch under Botference's
+  `projects/plugin-pages/artifacts/` can be deleted.
 - **See a proposed edit where it would land.** On a blog or Jupyter Book
   source page, every open suggestion card is now previewed in the body,
   Word-style: the passage it would replace struck through (a thin line in the

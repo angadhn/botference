@@ -1011,6 +1011,18 @@ def _tool_summary_display_blocks(tool_summaries: list) -> list[dict]:
     return text_blocks + output_blocks
 
 
+def _artifacts_override() -> str:
+    """The artifacts folder a caller fixed for this process, or "".
+
+    Set only by the browser plugin, on a blog or book lane
+    (BOTFERENCE_PLAN_ARTIFACTS_DIR, frontends/plugin/chat.mjs): an absolute
+    folder inside the reader's own repo, which replaces
+    `projects/<id>/artifacts/` for the builder and the deliverables note.
+    """
+    raw = os.environ.get("BOTFERENCE_PLAN_ARTIFACTS_DIR", "").strip()
+    return raw if raw and os.path.isabs(raw) else ""
+
+
 _VISUAL_ARTIFACT_EXTENSIONS = {
     ".css",
     ".gif",
@@ -3728,6 +3740,14 @@ class Botference:
         return "\n".join(kept)
 
     def _artifacts_dir_display(self) -> str:
+        # A blog or book lane of the browser plugin names its own folder, inside
+        # the reader's repo (frontends/plugin/blog.mjs scratchDir): the work
+        # belongs to their site, and `projects/plugin-pages/artifacts/` would
+        # put a redrawn figure in the Botference repo. Absolute, so the join in
+        # _make_builder leaves it alone.
+        override = _artifacts_override()
+        if override:
+            return override
         pid = self.session_project_id or self.active_project_id
         if pid:
             return f"projects/{pid}/artifacts"
@@ -3849,12 +3869,22 @@ class Botference:
         )
         self._persist_session()
 
+        # On a plugin blog/book lane the builder works in the reader's repo
+        # (the first write root is its cwd, cli_adapters.planner_write_config),
+        # is told the placement rule the bots' envelope carries, and links its
+        # files the way the companion serves them.
+        override = _artifacts_override()
+        roots = self._plan_write_roots() if override else []
         prompt = summon.builder_prompt(
             brief=brief,
             summoner=summoner,
             history=self._recent_room_history_text(),
             artifacts_dir=self._artifacts_dir_display(),
-            project_root=str(self.paths.project_root),
+            project_root=str(roots[0] if roots else self.paths.project_root),
+            deliverables_note=os.environ.get("BOTFERENCE_SUMMON_PLACEMENT", "").strip()
+            if override else "",
+            artifacts_link=os.environ.get("BOTFERENCE_PLAN_ARTIFACTS_LINK", "").strip()
+            if override else "",
             unsandboxed=spec.get("unsandboxed_commands") or [],
         )
         adapter = self._make_builder(spec)
@@ -6626,7 +6656,10 @@ class Botference:
         agents_note = subagents_note(model)
         if agents_note:
             parts.append(agents_note)
-        parts.append(deliverables_note())
+        parts.append(deliverables_note(
+            _artifacts_override(),
+            os.environ.get("BOTFERENCE_PLAN_ARTIFACTS_LINK", "").strip(),
+        ))
         parts.append(recommendations_note())
         parts.append(video_watch_note())
         parts.append(lasso_note())

@@ -159,13 +159,25 @@ def builder_label(spec: dict) -> str:
 def builder_prompt(
     *, brief: str, summoner: str, history: str, artifacts_dir: str,
     project_root: str, deliverables_note: str = "", unsandboxed: list[str] | None = None,
+    artifacts_link: str = "",
 ) -> str:
     """The whole of what the build agent is told.
 
     It is one turn with no follow-up, so everything it needs is here: who
     asked and why, the brief, where the deliverable goes, how to report.
+
+    An absolute *artifacts_dir* is a browser-plugin blog or book lane: the
+    folder is the site's own scratch, *deliverables_note* carries the
+    placement rule (a finished picture goes into the page's image folder,
+    scratch goes here, nothing is left for the reader to copy), and a file is
+    reported by its absolute path and linked under *artifacts_link*.
     """
     who = summoner.capitalize()
+    absolute = Path(artifacts_dir).is_absolute()
+    report_as = ("its absolute path" if absolute
+                 else "<path relative to the workspace root>")
+    link_line = (f" Link a file of `{artifacts_dir}/` in your report as "
+                 f"`{artifacts_link}/<name>`." if absolute and artifacts_link else "")
     return "\n\n".join(p for p in [
         "--- You are a build agent ---",
         f"You were summoned by {who}, one of two bots discussing a piece of "
@@ -181,16 +193,18 @@ def builder_prompt(
          if unsandboxed else ""),
         "--- Where things go ---\n"
         f"Working directory: {project_root}\n"
-        f"Save the deliverable under `{artifacts_dir}/` (create it if needed). "
-        "One self-contained file where that is possible — an HTML page carries "
+        + (f"Save scratch and anything that is not a finished picture for a page "
+           f"under `{artifacts_dir}/` (create it if needed). " if absolute else
+           f"Save the deliverable under `{artifacts_dir}/` (create it if needed). ")
+        + "One self-contained file where that is possible — an HTML page carries "
         "its own styles and scripts, reads well in light and dark, and sets its "
         "own background. Never start a server or a tunnel.",
         deliverables_note,
         "--- How to report ---\n"
         "When you are done, reply in at most eight short lines: what you built, "
         "where it is, what you left out or could not do. Then END with one line "
-        "of its own reading `artifact: <path relative to the workspace root>` "
+        f"of its own reading `artifact: {report_as}` "
         "for each file the reader should open — a path that names no file on "
-        "disk is ignored. No JSON footer.",
+        "disk is ignored. No JSON footer." + link_line,
         f"--- The room, most recent turns ---\n{history}" if history else "",
     ] if p)

@@ -855,6 +855,15 @@ looking at the result. Ask for a picture in a spot and it goes into
 `assets/` with the right path in the post; ask for an existing one to be
 cropped and they use whatever image tools the machine has.
 
+The bots place pictures themselves — they never hand you a file to copy.
+A finished picture goes straight into the page's image folder; the scripts,
+previews and drafts behind it go in a scratch folder **inside your repo**,
+`.botference/plugin/artifacts/` (the companion adds `.botference/` to your
+`.gitignore` if it is not there). Nothing for your site is written into the
+Botference folder. If a bot proposes a picture that it left in scratch,
+the companion copies it into place when the turn ends (never over a file
+you already have) and says so.
+
 Tell it once which folder your site is served from, in
 `.botference/plugin/config.json`:
 
@@ -954,7 +963,9 @@ rebuild takes as long as that does.
 
 The book's style (`_config.yml`, `_static/`) and every other chapter are
 left alone unless you ask for a change there in so many words, and the
-bots never run git in the book either.
+bots never run git in the book either. Redrawn figures go beside the
+chapter, in its own image folder; the drawing scripts and previews go in
+the book's `.botference/plugin/artifacts/`, as for a blog.
 
 ### The question vault: what you read, asked back
 
