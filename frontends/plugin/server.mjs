@@ -44,6 +44,7 @@ import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as suggest from './suggest.mjs';
+import * as preview from './preview.mjs';
 import * as scratch from './scratch.mjs';
 import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
@@ -2890,7 +2891,10 @@ export function handler(req, res) {
     const u = queryUrl(req.url);
     const bg = u ? blogOf(store.normUrl(u)) : null;
     if (!bg) return ok(res, { blog: null });
-    return ok(res, { blog: bg });
+    // …and whether the book can render a card before it is accepted
+    // (preview.mjs), so the page asks for rendered previews only where one
+    // can come back
+    return ok(res, { blog: { ...bg, rendered_preview: !!preview.previewScript(bg) } });
   }
   // GET /blog-image?url=<page>&src=<ref> — a picture a suggestion card refers
   // to, read off the page's SOURCE tree (blog.imagePathFor: inside the root,
@@ -3033,6 +3037,24 @@ export function handler(req, res) {
       noteDecisions(page);
       announceBlogWrite(page.url, bg, before);
       return ok(res, { card, applied: true });
+    });
+  }
+  // POST /suggest-preview {url, thread_id, ts, author, id} — one open card,
+  // RENDERED by the book's own preview script (preview.mjs): the chapter's
+  // article as the notebook stands and as it would with the card applied,
+  // for the page to diff and lay over itself. Reads only; the card's scratch
+  // notebook lives in the site's scratch dir. A first build of a whole book
+  // takes minutes, so the answer comes within a few seconds either way —
+  // `{pending:true}` means the build is still going and to ask again.
+  if (req.method === 'POST' && url === '/suggest-preview') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, async data => {
+      const at = suggestTargetOf(res, data);
+      if (!at) return;
+      const card = store.findCardIn(at.msg, data.id);
+      if (!card) return fail(res, 404, 'unknown suggestion');
+      if (!preview.previewScript(at.bg)) return ok(res, { preview: { ok: false, none: true, why: 'this book has no preview script' } });
+      return ok(res, { preview: await preview.renderCardWithin(at.bg, card, 20000) });
     });
   }
   // POST /suggest-reject {…, id} — turn one down. The file is not touched (it

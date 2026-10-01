@@ -11368,6 +11368,9 @@ ${bubbleShellHtml()}`;
       // a proposal's preview on the page, clicked: its card, scrolled to and
       // flashed
       focusSuggestion,
+      // …and its Accept / Reject on the page (content.js, the rendered
+      // preview): the card's own buttons, pressed — same busy state, same note
+      answerSuggestion: (yes, target, ts, id) => doSuggest(yes ? 'sg-yes' : 'sg-no', target, ts, id),
       // the overlap chooser: content.js decides there IS an overlap, the drawer
       // names the threads and does the choosing
       showPicks, hidePicks, picksOpen, choosePick,

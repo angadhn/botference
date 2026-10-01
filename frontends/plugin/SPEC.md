@@ -11179,3 +11179,67 @@ picking a project up at start and on rescan; list and remove; the launcher's
 `site`, `sites` and `init`); `tests/test_botference.py` (init writes the
 marker, against a throwaway registry — `tests/conftest.py` keeps every test
 off the real one and off a running companion).
+
+## Amendment (2026-10-01): rendered previews on a Jupyter Book page
+
+The text preview (struck words, underlined insert) is the wrong picture of a
+card on a book chapter: the source is MyST inside notebook JSON, the page shows
+typeset maths, figures and learn-mode check cards, and a `current` that spans
+MathJax or a directive never locates — so often nothing showed at all. Where
+the book can render a chapter itself, **an open card is shown rendered, in
+place**: the blocks it changes laid over the live page as the book draws them.
+
+1. **The book's renderer.** By convention `<root>/scripts/preview-chapter.sh
+   <chapter.ipynb> [<scratch.ipynb>]`, run in the book root: builds one chapter
+   from the scratch notebook in a cache of its own (never the repo's files or
+   `_build`) and prints the page's absolute path. `preview.previewScript(bg)`
+   finds it (kind `jupyterbook`, `.ipynb` source, the file exists);
+   `GET /blog-page` adds `rendered_preview` so the page only asks where an
+   answer can come back.
+2. **`POST /suggest-preview {url, thread_id?, ts, id}`** (owner-only, read-only).
+   The card is placed exactly as Accept would place it (`resolveSpan` on the
+   projection, `editNotebook` on a copy — same refusals), written to
+   `<root>/.botference/plugin/preview/<id>.ipynb`, and the script asked twice:
+   the chapter as the notebook stands (BASE) and with the card (CARD). Answer
+   `{preview: {ok, base, html, pictures}}` — both `article.bd-article`s and, as
+   data: urls, only the pictures CARD names that BASE does not. Builds are
+   queued one at a time per book and cached on (notebook bytes, card); a build
+   not done in 20 s answers `{pending:true}` and carries on — ask again.
+3. **The diff** (`extension/blockdiff.js`, pure core tested in node). Both
+   articles and the live one are flattened into top-level blocks (`<section>`s
+   opened up, as the book's learn script does). BASE vs CARD by LCS on a FULL
+   key (tag, text including maths' TeX, picture names) — same build, same
+   file, so only the card's blocks differ. BASE vs LIVE on a LOOSE key (maths,
+   learn-mode controls, admonition titles, permalinks, buttons left out,
+   because the live page is MathJax-typeset and learn mode rewrites its
+   cards). A run of change is a hunk: old blocks found on screen, new blocks
+   to show, and the live block they go after. A hunk with nothing on screen to
+   stand by makes the whole card fall back to the text preview.
+   **Deliberate departure from "diff the preview against the live page":**
+   comparing two builds means a stale `_build` or typeset maths cannot pass
+   for a change.
+4. **On the page** (`content.js`, `syncRendered`, run from `noteApprox` after
+   every paint pass). New blocks: a `.bfp-rp.bfp-ui[data-bfp-rp=<id>]` box,
+   outlined green, labelled "suggested", its body **inert** and
+   pointer-events none (a previewed check card must never touch progress;
+   scripts, handlers and ids stripped on import, maths typeset with the
+   extension's KaTeX as MathML), and a live bar with Accept / Reject. Old
+   blocks: the page's own element under `data-bfp-rp-old=<id>`, dimmed and
+   struck by one injected stylesheet. A cut is a struck block plus a bar.
+   Clicking either focuses the card in the drawer; the bar's buttons go
+   through the drawer (`answerSuggestion` → `doSuggest`), so busy state and
+   notes are the card's own. While the build runs, and for any card that
+   cannot be rendered, the text preview shows as before; once rendered, the
+   text preview for that card comes down. At most 8 cards per page.
+5. **Coming down.** Accept or Reject hides the card at once
+   (`unpaintAnswered`); a refused answer puts it back (`syncProposals`); a
+   reload, a card no longer open, or track changes off removes everything.
+   The overlay is skipped by `buildTextIndex` (bfp-ui), hidden from
+   `innerText` reads and removed from the snapshot.
+
+Tests: `test/blockdiff.test.mjs` (LCS, hunk placement incl. top-of-chapter,
+cuts and an unplaceable stale block; `articleOf`, `pictureRefs`; `renderCard`
+against a synthetic book and fake script — source untouched, scratch removed,
+card-only pictures, refusals, pending then ready). The DOM half was checked by
+eye on SpacecraftDynamics Lecture 2 (a check-card edit with a new equation,
+and a paragraph edit that adds a paragraph).

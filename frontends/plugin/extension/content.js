@@ -175,6 +175,9 @@
   // is the one await in the boot and there is no reason for it to be two. It
   // is kept here so `loadBlog()` — which the drawer calls later, and which is
   // the served page's route to the same record — does not ask a second time.
+  // the page's blog record as last read (loadBlog) — the rendered preview
+  // asks it whether this book can render a card
+  let BLOG_REC = null;
   let BLOG_AT_BOOT = (window.__BFP_BLOG && typeof window.__BFP_BLOG === 'object')
     ? window.__BFP_BLOG : null;
   if (FILE_DOC) {
@@ -808,7 +811,7 @@
     let hidden = [];
     // …and the wording an open suggestion PROPOSES, which is not in the
     // document either — it is a preview of a change nobody has accepted
-    try { hidden = [...document.querySelectorAll('del.bfp-was, ins.bfp-prop-ins')]; } catch { hidden = []; }
+    try { hidden = [...document.querySelectorAll('del.bfp-was, ins.bfp-prop-ins, .bfp-rp')]; } catch { hidden = []; }
     for (const n of hidden) n.style.setProperty('display', 'none', 'important');
     try { return fn(); }
     finally { for (const n of hidden) n.style.removeProperty('display'); }
@@ -874,6 +877,10 @@
         n.removeAttribute('data-bfp-prop-was');
         n.removeAttribute('data-bfp-prop-op');
       });
+      // …and a rendered preview's suggested blocks, and the mark on the old
+      // ones it struck (content.js, the rendered preview)
+      clone.querySelectorAll('.bfp-rp').forEach(n => n.remove());
+      clone.querySelectorAll('[data-bfp-rp-old]').forEach(n => n.removeAttribute('data-bfp-rp-old'));
       clone.querySelectorAll('#bfp-root').forEach(n => n.remove());
       clone.querySelectorAll(SNAP_JUNK).forEach(n => n.remove());
       // relative URLs mean nothing on the companion's hostname
@@ -1323,6 +1330,7 @@
   function proposalCards() {
     const out = [];
     propWhere = {};
+    propCards = Object.create(null);
     if (!PAGE) return out;
     const take = (target, msgs) => {
       for (const m of msgs || []) {
@@ -1330,6 +1338,7 @@
           if (!c || !c.id) continue;
           out.push(c);
           propWhere[String(c.id)] = { target, ts: String(m.ts || '') };
+          propCards[String(c.id)] = c;
         }
       }
     };
@@ -1366,6 +1375,7 @@
   // and, since that is also the moment a fresh <ins> exists, the one place
   // its formulas and pictures are drawn (dressProposals).
   function noteApprox() {
+    syncRendered();
     dressProposals();
     if (drawer) drawer.setTrackChanges({ approx: Anchor.approxProposalIds() });
   }
@@ -1496,18 +1506,258 @@
   }
   // Put the previews right outside a re-anchor: the switch, a refused answer.
   function syncProposals() {
+    // a refused answer puts its card back up, rendered preview and all
+    RP.hidden = Object.create(null);
     const cards = proposalCards();
     if (!CAPS.highlights) { Anchor.unpaintProposal(null); noteApprox(); return; }
     Anchor.syncProposals(cards, trackChanges, document.body, proposalNear);
     noteApprox();
   }
+  // ---- a proposal RENDERED, on a book page --------------------------------
+  // On a Jupyter Book chapter whose book ships a preview script (preview.mjs),
+  // an open card is not shown as struck words and an underlined insert: the
+  // companion builds the chapter with the card applied, and the blocks that
+  // change are laid over the live page as the book itself would draw them —
+  // the new ones outlined as suggested, the old ones dimmed and struck, each
+  // run with its own Accept / Reject. The text preview above stays the
+  // fallback: while a build is running, and for any card the book cannot
+  // render or the page cannot place.
+  //
+  // Display only, by the same doors as the rest: the overlay carries bfp-ui
+  // (buildTextIndex skips it, the snapshot drops it) and its body is INERT —
+  // a preview of a check card must never touch the reader's progress — with
+  // only its bar of buttons live. Struck old blocks are the page's own
+  // elements under one attribute, which the snapshot strips.
+  const RP_MAX = 8;               // cards rendered per page at once
+  const RP_RETRY_MS = 3000;
+  const RP = { byCard: Object.create(null), hidden: Object.create(null), none: false, busy: false, queue: [] };
+  let propCards = Object.create(null);
+  const rpOn = () => !!(BLOG_REC && BLOG_REC.rendered_preview && BLOG_REC.confirmed && !RP.none
+    && trackChanges && CAPS.highlights && window.BFPBlockDiff && document.querySelector('article.bd-article'));
+  const rpSel = id => '[data-bfp-rp="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
+  const rpOldSel = id => '[data-bfp-rp-old="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
+
+  function rpStyle() {
+    if (document.getElementById('bfp-rp-css')) return;
+    const st = document.createElement('style');
+    st.id = 'bfp-rp-css';
+    st.textContent = [
+      '[data-bfp-rp-old]{opacity:.45!important;text-decoration:line-through!important;'
+        + 'text-decoration-color:rgba(200,60,50,.85)!important;cursor:pointer!important;'
+        + 'box-shadow:-3px 0 0 rgba(200,60,50,.6)!important}',
+      '[data-bfp-rp-old] *{text-decoration:inherit!important}',
+      '.bfp-rp{position:relative!important;margin:.6em 0 .8em!important;padding:.4em .6em .3em!important;'
+        + 'outline:2px solid rgba(45,145,85,.9)!important;outline-offset:2px!important;border-radius:4px!important;'
+        + 'background:rgba(45,145,85,.05)!important;cursor:pointer!important}',
+      '.bfp-rp-body{pointer-events:none!important;user-select:none!important}',
+      '.bfp-rp-bar{display:flex!important;gap:.5em!important;align-items:center!important;'
+        + 'justify-content:flex-end!important;margin-top:.3em!important;font:12px/1.4 system-ui,sans-serif!important}',
+      '.bfp-rp-cut{margin:.2em 0 .8em!important;outline:none!important;background:none!important;padding:0!important}',
+      '.bfp-rp-lab{margin-right:auto!important;color:rgb(45,125,75)!important;font-weight:600!important;'
+        + 'letter-spacing:.02em!important;text-transform:uppercase!important;font-size:11px!important}',
+      '.bfp-rp-cut .bfp-rp-lab{color:rgb(180,60,50)!important}',
+      '.bfp-rp-bar button{all:unset;cursor:pointer!important;padding:2px 10px!important;border-radius:4px!important;'
+        + 'border:1px solid rgba(0,0,0,.25)!important;background:#fff!important;color:#222!important;font:inherit!important}',
+      '.bfp-rp-bar button[data-bfp-rp-act="yes"]{background:rgb(45,125,75)!important;color:#fff!important;border-color:rgb(45,125,75)!important}',
+      '.bfp-rp-bar button[disabled]{opacity:.5!important;cursor:default!important}',
+    ].join('\n');
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  // Everything one card painted, taken down: our wrappers removed, the page's
+  // own blocks given back their look. Every card, with no id.
+  function unpaintRendered(id) {
+    for (const el of document.querySelectorAll(id == null ? '.bfp-rp[data-bfp-rp]' : '.bfp-rp' + rpSel(id))) el.remove();
+    for (const el of document.querySelectorAll(id == null ? '[data-bfp-rp-old]' : rpOldSel(id))) {
+      el.removeAttribute('data-bfp-rp-old');
+    }
+  }
+  const renderedIds = () => {
+    const out = [];
+    for (const el of document.querySelectorAll('.bfp-rp[data-bfp-rp], [data-bfp-rp-old]')) {
+      const id = el.getAttribute('data-bfp-rp') || el.getAttribute('data-bfp-rp-old');
+      if (id && out.indexOf(id) === -1) out.push(id);
+    }
+    return out;
+  };
+
+  // The preview's maths, typeset the way the text preview's is: the extension's
+  // KaTeX, MathML only, so no stylesheet crosses into the page. A raw build
+  // carries its formulas as \( … \) and \[ … \] inside .math elements.
+  function typesetPreview(el) {
+    const K = window.katex;
+    if (!K || !K.render) return;
+    for (const m of el.querySelectorAll('.math')) {
+      const raw = String(m.textContent || '').trim();
+      const tex = raw.replace(/^\\\(|\\\)$/g, '').replace(/^\\\[|\\\]$/g, '').replace(/^\$\$|\$\$$/g, '').trim();
+      if (!tex) continue;
+      try {
+        K.render(tex, m, { displayMode: m.tagName === 'DIV', output: 'mathml', throwOnError: true,
+          strict: 'ignore', trust: false });
+      } catch { /* the TeX stays, legible */ }
+    }
+  }
+
+  // One preview build's blocks, imported into this document with nothing
+  // live left in them: no scripts, no handlers, no ids to collide with the
+  // page's own (a duplicated id is a duplicated check to the book's scripts).
+  function importBlock(el, pictures) {
+    const n = document.importNode(el, true);
+    const all = [n].concat(Array.prototype.slice.call(n.querySelectorAll('*')));
+    for (const x of all) {
+      if (/^(SCRIPT|IFRAME|OBJECT|EMBED)$/.test(x.tagName)) { x.remove(); continue; }
+      for (const a of Array.prototype.slice.call(x.attributes)) {
+        if (/^on/i.test(a.name)) x.removeAttribute(a.name);
+        else if (a.name === 'id') { x.setAttribute('data-bfp-rp-id', a.value); x.removeAttribute('id'); }
+        else if ((a.name === 'href' || a.name === 'src') && /^\s*javascript:/i.test(a.value)) x.removeAttribute(a.name);
+      }
+      if (x.tagName === 'IMG' || x.tagName === 'SOURCE') {
+        const s = x.getAttribute('src');
+        if (s && pictures && pictures[s]) x.setAttribute('src', pictures[s]);
+      }
+    }
+    return n;
+  }
+
+  function rpBar(id, cut) {
+    const bar = document.createElement('div');
+    bar.className = 'bfp-rp-bar';
+    const lab = document.createElement('span');
+    lab.className = 'bfp-rp-lab';
+    lab.textContent = cut ? 'suggested cut' : 'suggested';
+    bar.appendChild(lab);
+    for (const [act, text] of [['yes', 'Accept'], ['no', 'Reject']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('data-bfp-rp-act', act);
+      b.setAttribute('data-bfp-rp-card', id);
+      b.textContent = text;
+      bar.appendChild(b);
+    }
+    return bar;
+  }
+
+  // Paint one card's rendered preview. True when anything of it is on the
+  // page; false hands the card back to the text preview.
+  function paintRendered(id, data) {
+    const BD = window.BFPBlockDiff;
+    const article = document.querySelector('article.bd-article');
+    if (!BD || !article || !data) return false;
+    let baseDoc, cardDoc;
+    try {
+      const P = new DOMParser();
+      baseDoc = P.parseFromString('<!doctype html><body>' + data.base + '</body>', 'text/html');
+      cardDoc = P.parseFromString('<!doctype html><body>' + data.html + '</body>', 'text/html');
+    } catch { return false; }
+    const bArt = baseDoc.querySelector('article'), cArt = cardDoc.querySelector('article');
+    if (!bArt || !cArt) return false;
+    const bBlocks = BD.blocksOf(bArt), cBlocks = BD.blocksOf(cArt), lBlocks = BD.blocksOf(article);
+    const plan = BD.planHunks(bBlocks.map(BD.fullKey), cBlocks.map(BD.fullKey),
+      bBlocks.map(BD.looseKey), lBlocks.map(BD.looseKey));
+    if (!plan.hunks.length || plan.unplaced) return false;
+    rpStyle();
+    for (const h of plan.hunks) {
+      for (const l of h.remove) lBlocks[l].setAttribute('data-bfp-rp-old', id);
+      const box = document.createElement('div');
+      box.className = 'bfp-rp bfp-ui' + (h.add.length ? '' : ' bfp-rp-cut');
+      box.setAttribute('data-bfp-rp', id);
+      box.setAttribute('title', 'suggested change — click to open the suggestion');
+      if (h.add.length) {
+        const body = document.createElement('div');
+        body.className = 'bfp-rp-body';
+        body.setAttribute('inert', '');
+        body.setAttribute('aria-hidden', 'true');
+        for (const c of h.add) body.appendChild(importBlock(cBlocks[c], data.pictures));
+        typesetPreview(body);
+        box.appendChild(body);
+      }
+      box.appendChild(rpBar(id, !h.add.length));
+      const at = h.after >= 0 ? lBlocks[h.after] : lBlocks[h.before];
+      if (h.after >= 0) at.parentNode.insertBefore(box, at.nextSibling);
+      else at.parentNode.insertBefore(box, at);
+    }
+    return true;
+  }
+
+  // Ask the companion for one card's build, and keep asking while it says the
+  // build is still going. One request at a time: the book builds one chapter
+  // at a time anyway.
+  async function rpPump() {
+    if (RP.busy) return;
+    const id = RP.queue.shift();
+    if (!id) return;
+    const where = propWhere[id];
+    if (!where || !rpOn()) { rpPump(); return; }
+    RP.busy = true;
+    let r = null;
+    try {
+      r = await api('POST', '/suggest-preview', {
+        url: URL_NOW, ...(where.target === PAGE_TARGET ? {} : { thread_id: where.target }), ts: where.ts, id,
+      });
+    } catch { r = null; }
+    RP.busy = false;
+    const pv = r && r.ok && r.data && r.data.preview;
+    if (pv && pv.pending) {
+      RP.byCard[id] = { state: 'pending' };
+      setTimeout(() => { RP.queue.push(id); rpPump(); }, RP_RETRY_MS);
+    } else if (pv && pv.ok) {
+      RP.byCard[id] = { state: 'ready', data: pv };
+    } else {
+      if (pv && pv.none) RP.none = true;
+      RP.byCard[id] = { state: 'failed', why: (pv && pv.why) || (r && r.error) || '' };
+    }
+    syncRendered();
+    rpPump();
+  }
+
+  // The rendered previews brought into line with the record: answered (or
+  // vanished) cards taken down, ready ones painted, new ones asked for. Run
+  // after every paint pass, from noteApprox, so a card's text preview comes
+  // down the moment its rendered one is up.
+  function syncRendered() {
+    if (!rpOn()) { unpaintRendered(null); return; }
+    const open = Object.keys(propCards).filter(id => propCards[id].state === 'open' && !RP.hidden[id]);
+    for (const id of renderedIds()) if (open.indexOf(id) === -1) unpaintRendered(id);
+    for (const id of open.slice(0, RP_MAX)) {
+      const got = RP.byCard[id];
+      if (!got) {
+        RP.byCard[id] = { state: 'queued' };
+        RP.queue.push(id);
+        continue;
+      }
+      if (got.state !== 'ready') continue;
+      const up = document.querySelector('.bfp-rp' + rpSel(id));
+      if (!up && !paintRendered(id, got.data)) { got.state = 'failed'; continue; }
+      Anchor.unpaintProposal(id);
+    }
+    rpPump();
+  }
+
+  // Accept / Reject pressed on the page: the card's own buttons, through the
+  // drawer, so the busy state and the note are the drawer's as ever.
+  function answerRendered(id, yes) {
+    const where = propWhere[id];
+    if (!where) return;
+    for (const b of document.querySelectorAll('[data-bfp-rp-card="' + String(id).replace(/["\\]/g, '\\$&') + '"]')) {
+      b.disabled = true;
+    }
+    activate(false).then(d => {
+      if (!d || !d.answerSuggestion) return;
+      d.answerSuggestion(yes, where.target, where.ts, id);
+    });
+  }
+
   // The cards one answer is about, taken down NOW rather than when the record
   // comes back, so a preview never sits beside a card that has moved on.
   function unpaintAnswered(threadId, ts, id) {
-    if (id) { Anchor.unpaintProposal(id); noteApprox(); return; }
+    if (id) { RP.hidden[id] = true; unpaintRendered(id); Anchor.unpaintProposal(id); noteApprox(); return; }
     for (const cid of Object.keys(propWhere)) {
       const w = propWhere[cid];
-      if (w.target === threadId && w.ts === String(ts)) Anchor.unpaintProposal(cid);
+      if (w.target === threadId && w.ts === String(ts)) {
+        RP.hidden[cid] = true;
+        unpaintRendered(cid);
+        Anchor.unpaintProposal(cid);
+      }
     }
     noteApprox();
   }
@@ -1759,12 +2009,16 @@
     if (BLOG_AT_BOOT) {
       const b = BLOG_AT_BOOT;
       if (!window.__BFP_BLOG) BLOG_AT_BOOT = null;
+      BLOG_REC = b;
       drawer.setBlog(b);
+      syncRendered();
       return;
     }
     const r = await api('GET', '/blog-page?url=' + encodeURIComponent(URL_NOW));
     if (!drawer) return;
-    drawer.setBlog((r && r.ok && r.data && r.data.blog) || null);
+    BLOG_REC = (r && r.ok && r.data && r.data.blog) || null;
+    drawer.setBlog(BLOG_REC);
+    syncRendered();
   }
 
   // The document arrived in pieces, and the pieces are still coming.
@@ -1848,6 +2102,7 @@
     for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
     Anchor.unpaintProposal(null);
     propWhere = {};
+    propCards = Object.create(null);
     noteApprox();
     pendingSel = null;
     locs = {};
@@ -3230,6 +3485,14 @@
 
   // click a highlight → open the drawer at that thread
   document.addEventListener('click', e => {
+    // A RENDERED preview's own Accept / Reject (syncRendered), first of all
+    const rpAct = e.target && e.target.closest && e.target.closest('.bfp-rp [data-bfp-rp-act]');
+    if (rpAct) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!rpAct.disabled) answerRendered(rpAct.getAttribute('data-bfp-rp-card'), rpAct.getAttribute('data-bfp-rp-act') === 'yes');
+      return;
+    }
     // A PROPOSAL's preview — its struck words or the wording after them — is
     // one thing, the card, and opens it: the chat tab (or the thread it was
     // made in), scrolled to the card and flashed. Asked first, because a
@@ -3239,8 +3502,9 @@
     // dimmed — which names the card in its own attribute, since it is not ours)
     const prop = e.target && e.target.closest
       && e.target.closest('mark.bfp-prop[data-bfp-prop], ins.bfp-prop-ins[data-bfp-prop], '
-        + 'img.bfp-prop-img[data-bfp-prop], img[data-bfp-prop-was]');
-    const pid = prop && (prop.getAttribute('data-bfp-prop') || prop.getAttribute('data-bfp-prop-was'));
+        + 'img.bfp-prop-img[data-bfp-prop], img[data-bfp-prop-was], .bfp-rp[data-bfp-rp], [data-bfp-rp-old]');
+    const pid = prop && (prop.getAttribute('data-bfp-prop') || prop.getAttribute('data-bfp-prop-was')
+      || prop.getAttribute('data-bfp-rp') || prop.getAttribute('data-bfp-rp-old'));
     const where = pid && propWhere[pid];
     if (where) {
       e.preventDefault();
