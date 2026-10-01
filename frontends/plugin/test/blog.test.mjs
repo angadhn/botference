@@ -100,6 +100,8 @@ function jekyll(tag, { extra = {} } = {}) {
 // be the developer's own.
 const OWN_ROOT = tmp('own-store');
 process.env.BOTFERENCE_PROJECT_ROOT = OWN_ROOT;
+// …and never the developer's real project registry (markers.mjs)
+process.env.BOTFERENCE_SITES_REGISTRY = path.join(OWN_ROOT, 'sites.json');
 const blog = await import(path.join(PLUGIN, 'blog.mjs'));
 
 // =========================================================================

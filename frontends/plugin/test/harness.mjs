@@ -164,6 +164,10 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
   // (~/.botference/review-paper-secrets.json, identity.mjs), and a test must
   // never read — let alone generate into — the developer's real one.
   const SECRETS = fs.mkdtempSync(path.join(os.tmpdir(), `bfp-${tag}-secrets-`));
+  // …and a throwaway project registry: the real ~/.botference/sites.json
+  // (markers.mjs) names the developer's own books and blogs, and a test
+  // companion must never take them into its scope
+  const REGISTRY = path.join(SECRETS, 'sites.json');
   const spawned = [];
 
   function startServer({ root, args = [], env = {} }) {
@@ -171,6 +175,7 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
       env: {
         ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
         BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
+        BOTFERENCE_SITES_REGISTRY: REGISTRY,
         ...baseEnv, ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -195,7 +200,7 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
   }
 
   return {
-    test, waitFor, tmp, startServer, cleanup, spawned, tmps, SECRETS,
+    test, waitFor, tmp, startServer, cleanup, spawned, tmps, SECRETS, REGISTRY,
     passed: () => passed,
     failures: () => failures,
   };

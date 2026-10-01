@@ -379,6 +379,9 @@ parse_loop_args() {
   WEB_PORT=""
   CLAUDE_TRANSPORT="${BOTFERENCE_CLAUDE_TRANSPORT:-programmatic}"
   INIT_PROFILE="vault-drafter"
+  # init's hand-off to 'botference site' (frontends/plugin/site-cli.mjs):
+  # --serve / --rebuild / --no-rebuild are passed through untouched
+  SITE_ARGS=()
   PROJECT_DIR_NAME="${BOTFERENCE_PROJECT_DIR_NAME:-botference}"
 
   while [ "$#" -gt 0 ]; do
@@ -432,6 +435,15 @@ parse_loop_args() {
         shift
         ;;
       --profile=*) INIT_PROFILE="${arg#--profile=}" ;;
+      --serve=*|--rebuild=*|--no-rebuild) SITE_ARGS+=("$arg") ;;
+      --serve|--rebuild)
+        if [ "$#" -eq 0 ]; then
+          echo "Error: $arg requires a value." >&2
+          return 2
+        fi
+        SITE_ARGS+=("$arg" "$1")
+        shift
+        ;;
       --no-debug-panes) DEBUG_PANES=false ;;
       --help|-h) SHOW_HELP=true ;;
       [0-9]*) MAX_ITERATIONS="$arg" ;;
@@ -470,9 +482,23 @@ Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
        botference discuss --install-tunnel | --uninstall-tunnel
        botference service <start|stop|list|logs> …
        botference see <url | :port | service-name> [label] [--viewport WxH]
+       botference site [dir] [--serve <origin>] [--rebuild <cmd> | --no-rebuild] [--kind <k>]
+       botference sites [--remove <dir>]
 
 Modes:
-  init              Bootstrap a project-local state directory
+  init              Bootstrap a project-local state directory, and put the
+                    project in Discuss's scope (as 'botference site' does;
+                    --serve <origin> / --rebuild <cmd> pass through)
+  site              Put this project in Discuss's scope (for a repo that is
+                    already initialised): writes .botference/site.json
+                    (kind detected — Jupyter Book, Jekyll or plain — and a
+                    guessed serve origin, printed; --serve <origin>,
+                    --rebuild <cmd> | --no-rebuild, --kind <k>), gitignores
+                    .botference/, registers it in ~/.botference/sites.json,
+                    and tells a running companion. See 'botference site --help'.
+  sites             List the registered projects (kind, origin, on/off,
+                    whether the companion sees them); --remove <dir> takes
+                    one out
   plan              Free-form planning council: you + Claude + Codex in one
                     room; the bots can hand each other the floor (budgeted)
                     until the conversation returns to you
@@ -601,6 +627,8 @@ Environment variables:
 Examples:
   botference init                                     # Bootstrap botference/ in this project
   botference init --project-dir=spaceship             # Bootstrap botference-spaceship/ instead
+  botference site --serve 8000                        # This book, served at localhost:8000, in Discuss's scope
+  botference sites                                    # Which projects Discuss treats as yours
   botference --project-dir=spaceship plan             # Use botference-spaceship/
   botference plan                                     # Freeform planning room
   botference plan --web                               # The same room in your browser

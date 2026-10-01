@@ -2,6 +2,20 @@
 
 ## 2026-10-01
 
+- **`botference init` puts a project in Discuss's scope.** Run it — or the
+  new `botference site`, for a repo that is already initialised — in a book,
+  a blog or any folder, and the browser plugin treats its pages as yours:
+  the repo is the bots' write root and its scratch is
+  `.botference/plugin/artifacts/`. It writes `.botference/site.json` (kind
+  detected; the local address guessed and printed, `--serve <origin>` to fix
+  it; for a book, `jupyter-book` from your `PATH` as the rebuild command,
+  `--rebuild <cmd>` / `--no-rebuild`), gitignores `.botference/`, and adds
+  the folder to `~/.botference/sites.json`, which the companion reads when it
+  starts; a running companion is told at once (new `POST /sites/rescan`).
+  `botference sites` lists the registered projects and whether the companion
+  sees them; `botference sites --remove <dir>` takes one out. The drawer's
+  header names the project folder of a page in scope. Sites declared by hand
+  in `blog_sites` keep working and win for an address both name.
 - **A blog or book's files stay in the blog or book.** Pictures the bots
   make for a Jekyll post or a Jupyter Book chapter now go straight into that
   page's image folder, placed by the bots themselves — no more copy scripts

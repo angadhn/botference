@@ -23,3 +23,8 @@ def _isolate_botference_state(tmp_path, monkeypatch):
     monkeypatch.setenv(
         "BOTFERENCE_SETTINGS_FILE", str(tmp_path / "bf-user-settings.json")
     )
+    # `botference init` also registers the project with Discuss
+    # (frontends/plugin/site-cli.mjs): never into the developer's real
+    # ~/.botference/sites.json, and never by poking their running companion
+    monkeypatch.setenv("BOTFERENCE_SITES_REGISTRY", str(tmp_path / "bf-sites.json"))
+    monkeypatch.setenv("BOTFERENCE_PLUGIN_URL", "http://127.0.0.1:9")

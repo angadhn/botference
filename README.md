@@ -119,7 +119,8 @@ cd ink-ui && npm install
 From a target project root:
 
 ```bash
-botference init                            # Create project-local botference/ state
+botference init                            # Create project-local botference/ state (and register it with Discuss)
+botference site                            # Just the Discuss half, for a repo already initialised
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference plan                            # Council: you + Claude + Codex (Ink default)
 botference --project-dir=spaceship plan    # Use botference-spaceship/
@@ -864,17 +865,34 @@ Botference folder. If a bot proposes a picture that it left in scratch,
 the companion copies it into place when the turn ends (never over a file
 you already have) and says so.
 
-Tell it once which folder your site is served from, in
-`.botference/plugin/config.json`:
+Tell it about your site by running one command in its folder:
+
+```sh
+cd ~/sites/yourblog
+botference site            # or `botference init`, which does this too
+```
+
+That writes `.botference/site.json` in the repo (the kind is detected; the
+address it guesses, `http://localhost:4000` for Jekyll, is printed — fix it
+with `--serve <origin>`), makes sure `.botference/` is in your
+`.gitignore`, and adds the folder to `~/.botference/sites.json`, the list the
+companion reads when it starts. A running companion is told straight away.
+Running the command in the folder is your answer to *is this your site?*, so
+the drawer does not ask again. `botference sites` lists what is in scope
+(and whether the companion sees it); `botference sites --remove <dir>` takes
+one out. The drawer's header names the project folder of a page in scope.
+
+The older way still works, and wins for an address both name: declare the
+site by hand in the companion's own `.botference/plugin/config.json`,
 
 ```json
 "blog_sites": [{ "serve_origin": "http://localhost:4000",
                  "root": "/Users/you/sites/yourblog", "kind": "jekyll" }]
 ```
 
-The first page of that site you open asks — once — *is this your site?*,
+and the first page of that site you open asks — once — *is this your site?*,
 exactly as it asks about a council folder and for the same reason: yes is
-what lets the bots write in there. It then works out which file each
+what lets the bots write in there. Either way, it then works out which file each
 address came from by **reading your repo**: front-matter `permalink`
 first, then the permalink templates in your `_config.yml`, then the
 filename conventions, then the slug. Posts, drafts, pages and collections
@@ -932,8 +950,19 @@ root, so that is a new file in your repo:
 jupyter-book config sphinx . && sphinx-autobuild . _build/html --port 8000
 ```
 
-and declare it in `.botference/plugin/config.json` (a `_toc.yml` beside
-`_config.yml` is recognised as a book, so `kind` may be left out):
+then put the book in scope — once, from its root — and open it:
+
+```sh
+botference site            # or `botference init`; --serve 8000 if you serve elsewhere
+```
+
+A `_toc.yml` beside `_config.yml` is recognised as a book, the address is
+guessed as `http://localhost:8000` (printed, so you can correct it), and if
+`jupyter-book` is on your `PATH` its absolute path becomes the rebuild
+command (`--rebuild <cmd>` to choose another, `--no-rebuild` for none).
+
+By hand instead, in the companion's `.botference/plugin/config.json` — this
+still works, and a hand-written row wins for its address:
 
 ```json
 "blog_sites": [{ "serve_origin": "http://localhost:8000",

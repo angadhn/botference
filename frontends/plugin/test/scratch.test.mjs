@@ -30,6 +30,8 @@ const tmp = tag => {
 // is fixed when store.mjs loads: a throwaway one, never the developer's
 const OWN_ROOT = tmp('own');
 process.env.BOTFERENCE_PROJECT_ROOT = OWN_ROOT;
+// …and never the developer's real project registry (markers.mjs)
+process.env.BOTFERENCE_SITES_REGISTRY = path.join(OWN_ROOT, 'sites.json');
 const blog = await import(path.join(PLUGIN, 'blog.mjs'));
 const scratch = await import(path.join(PLUGIN, 'scratch.mjs'));
 

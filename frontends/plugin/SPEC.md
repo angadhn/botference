@@ -11116,3 +11116,66 @@ both envelopes, the summon rule); `test/blog.test.mjs` (the book child's spawn
 env, the envelope, `/files/` serving scratch, turn-end placement end to end);
 `tests/test_summon.py` (the override in the controller, the builder prompt, the
 deliverables note).
+
+## Amendment (2026-10-01): projects registered by marker — `botference init` is the gesture
+
+**The problem.** The companion knew a site only if it was typed into
+`blog_sites` in the companion's OWN `.botference/plugin/config.json` — the
+vault's, because that is where the companion runs. That does not travel: the
+reader takes botference to a repo outside the vault, runs `botference init`,
+opens the book, and nothing is in scope.
+
+**The fix: the declaration lives with the project, and the companion is told
+where to look.**
+
+| | where | written by | holds |
+|---|---|---|---|
+| the marker | `<root>/.botference/site.json` (gitignored there) | `botference init` / `botference site` | `{kind, serve_origin, rebuild?, enabled}` |
+| the registry | `~/.botference/sites.json` (`BOTFERENCE_SITES_REGISTRY` moves it) | the same | `{roots: [...]}` |
+
+`frontends/plugin/site-cli.mjs` is the command; `markers.mjs` reads and writes
+the two files; `blog.mjs` reads every marker AS IF it were a `blog_sites` row,
+through the same rules — a marker can no more switch off no-git or
+propose-only than a config row can.
+
+1. **Detection and guesses.** `kind` from `blog.detectKind` (a book from
+   `_toc.yml` + `_config.yml`, Jekyll from `_config.yml` or `_posts/`), else
+   `plain`. `serve_origin` guessed — `http://localhost:8000` for a book, `:4000`
+   for Jekyll — and PRINTED as a guess; `--serve` sets it. For a book, `command
+   -v jupyter-book` becomes `<abs path> build .` unless `--rebuild`/`--no-rebuild`
+   say otherwise. Re-running keeps every value not given.
+2. **Loading.** At start and on `POST /sites/rescan` (owner only; what the
+   command calls), never per request. A marker `enabled: false`, a folder that
+   is gone, a missing or unreadable marker, a kind the tree does not match, or
+   a bad rebuild command is SKIPPED AND SAID — in the start-up log, in
+   `GET /blog-sites` (`skipped`) and by `botference sites`; a skipped root stays
+   registered. A marker's `localhost:N` also declares `127.0.0.1:N` (one server,
+   two origins).
+3. **Precedence.** A hand-written `blog_sites` row wins its origin; a marker
+   is never copied into config.json (`addSite`/`removeSite` touch config rows
+   only — `configSites`). Two markers claiming one origin: the root registered
+   LAST wins (the registry moves a root to its end on every run) and the other
+   is reported.
+4. **Vouching.** Running the command in the folder IS the answer to "is this
+   your site?": a registered root with no stored answer reads `yes`. A stored
+   answer wins — a NO above all — and the command sends `POST /blog-root
+   {confirm:true}` to a running companion, because that is the moment the
+   reader said yes.
+5. **Plain folders.** `KIND_RULES.plain` (no git, propose-only, no rebuild).
+   No origin, so no url maps to it; the one path in is a file of it opened
+   straight off the disk (`fileBlogPage`, `.md`/`.html`/`.svg` — not a
+   notebook, which has no file: rendering to attach to), which then gets the
+   root as write root and its scratch folder like any site page.
+6. **Revoking.** `botference sites --remove <dir>` takes the root out of the
+   registry and sets `enabled: false` in its marker, then rescans. A site also
+   declared by hand stays, and the command says so.
+7. **The drawer** names the project folder of a page in scope in the header's
+   `.proj` span, beside "localhost · connected".
+
+Tests: `test/markers.test.mjs` (registry, twins, vouching and an explicit no,
+hand-written precedence, skipped-and-said, origin clashes, plain files; the
+command's marker, gitignore and registry, re-runs, refusals; a companion
+picking a project up at start and on rescan; list and remove; the launcher's
+`site`, `sites` and `init`); `tests/test_botference.py` (init writes the
+marker, against a throwaway registry — `tests/conftest.py` keeps every test
+off the real one and off a running companion).

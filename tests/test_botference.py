@@ -14,6 +14,7 @@ import json
 import logging
 import sys
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -4023,6 +4024,26 @@ class TestInitModeLauncher:
         assert project_json["modes"]["build"] is True
         assert project_json["write_roots"]["plan"] == ["botference"]
         assert project_json["write_roots"]["build"] == ["botference"]
+
+    @pytest.mark.skipif(shutil.which("node") is None, reason="needs node")
+    def test_botference_init_puts_the_project_in_discuss_scope(self, tmp_path):
+        """init is the one gesture: it also writes .botference/site.json,
+        gitignores .botference/ and registers the folder (botference site)."""
+        repo_root = Path(__file__).resolve().parent.parent
+        result = subprocess.run(
+            [str(repo_root / "botference"), "init", "--serve", "8123"],
+            cwd=tmp_path,
+            env={**os.environ, "BOTFERENCE_HOME": str(repo_root)},
+            capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        marker = json.loads((tmp_path / ".botference" / "site.json").read_text(encoding="utf-8"))
+        assert marker == {"kind": "plain", "serve_origin": "", "enabled": True}, \
+            "a folder that is neither a book nor a blog is a plain project (no origin)"
+        assert ".botference/" in (tmp_path / ".gitignore").read_text(encoding="utf-8").splitlines()
+        registry = json.loads(Path(os.environ["BOTFERENCE_SITES_REGISTRY"]).read_text(encoding="utf-8"))
+        assert str(tmp_path.resolve()) in registry["roots"]
+        assert "in scope" in result.stdout
 
     def test_botference_init_supports_custom_project_dir(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent

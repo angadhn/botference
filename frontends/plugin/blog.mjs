@@ -62,6 +62,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readConfig, saveConfig } from './store.mjs';
+// the projects `botference init` / `botference site` registered, by marker
+// (markers.mjs) — read here as if they were `blog_sites` rows
+import { loadMarkers } from './markers.mjs';
 // The review engine's Jupyter Book reader, imported and not forked: the same
 // text projection of a notebook (markdown cells verbatim, code cells as
 // ```{code-cell} fences), the same cell-surgical writer, the same _toc.yml
@@ -187,8 +190,15 @@ const originOf = v => {
 // `skip` is what the census and the source-file gate ignore ON TOP OF
 // SKIP_DIRS for this kind — a book's build output and caches move on every
 // rebuild and must never count as an edit or be mistaken for a page.
+//
+// `plain` is the fourth row and the only one with no server behind it: a repo
+// `botference site` registered that is neither a book nor a Jekyll site. There
+// is no url to map back from, so the only page of it Discuss can attach to is
+// a file of it opened straight off the disk (fileBlogPage) — which still gets
+// the root as its write root and its scratch folder, and the same two rules.
 const KIND_RULES = {
   jekyll: { git: false, suggest: true, rebuild: false, label: 'Jekyll', skip: [] },
+  plain: { git: false, suggest: true, rebuild: false, label: 'project folder', skip: [] },
   jupyterbook: {
     git: false, suggest: true, rebuild: true, label: 'Jupyter Book',
     skip: ['_build', '.jupyter_cache', '.ipynb_checkpoints', '__pycache__'],
@@ -273,8 +283,8 @@ function normalizeSite(row) {
   return out;
 }
 
-/** Every declared site, normalized, newest declaration of an origin winning. */
-export function listSites() {
+/** The sites declared BY HAND in config.json, normalized, newest of an origin winning. */
+export function configSites() {
   const cfg = readConfig();
   const rows = Array.isArray(cfg.blog_sites) ? cfg.blog_sites : [];
   const by = new Map();
@@ -283,6 +293,85 @@ export function listSites() {
     if (s) by.set(s.serve_origin, s);
   }
   return [...by.values()];
+}
+
+// ---- the registered projects (markers.mjs) --------------------------------
+// Loaded once, on the first question, and again only when asked (`rescanMarkers`
+// — the companion's start and POST /sites/rescan). Not on every listSites call:
+// that is asked on every page load, and the answer is a registry plus one file
+// per project.
+let markerState = null;   // {sites, skipped, at}
+
+// `localhost` and `127.0.0.1` are one server to the reader and two origins to
+// a browser; a marker names one, and both are declared. (A hand-written row
+// names each origin it means — the config this replaces had both.)
+const twinOrigin = o => (/^http:\/\/localhost(:\d+)?$/.test(o) ? o.replace('localhost', '127.0.0.1')
+  : /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(o) ? o.replace('127.0.0.1', 'localhost') : '');
+
+function markerSite(row) {
+  const root = realish(row.root);
+  const kind = MARKER_KIND(row.kind, root);
+  if (!kind) return { why: 'the marker names no kind this companion knows' };
+  if (kind === 'jupyterbook' && !isJupyterBookRoot(root)) return { why: 'marked a Jupyter Book, but there is no _toc.yml beside a _config.yml' };
+  if (kind === 'jekyll' && !isJekyllRoot(root)) return { why: 'marked a Jekyll site, but there is no _config.yml or _posts/' };
+  const origin = originOf(row.serve_origin);
+  if (kind !== 'plain' && !origin) return { why: 'no serve_origin (http://localhost:<port>) in the marker' };
+  const out = { serve_origin: kind === 'plain' ? '' : origin, root, kind, from: 'marker' };
+  const rb = rebuildOf(kind, row.rebuild);
+  if (rb.error) return { why: rb.error };
+  if (rb.cmd) out.rebuild = rb.cmd;
+  return { site: out };
+}
+const MARKER_KIND = (k, root) => (k === 'plain' || KINDS.has(k) ? k : (k ? '' : (detectKind(root) || 'plain')));
+
+/**
+ * Read the registry and every marker again. Returns what is now in scope and
+ * what was skipped, with why — the report `botference sites` and the start-up
+ * log print. Two registered projects claiming one origin: the one registered
+ * LAST wins (the registry moves a root to its end on every `botference site`),
+ * and the other is reported, because a page can only come from one folder.
+ */
+export function rescanMarkers() {
+  const { rows, skipped } = loadMarkers();
+  const by = new Map();      // origin (or 'file:' + root for plain) → site
+  const lost = [...skipped];
+  for (const row of rows) {
+    const r = markerSite(row);
+    if (!r.site) { lost.push({ root: row.root, why: r.why }); continue; }
+    const keys = r.site.serve_origin
+      ? [r.site.serve_origin, twinOrigin(r.site.serve_origin)].filter(Boolean)
+      : [`file:${r.site.root}`];
+    for (const k of keys) {
+      const had = by.get(k);
+      if (had && had.root !== r.site.root) {
+        lost.push({ root: had.root, why: `${k} is also claimed by ${r.site.root}, registered later — give one of them another --serve` });
+      }
+      by.set(k, { ...r.site, serve_origin: k.startsWith('file:') ? '' : k });
+    }
+  }
+  // one line per root, and a root still in scope by some origin is not skipped
+  const kept = new Set([...by.values()].map(x => x.root));
+  const once = new Map();
+  for (const x of lost) if (!kept.has(x.root) && !once.has(x.root)) once.set(x.root, x);
+  markerState = { sites: [...by.values()], skipped: [...once.values()], at: new Date().toISOString() };
+  forgetIndex();
+  return markerState;
+}
+/** The registered projects in scope (loaded on first ask). */
+export function markerSites() { return (markerState || rescanMarkers()).sites; }
+/** …and the ones that were not, with why. */
+export function skippedMarkers() { return (markerState || rescanMarkers()).skipped; }
+const isMarkerRoot = root => markerSites().some(m => m.root === root);
+
+/**
+ * Every site in scope: the hand-written ones, then the registered ones for
+ * every origin no hand-written row names. A plain project (no origin) is keyed
+ * by its root. Each row is tagged `from: 'config' | 'marker'`.
+ */
+export function listSites() {
+  const cfg = configSites().map(s => ({ ...s, from: 'config' }));
+  const taken = new Set(cfg.map(s => s.serve_origin));
+  return [...cfg, ...markerSites().filter(m => !m.serve_origin || !taken.has(m.serve_origin))];
 }
 
 /**
@@ -308,7 +397,7 @@ export function addSite({ serve_origin, root, kind = '', rebuild = '' } = {}) {
   }
   const rb = rebuildOf(s.kind, rebuild);
   if (rb.error) return { ok: false, error: rb.error };
-  const kept = listSites().filter(x => x.serve_origin !== s.serve_origin);
+  const kept = configSites().filter(x => x.serve_origin !== s.serve_origin);
   saveConfig({ blog_sites: [...kept, s] });
   forgetIndex(s.root);
   return { ok: true, site: s };
@@ -318,7 +407,7 @@ export function addSite({ serve_origin, root, kind = '', rebuild = '' } = {}) {
 export function removeSite(serve_origin) {
   const origin = originOf(serve_origin);
   if (!origin) return { ok: false, error: 'not an origin' };
-  const kept = listSites().filter(x => x.serve_origin !== origin);
+  const kept = configSites().filter(x => x.serve_origin !== origin);
   saveConfig({ blog_sites: kept });
   return { ok: true, sites: kept };
 }
@@ -328,11 +417,15 @@ const rootsMap = () => {
   return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
 };
 
-/** 'yes' | 'no' | '' (never asked) */
+/**
+ * 'yes' | 'no' | '' (never asked). A root registered by `botference site` and
+ * never answered for in the drawer is 'yes': running the command in that
+ * folder IS the answer (markers.mjs says why). A stored answer always wins.
+ */
 export function rootState(root) {
   const key = realish(root);
   const m = rootsMap();
-  if (!Object.prototype.hasOwnProperty.call(m, key)) return '';
+  if (!Object.prototype.hasOwnProperty.call(m, key)) return isMarkerRoot(key) ? 'yes' : '';
   return m[key] ? 'yes' : 'no';
 }
 
@@ -347,7 +440,7 @@ export function setRootState(root, confirmed) {
 export function siteFor(url) {
   const origin = originOf(url);
   if (!origin) return null;
-  return listSites().find(s => s.serve_origin === origin) || null;
+  return listSites().find(s => s.serve_origin && s.serve_origin === origin) || null;
 }
 
 // ---- reading the repo -----------------------------------------------------
@@ -1381,8 +1474,12 @@ export function blogBlock(blog) {
   const opening = blog.same_file
     ? `[blog page: ${blog.rel} · source ${blog.source_path}]\n`
       + `The reader is looking at THIS VERY FILE — the page and its source are one document, `
-      + `opened either straight off the disk or copied through unchanged by the local server at `
-      + `${blog.serve_origin}. There is no rendering step and nothing is generated from anything: `
+      + (blog.serve_origin
+        ? `opened either straight off the disk or copied through unchanged by the local server at `
+          + `${blog.serve_origin}. `
+        // a plain project folder has no server at all (KIND_RULES `plain`)
+        : `opened straight off the disk. `)
+      + `There is no rendering step and nothing is generated from anything: `
       + `the file named above IS the page. READ it before you change anything.\n`
       + `Quotes in this conversation are the text as a BROWSER lays it out, so the wording you `
       + `are given is without the markup around it. Find the matching text in the file yourself `

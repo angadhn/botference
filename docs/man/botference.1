@@ -23,6 +23,12 @@ botference \- a multi-LLM planning council for the terminal
 .B botference service
 \fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
 .br
+.B botference site
+[\fIdir\fR] [\fB\-\-serve\fR \fIorigin\fR] [\fB\-\-rebuild\fR \fIcmd\fR | \fB\-\-no-rebuild\fR] [\fB\-\-kind\fR \fIk\fR]
+.br
+.B botference sites
+[\fB\-\-remove\fR \fIdir\fR]
+.br
 .B botference see
 \fIurl\fR|\fB:\fR\fIport\fR|\fIservice-name\fR [\fIlabel\fR] [\fB\-\-viewport\fR \fIWxH\fR]… [\fB\-\-basic-auth\fR \fIU:P\fR] [\fB\-\-out\fR \fIdir\fR]
 .br
@@ -42,7 +48,35 @@ into the council with
 .SH MODES
 .TP
 .B init
-Bootstrap a project-local state directory.
+Bootstrap a project-local state directory, and put the project in
+Discuss's scope exactly as \fBsite\fR does (\fB\-\-serve\fR and
+\fB\-\-rebuild\fR pass through).
+.TP
+.B site
+Put a project (\fIdir\fR, default the current directory) in the scope of
+Discuss, the browser plugin: a page of it opened in the browser is then the
+reader's own \- the repo is the bots' write root, their scratch goes in
+\fI.botference/plugin/artifacts/\fR, and they propose changes to the source
+for the reader to accept. Writes \fI<dir>/.botference/site.json\fR
+(\fBkind\fR detected: Jupyter Book from \fI_toc.yml\fR beside
+\fI_config.yml\fR, Jekyll from \fI_config.yml\fR or \fI_posts/\fR, else
+plain; \fBserve_origin\fR guessed \- http://localhost:8000 for a book,
+http://localhost:4000 for Jekyll \- and printed; for a book, the rebuild
+command \fIjupyter-book build .\fR by absolute path when
+\fBjupyter-book\fR is on PATH), adds \fI.botference/\fR to the repo's
+\fI.gitignore\fR if it is missing, registers the folder in
+\fI~/.botference/sites.json\fR, and asks a running companion to rescan.
+Nothing else in the repo is touched and git is never run. Re-running keeps
+values not given. \fB\-\-serve\fR \fIorigin\fR (8000 and :8000 work),
+\fB\-\-rebuild\fR \fIcmd\fR or \fB\-\-no-rebuild\fR, \fB\-\-kind\fR
+jupyterbook|jekyll|plain. A plain folder has no server; a file of it opened
+straight off the disk is in scope.
+.TP
+.B sites
+List the registered projects: folder, kind, serve origin, on/off, and
+whether the running companion sees them (plus any sites declared by hand in
+the companion's \fIblog_sites\fR). \fB\-\-remove\fR \fIdir\fR takes one
+out of the registry and sets \fBenabled: false\fR in its marker.
 .TP
 .B plan
 Free-form planning council: you + Claude + Codex in one room; the bots can
@@ -561,6 +595,11 @@ Esc interrupts the current turn.
 .I <project>/botference/
 Project-local state: sessions, projects, plans, logs.
 .TP
+.I <project>/.botference/site.json, ~/.botference/sites.json
+A project's Discuss marker (written by \fBinit\fR / \fBsite\fR) and the
+per-user registry of folders that have one, which the companion reads at
+start and on \fBPOST /sites/rescan\fR.
+.TP
 .I ~/.botference/settings.json
 Per-user preferences (e.g. notifications).
 .TP
@@ -696,6 +735,12 @@ See \fBbotference --help\fR for details.
 .TP
 .B botference init
 Bootstrap botference/ in this project.
+.TP
+.B botference site --serve 8000
+Put this Jupyter Book, served at localhost:8000, in Discuss's scope.
+.TP
+.B botference sites
+Which projects Discuss treats as yours.
 .TP
 .B botference plan
 Open the planning council.

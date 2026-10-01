@@ -44,6 +44,7 @@ const {
 // workspace before any plugin module loads
 const OWN_ROOT = tmp('own-store');
 process.env.BOTFERENCE_PROJECT_ROOT = OWN_ROOT;
+process.env.BOTFERENCE_SITES_REGISTRY = path.join(OWN_ROOT, 'sites.json');
 const suggest = await import(path.join(PLUGIN, 'suggest.mjs'));
 const blog = await import(path.join(PLUGIN, 'blog.mjs'));
 

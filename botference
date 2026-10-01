@@ -70,6 +70,14 @@ if [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; then
   exit $?
 fi
 
+# --- site / sites: put a project in Discuss's scope, list or revoke ---
+# One marker in the project (.botference/site.json), one line in a per-user
+# registry (~/.botference/sites.json); the companion reads both. All of it is
+# frontends/plugin/site-cli.mjs — the launcher stays thin.
+if [ "${1:-}" = "site" ] || [ "${1:-}" = "sites" ]; then
+  exec node "${BOTFERENCE_HOME}/frontends/plugin/site-cli.mjs" "$@"
+fi
+
 # --- service mode: managed long-lived processes (servers, tunnels) ---
 # Also handled before the loop machinery: it only touches the per-workspace
 # ledger under .botference/ and returns immediately.
@@ -103,6 +111,13 @@ fi
 
 if [ "$LOOP_MODE" = "init" ]; then
   python3 "${BOTFERENCE_HOME}/scripts/init_project.py" --profile "$INIT_PROFILE"
+  # …and the same project in Discuss's scope (botference site): the one
+  # gesture. Best effort — no node means no browser plugin either, and init's
+  # own job is already done.
+  if command -v node >/dev/null 2>&1; then
+    node "${BOTFERENCE_HOME}/frontends/plugin/site-cli.mjs" site --from-init ${SITE_ARGS[@]+"${SITE_ARGS[@]}"} \
+      || echo "  (Discuss: could not register this project — run 'botference site' to retry)" >&2
+  fi
   exit 0
 fi
 

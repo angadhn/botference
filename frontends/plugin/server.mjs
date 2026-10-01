@@ -2920,6 +2920,26 @@ export function handler(req, res) {
     if (notOwner(req, res)) return;
     return ok(res, {
       sites: blog.listSites().map(s => ({ ...s, state: blog.rootState(s.root) })),
+      // …and the registered projects that are NOT in scope, with why
+      // (`botference sites` prints these)
+      skipped: blog.skippedMarkers(),
+    });
+  }
+  // POST /sites/rescan — read ~/.botference/sites.json and every project's
+  // `.botference/site.json` again (markers.mjs). What `botference site` calls
+  // after it writes a marker, so a running companion takes the project in
+  // without a restart; the start of this server does the same once. Owner
+  // only, like every route that decides what the bots may write.
+  if (req.method === 'POST' && url === '/sites/rescan') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, () => {
+      const r = blog.rescanMarkers();
+      forgetBlogPages();
+      broadcast({ type: 'blog-sites' });
+      return ok(res, {
+        sites: r.sites.map(x => ({ ...x, state: blog.rootState(x.root) })),
+        skipped: r.skipped,
+      });
     });
   }
   // POST /blog-site {serve_origin, root, kind} — declare one. `{remove:true}`
@@ -4959,6 +4979,16 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   server.listen(PORT, '127.0.0.1', () => {
     const p = server.address().port;
     console.log(`Web annotator companion live at http://127.0.0.1:${p} — workspace: ${store.ROOT}`);
+    // the projects `botference site` registered (markers.mjs), read once now
+    // and again on POST /sites/rescan; the skipped ones are said, never hidden
+    try {
+      const m = blog.rescanMarkers();
+      const roots = [...new Set(m.sites.map(x => x.root))];
+      if (roots.length || m.skipped.length) {
+        console.log(`· registered projects in scope: ${roots.length}${roots.length ? ` (${roots.map(r => path.basename(r)).join(', ')})` : ''}`);
+      }
+      for (const x of m.skipped) console.log(`· skipped ${x.root}: ${x.why}`);
+    } catch (e) { console.log(`· could not read the project registry: ${e.message}`); }
     if (NO_AGENTS) console.log('--no-agents: bots are off; annotations and export still work');
     if (HOSTED) {
       console.log('--hosted: remote visitors need the password; localhost stays the owner');

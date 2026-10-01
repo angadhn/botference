@@ -5303,6 +5303,7 @@ ${bubbleShellHtml()}`;
         D.blog.confirmed = !!yes;
         D.blog.declined = !yes;
       }
+      paintProject();
       render();
     }
 
@@ -9992,9 +9993,25 @@ ${bubbleShellHtml()}`;
     // The header's second line, and the only thing about a project artifact
     // that is visible before the reader touches anything: this file is not
     // loose on the disk, it belongs to a project, and the drawer says which.
+    //
+    // …and, for a page of the reader's own site or project in scope (a book
+    // chapter, a post, a file of a folder `botference site` registered), the
+    // FOLDER it belongs to — the one the bots may write in — beside
+    // "localhost · connected", so the reader can see which project this tab
+    // is in before they type a word. Same span, same place: a page is never
+    // both a council artifact and a site page.
     function paintProject() {
       if (!D.mounted || !D.el.proj) return;
       const p = D.project;
+      const b = D.blog;
+      if (!p && b && b.root && b.source_path && !b.declined) {
+        const folder = String(b.root).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+        D.el.proj.hidden = false;
+        D.el.proj.textContent = folder;
+        D.el.proj.title = b.root + (b.confirmed ? '' : ' — not yet confirmed as yours');
+        D.el.proj.classList.toggle('unconfirmed', !b.confirmed);
+        return;
+      }
       D.el.proj.hidden = !p;
       if (!p) return;
       const name = p.project_title || p.project_id || '';
@@ -10037,7 +10054,7 @@ ${bubbleShellHtml()}`;
     // content.js asked /blog-page (on every page load where the drawer is up)
     // and this is the answer: the markdown source behind a locally-served page
     // of the reader's own site, or null for every other page there is.
-    function setBlog(blog) { D.blog = blog || null; render(); return D; }
+    function setBlog(blog) { D.blog = blog || null; paintProject(); render(); return D; }
     // …and which repo the confirmation is about, for the callback that asks.
     function blogRoot() { return (D.blog && D.blog.root) || ''; }
 
