@@ -2,6 +2,7 @@
 
 ## 2026-10-01
 
+- **Fix: a book or blog stayed writable only until the first bridge restart.** Restoring a saved session re-checked its write roots against the Botference project folder and dropped the reader's repo, which lies outside it — so after any companion restart the bots (and the build agents they summoned) could write only the scratch folder and told the reader the images folder "isn't writable". A root the environment names now outranks the saved list on restore.
 - **`botference init` puts a project in Discuss's scope.** Run it — or the
   new `botference site`, for a repo that is already initialised — in a book,
   a blog or any folder, and the browser plugin treats its pages as yours:

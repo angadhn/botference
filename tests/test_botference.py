@@ -8227,3 +8227,35 @@ class TestProjectGithubCommand:
         ui.choice_responses.append(0)
         await c._handle_project_cmd("github alpha adriana-draft-two", ui)
         assert names == ["adriana-draft-two"]
+
+
+class TestWriteRootRestoreOutsideProject:
+    """A write root the environment names survives a session restore even
+    when it lies outside the project root — the browser plugin's blog/book
+    bridge case (2026-10-01: the book was dropped on every bridge restart)."""
+
+    def test_env_write_root_outside_project_survives_restore(self, tmp_path, monkeypatch):
+        book = tmp_path / "SomeBook"
+        book.mkdir()
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        monkeypatch.setenv("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", str(book))
+        c1, _, _, _ = _make_botference(tmp_path=ws)
+        assert c1._plan_write_roots() == [book.resolve()]
+        payload = c1._session_payload()
+        assert payload["base_plan_write_roots"] == [str(book.resolve())]
+
+        c2, _, _, _ = _make_botference(tmp_path=ws)
+        c2._restore_from_payload(payload)
+        assert c2._plan_write_roots() == [book.resolve()], \
+            "the book must still be writable after a restore"
+
+    def test_saved_roots_still_restore_without_env(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", raising=False)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        c1, _, _, _ = _make_botference(tmp_path=ws)
+        payload = c1._session_payload()
+        c2, _, _, _ = _make_botference(tmp_path=ws)
+        c2._restore_from_payload(payload)
+        assert c2._plan_write_roots() == c1._plan_write_roots()

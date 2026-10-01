@@ -2682,7 +2682,22 @@ class Botference:
             self.router.current_route = str(payload.get("route", "@all"))
             self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
             saved_base_roots = payload.get("base_plan_write_roots")
-            if isinstance(saved_base_roots, list):
+            # A write root the ENVIRONMENT named is the caller's decision for
+            # this process and outranks whatever the session remembered. The
+            # browser plugin spawns a blog/book bridge with the reader's repo
+            # as BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS — a folder OUTSIDE this
+            # project root, which _resolve_requested_write_root (rightly, for a
+            # root a bot asked for) refuses. Re-resolving the saved list on a
+            # restore therefore dropped the book silently: every bridge restart
+            # left the bots, and any builder they summoned, able to write only
+            # the scratch folder, and they told the reader the images folder
+            # "isn't writable". Seen 2026-10-01 on SpacecraftDynamics.
+            env_roots = planner_write_roots_for_env(
+                self.paths.project_root, self.paths.work_dir, mode="plan",
+            ) if os.environ.get("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", "").strip() else []
+            if env_roots:
+                self._base_plan_write_roots = normalize_write_roots(env_roots)
+            elif isinstance(saved_base_roots, list):
                 resolved_roots = []
                 for raw_root in saved_base_roots:
                     resolved, error = self._resolve_requested_write_root(str(raw_root))
