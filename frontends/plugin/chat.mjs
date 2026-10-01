@@ -66,6 +66,29 @@ const VERBOSITY_LINE = {
   long: 'Reply conversationally: at most 4-5 sentences, 120 words max — unless the reader explicitly asks for a longer or more detailed answer in their message; then take the space the question needs.' + MORE_LINE,
 };
 export const verbosityLine = v => VERBOSITY_LINE[v] || VERBOSITY_LINE.short;
+
+// ── half characters ─────────────────────────────────────────────────────
+// A character outside the Basic Multilingual Plane (𝐫, 𝑚, most emoji) is
+// TWO JS string units — a surrogate pair. `.slice(0, n)` counts units, so a
+// cut that lands between the two leaves a lone surrogate. See `send`.
+const LONE_SURROGATE_RE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+export const scrubSurrogates = v => {
+  if (typeof v === 'string') return v.replace(LONE_SURROGATE_RE, '�');
+  if (Array.isArray(v)) return v.map(scrubSurrogates);
+  if (v && typeof v === 'object') {
+    const out = {};
+    for (const k of Object.keys(v)) out[k] = scrubSurrogates(v[k]);
+    return out;
+  }
+  return v;
+};
+// `.slice(0, max)` that never splits a pair: one unit shorter when it would.
+export const cutText = (text, max) => {
+  const s = String(text == null ? '' : text);
+  if (s.length <= max) return s;
+  const end = (max > 0 && /[\ud800-\udbff]/.test(s[max - 1]) && /[\udc00-\udfff]/.test(s[max] || '')) ? max - 1 : max;
+  return s.slice(0, end);
+};
 // how long to wait for the `projects` event that names the live session
 const SID_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 15000;
 const RESUME_WAIT_MS = Number(process.env.PLUGIN_SID_WAIT_MS) || 8000;
@@ -741,7 +764,7 @@ export function commentsDigest(buf) {
       .replace(/\s+/g, ' ').trim();
     if (text) lines.push(`${author}: ${text}`);
   }
-  return lines.join('\n').slice(0, DOCX_DIGEST_MAX);
+  return cutText(lines.join('\n'), DOCX_DIGEST_MAX);
 }
 
 // A bot turn produces TWO room entries: the tool-activity summary
@@ -892,7 +915,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     }
     emit({ type: 'chat', url: job.url, target: job.target, ...fields });
   };
-  const send = obj => { if (proc && available) proc.stdin.write(JSON.stringify(obj) + '\n'); };
+  // Nothing goes to the bridge with half a character in it. A maths symbol
+  // like 𝐫 is two 16-bit halves in a JS string, and a `.slice(0, MAX)` that
+  // lands between them leaves a lone surrogate — legal in a JS string,
+  // escaped faithfully by JSON.stringify, read back faithfully by Python,
+  // and then fatal the moment the codex adapter puts the prompt in argv as
+  // UTF-8 ("surrogates not allowed"). Claude never noticed because its
+  // prompt travels as JSON over stdin. Seen 2026-10-01: every @codex turn
+  // on a book page died at start. So the halves are mended here, once, at
+  // the one door everything leaves through (scrubSurrogates), as well as at
+  // the cuts themselves (cutText).
+  const send = obj => { if (proc && available) proc.stdin.write(JSON.stringify(scrubSurrogates(obj)) + '\n'); };
 
   function command() {
     if (process.env.PLUGIN_BRIDGE_CMD) return JSON.parse(process.env.PLUGIN_BRIDGE_CMD);
@@ -1557,7 +1590,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   return {
     // a comment carrying an @-mention: queue a turn for its page/thread
     submit(job) {
-      if (job.articleText) articleByUrl.set(job.url, String(job.articleText).slice(0, ARTICLE_MAX));
+      if (job.articleText) articleByUrl.set(job.url, cutText(job.articleText, ARTICLE_MAX));
       const mine = { ...job, target: job.target || PAGE_CHAT };
       queue.push(mine);
       // WHY this turn is not answering yet, sampled before the bridge is

@@ -1252,3 +1252,18 @@ await sleep(200);
 
 console.log(`\n${passed()} passed, ${failures().length} failed`);
 if (failures.length) { for (const f of failures) console.log(`  · ${f}`); process.exit(1); }
+
+// ── half characters never reach the bridge ─────────────────────────────
+{
+  const { scrubSurrogates, cutText } = await import('../chat.mjs');
+  await test('a cut never splits a surrogate pair, and a lone half is mended before send', () => {
+    const r = '\u{1d42b}'; // 𝐫, two units
+    const s = 'ab' + r + 'cd';
+    assert.equal(cutText(s, 3), 'ab', 'cutting between the halves backs off one unit');
+    assert.equal(cutText(s, 4), 'ab' + r);
+    assert.equal(cutText(s, 99), s);
+    const scrubbed = scrubSurrogates({ text: 'x\ud835y', list: ['\udc00', r], n: 3 });
+    assert.deepEqual(scrubbed, { text: 'x�y', list: ['�', r], n: 3 });
+    for (const part of [scrubbed.text, ...scrubbed.list]) Buffer.from(part, 'utf8').toString('utf8') === part || assert.fail('not round-trippable');
+  });
+}

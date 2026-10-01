@@ -2302,3 +2302,14 @@ def test_codex_single_message_is_untouched():
         assert resp.text == "Only one thing to say."
 
     asyncio.run(_test())
+
+
+def test_codex_prompt_argv_never_carries_a_lone_surrogate():
+    """Half a 𝐫 in the prompt must not stop codex from launching."""
+    from cli_adapters import CodexAdapter, scrub_surrogates
+    broken = "bold vector \ud835 and a whole one \U0001d42b"
+    assert scrub_surrogates(broken) == "bold vector � and a whole one \U0001d42b"
+    a = CodexAdapter(model="gpt-6-astra")
+    for cmd in (a._build_send_cmd(broken), a._build_resume_cmd(broken) if a.thread_id else a._build_send_cmd(broken)):
+        for part in cmd:
+            part.encode("utf-8")  # raises if a surrogate survived

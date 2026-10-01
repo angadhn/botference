@@ -639,6 +639,21 @@ _CODEX_MODEL_ALIASES = {
 
 _CODEX_MODEL_PROBE_PROMPT = "Reply with exactly OK."
 
+
+# A prompt that reaches codex travels in argv, which the OS requires to be
+# valid UTF-8 — and a lone surrogate (half of a 𝐫 or an emoji, left behind
+# when a JS caller cut a string between its two 16-bit halves) is not
+# encodable: "'utf-8' codec can't encode character '\\ud835' … surrogates not
+# allowed", raised before the process even starts. Claude's prompt goes as
+# JSON over stdin and sails through, which is why only codex turns died
+# (2026-10-01, a Jupyter Book page full of bold maths vectors). The companion
+# mends its own cuts; this is the belt to that brace.
+_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def scrub_surrogates(text: str) -> str:
+    return _LONE_SURROGATE_RE.sub("\ufffd", str(text or ""))
+
 _DEFAULT_TIMEOUT = 3600  # seconds
 
 
@@ -1772,7 +1787,7 @@ class CodexAdapter:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         if self.network_access:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
-        cmd.append(prompt)
+        cmd.append(scrub_surrogates(prompt))
         return cmd
 
     def _build_probe_cmd(self, model: str) -> list:
@@ -1804,7 +1819,7 @@ class CodexAdapter:
             "--json",
             "--skip-git-repo-check",
         ]
-        cmd.append(message)
+        cmd.append(scrub_surrogates(message))
         return cmd
 
     async def _probe_model(self, model: str) -> bool:

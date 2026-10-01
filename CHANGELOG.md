@@ -2,6 +2,7 @@
 
 ## 2026-10-01
 
+- **Fix: every `@codex` turn on a maths-heavy page died silently.** A bold vector such as 𝐫 is two string halves, and a length cut that landed between them left a stray half; codex takes its prompt on the command line, which must be valid UTF-8, so it never launched — and the "Error starting codex" note was one the drawer threw away. Cuts no longer split a character, anything leaving for the bridge is scrubbed, the codex command is scrubbed again, and a bot that fails to start now says so in the thread.
 - **Fix: a book or blog stayed writable only until the first bridge restart.** Restoring a saved session re-checked its write roots against the Botference project folder and dropped the reader's repo, which lies outside it — so after any companion restart the bots (and the build agents they summoned) could write only the scratch folder and told the reader the images folder "isn't writable". A root the environment names now outranks the saved list on restore.
 - **`botference init` puts a project in Discuss's scope.** Run it — or the
   new `botference site`, for a repo that is already initialised — in a book,
