@@ -2176,7 +2176,7 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 }
 /* ↑ source landed: the message itself, marked for a moment, so the eye finds it
    among its neighbours instead of the reader having to re-read the thread */
-.reply.tasksrc {
+.reply.tasksrc, .sgcard.tasksrc {
   animation: bfp-tasksrc 1.6s ease-out;
   border-radius: 8px;
 }
@@ -2185,7 +2185,7 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   100% { background: transparent }
 }
 @media (prefers-reduced-motion: reduce) {
-  .reply.tasksrc { animation: none; outline: 2px solid var(--accent); outline-offset: 2px }
+  .reply.tasksrc, .sgcard.tasksrc { animation: none; outline: 2px solid var(--accent); outline-offset: 2px }
 }
 .reply .stream-text {
   white-space: pre-wrap; overflow-wrap: anywhere; margin: 2px 0 0;

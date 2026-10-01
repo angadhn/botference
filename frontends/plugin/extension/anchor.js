@@ -313,6 +313,18 @@
   const WAS_MAX = 600;
   const INS_LINE = 'rgba(45, 145, 85, .95)';
   const WAS_BG = 'rgba(203, 68, 58, .10)';
+  // ---- proposals, on the page ---------------------------------------------
+  // The same idiom one step EARLIER: a blog-source suggestion card that is
+  // still open, previewed where it would land. The passage it would replace is
+  // struck (PROP_CLASS, on marks that wrap the page's own words) and the
+  // wording it proposes follows in a display-only <ins> (PROP_INS_CLASS).
+  // The strike is the drawer's accent, softened — the colour the card's own
+  // left rule is drawn in — so it cannot be read as the reader's red strike
+  // or the track-changes hairline, and the marks set NO background colour of
+  // their own: a thread's tint under the same words shows through untouched.
+  const PROP_CLASS = 'bfp-prop';
+  const PROP_INS_CLASS = 'bfp-prop-ins';
+  const PROP_LINE = 'rgba(217, 119, 87, .7)';
 
   // ---- the OTHER mark: a strikeout ----------------------------------------
   // Adobe's second tool, and the reason a PDF's selection pill has two. A
@@ -465,6 +477,10 @@
           // the single place every locate, offset and paint reads the page
           // through, so there is nowhere else for it to leak in.
           if (n.classList && n.classList.contains(WAS_CLASS)) continue;
+          // …and, for the identical reason, the wording a still-open
+          // suggestion PROPOSES (PROP_INS_CLASS below): it is not on the page
+          // yet, and may never be.
+          if (n.classList && n.classList.contains(PROP_INS_CLASS)) continue;
           if (isHidden(n)) continue;
           if (tag === 'BR') { sep(); continue; }
           const block = BLOCK_TAGS.test(tag);
@@ -621,6 +637,21 @@
     const stateClass = (state === true || state === 'done' ? ' ' + DONE_CLASS
       : state === 'ready' ? ' ' + READY_CLASS : '')
       + (mark === 'strike' ? ' ' + STRIKE_CLASS : '');
+    return wrapOffsets(index, start, end, doc => {
+      const el = doc.createElement('mark');
+      el.className = 'bfp-hl' + stateClass;
+      el.setAttribute('data-bfp', String(id));
+      styleMark(el, false);
+      return el;
+    });
+  }
+
+  // The splitting and the mending, on their own: every text-node slice of
+  // [start,end) wrapped in whatever element `make(doc)` returns. paintOffsets
+  // is a thread's highlight through here; a proposal's struck passage
+  // (paintProposal) is the other caller, so both keep the index true the same
+  // way.
+  function wrapOffsets(index, start, end, make) {
     const parts = textNodesIn(index, start, end);
     const marks = [];
     const mended = new Map();
@@ -642,10 +673,7 @@
         mended.set(seg, pieces);
       }
       if (!n.data.trim()) continue; // don't leave empty marks on inter-node whitespace
-      const mark = (n.ownerDocument || document).createElement('mark');
-      mark.className = 'bfp-hl' + stateClass;
-      mark.setAttribute('data-bfp', String(id));
-      styleMark(mark, false);
+      const mark = make(n.ownerDocument || document);
       n.parentNode.insertBefore(mark, n);
       mark.appendChild(n);
       marks.push(mark);
@@ -888,6 +916,140 @@
     return marks.length;
   }
 
+  // ---- proposals, on the page ---------------------------------------------
+  // An OPEN suggestion card ({id, current, proposed, state}) previewed in the
+  // body: `current` struck where it stands, `proposed` inserted right after it.
+  //
+  // Located exactly the way a thread is, and held to the strictest form of
+  // the rule: `current` must occur EXACTLY ONCE in the indexed text. The card
+  // carries no prefix/suffix and no ordinal, so a second occurrence is not a
+  // tie to break, it is a reason to paint nothing — the companion's own apply
+  // refuses the same case (needs-manual), and the preview must never point
+  // at a place the accept would not write.
+  //
+  // Display only, provably, by the same door WAS_CLASS uses: the <ins> is
+  // skipped by buildTextIndex, so it is invisible to every locate and offset,
+  // and content.js strips it from the snapshot and the article text. The
+  // struck marks wrap the page's own words, so they are unwrapped (never
+  // removed) wherever thread marks are. The index is mended exactly as
+  // paintOffsets mends it, so later locates against it stay true.
+  const propSel = (tag, cls, id) => tag + '.' + cls + (id == null ? '[data-bfp-prop]'
+    : '[data-bfp-prop="' + String(id).replace(/["\\]/g, '\\$&') + '"]');
+
+  function paintProposal(index, card) {
+    if (!index || !card || !card.id || card.state !== 'open') return null;
+    const id = String(card.id);
+    if (document.querySelector(propSel('mark', PROP_CLASS, id))) return null;
+    const current = String(card.current == null ? '' : card.current);
+    if (!current.trim()) return null;
+    const r = locate(index.raw, { quote: current });
+    if (!r.ok || !r.unique) return null;
+    const marks = wrapOffsets(index, r.start, r.end, doc => {
+      const el = doc.createElement('mark');
+      el.className = PROP_CLASS;
+      el.setAttribute('data-bfp-prop', id);
+      el.setAttribute('title', 'proposed change — click to open the suggestion');
+      const st = el.style;
+      // a <mark>'s own yellow is the browser's, not ours: put it out, and let
+      // whatever is under the words (a thread's tint, or the page) show
+      st.setProperty('background-color', 'transparent', 'important');
+      st.setProperty('background-image', strikeImage(PROP_LINE, 1), 'important');
+      st.setProperty('background-repeat', 'no-repeat', 'important');
+      st.setProperty('color', 'inherit', 'important');
+      st.setProperty('padding', '0', 'important');
+      st.setProperty('cursor', 'pointer', 'important');
+      st.setProperty('box-decoration-break', 'clone', 'important');
+      st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
+      return el;
+    });
+    if (!marks.length) return null;
+    const proposed = String(card.proposed == null ? '' : card.proposed).trim();
+    let ins = null;
+    // a deletion proposes nothing, and shows as nothing but the strike
+    if (proposed) {
+      const last = marks[marks.length - 1];
+      ins = (last.ownerDocument || document).createElement('ins');
+      ins.className = PROP_INS_CLASS;
+      ins.setAttribute('data-bfp-prop', id);
+      ins.setAttribute('aria-hidden', 'true');
+      ins.setAttribute('title', 'proposed change — click to open the suggestion');
+      ins.textContent = proposed;
+      const st = ins.style;
+      st.setProperty('text-decoration-line', 'underline', 'important');
+      st.setProperty('text-decoration-color', INS_LINE, 'important');
+      st.setProperty('text-decoration-thickness', '2px', 'important');
+      st.setProperty('text-underline-offset', '2px', 'important');
+      st.setProperty('background', 'none', 'important');
+      st.setProperty('color', 'inherit', 'important');
+      // the gap between the struck words and the proposed ones, as a margin
+      // rather than a space character, so the <ins> holds exactly `proposed`
+      st.setProperty('margin-left', '.25em', 'important');
+      st.setProperty('cursor', 'pointer', 'important');
+      st.setProperty('user-select', 'none', 'important');
+      st.setProperty('-webkit-user-select', 'none', 'important');
+      st.setProperty('box-decoration-break', 'clone', 'important');
+      st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
+      last.parentNode.insertBefore(ins, last.nextSibling);
+    }
+    return { marks, ins };
+  }
+
+  // Every OPEN card of `cards` that can be placed, painted against one index.
+  // Cards in any other state are skipped: applied, rejected and needs-manual
+  // are answered, and unreadable never had a passage. Returns the ids painted.
+  function paintProposals(index, cards) {
+    const out = [];
+    for (const c of cards || []) if (paintProposal(index, c)) out.push(String(c.id));
+    return out;
+  }
+
+  // The preview for card `id` taken down — or every preview, with no id. The
+  // <ins> is removed (it was never the page's), the marks unwrapped, and the
+  // split text nodes re-joined, so the DOM is left exactly as it was found.
+  // An index built before this call is stale afterwards; build a fresh one.
+  function unpaintProposal(id) {
+    let n = 0;
+    for (const ins of document.querySelectorAll(propSel('ins', PROP_INS_CLASS, id))) {
+      const parent = ins.parentNode;
+      if (!parent) continue;
+      parent.removeChild(ins);
+      parent.normalize();
+      n++;
+    }
+    for (const mark of document.querySelectorAll(propSel('mark', PROP_CLASS, id))) {
+      const parent = mark.parentNode;
+      if (!parent) continue;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+      n++;
+    }
+    return n;
+  }
+
+  // Every card id currently previewed — the sweep's half, for the same reason
+  // paintedIds and wasIds exist.
+  function proposalIds() {
+    const seen = [];
+    const els = document.querySelectorAll(propSel('mark', PROP_CLASS) + ', ' + propSel('ins', PROP_INS_CLASS));
+    for (const el of els) {
+      const id = el.getAttribute('data-bfp-prop');
+      if (id && seen.indexOf(id) === -1) seen.push(id);
+    }
+    return seen;
+  }
+
+  // Unpaint everything, then (when `on`) paint the open cards against a
+  // FRESH index of `rootEl` — the one call for a caller that has no index of
+  // its own in hand (the track-changes switch, a refused accept).
+  function syncProposals(cards, on, rootEl) {
+    unpaintProposal(null);
+    if (!on) return [];
+    const open = (cards || []).filter(c => c && c.state === 'open');
+    if (!open.length) return [];
+    return paintProposals(buildTextIndex(rootEl || document.body), open);
+  }
+
   function scrollTo(id) {
     const m = marksFor(id)[0];
     if (m && m.scrollIntoView) m.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -917,9 +1079,11 @@
     marksAtPoint,
     markResolved, markAddressed, markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,
+    paintProposal, paintProposals, unpaintProposal, proposalIds, syncProposals,
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
     DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS, STRIKE_CLASS,
+    PROP_CLASS, PROP_INS_CLASS, PROP_LINE,
     STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

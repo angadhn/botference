@@ -10665,3 +10665,162 @@ card lifted `open` — the notebook's hash unchanged throughout.
 Not done: the drawer's book cards have no harness pose yet (the Jekyll poses
 are unchanged); the rebuild is per root and a book with
 `execute_notebooks: force` re-runs every notebook on every rebuild.
+
+## Amendment (2026-10-01): proposals on the page
+
+On a blog source page (a Jekyll post or a Jupyter Book chapter whose source
+the companion knows) the bots do not edit, they PROPOSE: every ```` ```suggest ````
+block is lifted into a card in the drawer, and the reader accepts or rejects
+it. While a card was open, **the page said nothing**. The reader saw the
+proposal only as a diff in the drawer and could not see where it would land,
+or what the paragraph would read like with it in — the question the card is
+asking them to answer.
+
+So: **an open card is previewed in the body, Word-style, with the idiom the
+page already uses for a rewrite that has landed** (2026-08-19, track changes
+on the page) — the wording it would replace struck where it stands, the
+wording it proposes immediately after it with the accepted-green underline.
+Display only; nothing is written anywhere until Accept.
+
+### 1. What the reader sees
+
+- The passage a card would replace, **struck through** with a thin line in the
+  drawer's accent (`#d97757`, at .7) — the colour the card's own left rule is
+  drawn in, so the two read as one thing. It is deliberately not the reader's
+  own strike (saturated red, `bfp-strike`) and not the landed-rewrite `<del>`
+  (dimmed, washed pale red, hairline in the text colour).
+- **No background of its own.** The words keep whatever tint a thread already
+  gives them — the three thread tints are untouched — and on plain prose they
+  stay black on white.
+- Immediately after the last struck word, the **proposed wording**, underlined
+  in the landed-rewrite green (`INS_LINE`, 2px, offset 2px), set off by a
+  .25em margin rather than a space so the element holds exactly `proposed`.
+- A **deletion** (`proposed` empty or whitespace) is the strike alone.
+- A card whose `current` is not on the page **exactly once** paints nothing.
+  The card carries no prefix, suffix or ordinal, so a second occurrence is not
+  a tie to break — and the companion's own apply refuses the same case
+  (needs-manual), so the preview never points at a place the accept would not
+  write. Located with `Anchor.locate` (whitespace-tolerant, quote- and
+  dash-folded) against the same index the threads are located on. A `current`
+  that is markdown source the page renders differently (emphasis markers, a
+  link's URL) or that spans MathJax (skipped by the index) simply does not
+  locate, and paints nothing.
+
+The interface does not change: no new switch, no new tab, no drawer colour or
+layout touched. The in-body marks are the whole of the visible change (plus
+the card's arrival flash, below, which is the existing `tasksrc` flash).
+
+### 2. The markup
+
+```
+<mark class="bfp-prop" data-bfp-prop="<cardId>">the current </mark><em><mark class="bfp-prop" data-bfp-prop="<cardId>">wording</mark><ins class="bfp-prop-ins" data-bfp-prop="<cardId>" aria-hidden="true">the proposed wording</ins></em>
+```
+
+The marks wrap the page's own text nodes, one per slice, exactly as a thread's
+highlight does (`Anchor.paintOffsets` and the new `Anchor.paintProposal` share
+`wrapOffsets`, the splitting and index-mending half of the old paintOffsets).
+They are **not** `bfp-hl` and carry `data-bfp-prop`, not `data-bfp`, so no
+thread sweep (`paintedIds`, `marksFor`, `marksAtPoint`) can ever take one for
+a thread. The `<ins>` goes after the LAST mark, in that mark's parent.
+
+Over a thread's highlight the proposal's marks nest INSIDE the thread's (they
+are painted last), so the thread mark, its tint and its state are untouched,
+and unpainting the proposal leaves the thread mark whole.
+
+### 3. Display-only, and the proof of it
+
+The same four doors the landed-rewrite `<del>` goes through, for the mirror
+reason — that is a sentence no longer in the document, this is one not in it
+yet:
+
+| door | what happens |
+| --- | --- |
+| `Anchor.buildTextIndex` | `PROP_INS_CLASS` is **skipped in the walk**, beside `WAS_CLASS`. Every locate, offset and paint reads the page through here, so the proposed wording can never be matched, selected into a quote, or re-anchored onto. The struck marks wrap real page text and stay in the index — that text IS on the page. |
+| `snapshotHtml` | `ins.bfp-prop-ins` **removed outright**; `mark.bfp-prop` **unwrapped** with the `bfp-hl` marks. |
+| `genericArticleText` | `withoutWasMarkup` hides `ins.bfp-prop-ins` with `del.bfp-was` for the length of the `innerText` read. The bots are never handed a draft with an unaccepted proposal in it. |
+| the reader's selection | `user-select: none` on the `<ins>`. |
+
+Plus `aria-hidden="true"` on the `<ins>`.
+
+**The index stays true.** `wrapOffsets` mends `index.segs` in place exactly as
+paintOffsets always has, and the `<ins>` adds no segment, so a locate of a
+later passage against the same index still lands on the right offsets.
+
+### 4. Lifecycle
+
+**Rebuilt from the record on every re-anchor, both directions** — the rule
+`paintTrackChanges` follows. `reanchorAll` unpaints every previewed id
+(`Anchor.proposalIds()` → `unpaintProposal`) **before** it builds the index
+(an unwrap re-joins text nodes, which would stale an index built first), then,
+after the threads and the provisional highlight, paints every open card on the
+record (`content.js proposalCards`: the page chat's messages and every
+thread's) against the same mended index. `reanchorAll` runs after every
+`loadPage`, and every stored bot message and every card answer is followed by
+a `page` broadcast that lands in `loadPage` — so:
+
+- a card that leaves `open` (applied, rejected, needs-manual), or whose message
+  or thread is gone, is unpainted on the next record load, in this tab or any
+  other;
+- **Accept, Reject and Accept all unpaint synchronously** before the request
+  (`unpaintAnswered`: the one card, or every card of that message), so the
+  preview never sits beside a card that has moved on; a refused request puts
+  the previews back from the record (`syncProposals`). After an accept the tab
+  reloads anyway;
+- `forgetPage` (the page deleted, an SPA route change) takes every preview
+  down with the highlights;
+- a page that cannot highlight (`CAPS.highlights` false) paints none.
+
+### 5. Click-through
+
+A click on a struck mark or the `<ins>` opens the drawer on the card: the
+chat tab for a page-chat card, the Comments tab (thread unfolded and focused)
+for a card made in a thread; the card is scrolled into view and flashed with
+the existing ↑-source flash (`.sgcard.tasksrc`, the `.reply.tasksrc`
+animation). The new drawer method is `focusSuggestion(target, ts, id)`. The
+proposal is asked before a thread's highlight, because its marks are the
+innermost; the thread under it is one click away anywhere else on its passage.
+
+### 6. The switch
+
+The existing track-changes switch (`trackChanges`, persisted per page under
+`TRACK_KEY`, default ON) governs proposals too: they paint only when it is on,
+and `setTrackChanges` / the boot-time `loadTrackChanges` re-sync them
+(`Anchor.syncProposals`, which unpaints and repaints against a fresh index).
+No new toggle. Known gap, left as it is because the interface was not to
+change: the `.trackbar` only renders where a LANDED rewrite exists, so on a
+page with proposals and no landed rewrites the switch is not on screen, and
+the previews show (the default).
+
+### 7. Files
+
+`extension/anchor.js` (`PROP_CLASS`, `PROP_INS_CLASS`, `PROP_LINE`; the index
+skip; `wrapOffsets` split out of `paintOffsets`; `paintProposal`,
+`paintProposals`, `unpaintProposal`, `proposalIds`, `syncProposals`),
+`extension/content.js` (`propWhere`, `proposalCards`, `syncProposals`,
+`unpaintAnswered`; `reanchorAll`, `forgetPage`, the switch, the three suggest
+callbacks, the snapshot, `withoutWasMarkup`, the click handler),
+`extension/drawer.js` (`focusSuggestion`), `extension/drawer.css`
+(`.sgcard.tasksrc` added to the existing flash rule).
+
+### 8. Testing
+
+`test/prop.test.mjs` (new, happy-dom, 55): a proposal paints its strike marks
+— proposal marks, not thread marks, exactly `current`, no tint of their own —
+and one `<ins>` holding exactly `proposed`, immediately after the last mark,
+aria-hidden, in the landed-rewrite green; a second paint is a no-op. The index
+stays true: raw unchanged, a fresh walk reads the same text, the mended segs
+contiguous and pointing at live nodes, and a later passage still located and
+painted at the right offsets. The `<ins>` is absent from the text index and
+cannot be located. A deletion paints the strike and no `<ins>`. A `current`
+on the page twice, absent, or empty paints nothing; a re-wrapped one still
+places. Unpaint removes everything, leaves the DOM byte-identical and the text
+nodes re-joined; unpaint-all clears several cards. Over a thread's highlight
+the proposal nests inside it, leaves its tint alone, and unpaints without
+disturbing it. Lifecycle: for each of applied, rejected, needs-manual and
+unreadable, an answered card comes down and its neighbour stays; a card gone
+from the record is swept; `paintProposals` paints only open cards; the switch
+off takes previews down and on puts them back.
+
+Not done: no harness pose for the click-through or the drawer flash; the
+locate is literal against rendered text, so a `current` written in markdown
+syntax the page renders differently does not preview.

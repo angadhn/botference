@@ -4310,6 +4310,33 @@ ${bubbleShellHtml()}`;
       setTimeout(() => reply.classList.remove('tasksrc'), 1600);
     }
 
+    // A proposal's preview clicked on the page: its card, on screen. The same
+    // landing ↑ source gives a message — the right tab, the thread unfolded
+    // and spotlit where the card was made in one, the card itself flashed —
+    // and nothing else: no state changes, no answer is given. Returns whether
+    // the card was found.
+    function focusSuggestion(target, ts, id) {
+      if (!D.mounted || !id) return false;
+      const chat = target === PAGE_TARGET || !CAPS.highlights;
+      if (D.view === 'pages') showThreads();
+      if (D.tab !== (chat ? 'chat' : 'comments')) {
+        D.tab = chat ? 'chat' : 'comments';
+        paintTabs();
+        rememberTab();
+      }
+      D.expanded[target] = FOLD_OPEN;       // a long conversation's middle is folded
+      if (!chat) focus(target);
+      render();
+      const pane = chat ? D.el.chat : D.el.comments;
+      const card = pane && pane.querySelector('.sgcard[data-sg="' + cssq(id) + '"]');
+      if (!card) { if (!chat) scrollToThread(target); return false; }
+      const top = card.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop;
+      pane.scrollTop = Math.max(0, top - 10);
+      card.classList.add('tasksrc');
+      setTimeout(() => card.classList.remove('tasksrc'), 1600);
+      return true;
+    }
+
     // ---- who is in this margin ------------------------------------------
     // A shared page collects comments from several people at once: the owner,
     // the guests who came in through the reading room, the visitors whose
@@ -11165,6 +11192,9 @@ ${bubbleShellHtml()}`;
                               revised: { ...D.questions.revised },
                               threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
+      // a proposal's preview on the page, clicked: its card, scrolled to and
+      // flashed
+      focusSuggestion,
       // the overlap chooser: content.js decides there IS an overlap, the drawer
       // names the threads and does the choosing
       showPicks, hidePicks, picksOpen, choosePick,

@@ -434,6 +434,9 @@
   // somewhere unambiguous enough to show the change inline. Rebuilt from the
   // record on every re-anchor, so it can never outlive the state it describes.
   let tracks = {};
+  // suggestion card id -> {target, ts}: where each card on the record lives,
+  // so a click on its preview in the body can open it (proposalCards)
+  let propWhere = {};
   // The reader's switch for the on-page markup. ON is the default — the whole
   // point is that the change is visible without being asked for — and the
   // answer is per page, because "show me the edits" is a thing about the draft
@@ -799,7 +802,9 @@
   // for the length of the read and put back before anything can paint.
   function withoutWasMarkup(fn) {
     let hidden = [];
-    try { hidden = [...document.querySelectorAll('del.bfp-was')]; } catch { hidden = []; }
+    // …and the wording an open suggestion PROPOSES, which is not in the
+    // document either — it is a preview of a change nobody has accepted
+    try { hidden = [...document.querySelectorAll('del.bfp-was, ins.bfp-prop-ins')]; } catch { hidden = []; }
     for (const n of hidden) n.style.setProperty('display', 'none', 'important');
     try { return fn(); }
     finally { for (const n of hidden) n.style.removeProperty('display'); }
@@ -841,7 +846,7 @@
       // our own highlight marks are UNWRAPPED, never removed: they wrap the
       // very text the anchors point at, so deleting them would delete the
       // sentence the comment is about
-      clone.querySelectorAll('mark.bfp-hl').forEach((m) => {
+      clone.querySelectorAll('mark.bfp-hl, mark.bfp-prop').forEach((m) => {
         const parent = m.parentNode;
         if (!parent) return;
         while (m.firstChild) parent.insertBefore(m.firstChild, m);
@@ -853,6 +858,9 @@
       // deleted passage back into the prose the phone reads and the bots are
       // sent, where nothing marks it as gone.
       clone.querySelectorAll('del.bfp-was').forEach(n => n.remove());
+      // …and so is a proposal's inserted wording, for the mirror reason: it
+      // is a sentence that is not in the document YET, and may never be
+      clone.querySelectorAll('ins.bfp-prop-ins').forEach(n => n.remove());
       clone.querySelectorAll('#bfp-root').forEach(n => n.remove());
       clone.querySelectorAll(SNAP_JUNK).forEach(n => n.remove());
       // relative URLs mean nothing on the companion's hostname
@@ -1080,6 +1088,8 @@
       for (const t of threads) orphans[t.id] = true;
       if (drawer) drawer.setOrphans(orphans);
       if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: [] });
+      Anchor.unpaintProposal(null);
+      proposalCards();
       return;
     }
     // RECONCILE, not just add: a thread can vanish from the record between two
@@ -1098,6 +1108,11 @@
     // skipped by buildTextIndex anyway, but a re-anchor that rebuilds it from
     // the record is the only thing allowed to decide it is still there
     Anchor.unpaintWas(null);
+    // …and every proposal preview, by the same rule: rebuilt from the record
+    // below, so a card answered (or deleted) in another tab cannot leave one
+    // behind. Its <ins> is skipped by buildTextIndex too; its marks unwrap,
+    // which is why this must happen before the index is built.
+    for (const id of Anchor.proposalIds()) Anchor.unpaintProposal(id);
     for (const t of threads) Anchor.unpaint(t.id);
     Anchor.unpaint('__new__');
 
@@ -1139,6 +1154,11 @@
     if (pendingSel) {
       Anchor.paintOffsets(index, pendingSel.start, pendingSel.end, '__new__', false, pendingSel.mark);
     }
+    // …and the open suggestion cards, previewed where they would land, against
+    // the same (mended) index — last, so a proposal's marks sit innermost and
+    // a click on its words reaches the card rather than a thread under it
+    const cards = proposalCards();
+    if (trackChanges) Anchor.paintProposals(index, cards);
 
     // Tell the server only about anchors whose verdict actually changed — and
     // only where a local verdict is worth anything.
@@ -1279,6 +1299,44 @@
     if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: Object.keys(tracks) });
   }
 
+  // ---- proposals, on the page ---------------------------------------------
+  // Every suggestion card on the record, wherever it was made — the page chat
+  // or a thread — with the address the drawer needs to find the card again
+  // when its preview is clicked. Rebuilt on every call, so it cannot outlive
+  // the record it was read from.
+  function proposalCards() {
+    const out = [];
+    propWhere = {};
+    if (!PAGE) return out;
+    const take = (target, msgs) => {
+      for (const m of msgs || []) {
+        for (const c of (m && m.suggestions) || []) {
+          if (!c || !c.id) continue;
+          out.push(c);
+          propWhere[String(c.id)] = { target, ts: String(m.ts || '') };
+        }
+      }
+    };
+    take(PAGE_TARGET, PAGE.page_chat);
+    for (const t of PAGE.threads || []) take(t.id, t.msgs);
+    return out;
+  }
+  // Put the previews right outside a re-anchor: the switch, a refused answer.
+  function syncProposals() {
+    const cards = proposalCards();
+    if (!CAPS.highlights) { Anchor.unpaintProposal(null); return; }
+    Anchor.syncProposals(cards, trackChanges, document.body);
+  }
+  // The cards one answer is about, taken down NOW rather than when the record
+  // comes back, so a preview never sits beside a card that has moved on.
+  function unpaintAnswered(threadId, ts, id) {
+    if (id) { Anchor.unpaintProposal(id); return; }
+    for (const cid of Object.keys(propWhere)) {
+      const w = propWhere[cid];
+      if (w.target === threadId && w.ts === String(ts)) Anchor.unpaintProposal(cid);
+    }
+  }
+
   // The switch itself, thrown from the drawer's Comments tab. Persisted per
   // page, exactly like the margin switch: the default (ON) stores nothing, so
   // a page nobody has an opinion about costs no storage at all.
@@ -1290,6 +1348,8 @@
       else chrome.storage.local.set({ [TRACK_KEY]: false });
     } catch { /* the choice still holds for this page view */ }
     paintTrackChanges();
+    // one switch for both: what changed, and what is proposed
+    syncProposals();
   }
 
   // …read back at boot. A stored value means the reader turned it OFF here.
@@ -1300,6 +1360,7 @@
         if (!r || !r[TRACK_KEY]) return;
         trackChanges = false;
         paintTrackChanges();
+        syncProposals();
       });
     } catch { /* no storage: the markup shows, which is the default */ }
   }
@@ -1610,6 +1671,8 @@
   function forgetPage() {
     for (const t of (PAGE && PAGE.threads) || []) Anchor.unpaint(t.id);
     for (const id of Anchor.paintedIds()) Anchor.unpaint(id);
+    Anchor.unpaintProposal(null);
+    propWhere = {};
     pendingSel = null;
     locs = {};
     orphans = {};
@@ -2278,18 +2341,20 @@
       // — and the RELOAD, when one is coming, arrives on its own through the
       // usual `blog-files` event, exactly as it does for a turn's own edit.
       onSuggestAccept: async (threadId, ts, id) => {
+        unpaintAnswered(threadId, ts, id);
         const r = await api('POST', '/suggest-accept', {
           url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts, id,
         });
-        if (!r.ok) return failure(r);
+        if (!r.ok) { syncProposals(); return failure(r); }
         await loadPage();
         return { ok: true, card: r.data && r.data.card, applied: !!(r.data && r.data.applied) };
       },
       onSuggestReject: async (threadId, ts, id) => {
+        unpaintAnswered(threadId, ts, id);
         const r = await api('POST', '/suggest-reject', {
           url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts, id,
         });
-        if (!r.ok) return failure(r);
+        if (!r.ok) { syncProposals(); return failure(r); }
         await loadPage();
         return { ok: true, card: r.data && r.data.card };
       },
@@ -2298,10 +2363,11 @@
       // that is what the reader needs to read after pressing one button over
       // ten changes.
       onSuggestAcceptAll: async (threadId, ts) => {
+        unpaintAnswered(threadId, ts, '');
         const r = await api('POST', '/suggest-accept-all', {
           url: URL_NOW, ...(threadId === PAGE_TARGET ? {} : { thread_id: threadId }), ts,
         });
-        if (!r.ok) return failure(r);
+        if (!r.ok) { syncProposals(); return failure(r); }
         await loadPage();
         return { ok: true,
                  applied: (r.data && r.data.applied) || 0,
@@ -2982,6 +3048,24 @@
 
   // click a highlight → open the drawer at that thread
   document.addEventListener('click', e => {
+    // A PROPOSAL's preview — its struck words or the wording after them — is
+    // one thing, the card, and opens it: the chat tab (or the thread it was
+    // made in), scrolled to the card and flashed. Asked first, because a
+    // proposal's marks sit innermost and a thread's highlight may be around
+    // them; that thread is still one click away anywhere else on its passage.
+    const prop = e.target && e.target.closest
+      && e.target.closest('mark.bfp-prop[data-bfp-prop], ins.bfp-prop-ins[data-bfp-prop]');
+    const where = prop && propWhere[prop.getAttribute('data-bfp-prop')];
+    if (where) {
+      e.preventDefault();
+      const pid = prop.getAttribute('data-bfp-prop');
+      activate(false).then(d => {
+        if (!d) return;
+        d.open(where.target === PAGE_TARGET ? 'chat' : 'comments');
+        if (d.focusSuggestion) d.focusSuggestion(where.target, where.ts, pid);
+      });
+      return;
+    }
     // …and the struck old wording beside a rewritten one opens the same
     // thread: to the reader it is one thing — the change — and half of it
     // being inert would be a small betrayal of that.

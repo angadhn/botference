@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## 2026-10-01
+
+- **See a proposed edit where it would land.** On a blog or Jupyter Book
+  source page, every open suggestion card is now previewed in the body,
+  Word-style: the passage it would replace struck through (a thin line in the
+  drawer's accent, no tint of its own) and the proposed wording right after it
+  with the green track-changes underline; a deletion shows the strike alone. A
+  passage not found exactly once on the page shows nothing. Display only — the
+  preview is invisible to anchoring, the snapshot and the text the bots are
+  sent — and it comes down the moment the card is accepted, rejected or goes
+  to needs-manual. Clicking it opens the drawer on that card. It follows the
+  existing track-changes switch.
+
 ## 2026-09-30
 
 - **An accepted card no longer loses your place.** When a page reloads itself
