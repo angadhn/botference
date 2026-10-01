@@ -254,6 +254,85 @@ const card = (o) => ({ id: 'sg1', state: 'open', current: 'quick brown fox', pro
   ok('imageRefs: in order', R('![b](2.png) then ![a](1.png)').map(r => r.src).join() === '2.png,1.png');
 }
 
+// ---- 9c. the bare path: a passage that is one picture's path --------------
+{
+  const R = A.imageRefs;
+  const b = R('  images/L1_6.png \n');
+  ok('bare: a lone path is a picture', b.length === 1 && b[0].kind === 'bare' && b[0].src === 'images/L1_6.png'
+    && b[0].alt === 'L1_6.png', JSON.stringify(b));
+  for (const ext of ['jpg', 'JPEG', 'gif', 'svg', 'webp', 'PNG']) {
+    ok('bare: .' + ext, R('a/b.' + ext).length === 1);
+  }
+  ok('bare: a path in a sentence is a word', R('see images/L1_6.png here').length === 0);
+  ok('bare: not a picture extension', R('notes/L1.pdf').length === 0 && R('a.pngx').length === 0);
+  ok('bare: two paths are not one picture', R('a.png b.png').length === 0);
+  ok('pictureOnly: a bare path', A.pictureOnly('images/x.png') && A.pictureOnly('images/x.png').kind === 'bare');
+  ok('pictureOnly: a lone markdown image', A.pictureOnly(' ![a](x.png) ') && A.pictureOnly(' ![a](x.png) ').kind === 'md');
+  ok('pictureOnly: a picture with words around it is not', A.pictureOnly('see ![a](x.png)') === null);
+  ok('pictureOnly: words are not', A.pictureOnly('just words') === null && A.pictureOnly('') === null);
+}
+
+// ---- 9d. a picture swap, previewed over the page's own <img> ----------------
+{
+  const PIC = '<article><p>Before the figure.</p><figure><img src="../_images/L1_6.png" alt="old" style="width: 300px">'
+    + '<figcaption>Figure 1.6</figcaption></figure><p>After it.</p>'
+    + '<img src="/static/logo.png"></article>';
+  const swap = o => card({ id: 'pi1', current: 'images/L1_6.png', proposed: 'images/L1_6-vector.png', ...o });
+  doc.body.innerHTML = PIC;
+  const original = doc.body.innerHTML;
+  const index = A.buildTextIndex(doc.body);
+  const r = A.paintProposal(index, swap());
+  const was = doc.querySelector('img[alt="old"]');
+  const mine = doc.querySelector('img.bfp-prop-img');
+  ok('swap: painted', !!r && !!mine && !r.approx);
+  ok('swap: our <img> sits right after the page\'s', was.nextSibling === mine);
+  ok('swap: it names the card and the new file', mine.getAttribute('data-bfp-prop') === 'pi1'
+    && mine.getAttribute('data-bfp-src') === 'images/L1_6-vector.png');
+  ok('swap: outlined in the proposal line', /217,\s*119,\s*87/.test(mine.style.getPropertyValue('outline')));
+  ok('swap: the page\'s picture is dimmed and names the card',
+    was.getAttribute('data-bfp-prop-was') === 'pi1' && parseFloat(was.style.getPropertyValue('opacity')) === .35);
+  ok('swap: no text marks, no strike anywhere', !props().length && !inses().length);
+  ok('swap: the text index is untouched', A.buildTextIndex(doc.body).raw === index.raw);
+  ok('swap: proposalIds sees it', A.proposalIds().join() === 'pi1');
+  ok('swap: a second paint is a no-op', A.paintProposal(A.buildTextIndex(doc.body), swap()) === null
+    && doc.querySelectorAll('img.bfp-prop-img').length === 1);
+  A.unpaintProposal('pi1');
+  ok('swap: unpaint restores the page exactly', doc.body.innerHTML === original, doc.body.innerHTML);
+  ok('swap: and nothing is left to sweep', !A.proposalIds().length);
+
+  // Sphinx's hashed copy
+  doc.body.innerHTML = '<p>x</p><img src="_images/L1_6-3f2a9c1d.png"><img src="_images/L1_60.png">';
+  ok('swap: a hashed copy matches on the stem', !!A.paintProposal(A.buildTextIndex(doc.body), swap())
+    && doc.querySelector('img[src$="3f2a9c1d.png"]').getAttribute('data-bfp-prop-was') === 'pi1');
+  A.unpaintProposal(null);
+  // two candidates: nothing
+  doc.body.innerHTML = '<p>Some text here.</p><img src="a/L1_6.png"><img src="b/L1_6.png">';
+  const i2 = A.buildTextIndex(doc.body);
+  const t2 = A.locate(i2.raw, { quote: 'Some text here' });
+  ok('swap: two matching pictures paint nothing', A.paintProposal(i2, swap()) === null && !A.proposalIds().length);
+  // no picture at all: drawer only, and NEVER the thread passage
+  doc.body.innerHTML = '<p>Some text here.</p>';
+  const i3 = A.buildTextIndex(doc.body);
+  ok('swap: no matching picture paints nothing, not even at the thread',
+    A.paintProposal(i3, swap(), { start: t2.start, end: t2.end }) === null && !A.proposalIds().length && !props().length);
+  // a picture swapped for words: not previewed
+  doc.body.innerHTML = PIC;
+  ok('swap: a picture replaced by words is drawer-only',
+    A.paintProposal(A.buildTextIndex(doc.body), swap({ proposed: 'no figure here after all' })) === null
+    && !doc.querySelector('[data-bfp-prop-was]'));
+  // a deletion: the original dimmed, nothing added
+  const rd = A.paintProposal(A.buildTextIndex(doc.body), swap({ proposed: '' }));
+  ok('swap: deleting a picture dims it and adds nothing', !!rd && !doc.querySelector('img.bfp-prop-img')
+    && doc.querySelector('img[alt="old"]').getAttribute('data-bfp-prop-was') === 'pi1');
+  A.syncProposals([], true, doc.body);
+  ok('swap: a sync with the card gone restores it', doc.body.innerHTML === original, doc.body.innerHTML);
+  // a picture with no style attribute of its own gets none back
+  doc.body.innerHTML = '<img src="L1_6.png">';
+  A.paintProposal(A.buildTextIndex(doc.body), swap());
+  A.unpaintProposal('pi1');
+  ok('swap: no style attribute in, none out', doc.body.innerHTML === '<img src="L1_6.png">', doc.body.innerHTML);
+}
+
 // ---- 10. fallback 1: a marked-up current places by its rendered words -------
 {
   reset();

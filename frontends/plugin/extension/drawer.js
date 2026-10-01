@@ -9302,9 +9302,25 @@ ${bubbleShellHtml()}`;
     // proposals and they are not alternatives — so they are listed, each
     // answered on its own, with one "Accept all" over the top for the reader
     // who has read them and agrees.
+    // A PICTURE swap (both sides a picture and nothing else — usually the bare
+    // path line inside a MyST {figure}): the two pictures side by side, old
+    // then new, each with its path under it. A word diff of two file names
+    // says nothing the reader can judge; the pictures are the change.
+    const pictureOnlyOf = s => {
+      const A = root.BFPAnchor;
+      return A && A.pictureOnly ? A.pictureOnly(s) : null;
+    };
+    function sgPicturesHtml(cur, prop) {
+      const side = (src, cls, lab) => `<figure class="sgpic ${cls}"><span class="wnlab">${lab}</span>`
+        + `${richHtml(src)}<figcaption>${esc(pictureOnlyOf(src).src)}</figcaption></figure>`;
+      return `<div class="wasnow sgpics" data-pictures="1">${side(cur.trim(), 'was', 'now')}`
+        + `<span class="sgarrow" aria-hidden="true">→</span>${side(prop.trim(), 'new', 'proposed')}</div>`;
+    }
+
     function sgDiffHtml(card) {
       const cur = String(card.current || '');
       const prop = String(card.proposed || '');
+      if (pictureOnlyOf(cur) && pictureOnlyOf(prop)) return sgPicturesHtml(cur, prop);
       if (!prop.trim()) {
         return `<div class="wasnow" data-deleted="1"><div class="wnstack"><div class="wnrow">`
           + `<span class="wnlab">cut</span><span class="wnval"><del>${richHtml(cur)}</del></span>`

@@ -865,6 +865,15 @@
       // …and so is a proposal's inserted wording, for the mirror reason: it
       // is a sentence that is not in the document YET, and may never be
       clone.querySelectorAll('ins.bfp-prop-ins').forEach(n => n.remove());
+      // …and a picture card's proposed <img>; the page's own picture it dimmed
+      // goes out as the page has it, undimmed
+      clone.querySelectorAll('img.bfp-prop-img').forEach(n => n.remove());
+      clone.querySelectorAll('img[data-bfp-prop-was]').forEach((n) => {
+        const style = n.getAttribute('data-bfp-prop-op');
+        if (style == null || style === '\u0000') n.removeAttribute('style'); else n.setAttribute('style', style);
+        n.removeAttribute('data-bfp-prop-was');
+        n.removeAttribute('data-bfp-prop-op');
+      });
       clone.querySelectorAll('#bfp-root').forEach(n => n.remove());
       clone.querySelectorAll(SNAP_JUNK).forEach(n => n.remove());
       // relative URLs mean nothing on the companion's hostname
@@ -1394,6 +1403,17 @@
   }
   function dressProposals() {
     const D = window.BFPDrawer;
+    // a picture card's proposed <img> (anchor.js paintPicture): the file named
+    // in data-bfp-src, by the same two routes as any proposal's picture. Not
+    // reachable: the outline stays, empty-handed, with the path as its alt
+    // and a title that says why.
+    for (const img of document.querySelectorAll('img.bfp-prop-img[data-bfp-src]:not([data-bfp-dressed])')) {
+      img.setAttribute('data-bfp-dressed', '1');
+      loadPicture(img, img.getAttribute('data-bfp-src'), () => {
+        img.setAttribute('alt', img.getAttribute('data-bfp-src') + ' (picture not reachable yet)');
+        img.setAttribute('title', 'proposed picture, not reachable yet (not built or not served) — click to open the suggestion');
+      });
+    }
     for (const ins of document.querySelectorAll('ins.bfp-prop-ins[data-bfp-prop]:not([data-bfp-dressed])')) {
       ins.setAttribute('data-bfp-dressed', '1');
       const text = ins.textContent;
@@ -1425,6 +1445,21 @@
     } catch { el.textContent = m.raw; }
     return el;
   }
+  // The two routes, in order: the served site (where a built or Jekyll
+  // asset already is), then the companion reading the source tree. `miss`
+  // when neither has it.
+  function loadPicture(img, src, miss) {
+    let tried = false;
+    img.addEventListener('error', () => {
+      if (tried) { miss(); return; }
+      tried = true;
+      blogImage(src).then(x => { if (x && x.ok) img.src = x.data_url; else miss(); });
+    });
+    let served = '';
+    try { served = new URL(src, location.href).href; } catch { /* straight to the companion */ }
+    if (/^https?:/.test(served)) img.src = served;
+    else setTimeout(() => img.dispatchEvent(new Event('error')), 0);
+  }
   function pagePicture(r) {
     const img = document.createElement('img');
     img.alt = r.alt || '';
@@ -1445,16 +1480,7 @@
       t.textContent = r.raw + ' (picture not reachable yet)';
       gone.parentNode.replaceChild(t, gone);
     };
-    let tried = false;
-    img.addEventListener('error', () => {
-      if (tried) { miss(); return; }
-      tried = true;
-      blogImage(r.src).then(x => { if (x && x.ok) img.src = x.data_url; else miss(); });
-    });
-    let served = '';
-    try { served = new URL(r.src, location.href).href; } catch { /* straight to the companion */ }
-    if (/^https?:/.test(served)) img.src = served;
-    else setTimeout(() => img.dispatchEvent(new Event('error')), 0);
+    loadPicture(img, r.src, miss);
     if (!r.caption) return img;
     // a MyST figure's caption is words the page will show under it
     const box = document.createElement('span');
@@ -3209,12 +3235,15 @@
     // made in), scrolled to the card and flashed. Asked first, because a
     // proposal's marks sit innermost and a thread's highlight may be around
     // them; that thread is still one click away anywhere else on its passage.
+    // (a picture card's preview is its <img>, and the page's own picture it
+    // dimmed — which names the card in its own attribute, since it is not ours)
     const prop = e.target && e.target.closest
-      && e.target.closest('mark.bfp-prop[data-bfp-prop], ins.bfp-prop-ins[data-bfp-prop]');
-    const where = prop && propWhere[prop.getAttribute('data-bfp-prop')];
+      && e.target.closest('mark.bfp-prop[data-bfp-prop], ins.bfp-prop-ins[data-bfp-prop], '
+        + 'img.bfp-prop-img[data-bfp-prop], img[data-bfp-prop-was]');
+    const pid = prop && (prop.getAttribute('data-bfp-prop') || prop.getAttribute('data-bfp-prop-was'));
+    const where = pid && propWhere[pid];
     if (where) {
       e.preventDefault();
-      const pid = prop.getAttribute('data-bfp-prop');
       activate(false).then(d => {
         if (!d) return;
         d.open(where.target === PAGE_TARGET ? 'chat' : 'comments');

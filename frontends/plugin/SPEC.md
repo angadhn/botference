@@ -10968,3 +10968,53 @@ site, a missing one left as source with the note, none of it in the text
 index; in the card the formula typeset, no slot left, figure and caption, the
 served picture and the missing note; a page-chat formula change struck and
 inserted whole, and not on the page.
+
+**The bare path, and the swap in place** (follow-up, from a live test). A bot
+swapping the picture inside a MyST `{figure}` proposes only the PATH line —
+`current: images/L1_6.png` → `proposed: images/L1_6-vector.png` — because the
+fence is a block and the path is the smallest cell-safe edit. Neither side is
+`![]()` or a directive, so nothing showed.
+
+- `imageRefs` also returns `kind: 'bare'` when the WHOLE passage (trimmed) is
+  one token ending in a picture extension (png, jpg/jpeg, gif, svg, webp, any
+  case; a `?`/`#` tail allowed). A path inside a sentence stays a word.
+  `Anchor.pictureOnly(text)` is the "this passage is one picture and nothing
+  else" test (any of the three forms) that makes a card a PICTURE card.
+- **Card:** both sides pictures → `sgPicturesHtml`: old and new side by side
+  (`.sgpics`, each ≤ 160px tall, the old one at .6), labelled now/proposed,
+  each with its path under it. Loaded as every card picture is (served site,
+  then `/blog-image` — the normal route here, since the new file is not
+  built); unreachable says only the note, the path being the caption already.
+- **Page:** `paintProposal` hands a picture card to `paintPicture` BEFORE any
+  text locate, and never to the thread fallback — striking a sentence for a
+  figure swap would point at the wrong thing. `pictureOnPage` finds the page's
+  `<img>` by file name: the `current` basename exactly (case-insensitive), or
+  failing that the stem plus a 6+ hex hash (`L1_6-3f2a9c1d.png`, Sphinx's
+  `_images/` copy); either way exactly one `<img>` or nothing (our own UI and
+  previews excluded). Found: the original is dimmed to .35 and carries
+  `data-bfp-prop-was="<card>"` plus its whole style attribute as it was
+  (`data-bfp-prop-op`); after it goes `img.bfp-prop-img[data-bfp-prop]
+  [data-bfp-src]` at the original's rendered width and horizontal margins,
+  with a 2px `PROP_LINE` outline and the title "proposed picture, in place of
+  the dimmed one — click to open the suggestion". It is not flagged
+  approximate (it is not at a thread passage, so the drawer's note would be
+  untrue). content.js `dressProposals` loads its file (served, then
+  companion; unreachable leaves the outline with the path as alt and a title
+  saying so). A picture swapped for words is drawer-only; a picture deleted
+  (`proposed` empty) dims the original alone. Not found → drawer only.
+- `unpaintProposal` removes our `<img>` and writes the original's style
+  attribute back byte for byte; `proposalIds` counts both; the click handler
+  opens the card from either image; the snapshot drops our `<img>` and
+  undims the original; the text index is untouched (an image has no text).
+
+Tests: `prop.test.mjs` 108 → 140 (bare detection and `pictureOnly`; the swap:
+placement, attributes, outline, dimming, index untouched, no-op repaint,
+byte-exact unpaint with and without a style attribute, a hashed copy, two
+candidates → nothing, no candidate → nothing even with a thread `near`,
+picture → words → nothing, a deletion dims only, a sync sweeps it). Harness
+**`?suggest=picture&selftest=1`** (18/18): a built figure on the page swapped
+by a bare-path card — previewed beside it at its width, original dimmed, the
+new file drawn from the fake companion, no text struck; a card whose picture
+the page does not show is not previewed anywhere; the card's side-by-side
+pair with both pictures and both paths; the unreachable pair's notes; the
+click-through flash; Reject restoring the page's picture exactly.

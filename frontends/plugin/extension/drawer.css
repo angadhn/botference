@@ -1679,6 +1679,19 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .sgfig-cap { display: block; font: italic 12px/1.4 var(--sans) }
 .wasnow ins:has(> .sgfig-img), .wasnow del:has(> .sgfig-img) { background: none; padding: 0 }
 .sgfig-miss { overflow-wrap: anywhere }
+/* a picture swap: old and new side by side, each bounded, path underneath */
+.sgpics { display: flex; align-items: flex-start; gap: 8px }
+.sgpic { flex: 1 1 0; min-width: 0; margin: 0 }
+.sgpic .sgfig-img { max-height: 160px }
+.sgpic.was .sgfig-img { opacity: .6 }
+.sgpic figcaption { font: 11px/1.4 var(--mono, ui-monospace, monospace); color: var(--muted);
+  overflow-wrap: anywhere; margin-top: 2px }
+.sgarrow { align-self: center; color: var(--muted) }
+.sgpic .wnlab { display: block; margin-bottom: 2px }
+/* a picture not reachable yet: the path is already the caption, so only the
+   note is said */
+.sgpic .sgfig-miss { font-size: 0 }
+.sgpic .sgfig-miss .sgfig-note { font-size: 11px }
 .sgfig-note { display: block; font: 11px/1.4 var(--sans); color: var(--muted) }
 .wasnow .wnrow:first-child .wnval { color: var(--muted); text-decoration: line-through }
 

@@ -297,6 +297,7 @@
   // $ is closed on the same line with no space inside either end, which is
   // the money case scanMath works hardest at, near enough.
   const MATH_LITE = /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$(?=[^\s$])[^$\n]*?[^\s$\\]\$(?!\d)/g;
+  const PIC_PATH = /^[^\s()<>\[\]`*"']+\.(?:png|jpe?g|gif|svg|webp)(?:[?#]\S*)?$/i;
   const MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g;
   // the fence may open mid-line (a word diff re-joins tokens with spaces) but
   // must CLOSE on a line of its own, as MyST requires
@@ -323,7 +324,28 @@
       if (out.some(r => at < r.end && to > r.start)) continue;   // inside a fence
       out.push({ start: at, end: to, raw: m[0], src: m[2], alt: m[1].trim(), caption: '', kind: 'md' });
     }
+    // …and the BARE PATH: a passage that is nothing but one picture's path.
+    // A bot swapping the picture inside a MyST {figure} fence proposes only
+    // the path line (`images/L1_6.png` → `images/L1_6-vector.png`) — the
+    // fence is a block, and the path is the smallest edit that stays inside
+    // one cell. Only ever the WHOLE passage: a path mentioned in a sentence
+    // is a word, not a picture.
+    if (!out.length) {
+      const t = s.trim();
+      if (PIC_PATH.test(t)) {
+        const at = s.indexOf(t);
+        out.push({ start: at, end: at + t.length, raw: t, src: t,
+          alt: t.split(/[?#]/)[0].split('/').pop(), caption: '', kind: 'bare' });
+      }
+    }
     return out.sort((a, b) => a.start - b.start);
+  }
+  // A passage that IS one picture and nothing else (any of the three forms),
+  // or null — what makes a card a picture card.
+  function pictureOnly(text) {
+    const s = String(text == null ? '' : text).trim();
+    const refs = imageRefs(s);
+    return refs.length === 1 && refs[0].start === 0 && refs[0].end === s.length ? refs[0] : null;
   }
 
   function plainOf(md, opts) {
@@ -443,6 +465,14 @@
   // classes — so every unpaint, sweep and click treats it identically — and
   // one attribute that says "this is where the comment is, not the edit".
   const APPROX_ATTR = 'data-bfp-prop-approx';
+  // …and a PICTURE card's preview (paintPicture): the proposed picture as an
+  // <img> of ours beside the page's own, which is dimmed while the card is
+  // open. The original carries WAS_IMG_ATTR (the card id) and, in
+  // WAS_IMG_OP, its whole style attribute as it was ('\u0000' for none), so
+  // the unpaint puts back exactly what was there, byte for byte.
+  const PROP_IMG_CLASS = 'bfp-prop-img';
+  const WAS_IMG_ATTR = 'data-bfp-prop-was';
+  const WAS_IMG_OP = 'data-bfp-prop-op';
 
   // ---- the OTHER mark: a strikeout ----------------------------------------
   // Adobe's second tool, and the reason a PDF's selection pill has two. A
@@ -1075,8 +1105,15 @@
     if (!index || !card || !card.id || card.state !== 'open') return null;
     const id = String(card.id);
     if (document.querySelector(propSel('mark', PROP_CLASS, id))) return null;
+    if (document.querySelector(propSel('img', PROP_IMG_CLASS, id))) return null;
     const current = String(card.current == null ? '' : card.current);
     if (!current.trim()) return null;
+    // A PICTURE card is not text and is never looked for as text — nor ever
+    // shown at its thread's passage, since striking a sentence for a picture
+    // swap would point at the wrong thing entirely. The page's own <img> or
+    // nothing (paintPicture).
+    const pic = pictureOnly(current);
+    if (pic) return paintPicture(index.root || document.body, id, pic, card.proposed);
     let proposed = String(card.proposed == null ? '' : card.proposed).trim();
     let r = locate(index.raw, { quote: current });
     let approx = false;
@@ -1146,6 +1183,81 @@
     return { marks, ins, approx };
   }
 
+  // ---- a picture swap, on the page -----------------------------------------
+  // `current` is a picture (pictureOnly) — usually the bare path line inside
+  // a MyST {figure} fence. The page shows the BUILT copy, which Sphinx files
+  // under _images/<basename>, sometimes with a hash on the stem, so the
+  // page's <img> is found by its file name: exactly that basename, or failing
+  // that the stem plus a hex hash, and either way EXACTLY ONE <img> or
+  // nothing (the same rule the text preview keeps, for the same reason).
+  //
+  // The page's own picture is left where it is, dimmed; the proposed one is
+  // an <img> of ours right after it at the same rendered width, outlined in
+  // the proposal line and carrying the card id, so the click-through, the
+  // sweep and the unpaint all find it. Its picture is loaded by content.js
+  // (dressProposals: the served site, then the companion's /blog-image),
+  // because a new file is not built yet and only the companion can read it.
+  // A deletion (nothing proposed) dims the original alone; a picture swapped
+  // for WORDS is not previewed at all.
+  const baseOf = src => {
+    let b = String(src || '').split(/[?#]/)[0].split('/').pop() || '';
+    try { b = decodeURIComponent(b); } catch { /* the raw name, then */ }
+    return b;
+  };
+  const reEsc = t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function pictureOnPage(rootEl, src) {
+    const base = baseOf(src).toLowerCase();
+    const dot = base.lastIndexOf('.');
+    if (dot <= 0) return null;
+    const hashed = new RegExp('^' + reEsc(base.slice(0, dot)) + '[-._]?[0-9a-f]{6,}' + reEsc(base.slice(dot)) + '$');
+    const exact = [], near = [];
+    for (const img of (rootEl || document).querySelectorAll('img')) {
+      if (img.classList.contains(PROP_IMG_CLASS) || img.hasAttribute(WAS_IMG_ATTR)) continue;
+      if (img.closest('#bfp-root, .bfp-ui, ins.' + PROP_INS_CLASS)) continue;
+      const b = baseOf(img.getAttribute('src') || '').toLowerCase();
+      if (b === base) exact.push(img);
+      else if (hashed.test(b)) near.push(img);
+    }
+    if (exact.length) return exact.length === 1 ? exact[0] : null;
+    return near.length === 1 ? near[0] : null;
+  }
+
+  function paintPicture(rootEl, id, pic, proposed) {
+    const was = pictureOnPage(rootEl, pic.src);
+    if (!was || !was.parentNode) return null;
+    const next = pictureOnly(proposed);
+    if (String(proposed == null ? '' : proposed).trim() && !next) return null;
+    was.setAttribute(WAS_IMG_ATTR, id);
+    was.setAttribute(WAS_IMG_OP, was.hasAttribute('style') ? was.getAttribute('style') : '\u0000');
+    was.style.setProperty('opacity', '.35', 'important');
+    if (!next) return { marks: [], ins: null, approx: false, picture: was };
+    const img = (was.ownerDocument || document).createElement('img');
+    img.className = PROP_IMG_CLASS;
+    img.setAttribute('data-bfp-prop', id);
+    img.setAttribute('data-bfp-src', next.src);
+    img.setAttribute('alt', next.alt || baseOf(next.src));
+    img.setAttribute('title', 'proposed picture, in place of the dimmed one — click to open the suggestion');
+    const w = (was.getBoundingClientRect && was.getBoundingClientRect().width) || was.width || 0;
+    const st = img.style;
+    if (w) st.setProperty('width', Math.round(w) + 'px', 'important');
+    st.setProperty('max-width', '100%', 'important');
+    st.setProperty('height', 'auto', 'important');
+    st.setProperty('display', 'block', 'important');
+    // the page's own horizontal placement (a centred Sphinx figure stays
+    // centred, a left-hung one stays left), a little air above
+    let ml = 'auto', mr = 'auto';
+    try {
+      const cs = (was.ownerDocument.defaultView || window).getComputedStyle(was);
+      ml = cs.marginLeft || ml; mr = cs.marginRight || mr;
+    } catch { /* centred, then */ }
+    st.setProperty('margin', '.5em ' + mr + ' 0 ' + ml, 'important');
+    st.setProperty('outline', '2px solid ' + PROP_LINE, 'important');
+    st.setProperty('outline-offset', '2px', 'important');
+    st.setProperty('cursor', 'pointer', 'important');
+    was.parentNode.insertBefore(img, was.nextSibling);
+    return { marks: [], ins: img, approx: false, picture: was };
+  }
+
   // Every OPEN card of `cards` that can be placed, painted against one index.
   // Cards in any other state are skipped: applied, rejected and needs-manual
   // are answered, and unreadable never had a passage. Returns the ids painted.
@@ -1174,6 +1286,19 @@
   // An index built before this call is stale afterwards; build a fresh one.
   function unpaintProposal(id) {
     let n = 0;
+    // a picture card's: our <img> removed, the page's own given its opacity back
+    for (const img of document.querySelectorAll(propSel('img', PROP_IMG_CLASS, id))) {
+      if (img.parentNode) { img.parentNode.removeChild(img); n++; }
+    }
+    const wasSel = id == null ? 'img[' + WAS_IMG_ATTR + ']'
+      : 'img[' + WAS_IMG_ATTR + '="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
+    for (const img of document.querySelectorAll(wasSel)) {
+      const style = img.getAttribute(WAS_IMG_OP);
+      if (style == null || style === '\u0000') img.removeAttribute('style'); else img.setAttribute('style', style);
+      img.removeAttribute(WAS_IMG_ATTR);
+      img.removeAttribute(WAS_IMG_OP);
+      n++;
+    }
     for (const ins of document.querySelectorAll(propSel('ins', PROP_INS_CLASS, id))) {
       const parent = ins.parentNode;
       if (!parent) continue;
@@ -1196,9 +1321,10 @@
   // paintedIds and wasIds exist.
   function proposalIds() {
     const seen = [];
-    const els = document.querySelectorAll(propSel('mark', PROP_CLASS) + ', ' + propSel('ins', PROP_INS_CLASS));
+    const els = document.querySelectorAll(propSel('mark', PROP_CLASS) + ', ' + propSel('ins', PROP_INS_CLASS)
+      + ', ' + propSel('img', PROP_IMG_CLASS) + ', img[' + WAS_IMG_ATTR + ']');
     for (const el of els) {
-      const id = el.getAttribute('data-bfp-prop');
+      const id = el.getAttribute('data-bfp-prop') || el.getAttribute(WAS_IMG_ATTR);
       if (id && seen.indexOf(id) === -1) seen.push(id);
     }
     return seen;
@@ -1251,7 +1377,7 @@
   const api = {
     // pure
     normIndex, normalize, findSpans, buildAnchor, locate, tailOverlap, headOverlap,
-    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX, occurrenceAt, ORD_MAX, plainOf, imageRefs,
+    newWording, NEW_WORDING_RE, WINDOW, WAS_MAX, occurrenceAt, ORD_MAX, plainOf, imageRefs, pictureOnly,
     // dom
     buildTextIndex, offsetsFromRange, sectionOf,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
@@ -1262,7 +1388,7 @@
     HL_BG, HL_BG_FOCUS, HL_BG_DONE, HL_BG_DONE_FOCUS,
     HL_BG_READY, HL_BG_READY_FOCUS,
     DONE_CLASS, READY_CLASS, FOCUS_CLASS, INS_CLASS, WAS_CLASS, STRIKE_CLASS,
-    PROP_CLASS, PROP_INS_CLASS, PROP_LINE, APPROX_ATTR,
+    PROP_CLASS, PROP_INS_CLASS, PROP_LINE, APPROX_ATTR, PROP_IMG_CLASS, WAS_IMG_ATTR,
     STRIKE_LINE, STRIKE_LINE_READY, STRIKE_LINE_DONE, STRIKE_AT,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

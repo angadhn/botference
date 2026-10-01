@@ -28,6 +28,13 @@
   read from the source folder by the companion (new owner-only
   `GET /blog-image`), otherwise the source line with a note that the
   picture is not reachable yet.
+- **Picture swaps show as pictures.** A card that only changes a figure's
+  path (`images/L1_6.png` → `images/L1_6-vector.png`, the usual edit inside
+  a MyST figure) now shows the old and new pictures side by side in the
+  card. On the page, the figure it changes is dimmed and the new picture
+  appears right under it at the same width. If the page's figure cannot be
+  found exactly once, the card stays in the drawer only; no sentence is
+  struck for it.
 
 - **Proposals that quote a code block or a MyST directive.** A suggestion
   whose passage contained its own ``` line (a `{figure}`, a `{note}`, a

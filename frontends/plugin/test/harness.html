@@ -285,7 +285,11 @@
                      formula diffed whole, a MyST figure the served site has
                      not got (fetched from the fake companion), a picture the
                      site serves, and one nobody has (the note).
-                     `&selftest=1` on any of the five.
+                     `?suggest=picture` is a figure swap proposed as a bare
+                     path line: previewed over the page's own <img>, old
+                     and new side by side in the card, and a second card
+                     whose picture is not on the page (drawer only).
+                     `&selftest=1` on any of the six.
     ?filein=1        the "File this page in…" picker, open, on an ORDINARY page
                      (an arXiv PDF, not a project artifact): the council's
                      projects with a peek at each one's recent chats and files,
@@ -1551,6 +1555,27 @@ if (SUGGEST === 'rich') {
     { author: 'claude', ts: iso(3), text: 'One.',
       suggestions: [sgCard('sr4', 'the rate is $r = 0.1$ per game',
         'the rate is $r = \\frac{1}{10}$ per game', 'a fraction reads better')] },
+  ]);
+}
+
+// ?suggest=picture — a picture swapped inside a MyST {figure}, which a bot
+// proposes as the bare PATH line and nothing else. The page gets a built
+// figure of its own first (Sphinx's copy, by basename), so the preview has a
+// real <img> to find; the second card names a picture this page does not
+// show, so it stays in the drawer — and must NOT strike its thread's passage.
+if (SUGGEST === 'picture') {
+  const fig = document.createElement('figure');
+  fig.innerHTML = '<img src="../extension/icons/icon128.png" alt="the old figure" style="width: 128px">'
+    + '<figcaption>Figure 1.6 — the badge, as built.</figcaption>';
+  const para = [...document.querySelectorAll('article p')].find(p => /Nothing had gone right either/.test(p.textContent));
+  if (para) para.insertAdjacentElement('afterend', fig);
+  RECORD.threads[1].msgs = RECORD.threads[1].msgs.concat([
+    { author: 'angadh', ts: iso(6), text: '@claude swap in the vector version of the figure.' },
+    { author: 'claude', ts: iso(5), text: 'Two changes.',
+      suggestions: [
+        sgCard('pc1', 'images/icon128.png', 'images/L1_6-vector.png', 'the vector redraw'),
+        sgCard('pc2', 'images/nowhere.png', 'images/nowhere-v2.png', 'a figure on another page'),
+      ] },
   ]);
 }
 
@@ -2907,8 +2932,9 @@ function companion(method, path, body) {
   // pose's figure names exists "on disk"; everything else is not there
   if (route === '/blog-image') {
     const src = new URLSearchParams(String(path).split('?')[1] || '').get('src');
-    if (src !== 'figs/fresh.png') return { ok: false, status: 404, error: 'no such picture under this site' };
-    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="#8db"/></svg>';
+    const FILL = { 'figs/fresh.png': '#8db', 'images/icon128.png': '#d97757', 'images/L1_6-vector.png': '#7aa7e0' };
+    if (!FILL[src]) return { ok: false, status: 404, error: 'no such picture under this site' };
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="60"><rect width="120" height="60" fill="' + FILL[src] + '"/></svg>';
     return { ok: true, status: 200, data: { ok: true, mime: 'image/svg+xml',
       data_url: 'data:image/svg+xml;base64,' + btoa(svg) } };
   }
@@ -12405,7 +12431,7 @@ async function selftestSuggest() {
   const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
   const hit = hitter(check);
   const d = window.__bfp.drawer, S = d.shadow;
-  const pane = SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' ? 'comments' : 'chat';
+  const pane = SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' || SUGGEST === 'picture' ? 'comments' : 'chat';
   const all = sel => S.querySelectorAll('.pane[data-pane="' + pane + '"] ' + sel);
   const one = sel => all(sel)[0];
   const txt = sel => (one(sel) || {}).textContent || '';
@@ -12500,6 +12526,39 @@ async function selftestSuggest() {
       && chat.querySelectorAll('.wndiff ins .md-math').length === 1
       && !/\$/.test((chat.querySelector('.wndiff') || {}).textContent || '$'));
     check('…and a card that cannot be placed is not on the page', !pi('sr4'));
+  } else if (SUGGEST === 'picture') {
+    const old = document.querySelector('img[alt="the old figure"]');
+    const mine = () => document.querySelector('img.bfp-prop-img[data-bfp-prop="pc1"]');
+    const card = id => S.querySelector('.sgcard[data-sg="' + id + '"]');
+    await until(mine, 2000);
+    check('a picture swap is previewed beside the page\'s own picture', !!mine() && old && old.nextSibling === mine());
+    check('…at the same rendered width', !!mine() && mine().style.getPropertyValue('width') === '128px');
+    check('…with the page\'s picture dimmed', !!old && parseFloat(old.style.getPropertyValue('opacity')) === .35
+      && old.getAttribute('data-bfp-prop-was') === 'pc1');
+    const loaded = await until(() => mine() && /^data:image\/svg/.test(mine().src) && mine(), 4000);
+    check('…and the new file, not built yet, drawn from the companion', !!loaded);
+    check('no text was struck for it', !document.querySelector('[data-bfp-prop="pc1"]:not(img)'));
+    check('a picture this page does not show is not previewed — and not at its thread either',
+      !document.querySelector('[data-bfp-prop="pc2"], [data-bfp-prop-was="pc2"]'));
+    check('the card shows the two pictures side by side', !!(card('pc1') && card('pc1').querySelector('.sgpics')
+      && card('pc1').querySelectorAll('.sgpic').length === 2));
+    const both = await until(() => card('pc1') && [...card('pc1').querySelectorAll('.sgpic img.sgfig-img')]
+      .filter(i => /^data:/.test(i.src)).length === 2, 4000);
+    check('…old and new both drawn', !!both);
+    check('…each with its path under it', !!card('pc1') && [...card('pc1').querySelectorAll('.sgpic figcaption')]
+      .map(f => f.textContent).join('|') === 'images/icon128.png|images/L1_6-vector.png');
+    await until(() => card('pc2') && card('pc2').querySelectorAll('.sgfig-note').length === 2, 4000);
+    check('the unplaced card says its pictures are not reachable yet',
+      !!card('pc2') && card('pc2').querySelectorAll('.sgfig-note').length === 2);
+    const click = mine();
+    check('clicking the preview opens its card', hit(click, 'preview'));
+    await sleep(400);
+    check('…flashed', !!(card('pc1') && card('pc1').classList.contains('tasksrc')));
+    check('rejecting it is a click', hit(card('pc1') && card('pc1').querySelector('[data-act="sg-no"]'), 'sg-no'));
+    await until(() => !mine(), 2000);
+    check('…the preview comes down', !mine());
+    check('…and the page\'s picture is exactly as it was',
+      !!old && old.getAttribute('style') === 'width: 128px' && !old.hasAttribute('data-bfp-prop-was'));
   } else if (SUGGEST === 'states') {
     check('every state is drawn', all('.sgcard').length === 4);
     check('the accepted one says it landed', /Applied to the post/.test(txt('.sgcard.done')));
@@ -12858,7 +12917,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // …and where the pose is a suggestion stack, the pane it is IN: a stack
     // written into a thread is in the margin, a whole-page sweep is in chat
     if (BLOG && Q.get('selftest') !== '1') {
-      setTimeout(() => d.open(SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' ? 'comments' : 'chat'), 300);
+      setTimeout(() => d.open(SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' || SUGGEST === 'picture' ? 'comments' : 'chat'), 300);
     }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the
     // reader picks a past council chat out of (screenshot state)
