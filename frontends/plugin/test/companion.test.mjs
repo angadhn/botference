@@ -4964,6 +4964,150 @@ async function main() {
     gs.proc.kill();
   }
 
+  // --- continue in council: the page's conversation, copied across ---------
+  //
+  // A page chat lives in the companion's workspace and never shows up in the
+  // council. POST /continue-in-council copies it — chat AND margin comments —
+  // into a confirmed council as a new chat of the reader's own, and answers
+  // with the council web link. What every assert below comes back to: the
+  // council gets a clean, resumable chat, and the PAGE loses nothing.
+  {
+    const cRoot = tmpRoot('council-copy');
+    fs.mkdirSync(path.join(cRoot, '.botference', 'plugin'), { recursive: true });
+    // a council laid out as botference lays one out (project.json + work/ +
+    // projects/), with one project in its portfolio
+    const council = tmpRoot('council-target');
+    fs.writeFileSync(path.join(council, 'project.json'), JSON.stringify({ version: 1 }));
+    fs.mkdirSync(path.join(council, 'work'), { recursive: true });
+    fs.mkdirSync(path.join(council, 'projects', 'blog-ideas'), { recursive: true });
+    fs.writeFileSync(path.join(council, 'projects', 'portfolio.json'), JSON.stringify({
+      version: 1, projects: [{ id: 'blog-ideas', title: 'Blog Ideas', status: 'active', priority: 1, root: 'projects/blog-ideas' }],
+    }));
+    const cs = await startServer({ root: cRoot, args: ['--no-agents'] });
+    const cb = cs.base;
+    const COPYPAGE = 'https://essays.test/do-not-conquer';
+    const rec = async u => (await GET(cb, `/page?url=${encodeURIComponent(u)}`)).json;
+    // whichever sessions dir the council resolves to (core/paths.py decides)
+    const sessionFiles = () => ['sessions', path.join('work', 'sessions')]
+      .map(d => path.join(council, d))
+      .filter(d => fs.existsSync(d))
+      .flatMap(d => fs.readdirSync(d).filter(f => /^[\w-]+\.json$/.test(f)).map(f => path.join(d, f)));
+    const sessionOf = sid => JSON.parse(fs.readFileSync(sessionFiles().find(f => f.endsWith(`${sid}.json`)), 'utf8'));
+
+    await POST(cb, '/page', { url: COPYPAGE, title: 'Do not conquer what you cannot defend', site: 'essays.test' });
+
+    await test('continue-in-council: nothing to carry, no council — both say so', async () => {
+      const empty = await POST(cb, '/continue-in-council', { url: COPYPAGE });
+      assert.equal(empty.status, 400);
+      assert.match(empty.json.error, /no council has been confirmed/);
+      assert.equal((await POST(cb, '/continue-in-council', { url: 'https://essays.test/never' })).status, 404);
+      assert.equal((await POST(cb, '/continue-in-council', {})).status, 400);
+    });
+
+    await POST(cb, '/council-root', { root: council, confirm: true });
+    await POST(cb, '/thread', { url: COPYPAGE, quote: 'the walk back to the tram stop',
+      msg: { text: 'a conquistador is not a creator' } });
+    await POST(cb, '/reply', { url: COPYPAGE, thread_id: '__page__', text: 'but what was conquered?' });
+
+    let first;
+    await test('continue-in-council copies the chat and the comments into the council, unfiled', async () => {
+      const r = await POST(cb, '/continue-in-council', { url: COPYPAGE });
+      assert.equal(r.status, 200, JSON.stringify(r.json));
+      first = r.json;
+      assert.equal(first.reused, false);
+      assert.match(first.session_id, /^[0-9a-f-]{36}$/);
+      assert.equal(first.url, `http://localhost:4187/#/chat/${first.session_id}`);
+      assert.equal(first.project_id, '', 'a page filed nowhere lands in the Inbox');
+      const s = sessionOf(first.session_id);
+      assert.equal(s.title, 'Do not conquer what you cannot defend');
+      // provenance first, then the comments, then the chat in council speakers
+      assert.equal(s.transcript[0].speaker, 'system');
+      assert.match(s.transcript[0].text, /Carried over from Discuss/);
+      assert.ok(s.transcript[0].text.includes(COPYPAGE), 'the source address travels with it');
+      assert.equal(s.transcript[1].speaker, 'system');
+      assert.match(s.transcript[1].text, /margin comments/);
+      assert.match(s.transcript[1].text, /the walk back to the tram stop/);
+      assert.match(s.transcript[1].text, /a conquistador is not a creator/);
+      assert.deepEqual(s.transcript.slice(2).map(e => [e.speaker, e.text]), [['user', 'but what was conquered?']]);
+      assert.equal(s.room_history.length, s.transcript.length, 'and the council UI has it to show');
+      // a fresh pair of bots, owed the whole conversation — and no plugin
+      // system prompt riding along to tell them they are writing margin notes
+      assert.deepEqual(s.models_initialized, []);
+      assert.ok(!('system_prompt' in s));
+      assert.deepEqual(s.last_seen, {});
+    });
+
+    await test('the page keeps its chat and comments, and a receipt', async () => {
+      const p = await rec(COPYPAGE);
+      assert.equal(p.page_chat.length, 1);
+      assert.equal(p.threads.length, 1);
+      assert.equal(p.council_copies.length, 1);
+      assert.equal(p.council_copies[0].session_id, first.session_id);
+      assert.equal(p.council_copies[0].url, first.url);
+    });
+
+    await test('a second click with nothing new hands back the same council chat', async () => {
+      const before = sessionFiles().length;
+      const r = await POST(cb, '/continue-in-council', { url: COPYPAGE });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.reused, true);
+      assert.equal(r.json.session_id, first.session_id);
+      assert.equal(sessionFiles().length, before, 'no second chat in the council');
+    });
+
+    await test('something new said, or fresh asked for, makes a new copy', async () => {
+      await POST(cb, '/reply', { url: COPYPAGE, thread_id: '__page__', text: 'building is not conquering' });
+      const r = await POST(cb, '/continue-in-council', { url: COPYPAGE });
+      assert.equal(r.json.reused, false);
+      assert.notEqual(r.json.session_id, first.session_id);
+      assert.equal(sessionOf(r.json.session_id).transcript.slice(-1)[0].text, 'building is not conquering');
+      const f = await POST(cb, '/continue-in-council', { url: COPYPAGE, fresh: true });
+      assert.equal(f.json.reused, false);
+      assert.notEqual(f.json.session_id, r.json.session_id);
+      assert.equal((await rec(COPYPAGE)).council_copies.length, 3);
+    });
+
+    await test('a page filed in one project of that council goes into that project', async () => {
+      const filed = await POST(cb, '/page-projects', { url: COPYPAGE, root: council, id: 'blog-ideas' });
+      assert.equal(filed.status, 200, JSON.stringify(filed.json));
+      const r = await POST(cb, '/continue-in-council', { url: COPYPAGE, fresh: true });
+      assert.equal(r.status, 200);
+      assert.equal(r.json.project_id, 'blog-ideas');
+      assert.equal(r.json.project_title, 'Blog Ideas');
+      assert.equal(sessionOf(r.json.session_id).project_id, 'blog-ideas');
+      const idx = JSON.parse(fs.readFileSync(path.join(council, 'projects', 'session-index.json'), 'utf8'));
+      assert.ok(idx.sessions.some(x => x.session_id === r.json.session_id && x.project === 'blog-ideas'),
+        'and the project index files it there');
+      // …unless the caller says otherwise, and a project that is not there is refused
+      const inbox = await POST(cb, '/continue-in-council', { url: COPYPAGE, fresh: true, project_id: '' });
+      assert.equal(inbox.json.project_id, '');
+      const bad = await POST(cb, '/continue-in-council', { url: COPYPAGE, fresh: true, project_id: 'nope' });
+      assert.equal(bad.status, 400);
+      assert.match(bad.json.error, /no project 'nope'/);
+    });
+
+    await test('a council nobody confirmed is not somewhere a chat gets written', async () => {
+      const other = tmpRoot('council-unvouched');
+      const r = await POST(cb, '/continue-in-council', { url: COPYPAGE, root: other });
+      assert.equal(r.status, 400);
+      assert.match(r.json.error, /not a council you have confirmed/);
+    });
+    cs.proc.kill();
+
+    // owner-only: it writes into the reader's council
+    const hRoot = tmpRoot('council-copy-guest');
+    fs.mkdirSync(path.join(hRoot, '.botference', 'plugin'), { recursive: true });
+    const hs = await startServer({ root: hRoot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw' } });
+    await POST(hs.base, '/page', { url: COPYPAGE, title: 'x', site: 'essays.test' });
+    await test('a guest may not copy a page’s chat into the council', async () => {
+      const REMOTE3 = { host: 'discuss.botference.com' };
+      const jar = cookieJar(await FORM(hs.base, '/auth',
+        { handle: 'visitor', password: 'guest-pw', next: '/pages' }, REMOTE3));
+      assert.equal((await POST(hs.base, '/continue-in-council', { url: COPYPAGE }, { ...REMOTE3, cookie: jar })).status, 403);
+    });
+    hs.proc.kill();
+  }
+
   stream.close();
   cleanup();
   console.log(`\n${passed()} passed, ${failures().length} failed`);

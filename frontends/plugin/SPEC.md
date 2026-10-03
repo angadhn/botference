@@ -11243,3 +11243,91 @@ against a synthetic book and fake script — source untouched, scratch removed,
 card-only pictures, refusals, pending then ready). The DOM half was checked by
 eye on SpacecraftDynamics Lecture 2 (a check-card edit with a new equation,
 and a paragraph edit that adds a paragraph).
+
+## Amendment (2026-10-03): continue in council
+
+**The problem.** A page chat is a botference session, but in the COMPANION's
+workspace (the plugin workspace, project "Plugin pages"). The council web UI
+runs against a different workspace (the reader's vault), so page chats never
+appear in the council. A conversation that grows into the reader's own idea
+(a blog post, a project) had no way out of the page it started on. "Send
+review" moves margin comments INTO page chat; nothing moved page chat out.
+
+**The decision: a clean COPY, written by the council's own store.**
+Considered and rejected:
+
+- *Copying the plugin's session file across.* Its transcript is the
+  companion's wire format (every user turn an envelope of page excerpts, length
+  rules and filing lists), its `system_prompt` is the margin-note one, and its
+  claude/codex native session ids belong to CLI sessions started from another
+  folder. A restore carries `system_prompt` from the payload, so the council
+  bots would keep being told their reply is a 60-word margin note.
+- *Moving the session.* The page would lose its chat, and the page chat must
+  keep working on the page.
+- *Driving a council bridge to replay the turns.* Costs a bot turn per message
+  and rewrites what was said.
+
+What ships: `council-handoff.mjs` builds `{speaker, text}` entries from the
+page record — (1) a system note naming the page title and address, saying this
+is now the reader's own chat, and pointing at the page's saved snapshot; (2)
+ONE system entry with every thread that has messages (quote cut at 400 chars,
+state open/resolved, then `- who: text` per message); (3) the page chat, turn
+by turn, owner → `user`, `claude`/`codex` as themselves, a guest as `user`
+prefixed `[handle]`. Dropped: `kind:"tools"` rows, `superseded` messages,
+`<!--more-->` markers. `core/session_import.py` writes a NEW session through
+`SessionStore.save` (after loading the metadata index, so the shared
+`.metadata-index.json` row is published) and, when filed,
+`ProjectStore.associate_session` — the same locked, atomic doors every council
+bridge uses, so a running council lists the chat on its next projects refresh
+with no restart. The payload has no `system_prompt` key (the resuming bridge
+keeps its own), no native sessions, empty `models_initialized` and no
+`last_seen`: no bot runs at copy time, and on the reader's first message each
+bot gets the whole conversation as its `context_since` backfill (bounded by
+`_BACKFILL_MAX_CHARS`). The script is run with every inherited `BOTFERENCE_*`
+scrubbed and `BOTFERENCE_PROJECT_ROOT=<council root>`, so the work dir resolves
+exactly as a council bridge started there resolves it.
+
+**Route.** `POST /continue-in-council {url, root?, project_id?, fresh?}` →
+`{ok, session_id, url, reused, project_id, project_title}`. Owner-only.
+Refused (409) on a project artifact page — its chat already IS a council chat.
+Council: `root` if given and confirmed, else the confirmed root used last
+(`confirmedRoots()[0]`); none → 400. Project: `project_id` if given (`''` =
+Inbox; an unknown id is a 400 from the script — exact ids only, never a
+prefix), else the ONE project this page is filed under in that council, else
+Inbox. `url` is `<council_web>/#/chat/<sid>` (config `council_web`, default
+`http://localhost:4187`).
+
+**Receipt and reuse.** Each copy appends `{root, session_id, project_id, url,
+session_file, fingerprint, at}` to `page.council_copies` (last 10). The
+fingerprint hashes the entries minus the dated note. Same root + same
+fingerprint + the session file still on disk → the same chat comes back
+(`reused: true`, nothing written). Anything new said → a fresh copy: the
+council copy may have moved on, and splicing into it would rewrite the
+reader's history there. `fresh: true` forces a new copy.
+
+**The drawer.** `continue in council ↗` on the dock row (`reviewHtml`, both
+the highlights and the no-highlights branch), owner-only, hidden on a
+confirmed project artifact page and on a page with neither chat messages nor
+threads. No confirm: nothing is lost or spent. On success it `window.open`s the
+link (still inside the click's user activation) and keeps an `open ↗` link
+beside the button for when the tab was blocked; after a reload the link comes
+from the last `council_copies` row. `onContinueInCouncil` in content.js.
+
+**From a terminal.** `botference discuss continue <url | words>` (the launcher
+execs `continue-cli.mjs`) runs the same `continueInCouncil` against the files
+on disk — no companion needed. Words match title or address; more than one
+match is listed and nothing is written. `--list`, `--dry-run`, `--project`,
+`--inbox`, `--council`, `--fresh`, `--council-web`. Caveat: a receipt it
+writes can be lost to a concurrent companion save of the same page record; the
+council chat is unaffected.
+
+**Council side.** `app.js` now folds a `/?chat=<sid>` deep link into
+`#/chat/<sid>` at load. The drawer's older "Open the full chat ↗" link has
+always used the query form and the council ignored it.
+
+Tests: companion.test.mjs (8: empty/no-council refusals, the copy's shape,
+page untouched + receipt, reuse, new-copy-on-change and `fresh`, project
+defaulting + session-index + unknown project, unconfirmed council, guest 403);
+tests/test_session_import.py (7, incl. a restore through
+`_restore_from_payload` proving the council prompt survives and both bots are
+backfilled).

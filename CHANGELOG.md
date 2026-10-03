@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-10-03
+
+- **Continue in council: one button takes a page's conversation to the council.** Page chats live in Discuss's own workspace, so they never appeared in the council. The drawer's chat dock now has **continue in council ↗**: it copies the page chat and every margin comment (with the passage each is on), plus the page's title and address, into your council as a new chat of your own, and opens the council on it in a new tab. Both bots start fresh there and are handed the whole conversation on your first message, under the council's own instructions rather than Discuss's "short margin note" ones. The page keeps its chat and comments; no bot is summoned. The copy goes into the project the page is filed in (when exactly one), else the council's Inbox. Pressing again with nothing new reopens the same council chat. New companion route `POST /continue-in-council`, new `botference discuss continue <page>` for doing it from a terminal, new `core/session_import.py` that writes the chat through the council's own session store (no council restart needed).
+- **Fix: the council now opens the chat named in `/?chat=<id>`.** Discuss's "Open the full chat ↗" link used that form, which the council ignored (it only read `#/chat/<id>`), so the link landed on whatever chat was open.
+
 ## 2026-10-01
 
 - **Suggestions on a Jupyter Book page are shown rendered, in place.** When a bot proposes a change to a chapter, the book builds the chapter with the change in it (its own `scripts/preview-chapter.sh`), and the page shows the changed blocks as the book would draw them — new ones outlined as "suggested", old ones dimmed and struck — with Accept and Reject right there. Clicking one opens its card in the drawer. Previewed check cards can't be clicked, so they never touch your progress. Until the build is ready (about 2 s, longer the first time), and for anything that can't be placed, the old struck-and-underlined preview shows instead.

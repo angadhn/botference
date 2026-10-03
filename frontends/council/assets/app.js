@@ -2709,6 +2709,20 @@
     const m = /^#\/chat\/([\w-]+)$/.exec(location.hash || '');
     return m ? m[1] : '';
   }
+  // `/?chat=<sid>` is the other spelling of a deep link — the one Discuss's
+  // "Open the full chat" link has always used. Fold it into the hash form once,
+  // at load, so there is still exactly one place the open chat is named (and a
+  // stale query string can never fight the hash after the reader moves on).
+  (function adoptChatQuery() {
+    let sid = '';
+    try { sid = new URLSearchParams(location.search).get('chat') || ''; } catch { sid = ''; }
+    if (!/^[\w-]+$/.test(sid) || hashSid()) return;
+    const params = new URLSearchParams(location.search);
+    params.delete('chat');
+    const q = params.toString();
+    try { history.replaceState(null, '', location.pathname + (q ? '?' + q : '') + `#/chat/${sid}`); }
+    catch { location.hash = `#/chat/${sid}`; }
+  })();
   function syncHash(sid) {
     const want = sid ? `#/chat/${sid}` : '';
     if (location.hash === want) return;

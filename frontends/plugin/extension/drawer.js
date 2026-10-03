@@ -201,6 +201,15 @@
 //                                        ones with a turn coming. The companion
 //                                        writes every word of it; nothing is
 //                                        resolved by it
+//   onContinueInCouncil()               → {ok, url, session_id, reused,
+//                                          project_id, project_title}
+//                                          | {ok:false, error}
+//                                        (POST /continue-in-council) — COPY this
+//                                        page's chat and its margin comments
+//                                        into the reader's council as a chat of
+//                                        its own; `url` opens it in the council
+//                                        web UI. The page keeps its chat and no
+//                                        bot is summoned
 //   onCreateProject(title, root, why)   → {ok, id, title, filed:[…]}
 //                                        (POST /project-create) — start a NEW
 //                                        council project and file this page in
@@ -2027,6 +2036,11 @@
       //   list     the set-aside chats, once asked for (GET /page-chat-archive)
       //   busy     '' when idle, 'new' while starting one, 'i<n>' while opening one
       newchat: { confirm: false, busy: '', err: '', open: false, list: null, loading: false },
+      // "continue in council": no confirm (it is a copy — nothing on this page
+      // changes and no bot is summoned), so just the in-flight flag, the error,
+      // and the link to the chat it made, kept on screen in case the new tab
+      // was blocked
+      council: { busy: false, err: '', url: '', reused: false, where: '' },
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       // the command table the /help popup and the slash menu read (null =
@@ -4725,7 +4739,7 @@ ${bubbleShellHtml()}`;
       // A page that cannot carry comments has no review to send — but it still
       // has a chat, and still every reason to be able to start a fresh one.
       if (!CAPS.highlights) {
-        const solo = newChatBtnHtml();
+        const solo = newChatBtnHtml() + councilBtnHtml();
         return solo
           ? `<div class="reviewrow">${solo}</div>` + newChatConfirmHtml() + newChatListHtml()
           : '';
@@ -4750,12 +4764,75 @@ ${bubbleShellHtml()}`;
             + makeArtifactBtnHtml()
             + publishBtnHtml()
             + newChatBtnHtml()
+            + councilBtnHtml()
             + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
               : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
       return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
         + makeArtifactConfirmHtml() + publishConfirmHtml() + newChatConfirmHtml()
         + newChatListHtml() + artifactsHtml()
         + publishedHtml();
+    }
+
+    // ---- continue in council --------------------------------------------
+    //
+    // A page chat that turned into an idea of the reader's own — a blog post,
+    // a project — is stranded on the page it started on: page chats live in
+    // the companion's workspace and never show up in the council. This is the
+    // one button that carries it across. The companion COPIES the chat and the
+    // margin comments into the council as a new chat (with the page's title
+    // and address at the top), and the council opens on it in a new tab.
+    //
+    // No confirm, unlike its neighbours: nothing here is lost or spent. The
+    // page keeps its chat and comments, no bot is summoned (both bots pick the
+    // conversation up on the reader's first message in the council), and a
+    // second click with nothing new said hands back the same council chat.
+    //
+    // Owner-only (it writes into the reader's council), and not on a project
+    // artifact page, whose chat already IS a council chat.
+    const canContinue = () => !!D.owner && !(D.project && D.project.confirmed)
+      && !!D.page && (((D.page.page_chat || []).some(m => m && m.text && m.kind !== 'tools'))
+        || (D.page.threads || []).length > 0);
+    // the council copy this page already has, if any — newest last
+    const lastCopy = () => {
+      const c = D.page && Array.isArray(D.page.council_copies) ? D.page.council_copies : [];
+      return c.length ? c[c.length - 1] : null;
+    };
+
+    function councilBtnHtml() {
+      if (!canContinue()) return '';
+      const C = D.council;
+      const prior = lastCopy();
+      const link = C.url || (prior && prior.url) || '';
+      return `<button class="archsend tocouncil" data-act="continue-council" type="button"
+          title="copy this chat and your margin comments into the council as a chat of your own, and open it there — this page keeps its chat"${
+        C.busy ? ' disabled' : ''}>continue in council ↗</button>`
+        + (C.busy ? '<span class="rvnote busy">copying to the council…</span>'
+          : C.err ? `<span class="rvnote err">${esc(C.err)}</span>`
+          : link ? `<span class="rvnote note">${C.url
+              ? (C.reused ? 'already in the council' : `copied${C.where ? ` to ${esc(C.where)}` : ''}`) + ' — '
+              : 'in the council: '}<a href="${esc(link)}" target="_blank" rel="noopener">open ↗</a></span>`
+          : '');
+    }
+
+    async function continueInCouncil() {
+      const C = D.council;
+      if (C.busy) return;
+      C.busy = true; C.err = '';
+      render();
+      const a = await cb('onContinueInCouncil')();
+      C.busy = false;
+      if (!a || !a.ok) {
+        C.err = (a && a.error) || 'the companion did not answer';
+      } else {
+        C.url = a.url || '';
+        C.reused = !!a.reused;
+        C.where = a.project_title || (a.project_id ? a.project_id : 'the Inbox');
+        // The click is still the reader's (one quick local round trip), so the
+        // new tab normally opens. If the browser blocks it anyway, the "open ↗"
+        // link beside the button is the same address.
+        if (C.url) { try { window.open(C.url, '_blank', 'noopener'); } catch { /* the link is there */ } }
+      }
+      render();
     }
 
     // ---- a fresh chat, here, keeping the comments -------------------------
@@ -6798,6 +6875,7 @@ ${bubbleShellHtml()}`;
       // "+ new chat" on every OTHER page: one inline step, because the reader's
       // real question is whether their comments are about to go with it
       'page-chat-new': () => { D.newchat.confirm = true; D.newchat.err = ''; render(); },
+      'continue-council': () => continueInCouncil(),
       'page-chat-new-no': () => { D.newchat.confirm = false; render(); },
       'page-chat-new-yes': () => startPageChat(),
       'page-chat-arch': () => {

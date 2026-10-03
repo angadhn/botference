@@ -20,6 +20,9 @@ botference \- a multi-LLM planning council for the terminal
 .B botference discuss
 \fB\-\-install-tunnel\fR | \fB\-\-uninstall-tunnel\fR
 .br
+.B botference discuss continue
+\fIpage\fR [\fB\-\-council\fR \fIroot\fR] [\fB\-\-project\fR \fIid\fR | \fB\-\-inbox\fR] [\fB\-\-fresh\fR] [\fB\-\-dry-run\fR] | \fB\-\-list\fR [\fIwords\fR]
+.br
 .B botference service
 \fBstart\fR \fIname\fR \fB\-\-\fR \fIcommand\fR… | \fBstop\fR \fIname\fR|\fB\-\-all\fR | \fBlist\fR | \fBlogs\fR \fIname\fR [\fB\-n\fR \fIN\fR]
 .br
@@ -167,6 +170,17 @@ Config (Obsidian vault path, export folder) in
 \fI.botference/plugin/config.json\fR. The workspace is sticky: after the
 first run, \fBbotference discuss\fR from any directory reuses the
 recorded workspace (\fB\-\-here\fR forces the current directory).
+\fBbotference discuss continue\fR \fIpage\fR copies one page's chat and
+margin comments into your council as a new chat of your own and prints
+its council link \- the drawer's \fBcontinue in council\fR button,
+from a terminal, run against the files on disk (no companion needed).
+\fIpage\fR is the page's address or a few words of its title or
+address; \fB\-\-list\fR shows matching pages, \fB\-\-dry-run\fR shows
+what would be copied, \fB\-\-project\fR \fIid\fR / \fB\-\-inbox\fR say
+where it is filed (default: the one project the page is filed in, else
+the Inbox), \fB\-\-council\fR \fIroot\fR picks the council (default:
+the one last used), \fB\-\-fresh\fR copies again even when nothing is
+new, and \fB\-\-council-web\fR \fIbase\fR sets the address in the link.
 \fB\-\-hosted\fR (requires PLUGIN_PASSWORD) adds a password gate with
 per-guest handles so collaborators see and comment on the same threads;
 guest @-mentions need a grant in

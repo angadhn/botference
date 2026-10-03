@@ -52,6 +52,7 @@ import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
 import * as lasso from './lasso.mjs';
 import * as checks from './checks.mjs';
+import * as handoff from './council-handoff.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // The article view's scripts. anchor.js is the extension's own file, served
@@ -3295,6 +3296,72 @@ export function handler(req, res) {
       broadcast({ type: 'page', url: page.url });
       ok(res, { session_id: page.session_id, session_title: page.session_title,
         archive: store.chatArchiveSummary(page), page });
+    });
+  }
+
+  // --- carrying the conversation into the council -------------------------
+  // POST /continue-in-council {url, root?, project_id?, fresh?}
+  //   → {ok, session_id, url, project_id, project_title, reused}
+  //
+  // The page chat and the margin comments, COPIED into the reader's council as
+  // a chat of its own (council-handoff.mjs says why a copy, and why a clean
+  // one rather than the plugin's own session file). The drawer opens `url` —
+  // the council web UI with that chat open — in a new tab.
+  //
+  // Nothing about the page changes but a receipt: its chat keeps working, its
+  // comments stay where they are, no bot is summoned. A second click with
+  // nothing said in between hands back the same council chat (`reused`); with
+  // something new it makes a fresh copy, because the council copy may have
+  // moved on by then and splicing into it would rewrite the reader's history.
+  //
+  // Which council: the one named, else the one the reader used last (filing a
+  // page, starting a project). Which project: the one named, else the ONE
+  // project this page is filed under in that council, else none — the
+  // council's Inbox, where /file or the chat's ⋯ menu files it later.
+  //
+  // Owner-only: it writes into the reader's council. Refused on a project
+  // artifact page, whose chat already IS a council chat ("Open the full chat"
+  // is the link there).
+  if (req.method === 'POST' && url === '/continue-in-council') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const u = store.normUrl(String(data.url || ''));
+      if (!u) return fail(res, 400, 'url required');
+      const page = store.readPage(u);
+      if (!page) return fail(res, 404, 'the companion has no record of this page');
+      if (artifactOf(u)) return fail(res, 409, 'this page\u2019s chat is already in your council — use \u201cOpen the full chat\u201d');
+      const roots = confirmedRoots();
+      const asked = workspace.realish(String(data.root || ''));
+      const root = asked || roots[0] || '';
+      if (!root || !roots.includes(root)) {
+        return fail(res, 400, roots.length
+          ? 'that is not a council you have confirmed'
+          : 'no council has been confirmed yet — open a file from one of your projects folders first');
+      }
+      const projectId = data.project_id != null
+        ? String(data.project_id || '')
+        : handoff.defaultProject(store.projectsOf(page), root);
+      const key = store.pageKey(page.url);
+      const r = handoff.continueInCouncil(page, {
+        root, projectId,
+        home: store.HOME,
+        python: process.env.BOTFERENCE_PYTHON_BIN || process.env.PLUGIN_PYTHON || 'python3',
+        councilWeb: String(store.readConfig().council_web || handoff.COUNCIL_WEB_DEFAULT),
+        owner: String(store.readConfig().author || ''),
+        snapshotPath: store.hasSnapshot(key) ? store.snapshotFile(key) : '',
+        fresh: formBool(data.fresh, false),
+      });
+      if (!r.ok) return fail(res, 400, r.error);
+      if (!r.reused) {
+        store.savePage(page);
+        broadcast({ type: 'page', url: page.url });
+      }
+      rememberRoot(root);
+      return ok(res, {
+        session_id: r.session_id, url: r.url, reused: r.reused,
+        project_id: r.project_id,
+        project_title: r.project_id ? workspace.projectTitle(root, r.project_id) : '',
+      });
     });
   }
 

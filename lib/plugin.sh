@@ -17,6 +17,9 @@ Usage: botference discuss [--port N] [--service] [--no-agents] [--agents] [--her
        botference discuss --uninstall-autostart
        botference discuss --install-tunnel [--port N] [--no-agents]
        botference discuss --uninstall-tunnel
+       botference discuss continue <page> [--project <id> | --inbox] [--dry-run]
+                          copy a page's chat + margin comments into your
+                          council as a chat of your own; prints its link
 
 ('botference plugin' is the same command, and always will be — the
 product is called Discuss, the plumbing is still called plugin.)

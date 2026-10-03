@@ -3103,6 +3103,22 @@
                  reason: d.reason };
       },
 
+      // ---- carrying this page's conversation into the council -------------
+      // A COPY: the companion writes a new council chat holding the page chat
+      // and the margin comments, and answers with the council web address that
+      // opens it. Reloading the record afterwards picks up the receipt (the
+      // page's `council_copies`), which is what keeps the "open ↗" link on the
+      // dock after a reload.
+      onContinueInCouncil: async () => {
+        await ensureRegistered();
+        const r = await api('POST', '/continue-in-council', { url: URL_NOW });
+        if (!r.ok) return failure(r);
+        await loadPage();
+        const d = r.data || {};
+        return { ok: true, url: d.url || '', session_id: d.session_id || '', reused: !!d.reused,
+                 project_id: d.project_id || '', project_title: d.project_title || '' };
+      },
+
       // ---- filing THIS page under a council project ----------------------
       // Different from everything above it: this page is not a project
       // artifact and never becomes one. It stays where it is, on its own

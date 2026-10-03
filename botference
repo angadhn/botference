@@ -62,6 +62,13 @@ fi
 # 'plugin' is the original name and stays an accepted spelling for good:
 # the product was renamed, but the command, the data directories and the
 # LaunchAgent labels were not, so nothing anyone typed or stored breaks. ---
+if { [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; } && [ "${2:-}" = "continue" ]; then
+  # 'discuss continue <page>': copy a page's chat + margin comments into the
+  # council as a chat of its own (frontends/plugin/continue-cli.mjs). Runs
+  # against the files on disk — no companion needed, nothing to serve.
+  shift 2
+  exec node "${BOTFERENCE_HOME}/frontends/plugin/continue-cli.mjs" "$@"
+fi
 if [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; then
   shift
   source "${BOTFERENCE_HOME}/lib/plugin.sh"

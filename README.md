@@ -736,6 +736,22 @@ opening one brings it back. (On a project artifact page the archive bar at the
 top of Page chat is already this control, with your council's own chats behind
 it, so there is no second button.)
 
+**Carry a conversation into the council.** Also on the dock, on every page
+that has a chat or comments: **continue in council ↗**. A page chat lives with
+Discuss and never shows up in your council; this button copies it — the whole
+chat, every margin comment with the passage it is on, and the page's title and
+address at the top — into your council as a new chat of your own, and opens
+the council on it in a new tab. Keep going there as you would in any council
+chat; both bots pick up the whole conversation on your first message. The page
+keeps its chat and comments and no bot is asked anything. The copy is filed in
+the project the page is filed in (if it is in exactly one), otherwise it waits
+in the council's Inbox for you to file it. Pressing it again with nothing new
+said opens the same council chat; with new messages it makes a fresh copy. No
+browser handy? `botference discuss continue <address or a few words of the
+title>` does the same from a terminal and prints the link (`--list` to find a
+page, `--dry-run` to see what would be copied, `--project <id>` / `--inbox` to
+choose where it goes).
+
 **Make a page out of the one you marked up.** Beside *send review*, on any
 page filed in a project, there is **make artifact**: say in one line what
 you want — *a planner of what to watch and when, with costs* — and one bot
