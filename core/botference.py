@@ -6279,9 +6279,16 @@ class Botference:
         block = lasso.attachments_block(self._attachments)
         if block:
             parts.append(block.rstrip())
+        # The plan is a source only when THIS room has been writing or
+        # reading it. The plan file is scoped to the workspace or the
+        # project, so it outlives the chat that wrote it: a chat about an
+        # essay otherwise hands the checker last month's build plan for
+        # something else, and the checker dutifully reports that it is about
+        # a different project entirely. Plan mode writes the plan's path into
+        # the transcript ("Plan: …"), so a room that used it has the name.
         plan = self._plan_path
         try:
-            if plan.is_file():
+            if plan.is_file() and self._plan_in_play():
                 parts.append(f"The plan this room has been writing: {plan}")
         except OSError:
             pass
@@ -6324,6 +6331,18 @@ class Botference:
         body = re.sub(r"^#.*$|^\*\*\w+:\*\*.*$", "", text, flags=re.M)
         words = [w for w in re.findall(r"[A-Za-z]+", body) if w.lower() not in ("todo", "tasks")]
         return len(words) < 8
+
+    def _plan_in_play(self) -> bool:
+        """Has this conversation mentioned the plan file at all?
+
+        Any entry — not a recent window — because the plan is typically
+        written early and discussed long after; and either name, since the
+        display path is what plan mode prints and the bots repeat.
+        """
+        needles = ("implementation-plan", "implementation plan")
+        return any(
+            n in e.text.lower() for e in self.transcript.entries for n in needles
+        )
 
     def _project_in_play(self, project: ProjectInfo, window: int = 30) -> bool:
         """Has this conversation actually touched the project?

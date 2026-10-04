@@ -1,5 +1,10 @@
 # CHANGELOG
 
+## 2026-10-04
+
+- **Fix: the convergence check no longer reads a plan this chat never wrote.** When the bots agree, one of them checks the claims against the room's sources. The implementation plan counted as a source whenever the file existed, and the file belongs to the workspace or project, not the chat, so an essay discussion was handed last month's build plan for something else and the checker reported, correctly, that it was "about a different project entirely". The plan is now a source only when this conversation has mentioned it.
+- **Fix: the council's copy button works on a phone.** The rich copy waited on a promise before writing, which Safari treats as outside the tap and refuses, and the failure was swallowed so the button looked dead. The write now happens inside the tap, falls back to plain text and then to the old select-and-copy, and says so when every route fails.
+
 ## 2026-10-03
 
 - **Continue in council: one button takes a page's conversation to the council.** Page chats live in Discuss's own workspace, so they never appeared in the council. The drawer's chat dock now has **continue in council ↗**: it copies the page chat and every margin comment (with the passage each is on), plus the page's title and address, into your council as a new chat of your own, and opens the council on it in a new tab. Both bots start fresh there and are handed the whole conversation on your first message, under the council's own instructions rather than Discuss's "short margin note" ones. The page keeps its chat and comments; no bot is summoned. The copy goes into the project the page is filed in (when exactly one), else the council's Inbox. Pressing again with nothing new reopens the same council chat. New companion route `POST /continue-in-council`, new `botference discuss continue <page>` for doing it from a terminal, new `core/session_import.py` that writes the chat through the council's own session store (no council restart needed).

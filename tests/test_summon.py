@@ -689,6 +689,18 @@ class TestVerificationSourcesStayInLane:
         # the bots' own bookkeeping is never evidence
         assert "PROJECT.md" not in src and "TASKS.md" not in src
 
+    async def test_a_stale_plan_counts_only_when_the_room_mentioned_it(self, tmp_path):
+        c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
+        plan = c._plan_path
+        plan.parent.mkdir(parents=True, exist_ok=True)
+        plan.write_text("# Implementation Plan — Space Governance review doc\n")
+        # an essay chat in a workspace whose plan file is about something else
+        await c.handle_input("@claude is Django a conqueror or a gardener?", ui)
+        assert "implementation-plan" not in c._verification_sources()
+        # a room that has actually talked about the plan gets it as a source
+        await c.handle_input("@claude update implementation-plan.md with that", ui)
+        assert "implementation-plan" in c._verification_sources()
+
 
 # ── short titles ──────────────────────────────────────────
 

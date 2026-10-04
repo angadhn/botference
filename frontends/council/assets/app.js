@@ -1210,26 +1210,55 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { els.toast.classList.remove('show'); els.toast.hidden = true; }, 1600);
   }
-  function copyText(t) {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) return; // no API: selection still works
-    navigator.clipboard.writeText(t).then(() => toast('copied ✓')).catch(() => { });
+  // The old-school copy: select a hidden textarea and ask the browser to
+  // copy it. It is what still works when the clipboard API refuses — which
+  // on a phone it does more often than not (Safari wants the call inside the
+  // tap, and a page behind a tunnel is not always "secure" to it).
+  function copyLegacy(t) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      ta.setSelectionRange(0, t.length);  // iOS ignores select() alone
+      const ok = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch { return false; }
+  }
+  // Every copy goes through here, so a failure is SAID rather than swallowed:
+  // the old version caught the clipboard's rejection and showed nothing, and
+  // on a phone that read as "the button does nothing".
+  async function copyText(t) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      try { await navigator.clipboard.writeText(t); toast('copied ✓'); return true; }
+      catch { /* fall through */ }
+    }
+    if (copyLegacy(t)) { toast('copied ✓'); return true; }
+    toast('copy failed — long-press the text to select it');
+    return false;
   }
   // whole-message copy: rich HTML *and* plain markdown on the clipboard, so a
   // paste into a doc keeps the links and headings while a paste into a text
   // field gets the markdown the agent actually wrote. Older browsers (and any
   // context where ClipboardItem is missing) fall back to the plain text.
-  async function copyMessage(msg) {
+  // The rich write is attempted SYNCHRONOUSLY, before any await: Safari only
+  // honours a clipboard write while the tap that caused it is still live, and
+  // an await in between is what lost it on the phone.
+  function copyMessage(msg) {
     const text = msg.getAttribute('data-raw') || (msg.querySelector('.body') || msg).textContent || '';
     const body = msg.querySelector('.body');
     const nav = navigator;
     if (body && nav.clipboard && nav.clipboard.write &&
         typeof window.ClipboardItem === 'function' && typeof window.Blob === 'function') {
       try {
-        await nav.clipboard.write([new window.ClipboardItem({
+        const p = nav.clipboard.write([new window.ClipboardItem({
           'text/html': new window.Blob([body.innerHTML], { type: 'text/html' }),
           'text/plain': new window.Blob([text], { type: 'text/plain' }),
         })]);
-        toast('copied ✓');
+        p.then(() => toast('copied ✓')).catch(() => copyText(text));
         return;
       } catch { /* fall through to plain text */ }
     }
