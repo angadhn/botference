@@ -1,0 +1,26 @@
+{
+  "transformed": {
+    "head": { "canonicalUrl": "https://www.newyorker.com/culture/notebook/the-test-piece" },
+    "article": {
+      "headerProps": {
+        "dangerousHed": "The <em>Test</em> Piece",
+        "dangerousDek": "A made-up dek for a made-up article &amp; its fixture.",
+        "contributors": { "author": { "items": [ { "name": "Ada Example" }, { "name": "Bo Sample" } ] } }
+      },
+      "body": ["div",
+        ["inline-embed", { "type": "callout:dropcap", "ref": "x" },
+          ["p", { "class": "has-dropcap" }, "Opening paragraph of the fixture, which a drop cap decorates on the real site."]],
+        ["p", {}, "A second paragraph with ", ["a", { "href": "https://example.com/source", "isExternal": true }, "a link in it"], " and ", ["em", "some emphasis"], "."],
+        ["ad", { "slot": "mid-content" }],
+        ["figure", {}, ["img", { "src": "https://example.com/pic.jpg" }], ["figcaption", "A caption the bots must not read as prose."]],
+        ["h2", {}, "A Section Heading"],
+        ["inline-embed", { "type": "image", "props": {} }, ["p", "An image embed's text, which is not prose."]],
+        ["p", "A third paragraph, written with no attrs object at all."],
+        ["blockquote", {}, ["p", "Quoted line one."], ["p", "Quoted line two."]],
+        ["journey-inline-newsletter", {}, ["p", "Sign up for our newsletter."]],
+        ["p", {}, "Unsafe <b>markup</b> in a string stays text & is escaped; a ", ["a", { "href": "javascript:alert(1)" }, "bad link"], " loses its href."],
+        ["p", {}, "   "]
+      ]
+    }
+  }
+}

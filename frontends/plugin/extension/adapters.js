@@ -41,6 +41,12 @@
 // its own extraction with { highlights: true }. Adding Notion or Office later
 // means one entry in REGISTRY and nothing else.
 //
+// Not every adapter replaces the page. The preloaded-state adapters (Condé
+// Nast, the New York Times) keep highlights on and only answer "what is the
+// whole text": the site draws part of the article and keeps all of it in an
+// inline script, which they parse. Their '' always means "do the ordinary
+// thing" — for the snapshot too (see SPEC, 2026-10-15).
+//
 // The hard parts are deliberately pure so they run in node:
 // gdocsId · gdocsScope · gdocsExportUrl · gdocsExportUrls · accountFromUrls ·
 // stripDocsSuffix · cleanExport · looksHtml · looksZip · bytesToBase64 ·
@@ -982,6 +988,399 @@
     },
   };
 
+  // ---- Condé Nast (preloaded-state sites) ---------------------------------
+  //
+  // The New Yorker, Wired, Vanity Fair and the rest of the Condé Nast stable
+  // serve an <article> holding the headline and a ~300-character stub of the
+  // body, then fill the body in from script AFTER deciding whether the reader
+  // may see it. A capture made at load — or ever, for a reader who is not
+  // subscribed — is a headline and a "Save this story" button, and the bots
+  // said so: "the saved copy cuts off after the headline".
+  //
+  // The whole piece is in the page all along, though: the server writes it into
+  // an inline script as `window.__PRELOADED_STATE__ = {…};`, plain JSON after
+  // the `=`. A content script cannot read the page's window (it runs in an
+  // isolated world), but it can read the script's TEXT and parse it, which is
+  // what this does — no injected script, no page-world bridge.
+  //
+  // The body is `transformed.article.body`, a JSON-ML tree: every element is
+  // `[tag, attrs?, ...children]`, where attrs is a plain object (absent when
+  // the second slot is already a child) and a child is a string or another
+  // element. Paragraphs are `["p", {…}, "text", ["a", {href}, "link"], …]`.
+  //
+  // Everything here fails to '' — no script, unparseable JSON, a body of the
+  // wrong shape, a state left over from the previous article after an in-site
+  // navigation — and '' sends content.js down its ordinary path, because these
+  // are ordinary pages: highlights stay on, and anchoring is by quoted words,
+  // which are the same words the site renders.
+  const CONDE_NAST_HOSTS = [
+    'newyorker.com', 'wired.com', 'vanityfair.com', 'vogue.com', 'gq.com',
+    'bonappetit.com', 'architecturaldigest.com', 'cntraveler.com', 'allure.com',
+    'epicurious.com',
+  ];
+  function condeNastHost(url) {
+    let h = '';
+    try { h = new URL(String(url)).hostname.toLowerCase(); } catch { return ''; }
+    for (const d of CONDE_NAST_HOSTS) if (h === d || h.endsWith('.' + d)) return d;
+    return '';
+  }
+
+  const PRELOAD_MARK = '__PRELOADED_STATE__';
+  const PRELOAD_HEAD = /^\s*window\.__PRELOADED_STATE__\s*=\s*/;
+  // The state object, from the TEXT of the page's inline scripts, or null.
+  function preloadedState(scriptTexts) {
+    for (const t of scriptTexts || []) {
+      const s = String(t == null ? '' : t);
+      if (!s.includes(PRELOAD_MARK)) continue;
+      const m = PRELOAD_HEAD.exec(s);
+      if (!m) continue;
+      const json = s.slice(m[0].length).trim().replace(/;\s*$/, '');
+      try {
+        const o = JSON.parse(json);
+        if (o && typeof o === 'object') return o;
+      } catch { /* not plain JSON: the generic path it is */ }
+    }
+    return null;
+  }
+
+  const isAttrs = x => !!x && typeof x === 'object' && !Array.isArray(x);
+  const kidsOf = n => (Array.isArray(n) ? n.slice(isAttrs(n[1]) ? 2 : 1) : []);
+  const attrsOf = n => (Array.isArray(n) && isAttrs(n[1]) ? n[1] : {});
+  const tagOf = n => (Array.isArray(n) ? String(n[0] || '').toLowerCase() : '');
+
+  // What is never the prose: ads, sign-up boxes, pictures, and the embeds
+  // that are not text. A "callout" embed is a drop-cap paragraph and IS prose.
+  const CN_SKIP = new Set(['ad', 'cm-unit', 'figure', 'figcaption', 'img', 'picture',
+    'video', 'audio', 'iframe', 'aside', 'script', 'style', 'svg', 'button', 'form']);
+  function cnSkip(n) {
+    const t = tagOf(n);
+    if (CN_SKIP.has(t) || t.includes('newsletter')) return true;
+    if (t === 'inline-embed') return !/^callout/i.test(String(attrsOf(n).type || ''));
+    return false;
+  }
+  const CN_BLOCK = new Set(['p', 'h2', 'h3', 'h4', 'h5', 'h6', 'li']);
+  const CN_INLINE_KEEP = { em: 'em', i: 'em', strong: 'strong', b: 'strong' };
+
+  const escCn = s => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const tidy = s => String(s || '').replace(/[ \t\r\f\v ]+/g, ' ').replace(/ *\n */g, '\n').trim();
+
+  // One block's words, as text and as HTML. A block nested in a block (a <p>
+  // inside an <li>) is flattened into it: the words matter, the nesting not.
+  function cnInline(n, out) {
+    if (typeof n === 'string' || typeof n === 'number') {
+      out.text += String(n); out.html += escCn(String(n)); return;
+    }
+    if (!Array.isArray(n) || cnSkip(n)) return;
+    const t = tagOf(n);
+    if (t === 'br') { out.text += '\n'; out.html += '<br>'; return; }
+    let open = '', close = '';
+    if (t === 'a') {
+      const href = String(attrsOf(n).href || '');
+      if (/^https?:\/\//i.test(href)) { open = '<a href="' + escCn(href) + '">'; close = '</a>'; }
+    } else if (CN_INLINE_KEEP[t]) {
+      open = '<' + CN_INLINE_KEEP[t] + '>'; close = '</' + CN_INLINE_KEEP[t] + '>';
+    }
+    out.html += open;
+    for (const c of kidsOf(n)) cnInline(c, out);
+    out.html += close;
+  }
+
+  // The body as a list of blocks: [{tag, text, html}], in reading order.
+  function cnBlocks(body) {
+    const blocks = [];
+    function walk(n) {
+      if (!Array.isArray(n) || cnSkip(n)) return;
+      const t = tagOf(n);
+      if (CN_BLOCK.has(t)) {
+        const o = { text: '', html: '' };
+        for (const c of kidsOf(n)) cnInline(c, o);
+        const text = tidy(o.text);
+        if (text) blocks.push({ tag: t === 'li' ? 'p' : t, text, html: o.html.trim() });
+        return;
+      }
+      if (t === 'blockquote') {
+        const before = blocks.length;
+        const kids = kidsOf(n);
+        // a quotation of bare words, with no <p> in it, is one paragraph
+        if (kids.some(c => typeof c === 'string')) walk(['p', ...kids]);
+        else for (const c of kids) walk(c);
+        const inner = blocks.splice(before);
+        if (inner.length) {
+          blocks.push({ tag: 'blockquote', text: inner.map(b => b.text).join('\n\n'),
+            html: inner.map(b => '<' + b.tag + '>' + b.html + '</' + b.tag + '>').join('') });
+        }
+        return;
+      }
+      for (const c of kidsOf(n)) walk(c);   // div, section, a callout embed…
+    }
+    walk(body);
+    return blocks;
+  }
+
+  // The parts of a piece that are not its body, from the header the site drew
+  // from. "dangerous" is Condé Nast's word for "may hold markup": stripped.
+  const stripTags = s => tidy(String(s == null ? '' : s).replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#39;|&#x27;|&rsquo;/g, '’').replace(/&lsquo;/g, '‘')
+    .replace(/&ldquo;/g, '“').replace(/&rdquo;/g, '”').replace(/&mdash;/g, '—'));
+
+  // {hed, dek, byline, blocks} for the piece in `state`, or null when the
+  // state is not a Condé Nast article (or is one for some OTHER page: an
+  // in-site navigation leaves the first article's script in the document).
+  function cnPiece(state, locationHref) {
+    const art = state && state.transformed && state.transformed.article;
+    if (!art || !Array.isArray(art.body)) return null;
+    const canon = state.transformed.head && state.transformed.head.canonicalUrl;
+    if (canon && locationHref) {
+      try {
+        const a = new URL(String(canon), String(locationHref)).pathname.replace(/\/+$/, '');
+        const b = new URL(String(locationHref)).pathname.replace(/\/+$/, '');
+        if (a !== b) return null;
+      } catch { /* an unreadable canonical decides nothing */ }
+    }
+    const blocks = cnBlocks(art.body);
+    if (!blocks.length) return null;
+    const hp = isAttrs(art.headerProps) ? art.headerProps : {};
+    const authors = ((hp.contributors && hp.contributors.author && hp.contributors.author.items) || [])
+      .map(a => stripTags(a && a.name)).filter(Boolean);
+    return {
+      hed: stripTags(hp.dangerousHed),
+      dek: stripTags(hp.dangerousDek),
+      byline: authors.length ? 'By ' + authors.join(', ') : '',
+      blocks,
+    };
+  }
+
+  function pieceText(piece, limit) {
+    if (!piece) return '';
+    const head = [piece.hed, piece.dek, piece.byline].filter(Boolean);
+    const all = head.concat(piece.blocks.map(b => b.text)).join('\n\n');
+    return all.slice(0, limit || TEXT_LIMIT).trimEnd();
+  }
+
+  function pieceHtml(piece) {
+    if (!piece) return '';
+    const out = [];
+    if (piece.hed) out.push('<h1>' + escCn(piece.hed) + '</h1>');
+    if (piece.dek) out.push('<p><em>' + escCn(piece.dek) + '</em></p>');
+    if (piece.byline) out.push('<p>' + escCn(piece.byline) + '</p>');
+    for (const b of piece.blocks) {
+      out.push(b.tag === 'blockquote'
+        ? '<blockquote>' + b.html + '</blockquote>'
+        : '<' + b.tag + '>' + b.html + '</' + b.tag + '>');
+    }
+    return '<article>' + out.join('\n') + '</article>';
+  }
+
+  // the page's inline scripts, as text — only the one that can hold the state
+  function inlineScriptTexts(mark) {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return [];
+    const out = [];
+    for (const s of document.querySelectorAll('script:not([src])')) {
+      const t = s.textContent || '';
+      if (t.includes(mark)) out.push(t);
+    }
+    return out;
+  }
+
+  // One factory for every preloaded-state site: how to find the site, which
+  // script to read, how to parse it and how to turn it into a piece.
+  function preloadAdapter(spec) {
+    return {
+      name: spec.name,
+      match(url) {
+        const host = spec.host(url);
+        return host ? { host } : null;
+      },
+      create(hit, env) {
+        const scripts = (env && env.scripts) || (() => inlineScriptTexts(spec.mark));
+        const href = (env && env.locationHref) ||
+          (() => (typeof location !== 'undefined' ? location.href : ''));
+        // Parsed once per (address, script text): the state is a few hundred
+        // KB of JSON and the headline is asked for often. The key is the
+        // address plus the scripts' lengths, so an in-site navigation — which
+        // the canonical check exists to catch — is never served the old piece.
+        let memo = { key: null, piece: null, err: '' };
+        const piece = () => {
+          let texts = [];
+          try { texts = scripts() || []; } catch { texts = []; }
+          const key = href() + '|' + texts.map(t => String(t).length).join(',');
+          if (memo.key !== key) {
+            let st = null, p = null;
+            try { st = spec.parse(texts); p = st ? spec.piece(st, href()) : null; } catch { p = null; }
+            memo = { key, piece: p, err: !st ? 'no ' + spec.mark + ' script on this page'
+              : (!p ? 'the preloaded state holds no article body for this page' : '') };
+          }
+          if (memo.err) ad.lastError = memo.err;
+          return memo.piece;
+        };
+        const ad = {
+          name: spec.name,
+          kind: 'article',
+          host: hit && hit.host,
+          // an ordinary page: real text nodes, real highlights, and '' from
+          // either reader below means "do what you would have done anyway"
+          capabilities: { highlights: true },
+          lastError: '',
+          title() { const p = piece(); return (p && p.hed) || ''; },
+          async articleText() { ad.lastError = ''; return pieceText(piece(), TEXT_LIMIT); },
+          snapshotHtml() { ad.lastError = ''; return pieceHtml(piece()); },
+        };
+        return ad;
+      },
+    };
+  }
+
+  const CONDE_NAST = preloadAdapter({
+    name: 'condenast', host: condeNastHost, mark: PRELOAD_MARK,
+    parse: preloadedState, piece: cnPiece,
+  });
+
+  // ---- The New York Times (the same idea, a different tree) ---------------
+  //
+  // A metered or gated NYT article renders a handful of paragraphs into
+  // `section[name="articleBody"]` and stops; the rest of the piece sits in
+  // the page as `window.__preloadedData = {…};`. Two differences from Condé
+  // Nast: the script is NOT quite JSON (bare `undefined` values appear in it,
+  // which JSON.parse refuses, so they are read as null), and the body is a
+  // list of typed blocks rather than JSON-ML:
+  //
+  //   loaderData.data.article = { headline: {default}, summary, url,
+  //     bylines: [{renderedRepresentation: "By …"}],
+  //     sprinkledBody: { content: [ {__typename: 'ParagraphBlock',
+  //       content: [ {__typename: 'TextInline', text, formats: [
+  //         {__typename: 'LinkFormat', url} | 'BoldFormat' | 'ItalicFormat' ]},
+  //         {__typename: 'LineBreakInline'} ]}, 'Heading2Block', 'BlockquoteBlock'
+  //       (paragraphs inside), and the rest — Dropzone (ads), ImageBlock,
+  //       HeaderBasicBlock (the header, read from the fields above) — skipped ] } }
+  //
+  // It produces the same {hed, dek, byline, blocks} a Condé Nast piece does,
+  // so the text and the snapshot are written by the same two functions.
+  const NYT_HOSTS = ['nytimes.com'];
+  function nytHost(url) {
+    let h = '';
+    try { h = new URL(String(url)).hostname.toLowerCase(); } catch { return ''; }
+    for (const d of NYT_HOSTS) if (h === d || h.endsWith('.' + d)) return d;
+    return '';
+  }
+  const NYT_MARK = '__preloadedData';
+  const NYT_HEAD = /^\s*window\.__preloadedData\s*=\s*/;
+  // `undefined` is only ever a VALUE here; read it as null wherever it stands
+  // OUTSIDE a string. A scan, not a regex: the prose itself can say
+  // "x: undefined," and the words must arrive as written.
+  function nullUndefined(src) {
+    const s = String(src);
+    let out = '', i = 0, from = 0, inStr = false;
+    while (i < s.length) {
+      const c = s.charCodeAt(i);
+      if (inStr) {
+        if (c === 92) { i += 2; continue; }          // backslash: skip the escaped char
+        if (c === 34) inStr = false;                 // closing quote
+        i++; continue;
+      }
+      if (c === 34) { inStr = true; i++; continue; }
+      if (c === 117 && s.startsWith('undefined', i)) {  // 'u'
+        out += s.slice(from, i) + 'null';
+        i += 9; from = i; continue;
+      }
+      i++;
+    }
+    return out + s.slice(from);
+  }
+  function nytPreloaded(scriptTexts) {
+    for (const t of scriptTexts || []) {
+      const s = String(t == null ? '' : t);
+      if (!s.includes(NYT_MARK)) continue;
+      const m = NYT_HEAD.exec(s);
+      if (!m) continue;
+      const json = s.slice(m[0].length).trim().replace(/;\s*$/, '');
+      for (const attempt of [json, () => nullUndefined(json)]) {
+        try {
+          const o = JSON.parse(typeof attempt === 'function' ? attempt() : attempt);
+          if (o && typeof o === 'object') return o;
+        } catch { /* next attempt, then the generic path */ }
+      }
+    }
+    return null;
+  }
+
+  // one inline run, as text and html
+  function nytInline(n, out) {
+    if (!n || typeof n !== 'object') return;
+    if (n.__typename === 'LineBreakInline') { out.text += '\n'; out.html += '<br>'; return; }
+    if (typeof n.text !== 'string') {
+      // a nested run (rare), read through
+      for (const c of Array.isArray(n.content) ? n.content : []) nytInline(c, out);
+      return;
+    }
+    let open = '', close = '';
+    for (const f of Array.isArray(n.formats) ? n.formats : []) {
+      const k = f && f.__typename;
+      if (k === 'LinkFormat' && /^https?:\/\//i.test(String(f.url || ''))) {
+        open = '<a href="' + escCn(f.url) + '">' + open; close = close + '</a>';
+      } else if (k === 'BoldFormat') { open += '<strong>'; close = '</strong>' + close; }
+      else if (k === 'ItalicFormat') { open += '<em>'; close = '</em>' + close; }
+    }
+    out.text += n.text;
+    out.html += open + escCn(n.text) + close;
+  }
+  const NYT_BLOCK = { ParagraphBlock: 'p', Heading2Block: 'h2', Heading3Block: 'h3', Heading4Block: 'h4',
+    DetailBlock: 'p' };
+  function nytBlock(b) {
+    const o = { text: '', html: '' };
+    for (const c of Array.isArray(b.content) ? b.content : []) nytInline(c, o);
+    return o;
+  }
+  function nytBlocks(content) {
+    const blocks = [];
+    for (const b of Array.isArray(content) ? content : []) {
+      if (!b || typeof b !== 'object') continue;
+      const kind = b.__typename;
+      if (NYT_BLOCK[kind]) {
+        const o = nytBlock(b);
+        const text = tidy(o.text);
+        if (text) blocks.push({ tag: NYT_BLOCK[kind], text, html: o.html.trim() });
+      } else if (kind === 'BlockquoteBlock' || kind === 'PullquoteBlock') {
+        if (kind === 'PullquoteBlock') continue;    // a repeat of the prose, for show
+        const inner = nytBlocks((b.content || []).map(c => (c && c.__typename ? c : Object.assign({ __typename: 'ParagraphBlock' }, c))));
+        if (inner.length) {
+          blocks.push({ tag: 'blockquote', text: inner.map(x => x.text).join('\n\n'),
+            html: inner.map(x => '<' + x.tag + '>' + x.html + '</' + x.tag + '>').join('') });
+        }
+      }
+      // everything else — Dropzone (ads), ImageBlock, HeaderBasicBlock … — is not prose
+    }
+    return blocks;
+  }
+  function nytPiece(state, locationHref) {
+    const art = state && state.loaderData && state.loaderData.data && state.loaderData.data.article;
+    const body = art && art.sprinkledBody && art.sprinkledBody.content;
+    if (!art || !Array.isArray(body)) return null;
+    if (art.url && locationHref) {
+      try {
+        const a = new URL(String(art.url), String(locationHref)).pathname.replace(/\/+$/, '');
+        const b = new URL(String(locationHref)).pathname.replace(/\/+$/, '');
+        if (a !== b) return null;
+      } catch { /* an unreadable url decides nothing */ }
+    }
+    const blocks = nytBlocks(body);
+    if (!blocks.length) return null;
+    const by = (Array.isArray(art.bylines) ? art.bylines : [])
+      .map(b => stripTags(b && b.renderedRepresentation)).filter(Boolean);
+    return {
+      hed: stripTags(art.headline && (art.headline.default || art.headline.seo)),
+      dek: stripTags(art.summary),
+      byline: by.join(', '),
+      blocks,
+    };
+  }
+
+  const NYT = preloadAdapter({
+    name: 'nyt', host: nytHost, mark: NYT_MARK,
+    parse: nytPreloaded, piece: nytPiece,
+  });
+
   // ---- page identity ------------------------------------------------------
   // WHICH page a document is, when the address bar and the document disagree.
   //
@@ -1028,7 +1427,7 @@
 
   // ---- registry -----------------------------------------------------------
 
-  const REGISTRY = [GDOCS, PDF];
+  const REGISTRY = [GDOCS, PDF, CONDE_NAST, NYT];
 
   function pick(url, env) {
     for (const a of REGISTRY) {
@@ -1057,6 +1456,11 @@
     isFileUrl, isPdfHashUrl, isPdfTextUrl, isPdfIdentUrl, bytesToHex,
     pdfHashUrl, pdfTextUrl, pdfNormalizedText, pdfIdentity, pdfFileName,
     PDF_HASH_SCHEME, PDF_TEXT_SCHEME, LOCAL_PDF_SITE,
+    // Condé Nast's preloaded state (pure: script text in, words out)
+    CONDE_NAST_HOSTS, condeNastHost, preloadedState, cnBlocks, cnPiece,
+    pieceText, pieceHtml,
+    // …and the New York Times'
+    NYT_HOSTS, nytHost, nytPreloaded, nytBlocks, nytPiece,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPAdapters = api;

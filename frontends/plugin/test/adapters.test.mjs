@@ -963,10 +963,161 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
   }
 }
 
+// ---- 18. The New York Times: the same, from __preloadedData -----------------
+{
+  const URLN = 'https://www.nytimes.com/2026/10/15/opinion/test-piece.html';
+  const para = (...runs) => ({ __typename: 'ParagraphBlock', textAlign: 'LEFT', content: runs });
+  const run = (text, formats) => ({ __typename: 'TextInline', text, formats: formats || [] });
+  const STATE = { loaderData: { data: { article: {
+    url: URLN,
+    headline: { default: 'A Test Headline', seo: 'seo' },
+    summary: 'A summary that is the dek.',
+    bylines: [{ renderedRepresentation: 'By Cy Fixture' }],
+    sprinkledBody: { content: [
+      { __typename: 'HeaderBasicBlock', headline: { content: [run('A Test Headline')] } },
+      para(run('First paragraph, '), run('linked', [{ __typename: 'LinkFormat', url: 'https://example.com/x' }]), run(' and '), run('bold', [{ __typename: 'BoldFormat' }]), run('.')),
+      { __typename: 'Dropzone', index: 1 },
+      { __typename: 'ImageBlock', media: { caption: { text: 'An image caption, not prose.' } } },
+      { __typename: 'Heading2Block', content: [run('A Subhead')] },
+      para(run('Second paragraph,'), { __typename: 'LineBreakInline' }, run('with a break.')),
+      { __typename: 'BlockquoteBlock', content: [{ __typename: 'ParagraphBlock', content: [run('Quoted.')] }] },
+      { __typename: 'PullquoteBlock', content: [run('A pull quote repeats the prose.')] },
+      para(run('<script>not markup</script>', [{ __typename: 'LinkFormat', url: 'javascript:void(0)' }])),
+    ] },
+  } } } };
+  // the real script is NOT JSON: bare `undefined` values appear in it
+  const script = 'window.__preloadedData = ' + JSON.stringify(STATE).replace('"seo":"seo"', '"seo":undefined') + ';';
+  ok('nyt: the fixture really is not JSON', (() => { try { JSON.parse(script.slice(25, -1)); return false; } catch { return true; } })());
+
+  ok('nyt: www.nytimes.com matches', A.nytHost(URLN) === 'nytimes.com');
+  ok('nyt: a look-alike does not', A.nytHost('https://nytimes.com.evil.test/x') === '' && A.nytHost('https://notnytimes.com/x') === '');
+  eq('nyt: pick() finds it', (A.pick(URLN, { scripts: () => [], locationHref: () => URLN }) || {}).name, 'nyt');
+
+  const st = A.nytPreloaded([script]);
+  ok('nyt: the script parses, undefined read as null', !!st && st.loaderData.data.article.headline.seo === null);
+  ok('nyt: an "undefined" inside a string is left alone',
+    A.nytPreloaded(['window.__preloadedData = {"a":"x: undefined, y","b":undefined};']).a === 'x: undefined, y');
+  eq('nyt: garbage is no state', A.nytPreloaded(['window.__preloadedData = function(){};']), null);
+  eq('nyt: no script is no state', A.nytPreloaded([]), null);
+
+  const piece = A.nytPiece(st, URLN);
+  eq('nyt: blocks in order, header/ads/images/pull quotes skipped', piece.blocks.map(x => x.tag), ['p', 'h2', 'p', 'blockquote', 'p']);
+  eq('nyt: runs join into one paragraph', piece.blocks[0].text, 'First paragraph, linked and bold.');
+  ok('nyt: links and bold survive in the html',
+    piece.blocks[0].html.includes('<a href="https://example.com/x">linked</a>') && piece.blocks[0].html.includes('<strong>bold</strong>'));
+  eq('nyt: a line break is a newline', piece.blocks[2].text, 'Second paragraph,\nwith a break.');
+  ok('nyt: markup in text is escaped and a javascript: link dropped',
+    piece.blocks[4].html === '&lt;script&gt;not markup&lt;/script&gt;');
+  eq('nyt: headline, dek, byline', [piece.hed, piece.dek, piece.byline], ['A Test Headline', 'A summary that is the dek.', 'By Cy Fixture']);
+  ok('nyt: the text opens with the header and keeps paragraph breaks',
+    A.pieceText(piece).startsWith('A Test Headline\n\nA summary that is the dek.\n\nBy Cy Fixture\n\nFirst paragraph'));
+  ok('nyt: no caption anywhere', !/caption|pull quote/i.test(A.pieceText(piece) + A.pieceHtml(piece)));
+  eq('nyt: another article\'s state is no piece', A.nytPiece(st, 'https://www.nytimes.com/2026/10/15/us/other.html'), null);
+  eq('nyt: no article is no piece', A.nytPiece({ loaderData: {} }, URLN), null);
+  eq('nyt: a body with nothing readable is no piece',
+    A.nytPiece({ loaderData: { data: { article: { sprinkledBody: { content: [{ __typename: 'Dropzone' }] } } } } }, URLN), null);
+  const ad = A.pick(URLN, { scripts: () => [script], locationHref: () => URLN });
+  eq('nyt: title() is the headline', ad.title(), 'A Test Headline');
+  ok('nyt: snapshotHtml() is the whole piece', /<blockquote><p>Quoted\.<\/p><\/blockquote>/.test(ad.snapshotHtml()));
+  ok('nyt: highlights stay on', ad.capabilities.highlights === true);
+}
+
+// ---- 17. Condé Nast: the whole piece from the preloaded state ---------------
+{
+  const STATE = JSON.parse(fs.readFileSync(path.join(here, 'fixtures', 'condenast-preload.json'), 'utf8'));
+  const URL0 = 'https://www.newyorker.com/culture/notebook/the-test-piece';
+  const script = 'window.__PRELOADED_STATE__ = ' + JSON.stringify(STATE) + ';';
+
+  // the host matcher: one constant, subdomains yes, look-alikes no
+  for (const h of A.CONDE_NAST_HOSTS) {
+    ok('cn: matches ' + h, A.condeNastHost('https://www.' + h + '/story/x') === h);
+  }
+  ok('cn: a bare host matches', A.condeNastHost('https://newyorker.com/a') === 'newyorker.com');
+  ok('cn: a look-alike does not', A.condeNastHost('https://notnewyorker.com/a') === '');
+  ok('cn: a host that merely contains the name does not', A.condeNastHost('https://newyorker.com.evil.test/a') === '');
+  ok('cn: junk is not a host', A.condeNastHost('not a url') === '');
+  eq('cn: pick() finds the adapter', (A.pick(URL0, { scripts: () => [], locationHref: () => URL0 }) || {}).name, 'condenast');
+  eq('cn: …and leaves everyone else alone', A.pick('https://example.com/post', {}), null);
+  eq('cn: …and Google Docs keeps its own', (A.pick('https://docs.google.com/document/d/' + ID + '/edit', {}) || {}).name, 'gdocs');
+
+  // parsing the script TEXT
+  ok('cn: the state parses from its script', !!A.preloadedState(['var x = 1;', script]));
+  ok('cn: a trailing semicolon and whitespace are fine', !!A.preloadedState([script + '  \n']));
+  eq('cn: no script, no state', A.preloadedState(['var y = 2;']), null);
+  eq('cn: a script that is not plain JSON is no state', A.preloadedState(['window.__PRELOADED_STATE__ = JSON.parse("{}");']), null);
+  eq('cn: a mention of the name somewhere else is no state', A.preloadedState(['if (window.__PRELOADED_STATE__) go();']), null);
+  eq('cn: truncated JSON is no state', A.preloadedState([script.slice(0, 200)]), null);
+
+  // the walker
+  const blocks = A.cnBlocks(STATE.transformed.article.body);
+  eq('cn: blocks in reading order, junk skipped', blocks.map(b => b.tag), ['p', 'p', 'h2', 'p', 'blockquote', 'p']);
+  ok('cn: the drop-cap callout IS prose', /^Opening paragraph/.test(blocks[0].text));
+  eq('cn: inline children join into one paragraph', blocks[1].text, 'A second paragraph with a link in it and some emphasis.');
+  ok('cn: a link keeps its href in the html', blocks[1].html.includes('<a href="https://example.com/source">a link in it</a>'));
+  ok('cn: emphasis survives as <em>', blocks[1].html.includes('<em>some emphasis</em>'));
+  const all = blocks.map(b => b.text).join(' ');
+  ok('cn: ads, figures, captions, image embeds and newsletters are not prose',
+    !/caption|image embed|newsletter/i.test(all), all);
+  ok('cn: an element with no attrs object still reads', /written with no attrs/.test(all));
+  eq('cn: a blockquote holds its paragraphs', blocks[4].text, 'Quoted line one.\n\nQuoted line two.');
+  ok('cn: markup in a string is escaped, not obeyed', blocks[5].html.includes('&lt;b&gt;markup&lt;/b&gt;') && blocks[5].html.includes('&amp;'));
+  ok('cn: a javascript: link loses its href', !/javascript:/.test(blocks[5].html) && blocks[5].text.includes('bad link'));
+  eq('cn: a non-array body is no blocks', A.cnBlocks('nope'), []);
+
+  // the piece, the text, the snapshot
+  const piece = A.cnPiece(STATE, URL0);
+  eq('cn: headline with its markup stripped', piece.hed, 'The Test Piece');
+  eq('cn: dek, entities decoded', piece.dek, 'A made-up dek for a made-up article & its fixture.');
+  eq('cn: byline names every author', piece.byline, 'By Ada Example, Bo Sample');
+  const text = A.pieceText(piece);
+  ok('cn: text opens with headline, dek, byline', text.startsWith('The Test Piece\n\nA made-up dek') && text.includes('By Ada Example'));
+  ok('cn: paragraph breaks are kept', text.includes('emphasis.\n\nA Section Heading\n\nA third'));
+  eq('cn: the text is capped', A.pieceText(piece, 20).length <= 20, true);
+  const snap = A.pieceHtml(piece);
+  ok('cn: snapshot has the headline as <h1>', snap.includes('<h1>The Test Piece</h1>'));
+  ok('cn: …the heading as <h2>, the quote as <blockquote>',
+    snap.includes('<h2>A Section Heading</h2>') && snap.includes('<blockquote><p>Quoted line one.</p><p>Quoted line two.</p></blockquote>'));
+  ok('cn: …and no figure', !/caption|<img|<figure/i.test(snap));
+
+  // falling back to '' — the generic path runs
+  eq('cn: another page\'s state (an in-site navigation) is no piece',
+    A.cnPiece(STATE, 'https://www.newyorker.com/news/some-other-story'), null);
+  ok('cn: a trailing slash on the address is the same page', !!A.cnPiece(STATE, URL0 + '/'));
+  eq('cn: a state with no article is no piece', A.cnPiece({ transformed: {} }, URL0), null);
+  eq('cn: a body with no prose is no piece', A.cnPiece({ transformed: { article: { body: ['div', ['ad', {}]] } } }, URL0), null);
+  eq('cn: no piece, no text', A.pieceText(null), '');
+  eq('cn: no piece, no snapshot', A.pieceHtml(null), '');
+
+  // the adapter object, end to end through env
+  (async () => {
+    const ad = A.pick(URL0, { scripts: () => [script], locationHref: () => URL0 });
+    ok('cn: highlights stay ON (an ordinary page)', ad.capabilities.highlights === true && ad.capabilities.textFallback !== false);
+    eq('cn: kind is article', ad.kind, 'article');
+    eq('cn: title() is the headline', ad.title(), 'The Test Piece');
+    ok('cn: articleText() is the whole piece', /Quoted line two/.test(await ad.articleText()));
+    ok('cn: snapshotHtml() is clean html', /^<article><h1>/.test(ad.snapshotHtml()));
+    const bare = A.pick(URL0, { scripts: () => [], locationHref: () => URL0 });
+    eq('cn: no state → articleText() is \'\'', await bare.articleText(), '');
+    eq('cn: …and snapshotHtml() is \'\'', bare.snapshotHtml(), '');
+    eq('cn: …and title() is \'\'', bare.title(), '');
+    ok('cn: …and lastError says why', /PRELOADED_STATE/.test(bare.lastError));
+    const bad = A.pick(URL0, { scripts: () => ['window.__PRELOADED_STATE__ = {"transformed": {"article": {"body": 7}}};'], locationHref: () => URL0 });
+    eq('cn: malformed body → \'\'', await bad.articleText(), '');
+    ok('cn: …and lastError says so', /no article body/.test(bad.lastError));
+    let href = URL0;
+    const moving = A.pick(URL0, { scripts: () => [script], locationHref: () => href });
+    ok('cn: reads while the address is the piece', !!(await moving.articleText()));
+    href = 'https://www.newyorker.com/news/next-story';
+    eq('cn: after an in-site navigation the old state is not served (memo keyed by address)', await moving.articleText(), '');
+  })().then(() => finish(), (e) => { fail++; failures.push('cn async: ' + e); finish(); });
+}
+
 // ---- report -------------------------------------------------------------------
+function finish() {
 if (fail) {
   console.error('\nFAILED (' + fail + '):');
   for (const f of failures) console.error('  ✗ ' + f);
 }
 console.log((fail ? '✗' : '✓') + ' adapters.test.mjs — ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
+}

@@ -1430,6 +1430,31 @@ async function main() {
       'the very first turn on the page already names the snapshot by absolute path');
   });
 
+  // --- re-capture: a later snapshot replaces the earlier one ---------------
+  // A paywalled or late-filled article is captured at load as a headline and
+  // a stub; the prose lands seconds later and the extension sends the page
+  // again. The file the bots are told to read must be the NEWER one.
+  await test('a second /snapshot for the same page replaces the first', async () => {
+    const url = 'https://ledger.test/2026/late-hydrated';
+    const k = crypto.createHash('sha1').update(url).digest('hex');
+    const snapFile = path.join(root, '.botference', 'plugin', 'snapshots', `${k}.html`);
+    await POST(base, '/page', { url, title: 'Late Hydrated', site: 'ledger.test' });
+    const first = await POST(base, '/snapshot', { url, html: '<h1>Late Hydrated</h1><p>HEADER-ONLY stub.</p>' });
+    assert.equal(first.json.stored, true);
+    assert.ok(fs.readFileSync(snapFile, 'utf8').includes('HEADER-ONLY'));
+    const second = await POST(base, '/snapshot', { url,
+      html: '<h1>Late Hydrated</h1><p>The FULL-BODY paragraph that arrived after the paywall check.</p>' });
+    assert.equal(second.json.stored, true, 'the second capture is stored too');
+    const now = fs.readFileSync(snapFile, 'utf8');
+    assert.ok(now.includes('FULL-BODY'), 'the file is the newer capture');
+    assert.ok(!now.includes('HEADER-ONLY'), '…and nothing of the stale one is left');
+    const from = inputs(logFile).length;
+    await POST(base, '/thread', { url, quote: 'FULL-BODY paragraph', prefix: '', suffix: '',
+      msg: { text: '@claude what does the body say?' } });
+    const turn = await waitFor(() => inputs(logFile).slice(from).find(t => t.startsWith('@claude ')), 'the turn');
+    assert.ok(turn.includes(snapFile), 'and the turn points the bots at that file');
+  });
+
   // --- .docx comments ----------------------------------------------------
   await test('a .docx rides a mention and its comments reach the envelope', async () => {
     const url = 'https://docs.google.test/document/d/abc/edit';

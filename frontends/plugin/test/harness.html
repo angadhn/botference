@@ -7212,6 +7212,78 @@ async function selftest() {
       S.querySelectorAll('.pane[data-pane="comments"] .card').length === threadsBefore);
   }
 
+  // ---- a header-only <article> is not the piece -------------------------
+  // The paywall shape (Condé Nast, logged out): an <article> holding the
+  // headline, a byline and a share bar — comfortably over the thin-landmark
+  // line — while the prose sits in a block beside it. The landmark's own
+  // paragraphs are under a quarter of that block's, so the block wins.
+  {
+    const lifted = [...document.querySelectorAll('article, main, [role="main"]')]
+      .map(el => ({ el, at: el.nextSibling, in: el.parentNode }));
+    for (const h of lifted) h.el.remove();
+    const pose = document.createElement('div');
+    pose.id = 'h-paywall';
+    pose.innerHTML = '<article><h1>The Header-Only Piece</h1>'
+      + '<p>By A. Writer · October 15, 2026 · a twelve-minute read</p>'
+      + '<div>Save this story. Share · Save · Comment · Gift · Listen · Print · Facebook · X · '
+      + 'Email · Copy link · Bookmark · Read later · Newsletter sign-up for more like this, '
+      + 'and every other button a magazine header carries before the words begin.</div></article>'
+      + '<div id="h-paywall-body">'
+      + ['The first paragraph of the real body sits outside the landmark entirely, which is the whole bug.',
+         'A second paragraph keeps going, long enough that the block clearly outweighs the header by far.',
+         'A third paragraph makes the point again, because one paragraph alone proves nothing at all here.',
+         'A fourth paragraph, and a fifth after it, are what the bots would otherwise never have been shown.',
+         'The fifth paragraph closes the fixture with the sentence the check below goes looking for: PAYWALL-BODY-END.']
+        .map(t => '<p>' + t + '</p>').join('') + '</div>';
+    document.body.appendChild(pose);
+    const root = window.__bfp.recapture.root();
+    check('a header-only <article> beside the prose: the prose block is the root',
+      !!root && root.id === 'h-paywall-body');
+    const read = await window.__bfp.articleText();
+    check('…so the bots are handed the body, not the byline', /PAYWALL-BODY-END/.test(read));
+    // and the ordinary case is untouched: an <article> that holds its own prose
+    pose.querySelector('article').appendChild(document.getElementById('h-paywall-body'));
+    const root2 = window.__bfp.recapture.root();
+    check('…while an <article> that holds its prose is still the root',
+      !!root2 && root2.tagName === 'ARTICLE');
+    pose.remove();
+    for (const h of lifted) h.in.insertBefore(h.el, h.at);
+  }
+
+  // ---- late hydration: prose that lands after the capture is re-sent ------
+  // A paywall script that writes the body in seconds after load. The watcher
+  // is armed by the record (this page has one now); a re-arm here starts its
+  // 20s window afresh, since the pose has been running for longer than that.
+  {
+    window.__bfp.recapture.disarm();
+    window.__bfp.recapture.arm();
+    await until(() => window.__bfp.recapture.watching, 2000);
+    check('an annotated page watches for late prose', window.__bfp.recapture.watching);
+    const before = window.__bfp.recapture.count;
+    const nSnaps = snapshots.length;
+    const art = document.querySelector('article');
+    const late = document.createElement('p');
+    late.textContent = 'LATE-HYDRATED paragraph, written in by a script long after the load event fired.';
+    art.appendChild(late);
+    const fired = await until(() => window.__bfp.recapture.count > before, 4000);
+    check('…a change to the article text fires a re-capture', !!fired);
+    const resent = await until(() => snapshots.slice(nSnaps).find(h => /LATE-HYDRATED/.test(h)), 4000);
+    check('…and the companion is sent the newer snapshot', !!resent);
+    // a mutation that changes no words (our own painting does exactly this)
+    const count2 = window.__bfp.recapture.count;
+    const n2 = snapshots.length;
+    const span = document.createElement('span');
+    art.appendChild(span);
+    await sleep(900);
+    check('…while a mutation that changes no words sends nothing',
+      window.__bfp.recapture.count === count2 && snapshots.length === n2);
+    span.remove();
+    late.remove();
+    await sleep(900);
+    window.__bfp.recapture.disarm();
+    check('…and disarming stops the watch', !window.__bfp.recapture.watching);
+  }
+
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;
   const el = document.getElementById('h-log');

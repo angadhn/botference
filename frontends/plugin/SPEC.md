@@ -11331,3 +11331,94 @@ defaulting + session-index + unknown project, unconfirmed council, guest 403);
 tests/test_session_import.py (7, incl. a restore through
 `_restore_from_payload` proving the council prompt survives and both bots are
 backfilled).
+
+## Amendment (2026-10-15): the whole article, on paywalled and late-filled pages
+
+**The failure.** A New Yorker piece was saved as a 725-byte snapshot: the
+headline block and nothing else. Both bots, told to read the snapshot file,
+said the copy stopped after the headline. Condé Nast serves an `<article>`
+with the header and a ~300-character stub; for a reader without access the
+body is never put on the page at all (measured logged out: 0 body paragraphs,
+88 words in the `<article>`). Logged in, the same page carries all 23
+paragraphs (16.5k characters) already at `interactive`, before the load
+event, and nothing changes over the next 18s — so the late-filling case is
+real for metered and gated readers, not for subscribers. The text sent with a
+mention was re-read each time, but the snapshot was only ever sent on the
+first act, so a stale one was never replaced.
+
+**Adapters for preloaded-state sites (`adapters.js`).** Some sites put the
+whole article into the page as a script assignment and only draw part of it.
+A content script cannot read the page's `window`, but it can read the
+script's text, so these adapters parse it — no injected script:
+
+- **Condé Nast** — `CONDE_NAST_HOSTS` (newyorker, wired, vanityfair, vogue,
+  gq, bonappetit, architecturaldigest, cntraveler, allure, epicurious; a
+  subdomain of one matches, a look-alike does not). Script:
+  `window.__PRELOADED_STATE__ = {…};`, plain JSON. Body:
+  `transformed.article.body`, a JSON-ML tree (`[tag, attrs?, ...children]`).
+  Header: `headerProps.dangerousHed`, `dangerousDek`,
+  `contributors.author.items[].name`. Skipped: ads, `cm-unit`, newsletters,
+  figures, captions, and every `inline-embed` except `callout:*` (drop-cap
+  paragraphs). Live check, logged out: 2,652 words (23 paragraphs) against 88
+  in the DOM; a Wired story read the same way.
+- **The New York Times** — `nytimes.com`. Script:
+  `window.__preloadedData = {…};`, which is *not* plain JSON (bare
+  `undefined` values); those are read as `null` by a scan that leaves strings
+  alone. Body: `loaderData.data.article.sprinkledBody.content`, typed blocks
+  (`ParagraphBlock`, `Heading2Block`, `BlockquoteBlock`, …; `Dropzone`,
+  `ImageBlock`, `HeaderBasicBlock`, `PullquoteBlock` skipped). Live check on
+  a gated opinion piece: 1,967 words (35 blocks) against 8 paragraphs in
+  `section[name="articleBody"]`; 7 of those 8 match the extracted text word
+  for word.
+
+Both come from one factory (`preloadAdapter`) and produce the same
+`{hed, dek, byline, blocks}`, which `pieceText` (headline, dek, byline, then
+paragraphs with blank lines between) and `pieceHtml` (`<h1>`, `<p>`, `<h2>`,
+`<blockquote>`, `<a href>` for http(s) only, `<em>`/`<strong>`) turn into the
+first-turn text and the snapshot. Rules:
+
+- **Highlights stay on.** These are ordinary pages; anchoring is by quoted
+  words, which are the words the site renders.
+- **Any failure is `''`, and `''` means "do the ordinary thing"**: no script,
+  unparseable script, a body of the wrong shape, or a state whose own address
+  (`head.canonicalUrl` / `article.url`) is a different path from the address
+  bar (an in-site navigation leaves the first article's script behind). For
+  `articleText()` that was already the rule; `snapshotHtml()` now follows it
+  too on an ordinary page (`CAPS.highlights && CAPS.textFallback !== false`):
+  `''` falls through to cloning the article. Docs and PDFs keep `''` final.
+- Parsed once per address-plus-script-length, so asking for the headline
+  often costs nothing.
+
+**The re-capture rule (`content.js`).**
+
+1. *Snapshot before every summoning message.* Any message that will summon a
+   bot (an `@`-mention or a routed message), and the first act on a page,
+   sends the snapshot before the message (`snapshotBeforeSend`). Order stays
+   record → snapshot → message; the snapshot now goes after the page text is
+   read, so an adapter that fetches (Docs) reuses that read. The existing
+   hash check makes an unchanged page cost one clone and no request.
+2. *Watch for late prose.* A page with a record arms a watcher
+   (`armRecapture`, from `loadPage`): after `pageSettled`, a MutationObserver
+   on `document.body`, debounced 500ms, for 20s. When the article text's hash
+   changes it re-sends the snapshot. The text itself rides the next mention,
+   which already re-reads the page and flags `article_changed` when the hash
+   moved. Not armed where the DOM is not the document (Docs, PDFs). Disarmed
+   on `forgetPage` (an in-site navigation or a delete).
+3. *The companion keeps the latest.* `POST /snapshot` was already
+   replace-whole (owner-only, 2MB sanitizer cap); it is now tested as such.
+
+**Extractor (`articleRoot`).** After the thin-landmark guard, the landmark's
+own paragraph text (`<p>`s of 40+ characters) is weighed against the best
+paragraph block in the document; under a quarter of it, and neither contains
+the other, the block wins. An ordinary article holds its own best block, so
+nothing changes there.
+
+Tests: adapters.test.mjs sections 17 (Condé Nast: host matcher, script
+parsing, walker, skips, escaping, header, fallbacks to `''`, the adapter end
+to end, an in-site navigation) and 18 (NYT: the not-JSON script, an
+`undefined` inside a string, blocks, fallbacks); fixture
+`test/fixtures/condenast-preload.json` (synthetic); companion.test.mjs "a
+second /snapshot for the same page replaces the first"; harness `?selftest=1`
+gains a header-only `<article>` beside the prose and the late-hydration
+watcher (fires on new words, re-sends the snapshot, ignores mutations that
+change no words). 54/54 poses green.

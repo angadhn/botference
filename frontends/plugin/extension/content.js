@@ -52,7 +52,10 @@
 //                            and records the name of the file it came from).
 //   snapshotHtml()           the phone-readable copy, where cloning the article
 //                            is not how you get one (a PDF's prose is PDF.js's
-//                            text layer).
+//                            text layer, a paywalled article's is a script).
+//                            '' falls back to the clone on an ordinary page
+//                            (highlights on, textFallback not false) and is
+//                            final everywhere else.
 //   pageOf(node)             1-based page number for an anchor made at `node`;
 //                            0 = this document has no pages.
 //   capabilities.reportOrphans
@@ -770,18 +773,51 @@
     // The test is deliberately blunt — a landmark holding almost nothing while
     // the document holds a great deal is not the prose container, whatever it
     // is called — and every ordinary article passes it on the first branch.
-    if (direct && !tooThin(direct)) return direct;
+    if (direct && tooThin(direct)) return bestBlock() || direct || document.body;
+    if (!direct) return bestBlock() || document.body;
+    // …and unless it is a HEADER. A paywalled or late-filled article (Condé
+    // Nast's, until its script decides you may read it) is an <article>
+    // holding the headline, the byline, a share bar and a one-paragraph stub:
+    // comfortably over the thin-landmark line, and still not the piece. So
+    // the landmark's own paragraphs are weighed against the best paragraph
+    // block anywhere: a landmark carrying under a quarter of that block's
+    // prose is not where the prose is. An ordinary article holds its own
+    // best block, so the two scores are the same and the landmark wins.
+    const best = bestBlock(true);
+    if (best && !direct.contains(best.el) && !best.el.contains(direct) &&
+        paragraphChars(direct) * LANDMARK_SHARE < best.len) return best.el;
+    return direct;
+  }
+
+  // The element holding the most direct <p> text (paragraphs of 40+ chars),
+  // the standard "largest text block" heuristic. `withLen` returns {el, len}.
+  const MIN_P_CHARS = 40;
+  const LANDMARK_SHARE = 4;
+  function bestBlock(withLen) {
     const score = new Map();
     for (const p of document.querySelectorAll('p')) {
       const len = (p.textContent || '').trim().length;
-      if (len < 40) continue;
+      if (len < MIN_P_CHARS) continue;
       const parent = p.parentElement;
       if (!parent) continue;
+      // our own drawer lives in a shadow root, but a bot-written card on the
+      // page must never out-vote the page
+      if (parent.closest && parent.closest('#bfp-root')) continue;
       score.set(parent, (score.get(parent) || 0) + len);
     }
     let best = null, bestLen = 0;
     for (const [el, len] of score) if (len > bestLen) { best = el; bestLen = len; }
-    return best || direct || document.body;
+    if (withLen) return best ? { el: best, len: bestLen } : null;
+    return best;
+  }
+  // the prose a landmark itself carries: its <p> descendants of 40+ chars
+  function paragraphChars(el) {
+    let n = 0;
+    for (const p of el.querySelectorAll('p')) {
+      const len = (p.textContent || '').trim().length;
+      if (len >= MIN_P_CHARS) n += len;
+    }
+    return n;
   }
 
   // A landmark with under 200 characters in it, on a document carrying more
@@ -837,13 +873,23 @@
     // An adapter's snapshot may be a Promise (Google Docs fetches the export):
     // callers await this — sendSnapshot does — and the harness's direct call
     // gets a string on the synchronous paths it exercises.
+    // On an ORDINARY page (highlights on, text fallback allowed — the
+    // Condé Nast adapter) an adapter's '' means "I could not", and the clone
+    // below is the honest fallback, exactly as for articleText(). Where the
+    // DOM is not the document (Docs' canvas, a scanned PDF) '' stays final.
     if (SITE && typeof SITE.snapshotHtml === 'function') {
       const fit = h => { h = String(h || ''); return h.length > SNAP_MAX ? '' : h; };
+      const ordinary = CAPS.highlights && CAPS.textFallback !== false;
+      const orClone = h => (h || !ordinary ? h : cloneSnapshot());
       let out;
-      try { out = SITE.snapshotHtml(); } catch (_) { return ''; }
-      if (out && typeof out.then === 'function') return out.then(fit, () => '');
-      return fit(out);
+      try { out = SITE.snapshotHtml(); } catch (_) { return ordinary ? cloneSnapshot() : ''; }
+      if (out && typeof out.then === 'function') return out.then(h => orClone(fit(h)), () => (ordinary ? cloneSnapshot() : ''));
+      return orClone(fit(out));
     }
+    return cloneSnapshot();
+  }
+
+  function cloneSnapshot() {
     let root;
     try { root = articleRoot(); } catch (_) { return ''; }
     if (!root) return '';
@@ -916,6 +962,15 @@
       });
   let lastSnapHash = null;
   function snapshotNow() { return pageSettled.then(sendSnapshot); }
+  // Before a message goes out: the first act on a page always snapshots, and
+  // so does every message that will SUMMON a bot — the turn it plans reads the
+  // snapshot file, so a page whose prose arrived after the first capture
+  // (late hydration, a paywall script) must have its newer copy on disk first.
+  // The hash gate makes an unchanged page cost one clone and no request.
+  function snapshotBeforeSend(wasNew, text, route) {
+    if (wasNew || MENTION.test(String(text || '')) || (route && route !== 'none')) return snapshotNow();
+    return Promise.resolve();
+  }
   async function sendSnapshot() {
     let html = '';
     try { html = await snapshotHtml(); } catch (_) { return; }
@@ -929,6 +984,78 @@
   }
   // fire and forget: a snapshot is never worth delaying a comment for
   function maybeSnapshot() { snapshotNow(); }
+
+  // ---- late hydration: the prose that lands after the capture -------------
+  // `pageSettled` is the load event (or 4s), and plenty of articles are not
+  // finished then: a paywall script decides whether you may read the piece
+  // and only THEN writes the body in, a framework streams it, a "read more"
+  // expands itself. A snapshot taken at load is a headline and a share bar,
+  // and the bots — who read the snapshot FILE — were told that was the page.
+  //
+  // So on a page that has a record, watch the document for a while after it
+  // settles: debounced, bounded, and only ever acting when the article's text
+  // actually changed. A change re-sends the snapshot (the companion replaces
+  // the old one); the article TEXT travels with the next mention, which
+  // re-reads the page anyway and flags it `article_changed` when its hash
+  // moved — there is no message to carry it before then.
+  //
+  // Not on a page whose DOM is not the document (Docs' canvas, a PDF's text
+  // layer): there the adapter's own reader is the only source of truth, and a
+  // mutation means nothing about the words.
+  const RECAPTURE_DEBOUNCE_MS = 500;
+  const RECAPTURE_WINDOW_MS = 20000;
+  let recaptureFor = null;       // the URL_NOW this tab is watching (or watched)
+  let recaptureStop = null;
+  let recaptures = 0;            // how many re-captures fired (the harness reads it)
+  function articleTextHash() {
+    try {
+      const el = articleRoot();
+      return hashText(withoutWasMarkup(() => collapse(el.innerText || el.textContent)));
+    } catch (_) { return null; }
+  }
+  function armRecapture() {
+    if (!registered || recaptureFor === URL_NOW) return;
+    if (!CAPS.highlights || CAPS.textFallback === false) return;
+    if (!window.MutationObserver || !document.body) return;
+    const forUrl = recaptureFor = URL_NOW;
+    pageSettled.then(() => {
+      if (URL_NOW !== forUrl || !registered) return;
+      let base = articleTextHash();
+      let timer = null;
+      const check = () => {
+        timer = null;
+        if (URL_NOW !== forUrl || !registered) return stop();
+        const h = articleTextHash();
+        if (h == null || h === base) return;
+        base = h;
+        recaptures++;
+        maybeSnapshot();
+      };
+      const mo = new MutationObserver(() => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(check, RECAPTURE_DEBOUNCE_MS);
+      });
+      mo.observe(document.body, { childList: true, subtree: true, characterData: true });
+      const giveUp = setTimeout(() => {
+        // a burst still pending at the deadline gets its look first
+        if (timer) { clearTimeout(timer); check(); }
+        stop();
+      }, RECAPTURE_WINDOW_MS);
+      function stop() {
+        mo.disconnect();
+        if (timer) clearTimeout(timer);
+        clearTimeout(giveUp);
+        timer = null;
+        if (recaptureStop === stop) recaptureStop = null;
+      }
+      recaptureStop = stop;
+    });
+  }
+  function disarmRecapture() {
+    if (recaptureStop) recaptureStop();
+    recaptureStop = null;
+    recaptureFor = null;
+  }
 
   // --- a picture of the page, for the bots -------------------------------
   // The snapshot carries the WORDS of this document and a figure is not words.
@@ -1880,6 +2007,8 @@
     // registered — page:null means it has never been acted on, and nothing
     // may be POSTed for it until it is
     registered = !!(rec && rec.url);
+    // an annotated page is worth watching while its prose may still be landing
+    if (registered) armRecapture();
     const base = rec && rec.url
       ? rec
       : { url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] };
@@ -2119,6 +2248,7 @@
     // fresh one rather than writing this document's text over another's
     registered = false;
     lastSnapHash = null;
+    disarmRecapture();
     lastPostedTitle = '';
     if (drawer) { drawer.setPage(PAGE); drawer.setOrphans({}); }
     bg({ t: 'badge', count: 0 });
@@ -2525,7 +2655,6 @@
         const wasNew = !registered;
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
-        if (wasNew) await snapshotNow();
         // …and the picture of the page this comment is on, before the message
         // that may summon: a caption's thread is exactly the one that needs it
         if (pendingSel && pendingSel.page > 0) await capturePage(pendingSel.page);
@@ -2552,6 +2681,9 @@
         // all, and the flag stays down so the next mention tries again
         const ctx = await mentionContext(text, route);
         applyContext(body, ctx);
+        // the snapshot AFTER the text is read and BEFORE the message: an
+        // adapter that fetches (Docs) reuses the read it just made
+        await snapshotBeforeSend(wasNew, text, route);
         const r = await api('POST', '/thread', body);
         if (!r.ok) return failure(r);
         commitContext(ctx);
@@ -2601,7 +2733,6 @@
         const wasNew = !registered;
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
-        if (wasNew) await snapshotNow();
         // a reply into a thread that sits on page N is a turn about page N: if
         // that page was never captured (this thread was made before the viewer
         // could, or on the phone), this is the moment it can be
@@ -2609,6 +2740,7 @@
         const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
         const ctx = await mentionContext(text, route);
         applyContext(body, ctx);
+        await snapshotBeforeSend(wasNew, text, route);
         const r = await api('POST', '/reply', body);
         if (!r.ok) return failure(r);
         commitContext(ctx);
@@ -3981,6 +4113,10 @@
     // does the companion hold a record for this page yet? — the lazy-persistence
     // rule, observable so the harness can assert a visit wrote nothing
     get registered() { return registered; },
+    // the late-hydration watcher: whether it is watching, how many re-captures
+    // it has fired, and the article root it would read (for the harness)
+    recapture: { get watching() { return !!recaptureStop; }, get count() { return recaptures; },
+                 arm: armRecapture, disarm: disarmRecapture, root: () => articleRoot() },
     get drawer() { return drawer; },
     get page() { return PAGE; },
   };

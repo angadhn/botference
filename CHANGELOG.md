@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-10-15
+
+- **Fix: the bots get the whole article on paywalled and gated pages.** On a New Yorker piece the saved copy stopped after the headline, because for a reader without access the site never puts the body on the page — and the bots read that saved copy. The New Yorker, Wired, Vanity Fair, Vogue, GQ, Bon Appétit, Architectural Digest, Condé Nast Traveler, Allure and Epicurious keep the whole piece in the page's own data, and so does the New York Times; the plugin now reads it from there (2,652 words where the page showed 88). Highlights work as before. Elsewhere, two general fixes: the saved copy is refreshed before every message that calls a bot (it used to be saved once, on the first comment, and never replaced), and for 20 seconds after a page with comments loads, prose that a site writes in late is noticed and the saved copy updated. The text picker also no longer settles for an `<article>` that holds only a header when the actual paragraphs sit beside it.
+
 ## 2026-10-04
 
 - **Fix: the convergence check no longer reads a plan this chat never wrote.** When the bots agree, one of them checks the claims against the room's sources. The implementation plan counted as a source whenever the file existed, and the file belongs to the workspace or project, not the chat, so an essay discussion was handed last month's build plan for something else and the checker reported, correctly, that it was "about a different project entirely". The plan is now a source only when this conversation has mentioned it.
