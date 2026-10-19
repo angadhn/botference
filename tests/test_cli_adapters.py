@@ -453,6 +453,38 @@ Reading 1 file… (ctrl+o to expand)
         adapter.adopt_native_session("")
         assert "--resume" not in adapter._build_claude_command()
 
+    def test_resume_starts_fresh_when_transcript_is_gone(self):
+        """Claude Code deletes transcripts after cleanupPeriodDays; a chat
+        resumed after that must not fail every turn forever."""
+        from cli_adapters import AdapterResponse
+
+        async def run():
+            adapter = ClaudeAdapter(model="claude-sonnet-4-6")
+            adapter.session_id = "559d00b3-dead-beef"
+            seen = []
+
+            async def fake_run(prompt, *, resume):
+                seen.append((prompt, resume, adapter.session_id))
+                if resume:
+                    return AdapterResponse(
+                        text="Error: claude exited 1\nNo conversation found "
+                             "with session ID: 559d00b3-dead-beef\n",
+                        exit_code=1, session_id=adapter.session_id)
+                return AdapterResponse(text="fresh answer", exit_code=0,
+                                       session_id=adapter.session_id)
+
+            adapter._run = fake_run
+            resp = await adapter.resume("hello again")
+            assert [s[1] for s in seen] == [True, False]
+            assert seen[1][0] == "hello again"
+            assert adapter.session_id != "559d00b3-dead-beef"
+            assert resp.exit_code == 0
+            assert resp.session_id == adapter.session_id
+            assert resp.text.endswith("fresh answer")
+            assert "expired" in resp.text
+
+        asyncio.run(run())
+
     def test_programmatic_adopt_is_live_immediately(self):
         adapter = ClaudeAdapter(model="claude-sonnet-4-6")
         assert adapter.adopt_native_session("cafe0001-aaaa") is True

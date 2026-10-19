@@ -716,6 +716,11 @@ _OVERFLOW_PATTERNS = (
 )
 
 
+def is_session_gone(text: str) -> bool:
+    """True when `claude --resume` reports the transcript no longer exists."""
+    return "No conversation found with session ID" in (text or "")
+
+
 def is_context_overflow(text: str) -> bool:
     """True if *text* looks like a provider context-window-overflow error."""
     if not text:
@@ -986,10 +991,29 @@ class ClaudeAdapter:
         return True
 
     async def resume(self, message: str) -> AdapterResponse:
-        """Follow-up message in existing session."""
+        """Follow-up message in existing session.
+
+        If Claude Code no longer has the transcript (it deletes them after
+        ``cleanupPeriodDays``, 30 by default — a chat picked up again six
+        weeks later hits this), start a fresh session with the same message
+        rather than failing every turn from here on. The reply says so.
+        """
         if not self.session_id:
             raise RuntimeError("No session to resume — call send() first")
-        return await self._run(message, resume=True)
+        response = await self._run(message, resume=True)
+        if response.exit_code != 0 and is_session_gone(response.text):
+            log.warning(
+                "claude session %s is gone; starting a fresh one",
+                self.session_id,
+            )
+            response = await self.send(message)
+            if response.exit_code == 0:
+                response.text = (
+                    "_(my earlier memory of this chat had expired, so I am "
+                    "starting afresh from what this turn carries)_\n\n"
+                    + response.text
+                )
+        return response
 
     async def _run(self, prompt: str, *, resume: bool) -> AdapterResponse:
         cmd = self._build_cmd(resume)
