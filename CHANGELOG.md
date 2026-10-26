@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-10-26
+
+- **Discuss can start a blog draft from an article's conversation.** `/draft-blog [@claude|@codex] name | brief` saves a new unpublished Markdown post in a confirmed Jekyll site's `_notes/`, starts its localhost preview, and returns a link. The draft carries the source discussion into subsequent comments and suggested edits. Existing files are never overwritten; preview failures keep the draft and report the error. No commit, push, or public deployment is performed.
+
 ## 2026-10-15
 
 - **Fix: the bots get the whole article on paywalled and gated pages.** On a New Yorker piece the saved copy stopped after the headline, because for a reader without access the site never puts the body on the page — and the bots read that saved copy. The New Yorker, Wired, Vanity Fair, Vogue, GQ, Bon Appétit, Architectural Digest, Condé Nast Traveler, Allure and Epicurious keep the whole piece in the page's own data, and so does the New York Times; the plugin now reads it from there (2,652 words where the page showed 88). Highlights work as before. Elsewhere, two general fixes: the saved copy is refreshed before every message that calls a bot (it used to be saved once, on the first comment, and never replaced), and for 20 seconds after a page with comments loads, prose that a site writes in late is noticed and the saved copy updated. The text picker also no longer settles for an `<article>` that holds only a header when the actual paragraphs sit beside it.

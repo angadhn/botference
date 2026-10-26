@@ -968,7 +968,8 @@
   // (late hydration, a paywall script) must have its newer copy on disk first.
   // The hash gate makes an unchanged page cost one clone and no request.
   function snapshotBeforeSend(wasNew, text, route) {
-    if (wasNew || MENTION.test(String(text || '')) || (route && route !== 'none')) return snapshotNow();
+    if (wasNew || /^\/draft-blog(?:\s|$)/i.test(String(text || '').trim())
+        || MENTION.test(String(text || '')) || (route && route !== 'none')) return snapshotNow();
     return Promise.resolve();
   }
   async function sendSnapshot() {

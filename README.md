@@ -863,6 +863,36 @@ one bridge per open chat, idle ones parked past `COUNCIL_MAX_CHATS`.
 
 ### Discuss your blog draft
 
+**Start a draft from an article you are reading.** In Discuss's page chat or
+a comment thread, type:
+
+```text
+/draft-blog my-response | Turn our discussion into an essay, keeping the counterargument.
+/draft-blog @codex my-response | Write the first draft from the points we agreed on.
+```
+
+The first form asks Claude; the second chooses Codex. Discuss uses the article
+and conversation, saves a new `_notes/my-response.md` in your registered Jekyll
+site, starts a local Jekyll preview, and posts its link in the conversation.
+Open it with Discuss to continue: the bots receive the source discussion, and
+you can highlight paragraphs and accept suggested edits as usual. The initial
+drafting turn creates Markdown only. On the preview page, the bots receive the
+site's asset paths and write scope: ask for images or other assets there using
+the existing blog editing workflow described below.
+
+The new post has `published: false`; an ordinary site build omits it. The local
+preview runs with `--unpublished`. If you already have Jekyll running without
+that flag, restart it with `bundle exec jekyll serve --unpublished` (or
+`jekyll serve --unpublished` if you do not use Bundler). A failed preview keeps
+the draft and reports the problem. A preview started by Discuss stops with the
+companion. Existing files are never replaced and nothing is committed or pushed.
+
+Register the site with `botference site` as below. If more than one confirmed
+Jekyll site is registered, set `"draft_site": "/absolute/path/to/site"` in the
+companion's `.botference/plugin/config.json`. `"draft_dir": "_notes"` is the
+default; another existing, output-enabled Jekyll collection can be selected.
+This first-draft command is owner-only and currently supports Jekyll collections.
+
 You write a post in markdown, run the site locally (`jekyll serve`), and
 read the finished page in the browser. Comment on a paragraph there and
 ask for it to be tightened, and the bots edit the **markdown the page was

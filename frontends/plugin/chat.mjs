@@ -450,7 +450,7 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext, attachContext, webContext, edited }) {
+  blogContext, attachContext, webContext, edited, drafting }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -619,7 +619,9 @@ export function envelope({ url, title, target, text, quote, history,
     ? `Earlier in this thread:\n${historyLines(history)}\n\n` : '';
   // one length instruction per turn, never two: the reader's verbosity setting
   // is the only thing that says how long a reply should be
-  const how = verbosityLine(verbosity);
+  const how = drafting
+    ? 'Write the full requested draft in the blog-draft block; the usual short-reply limit does not apply.'
+    : verbosityLine(verbosity);
   // On a shared page several people write into one thread, so the turn says
   // WHO is asking (the history lines already carry the others' names). Absent
   // for the owner: their own annotator has always said "the user".
@@ -913,7 +915,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       }
       return;
     }
-    emit({ type: 'chat', url: job.url, target: job.target, ...fields });
+    emit({ type: 'chat', url: job.url, target: job.target,
+      ...(job.draftId ? { draft_id: job.draftId } : {}), ...fields });
   };
   // Nothing goes to the bridge with half a character in it. A maths symbol
   // like 𝐫 is two 16-bit halves in a JS string, and a `.slice(0, MAX)` that
@@ -1488,6 +1491,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         // the markdown source behind a locally-served page of the reader's own
         // site, and the rules for editing it (blog.mjs blogBlock)
         blogContext: job.blogContext || '',
+        drafting: !!job.draftId,
         // the strikeout offer, on a thread that could take one (server.mjs)
         strikeContext: job.strikeContext || '',
         // …and the revision-question offer, on a thread that has one to make
