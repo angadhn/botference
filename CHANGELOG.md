@@ -2,6 +2,8 @@
 
 ## 2026-10-27
 
+- **Opt-in direct blog authoring and batch review.** A confirmed `blog_authoring_root` lets owner conversations on source articles and local previews edit that site's actual posts, assets, CSS and layouts. Builders inherit the same scope; the companion reports changes and preview links. Send review dispatches blog comments as direct source edits. New posts receive creation/release dates and the `essays` tag for local archives, while remaining unpublished for normal builds. A `jekyll_command` override supports an existing Ruby environment.
+
 - **Generative artwork can use a Codex build agent.** Either bot can issue `summon: [imagegen] <brief>` to select Codex with native image generation, using the room's Codex model or an optional `builder.tasks.imagegen` override. Existing write/network scope and ordinary builder defaults are preserved. The Codex launcher now separates prompts from CLI options, fixing build prompts that start with `---`.
 
 - **Blog draft commands cannot silently fall back to ordinary chat on an outdated companion.** The extension uses dedicated draft routes and reports a restart/update instruction if the running server lacks them. The health endpoint advertises draft support for deployment checks.

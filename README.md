@@ -863,6 +863,22 @@ one bridge per open chat, idle ones parked past `COUNCIL_MAX_CHATS`.
 
 ### Discuss your blog draft
 
+**Work directly in your site from any source article.** An owner can set
+`"blog_authoring_root": "/absolute/path/to/site"` in the companion config and
+restart Discuss. The directory must already be a registered, confirmed Jekyll
+site with a local preview origin. Ordinary reading conversations and the site's
+own preview then share one site writer: both main bots and their builders can
+edit the actual posts, assets, CSS and layouts there. This mode implements edits
+directly, reuses existing drafts, and reports changed files; guests can leave
+comments but cannot start the site writer. Other project and site scopes remain
+separate. Network grants are separate, and no git or public deployment is allowed.
+
+**Batch comments on a blog preview.** Highlight a passage, select **Note**, and
+leave the comment; repeat for each point. Press **Send review** to hand all open
+comments over together. In site-authoring mode the agents edit the source and
+reply in each comment's thread. The normal suggestion-card workflow remains
+available when site-authoring mode is off.
+
 **Start a draft from an article you are reading.** In Discuss's page chat or
 a comment thread, type:
 
@@ -879,7 +895,7 @@ site, starts a local Jekyll preview, and posts its link in the conversation.
 No filename or pipe is required. The original `name | brief` form still works.
 Open it with Discuss to continue: the bots receive the source discussion, and
 you can highlight paragraphs and accept suggested edits as usual. The initial
-drafting turn creates Markdown only. On the preview page, the bots receive the
+drafting turn creates Markdown only when site-authoring mode is off. On the preview page, the bots receive the
 site's asset paths and write scope: ask for images or other assets there using
 the existing blog editing workflow described below.
 
@@ -897,10 +913,17 @@ default; another existing, output-enabled Jekyll collection can be selected.
 This first-draft command is owner-only and currently supports Jekyll collections.
 
 When the site has `Templates/baseline.md`, its YAML front matter supplies the
-new post's fields. Discuss fills the title, creation date, permalink and source
-URL, forces `published: false`, and preserves the other fields. The template
+new post's fields. Discuss fills the title, creation and release dates, an
+`essays` tag, permalink and source URL, forces `published: false`, and preserves
+other template fields and tags. Site-authoring mode also completes these fields
+on newly created posts and touched unpublished or undated essay drafts, preserving
+existing creation/release dates. The template
 itself is never edited. Set `draft_template` to another template path inside
 the site if needed. The site's normal Jekyll layout renders the title and body.
+Local archives can list these dated drafts when Jekyll runs with `--unpublished`;
+normal public builds still omit them. If the companion needs a particular Ruby
+environment, `jekyll_command` can name an argv array such as
+`["/path/to/rvm-exec", "ruby-3.2.1", "bundle", "exec", "jekyll"]`.
 
 You write a post in markdown, run the site locally (`jekyll serve`), and
 read the finished page in the browser. Comment on a paragraph there and

@@ -44,6 +44,7 @@ import * as beacon from './beacon.mjs';
 import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as drafts from './draft.mjs';
+import * as authoring from './authoring.mjs';
 import * as suggest from './suggest.mjs';
 import * as preview from './preview.mjs';
 import * as scratch from './scratch.mjs';
@@ -56,6 +57,9 @@ import * as checks from './checks.mjs';
 import * as handoff from './council-handoff.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
+// Write-scope changes require a companion restart, so a live conversation
+// cannot migrate between two children that both own its session file.
+const AUTHORING_ROOT = String(store.readConfig().blog_authoring_root || '');
 // The article view's scripts. anchor.js is the extension's own file, served
 // unchanged: the phone must anchor by exactly the code the Mac anchors by, or
 // a highlight made in one place would not be found in the other.
@@ -296,6 +300,7 @@ const blogChats = new Map();        // repo root → chat
 function blogChatFor(root, kind = 'jekyll') {
   let c = blogChats.get(root);
   if (c) return c;
+  const direct = authoring.siteForRoot(AUTHORING_ROOT);
   c = createChat({
     onEvent: onChatEvent,
     // …and the commands this child may not run, which for every kind of blog
@@ -328,7 +333,7 @@ function blogChatFor(root, kind = 'jekyll') {
     artifactsLink: blog.scratchLink(root),
     // …and the placement rule in short, for the one participant that never
     // sees a blog envelope: a summoned build agent (core/summon.py).
-    summonNote: blog.summonPlacement(root, kind),
+    summonNote: direct?.root === root ? authoring.builderPlacement(direct) : blog.summonPlacement(root, kind),
   });
   blogChats.set(root, c);
   return c;
@@ -344,12 +349,26 @@ function blogOf(url) {
   const now = Date.now();
   const hit = blogCache.get(key);
   if (hit && now - hit.at < ART_TTL) return hit.page;
-  const page = blog.blogPageFor(key);
+  let page = blog.blogPageFor(key);
+  const direct = authoring.siteForRoot(AUTHORING_ROOT);
+  if (page?.confirmed && direct?.root === page.root) page = { ...page, suggest_mode: false, direct_edit: true };
   if (blogCache.size > 200) blogCache.clear();
   blogCache.set(key, { at: now, page });
   return page;
 }
 const forgetBlogPages = () => blogCache.clear();
+
+function authoringFor(url) {
+  const site = authoring.siteForRoot(AUTHORING_ROOT);
+  if (!site || !url || artifactOf(url)) return null;
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  if (!['http:', 'https:', 'file:'].includes(u.protocol)) return null;
+  const ownSite = blog.siteFor(url);
+  if (ownSite && blog.realish(ownSite.root) !== site.root) return null;
+  if (u.protocol === 'file:' && !blog.sourceInRoot(site.root, blog.filePathOf(url), site.kind)) return null;
+  return site;
+}
 
 // ---- the claim checker's sources -----------------------------------------
 //
@@ -435,6 +454,8 @@ function checksFor(page, text) {
 // writable, which is the honest answer to "I do not know which file this is".
 function chatFor(url) {
   if (!chat) return null;
+  const writing = authoringFor(url);
+  if (writing) return blogChatFor(writing.root, writing.kind);
   const art = artifactOf(url);
   if (art) {
     if (!art.confirmed) return null;
@@ -575,6 +596,15 @@ function artifactSnapshot(art) {
 }
 
 function noteTurnStart(url) {
+  const writing = authoringFor(url);
+  if (writing) {
+    const bg = blogOf(url);
+    turnScans.set(url, { authoring: true, dir: writing.root, site: writing,
+      source: bg?.source_path || '', noCollateral: !bg?.source_path,
+      text: bg?.source_path ? blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel) : '',
+      before: authoring.scan(writing), at: new Date().toISOString() });
+    return;
+  }
   const art = url ? artifactOf(url) : null;
   if (!art) return noteBlogTurnStart(url);
   if (!art.confirmed || !art.project_dir) return;
@@ -757,6 +787,7 @@ function reportProjectChanges(ev) {
   const seen = url ? turnScans.get(url) : null;
   if (!seen) return;
   turnScans.delete(url);
+  if (seen.authoring) { void reportAuthoringChanges(url, seen, ev); return; }
   if (seen.blog) return reportBlogChanges(url, seen, ev);
   const art = artifactOf(url);
   // the project was deleted, or the root un-confirmed, while the turn ran
@@ -784,6 +815,45 @@ function reportProjectChanges(ev) {
   // tab refetch it).
   if (payload.page_changed) withCollateral(url, payload, seen, ev, () => artifactSnapshot(art));
   publishChanges(url, payload);
+}
+
+async function reportAuthoringChanges(url, seen, ev) {
+  const site = authoringFor(url);
+  if (!site || site.root !== seen.dir) return;
+  const changed = workspace.diffScans(seen.before, authoring.scan(site));
+  if (!changed.length) return;
+  try {
+    const posts = authoring.changedPosts(site, changed, seen.before, url, store.readConfig());
+    forgetBlogPages();
+    const bg = blogOf(url);
+    const source = bg?.source_path ? path.relative(site.root, bg.source_path) : '';
+    const assetsChanged = changed.some(p => /^(assets|images|img|media|_sass|_layouts|_includes)\//.test(p) || p === '_config.yml');
+    const payload = { type: 'blog-files', url, root: site.root, serve_origin: site.serve_origin,
+      source, page_changed: !!source && (changed.includes(source) || assetsChanged), assets_changed: assetsChanged,
+      count: changed.length, files: changed.slice(0, workspace.CHANGED_LIST_MAX), at: new Date().toISOString() };
+    if (source && changed.includes(source)) withCollateral(url, payload, seen, ev,
+      () => blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel));
+    // Source articles must not reload merely because the local site changed.
+    publishChanges(url, payload);
+    for (const post of posts) {
+      const page = store.upsertPage({ url: post.url, title: post.title,
+        ...(store.normUrl(post.url) !== store.normUrl(url) ? { source_url: url } : {}) });
+      if (page.url !== store.normUrl(url)) {
+        const original = store.readPage(url);
+        page.draft_context ||= `Source: ${original?.title || url} · ${url}\n`
+          + priorMsgs(original || {}, ev.target).map(m => `${m.author}: ${m.text}`).join('\n').slice(-24000);
+        store.savePage(page);
+      }
+      try {
+        await draftPreview.start(post);
+        publishChanges(page.url, { ...payload, url: page.url, source: post.rel, page_changed: true });
+        if (page.url !== store.normUrl(url)) draftReceipt(url, ev.target,
+          `Updated \`${post.rel}\` in your site. [Open the local preview](<${post.url}>).`);
+      } catch (e) { draftReceipt(url, ev.target, `Saved \`${post.rel}\` in your site. Preview: ${post.url}\n${e.message}`); }
+    }
+  } catch (e) {
+    draftReceipt(url, ev.target, `Site files changed, but the companion could not finish checking them: ${e.message}`);
+  }
 }
 
 // The same report for a blog page, and the loop it closes.
@@ -1132,16 +1202,29 @@ function roundTurn(ev, phase) {
 }
 
 const pendingDrafts = new Map();
-const draftPreview = drafts.createPreviewer();
+const draftPreview = drafts.createPreviewer({ command: store.readConfig().jekyll_command || null });
 process.on('exit', () => draftPreview.stop());
 
-function prepareDraft(text) {
-  const d = drafts.destination(drafts.parseCommand(text), store.readConfig());
+function prepareDraft(text, page) {
+  const writing = authoringFor(page?.url);
+  const config = { ...store.readConfig(), ...(writing ? { draft_site: writing.root } : {}) };
+  const d = drafts.destination(drafts.parseCommand(text), config, blog.listSites(), blog.rootState,
+    { allowExisting: !!writing });
   if (d.file && [...pendingDrafts.values()].some(p => p.file === d.file)) throw new Error('That draft is already being written.');
   return d;
 }
 
 async function submitDraft(page, target, d, me) {
+  const writing = authoringFor(page.url);
+  if (writing?.root === d.root) {
+    return summon(page, target, `@${d.agent} ${d.brief}`, {
+      addressed: true, routeHint: `@${d.agent}`,
+      blogContext: authoring.context(writing, page, blogOf(page.url))
+        + `This is a blog drafting request. Continue the existing draft if there is one, or create it directly under ${d.dir}. `
+        + (d.file ? `Requested file: ${d.file}. ` : '')
+        + `Do not return a blog-draft block or stage another copy outside the site.\n`,
+    }, me);
+  }
   const id = crypto.randomUUID();
   d.sourceTitle = page.title || page.url;
   const history = [...(page.page_chat || []), ...(page.threads || []).flatMap(t =>
@@ -1922,6 +2005,8 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
     return { queued: false, reason };
   };
   if (NO_AGENTS) return refuse(AGENTS_OFF_ERROR, AGENTS_OFF_REASON);
+  const writing = authoringFor(page.url);
+  if (writing && !me.owner) return refuse('Blog authoring is owner-only. Your comment was saved, but no writer was started.');
   const refused = guestRefusal(me);
   if (refused) return refuse(refused);
   // A project-artifact page whose council root the reader has not vouched for
@@ -1971,7 +2056,8 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // are: the server holds the record, a model never shown the convention
   // cannot use it, and a bot told nothing about its last suggestions assumes
   // they landed and says so.
-  const blogContext = (bg && bg.confirmed && bg.source_path)
+  const blogContext = writing ? authoring.context(writing, page, bg)
+    : (bg && bg.confirmed && bg.source_path)
     ? blog.blogBlock(bg)
       + (bg.suggest_mode ? suggest.suggestBlock() + suggestVerdict(page, target) : '')
     : '';
@@ -2552,6 +2638,10 @@ export function handler(req, res) {
     const me = hosted.identity(req);
     return ok(res, {
       capabilities: { draft_blog: 1 },
+      ...(AUTHORING_ROOT ? { blog_authoring: {
+        enabled: !!authoring.siteForRoot(AUTHORING_ROOT),
+        ...(me.owner ? { root: AUTHORING_ROOT } : {}),
+      } } : {}),
       // the WHOLE stable: 'running' the moment any bridge is up (the plugin's
       // own or a council's), and one queue depth across all of them
       bridge: bridgeState(),
@@ -3500,7 +3590,7 @@ export function handler(req, res) {
       // edit and the round asks for edits; everywhere else the bots have
       // deny-all file writes, so the round asks for answers and then for one
       // turn that pulls them together.
-      const editable = !!art && art.confirmed;
+      const editable = (!!art && art.confirmed) || (!!authoringFor(u) && !!blogOf(u)?.source_path);
       // WHO ANSWERS. On an artifact the bots made, the round goes to the one
       // that did NOT write the file: a draft reviewed by its own author is not
       // a check, it is the same reasoning read twice. The receipt lives on the
@@ -3857,7 +3947,7 @@ export function handler(req, res) {
       const dedupe = dedupeCheck([store.pageKey(page.url), 'thread', me.handle, data.quote, text.trim(), mark]);
       if (dedupe.hit) return ok(res, { thread: dedupe.hit, deduped: true });
       if (isDraft) {
-        try { draft = prepareDraft(text); }
+        try { draft = prepareDraft(text, page); }
         catch (e) { return fail(res, 400, e.message); }
         route = `@${draft.agent}`;
       }
@@ -4128,7 +4218,7 @@ export function handler(req, res) {
           : ok(res, { msg: dedupe.hit, deduped: true });
         let d;
         try {
-          d = prepareDraft(text);
+          d = prepareDraft(text, page);
         } catch (e) { return fail(res, 400, e.message); }
         const msg = store.appendMsg(page, target, { author: me.handle, text, route: `@${d.agent}` });
         dedupe.remember(msg);

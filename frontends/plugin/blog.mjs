@@ -177,6 +177,11 @@ const originOf = v => {
 // restored or hand-edited config.json can move the path and cannot turn the
 // mode off.
 //
+// NOTE: these are the defaults for ordinary site registrations. An explicit
+// owner-only companion `blog_authoring_root` opt-in is handled separately by
+// authoring.mjs/server.mjs; it enables direct site edits without changing a
+// registration row or granting git/public deployment.
+//
 // `rebuild` is the third column, and it is a different sort of rule: not a
 // power withheld from the bots but a fact about the builder. `jekyll serve`
 // rebuilds itself on every save, so a Jekyll row has nothing to run and any
@@ -1366,10 +1371,11 @@ export function summonPlacement(root, kind = 'jekyll') {
 // BECAUSE the bots edited the source. Counting them would make every turn a
 // change and every change a reload loop.
 
-export function scanSite(dir, kind) {
+export function scanSite(dir, kind, { includeSiteSource = false } = {}) {
   // a book's `_build/` (and its caches) on top of Jekyll's list: the build
   // output is rewritten wholesale by every rebuild and is never an edit
-  const skip = skipDirsFor(kind || detectKind(dir));
+  const skip = new Set(skipDirsFor(kind || detectKind(dir)));
+  if (includeSiteSource) for (const name of ['_includes', '_layouts', '_sass', '_data', '_plugins']) skip.delete(name);
   const out = new Map();
   if (!dir || !isDir(dir)) return out;
   const stack = [{ abs: dir, rel: '', depth: 0 }];

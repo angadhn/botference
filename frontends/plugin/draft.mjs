@@ -46,10 +46,18 @@ function templateFor(root, configured) {
   return text;
 }
 
-export function frontMatterFor(d, title, source, now = new Date()) {
+export function frontMatterFor(d, title, source, now = new Date(), { preserveDates = false } = {}) {
   const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(d.template || '');
+  const original = blog.frontMatter(d.template || '') || {};
+  const today = now.toISOString().slice(0, 10);
+  const date = key => preserveDates && typeof original[key] === 'string' && original[key]
+    ? JSON.stringify(original[key]) : today;
+  const tags = Array.isArray(original.tags) ? original.tags
+    : typeof original.tags === 'string' ? [original.tags] : [];
   const fields = {
-    title: JSON.stringify(title), created: now.toISOString().slice(0, 10),
+    title: JSON.stringify(title), created: date('created'), released: date('released'),
+    ...(Object.hasOwn(original, 'date') ? { date: date('date') } : {}),
+    tags: JSON.stringify([...new Set(['essays', ...tags])]),
     published: 'false', permalink: JSON.stringify(d.urlPath), source_url: JSON.stringify(source.url),
   };
   const seen = new Set();
@@ -69,7 +77,8 @@ export function frontMatterFor(d, title, source, now = new Date()) {
   return ['---', ...lines.filter((line, i) => line || i > 0), '---'].join('\n');
 }
 
-export function destination(command, config, sites = blog.listSites(), state = blog.rootState) {
+export function destination(command, config, sites = blog.listSites(), state = blog.rootState,
+                            { allowExisting = false } = {}) {
   const roots = new Map(sites.filter(s => s.kind === 'jekyll' && state(s.root) === 'yes')
     .map(s => [blog.realish(s.root), s]));
   const site = config.draft_site ? roots.get(blog.realish(config.draft_site))
@@ -97,7 +106,7 @@ export function destination(command, config, sites = blog.listSites(), state = b
     serve_origin: origin.origin, previewToken: randomUUID(),
     template: templateFor(root, config.draft_template) };
   if (command.slug) Object.assign(d, fileFields(d, command.slug));
-  if (d.file && occupied(d)) {
+  if (!allowExisting && d.file && occupied(d)) {
     throw new Error('That draft name or URL already exists. Choose another name.');
   }
   return d;
@@ -149,7 +158,12 @@ export function saveDraft(d, body, source) {
 
 // Own the child for the lifetime of the companion. Reuse an existing server,
 // never stop someone else's. No shell, dependency installation, or deployment.
-export function createPreviewer({ spawnProcess = spawn, fetchPage = fetch, timeoutMs = 60000, intervalMs = 500 } = {}) {
+export function createPreviewer({ spawnProcess = spawn, fetchPage = fetch, timeoutMs = 60000, intervalMs = 500,
+                                  command = null } = {}) {
+  if (command !== null && (!Array.isArray(command) || !command.length
+      || command.some(part => typeof part !== 'string' || !part))) {
+    throw new Error('jekyll_command must be a nonempty array of command arguments.');
+  }
   const children = new Map();
   const booting = new Map();
   const reachable = async (url, token = '') => {
@@ -167,7 +181,8 @@ export function createPreviewer({ spawnProcess = spawn, fetchPage = fetch, timeo
       const port = u.port || '80';
       const args = ['serve', '--host', '127.0.0.1', '--port', port, '--unpublished'];
       const bundled = fs.existsSync(path.join(d.root, 'Gemfile'));
-      child = { proc: spawnProcess(bundled ? 'bundle' : 'jekyll', bundled ? ['exec', 'jekyll', ...args] : args,
+      const invocation = command || (bundled ? ['bundle', 'exec', 'jekyll'] : ['jekyll']);
+      child = { proc: spawnProcess(invocation[0], [...invocation.slice(1), ...args],
         { cwd: d.root, stdio: ['ignore', 'pipe', 'pipe'] }), error: '', tail: '' };
       children.set(d.root, child);
       const capture = chunk => { child.tail = (child.tail + chunk).slice(-2000); };

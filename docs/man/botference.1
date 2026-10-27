@@ -159,6 +159,15 @@ The site's \fITemplates/baseline.md\fR supplies front-matter fields when present
 \fIdraft_template\fR selects a different template inside the site.
 Companion config keys \fIdraft_site\fR (absolute site root) and
 \fIdraft_dir\fR (collection directory) select a different destination.
+Set \fIblog_authoring_root\fR to a registered, confirmed Jekyll repository
+and restart the companion to enable owner-only direct editing from source
+articles and local previews. Bots and builders share that site's write scope
+for posts, assets, CSS and layouts. Send review dispatches open blog comments
+as source edits, with replies kept in their threads. New posts get creation
+and release dates plus the essays tag; --unpublished makes them visible in the
+local archive while normal public builds omit them. Network grants and public
+deployment remain separate. \fIjekyll_command\fR accepts an argv array for
+an existing Ruby/Bundler installation.
 \fBplugin\fR is an accepted alias and remains one: the product was
 renamed, but the command, the \fI.botference/plugin\fR data directories
 and the \fBcom.botference.plugin-*\fR LaunchAgent labels were not, so

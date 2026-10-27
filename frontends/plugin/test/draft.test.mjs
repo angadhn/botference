@@ -71,7 +71,8 @@ await test('baseline front matter is preserved while generated fields stay safe 
   assert.match(saved, /title: "A title: with punctuation"/);
   assert.doesNotMatch(saved, /^# A title/m, 'the layout renders the title, so do not duplicate it in the body');
   assert.match(saved, /created: \d{4}-\d{2}-\d{2}/);
-  assert.match(saved, /released:\ntags:\n  - essays/);
+  assert.match(saved, /released: \d{4}-\d{2}-\d{2}/);
+  assert.match(saved, /tags: \["essays"\]/);
   assert.match(saved, /companion music:\nimage:\npremium: false/);
   assert.match(saved, /published: false/);
   assert.doesNotMatch(saved, /published: true/);
