@@ -185,7 +185,7 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
     proc.stdout.on('data', d => { out += d; });
     proc.stderr.on('data', d => { out += d; });
     return waitFor(() => {
-      const m = /http:\/\/127\.0\.0\.1:(\d+)/.exec(out);
+      const m = /http:\/\/(?:127\.0\.0\.1|localhost):(\d+)/.exec(out);
       return m ? `http://127.0.0.1:${m[1]}` : null;
     }, `server on ${root} to listen (got: ${out.slice(0, 300)})`)
       .then(base => ({ proc, base, out: () => out }));

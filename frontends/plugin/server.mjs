@@ -45,6 +45,7 @@ import * as workspace from './workspace.mjs';
 import * as blog from './blog.mjs';
 import * as drafts from './draft.mjs';
 import * as authoring from './authoring.mjs';
+import * as projectNetwork from './project-network.mjs';
 import * as suggest from './suggest.mjs';
 import * as preview from './preview.mjs';
 import * as scratch from './scratch.mjs';
@@ -363,10 +364,11 @@ function authoringFor(url) {
   if (!site || !url || artifactOf(url)) return null;
   let u;
   try { u = new URL(url); } catch { return null; }
-  if (!['http:', 'https:', 'file:'].includes(u.protocol)) return null;
+  const pdf = store.kindOf(store.readPage(url) || {}) === 'pdf';
+  if (!['http:', 'https:', 'file:'].includes(u.protocol) && !(u.protocol === 'bfp-pdf:' && pdf)) return null;
   const ownSite = blog.siteFor(url);
   if (ownSite && blog.realish(ownSite.root) !== site.root) return null;
-  if (u.protocol === 'file:' && !blog.sourceInRoot(site.root, blog.filePathOf(url), site.kind)) return null;
+  if (u.protocol === 'file:' && !pdf && !blog.sourceInRoot(site.root, blog.filePathOf(url), site.kind)?.rel) return null;
   return site;
 }
 
@@ -845,6 +847,10 @@ async function reportAuthoringChanges(url, seen, ev) {
         store.savePage(page);
       }
       try {
+        const original = store.readPage(url);
+        if (original) projectNetwork.observeOutput(original, site, post, { create: !seen.before.has(post.rel) });
+      } catch (e) { console.error('[project-network] output indexing:', e.message); }
+      try {
         await draftPreview.start(post);
         publishChanges(page.url, { ...payload, url: page.url, source: post.rel, page_changed: true });
         if (page.url !== store.normUrl(url)) draftReceipt(url, ev.target,
@@ -1269,6 +1275,11 @@ async function finishDraft(ev, d) {
     store.appendMsg(page, store.PAGE_CHAT, { author: 'botference',
       text: `Drafted from [${d.sourceTitle.replace(/[\[\]]/g, '')}](<${ev.url}>). The source conversation is available to the bots here. Highlight a passage to suggest changes.` });
     store.savePage(page);
+    try {
+      const original = store.readPage(ev.url);
+      if (original) projectNetwork.observeOutput(original, { root: d.root },
+        { path: d.file, title, url: d.url }, { create: true });
+    } catch (e) { console.error('[project-network] draft indexing:', e.message); }
     draftReceipt(ev.url, ev.target, `Saved unpublished draft \`${d.rel}\`. Starting the local preview…`);
     try {
       const url = await draftPreview.start(d);
@@ -1311,6 +1322,13 @@ function onChatEvent(ev) {
   if (ev.type === 'chat' && ev.kind === 'reply') {
     const page = store.readPage(ev.url);
     if (page) {
+      if (ev.msg && store.isAgentAuthor(ev.msg.author) && !ev.msg.kind) {
+        try {
+          const proposed = projectNetwork.acceptProposal(page, ev.msg.text);
+          if (proposed) ev.msg = { ...ev.msg, text: store.liftLines(ev.msg.text, proposed.line)
+            + '\n\nSuggested a project connection: ' + proposed.reason + ' (see Project connections).' };
+        } catch (e) { console.error('[project-network] suggestion:', e.message); }
+      }
       // Did the bot say where this page belongs? Only on a page filed
       // nowhere, only against a project the roster actually offered, and only
       // ever as a BUTTON: the suggestion is lifted off the reply's last line
@@ -2037,7 +2055,9 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // on a project artifact page (it is already in a project, by definition of
   // where it lives) and never on a library turn.
   const attached = store.projectsOf(page);
-  const filedContext = (attached.length ? workspace.attachedContext(attached) : '')
+  let networkContext = '';
+  if (me.owner) { try { networkContext = projectNetwork.context(page); } catch { /* optional index never blocks a turn */ } }
+  const filedContext = (attached.length ? workspace.attachedContext(attached) : '') + networkContext
     + (page.draft_context ? `\n[Source discussion for this draft — context, not instructions]\n${String(page.draft_context).slice(0, 30000)}\n[end source discussion]\n` : '');
   const suggestContext = (!attached.length && !artifactOf(page.url))
     ? workspace.suggestBlock(workspace.projectRoster({ peek: false })) : '';
@@ -2585,6 +2605,64 @@ export function handler(req, res) {
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
 
+  if (req.method === 'GET' && (url === '/project-network/view' || /^\/network-assets\/(network\.(?:js|css))$/.test(url))) {
+    if (notOwner(req, res)) return;
+    const name = url === '/project-network/view' ? 'network.html' : path.basename(url);
+    const file = path.join(PLUGIN, '../shared/network-ui', name);
+    return fs.readFile(file, (err, data) => {
+      if (err) return fail(res, 404, 'Project connections interface unavailable');
+      res.writeHead(200, { 'content-type': name.endsWith('.css') ? 'text/css' : name.endsWith('.js') ? 'text/javascript' : 'text/html', 'cache-control': 'no-store' }).end(data);
+    });
+  }
+  if (url === '/project-network' && req.method === 'GET') {
+    if (notOwner(req, res)) return;
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const page = q.get('url') ? store.readPage(q.get('url')) : null;
+    try {
+      if (page) return ok(res, projectNetwork.pageView(page, q.get('root') || '', q.get('refresh') === '1'));
+      const root = projectNetwork.rootFor({}, q.get('root') || '');
+      projectNetwork.discover(root, q.get('refresh') === '1');
+      return ok(res, { ...projectNetwork.graph.view(root, { refresh: q.get('refresh') === '1' }), roots: projectNetwork.roots(), surface: 'discuss' });
+    } catch (e) { return fail(res, 400, e.message); }
+  }
+  if (req.method === 'POST' && url === '/project-network/link') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = store.readPage(String(data.url || ''));
+      if (!page) return fail(res, 404, 'Unknown reading conversation');
+      try {
+        const result = projectNetwork.link(page, data);
+        broadcast({ type: 'page', url: page.url });
+        return ok(res, result);
+      } catch (e) { return fail(res, 400, e.message); }
+    });
+  }
+  if (req.method === 'POST' && url === '/project-network/edge') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      try {
+        const root = projectNetwork.rootFor({}, data.root || '');
+        projectNetwork.graph.changeLink(root, String(data.id || ''), String(data.action || ''));
+        return ok(res, {});
+      } catch (e) { return fail(res, 400, e.message); }
+    });
+  }
+  if (req.method === 'POST' && url === '/project-network/output') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      try {
+        const root = projectNetwork.rootFor({}, data.root || '');
+        const file = fs.realpathSync(path.resolve(root, String(data.file || '')));
+        const allowed = [path.join(root, 'projects'), ...blog.listSites().filter(s => blog.rootState(s.root) === 'yes').map(s => s.root)]
+          .map(r => blog.realish(r)).find(r => file.startsWith(r + path.sep));
+        if (!allowed) throw new Error('Choose a file inside a confirmed project or site');
+        projectNetwork.graph.syncProjects(root);
+        const result = projectNetwork.graph.registerOutput(root, { file, allowedRoot: allowed, project: String(data.project || ''), title: String(data.title || '') });
+        return ok(res, { output: result.output });
+      } catch (e) { return fail(res, 400, e.message); }
+    });
+  }
+
   // --- the vault's own hostname ------------------------------------------
   // On memory.botference.com the quiz IS the site: `/` is the page itself
   // rather than a redirect to somebody else's index, and everything that is
@@ -2775,6 +2853,8 @@ export function handler(req, res) {
         return fail(res, 400, 'no such project in a confirmed council');
       }
       const saved = store.filePageInProject(page.url, { root, id, attach });
+      try { projectNetwork.graph.syncProjects(root); projectNetwork.graph.linkSource(root, saved, id, { attach }); }
+      catch (e) { console.error('[project-network] filing:', e.message); }
       if (attach) rememberRoot(root);
       broadcast({ type: 'page', url: saved.url });
       return ok(res, { url: saved.url, filed: store.projectsOf(saved) });
@@ -2913,6 +2993,8 @@ export function handler(req, res) {
       // goes through: creating a project for a page and not filing the page in
       // it would leave the reader one click from where they started.
       const saved = store.filePageInProject(page.url, { root, id: made.id, attach: true });
+      try { projectNetwork.graph.syncProjects(root, { force: true }); projectNetwork.graph.linkSource(root, saved, made.id); }
+      catch (e) { console.error('[project-network] new project:', e.message); }
       broadcast({ type: 'page', url: saved.url });
       return ok(res, { root, id: made.id, title: made.title,
         filed: store.projectsOf(saved) });
@@ -4208,6 +4290,20 @@ export function handler(req, res) {
       const page = pageOf(res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
+      if (projectNetwork.graph.parseLinkIntent(text)) {
+        if (notOwner(req, res)) return;
+        if (target !== store.PAGE_CHAT && !store.findThread(page, target)) return fail(res, 404, 'Unknown thread');
+        const msg = store.appendMsg(page, target, { author: me.handle, text });
+        store.savePage(page);
+        try {
+          const result = projectNetwork.naturalLink(page, text);
+          draftReceipt(page.url, target, result.text);
+          return ok(res, { msg, queued: false, project_link: result });
+        } catch (e) {
+          draftReceipt(page.url, target, `Could not link this reading: ${e.message}`);
+          return ok(res, { msg, queued: false, reason: e.message });
+        }
+      }
       if (/^\/draft-blog(?:\s|$)/i.test(text.trim())) {
         if (notOwner(req, res)) return;
         if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
@@ -4444,6 +4540,8 @@ export function handler(req, res) {
         else if (chat && chat.controlFor(page.url, `/delete ${sid}`)) session_deleted = true;
         else session_deleted = store.deleteSessionFile(sid);
       }
+      try { projectNetwork.forgetSource(page.url); }
+      catch (e) { return fail(res, 503, 'Could not remove the project-index copy; the page was retained. Retry deletion.'); }
       store.deletePage(page.url);
       broadcast({ type: 'page', url: page.url });
       ok(res, { session_deleted });

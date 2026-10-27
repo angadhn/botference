@@ -3258,11 +3258,22 @@
       // lane, with no write scope — filing is a READ, and what it changes is
       // what the bots are told before they answer.
       onProjects: async () => {
+        await ensureRegistered();
         const r = await api('GET', '/projects?url=' + encodeURIComponent(URL_NOW));
         if (!r.ok) throw new Error(failure(r).error);
         const d = r.data || {};
-        return { projects: d.projects || [], filed: d.filed || [] };
+        const network = await api('GET', '/project-network?url=' + encodeURIComponent(URL_NOW));
+        return { projects: d.projects || [], filed: d.filed || [], roots: d.roots || [],
+          network: network.ok ? network.data : null };
       },
+      onLinkOutput: async (root, output) => {
+        await ensureRegistered();
+        const r = await api('POST', '/project-network/link', { url: URL_NOW, root, output });
+        if (!r.ok) throw new Error(failure(r).error);
+        await loadPage();
+        return r.data;
+      },
+      onNetworkView: () => bg({ t: 'open-here', path: '/project-network/view' }),
       onFileProject: async (root, id, attach) => {
         // the record has to exist before it can be filed — a page the reader
         // has never commented on is a shell the companion has not been asked

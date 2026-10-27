@@ -6867,6 +6867,8 @@ ${bubbleShellHtml()}`;
       // …and the same act reached by hand, from the bottom of the picker: a
       // reader who does not want to wait to be offered one.
       'proj-new-open': () => { D.projects.newOpen = true; paintProjPick(); },
+      'network-output': btn => linkNetworkOutput(btn),
+      'network-map': () => cb('onNetworkView')(),
       'proj-new-go': () => {
         const box = D.el.projpick && D.el.projpick.querySelector('[data-role="new-title"]');
         const sel = D.el.projpick && D.el.projpick.querySelector('[data-role="new-root"]');
@@ -8640,14 +8642,42 @@ ${bubbleShellHtml()}`;
         : `<button class="xrow newproj" type="button" data-act="proj-new-open">
              <span class="xname">+ new project</span>
              <span class="xwhy">start one for this page</span></button>`;
+      const network = P.network;
+      const networkPanel = network ? `<div class="pop-head second">Work this reading can feed</div>
+        <div class="pop-note">Link it to an existing draft or paper. The file stays where it is.</div>
+        <input class="mkbrief" data-role="network-find" type="search" aria-label="Find a draft or paper" placeholder="Find a draft or paper…" value="${esc(P.networkQuery || '')}">
+        <div data-network-results>${networkOutputRows()}</div>
+        ${(network.candidates || []).length ? '<div class="pop-head second">Possibly related projects</div>' + network.candidates.map(c =>
+          `<button class="xrow" type="button" data-act="proj-file" data-root="${esc(network.root)}" data-pid="${esc(c.project)}" data-on=""><span class="xname">${esc(c.title)}</span><span class="xwhy">${esc(c.reason)}</span></button>`).join('') : ''}
+        <button class="xrow" type="button" data-act="network-map"><span class="xname">Project connections ↗</span><span class="xwhy">See outputs, readings and the evidence behind connections</span></button>` : '';
       D.el.projpick.innerHTML =
         '<div class="pop-head">File this page in\u2026</div>'
+        + networkPanel
+        + (network ? '<div class="pop-head second">Projects</div>' : '')
         + body
         + (P.loading || P.err ? '' : newRow)
         + '<div class="pop-note foot">Filing is a read: the bots get what these '
         + 'projects already know. Nothing here is moved or written \u2014 except a '
         + 'new project, which is a new folder in your council.</div>';
       D.el.projpick.hidden = false;
+      const find = D.el.projpick.querySelector('[data-role="network-find"]');
+      if (find) find.oninput = () => { P.networkQuery = find.value;
+        D.el.projpick.querySelector('[data-network-results]').innerHTML = networkOutputRows(); };
+    }
+    function networkOutputRows() {
+      const P = D.projects, network = P.network;
+      if (!network) return '';
+      const query = String(P.networkQuery || '').trim().toLowerCase();
+      const filed = (P.filed || []).filter(p => p.root === network.root).map(p => p.id);
+      const rows = (network.outputs || []).filter(o => query ? String(o.title).toLowerCase().includes(query)
+        : (o.projects || []).some(id => filed.includes(id))).slice(0, 10);
+      if (!rows.length) return `<div class="pop-note">${query ? 'No matching output. You can create a project above.' : 'Search by the title of an existing post or paper.'}</div>`;
+      return rows.map(o => `<button class="xrow" type="button" data-act="network-output" data-output="${esc(o.id)}" data-root="${esc(network.root)}"><span class="xname">${esc(o.title)}</span><span class="xwhy">${esc((o.projects || []).map(id => network.projects.find(p => p.id === id)?.title || id).join(' · ') || 'A project will be created when you link this reading')}</span></button>`).join('');
+    }
+    async function linkNetworkOutput(btn) {
+      D.projects.err = '';
+      try { await cb('onLinkOutput')(btn.dataset.root, btn.dataset.output); await openProjPick(); }
+      catch (e) { D.projects.err = e.message || 'Could not link that output'; paintProjPick(); }
     }
     async function openProjPick() {
       if (!D.mounted) return;
@@ -8662,6 +8692,7 @@ ${bubbleShellHtml()}`;
         D.projects.list = (r && r.projects) || [];
         D.projects.filed = (r && r.filed) || [];
         D.projects.roots = (r && r.roots) || [];
+        D.projects.network = (r && r.network) || null;
       } catch (e) {
         D.projects.err = (e && e.message) || 'could not read your council';
       }

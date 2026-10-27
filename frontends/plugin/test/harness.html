@@ -2878,6 +2878,23 @@ function companion(method, path, body) {
     return { ok: true, status: 200,
       data: { ok: true, projects: FILE_ROSTER, filed: fileFiled, roots: [WS_ROOT] } };
   }
+  if (route === '/project-network') {
+    if (Q.get('network') !== '1') return { ok: false, status: 404, error: 'not enabled in this fixture' };
+    return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, projects: FILE_ROSTER,
+      outputs: [
+        { id: 'essay', title: 'What does it cost to run a university?', projects: ['adriana-paper'] },
+        { id: 'paper', title: 'Learning interfaces — paper draft', projects: ['adriana-paper'] },
+        { id: 'space-essay', title: 'Building larger space stations', projects: ['spaceship-engineering'] },
+      ], candidates: [{ project: 'spaceship-engineering', title: 'Spaceship Engineering',
+        reason: 'Shared wording: coordination, engineering. Check whether the connection is useful.' }],
+    } };
+  }
+  if (route === '/project-network/link') {
+    const id = body.output === 'space-essay' ? 'spaceship-engineering' : 'adriana-paper';
+    if (!fileFiled.some(p => p.id === id)) fileFiled.push({ root: WS_ROOT, id });
+    RECORD.projects = fileFiled;
+    return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, project: id, output: body.output } };
+  }
   // start a project, and put this page in it. The one act in the drawer that
   // writes inside the reader's council — here it only records what was asked.
   if (route === '/project-create') {

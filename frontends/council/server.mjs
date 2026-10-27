@@ -34,6 +34,7 @@ import { attachWs } from '../review/ws.mjs';
 import * as keys from '../shared/keys.mjs';
 import { isLocalDirect } from '../shared/local.mjs';
 import { transcribeRequest, whisperStatus } from '../shared/transcribe.mjs';
+import * as projectNetwork from '../shared/project-network.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -312,6 +313,7 @@ class Bridge {
     this.resuming = !!claimedSid;
     this.busy = false;             // between an input send and the next ready
     this.readySeen = false;        // the startup ready has arrived
+    this.networkProject = '';
     this.lastUsed = Date.now();
     // completion_context is pinned outside history: the bridge emits it once
     // at startup, so leaving it in a buffer that gets wiped on chat switches
@@ -412,9 +414,9 @@ class Bridge {
       // learn which chat this bridge actually drives (the active session)
       let active = null;
       for (const pr of ev.projects || []) {
-        for (const s of pr.sessions || []) if (s.active) active = s.session_id;
+        for (const s of pr.sessions || []) if (s.active) { active = s.session_id; this.networkProject = pr.id || ''; }
       }
-      for (const s of ev.inbox_sessions || []) if (s.active) active = s.session_id;
+      for (const s of ev.inbox_sessions || []) if (s.active) { active = s.session_id; this.networkProject = ''; }
       if (active) {
         this.sid = active;
         if (active === this.claimedSid) { this.claimedSid = null; this.resuming = false; }
@@ -463,10 +465,25 @@ class Bridge {
       if (bridges.size === 0) setTimeout(() => process.exit(0), 200);
       return;
     }
+    if (ev.type === 'room' && this.networkProject && /^(claude|codex)/i.test(ev.speaker || '')) {
+      try {
+        const p = projectNetwork.parseProposal(ev.text);
+        if (p) {
+          projectNetwork.propose(ROOT, { a: this.networkProject, b: p.project, relation: p.relation, reason: p.reason });
+          ev = { ...ev, text: ev.text.replace(p.line, '').trim() + '\n\nSuggested a project connection: ' + p.reason + ' (see Project connections).', blocks: [] };
+        }
+      } catch (e) { console.error('[project-network]', e.message); }
+    }
     this.broadcast(ev);
   }
   send(obj) {
     if (!this.proc || !this.available) return false;
+    if (obj?.type === 'input' && this.networkProject && obj.text && !/^\s*\//.test(obj.text)) {
+      try {
+        const ctx = projectNetwork.context(ROOT, { url: '', title: '', page_chat: [{ author: 'user', text: obj.text }] }, [this.networkProject], 4000);
+        if (ctx) obj = { ...obj, text: obj.text + '\n\n' + ctx };
+      } catch (e) { console.error('[project-network] context:', e.message); }
+    }
     if (obj && obj.type === 'input') this.busy = true;
     this.lastUsed = Date.now();
     this.proc.stdin.write(JSON.stringify(obj) + '\n');
@@ -757,6 +774,44 @@ export function handler(req, res) {
   if (GATED && req.method === 'POST' && url === '/auth') { authEndpoint(req, res); return; }
   if (!authorized(req)) { denied(req, res); return; }
 
+  if (req.method === 'GET' && (url === '/project-network/view' || /^\/network-assets\/network\.(js|css)$/.test(url))) {
+    const name = url === '/project-network/view' ? 'network.html' : path.basename(url);
+    serveFile(res, path.join(COUNCIL, '../shared/network-ui', name));
+    return;
+  }
+  if (req.method === 'GET' && url === '/project-network') {
+    try {
+      const q = new URLSearchParams(req.url.split('?')[1] || '');
+      if (q.get('root') && path.resolve(q.get('root')) !== path.resolve(ROOT)) throw new Error('This council serves one workspace');
+      const cfg = (() => { try { return JSON.parse(fs.readFileSync(path.join(HOME, '.botference/plugin/config.json'), 'utf8')); } catch { return {}; } })();
+      res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...projectNetwork.view(ROOT, { refresh: q.get('refresh') === '1' }),
+        roots: [ROOT], surface: 'council', discuss_base: cfg.discuss_web || 'http://127.0.0.1:4189' }));
+    } catch (e) { res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: e.message })); }
+    return;
+  }
+  if (req.method === 'POST' && url === '/project-network/edge') {
+    readBody(req, res, 10000, data => {
+      try {
+        if (data.root && path.resolve(data.root) !== path.resolve(ROOT)) throw new Error('This council serves one workspace');
+        projectNetwork.changeLink(ROOT, String(data.id || ''), String(data.action || ''));
+        res.writeHead(200, JSON_HEAD).end('{"ok":true}');
+      } catch (e) { res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: e.message })); }
+    }); return;
+  }
+  if (req.method === 'POST' && url === '/project-network/output') {
+    readBody(req, res, 10000, data => {
+      try {
+        if (data.root && path.resolve(data.root) !== path.resolve(ROOT)) throw new Error('This council serves one workspace');
+        const file = fs.realpathSync(path.resolve(ROOT, String(data.file || '')));
+        const old = projectNetwork.records(ROOT).outputs.find(o => o.path === file);
+        const allowedRoot = old?.allowed_root || path.join(ROOT, 'projects');
+        projectNetwork.syncProjects(ROOT);
+        const result = projectNetwork.registerOutput(ROOT, { file, allowedRoot, project: String(data.project || ''), title: String(data.title || '') });
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, output: result.output }));
+      } catch (e) { res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: e.message })); }
+    }); return;
+  }
+
   if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
     serveFile(res, path.join(ASSETS, 'index.html'));
     return;
@@ -991,7 +1046,7 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
     },
   });
   server.listen(PORT, '127.0.0.1', () => {
-    console.log(`Council live at http://localhost:${PORT} — workspace: ${ROOT}`);
+    console.log(`Council live at http://localhost:${server.address().port} — workspace: ${ROOT}`);
     if (GATED) console.log('hosted mode: password-gated (COUNCIL_PASSWORD)');
     if (NO_AUTH && HOSTED) console.log('WARNING: --no-auth — this server answers ANYONE who reaches it');
   });

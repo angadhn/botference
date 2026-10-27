@@ -1001,3 +1001,6 @@ body.agents-open #agents-panel { transform: translateX(0) }
 @media (max-width: 480px) {
   #help-pop .help-row { grid-template-columns: 1fr; gap: 0; padding: .3rem 0 }
 }
+/* One view over the same project/source/output store used by Discuss. */
+.network-nav { display:block; margin:8px 14px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; color:var(--accent); text-decoration:none; font-size:13px; }
+.network-nav:hover { text-decoration:underline; }

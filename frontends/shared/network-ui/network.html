@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Project connections · Botference</title><link rel="stylesheet" href="/network-assets/network.css"></head>
+<body><header><a href="/" class="back">← Back</a><div><h1>Project connections</h1><p>Readings, conversations and the work they become.</p></div><button id="refresh">Refresh evidence</button></header>
+<section class="controls" aria-label="Map controls"><label>Council <select id="root"></select></label><label class="search">Find a project or output <input id="search" type="search" placeholder="Teaching, space stations, an essay…"></label><label><input id="suggestions" type="checkbox" checked> Suggestions</label><label><input id="archived" type="checkbox"> Archived</label><label><input id="dismissed" type="checkbox"> Dismissed</label></section>
+<p id="status" role="status">Loading project records…</p>
+<main><section class="map-panel"><div class="legend"><span class="suggested">┄ Suggested</span><span class="linked">━ Linked or used by you</span><span class="stale">┄ Evidence changed</span></div><svg id="map" viewBox="0 0 900 600" role="img" aria-label="Project relationship map"></svg><p class="hint">Select a project or connection. Position shows link structure, not a measure of meaning or truth.</p><div id="projects" class="project-list"></div></section>
+<aside id="detail" aria-live="polite"><h2>Your project network</h2><p>Select a project to see its outputs and reading conversations. Select a connection to inspect why it exists.</p><p>Red dashed lines are suggestions. Green lines record links you made or evidence of use you requested.</p></aside></main>
+<script type="module" src="/network-assets/network.js"></script></body></html>
