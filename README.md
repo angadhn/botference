@@ -1838,6 +1838,24 @@ turns, in the project folder. By default it is Claude Code on **Opus 5.5 at
 Sol at `xhigh`) while Claude's go to Opus. Codex can summon because botference
 does the summoning, not the bot.
 
+**Generative artwork uses Codex.** Ask either bot for an illustration, photo,
+texture or creative image edit in normal language. It can request
+`summon: [imagegen] <brief>`, which selects a Codex builder with the native
+image-generation tool. The builder uses the room's selected Codex model at
+`high` effort; optional `builder.tasks.imagegen` settings in
+`context-budgets.json` override `model`, `effort` and `timeout_s` for this task.
+General builder settings still apply to ordinary builds. You do not need a
+separate API key for the native image tool, though the selected Codex account
+must have access to it. The builder saves the actual generated file into the
+permitted artifact or site-asset folder and reports its path.
+
+This route does not widen filesystem or network permissions. From an external
+article, create the blog draft first and request its assets on the local
+preview. Faithful annotations of an existing scientific chart use the original
+image and the ordinary builder; generative artwork is not a replacement for a
+blocked image download. Image work still follows the existing one-builder-per-
+bot-per-turn limit; no new parallel orchestration is introduced.
+
 What you see, in the council page, the browser plugin and the terminal: a card
 **indented under the message that summoned it**, in the style of a reply on a
 thread —

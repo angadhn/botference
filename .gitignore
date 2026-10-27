@@ -24,5 +24,6 @@ specs/editor-output-format.md
 
 # Bots' own outputs on this machine — never part of the harness
 work/artifacts/
+work/visual-checks/
 # one-off maintenance scripts
 scrub-*.sh

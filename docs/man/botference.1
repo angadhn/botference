@@ -502,6 +502,13 @@ offers it as "delete project..." in each project block.
 Planning: set (or let the bots vote on) the plan writer, draft
 implementation-plan.md with AI review rounds, and finalize with a
 checkpoint.
+.PP
+Bots can delegate generative artwork with \fBsummon: [imagegen] <brief>\fR.
+This selects a Codex builder with native image generation, using the room's
+Codex model at high effort. Optional \fIbuilder.tasks.imagegen\fR settings
+in \fIcontext-budgets.json\fR override model, effort and timeout_s.
+The existing filesystem and network scope still applies. Accurate plots and
+faithful annotations of source charts use the ordinary builder, not generation.
 .TP
 .B /relay /compact /goal /permissions /status /auth /model /effort
 Session management, including per-participant model and effort switches.

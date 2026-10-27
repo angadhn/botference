@@ -3799,6 +3799,7 @@ class Botference:
                 debug_log_path=getattr(self.codex, "debug_log_path", ""),
                 fallback_api_key=getattr(self.codex, "fallback_api_key", ""),
                 network_access=config.codex_network_access,
+                image_generation=spec.get("task") == "imagegen",
             )
         else:
             settings = json.loads(json.dumps(config.claude_settings))
@@ -3854,7 +3855,9 @@ class Botference:
     async def _run_summon(
         self, brief: str, summoner: str, parent_stream_id: str, ui: UIPort,
     ) -> None:
-        spec = summon.builder_spec(summoner, self.paths.botference_home)
+        task = summon.builder_task(brief)
+        spec = summon.builder_spec(summoner, self.paths.botference_home, task=task,
+                                   codex_model=getattr(self.codex, "model", "gpt-6-astra"))
         self._summon_seq += 1
         agent_id = f"{self.session_id}:agent:{self._summon_seq}"
         label = summon.builder_label(spec)
@@ -3868,6 +3871,7 @@ class Botference:
             "effort": spec.get("effort", ""),
             "label": label,
             "brief": brief,
+            "task": task,
             "status": "working",
             "elapsed_s": 0,
             # wall-clock start (epoch seconds): a page reloaded mid-build — a
@@ -3904,6 +3908,7 @@ class Botference:
             artifacts_link=os.environ.get("BOTFERENCE_PLAN_ARTIFACTS_LINK", "").strip()
             if override else "",
             unsandboxed=spec.get("unsandboxed_commands") or [],
+            task=task,
         )
         adapter = self._make_builder(spec)
         started = time.monotonic()

@@ -198,6 +198,11 @@ def free_form_turn_status(
             "A few short sentences unless you are drafting a deliverable.]"
         )
     lines.append(
+        "[For generative raster artwork, use summon: [imagegen] <brief> to "
+        "request the Codex image builder. Accurate plots and faithful "
+        "annotations use the ordinary builder and the original data/image.]"
+    )
+    lines.append(
         f"[End your reply with the room footer: {FREE_FORM_FOOTER_SCHEMA}]"
     )
     return "\n".join(lines)
@@ -328,6 +333,15 @@ def deliverables_note(artifacts_dir: str = "", artifacts_link: str = "") -> str:
         "if the work needs several, say so and let the user decide. Ordinary "
         "code edits in a repository under discussion are yours to make; a "
         "deliverable the reader opens is not.\n"
+        "For generative raster artwork (illustrations, photos, textures, or "
+        "creative image edits), use `summon: [imagegen] <brief>`. That task "
+        "runs on a Codex builder with built-in image generation, whether "
+        "Claude or Codex summons it. Include the intended use, references, "
+        "visual requirements and exact destination. Do not use [imagegen] "
+        "for accurate data plots, SVG/code-native figures, or adding labels "
+        "to an existing scientific chart: preserve the original instead. "
+        "The image builder inherits this chat's writable folders; selecting "
+        "it does not grant access to another repository or blocked hosts.\n"
         + (where_override(artifacts_dir, artifacts_link) if artifacts_dir else
            "Deliverables live inside the current project's folder "
            "(`projects/<project-id>/artifacts/`), or under `work/artifacts/` "

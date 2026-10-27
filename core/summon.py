@@ -53,6 +53,11 @@ DEFAULT_BUILDER = {
 SUMMON_BUDGET = 1
 
 
+def builder_task(brief: str) -> str:
+    """The bot explicitly selects the capability; topic words do not route jobs."""
+    return "imagegen" if re.match(r"^\s*\[imagegen\](?:\s|$)", brief or "", re.I) else "build"
+
+
 def parse_summon_request(text: str) -> Optional[str]:
     """The brief a bot's reply asked to have built, or None.
 
@@ -103,7 +108,8 @@ def _load_budgets(botference_home: Path | None) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def builder_spec(summoner: str, botference_home: Path | None = None) -> dict:
+def builder_spec(summoner: str, botference_home: Path | None = None, *,
+                 task: str = "build", codex_model: str = "gpt-6-astra") -> dict:
     """Which agent to run for a summon from *summoner*.
 
     ``context-budgets.json`` may carry::
@@ -116,12 +122,29 @@ def builder_spec(summoner: str, botference_home: Path | None = None) -> dict:
     The per-summoner entry under ``for`` overrides the top level, so Codex's
     summons can go to a Codex builder while Claude's go to Opus. Environment
     overrides (``BOTFERENCE_BUILDER_MODEL`` / ``_EFFORT`` / ``_CLI``) win over
-    the file, for a one-off run.
+    the file, for a one-off run. The explicit ``imagegen`` task uses Codex and
+    the room's Codex model, with separate optional ``builder.tasks.imagegen``
+    overrides for model/effort/timeout; general Opus settings do not apply.
     """
     spec = dict(DEFAULT_BUILDER)
     cfg = _load_budgets(botference_home).get("builder")
+    if task == "imagegen":
+        # Built-in image generation belongs to Codex. Use the room's chosen
+        # Codex model unless this capability has its own explicit override.
+        # General Opus-builder settings must not silently defeat this route.
+        spec = {"cli": "codex", "model": codex_model, "effort": "high",
+                "timeout_s": 0, "unsandboxed_commands": [], "task": "imagegen"}
+        tasks = cfg.get("tasks", {}) if isinstance(cfg, dict) else {}
+        image = tasks.get("imagegen", {}) if isinstance(tasks, dict) else {}
+        if isinstance(image, dict):
+            spec.update({k: image[k] for k in ("model", "effort", "timeout_s") if image.get(k) is not None})
+        try:
+            spec["timeout_s"] = max(0, int(spec.get("timeout_s") or 0))
+        except (TypeError, ValueError):
+            spec["timeout_s"] = 0
+        return spec
     if isinstance(cfg, dict):
-        spec.update({k: v for k, v in cfg.items() if k != "for" and v})
+        spec.update({k: v for k, v in cfg.items() if k not in ("for", "tasks") and v})
         per = cfg.get("for")
         if isinstance(per, dict) and isinstance(per.get(summoner), dict):
             spec.update({k: v for k, v in per[summoner].items() if v})
@@ -159,7 +182,7 @@ def builder_label(spec: dict) -> str:
 def builder_prompt(
     *, brief: str, summoner: str, history: str, artifacts_dir: str,
     project_root: str, deliverables_note: str = "", unsandboxed: list[str] | None = None,
-    artifacts_link: str = "",
+    artifacts_link: str = "", task: str = "build",
 ) -> str:
     """The whole of what the build agent is told.
 
@@ -185,6 +208,20 @@ def builder_prompt(
         "you build it. You have one turn and nobody will answer questions, so "
         "decide and proceed. Do not summon anyone yourself.",
         f"--- The brief (from {who}) ---\n{brief}",
+        ("--- Generative image task ---\n"
+         "Use $imagegen and the built-in image_gen tool to create or edit the "
+         "requested raster artwork. Read the imagegen skill if available. "
+         "Do not substitute SVG, hand-drawn code, stock images, or an API-key "
+         "workflow for the requested generative image. If the built-in tool "
+         "is unavailable, report that blocker and stop. For a local reference "
+         "image, view it before editing. Copy the actual generated output into "
+         "the destination specified below; do not leave a project asset only "
+         "under Codex's generated_images directory. Verify that the final file "
+         "exists and inspect it before reporting its path. Preserve existing "
+         "assets unless replacement was requested. Image generation is not a "
+         "way to recreate measurements, redraw a published chart, or bypass "
+         "an unavailable source image. Do not generate substitutes for those."
+         if task == "imagegen" else ""),
         ("--- Hardware ---\n"
          "These commands run outside your sandbox, with the GPU: "
          + ", ".join(f"`{c}`" for c in unsandboxed) + ". Call them directly "

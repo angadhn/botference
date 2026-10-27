@@ -1759,6 +1759,7 @@ class CodexAdapter:
                  debug_log_path: str = "",
                  fallback_api_key: str = "",
                  network_access: bool = False,
+                 image_generation: bool = False,
                  stream_callback: Optional[StreamCallback] = None):
         self.requested_model = model
         self.model = model
@@ -1767,6 +1768,7 @@ class CodexAdapter:
         self.add_dirs = add_dirs or []
         self.reasoning_effort = reasoning_effort
         self.network_access = network_access
+        self.image_generation = image_generation
         self.timeout = timeout or _timeout_from_env(
             "BOTFERENCE_CODEX_TIMEOUT",
             "BOTFERENCE_CLI_TIMEOUT",
@@ -1801,6 +1803,8 @@ class CodexAdapter:
                "--sandbox", self.sandbox,
                "--skip-git-repo-check",
                "--json"]
+        if self.image_generation:
+            cmd += ["-c", "features.image_generation=true"]
         if self.cwd:
             cmd += ["--cd", self.cwd]
         for path in self.add_dirs:
@@ -1811,7 +1815,7 @@ class CodexAdapter:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         if self.network_access:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
-        cmd.append(scrub_surrogates(prompt))
+        cmd += ["--", scrub_surrogates(prompt)]
         return cmd
 
     def _build_probe_cmd(self, model: str) -> list:
@@ -1830,6 +1834,8 @@ class CodexAdapter:
 
     def _build_resume_cmd(self, message: str) -> list:
         cmd = ["codex", "exec", "--sandbox", self.sandbox]
+        if self.image_generation:
+            cmd += ["-c", "features.image_generation=true"]
         if self.cwd:
             cmd += ["--cd", self.cwd]
         for path in self.add_dirs:
@@ -1843,7 +1849,7 @@ class CodexAdapter:
             "--json",
             "--skip-git-repo-check",
         ]
-        cmd.append(scrub_surrogates(message))
+        cmd += ["--", scrub_surrogates(message)]
         return cmd
 
     async def _probe_model(self, model: str) -> bool:

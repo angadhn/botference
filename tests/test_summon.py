@@ -57,6 +57,53 @@ class TestParseSummon:
 
 
 class TestBuilderSpec:
+    def test_imagegen_is_an_explicit_capability_not_a_keyword_guess(self):
+        assert summon.builder_task('[imagegen] Paint a botanical illustration') == 'imagegen'
+        assert summon.builder_task('[IMAGEGEN] Create artwork') == 'imagegen'
+        assert summon.builder_task('Annotate an existing image of a scientific chart') == 'build'
+        assert summon.builder_task('Explain how imagegen works in a document') == 'build'
+
+    def test_imagegen_routes_either_summoner_to_the_rooms_codex_model(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('BOTFERENCE_BUILDER_CLI', 'claude')
+        monkeypatch.setenv('BOTFERENCE_BUILDER_MODEL', 'claude-opus-5-5')
+        (tmp_path / 'context-budgets.json').write_text(json.dumps({
+            'builder': {'cli': 'claude', 'model': 'claude-opus-5-5',
+                        'for': {'codex': {'cli': 'claude'}}}}))
+        for who in ['claude', 'codex']:
+            spec = summon.builder_spec(who, tmp_path, task='imagegen', codex_model='gpt-6-sol')
+            assert (spec['cli'], spec['model'], spec['task']) == ('codex', 'gpt-6-sol', 'imagegen')
+            assert spec['unsandboxed_commands'] == []
+        assert summon.builder_spec('codex', tmp_path)['cli'] == 'claude'
+
+    def test_imagegen_has_its_own_optional_settings(self, tmp_path):
+        (tmp_path / 'context-budgets.json').write_text(json.dumps({
+            'builder': {'tasks': {'imagegen': {'model': 'gpt-6-sol', 'effort': 'medium', 'timeout_s': 600}}}}))
+        spec = summon.builder_spec('claude', tmp_path, task='imagegen')
+        assert (spec['model'], spec['effort'], spec['timeout_s']) == ('gpt-6-sol', 'medium', 600)
+
+    def test_image_builder_enables_native_tool_without_broadening_sandbox(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        spec = summon.builder_spec('claude', tmp_path, task='imagegen')
+        adapter = c._make_builder(spec)
+        assert adapter.image_generation is True
+        assert 'features.image_generation=true' in adapter._build_send_cmd('make an image')
+        assert 'features.image_generation=true' in adapter._build_resume_cmd('refine it')
+        assert adapter._build_send_cmd('--- builder prompt')[-2:] == ['--', '--- builder prompt']
+        assert adapter._build_resume_cmd('--- follow-up')[-2:] == ['--', '--- follow-up']
+        assert adapter.sandbox == 'workspace-write'
+        ordinary = c._make_builder({**spec, 'task': 'build'})
+        assert adapter.network_access == ordinary.network_access
+        assert adapter.add_dirs == ordinary.add_dirs
+        assert adapter.cwd == ordinary.cwd
+        assert '--dangerously-bypass-approvals-and-sandbox' not in adapter._build_send_cmd('make an image')
+
+    def test_image_builder_prompt_requires_real_generation_and_saved_output(self):
+        p = summon.builder_prompt(brief='[imagegen] paint a fern', summoner='claude', history='',
+                                  artifacts_dir='work/artifacts', project_root='/w', task='imagegen')
+        assert '$imagegen' in p and 'built-in image_gen' in p
+        assert 'actual generated output' in p and 'Verify that the final file exists' in p
+        assert 'Do not generate substitutes' in p
+
     def test_defaults_are_opus_5_5_high(self, tmp_path, monkeypatch):
         for env in ("BOTFERENCE_BUILDER_CLI", "BOTFERENCE_BUILDER_MODEL",
                     "BOTFERENCE_BUILDER_EFFORT"):
@@ -247,6 +294,19 @@ def _bot_with_summon(tmp_path, *, summoner_reply: str, builder: MockAdapter,
 
 @pytest.mark.asyncio
 class TestSummonInChat:
+    async def test_image_request_selects_codex_and_keeps_the_visible_agent_card(self, tmp_path):
+        builder = MockAdapter([_ok('Created fern.png.\nartifact: work/artifacts/fern.png')])
+        c, claude, codex, ui, made = _bot_with_summon(tmp_path,
+            summoner_reply='summon: [imagegen] Make a watercolor fern', builder=builder)
+        await c.handle_input('@claude create an illustration', ui)
+        assert made[0]['cli'] == 'codex'
+        assert made[0]['task'] == 'imagegen'
+        assert '$imagegen' in builder.send_calls[0]
+        cards = [e for e in ui.agent_entries if e[2]['card'] == 'report']
+        assert cards[-1][2]['task'] == 'imagegen'
+        assert cards[-1][2]['cli'] == 'codex'
+        assert cards[-1][2]['status'] == 'done'
+
     async def test_a_summon_line_runs_the_builder_and_nests_its_report(
         self, tmp_path, monkeypatch,
     ):

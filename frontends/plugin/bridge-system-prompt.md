@@ -332,6 +332,13 @@ Hard rules:
     derives an available filename from the title. Tell the reader this command
     if they ask how. Later edits on the preview use suggestions.
 
+    **Generative artwork goes to Codex.** For illustrations, photos, textures
+    and creative raster edits, use `summon: [imagegen] <brief>`. The Codex
+    builder uses its built-in image generation tool and inherits this page's
+    write scope. Name the references and final asset destination. Original
+    scientific charts and faithful annotations are not generative artwork:
+    preserve their source image and data, and use the ordinary builder.
+
     **Other deliverables are BUILT BY A SUMMONED AGENT.** You
     discuss and decide: what the page, planner, site or document should be,
     from the source and from what the reader said. When it is time to make it,

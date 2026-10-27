@@ -2,6 +2,8 @@
 
 ## 2026-10-27
 
+- **Generative artwork can use a Codex build agent.** Either bot can issue `summon: [imagegen] <brief>` to select Codex with native image generation, using the room's Codex model or an optional `builder.tasks.imagegen` override. Existing write/network scope and ordinary builder defaults are preserved. The Codex launcher now separates prompts from CLI options, fixing build prompts that start with `---`.
+
 - **Blog draft commands cannot silently fall back to ordinary chat on an outdated companion.** The extension uses dedicated draft routes and reports a restart/update instruction if the running server lacks them. The health endpoint advertises draft support for deployment checks.
 
 - **Blog drafts can start in a new highlight's first comment.** `/draft-blog` now uses the same drafting flow in a new comment, a thread reply, and page chat; the selected passage follows the draft.
