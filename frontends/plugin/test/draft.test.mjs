@@ -123,10 +123,15 @@ try {
   } });
   const url = 'https://example.test/source';
   await POST(base, '/page', { url, title: 'Source article' });
+  await test('dedicated draft routes advertise support and refuse ordinary chat', async () => {
+    assert.equal((await GET(base, '/health')).json.capabilities.draft_blog, 1);
+    assert.equal((await POST(base, '/draft-blog', { url, text: '@claude create an artifact' })).status, 400);
+    assert.equal((await POST(base, '/draft-blog/thread', { url, quote: 'passage', msg: { text: 'ordinary comment' } })).status, 400);
+  });
   await POST(base, '/reply', { url, text: 'Keep the economic counterargument.', route: '' });
   await test('owner command creates a preview link and carries source context into later draft turns', async () => {
     const response = fence('# Economics\n\nThe counterargument matters.');
-    const r = await POST(base, '/reply', { url, text: '/draft-blog @codex Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
+    const r = await POST(base, '/draft-blog', { url, text: '/draft-blog @codex Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.queued, true);
     const repeated = await POST(base, '/reply', { url, text: '/draft-blog @codex Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
@@ -159,7 +164,7 @@ try {
     const command = '/draft-blog Discuss this passage. [mock:says:'
       + fence('# From a highlight\n\nAn answer to the line.').replaceAll('\n', '\\n') + ']';
     const body = { url, quote, msg: { text: command } };
-    const r = await POST(base, '/thread', body);
+    const r = await POST(base, '/draft-blog/thread', body);
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.queued, true);
     const id = r.json.thread.id;

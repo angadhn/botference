@@ -268,6 +268,7 @@ const AUTH_FAIL = 'auth required — check the password on the extension’s opt
 
 async function api(method, path, body) {
   await configReady;
+  path = CFG.commandRoute(method, path, body);
   const init = { method: method || 'GET', cache: 'no-store' };
   const headers = CFG.authHeaders(CONF.password, CONF.handle);
   if (body !== undefined && body !== null) {
@@ -285,7 +286,8 @@ async function api(method, path, body) {
   const text = await res.text().catch(() => '');
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!res.ok) {
-    const err = res.status === 401 ? AUTH_FAIL : ((data && data.error) || ('HTTP ' + res.status));
+    const err = res.status === 401 ? AUTH_FAIL
+      : CFG.commandError(path, res.status) || ((data && data.error) || ('HTTP ' + res.status));
     return { ok: false, status: res.status, data, error: err };
   }
   return { ok: true, status: res.status, data };

@@ -2460,6 +2460,8 @@ function runFigure(req, res) {
 
 export function handler(req, res) {
   let url = req.url.split('?')[0];
+  const draftCommandOnly = req.method === 'POST' && (url === '/draft-blog' || url === '/draft-blog/thread');
+  if (draftCommandOnly) url = url === '/draft-blog/thread' ? '/thread' : '/reply';
   // CORS, hosted only: the remote extension is cross-origin against a public
   // hostname. Wildcard origin is safe precisely because API auth is a bearer
   // header — a wildcard can never carry the cookie the browsers use.
@@ -2549,6 +2551,7 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/health') {
     const me = hosted.identity(req);
     return ok(res, {
+      capabilities: { draft_blog: 1 },
       // the WHOLE stable: 'running' the moment any bridge is up (the plugin's
       // own or a council's), and one queue depth across all of them
       bridge: bridgeState(),
@@ -3826,6 +3829,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/thread') {
     return readBody(req, res, async data => {
       const text = String((data.msg && data.msg.text) || '');
+      if (draftCommandOnly && !/^\/draft-blog(?:\s|$)/i.test(text.trim())) return fail(res, 400, '/draft-blog command required');
       if (!data.url) return fail(res, 400, 'url required');
       if (!data.quote) return fail(res, 400, 'quote required');
       // A STRUCK PASSAGE IS ALREADY A STATEMENT. Adobe's strikeout with no
@@ -4107,6 +4111,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/reply') {
     return readBody(req, res, async data => {
       const text = String(data.text || '');
+      if (draftCommandOnly && !/^\/draft-blog(?:\s|$)/i.test(text.trim())) return fail(res, 400, '/draft-blog command required');
       if (!text.trim()) return fail(res, 400, 'empty reply');
       const me = authorOf(req, res);
       if (!me) return;

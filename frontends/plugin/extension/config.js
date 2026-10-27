@@ -25,6 +25,20 @@
   'use strict';
 
   const DEFAULT_BASE = 'http://127.0.0.1:4189';
+  // A new client must never send a draft request as ordinary chat to an old
+  // companion. Unknown dedicated routes fail visibly instead of summoning a
+  // general-purpose artifact builder with the wrong output directory.
+  function commandRoute(method, route, body) {
+    if (String(method).toUpperCase() !== 'POST') return route;
+    const text = route === '/thread' ? body?.msg?.text : body?.text;
+    if (!/^\/draft-blog(?:\s|$)/i.test(String(text || '').trim())) return route;
+    return route === '/reply' ? '/draft-blog' : route === '/thread' ? '/draft-blog/thread' : route;
+  }
+  function commandError(route, status) {
+    return (route === '/draft-blog' || route === '/draft-blog/thread') && status === 404
+      ? 'The running Discuss companion does not support this draft command. Restart or update the companion, then retry. Nothing was sent to the bots.'
+      : '';
+  }
   // bfp:pdf is the one setting here that is not about the wire: whether a web
   // PDF is opened in Discuss's own viewer (so it can be annotated) or left to
   // the browser's. Stored the same way as the rest because it is read in the
@@ -153,6 +167,7 @@
     DEFAULT_BASE, KEYS, HANDLE_MAX,
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,
+    commandRoute, commandError,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPConfig = api;

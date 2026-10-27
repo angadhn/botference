@@ -696,6 +696,19 @@ const res = (body, extra) => Object.assign({
 // they encode are contracts with the companion (the handle sanitiser especially
 // — see below), so they are unit-tested rather than eyeballed in a browser.
 const C = require(path.join(here, '..', 'extension', 'config.js'));
+{
+  eq('draft transport: page chat uses a dedicated route',
+    C.commandRoute('POST', '/reply', { text: '/draft-blog Write my response' }), '/draft-blog');
+  eq('draft transport: a highlighted comment uses a dedicated route',
+    C.commandRoute('POST', '/thread', { msg: { text: ' /draft-blog ' } }), '/draft-blog/thread');
+  eq('draft transport: ordinary conversation keeps its route',
+    C.commandRoute('POST', '/reply', { text: 'What does /draft-blog do?' }), '/reply');
+  eq('draft transport: edits are not fresh draft requests',
+    C.commandRoute('POST', '/edit', { text: '/draft-blog' }), '/edit');
+  ok('draft transport: an old server gets a restart error, never a chat fallback',
+    /Restart or update/.test(C.commandError('/draft-blog', 404)));
+  eq('draft transport: other errors keep their real explanation', C.commandError('/draft-blog', 403), '');
+}
 const O = require(path.join(here, '..', 'extension', 'options.js'));
 
 // ---- 10. normalizeBase ------------------------------------------------------

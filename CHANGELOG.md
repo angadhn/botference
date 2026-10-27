@@ -2,6 +2,8 @@
 
 ## 2026-10-27
 
+- **Blog draft commands cannot silently fall back to ordinary chat on an outdated companion.** The extension uses dedicated draft routes and reports a restart/update instruction if the running server lacks them. The health endpoint advertises draft support for deployment checks.
+
 - **Blog drafts can start in a new highlight's first comment.** `/draft-blog` now uses the same drafting flow in a new comment, a thread reply, and page chat; the selected passage follows the draft.
 
 - **Blog drafting accepts ordinary requests.** `/draft-blog` can be used alone or followed by a description; the title determines an unused filename. New posts inherit YAML fields from the site's `Templates/baseline.md` when present, remain unpublished, and leave the template untouched. The title lives in front matter so the site layout does not display it twice.
