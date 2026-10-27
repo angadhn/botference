@@ -3,7 +3,10 @@
 botference \- a multi-LLM planning council for the terminal
 .SH SYNOPSIS
 .B botference
-[\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR|\fBbuild\fR] [\fIiterations\fR]
+[\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR]
+.br
+.B botference
+[\fIoptions\fR] \fBbuild\fR [\fIiterations\fR]
 .br
 .B botference plan
 [\fB\-\-web\fR|\fB\-\-share\fR [\fB\-\-no-auth\fR]] [\fB\-\-port\fR \fIN\fR]
@@ -84,6 +87,15 @@ out of the registry and sets \fBenabled: false\fR in its marker.
 .B plan
 Free-form planning council: you + Claude + Codex in one room; the bots can
 hand each other the floor (budgeted) until the conversation returns to you.
+This is the default: \fBbotference\fR with no mode word opens the same room.
+Ask for something to be built and the bots spec it (asking you first if the
+brief is thin), then mark their footer \fB"build": "building"\fR: the thread
+then has no turn cap and runs until a footer says \fBconverged\fR with
+\fB"build": "done"\fR (accepted only when the last build agent succeeded and
+the \fB"test"\fR command in botference/project.json, if any, exits zero), a
+bot says \fBblocked\fR, you type, or the time budget (8 hours) runs out.
+\fBsummon: [ui]\fR runs Claude Code on Opus 5.5, \fBsummon: [logic]\fR runs
+Codex; the bot that summoned does not review its own builder.
 With \fB\-\-web\fR the council serves as a chat web app in the browser
 instead of the Ink TUI (sidebar where every project expands to its recent
 chats and tapping any chat opens it \- no "make active project" step \-
@@ -113,7 +125,10 @@ Structured planning with prompts/plan.md.
 Archive the current thread and restore blank templates.
 .TP
 .B build
-Build loop (default), optionally capped at \fIiterations\fR.
+Build loop, optionally capped at \fIiterations\fR. It used to be the
+default; it now needs its word, except that \fB\-p\fR with no mode word
+still runs it headless, so scripts keep working. A bare number with no mode
+word is an error that points at \fBbotference build\fR \fIN\fR.
 .TP
 .B review \fR[\fIdir\fR]
 Set up and serve the document-review interface (Google-Docs-style
@@ -328,7 +343,8 @@ lines).
 .SH OPTIONS
 .TP
 .B \-p
-Non-interactive (pipe) mode.
+Non-interactive (pipe) mode. With no mode word it means the headless build
+loop.
 .TP
 .BI \-\-anthropic-model= name
 Override the Anthropic model (Claude participant).
@@ -523,6 +539,10 @@ faithful annotations of source charts use the ordinary builder, not generation.
 Session management, including per-participant model and effort switches.
 Effort levels: Claude low/medium/high/xhigh/max; Codex low/medium/high/xhigh/max/ultra.
 Models added 2026-09-23: claude-opus-5-5, gpt-6-sol, gpt-6-luna.
+A bot that asks to write outside its roots gets a terminal prompt:
+\fBY\fR allows once (this session), \fBA\fR allows always (also saved to
+write_roots.plan and write_roots.build in botference/project.json, so the
+prompt never returns for that folder), \fBN\fR or Esc denies.
 .B /fresh @claude|@codex|@both
 restarts a bot with no memory of the chat: no summary, no history; only what
 the user sends next. For a session that has gone wrong.
@@ -770,7 +790,10 @@ a sandbox CSP with an opaque origin.
 .BR BOTFERENCE_PLUGIN_LEGACY_HOSTNAME ,
 .BR BOTFERENCE_PLUGIN_TUNNEL ,
 .BR GEMINI_API_KEY ,
-.BR BOTFERENCE_VIDEO_WATCH .
+.BR BOTFERENCE_VIDEO_WATCH ,
+.BR BOTFERENCE_BUILD_HOURS
+(the time budget of a build thread; default 8, or "build_hours" in
+botference/project.json).
 See \fBbotference --help\fR for details.
 .SH EXAMPLES
 .TP
@@ -783,8 +806,12 @@ Put this Jupyter Book, served at localhost:8000, in Discuss's scope.
 .B botference sites
 Which projects Discuss treats as yours.
 .TP
-.B botference plan
-Open the planning council.
+.B botference
+Open the council (the same as \fBbotference plan\fR).
+.TP
+.B botference build 10
+The build loop, capped at 10 iterations (\fBbotference -p\fR runs it
+headless).
 .TP
 .B botference plan --claude-interactive
 Council with a real, tmux-attachable Claude Code session.

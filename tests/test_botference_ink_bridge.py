@@ -520,6 +520,22 @@ class TestNotifyEmission:
         assert not any(e.get("type") == "notify" for e in emitted)
 
 
+    async def test_permission_request_can_be_answered_always(
+        self, tmp_path, monkeypatch
+    ):
+        from botference import WritePermissionRequest
+
+        monkeypatch.setattr(binkb, "emit", lambda obj: None)
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        request = WritePermissionRequest(
+            request_id="r1", model="claude", path="src", reason="edit",
+        )
+        task = asyncio.create_task(bridge.request_write_permission(request))
+        await asyncio.sleep(0)
+        bridge.resolve_permission_request(True, always=True)
+        assert await asyncio.wait_for(task, timeout=2.0) == "always"
+
+
 @pytest.mark.asyncio
 class TestStreamCoalescing:
     def _bridge(self, tmp_path, monkeypatch, emitted):

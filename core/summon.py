@@ -24,6 +24,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from room_prompts import PROPORTIONATE_TESTS_RULE
 from video_watch import _FENCE_RE, _unwrap_line
 
 # `summon:` on a line of its own (light markdown tolerated), the brief after
@@ -53,9 +54,28 @@ DEFAULT_BUILDER = {
 SUMMON_BUDGET = 1
 
 
+#: Kind tags a brief may open with, and the task each one names. The tag
+#: decides the builder whoever summoned it: `[ui]` (anything a person sees)
+#: goes to Claude Code on Opus, `[logic]` (behaviour: controller code,
+#: adapters, parsing, protocols, shell) to Codex. That is how the two
+#: subscriptions share a long build. No tag keeps the summoner's own default.
+_TASK_TAGS = ("imagegen", "ui", "logic")
+_TASK_TAG_RE = re.compile(r"^\s*\[(imagegen|ui|logic)\](?:\s|$)", re.I)
+
+#: The builder each tag runs when context-budgets.json says nothing about it
+#: (`builder.tasks.<tag>` may change cli, model, effort and timeout_s).
+#: "codex" as the model means the room's own Codex model.
+_TASK_DEFAULTS = {
+    "imagegen": {"cli": "codex", "model": "codex", "effort": "high"},
+    "ui": {"cli": "claude", "model": "claude-opus-5-5", "effort": "high"},
+    "logic": {"cli": "codex", "model": "codex", "effort": "high"},
+}
+
+
 def builder_task(brief: str) -> str:
     """The bot explicitly selects the capability; topic words do not route jobs."""
-    return "imagegen" if re.match(r"^\s*\[imagegen\](?:\s|$)", brief or "", re.I) else "build"
+    m = _TASK_TAG_RE.match(brief or "")
+    return m.group(1).lower() if m else "build"
 
 
 def parse_summon_request(text: str) -> Optional[str]:
@@ -125,19 +145,34 @@ def builder_spec(summoner: str, botference_home: Path | None = None, *,
     the file, for a one-off run. The explicit ``imagegen`` task uses Codex and
     the room's Codex model, with separate optional ``builder.tasks.imagegen``
     overrides for model/effort/timeout; general Opus settings do not apply.
+    The ``ui`` and ``logic`` tasks work the same way: ``[ui]`` runs Claude
+    Code on Opus 5.5 and ``[logic]`` runs Codex on the room's Codex model,
+    each overridable (cli too) under ``builder.tasks.ui`` / ``.logic``.
     """
     spec = dict(DEFAULT_BUILDER)
     cfg = _load_budgets(botference_home).get("builder")
-    if task == "imagegen":
-        # Built-in image generation belongs to Codex. Use the room's chosen
-        # Codex model unless this capability has its own explicit override.
-        # General Opus-builder settings must not silently defeat this route.
-        spec = {"cli": "codex", "model": codex_model, "effort": "high",
-                "timeout_s": 0, "unsandboxed_commands": [], "task": "imagegen"}
+    if task in _TASK_TAGS:
+        # A tagged brief names its builder. General builder settings and the
+        # per-summoner `for` entries must not silently defeat the route (an
+        # Opus override would turn every [logic] build back into Claude), so
+        # only `builder.tasks.<tag>` may change it. Image generation is a
+        # Codex-only tool, so its cli is not open to change.
+        base = _TASK_DEFAULTS[task]
+        spec = {"cli": base["cli"], "model": base["model"], "effort": base["effort"],
+                "timeout_s": 0, "task": task,
+                "unsandboxed_commands": list(DEFAULT_BUILDER["unsandboxed_commands"])
+                if base["cli"] == "claude" else []}
         tasks = cfg.get("tasks", {}) if isinstance(cfg, dict) else {}
-        image = tasks.get("imagegen", {}) if isinstance(tasks, dict) else {}
-        if isinstance(image, dict):
-            spec.update({k: image[k] for k in ("model", "effort", "timeout_s") if image.get(k) is not None})
+        own = tasks.get(task, {}) if isinstance(tasks, dict) else {}
+        keys = ("model", "effort", "timeout_s") if task == "imagegen" else (
+            "cli", "model", "effort", "timeout_s")
+        if isinstance(own, dict):
+            spec.update({k: own[k] for k in keys if own.get(k) is not None})
+        spec["cli"] = "codex" if str(spec.get("cli", "")).lower() == "codex" else "claude"
+        if spec["model"] == "codex":
+            spec["model"] = codex_model
+        if spec["cli"] == "codex":
+            spec["unsandboxed_commands"] = []
         try:
             spec["timeout_s"] = max(0, int(spec.get("timeout_s") or 0))
         except (TypeError, ValueError):
@@ -228,6 +263,13 @@ def builder_prompt(
          "(not through a shell script or `sh run.sh`, which stays sandboxed "
          "and sees no GPU). Everything else is sandboxed as usual."
          if unsandboxed else ""),
+        ("--- Where things go ---\n"
+         f"Working directory: {project_root}\n"
+         "This is a change to the project's own code: edit its files in place "
+         "and run its tests. Put scratch, if any, under "
+         f"`{artifacts_dir}/`. Never start a server or a tunnel, and never "
+         "commit or push unless the brief asks."
+         if task in ("ui", "logic") else
         "--- Where things go ---\n"
         f"Working directory: {project_root}\n"
         + (f"Save scratch and anything that is not a finished picture for a page "
@@ -235,8 +277,9 @@ def builder_prompt(
            f"Save the deliverable under `{artifacts_dir}/` (create it if needed). ")
         + "One self-contained file where that is possible — an HTML page carries "
         "its own styles and scripts, reads well in light and dark, and sets its "
-        "own background. Never start a server or a tunnel.",
+        "own background. Never start a server or a tunnel."),
         deliverables_note,
+        ("--- Tests ---\n" + PROPORTIONATE_TESTS_RULE if task != "imagegen" else ""),
         "--- How to report ---\n"
         "When you are done, reply in at most eight short lines: what you built, "
         "where it is, what you left out or could not do. Then END with one line "

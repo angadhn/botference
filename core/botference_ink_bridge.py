@@ -166,7 +166,10 @@ class InkBridge:
     def __init__(self, paths: BotferencePaths) -> None:
         # Overridden in main() to read the controller's /notify preference.
         self.notify_enabled: "Callable[[], bool]" = lambda: False
-        self._pending_permission: asyncio.Future[bool] | None = None
+        # Resolves to True (allow once), False (deny) or "always" (allow and
+        # save the root to project.json). Once and deny stay bools so every
+        # caller written before "always" existed reads them as it did.
+        self._pending_permission: asyncio.Future[bool | str] | None = None
         self._pending_choice: asyncio.Future[int | None] | None = None
         self._stream_buffer: dict[tuple, dict] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
@@ -417,11 +420,11 @@ class InkBridge:
     async def request_write_permission(
         self,
         request: WritePermissionRequest,
-    ) -> bool:
+    ) -> bool | str:
         if self._pending_permission is not None and not self._pending_permission.done():
             raise RuntimeError("Permission request already pending")
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool] = loop.create_future()
+        future: asyncio.Future[bool | str] = loop.create_future()
         self._pending_permission = future
         emit({
             "type": "permission_request",
@@ -443,10 +446,10 @@ class InkBridge:
             self._pending_permission = None
             emit({"type": "permission_cleared"})
 
-    def resolve_permission_request(self, allow: bool) -> None:
+    def resolve_permission_request(self, allow: bool, always: bool = False) -> None:
         if self._pending_permission is None or self._pending_permission.done():
             return
-        self._pending_permission.set_result(allow)
+        self._pending_permission.set_result("always" if allow and always else bool(allow))
 
     async def request_choice(
         self, prompt: str, options: list[str],
@@ -854,7 +857,9 @@ async def main() -> None:
             continue
 
         if msg.get("type") == "permission_response":
-            bridge.resolve_permission_request(bool(msg.get("allow")))
+            bridge.resolve_permission_request(
+                bool(msg.get("allow")), always=bool(msg.get("always")),
+            )
             continue
 
         if msg.get("type") == "choice_response":

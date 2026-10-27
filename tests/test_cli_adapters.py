@@ -40,6 +40,7 @@ from cli_adapters import (
     plan_allowed_tools_for_work_dir,
     planner_write_config,
     planner_write_roots_for_env,
+    add_project_write_root,
     tmux_capture_can_complete_turn,
     tmux_capture_delta,
     tmux_capture_has_busy_marker,
@@ -1438,6 +1439,31 @@ class TestCommandConstruction:
             (project_root / "projects").resolve(),
             (tmp_path / "shared").resolve(),
         ]
+
+    def test_add_project_write_root_keeps_other_keys_and_stores_relative(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv("BOTFERENCE_PROJECT_DIR_NAME", raising=False)
+        config = tmp_path / "botference" / "project.json"
+        config.parent.mkdir()
+        config.write_text(json.dumps({"profile": "x", "write_roots": {"plan": ["docs"]}}))
+
+        add_project_write_root(tmp_path, tmp_path / "src" / "app")
+        add_project_write_root(tmp_path, tmp_path / "src" / "app")  # no duplicate
+
+        data = json.loads(config.read_text())
+        assert data["profile"] == "x"
+        assert data["write_roots"]["plan"] == ["docs", "src/app"]
+        assert data["write_roots"]["build"] == ["src/app"]
+
+    def test_add_project_write_root_creates_the_file_with_the_current_roots(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv("BOTFERENCE_PROJECT_DIR_NAME", raising=False)
+        path = add_project_write_root(tmp_path, tmp_path, seed_roots=[tmp_path / "work"])
+        assert path == tmp_path / "botference" / "project.json"
+        data = json.loads(path.read_text())
+        assert data == {"write_roots": {"plan": ["work", "."], "build": ["work", "."]}}
 
     def test_no_deny_rules_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_DENY_BASH", raising=False)

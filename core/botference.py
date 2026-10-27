@@ -41,6 +41,9 @@ from cli_adapters import (
     normalize_write_roots,
     planner_write_config,
     planner_write_roots_for_env,
+    add_project_write_root,
+    project_config_value,
+    project_test_command,
 )
 from paths import BotferencePaths
 from project_github import preflight, publish_project, slugify_repo_name
@@ -62,7 +65,10 @@ from ui_types import (
 from room_prompts import (
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
+    BUILD_STAGES,
     adopt_room_note,
+    build_thread_note,
+    build_turn_status,
     checkpoint_preamble,
     deliverables_note,
     finalize_plan_preamble,
@@ -1264,6 +1270,7 @@ class RoomFooter:
     next: str      # @claude | @codex | @user | ""
     summary: str
     writer: str = ""   # @claude | @codex | "" — vote for who drafts the plan
+    build: str = ""    # specifying | building | reviewing | done (build threads)
 
     @classmethod
     def parse(cls, text: str) -> Optional["RoomFooter"]:
@@ -1281,6 +1288,7 @@ class RoomFooter:
                         next=str(d.get("next", "")),
                         summary=str(d.get("summary", "")),
                         writer=str(d.get("writer", "")),
+                        build=str(d.get("build", "") or "").strip().lower(),
                     )
         return None
 
@@ -1416,9 +1424,12 @@ class UIPort(Protocol):
     # def video_watch(self, event: dict) -> None: ...
     def set_mode(self, mode: RoomMode) -> None: ...
     def clear_panes(self) -> None: ...
+    # True (allow once), False (deny), or "always": allow, and save the
+    # root to project.json so it is never asked about again. Frontends that
+    # predate "always" keep returning a bool and lose nothing.
     async def request_write_permission(
         self, request: "WritePermissionRequest",
-    ) -> bool: ...
+    ) -> "bool | str": ...
     async def request_choice(
         self, prompt: str, options: list[str],
     ) -> Optional[int]: ...
@@ -1588,6 +1599,65 @@ _FREE_FORM_EXTENSION_TURNS = 3        # one automatic extension, then handoff
 _FREE_FORM_EXTENSION_TOKENS = 4_000
 _FREE_FORM_TURN_NUDGE_TOKENS = 400    # per-turn size above which we nudge
 
+# Build threads (a footer said "build": "building") lift the caps above: the thread runs until the build
+# is done, a bot is blocked, the reader types, or this wall clock runs out.
+_BUILD_DEFAULT_HOURS = 8.0
+# A bot's session is relayed (fresh session, structured handoff) after this
+# many of its own turns, or once its context passes this share of the window,
+# so an hours-long thread never runs a bot into its context limit.
+_BUILD_RELAY_EVERY_TURNS = 10
+_BUILD_RELAY_PCT = 60.0
+# The project's test command gets this long before the done claim is refused.
+_BUILD_TEST_TIMEOUT_S = 20 * 60
+# How much of a failing test run's output reaches the room and the bots.
+_BUILD_TEST_TAIL_LINES = 40
+_BUILD_TEST_TAIL_CHARS = 4_000
+# Turns in a row that hand the floor back without done or blocked before the
+# thread gives up and returns the floor; a bot that keeps asking the reader a
+# question should be heard rather than talked over for hours.
+_BUILD_MAX_IDLE_HANDBACKS = 3
+
+
+def _build_hours_default(project_root: Path) -> float:
+    """BOTFERENCE_BUILD_HOURS, else "build_hours" in project.json, else 8."""
+    raw = os.environ.get("BOTFERENCE_BUILD_HOURS", "").strip()
+    if not raw:
+        raw = str(project_config_value(project_root, "build_hours") or "").strip()
+    try:
+        hours = float(raw) if raw else _BUILD_DEFAULT_HOURS
+    except ValueError:
+        return _BUILD_DEFAULT_HOURS
+    return hours if hours > 0 else _BUILD_DEFAULT_HOURS
+
+
+@dataclass
+class BuildThread:
+    """The state of a running build thread, kept on the controller.
+
+    Not persisted: the thread is a running loop, and a restarted session
+    comes back as an ordinary chat with the whole build on the record. The
+    reader's next message (say, "carry on") starts an ordinary thread, and the
+    first footer that says "build": "building" makes it a build thread again.
+    """
+    hours: float
+    started: float = field(default_factory=time.monotonic)
+    turns: int = 0
+    stage: str = ""
+    # outcome of the last build agent in this thread: "" (none yet), "done",
+    # "failed", "timeout"
+    last_build_status: str = ""
+    # the bot whose builder just reported; the floor goes to the other one
+    review_due: str = ""
+    # model → its turns since its session last started fresh
+    bot_turns: dict = field(default_factory=dict)
+
+    @property
+    def deadline(self) -> float:
+        return self.started + self.hours * 3600
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
 _RELAY_USAGE = (
     "Usage: /relay @claude|@codex|@both  "
     "(aliases: /relay-claude, /relay-both, /tag @claude)"
@@ -1699,6 +1769,9 @@ class Botference:
         # (core/summon.py); reset with _gemini_asks.
         self._summons: dict[str, int] = {}
         self._summon_seq: int = 0
+        # The running build thread, if any (see BuildThread). A thread
+        # becomes one when a bot's footer says "build": "building".
+        self._build: Optional[BuildThread] = None
         # A two-to-four-word title a small model wrote for this chat once it
         # had its first exchange (see _auto_title_task). /rename overrides it.
         self.auto_title: str = ""
@@ -3958,6 +4031,22 @@ class Botference:
             f"{status} after {elapsed}s:]\n{report}",
         )
         self._persist_session()
+        if self._build is not None:
+            # In a build thread the summoner does not judge its own builder:
+            # the thread hands the floor to the other bot to review it.
+            self._build.last_build_status = status
+            self._build.review_due = summoner
+            reviewer = "Codex" if summoner == "claude" else "Claude"
+            self.transcript.add(
+                "system",
+                f"[The build agent {summoner.capitalize()} summoned ({label}) has "
+                f"{status}. {reviewer} reviews it next: read the change with "
+                "`git diff`, run the tests, count the new tests against the "
+                "test rule, and report in at most ten lines what is wrong, "
+                "what is missing and what is good. Then summon a fix with the "
+                'same tag, or mark the task done. Footer "build": "reviewing".]',
+            )
+            return
         await self._wake_after_summon(summoner, label, status, ui)
 
     async def _wake_after_summon(
@@ -4059,6 +4148,15 @@ class Botference:
             "messages typed during its turns queue for the next turn.",
             "",
             "Workflow: discuss (bots hand each other the floor) → /draft [rounds] → /finalize",
+            "Builds: ask for something to be built and the bots spec it (asking you first",
+            "if the brief is thin), then run with no turn cap, summoning builders ([ui] goes",
+            "to Claude Opus, [logic] to Codex) and reviewing each other's builds until it is",
+            "done and the project's \"test\" command (botference/project.json) passes.",
+            "",
+            "Launch: `botference` opens this room (same as `botference plan`);",
+            "`botference build [N]` or `botference -p` runs the headless build loop.",
+            "Write prompts: Y allows once, A allows always (saved to botference/project.json),",
+            "N denies.",
             "",
             "Keys (Ink TUI): Esc interrupts the current turn. Shift+Enter inserts a newline.",
             "Images, PDFs, spreadsheets & Word files: drag them in (or Finder Cmd+C → Cmd+V) to",
@@ -6034,6 +6132,8 @@ class Botference:
         self._gemini_asks = {}
         self._summons = {}
         self._safeguard_tried = set()
+        # a build thread lives inside one user turn
+        self._build = None
 
         prefix = f"{route} " if parsed.target else f"(→{route}) "
         if parsed.parallel:
@@ -6121,6 +6221,7 @@ class Botference:
                 self._persist_session()
                 await self._maybe_watch_for_bot(resp.text, ui, model)
                 self._maybe_lasso_for_bot(resp.text, ui)
+                self._maybe_enter_build(model, resp, ui)
                 await self._maybe_summon_for_bot(resp, ui, model)
                 last_speaker, last_resp = model, resp
 
@@ -6130,6 +6231,7 @@ class Botference:
             and last_resp is not None
         ):
             await self._run_free_form_thread(last_speaker, last_resp, ui)
+        self._build = None
 
         # Thread/round is complete — safe to drain anything that crossed the
         # threshold during it, so the relay lands before the next turn.
@@ -6181,7 +6283,14 @@ class Botference:
         exhaustion grants one automatic extension, then forces the floor
         back to the user with the last footer summary — the thread pauses
         rather than dies, and any user reply starts a fresh budget.
+
+        A build thread (a footer said "build": "building") has its own loop
+        with the caps lifted (_run_build_thread); a thread whose footers never
+        carry the field is this one, unchanged.
         """
+        if self._build is not None or self._maybe_enter_build(speaker, resp, ui):
+            await self._run_build_thread(speaker, resp, ui)
+            return
         turns = 0
         tokens_used = self._response_output_tokens(resp)
         max_turns = _FREE_FORM_MAX_BOT_TURNS
@@ -6254,7 +6363,13 @@ class Botference:
             self._persist_session()
             await self._maybe_watch_for_bot(next_resp.text, ui, target)
             self._maybe_lasso_for_bot(next_resp.text, ui)
+            # before the summon, so a build's first summon is already under
+            # the build-thread rules (the other bot reviews it)
+            entered_build = self._maybe_enter_build(target, next_resp, ui)
             await self._maybe_summon_for_bot(next_resp, ui, target)
+            if entered_build:
+                await self._run_build_thread(target, next_resp, ui)
+                return
 
             tokens_used += self._response_output_tokens(next_resp)
             current_speaker, current_resp = target, next_resp
@@ -6264,6 +6379,240 @@ class Botference:
         # thread paused by a budget, a queued message or an error is not
         # agreement and gets no check.
         if handed_back:
+            await self._run_verification_turn(current_speaker, current_resp, ui)
+
+    # ── build threads ─────────────────────────────────────
+
+    def _maybe_enter_build(self, model: str, resp: AdapterResponse, ui: UIPort) -> bool:
+        """Turn the thread into a build thread if *resp* says so.
+
+        There is no command: the bots infer from the reader's request that
+        something should be built (asking first when the brief is thin), and
+        the first footer with "build": "building" is the switch.
+        """
+        if self._build is not None:
+            return True
+        if self.mode is not RoomMode.PUBLIC:
+            return False
+        footer = RoomFooter.parse(resp.text)
+        if footer is None or footer.build != "building":
+            return False
+        hours = _build_hours_default(self.paths.project_root)
+        test_cmd = project_test_command(self.paths.project_root)
+        # "building" is announced by the notice below, not again as a stage
+        self._build = BuildThread(hours=hours, stage="building")
+        self.transcript.add("system", build_thread_note(hours, test_cmd))
+        self._add_room_entry(
+            ui, "system",
+            f"{model.capitalize()} started a build. The thread runs with no turn "
+            f"cap for up to {hours:g} hours, until the bots mark it done"
+            + (f" and `{test_cmd}` passes" if test_cmd else "")
+            + ", one is blocked, or you type anything.",
+        )
+        return True
+
+    def _note_build_stage(self, footer: Optional["RoomFooter"], speaker: str, ui: UIPort) -> None:
+        """Show the reader where the build is, once per change of stage."""
+        build = self._build
+        if build is None or footer is None or footer.build not in BUILD_STAGES:
+            return
+        if footer.build == build.stage:
+            return
+        build.stage = footer.build
+        mins = int(build.elapsed() // 60)
+        self._add_room_entry(
+            ui, "system",
+            f"Build: {footer.build} ({speaker.capitalize()}, turn {build.turns}, "
+            f"{mins // 60}h {mins % 60:02d}m)",
+        )
+
+    async def _run_project_tests(self, ui: UIPort) -> tuple[bool, str]:
+        """Run the project's own test command, if it names one.
+
+        Returns (passed, why-not). The tail of a failing run goes into the
+        room so the reader sees what the bots are told.
+        """
+        cmd = project_test_command(self.paths.project_root)
+        if not cmd:
+            return True, ""
+        self._add_room_entry(ui, "system", f"Running the project's tests: {cmd}")
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run, cmd, shell=True, cwd=str(self.paths.project_root),
+                capture_output=True, text=True, timeout=_BUILD_TEST_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            why = f"`{cmd}` did not finish within {_BUILD_TEST_TIMEOUT_S // 60} minutes."
+            self._add_room_entry(ui, "system", f"Tests failed: {why}")
+            return False, why
+        except OSError as exc:
+            why = f"`{cmd}` could not be started: {exc}"
+            self._add_room_entry(ui, "system", f"Tests failed: {why}")
+            return False, why
+        if proc.returncode == 0:
+            self._add_room_entry(ui, "system", f"Tests passed: {cmd}")
+            return True, ""
+        output = ((proc.stdout or "") + ("\n" if proc.stdout and proc.stderr else "")
+                  + (proc.stderr or "")).rstrip()
+        tail = "\n".join(output.splitlines()[-_BUILD_TEST_TAIL_LINES:])
+        tail = tail[-_BUILD_TEST_TAIL_CHARS:]
+        why = f"`{cmd}` exited {proc.returncode}." + (f" Last lines:\n{tail}" if tail else "")
+        self._add_room_entry(ui, "system", f"Tests failed: {why}")
+        return False, why
+
+    async def _build_done_gate(self, ui: UIPort) -> tuple[bool, str]:
+        """Is a `done` claim true? The last builder succeeded and tests pass."""
+        build = self._build
+        status = build.last_build_status if build else ""
+        if status != "done":
+            if not status:
+                return False, ("no build agent has reported in this thread yet. "
+                               "If there is nothing to build, say so with "
+                               '"status": "blocked".')
+            return False, f"the last build agent's report was '{status}', not done."
+        return await self._run_project_tests(ui)
+
+    async def _build_context_reset(self, model: str, ui: UIPort) -> None:
+        """Give *model* a fresh session with a structured handoff when due.
+
+        Due after _BUILD_RELAY_EVERY_TURNS of its own turns, when its context
+        passes _BUILD_RELAY_PCT, or when an auto-relay is queued for it (an
+        hours-long thread has no round boundary where the queue would drain).
+        The room does not stop: the relay runs, and the turn goes ahead.
+        """
+        build = self._build
+        if build is None or model not in self._models_initialized:
+            return
+        pct = self._claude_pct if model == "claude" else self._codex_pct
+        due = (
+            build.bot_turns.get(model, 0) >= _BUILD_RELAY_EVERY_TURNS
+            or (pct is not None and pct > _BUILD_RELAY_PCT)
+            or model in self._pending_auto_relay
+        )
+        if not due:
+            return
+        self._pending_auto_relay.discard(model)
+        build.bot_turns[model] = 0
+        await self._relay_model(model, ui)
+
+    async def _run_build_thread(
+        self, speaker: str, resp: AdapterResponse, ui: UIPort,
+    ) -> None:
+        """The build-thread loop: no turn or token cap, the clock instead.
+
+        Ends at a footer with "converged" and "build": "done" that passes the
+        done gate, at "blocked", when the reader types, or at the deadline.
+        After a build agent reports, the floor goes to the bot that did not
+        summon it, whatever the summoner's footer said: nobody reviews their
+        own builder.
+        """
+        build = self._build
+        assert build is not None
+        current_speaker, current_resp = speaker, resp
+        if build.review_due and speaker != build.review_due:
+            build.review_due = ""
+        idle = 0
+        done = False
+
+        def note(text: str) -> None:
+            self._add_room_entry(ui, "system", text)
+            self.transcript.add("system", f"[{text}]")
+
+        while True:
+            footer = RoomFooter.parse(current_resp.text)
+            self._note_build_stage(footer, current_speaker, ui)
+            other = "codex" if current_speaker == "claude" else "claude"
+            target: Optional[str] = None
+
+            if build.review_due == current_speaker:
+                build.review_due = ""
+                target = other
+                idle = 0
+            elif footer is not None and footer.status == "blocked":
+                summary = f" {footer.summary}" if footer.summary else ""
+                note(f"Build thread stopped: {current_speaker.capitalize()} is "
+                     f"blocked.{summary} The floor is yours.")
+                self._persist_session()
+                break
+            elif (footer is not None and footer.status == "converged"
+                  and footer.build == "done"):
+                ok, why = await self._build_done_gate(ui)
+                if ok:
+                    self._add_room_entry(
+                        ui, "system",
+                        f"Build done after {build.turns} turns. The floor is yours.",
+                    )
+                    self.transcript.add("system", "[Build thread finished: done.]")
+                    self._persist_session()
+                    done = True
+                    break
+                self.transcript.add(
+                    "system",
+                    f"[Build not done: {why} The thread continues; fix it and "
+                    "claim done again when it is.]",
+                )
+                self._add_room_entry(ui, "system", "Done refused; the thread continues.")
+                target = current_speaker
+                idle = 0
+            else:
+                target = free_form_next_target(current_speaker, current_resp.text)
+                if target in (None, "user"):
+                    idle += 1
+                    if idle >= _BUILD_MAX_IDLE_HANDBACKS:
+                        note("Build thread paused: the bots handed the floor back "
+                             f"{idle} times without done or blocked. Reply to "
+                             "answer them and they will pick it up.")
+                        self._persist_session()
+                        break
+                    self.transcript.add(
+                        "system",
+                        "[Build thread: the floor stays with the bots until the "
+                        'build is done. Use "status": "blocked" if you need the '
+                        f"user. {other.capitalize()}, carry on.]",
+                    )
+                    target = other
+                else:
+                    idle = 0
+
+            if self.pending_input_check is not None and self.pending_input_check():
+                note("Build thread paused: you have queued messages; the floor is yours.")
+                self._persist_session()
+                break
+            if time.monotonic() >= build.deadline:
+                note(f"Build thread stopped: the {build.hours:g}-hour budget ran "
+                     'out. Reply (say, "carry on") to keep going.')
+                self._persist_session()
+                break
+
+            await self._build_context_reset(target, ui)
+            build.turns += 1
+            build.bot_turns[target] = build.bot_turns.get(target, 0) + 1
+            # one summon per bot per TURN here, not per user message: a long
+            # build is many builds in a row
+            self._summons = {}
+            self.transcript.add(
+                "system", build_turn_status(build.turns, build.elapsed(), build.hours),
+            )
+
+            next_resp = await self._send_to_model(target, "", ui)
+            if next_resp is None:
+                break
+            self.transcript.add(target, next_resp.text, next_resp.tool_summaries)
+            self._stamp_in_chat_build(target, next_resp, ui)
+            visual_warning = _visual_verification_warning(target, next_resp)
+            if visual_warning:
+                self._add_room_entry(ui, "system", visual_warning)
+                self.transcript.add("system", visual_warning)
+            self.transcript.mark_seen(target)
+            self._update_pct(target, next_resp, ui)
+            ui.set_status(self.status_snapshot())
+            self._persist_session()
+            await self._maybe_watch_for_bot(next_resp.text, ui, target)
+            self._maybe_lasso_for_bot(next_resp.text, ui)
+            await self._maybe_summon_for_bot(next_resp, ui, target)
+            current_speaker, current_resp = target, next_resp
+
+        if done:
             await self._run_verification_turn(current_speaker, current_resp, ui)
 
     # ── the verification turn ─────────────────────────────
@@ -6692,6 +7041,12 @@ class Botference:
         other = "Codex" if model == "claude" else "Claude"
         parts = [room_preamble(name, other, self._plan_write_roots_display())]
         parts.append(free_form_protocol(name, other))
+        if self._build is not None:
+            # a session relayed mid-build would otherwise lose the build's
+            # specifics, which sit in the transcript before its relay boundary
+            parts.append(build_thread_note(
+                self._build.hours, project_test_command(self.paths.project_root),
+            ))
         web_note = web_access_note(model)
         if web_note:
             parts.append(web_note)
@@ -6766,7 +7121,7 @@ class Botference:
                 f"Write access to {rel_path} is already available. Continue with the pending task."
             )
 
-        approved = await ui.request_write_permission(
+        answer = await ui.request_write_permission(
             WritePermissionRequest(
                 request_id=str(uuid.uuid4()),
                 model=model,
@@ -6774,17 +7129,25 @@ class Botference:
                 reason=reason,
             )
         )
-        if approved:
+        if answer == "always" or answer is True or answer == "once":
+            # the base roots before this grant: what a new project.json must
+            # keep (see add_project_write_root)
+            seed = list(self._base_plan_write_roots)
             granted_path = self._grant_plan_write_root(resolved)
-            self._add_room_entry(
-                ui,
-                "system",
-                f"Granted write access to {granted_path} for this planner session.",
-            )
-            self.transcript.add(
-                "system",
-                f"[Granted write access to {granted_path} for this planner session]",
-            )
+            notice = f"Granted write access to {granted_path} for this planner session."
+            if answer == "always":
+                try:
+                    saved = add_project_write_root(
+                        self.paths.project_root, resolved, seed_roots=seed,
+                    )
+                    notice = (
+                        f"Granted write access to {granted_path}, now and on every "
+                        f"later launch (saved in {self._relative_project_path(saved)})."
+                    )
+                except (OSError, ValueError) as exc:
+                    notice += f" It could not be saved for later launches: {exc}"
+            self._add_room_entry(ui, "system", notice)
+            self.transcript.add("system", f"[{notice}]")
             self._persist_session()
             return (
                 f"Write access to {granted_path} is now approved for this planner session. "

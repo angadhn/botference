@@ -96,7 +96,8 @@ If you cloned **this** repository and want to try Botference immediately, run
 it from the repo root with the local launcher:
 
 ```bash
-./botference plan                          # Ink TUI (default)
+./botference                               # Ink TUI council room (the default)
+./botference plan                          # The same room, spelled out
 ./botference plan --claude                 # Solo Claude
 ./botference plan --claude-interactive     # Experimental: mirror interactive Claude through tmux
 ./botference research-plan                 # Structured planning in Ink (experimental)
@@ -122,14 +123,18 @@ From a target project root:
 botference init                            # Create project-local botference/ state (and register it with Discuss)
 botference site                            # Just the Discuss half, for a repo already initialised
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
-botference plan                            # Council: you + Claude + Codex (Ink default)
+botference                                 # Council: you + Claude + Codex (Ink default)
+botference plan                            # The same room, spelled out
 botference --project-dir=spaceship plan    # Use botference-spaceship/
 botference plan --claude                   # Solo Claude (no Codex)
 botference plan --claude-interactive       # Experimental interactive-Claude tmux transport
 
-# Building (experimental)
+# Building (experimental). The build loop used to be the default; it now
+# needs its word. -p alone still means the headless build loop, so scripts
+# keep working. A bare number (botference 10) is an error that points here.
 botference build                           # Interactive build loop
-botference -p build                        # Headless build loop
+botference build 10                        # Max 10 iterations
+botference -p build                        # Headless build loop (botference -p also works)
 botference -p build 10                     # Headless, max 10 iterations
 botference -p build --parallel             # Phase-level parallelism
 
@@ -1648,6 +1653,50 @@ Mechanics:
 Turn-based behavior is the degenerate case of free-form: a reply with no
 handoff (no footer, no mention) simply returns the floor to you.
 
+### Pairing builds
+
+Run the council inside a code repo and ask for something to be built, in your
+own words. There is no command: the bots work out from what you say that it
+is a build, spec it between them, and ask you first if the brief is too thin.
+When they start, one says so in a line and marks its footer
+`"build": "building"`. From that turn the thread is a build thread and the
+caps above are lifted for it:
+
+- **No turn or token cap.** The thread ends when a bot's footer says
+  `converged` with `"build": "done"`, when a bot says `blocked`, when you type
+  anything, or after 8 hours (`BOTFERENCE_BUILD_HOURS`, or `"build_hours"` in
+  `botference/project.json`). A thread whose footers never carry `build`
+  keeps the 6 plus 3 caps.
+- **Done means done.** `done` is accepted only when the last build agent in
+  the thread reported success and the project's test command passed. Name it
+  as `"test"` in `botference/project.json` (for example
+  `"test": "pytest tests/ && (cd ink-ui && npm test)"`); it runs from the
+  project root with a 20-minute limit, and the tail of a failing run is shown
+  in the room and given to the bots, who keep going.
+- **Roles by strength.** A summon brief may start with a kind tag:
+  `summon: [ui] …` runs Claude Code on Opus 5.5 (anything a person sees),
+  `summon: [logic] …` runs Codex on the room's Codex model (behaviour:
+  controller code, adapters, parsing, protocols, shell). No tag keeps the
+  summoner's own builder. Change either under `builder.tasks.ui` /
+  `builder.tasks.logic` in `context-budgets.json`.
+- **Review in both directions.** The bot that summoned a builder never judges
+  its report: the floor goes to the other bot, which reads `git diff`, runs
+  the tests and reports in at most ten lines, then summons a fix or marks the
+  task done. One summon per bot per turn, reset every turn.
+- **Tests stay proportionate.** The room and every builder carry one rule:
+  a test only for a stated contract or something just seen failing, one test
+  per behaviour, no snapshot tests, and a reason for more than three.
+- **Long threads stay fresh.** Each bot is relayed (fresh session,
+  structured handoff) after ten of its own turns or when its context passes
+  60 percent; the room does not stop for it.
+- The footer's `"build"` field (`specifying`, `building`, `reviewing`,
+  `done`) is shown in the room at each change of stage.
+
+The thread never commits or pushes unless you asked. A thread is not saved
+mid-run: if botference restarts, the chat comes back as an ordinary chat with
+the whole build on the record, and a reply such as "carry on" lets the bots
+pick it up.
+
 ### Commands
 
 | Command | What it does |
@@ -2183,10 +2232,17 @@ the default Botference work directory in legacy layouts). If a model wants to
 edit somewhere else, it must first request a runtime grant for the narrowest
 directory it needs.
 
-In the Ink UI, this appears as an allow/deny prompt. Choosing `Allow once`
-expands the planner write roots for the rest of the current session and records
-that grant in the resumable session snapshot. Choosing `Deny` keeps the current
-roots unchanged and the model must continue without writing there.
+In the Ink UI, this appears as a three-way prompt:
+`[ Allow once ]  [ Allow always ]  [ Deny ]`. Choosing `Allow once` expands
+the planner write roots for the rest of the current session and records that
+grant in the resumable session snapshot. `Allow always` does the same and also
+writes the directory into `write_roots.plan` and `write_roots.build` in
+`botference/project.json` (creating the file if needed, keeping the roots that
+were in force and every other key), so it is a base root on every later
+launch and the prompt never comes back for it. For a repo the bots are
+building, `Allow always` on the repo root is the natural first answer; `.git`
+stays unwritable whatever is granted. Choosing `Deny` keeps the current roots
+unchanged and the model must continue without writing there.
 
 ### Navigation and input
 
@@ -2216,8 +2272,9 @@ The TUI shows the **projects** panel (left, toggleable) and the full-width
 - **Shift+Enter** inserts a newline.
 - **Esc interrupts the current in-flight turn.** It no longer clears the
   input buffer.
-- When a protected write is requested, use **Left/Right** or **Tab** to switch
-  between `Allow once` and `Deny`, then press **Enter**.
+- When a protected write is requested, use **Left/Right** or **Tab** to move
+  between `Allow once`, `Allow always` and `Deny`, then press **Enter**; or
+  press **Y** (once), **A** (always) or **N**/**Esc** (deny).
 - The Ink text field can be glitchy when resizing the terminal window — if it
   gets stuck, try narrowing and re-widening the window.
 

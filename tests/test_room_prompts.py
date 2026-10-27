@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from room_prompts import (
     FREE_FORM_FOOTER_SCHEMA,
+    PROPORTIONATE_TESTS_RULE,
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
     checkpoint_preamble,
@@ -50,6 +51,23 @@ class TestFreeFormProtocol:
         result = free_form_protocol("Claude", "Codex")
         assert "writer" in result
         assert "/lead" in result
+
+
+class TestBuildRules:
+    def test_footer_carries_the_optional_build_stage(self):
+        assert '"build": "specifying|building|reviewing|done' in FREE_FORM_FOOTER_SCHEMA
+
+    def test_protocol_says_ask_first_then_announce_the_build(self):
+        text = free_form_protocol("Claude", "Codex")
+        assert "too thin to build from, ask the user" in text
+        assert 'say in one line that a long build is starting' in text
+        assert '"build": "building"' in text
+
+    def test_protocol_carries_tags_review_rule_and_test_rule(self):
+        text = free_form_protocol("Claude", "Codex")
+        assert "summon: [ui]" in text and "summon: [logic]" in text
+        assert "does not judge its report" in text and "`git diff`" in text
+        assert PROPORTIONATE_TESTS_RULE in text
 
 
 # -- room_preamble ----------------------------------------------------------

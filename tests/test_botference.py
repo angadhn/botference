@@ -3953,6 +3953,24 @@ class TestPlanningModeRouting:
         explicit = _shell_parse_loop_args("plan", "--claude-transport", "programmatic")
         assert explicit["CLAUDE_TRANSPORT"] == "programmatic"
 
+    def test_no_mode_word_opens_the_room(self):
+        bare = _shell_parse_loop_args()
+        assert (bare["LOOP_MODE"], bare["PROMPT_FILE"], bare["BOTFERENCE_MODE"]) == (
+            "plan", "", "true")
+
+    def test_pipe_flag_alone_still_means_the_build_loop(self):
+        piped = _shell_parse_loop_args("-p")
+        assert (piped["LOOP_MODE"], piped["PROMPT_FILE"]) == ("build", "prompts/build.md")
+
+    def test_a_bare_number_points_at_botference_build(self):
+        script_dir = Path(__file__).resolve().parent.parent / "lib"
+        result = subprocess.run(
+            ["bash", "-c", f'source "{script_dir}/config.sh" && parse_loop_args 5'],
+            capture_output=True, text=True, timeout=5,
+        )
+        assert result.returncode != 0
+        assert "botference build 5" in result.stderr
+
     def test_parse_loop_args_supports_archive_mode(self):
         archive = _shell_parse_loop_args("archive")
         assert archive["LOOP_MODE"] == "archive"
@@ -6434,6 +6452,103 @@ class TestConvergenceVerification:
         assert any("Verification: on" in t for s, t in ui.room_entries if s == "system")
         c._run_verify("sideways", ui)
         assert any("Usage: /verify" in t for s, t in ui.room_entries if s == "system")
+
+
+def _bf(text: str, status: str = "continuing", nxt: str = "",
+        build: str = "") -> AdapterResponse:
+    """AdapterResponse ending in a build-thread footer."""
+    payload = {"status": status, "next": nxt, "summary": "s"}
+    if build:
+        payload["build"] = build
+    return _ok(f"{text}\n\n{json.dumps(payload)}")
+
+
+def _build_room(tmp_path, claude, codex, *, test_cmd: str):
+    (tmp_path / "botference").mkdir(exist_ok=True)
+    (tmp_path / "botference" / "project.json").write_text(
+        json.dumps({"test": test_cmd}), encoding="utf-8")
+    c, _, _, ui = _make_botference(
+        claude_responses=claude, codex_responses=codex, tmp_path=tmp_path)
+    builder = MockAdapter([_ok("built it")])
+    c._make_builder = lambda spec: builder  # type: ignore[method-assign]
+    return c, ui
+
+
+@pytest.mark.asyncio
+class TestBuildThread:
+    async def test_a_building_footer_lifts_the_caps_until_done_with_tests_passing(
+        self, tmp_path,
+    ):
+        # 13 bot-to-bot turns: past the 6 + 3 a conversation gets
+        claude = [_bf("Starting a long build.\nsummon: [logic] write it",
+                      nxt="@codex", build="building")]
+        codex = []
+        for i in range(6):
+            codex.append(_bf(f"codex {i}", nxt="@claude", build="reviewing"))
+            claude.append(_bf(f"claude {i}", nxt="@codex", build="building"))
+        codex.append(_bf("All good.", status="converged", nxt="@user", build="done"))
+        c, ui = _build_room(tmp_path, claude, codex, test_cmd="true")
+
+        await c.handle_input("@claude build the thing", ui)
+
+        system = [t for sp, t in ui.room_entries if sp == "system"]
+        assert any(t.startswith("Claude started a build") for t in system)
+        assert any(t.startswith("Build done after 13 turns") for t in system)
+        assert "Tests passed: true" in system
+        assert not any("budget" in t for t in system)
+        assert c._build is None
+
+    async def test_done_is_refused_when_the_tests_fail(self, tmp_path):
+        claude = [_bf("summon: [ui] draw it", nxt="@codex", build="building")]
+        codex = [
+            _bf("Looks done.", status="converged", nxt="@user", build="done"),
+            _bf("Stuck on the failure.", status="blocked", nxt="@user"),
+        ]
+        c, ui = _build_room(tmp_path, claude, codex,
+                            test_cmd="echo boom-marker; exit 3")
+
+        await c.handle_input("@claude build the thing", ui)
+
+        system = [t for sp, t in ui.room_entries if sp == "system"]
+        failed = [t for t in system if t.startswith("Tests failed")]
+        assert failed and "boom-marker" in failed[0] and "exited 3" in failed[0]
+        assert "Done refused; the thread continues." in system
+        assert not any(t.startswith("Build done") for t in system)
+        assert any("Build not done" in e.text for e in c.transcript.entries)
+        assert any(t.startswith("Build thread stopped: Codex is blocked") for t in system)
+
+    async def test_the_clock_comes_from_project_json(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_BUILD_HOURS", raising=False)
+        (tmp_path / "botference").mkdir()
+        (tmp_path / "botference" / "project.json").write_text(
+            json.dumps({"build_hours": 2}), encoding="utf-8")
+        from botference import _build_hours_default
+        assert _build_hours_default(tmp_path) == 2.0
+        monkeypatch.setenv("BOTFERENCE_BUILD_HOURS", "3")
+        assert _build_hours_default(tmp_path) == 3.0
+
+
+@pytest.mark.asyncio
+class TestAllowAlways:
+    async def test_allow_always_saves_the_root_to_project_json(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok('<write-access-request path="src" reason="edit the app" />'),
+                _ok("Done."),
+            ],
+            tmp_path=tmp_path,
+        )
+        ui.permission_responses = ["always"]
+
+        await c.handle_input("@claude update the app", ui)
+
+        data = json.loads((tmp_path / "botference" / "project.json").read_text())
+        assert "src" in data["write_roots"]["plan"]
+        assert "src" in data["write_roots"]["build"]
+        # the roots in force before the grant stay (a new project.json
+        # replaces the default work folder rather than adding to it)
+        assert "work" in data["write_roots"]["plan"]
+        assert any(root.name == "src" for root in c._plan_write_roots())
 
 
 @pytest.mark.asyncio

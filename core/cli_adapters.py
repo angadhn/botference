@@ -426,6 +426,112 @@ def plan_allowed_tools_for_work_dir(
     return allowed
 
 
+def project_config_path(project_root: str | Path) -> Path:
+    """Where a project's botference settings live.
+
+    `<project>/botference/project.json` (or the `--project-dir` slug), else a
+    `project.json` at the project root when only that one exists. A path that
+    does not exist yet is the botference/ one, which is where a new file goes.
+    """
+    project_root_path = Path(project_root).resolve()
+    config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
+    project_config = project_root_path / config_name / "project.json"
+    if not project_config.exists():
+        root_config = project_root_path / "project.json"
+        if root_config.exists():
+            return root_config
+    return project_config
+
+
+def _read_project_config(project_root: str | Path) -> dict:
+    path = project_config_path(project_root)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def project_config_value(project_root: str | Path, key: str):
+    """One top-level setting from the project's project.json, or None."""
+    return _read_project_config(project_root).get(key)
+
+
+def project_test_command(project_root: str | Path) -> str:
+    """The project's own test command (`"test"` in project.json), or ""."""
+    cmd = _read_project_config(project_root).get("test")
+    return cmd.strip() if isinstance(cmd, str) else ""
+
+
+def add_project_write_root(
+    project_root: str | Path,
+    root: str | Path,
+    modes: tuple[str, ...] = ("plan", "build"),
+    *,
+    seed_roots: list[str | Path] | None = None,
+) -> Path:
+    """Write *root* into `write_roots.<mode>` of the project's project.json.
+
+    This is the "Allow always" answer to a write prompt: the root joins the
+    base roots on every later launch, so the question is not asked again.
+    The file is created when missing and every other key is kept. Paths are
+    stored relative to the project root, the same form a person would type.
+
+    *seed_roots* are the roots in force right now. When there is no
+    project.json yet they are written first, because a project.json replaces
+    the launcher's default work folder rather than adding to it: without the
+    seed, granting one folder would quietly take the default one away on the
+    next launch. An existing file already decides the roots, so it is not
+    seeded.
+
+    Returns the path of the file written.
+    """
+    project_root_path = Path(project_root).resolve()
+    path = project_config_path(project_root_path)
+    data: dict = {}
+    creating = not path.exists()
+    if not creating:
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            # never overwrite a file we could not read: it may hold settings
+            # the person wrote by hand
+            raise ValueError(f"cannot read {path}: {exc}") from exc
+        if isinstance(loaded, dict):
+            data = loaded
+
+    def rel(p: str | Path) -> str:
+        resolved = Path(p).expanduser()
+        if not resolved.is_absolute():
+            resolved = project_root_path / resolved
+        resolved = resolved.resolve()
+        try:
+            out = resolved.relative_to(project_root_path).as_posix()
+        except ValueError:
+            return str(resolved)
+        return out or "."
+
+    write_roots = data.get("write_roots")
+    if not isinstance(write_roots, dict):
+        write_roots = {}
+    for mode in modes:
+        existing = write_roots.get(mode)
+        if not isinstance(existing, list):
+            existing = [rel(s) for s in (seed_roots or [])] if creating else []
+        entries = [str(e) for e in existing]
+        known = {rel(e) for e in entries}
+        new = rel(root)
+        if new not in known:
+            entries.append(new)
+        # de-duplicate seeds that resolve to the same folder
+        seen: set[str] = set()
+        write_roots[mode] = [e for e in entries if not (rel(e) in seen or seen.add(rel(e)))]
+    data["write_roots"] = write_roots
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def planner_write_roots_for_env(
     project_root: str | Path,
     fallback_dir: str | Path,
@@ -434,12 +540,7 @@ def planner_write_roots_for_env(
 ) -> list[Path]:
     """Resolve explicit write roots from Botference env for a mode."""
     project_root_path = Path(project_root).resolve()
-    config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
-    project_config = project_root_path / config_name / "project.json"
-    if not project_config.exists():
-        root_config = project_root_path / "project.json"
-        if root_config.exists():
-            project_config = root_config
+    project_config = project_config_path(project_root_path)
     env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
     raw_roots = os.environ.get(env_name, "").strip()
     if raw_roots:

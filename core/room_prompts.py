@@ -92,6 +92,7 @@ FREE_FORM_FOOTER_SCHEMA = (
     '{"status": "continuing|converged|blocked", '
     '"next": "@claude|@codex|@user", '
     '"writer": "@claude|@codex (optional)", '
+    '"build": "specifying|building|reviewing|done (optional, builds only)", '
     '"summary": "one-line state update"}'
 )
 
@@ -127,8 +128,92 @@ def free_form_protocol(name: str, other: str) -> str:
         "- Keep each turn terse and precise: your position, the reason, and "
         "one open question. No restating what was already said.\n"
         "- The bot-to-bot thread has a turn and token budget shown to you "
-        "each turn; pace the discussion so it converges within it."
+        "each turn; pace the discussion so it converges within it.\n"
+        f"{build_rules()}"
     )
+
+
+# -- Build threads --------------------------------------------------------
+
+#: The one test rule, word for word in the free-form protocol and in every
+#: builder's prompt, so the reviewer and the builder argue from the same text.
+PROPORTIONATE_TESTS_RULE = (
+    "Write a test only for behaviour that is a stated contract or that you "
+    "just saw fail. One test per behaviour, no snapshot tests, no tests of "
+    "the framework, no tests that restate the implementation. If a change "
+    "needs more than three new tests, say why in your report."
+)
+
+BUILD_STAGES = ("specifying", "building", "reviewing", "done")
+
+
+def build_rules() -> str:
+    """The build-thread part of the free-form protocol.
+
+    There is no command for a build: the bots infer from what the user asks
+    that something should be built, and the footer's `build` field is the
+    switch. The first `"build": "building"` turns the thread into a build
+    thread, which has no turn or token cap; a thread whose footers never
+    carry the field keeps the ordinary budget.
+    """
+    return (
+        "Builds:\n"
+        "- When the user asks for something to be built, spec it with the "
+        "other bot first. If the brief is too thin to build from, ask the "
+        'user before starting ("next": "@user", or "status": "blocked").\n'
+        "- When you start, say in one line that a long build is starting and "
+        'put "build": "building" in your footer. From that turn the thread '
+        'has no turn cap and runs until a footer says "converged" with '
+        '"build": "done", a bot says "blocked", the user types, or the time '
+        'budget runs out. Use "specifying", "reviewing" and "done" for the '
+        'other stages. Leave "build" out of an ordinary conversation.\n'
+        '- "done" is accepted only when the last build agent succeeded and '
+        "the project's test command passes; the controller checks both.\n"
+        "- Start a summon brief with a kind tag. `summon: [ui] <brief>` runs "
+        "Claude Code on Opus 5.5, for anything a person sees: layout, styling, "
+        "copy, terminal UI, web pages, charts. `summon: [logic] <brief>` runs "
+        "Codex, for behaviour: controller code, adapters, parsing, protocols, "
+        "shell. No tag runs the summoner's own default; use it for mixed work. "
+        "When a task could go either way, balance the load between the two. "
+        "One build agent at a time.\n"
+        "- The bot that summoned a builder does not judge its report. After a "
+        'build the floor goes to the other bot with "build": "reviewing". The '
+        "reviewer reads the change with `git diff`, runs the tests, and reports "
+        "in at most ten lines what is wrong, what is missing and what is good, "
+        "then either summons a fix with the same tag or marks the task done "
+        "and moves to the next one. The reviewer counts the new tests against "
+        "the rule below and flags overreach as a defect, the same as a bug.\n"
+        f"- Tests: {PROPORTIONATE_TESTS_RULE}\n"
+        "- Never commit or push unless the user asked for it."
+    )
+
+
+def build_thread_note(hours: float, test_command: str = "") -> str:
+    """Said once, when a thread turns into a build thread: the specifics."""
+    tests = (
+        f"The project's test command is `{test_command}`; the controller runs "
+        "it when you claim done and tells you if it fails."
+        if test_command else
+        'This project names no test command ("test" in botference/project.json), '
+        "so run whatever tests exist yourself before claiming done."
+    )
+    return (
+        f"[Build thread started: no turn cap, up to {hours:g} hours. {tests} "
+        'Keep the footer\'s "build" field current.]'
+    )
+
+
+def build_turn_status(turn: int, elapsed_s: float, hours: float) -> str:
+    """Per-turn countdown for a build thread: the clock, not a turn cap."""
+    used = int(elapsed_s // 60)
+    return "\n".join([
+        f"[Build thread: turn {turn}, {used // 60}h {used % 60:02d}m of "
+        f"{hours:g}h used. No turn cap; the thread ends at done, blocked, the "
+        "user typing, or the clock.]",
+        "[Keep turns short: what you decided, what you are delegating or what "
+        "the review found.]",
+        f"[End your reply with the room footer: {FREE_FORM_FOOTER_SCHEMA}]",
+    ])
 
 
 def adopt_room_note(name: str, other: str, writable_roots: str) -> str:

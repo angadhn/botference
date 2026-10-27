@@ -60,6 +60,15 @@ import {
 } from "./v2/selection.js";
 import { BusyLine, Pane, THEME } from "./panes.js";
 import {
+  PERMISSION_CHOICES,
+  PERMISSION_KEYS_HINT,
+  PERMISSION_LABELS,
+  cyclePermissionChoice,
+  permissionChoiceForKey,
+  permissionResponse,
+  type PermissionChoice,
+} from "./permission.js";
+import {
   createV2Activity,
   formatV2ActivityText,
   startV2ActivityFromInput,
@@ -416,11 +425,8 @@ function PermissionPrompt({
   choice,
 }: {
   request: PendingPermission;
-  choice: "allow" | "deny";
+  choice: PermissionChoice;
 }) {
-  const allowFocused = choice === "allow";
-  const denyFocused = choice === "deny";
-
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
       <Text bold color={THEME.warning}>
@@ -434,22 +440,24 @@ function PermissionPrompt({
         {request.reason}
       </Text>
       <Box>
-        <Text
-          bold={allowFocused}
-          color={allowFocused ? THEME.ready : THEME.textMuted}
-        >
-          {allowFocused ? "[ Allow once ]" : "  Allow once  "}
-        </Text>
-        <Text color={THEME.textMuted}>{"  "}</Text>
-        <Text
-          bold={denyFocused}
-          color={denyFocused ? THEME.danger : THEME.textMuted}
-        >
-          {denyFocused ? "[ Deny ]" : "  Deny  "}
-        </Text>
+        {PERMISSION_CHOICES.map((c, i) => {
+          const focused = c === choice;
+          const label = PERMISSION_LABELS[c];
+          return (
+            <React.Fragment key={c}>
+              {i > 0 ? <Text color={THEME.textMuted}>{"  "}</Text> : null}
+              <Text
+                bold={focused}
+                color={focused ? (c === "deny" ? THEME.danger : THEME.ready) : THEME.textMuted}
+              >
+                {focused ? `[ ${label} ]` : `  ${label}  `}
+              </Text>
+            </React.Fragment>
+          );
+        })}
       </Box>
       <Text color={THEME.statusMuted} wrap="truncate-end">
-        Enter confirms | Tab/Left/Right switches | Y allows | N/Esc denies
+        {PERMISSION_KEYS_HINT}
       </Text>
     </Box>
   );
@@ -530,7 +538,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
   const [imageAttachments, setImageAttachmentsState] = useState<Map<number, string>>(new Map());
   const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
-  const [permissionChoice, setPermissionChoice] = useState<"allow" | "deny">("allow");
+  const [permissionChoice, setPermissionChoice] = useState<PermissionChoice>("once");
   const [pendingChoice, setPendingChoice] = useState<{ prompt: string; options: string[] } | null>(null);
   const [choiceIndex, setChoiceIndex] = useState(0);
   const [completionCtx, setCompletionCtx] = useState<{
@@ -1251,7 +1259,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             path: msg.path as string,
             reason: msg.reason as string,
           });
-          setPermissionChoice("allow");
+          setPermissionChoice("once");
           setHint("Approve or deny the protected write.");
           break;
         case "permission_cleared":
@@ -1393,17 +1401,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     nextImageId.current = 1;
   }, [focusedPane, ready, pendingPermission, pendingChoice, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
-  const respondToPermission = useCallback((allow: boolean) => {
+  const respondToPermission = useCallback((choice: PermissionChoice) => {
     const proc = bridgeRef.current;
     if (!pendingPermission || !proc?.stdin?.writable) {
       return;
     }
-    proc.stdin.write(JSON.stringify({
-      type: "permission_response",
-      request_id: pendingPermission.request_id,
-      allow,
-    }) + "\n");
-    setHint(allow ? "Allowing protected write..." : "Denying protected write...");
+    proc.stdin.write(JSON.stringify(
+      permissionResponse(pendingPermission.request_id, choice),
+    ) + "\n");
+    setHint(
+      choice === "deny" ? "Denying protected write..."
+        : choice === "always" ? "Allowing protected write for every session..."
+        : "Allowing protected write...",
+    );
   }, [pendingPermission]);
 
   const respondToChoice = useCallback((index: number) => {
@@ -1487,21 +1497,25 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     if (pendingPermission) {
-      if (key.leftArrow || key.rightArrow || key.tab) {
-        setPermissionChoice((prev) => (prev === "allow" ? "deny" : "allow"));
+      if (key.leftArrow) {
+        setPermissionChoice((prev) => cyclePermissionChoice(prev, -1));
+        return;
+      }
+      if (key.rightArrow || key.tab) {
+        setPermissionChoice((prev) => cyclePermissionChoice(prev, 1));
         return;
       }
       if (key.return) {
-        respondToPermission(permissionChoice === "allow");
+        respondToPermission(permissionChoice);
         return;
       }
-      if (key.escape || input.toLowerCase() === "n") {
-        respondToPermission(false);
+      if (key.escape) {
+        respondToPermission("deny");
         return;
       }
-      if (input.toLowerCase() === "y") {
-        respondToPermission(true);
-        return;
+      const direct = permissionChoiceForKey(input);
+      if (direct) {
+        respondToPermission(direct);
       }
       return;
     }

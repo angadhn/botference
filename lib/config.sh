@@ -362,14 +362,18 @@ normalize_project_dir_name() {
 
 parse_loop_args() {
   PIPE_MODE=false
-  LOOP_MODE="build"
-  PROMPT_FILE="prompts/build.md"
+  # With no mode word, botference opens the council room (what 'plan' does).
+  # The headless build loop sits behind its word, 'build', or -p alone.
+  LOOP_MODE="plan"
+  PROMPT_FILE=""
+  MODE_WORD=""
   ARCH_MODE=""
   RUN_TAG=""
   MAX_ITERATIONS=""
   SHOW_HELP=false
   CLI_MODEL=""
   BOTFERENCE_MODE=false
+  BOTFERENCE_MODE_FLAG=""
   DEBUG_PANES=false
   UI_MODE="ink"
   WEB_MODE=false
@@ -389,11 +393,11 @@ parse_loop_args() {
     shift
     case "$arg" in
       -p) PIPE_MODE=true ;;
-      init) LOOP_MODE="init"; PROMPT_FILE=""; BOTFERENCE_MODE=false ;;
-      plan) LOOP_MODE="plan"; PROMPT_FILE=""; BOTFERENCE_MODE=true ;;
-      research-plan) LOOP_MODE="research-plan"; PROMPT_FILE="prompts/plan.md"; BOTFERENCE_MODE=true ;;
-      archive) LOOP_MODE="archive"; PROMPT_FILE="" ;;
-      build) LOOP_MODE="build"; PROMPT_FILE="prompts/build.md" ;;
+      init) MODE_WORD="init"; LOOP_MODE="init"; PROMPT_FILE=""; BOTFERENCE_MODE=false ;;
+      plan) MODE_WORD="plan"; LOOP_MODE="plan"; PROMPT_FILE=""; BOTFERENCE_MODE=true ;;
+      research-plan) MODE_WORD="research-plan"; LOOP_MODE="research-plan"; PROMPT_FILE="prompts/plan.md"; BOTFERENCE_MODE=true ;;
+      archive) MODE_WORD="archive"; LOOP_MODE="archive"; PROMPT_FILE="" ;;
+      build) MODE_WORD="build"; LOOP_MODE="build"; PROMPT_FILE="prompts/build.md" ;;
       --serial) ARCH_MODE="serial" ;;
       --parallel) ARCH_MODE="parallel" ;;
       --orchestrated) ARCH_MODE="orchestrated" ;;
@@ -408,8 +412,8 @@ parse_loop_args() {
         PROJECT_DIR_NAME="$1"
         shift
         ;;
-      --claude) BOTFERENCE_MODE=false ;;
-      --botference|--group) BOTFERENCE_MODE=true ;;
+      --claude) BOTFERENCE_MODE=false; BOTFERENCE_MODE_FLAG=false ;;
+      --botference|--group) BOTFERENCE_MODE=true; BOTFERENCE_MODE_FLAG=true ;;
       --claude-interactive) CLAUDE_TRANSPORT="tmux" ;;
       --claude-transport=*) CLAUDE_TRANSPORT="${arg#--claude-transport=}" ;;
       --claude-transport)
@@ -450,6 +454,24 @@ parse_loop_args() {
     esac
   done
 
+  # No mode word: -p still means the headless build loop, so scripts and CI
+  # keep working; a bare number used to mean build iterations and now says
+  # where it went rather than silently opening the room.
+  if [ -z "$MODE_WORD" ]; then
+    if $PIPE_MODE; then
+      LOOP_MODE="build"
+      PROMPT_FILE="prompts/build.md"
+    elif [ -n "$MAX_ITERATIONS" ]; then
+      echo "Error: a bare number no longer starts the build loop. Use 'botference build $MAX_ITERATIONS'." >&2
+      return 2
+    else
+      LOOP_MODE="plan"
+      PROMPT_FILE=""
+      # both bots, as 'plan' gives, unless --claude asked for Claude alone
+      BOTFERENCE_MODE="${BOTFERENCE_MODE_FLAG:-true}"
+    fi
+  fi
+
   if $WEB_MODE && [ "$LOOP_MODE" != "plan" ]; then
     echo "Error: --web/--share apply to plan mode only (botference plan --web)." >&2
     return 2
@@ -474,8 +496,10 @@ parse_loop_args() {
 
 show_help() {
   cat <<'HELP'
-Usage: botference [options] [init|plan|research-plan|archive|build] [iterations]
-       botference plan [--web|--share [--no-auth] [--service]] [--port N]
+Usage: botference [options]                      (opens the council room)
+       botference [options] [init|plan|research-plan|archive]
+       botference [options] build [iterations]     (headless build loop; also -p)
+       botference [plan] [--web|--share [--no-auth] [--service]] [--port N]
        botference review [dir] [--share [--service]] [--hosted] [--port N] [--no-agents] [--upgrade]
        botference discuss [--port N] [--service] [--no-agents] [--hosted] [--share] [--here]
        botference discuss --install-autostart | --uninstall-autostart
@@ -499,12 +523,16 @@ Modes:
   sites             List the registered projects (kind, origin, on/off,
                     whether the companion sees them); --remove <dir> takes
                     one out
-  plan              Free-form planning council: you + Claude + Codex in one
-                    room; the bots can hand each other the floor (budgeted)
-                    until the conversation returns to you
+  plan              Free-form council: you + Claude + Codex in one room;
+                    the bots can hand each other the floor (budgeted) until
+                    the conversation returns to you. The default: plain
+                    'botference' does the same. Ask for something to be
+                    built and the bots run a long pairing build until it
+                    is done and the tests pass
   research-plan     Structured planning with prompts/plan.md (botference mode)
   archive           Archive current thread and restore blank templates
-  build             Build loop (default)
+  build             Headless build loop (was the default; -p with no mode
+                    word still runs it)
   review            Set up + serve the document-review interface in a document
                     repo (dir defaults to cwd). First run copies the engine into
                     <dir>/review/, detects the config, and builds the site; every
@@ -630,7 +658,8 @@ Examples:
   botference site --serve 8000                        # This book, served at localhost:8000, in Discuss's scope
   botference sites                                    # Which projects Discuss treats as yours
   botference --project-dir=spaceship plan             # Use botference-spaceship/
-  botference plan                                     # Freeform planning room
+  botference                                          # Open the council room
+  botference plan                                     # The same room
   botference plan --web                               # The same room in your browser
   botference plan --share                             # Browser room tunneled to your phone (password printed)
   botference plan --claude                            # Solo Claude freeform planning
@@ -647,7 +676,7 @@ Examples:
   botference service list                             # name, pid, uptime, alive/dead, command, log
   botference service stop docs
   botference -p build                                 # Non-interactive build loop
-  botference --anthropic-model=claude-sonnet-4-6 -p  # Build with Sonnet
+  botference --anthropic-model=claude-sonnet-4-6 -p  # Build with Sonnet (-p alone means build)
   botference -p build 10                              # Build for max 10 iterations
 HELP
 }

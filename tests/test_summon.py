@@ -162,6 +162,28 @@ class TestBuilderSpec:
         # the bots' own sessions are untouched
         assert "excludedCommands" not in json.dumps(c.claude.settings or {})
 
+    def test_ui_and_logic_tags_choose_the_builder_whoever_summoned(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("BOTFERENCE_BUILDER_CLI", "claude")
+        assert summon.builder_task("[ui] restyle the header") == "ui"
+        assert summon.builder_task("[LOGIC] fix the parser") == "logic"
+        for who in ("claude", "codex"):
+            ui = summon.builder_spec(who, tmp_path, task="ui", codex_model="gpt-6-astra")
+            assert (ui["cli"], ui["model"], ui["effort"]) == ("claude", "claude-opus-5-5", "high")
+            logic = summon.builder_spec(who, tmp_path, task="logic", codex_model="gpt-6-astra")
+            assert (logic["cli"], logic["model"]) == ("codex", "gpt-6-astra")
+
+    def test_tagged_builders_have_their_own_optional_settings(self, tmp_path):
+        (tmp_path / "context-budgets.json").write_text(json.dumps({
+            "builder": {"model": "claude-fable-5-1", "tasks": {
+                "ui": {"effort": "max"}, "logic": {"model": "gpt-6-sol"}}}}))
+        assert summon.builder_spec("codex", tmp_path, task="ui")["effort"] == "max"
+        assert summon.builder_spec("claude", tmp_path, task="logic")["model"] == "gpt-6-sol"
+
+    def test_builder_prompt_carries_the_test_rule(self):
+        p = summon.builder_prompt(brief="[logic] fix it", summoner="codex", history="",
+                                  artifacts_dir="work/artifacts", project_root="/w", task="logic")
+        assert "One test per behaviour, no snapshot tests" in p
+
     def test_labels(self):
         assert summon.builder_label({"model": "claude-opus-5-5", "effort": "high"}) == "Claude Opus 5.5 (high)"
         assert summon.builder_label({"model": "gpt-6-sol", "effort": "xhigh"}) == "GPT-6 Sol (xhigh)"
