@@ -1135,6 +1135,34 @@ const pendingDrafts = new Map();
 const draftPreview = drafts.createPreviewer();
 process.on('exit', () => draftPreview.stop());
 
+function prepareDraft(text) {
+  const d = drafts.destination(drafts.parseCommand(text), store.readConfig());
+  if (d.file && [...pendingDrafts.values()].some(p => p.file === d.file)) throw new Error('That draft is already being written.');
+  return d;
+}
+
+async function submitDraft(page, target, d, me) {
+  const id = crypto.randomUUID();
+  d.sourceTitle = page.title || page.url;
+  const history = [...(page.page_chat || []), ...(page.threads || []).flatMap(t =>
+    [{ author: 'passage', text: t.quote }, ...(t.msgs || [])])];
+  d.context = `Source: ${page.title} · ${page.url}\n`
+    + (store.hasSnapshot(store.pageKey(page.url)) ? `Saved article: ${store.snapshotFile(store.pageKey(page.url))}\n` : '')
+    + history.filter(m => !m.kind).slice(-80).map(m => `${m.author}: ${m.text}`).join('\n').slice(-24000);
+  pendingDrafts.set(id, d);
+  try {
+    const result = await summon(page, target, `@${d.agent} ${d.brief}`, {
+      addressed: true, routeHint: `@${d.agent}`, draftId: id,
+      blogContext: drafts.prompt(d), filedContext: d.context,
+    }, me);
+    if (!result.queued) pendingDrafts.delete(id);
+    return result;
+  } catch (e) {
+    pendingDrafts.delete(id);
+    throw e;
+  }
+}
+
 function draftReceipt(url, target, text) {
   const page = store.readPage(url);
   if (!page) return;
@@ -3810,7 +3838,11 @@ export function handler(req, res) {
       if (!me) return;
       // a brand-new thread has no history to be sticky about: its address is
       // whatever this first comment tagged, or the pill the composer sent
-      const route = addressOf('new', text, data.route, []);
+      const isDraft = /^\/draft-blog(?:\s|$)/i.test(text.trim());
+      if (isDraft && notOwner(req, res)) return;
+      if (isDraft && NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
+      let draft = null;
+      let route = addressOf('new', text, data.route, []);
       const docxDigest = docxDigestOf(res, data, text, route);
       if (docxDigest === null) return; // 413: nothing is saved, nothing is queued
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
@@ -3820,6 +3852,11 @@ export function handler(req, res) {
       // passage you had already highlighted is a second, different act
       const dedupe = dedupeCheck([store.pageKey(page.url), 'thread', me.handle, data.quote, text.trim(), mark]);
       if (dedupe.hit) return ok(res, { thread: dedupe.hit, deduped: true });
+      if (isDraft) {
+        try { draft = prepareDraft(text); }
+        catch (e) { return fail(res, 400, e.message); }
+        route = `@${draft.agent}`;
+      }
       const thread = store.addThread(page, {
         quote: data.quote, prefix: data.prefix, suffix: data.suffix, mark,
         // documents with pages (a web PDF) say which one the passage came off;
@@ -3838,6 +3875,7 @@ export function handler(req, res) {
       // a new mark on the document is a new line in the log — and the SECOND
       // one on a page is what brings the log into being at all
       noteDecisions(page);
+      if (draft) return ok(res, { thread, ...await submitDraft(page, thread.id, draft, me) });
       ok(res, { thread, ...await summon(page, thread.id, text, { ...contextExtras(data, docxDigest), routeHint: route }, me) });
     });
   }
@@ -4085,26 +4123,13 @@ export function handler(req, res) {
           : ok(res, { msg: dedupe.hit, deduped: true });
         let d;
         try {
-          d = drafts.destination(drafts.parseCommand(text), store.readConfig());
-          if (d.file && [...pendingDrafts.values()].some(p => p.file === d.file)) throw new Error('That draft is already being written.');
+          d = prepareDraft(text);
         } catch (e) { return fail(res, 400, e.message); }
-        const id = crypto.randomUUID();
-        d.sourceTitle = page.title || page.url;
-        const history = [...(page.page_chat || []), ...(page.threads || []).flatMap(t =>
-          [{ author: 'passage', text: t.quote }, ...(t.msgs || [])])];
-        d.context = `Source: ${page.title} · ${page.url}\n`
-          + (store.hasSnapshot(store.pageKey(page.url)) ? `Saved article: ${store.snapshotFile(store.pageKey(page.url))}\n` : '')
-          + history.filter(m => !m.kind).slice(-80).map(m => `${m.author}: ${m.text}`).join('\n').slice(-24000);
         const msg = store.appendMsg(page, target, { author: me.handle, text, route: `@${d.agent}` });
         dedupe.remember(msg);
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
-        pendingDrafts.set(id, d);
-        const summoned = await summon(page, target, `@${d.agent} ${d.brief}`, {
-          addressed: true, routeHint: `@${d.agent}`, draftId: id,
-          blogContext: drafts.prompt(d), filedContext: d.context,
-        }, me);
-        if (!summoned.queued) pendingDrafts.delete(id);
+        const summoned = await submitDraft(page, target, d, me);
         if (data._form) return seeOther(res, backTo(data, page, target === store.PAGE_CHAT ? '' : target, summoned.reason));
         return ok(res, { msg, ...summoned });
       }

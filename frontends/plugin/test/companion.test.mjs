@@ -2699,6 +2699,7 @@ async function main() {
     await test('owner-only endpoints answer a guest with 403', async () => {
       const calls = [
         ['/reply', { url: PAGE1, text: '/draft-blog guest-post | Write into the owner\'s blog' }],
+        ['/thread', { url: PAGE1, quote: 'A passage', msg: { text: '/draft-blog Write a post' } }],
         ['/export', { url: PAGE1 }],
         ['/delete-page', { url: PAGE1 }],
         ['/rename-page', { url: PAGE1, title: 'ada was here' }],

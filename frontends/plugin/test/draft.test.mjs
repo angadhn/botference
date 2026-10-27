@@ -154,6 +154,32 @@ try {
       ?.page_chat.some(m => m.author === 'codex' && m.text.includes('# Unauthorized')), 'ordinary reply');
     assert.equal(fs.existsSync(path.join(root, '_notes/unauthorized.md')), false);
   });
+  await test('the first comment on a highlight and a later reply both create drafts in that thread', async () => {
+    const quote = 'A specific line worth responding to.';
+    const command = '/draft-blog Discuss this passage. [mock:says:'
+      + fence('# From a highlight\n\nAn answer to the line.').replaceAll('\n', '\\n') + ']';
+    const body = { url, quote, msg: { text: command } };
+    const r = await POST(base, '/thread', body);
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.equal(r.json.queued, true);
+    const id = r.json.thread.id;
+    const duplicate = await POST(base, '/thread', body);
+    assert.equal(duplicate.json.deduped, true);
+    const receipt = async title => {
+      const page = (await GET(base, '/page?url=' + encodeURIComponent(url))).json;
+      return page.threads.find(t => t.id === id)?.msgs.some(m => m.text.includes(title) && m.text.includes('Read [the draft]'));
+    };
+    await waitFor(() => receipt('/from-a-highlight/'), 'preview link in the new comment thread');
+    const input = inputs(log).findLast(s => s.includes('Discuss this passage.'));
+    assert.match(input, /A specific line worth responding to/);
+    const next = await POST(base, '/reply', { url, thread_id: id,
+      text: '/draft-blog @codex Try another angle. [mock:says:'
+        + fence('# Another angle\n\nA second answer.').replaceAll('\n', '\\n') + ']' });
+    assert.equal(next.json.queued, true);
+    await waitFor(() => receipt('/another-angle/'), 'preview link for thread reply');
+    const draftPage = (await GET(base, '/page?url=' + encodeURIComponent(origin + '/another-angle/'))).json;
+    assert.match(draftPage.draft_context, /A specific line worth responding to/);
+  });
   await test('a missing draft block reports failure and releases the filename for retry', async () => {
     await POST(base, '/reply', { url, text: '/draft-blog malformed | [mock:says:I could not draft this.]' });
     await waitFor(async () => (await GET(base, '/page?url=' + encodeURIComponent(url))).json
