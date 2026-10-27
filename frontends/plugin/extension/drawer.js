@@ -1533,7 +1533,7 @@
     {"cmd": "@all", "args": "<msg>", "hint": "Send to both bots", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
-    {"cmd": "/draft-blog", "args": "[@claude|@codex] name | brief", "hint": "Create a blog draft and start its local preview", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/draft-blog", "args": "[what to write]", "hint": "Create a blog draft and start its local preview", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
   // the plugin's share of a table (live or fallback), in the table's order

@@ -867,13 +867,16 @@ one bridge per open chat, idle ones parked past `COUNCIL_MAX_CHATS`.
 a comment thread, type:
 
 ```text
-/draft-blog my-response | Turn our discussion into an essay, keeping the counterargument.
-/draft-blog @codex my-response | Write the first draft from the points we agreed on.
+/draft-blog Turn our discussion into an essay, keeping the counterargument.
+/draft-blog
 ```
 
-The first form asks Claude; the second chooses Codex. Discuss uses the article
-and conversation, saves a new `_notes/my-response.md` in your registered Jekyll
+Write a normal request after the command, or use the command alone to draft
+from the discussion. Claude writes by default; an optional `@codex` immediately
+after the command chooses Codex. Discuss uses the article and conversation,
+chooses a title and an unused filename under `_notes/` in your registered Jekyll
 site, starts a local Jekyll preview, and posts its link in the conversation.
+No filename or pipe is required. The original `name | brief` form still works.
 Open it with Discuss to continue: the bots receive the source discussion, and
 you can highlight paragraphs and accept suggested edits as usual. The initial
 drafting turn creates Markdown only. On the preview page, the bots receive the
@@ -892,6 +895,12 @@ Jekyll site is registered, set `"draft_site": "/absolute/path/to/site"` in the
 companion's `.botference/plugin/config.json`. `"draft_dir": "_notes"` is the
 default; another existing, output-enabled Jekyll collection can be selected.
 This first-draft command is owner-only and currently supports Jekyll collections.
+
+When the site has `Templates/baseline.md`, its YAML front matter supplies the
+new post's fields. Discuss fills the title, creation date, permalink and source
+URL, forces `published: false`, and preserves the other fields. The template
+itself is never edited. Set `draft_template` to another template path inside
+the site if needed. The site's normal Jekyll layout renders the title and body.
 
 You write a post in markdown, run the site locally (`jekyll serve`), and
 read the finished page in the browser. Comment on a paragraph there and

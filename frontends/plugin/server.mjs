@@ -4079,10 +4079,14 @@ export function handler(req, res) {
         if (notOwner(req, res)) return;
         if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
         if (target !== store.PAGE_CHAT && !store.findThread(page, target)) return fail(res, 404, 'unknown thread');
+        const dedupe = dedupeCheck([store.pageKey(page.url), target, me.handle, text.trim()]);
+        if (dedupe.hit) return data._form
+          ? seeOther(res, backTo(data, page, target === store.PAGE_CHAT ? '' : target))
+          : ok(res, { msg: dedupe.hit, deduped: true });
         let d;
         try {
           d = drafts.destination(drafts.parseCommand(text), store.readConfig());
-          if ([...pendingDrafts.values()].some(p => p.file === d.file)) throw new Error('That draft is already being written.');
+          if (d.file && [...pendingDrafts.values()].some(p => p.file === d.file)) throw new Error('That draft is already being written.');
         } catch (e) { return fail(res, 400, e.message); }
         const id = crypto.randomUUID();
         d.sourceTitle = page.title || page.url;
@@ -4092,6 +4096,7 @@ export function handler(req, res) {
           + (store.hasSnapshot(store.pageKey(page.url)) ? `Saved article: ${store.snapshotFile(store.pageKey(page.url))}\n` : '')
           + history.filter(m => !m.kind).slice(-80).map(m => `${m.author}: ${m.text}`).join('\n').slice(-24000);
         const msg = store.appendMsg(page, target, { author: me.handle, text, route: `@${d.agent}` });
+        dedupe.remember(msg);
         store.savePage(page);
         broadcast({ type: 'page', url: page.url });
         pendingDrafts.set(id, d);

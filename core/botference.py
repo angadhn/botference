@@ -357,7 +357,7 @@ COMMAND_HELP: list[dict] = [
     {"cmd": "/draft", "args": "[rounds]", "group": "Planning",
      "hint": "Write implementation-plan.md, with review rounds (default 2)",
      "scope": _ALL},
-    {"cmd": "/draft-blog", "args": "[@claude|@codex] name | brief", "group": "Talking to the bots",
+    {"cmd": "/draft-blog", "args": "[what to write]", "group": "Talking to the bots",
      "hint": "Create a blog draft and start its local preview",
      "scope": ("plugin",)},
     {"cmd": "/finalize", "args": "", "group": "Planning",

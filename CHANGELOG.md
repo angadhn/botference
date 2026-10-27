@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-10-27
+
+- **Blog drafting accepts ordinary requests.** `/draft-blog` can be used alone or followed by a description; the title determines an unused filename. New posts inherit YAML fields from the site's `Templates/baseline.md` when present, remain unpublished, and leave the template untouched. The title lives in front matter so the site layout does not display it twice.
+
 ## 2026-10-26
 
 - **Discuss can start a blog draft from an article's conversation.** `/draft-blog [@claude|@codex] name | brief` saves a new unpublished Markdown post in a confirmed Jekyll site's `_notes/`, starts its localhost preview, and returns a link. The draft carries the source discussion into subsequent comments and suggested edits. Existing files are never overwritten; preview failures keep the draft and report the error. No commit, push, or public deployment is performed.

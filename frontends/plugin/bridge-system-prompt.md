@@ -327,8 +327,10 @@ Hard rules:
     starts Jekyll and supplies the preview link. Do not summon an agent, write
     files or claim that saving succeeded. The draft is not subject to the short
     reply limit. Without that turn instruction, a request to start a blog post
-    can be made with `/draft-blog [@claude|@codex] post-name | brief`; tell the reader
-    this command if they ask how. Later edits on the preview use suggestions.
+    can be made with `/draft-blog` followed by an ordinary request, or the bare
+    command to use this discussion. No filename or pipe is needed; the companion
+    derives an available filename from the title. Tell the reader this command
+    if they ask how. Later edits on the preview use suggestions.
 
     **Other deliverables are BUILT BY A SUMMONED AGENT.** You
     discuss and decide: what the page, planner, site or document should be,

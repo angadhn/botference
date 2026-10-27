@@ -18,11 +18,16 @@ const cmd = draft.parseCommand('/draft-blog @codex new-post | Turn our disagreem
 const dest = (c = cmd, cfg = {}) => draft.destination(c, cfg, [site], () => 'yes');
 const fence = body => '````blog-draft\n' + body + '\n````';
 
-await test('commands select a writer and require a plain filename and brief', () => {
+await test('command accepts ordinary prose, a bare command, and the older explicit filename form', () => {
   assert.equal(cmd.agent, 'codex');
   assert.equal(draft.parseCommand('draft me a post'), null);
   assert.equal(draft.parseCommand('/draft ordinary-plan'), null);
-  for (const s of ['/draft-blog', '/draft-blog ../escape | hello', '/draft-blog good-name']) assert.throws(() => draft.parseCommand(s));
+  assert.equal(draft.parseCommand('/draft-blog').slug, '');
+  assert.match(draft.parseCommand('/draft-blog').brief, /our discussion/);
+  assert.deepEqual(draft.parseCommand('/draft-blog @codex Write my response to this article.'),
+    { agent: 'codex', slug: '', brief: 'Write my response to this article.' });
+  assert.equal(draft.parseCommand('/draft-blog ../escape | hello').slug, '', 'a path in prose cannot name a file');
+  assert.throws(() => dest({ ...cmd, slug: '../escape' }));
 });
 await test('confirmed local collection required; duplicate origins count as one site', () => {
   assert.throws(() => draft.destination(cmd, {}, [site], () => 'no'));
@@ -43,6 +48,35 @@ await test('draft saves unpublished source and never replaces a file or permalin
   assert.throws(() => dest({ ...cmd, slug: 'occupied' }));
   assert.throws(() => draft.bodyOf('No fenced draft'));
   assert.throws(() => draft.bodyOf(fence('# One') + '\n' + fence('# Two')));
+});
+await test('freeform drafts derive filenames from titles and avoid existing posts', () => {
+  const automatic = () => dest(draft.parseCommand('/draft-blog Write my response.'));
+  const first = automatic();
+  draft.saveDraft(first, '# My response!\n\nOne view.', { url: 'https://example.com/article' });
+  assert.equal(first.rel, '_notes/my-response.md');
+  const second = automatic();
+  draft.saveDraft(second, '# My response!\n\nAnother view.', { url: 'https://example.com/article' });
+  assert.equal(second.rel, '_notes/my-response-2.md');
+  assert.match(fs.readFileSync(first.file, 'utf8'), /One view/);
+});
+await test('baseline front matter is preserved while generated fields stay safe and unpublished', () => {
+  const folder = path.join(root, 'Templates'); fs.mkdirSync(folder);
+  const file = path.join(folder, 'baseline.md');
+  const template = '---\ntitle:\ncreated:\nreleased:\ntags:\n  - essays\npermalink:\n'
+    + 'top_of_mind: "false"\ncompanion music:\nimage:\npremium: false\npublished: true\n---\n';
+  fs.writeFileSync(file, template);
+  const d = dest(draft.parseCommand('/draft-blog'));
+  draft.saveDraft(d, '# A title: with punctuation\n\nBody.', { url: 'https://example.com/article' });
+  const saved = fs.readFileSync(d.file, 'utf8');
+  assert.match(saved, /title: "A title: with punctuation"/);
+  assert.doesNotMatch(saved, /^# A title/m, 'the layout renders the title, so do not duplicate it in the body');
+  assert.match(saved, /created: \d{4}-\d{2}-\d{2}/);
+  assert.match(saved, /released:\ntags:\n  - essays/);
+  assert.match(saved, /companion music:\nimage:\npremium: false/);
+  assert.match(saved, /published: false/);
+  assert.doesNotMatch(saved, /published: true/);
+  assert.equal(fs.readFileSync(file, 'utf8'), template);
+  assert.throws(() => dest(cmd, { draft_template: '../outside.md' }));
 });
 await test('preview starts one Jekyll process for concurrent requests and checks its actual output', async () => {
   const calls = [];
@@ -92,9 +126,11 @@ try {
   await POST(base, '/reply', { url, text: 'Keep the economic counterargument.', route: '' });
   await test('owner command creates a preview link and carries source context into later draft turns', async () => {
     const response = fence('# Economics\n\nThe counterargument matters.');
-    const r = await POST(base, '/reply', { url, text: '/draft-blog @codex economics | Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
+    const r = await POST(base, '/reply', { url, text: '/draft-blog @codex Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(r.json.queued, true);
+    const repeated = await POST(base, '/reply', { url, text: '/draft-blog @codex Write it. [mock:says:' + response.replaceAll('\n', '\\n') + ']' });
+    assert.equal(repeated.json.deduped, true, 'retrying the same submission must not create a second post');
     const page = await waitFor(async () => {
       const result = (await GET(base, '/page?url=' + encodeURIComponent(url))).json;
       const p = result?.page || result;
@@ -102,6 +138,7 @@ try {
     }, 'saved preview link');
     assert.ok(page.page_chat.some(m => m.text.includes(origin + '/economics/')));
     assert.match(fs.readFileSync(path.join(root, '_notes/economics.md'), 'utf8'), /published: false/);
+    assert.match(fs.readFileSync(path.join(root, '_notes/economics.md'), 'utf8'), /companion music:/);
     const preview = origin + '/economics/';
     await POST(base, '/reply', { url: preview, text: '@claude tighten the argument' });
     await waitFor(() => inputs(log).some(s => s.includes('tighten the argument')), 'follow-up turn');

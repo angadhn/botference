@@ -10,9 +10,63 @@ import * as blog from './blog.mjs';
 export function parseCommand(text) {
   const s = String(text || '').trim();
   if (!/^\/draft-blog(?:\s|$)/i.test(s)) return null;
-  const m = /^\/draft-blog\s+(?:@(claude|codex)\s+)?([a-z0-9][a-z0-9-]{0,79})\s*\|\s*([\s\S]+)$/i.exec(s);
-  if (!m) throw new Error('Use /draft-blog [@claude|@codex] post-name | what you want written');
-  return { agent: (m[1] || 'claude').toLowerCase(), slug: m[2].toLowerCase(), brief: m[3].trim() };
+  let brief = s.replace(/^\/draft-blog\s*/i, '');
+  const writer = /^@(claude|codex)(?:\s+|$)/i.exec(brief);
+  if (writer) brief = brief.slice(writer[0].length).trim();
+  // Keep the original explicit-filename form working, without requiring it.
+  const legacy = /^([a-z0-9][a-z0-9-]{0,79})\s*\|\s*([\s\S]+)$/i.exec(brief);
+  return { agent: (writer?.[1] || 'claude').toLowerCase(),
+    slug: legacy ? legacy[1].toLowerCase() : '',
+    brief: legacy ? legacy[2].trim() : brief || 'Write a blog post based on this article and our discussion.' };
+}
+
+function fileFields(d, slug) {
+  if (!/^[a-z0-9][a-z0-9-]{0,95}$/.test(slug)) throw new Error('Invalid draft filename.');
+  const file = path.join(d.dir, `${slug}.md`);
+  const urlPath = `/${slug}/`;
+  return { slug, file, rel: path.relative(d.root, file), urlPath, url: d.serve_origin + urlPath };
+}
+
+function occupied(d) {
+  return fs.existsSync(d.file) || !!blog.resolvePath(d.root, d.urlPath, 'jekyll').doc;
+}
+
+// Read the site's actual Obsidian template, never another post's metadata.
+// Keep non-owned YAML fields verbatim (including lists and quoted values).
+function templateFor(root, configured) {
+  const relative = configured || 'Templates/baseline.md';
+  const file = path.resolve(root, relative);
+  if (!file.startsWith(root + path.sep)) throw new Error('draft_template must be inside the site.');
+  if (!fs.existsSync(file) && !configured) return '';
+  if (!fs.realpathSync(file).startsWith(root + path.sep)) throw new Error('The draft template must be inside the site.');
+  const text = fs.readFileSync(file, 'utf8');
+  if (!/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.test(text)) {
+    throw new Error('The draft template must start with YAML front matter.');
+  }
+  return text;
+}
+
+export function frontMatterFor(d, title, source, now = new Date()) {
+  const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(d.template || '');
+  const fields = {
+    title: JSON.stringify(title), created: now.toISOString().slice(0, 10),
+    published: 'false', permalink: JSON.stringify(d.urlPath), source_url: JSON.stringify(source.url),
+  };
+  const seen = new Set();
+  const lines = [];
+  let replacing = false;
+  for (const line of (match?.[1] || '').split(/\r?\n/)) {
+    const key = /^([A-Za-z_][\w -]*):/.exec(line)?.[1];
+    if (key) {
+      replacing = Object.hasOwn(fields, key);
+      if (replacing) {
+        if (!seen.has(key)) lines.push(`${key}: ${fields[key]}`);
+        seen.add(key);
+      } else lines.push(line);
+    } else if (!replacing) lines.push(line);
+  }
+  for (const [key, value] of Object.entries(fields)) if (!seen.has(key)) lines.push(`${key}: ${value}`);
+  return ['---', ...lines.filter((line, i) => line || i > 0), '---'].join('\n');
 }
 
 export function destination(command, config, sites = blog.listSites(), state = blog.rootState) {
@@ -39,20 +93,21 @@ export function destination(command, config, sites = blog.listSites(), state = b
   if (!rel.startsWith('_') || cfg.collections[collection]?.output !== 'true') {
     throw new Error('draft_dir must be an existing Jekyll collection, such as _notes.');
   }
-  const file = path.join(dir, `${command.slug}.md`);
-  const urlPath = `/${command.slug}/`;
-  if (fs.existsSync(file) || blog.resolvePath(root, urlPath, 'jekyll').doc) {
+  const d = { ...command, root, dir, rel: rel + '/', file: '', url: '', urlPath: '',
+    serve_origin: origin.origin, previewToken: randomUUID(),
+    template: templateFor(root, config.draft_template) };
+  if (command.slug) Object.assign(d, fileFields(d, command.slug));
+  if (d.file && occupied(d)) {
     throw new Error('That draft name or URL already exists. Choose another name.');
   }
-  return { ...command, root, dir, file, rel: path.relative(root, file),
-    serve_origin: origin.origin, url: origin.origin + urlPath, urlPath, previewToken: randomUUID() };
+  return d;
 }
 
 export function prompt(d) {
   return '[new blog draft requested by the reader]\n'
-    + `Write the first draft for ${d.rel}, based on this article and our discussion. Brief: ${d.brief}\n`
+    + `Write the first draft in ${d.rel}, based on this article and our discussion. Brief: ${d.brief}\n`
     + 'Return the complete Markdown body in ONE fenced block labelled blog-draft, using FOUR backticks for its fences. '
-    + 'Start with a # title. Do not include YAML front matter. This is the requested deliverable: write it in your reply, do not summon another agent or write files. '
+    + 'Choose a fitting # title; the companion moves it into front matter and derives an available filename from it. Do not include YAML front matter: the companion fills the site’s baseline template. This is the requested deliverable: write it in your reply, do not summon another agent or write files. '
     + 'The normal short-reply limit does not apply to the draft. Cite the source where useful, distinguish your interpretation from its claims, and do not invent evidence. '
     + 'The companion saves this block as a new unpublished post and starts its local preview. Do not claim the file was saved or the preview is live yourself.\n';
 }
@@ -72,11 +127,21 @@ export function saveDraft(d, body, source) {
     throw new Error('The site directory changed while the draft was being written.');
   }
   blog.forgetIndex(d.root);
-  if (blog.resolvePath(d.root, d.urlPath, 'jekyll').doc) throw new Error('The draft URL is now used by another file.');
   const title = body.split('\n')[0].replace(/^#\s+/, '').trim();
-  const content = ['---', `title: ${JSON.stringify(title)}`, 'published: false',
-    `permalink: ${JSON.stringify(d.urlPath)}`, `source_url: ${JSON.stringify(source.url)}`,
-    '---', '', body, '', `<!-- botference-draft:${d.previewToken} -->`, ''].join('\n');
+  if (!d.slug) {
+    const base = blog.slugify(title).slice(0, 80).replace(/-+$/, '') || 'draft';
+    let candidate;
+    for (let n = 1; n <= 100; n++) {
+      candidate = { ...d, ...fileFields(d, base + (n > 1 ? `-${n}` : '')) };
+      if (!occupied(candidate)) break;
+    }
+    if (occupied(candidate)) throw new Error('Could not find an unused draft filename.');
+    Object.assign(d, candidate);
+  }
+  if (occupied(d)) throw new Error('The draft filename or URL is now used by another file.');
+  const prose = body.slice(body.indexOf('\n') < 0 ? body.length : body.indexOf('\n') + 1).trimStart();
+  const content = [frontMatterFor(d, title, source), '', prose, '',
+    `<!-- botference-draft:${d.previewToken} -->`, ''].join('\n');
   fs.writeFileSync(d.file, content, { flag: 'wx' });
   blog.forgetIndex(d.root);
   return title;

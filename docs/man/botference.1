@@ -148,11 +148,15 @@ belongs to the paper's own directory, so stop it from there.
 .TP
 .B discuss
 Serve \fBDiscuss\fR, the companion server for the browser extension.
-In its chat, \fB/draft-blog [@claude|@codex] name | brief\fR creates a new
+In its chat, \fB/draft-blog [what to write]\fR creates a new
 unpublished Markdown file in a confirmed Jekyll site's \fI_notes/\fR
 collection and starts a local preview with \fB--unpublished\fR. Open the
 returned link to continue with paragraph comments and suggested edits.
 The source discussion follows the draft. Existing files are never replaced.
+An ordinary request or the bare command is enough: the title determines an
+unused filename. An optional \fB@codex\fR after the command selects Codex.
+The site's \fITemplates/baseline.md\fR supplies front-matter fields when present;
+\fIdraft_template\fR selects a different template inside the site.
 Companion config keys \fIdraft_site\fR (absolute site root) and
 \fIdraft_dir\fR (collection directory) select a different destination.
 \fBplugin\fR is an accepted alias and remains one: the product was
