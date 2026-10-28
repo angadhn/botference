@@ -1,9 +1,27 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en" data-scheme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Project connections · Botference</title><link rel="stylesheet" href="/network-assets/network.css"></head>
-<body><header><a href="/" class="back">← Back</a><div><h1>Project connections</h1><p>Readings, conversations and the work they become.</p></div><button id="refresh">Refresh evidence</button></header>
-<section class="controls" aria-label="Map controls"><label>Council <select id="root"></select></label><label class="search">Find a project or output <input id="search" type="search" placeholder="Teaching, space stations, an essay…"></label><label><input id="suggestions" type="checkbox" checked> Suggestions</label><label><input id="archived" type="checkbox"> Archived</label><label><input id="dismissed" type="checkbox"> Dismissed</label></section>
-<p id="status" role="status">Loading project records…</p>
-<main><section class="map-panel"><div class="legend"><span class="suggested">┄ Suggested</span><span class="linked">━ Linked or used by you</span><span class="stale">┄ Evidence changed</span></div><svg id="map" viewBox="0 0 900 600" role="img" aria-label="Project relationship map"></svg><p class="hint">Select a project or connection. Position shows link structure, not a measure of meaning or truth.</p><div id="projects" class="project-list"></div></section>
-<aside id="detail" aria-live="polite"><h2>Your project network</h2><p>Select a project to see its outputs and reading conversations. Select a connection to inspect why it exists.</p><p>Red dashed lines are suggestions. Green lines record links you made or evidence of use you requested.</p></aside></main>
+<body>
+<svg id="map" role="img" aria-label="Map of projects and the connections between them"></svg>
+<header class="top">
+  <a href="/" class="home" title="Back to Botference" aria-label="Back to Botference">←</a>
+  <div class="where">
+    <h1><button id="overview" type="button" title="Back to all projects (Esc)">Project connections</button><span id="focus-name"></span></h1>
+    <p id="status" role="status">Loading project records…</p>
+  </div>
+</header>
+<nav class="tools" aria-label="Map tools">
+  <select id="root" aria-label="Council" hidden></select>
+  <input id="search" type="search" placeholder="find  /" aria-label="Find a project, reading or output" autocomplete="off">
+  <label class="tog sug" title="Show agent suggestions (S)"><input type="checkbox" id="suggestions" checked><span>suggested</span></label>
+  <label class="tog dis" title="Show dismissed connections (D)"><input type="checkbox" id="dismissed"><span>dismissed</span></label>
+  <label class="tog" title="Show archived projects (A)"><input type="checkbox" id="archived"><span>archived</span></label>
+  <button id="fit" type="button" title="Fit everything in view (F)">fit</button>
+  <button id="refresh" type="button" title="Re-read files and look for new suggestions">refresh</button>
+  <button id="scheme" type="button" title="Light or dark (T)" aria-label="Switch between light and dark">◐</button>
+</nav>
+<div id="empty" hidden></div>
+<p class="caption">Closeness on this map is only arrangement. It does not measure similarity.</p>
+<div id="tip" role="tooltip" hidden></div>
+<aside id="detail" class="sheet" aria-live="polite" aria-label="Details"></aside>
 <script type="module" src="/network-assets/network.js"></script></body></html>
