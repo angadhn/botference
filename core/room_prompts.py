@@ -600,8 +600,37 @@ def claude_style_contract() -> str:
         "further. When a turn ends with a length instruction, that line is "
         "the hard cap on this reply and outranks all other style guidance. "
         "Go long only when the user explicitly asks for depth or you are "
-        "drafting a deliverable they requested."
+        "drafting a deliverable they requested. "
+        + WRITING_STYLE_RULE
     )
+
+
+# -- Writing style ----------------------------------------------------------
+
+#: The house writing style, carried by every surface the bots write on: the
+#: council room (TUI and web), the Discuss plugin, and the blog draft. It is
+#: Simplified Technical English (ASD-STE100) softened to about 80 percent,
+#: the way Karpathy recommends: the sentence and paragraph discipline of the
+#: spec without the parts that flatten an argument. One place, so the three
+#: surfaces never drift apart.
+WRITING_STYLE_RULE = (
+    "Writing style: about 80 percent of the way to ASD-STE100, the "
+    "Simplified Technical English used for aircraft manuals. One topic per "
+    "paragraph, and short paragraphs. Sentences of about 20 words, one idea "
+    "each, with a verb. Active voice and concrete verbs. The same word for "
+    "the same thing every time; no elegant variation. Plain words over "
+    "technical ones, and a term defined in the sentence that first uses it. "
+    "An instruction is one command sentence. No stacked nouns, no filler. "
+    "Keep what the full spec forbids only where it earns its place: a "
+    "qualified claim, a contrast, a subordinate clause that carries real "
+    "meaning. Never flatten the hedges of an honest argument into false "
+    "certainty."
+)
+
+
+def writing_style_rule() -> str:
+    """The house style as a prompt block, for surfaces that compose text."""
+    return "--- Writing style ---\n" + WRITING_STYLE_RULE
 
 
 # -- Room role --------------------------------------------------------------
@@ -627,7 +656,8 @@ def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)") 
         "\"done\" or \"verified\" unless you rendered and inspected the output, and "
         "use `visual_check_html` for HTML when available.\n"
         f"Be concise and constructive. Focus on architecture and "
-        f"design decisions."
+        f"design decisions.\n"
+        + WRITING_STYLE_RULE
     )
 
 

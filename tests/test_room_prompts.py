@@ -272,3 +272,11 @@ class TestVideoWatchNote:
         note = video_watch_note()
         assert "two questions to Gemini per user turn" in note
         assert "not acted on" in note   # the wake-up is the end of the chain
+
+
+class TestWritingStyle:
+    def test_room_preamble_carries_house_style(self):
+        from room_prompts import WRITING_STYLE_RULE, claude_style_contract
+        assert "ASD-STE100" in WRITING_STYLE_RULE
+        assert WRITING_STYLE_RULE in room_preamble("Claude", "Codex")
+        assert WRITING_STYLE_RULE in claude_style_contract()

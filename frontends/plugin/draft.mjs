@@ -118,8 +118,22 @@ export function prompt(d) {
     + 'Return the complete Markdown body in ONE fenced block labelled blog-draft, using FOUR backticks for its fences. '
     + 'Choose a fitting # title; the companion moves it into front matter and derives an available filename from it. Do not include YAML front matter: the companion fills the site’s baseline template. This is the requested deliverable: write it in your reply, do not summon another agent or write files. '
     + 'The normal short-reply limit does not apply to the draft. Cite the source where useful, distinguish your interpretation from its claims, and do not invent evidence. '
-    + 'The companion saves this block as a new unpublished post and starts its local preview. Do not claim the file was saved or the preview is live yourself.\n';
+    + 'The companion saves this block as a new unpublished post and starts its local preview. Do not claim the file was saved or the preview is live yourself.\n'
+    + DRAFT_STYLE;
 }
+
+// The house style at its strictest, because a first draft is where it is
+// cheapest to get right and where a bot's habits (long sentences, stacked
+// nouns, restating the source) do the most harm. The same rule, in short
+// form, lives in bridge-system-prompt.md for replies and suggestions.
+export const DRAFT_STYLE =
+  'Writing style for the draft, and this outranks your habits: about 80 percent of the way to ASD-STE100, the Simplified Technical English used for aircraft manuals. '
+  + 'One topic per paragraph; paragraphs of three to five sentences. Sentences of about 20 words, one idea each, with a verb; split any sentence that needs a semicolon. '
+  + 'Active voice. Concrete verbs. The same word for the same thing every time; no elegant variation. Plain words over technical ones, and define a term in the sentence that first uses it. '
+  + 'No stacked nouns, no filler openers, no throat-clearing, no summary paragraph that restates the piece. Lead each section with its point. '
+  + 'Keep what the full spec forbids only where it earns its place: a qualified claim, a contrast, a subordinate clause that carries meaning, a passive where the actor is unknown. '
+  + 'This is an essay, so keep the hedges and the counterargument; never make the piece sound more certain than the discussion was. '
+  + 'Write in the reader\'s first person and voice as shown in the discussion, not in a manual\'s. Headings are short noun phrases. Lists only for parallel items, never for argument.\n';
 
 export function bodyOf(text) {
   const hits = [...String(text || '').matchAll(/^(`{4,})blog-draft\s*\n([\s\S]*?)^\1\s*$/gm)];
