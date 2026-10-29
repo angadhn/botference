@@ -1,10 +1,12 @@
 /* Project connections: a quiet map. Meaning lives in line style, explained on hover. */
 :root{color-scheme:dark;--bg:#14110d;--fg:#e6dccb;--muted:#8f8571;--faint:#4f483c;--rule:#2a241c;--sheet:#1a1611;
   --node:#d6c6a6;--out:#c8975a;--read:#a39882;--chat:#7a715f;
-  --red:#e07c69;--green:#86c49a;--grey:rgba(230,220,203,.3);--member:rgba(230,220,203,.1);--warn:#d6b06a;--ring:#f4ead8}
+  --red:#e07c69;--green:#86c49a;--grey:rgba(230,220,203,.3);--member:rgba(230,220,203,.1);--warn:#d6b06a;--ring:#f4ead8;
+  --g-writing:#d9a35e;--g-teaching:#7fbf9b;--g-research:#82a6d9;--g-other:#a29a8b}
 :root[data-scheme=light]{color-scheme:light;--bg:#f5f0e6;--fg:#2a241b;--muted:#776c5a;--faint:#c4b9a5;--rule:#e2d9c8;--sheet:#fbf8f1;
   --node:#5a4a34;--out:#a86a2c;--read:#8a7e69;--chat:#b0a58f;
-  --red:#b84a3c;--green:#2e7a4e;--grey:rgba(42,36,27,.32);--member:rgba(42,36,27,.12);--warn:#8d6a24;--ring:#1c1710}
+  --red:#b84a3c;--green:#2e7a4e;--grey:rgba(42,36,27,.32);--member:rgba(42,36,27,.12);--warn:#8d6a24;--ring:#1c1710;
+  --g-writing:#a8661c;--g-teaching:#2f7d55;--g-research:#3a63a3;--g-other:#7a705e}
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,sans-serif}
 a{color:inherit;text-decoration:underline;text-decoration-color:var(--faint);text-underline-offset:2px;overflow-wrap:anywhere}a:hover{text-decoration-color:currentColor}
@@ -22,18 +24,41 @@ h1{margin:0;font:normal 17px/1.3 Georgia,'Iowan Old Style',serif;letter-spacing:
 .focusing #overview{color:var(--muted)}.focusing #overview::after{content:' /';color:var(--faint)}
 #focus-name{font-style:italic}
 #status{margin:2px 0 0;color:var(--muted);font-size:12px}#status.error{color:var(--red)}
+/* in a project: a plain way back, named for the overview you came from */
+.back{display:inline-block;margin-top:8px;background:var(--sheet);border:1px solid var(--muted);border-radius:16px;padding:5px 14px;font-size:13px;color:var(--fg);cursor:pointer}
+.back:hover{border-color:var(--fg)}.back[hidden]{display:none}
 
-.tools{position:fixed;top:14px;right:18px;display:flex;align-items:center;gap:2px;font-size:12px;color:var(--muted);transition:right .28s ease}
-.tools>*{background:none;border:0;padding:5px 7px;border-radius:5px;cursor:pointer;color:inherit}
-.tools>button:hover,.tog:hover{color:var(--fg)}
+.tools{position:fixed;z-index:4;top:14px;right:18px;display:flex;align-items:center;gap:2px;font-size:12px;color:var(--muted);transition:right .28s ease}
+.tools>*{background:none;border:0;padding:5px 7px;border-radius:5px;cursor:pointer;color:inherit;white-space:nowrap;flex:none}
+.tools>button:hover{color:var(--fg)}
 #search{width:150px;cursor:text;border-bottom:1px solid var(--rule);border-radius:0;margin-right:6px;padding-left:2px}
 #search:focus{outline:none;border-bottom-color:var(--muted);color:var(--fg)}#search::placeholder{color:var(--faint)}
 #root{border-bottom:1px solid var(--rule);border-radius:0;max-width:150px}
-.tog{display:inline-flex;align-items:center}.tog input{position:absolute;opacity:0;pointer-events:none}
-.tog span{padding-bottom:1px;border-bottom:1.5px solid transparent;opacity:.5}
-.tog input:checked+span{opacity:1;color:var(--fg)}.tog input:focus-visible+span{outline:1.5px solid var(--muted);outline-offset:3px}
-.tog.sug span{border-bottom:1.5px dashed var(--red)}.tog.dis span{border-bottom:1.5px dotted var(--faint)}
-#refresh:disabled{opacity:.4;cursor:wait}#scheme{font-size:14px}
+#scheme{font-size:14px}#fit{color:var(--fg)}
+#help{width:22px;height:22px;padding:0;margin:0 4px;border:1px solid var(--rule);border-radius:50%;line-height:20px;text-align:center}#help[aria-expanded=true]{border-color:var(--fg);color:var(--fg)}
+/* View and Filters: a button that opens a short list; what is on carries a tick */
+.tools>.menu{position:relative;padding:0;cursor:default}
+.menu>button{background:none;border:0;padding:5px 8px;border-radius:5px;cursor:pointer;color:inherit}
+.menu>button:hover,.menu>button[aria-expanded=true]{color:var(--fg);background:var(--rule)}
+#view-name{font-weight:600;color:var(--fg)}.caret{font-size:9px;opacity:.7;margin-left:1px}
+.pop{position:absolute;top:calc(100% + 6px);right:0;z-index:6;width:280px;padding:5px;display:grid;gap:1px;white-space:normal;cursor:default;
+  background:var(--sheet);border:1px solid var(--rule);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.pop[hidden]{display:none}
+.opt{position:relative;display:grid;grid-template-columns:16px 1fr auto;align-items:start;gap:6px;width:100%;text-align:left;background:none;border:0;border-radius:5px;padding:7px 9px;cursor:pointer;color:var(--fg);font-size:13px;line-height:1.35}
+.opt:hover,.opt:focus-within,.opt:focus-visible{background:var(--rule);outline:none}
+.opt small{display:block;color:var(--muted);font-size:11.5px}
+.opt input{position:absolute;opacity:0;pointer-events:none}
+.opt .tick::before{content:'\2713';color:var(--green);font-weight:700;visibility:hidden}
+.opt input:checked~.tick::before,.opt[aria-current=true] .tick::before{visibility:visible}
+.opt kbd{align-self:center;font:10.5px ui-monospace,Menlo,monospace;color:var(--faint);border:1px solid var(--rule);border-radius:3px;padding:0 4px}
+.opt.plain{margin-top:3px;border-top:1px solid var(--rule);border-radius:0 0 5px 5px;color:var(--muted)}
+#refresh:disabled{opacity:.4;cursor:wait}
+/* the one-paragraph explainer: once on a first visit, and behind "?" */
+.intro{position:fixed;z-index:7;top:62px;left:50%;transform:translateX(-50%);width:min(580px,calc(100vw - 24px));max-height:calc(100vh - 80px);overflow:auto;padding:18px 22px 16px;
+  background:var(--sheet);border:1px solid var(--rule);border-radius:10px;box-shadow:0 14px 44px rgba(0,0,0,.45);font-size:13.5px;line-height:1.6}
+.intro[hidden]{display:none}
+.intro h2{margin:0 0 8px;font:normal 18px/1.3 Georgia,serif}.intro p{margin:0 0 14px}
+#intro-ok{background:none;border:1px solid var(--muted);border-radius:16px;padding:5px 16px;cursor:pointer}#intro-ok:hover{border-color:var(--fg)}
 
 .caption{position:fixed;left:22px;bottom:14px;margin:0;font-size:11.5px;color:var(--faint);pointer-events:none}
 #empty{position:fixed;left:50%;bottom:52px;transform:translateX(-50%);width:min(460px,calc(100vw - 40px));text-align:center;color:var(--muted);font-size:13px}
@@ -90,12 +115,121 @@ h1{margin:0;font:normal 17px/1.3 Georgia,'Iowan Old Style',serif;letter-spacing:
 #map.focused .node.chat.in,#map.focused .thread.in{opacity:1}
 #map.focused .member.in{stroke:var(--grey)}
 #map.focused .node.project.in:not(.selected) .dot{fill:var(--muted)}
+.sheet .groups{font-size:13px}.sheet .groups small{display:inline;margin-left:4px;color:var(--faint);font-size:11.5px}
 #map.focused .node.project.selected .dot{fill:var(--node)}
 
-#map .node,#map .member,#map .share,#map .edge,#map .thread,.label{transition:opacity .3s ease}
+#map .node,#map .member,#map .share,#map .edge,#map .arrow,#map .thread,.label{transition:opacity .3s ease}
+
+/* arrowheads: only on relations that read one way, in the colour of their line */
+#map .arrow{stroke:none;pointer-events:none}
+#map .arrow.linked{fill:var(--green)}#map .arrow.suggested{fill:var(--red)}#map .arrow.dismissed{fill:var(--faint)}
+#map.hovering .edge:not(.hl)+.arrow{opacity:.12}
+#map.focused .edge:not(.in)+.arrow{opacity:.035}
+
+/* overview: lines appear for the project under the pointer, or all of them with "all links" */
+#map:not(.focused):not(.all-links) .edge:not(.hl):not(.selected):not(:focus-visible),
+#map:not(.focused):not(.all-links) .share:not(.hl):not(.selected):not(:focus-visible){opacity:0;pointer-events:none}
+#map:not(.focused):not(.all-links) .edge:not(.hl):not(.selected):not(:focus-visible)+.arrow{opacity:0}
+#map:not(.focused):not(.all-links) .hit-line:not(.hl){pointer-events:none}
+/* readings and writing live inside their project until it is opened */
+#map:not(.focused) .nodes .node.output,#map:not(.focused) .nodes .node.source,#map:not(.focused) .member{visibility:hidden}
+
+/* recent work is bright, older work recedes (R) */
+#map.recency:not(.focused):not(.hovering):not(.searching) .node.project:not(.selected){opacity:var(--fresh,1)}
+#map:not(.focused) .node.project .label{opacity:.6}
+#map:not(.focused) .node.project.tuck:not(.hl):not(.selected):not(.ends):not(.match):not(:focus-visible) .label{opacity:0}
+#map .node.project.ends .label{opacity:1}#map:not(.focused) .node.project.recent .label{opacity:1;font-weight:600}
+
+/* the map: group regions, faint fields with a small name */
+.regions{pointer-events:none;transition:opacity .3s ease}
+.region circle{fill-opacity:.075;stroke-opacity:.22;stroke-width:1;vector-effect:non-scaling-stroke}
+.region text{font-size:calc(var(--u,1px)*10.5);font-family:system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;fill-opacity:.85}
+.region[data-group=writing]{fill:var(--g-writing);stroke:var(--g-writing)}.region[data-group=teaching]{fill:var(--g-teaching);stroke:var(--g-teaching)}
+.region[data-group=research]{fill:var(--g-research);stroke:var(--g-research)}.region[data-group=other]{fill:var(--g-other);stroke:var(--g-other)}
+.region text{stroke:none}
+#map.focused .regions,#map.searching .regions{opacity:.15}#map.hovering .regions{opacity:.6}
+
+/* the city. Buildings in a clearing in the woods, drawn as isometric SVG */
+:root{--grass:#1c2318;--floor:#13170f;--leaf-a:#2a4026;--leaf-b:#37552f;--trunk:#4a3826;--path:#b9a57c}
+:root[data-scheme=light]{--grass:#e4e6cc;--floor:#d0d8b8;--leaf-a:#6f8f5c;--leaf-b:#8fae78;--trunk:#7b5d3e;--path:#bfa676}
+.cg-writing{--dc:var(--g-writing)}.cg-teaching{--dc:var(--g-teaching)}.cg-research{--dc:var(--g-research)}.cg-other{--dc:var(--g-other)}
+.campus-list{display:none}
+.campus-mode .campus-list{display:flex;flex-direction:column;gap:8px;position:fixed;left:0;top:0;bottom:0;width:344px;padding:84px 14px 16px 22px;z-index:2;font-size:13px;background:color-mix(in srgb,var(--bg) 97%,transparent);border-right:1px solid var(--rule)}
+.campus-mode .top{z-index:3}
+.sheet-open.campus-mode .caption{right:382px}
+.campus-mode .tools{background:color-mix(in srgb,var(--bg) 88%,transparent);border-radius:8px;padding:2px 4px}
+.campus-mode .tools .graph-only{display:none}
+.campus-mode .caption{left:360px;right:22px;bottom:10px;line-height:1.45;padding:5px 10px;border-radius:6px;color:var(--muted);background:color-mix(in srgb,var(--bg) 85%,transparent)}
+#capacity{margin:0;font-size:12.5px;line-height:1.4}#capacity b{font-weight:600}#capacity.over b{color:var(--warn)}
+#capacity small{display:block;margin-top:2px;color:var(--muted);font-size:11.5px}
+.city-tools{display:flex;gap:8px;align-items:center}
+#campus-find{flex:1;min-width:0;background:none;border:0;border-bottom:1px solid var(--rule);padding:4px 2px;color:var(--fg)}
+#campus-find:focus{outline:none;border-bottom-color:var(--muted)}#campus-find::placeholder{color:var(--faint)}
+#tidy{background:none;border:1px solid var(--rule);border-radius:12px;padding:3px 11px;font-size:11.5px;color:var(--muted);cursor:pointer}#tidy:hover{color:var(--fg);border-color:var(--muted)}
+.act-head{margin:6px 0 0;font:normal 16px/1.3 Georgia,serif}
+#week{margin:0;color:var(--muted);font-size:12px;line-height:1.4}
+#placed-note{margin:0}
+#campus-rows{flex:1;overflow:auto;overscroll-behavior:contain;padding-right:4px}
+#campus-rows h3,#campus-rows summary{margin:10px 0 2px;display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+#campus-rows h3 span,#campus-rows summary span{font-weight:400;color:var(--faint)}
+#campus-rows summary{cursor:pointer;list-style:revert;display:list-item}
+#campus-rows ul{list-style:none;margin:0;padding:0}#campus-rows .muted{font-size:12px;margin:2px 7px}
+/* one line per project: its name, what changed, and when */
+.row{display:flex;align-items:baseline;gap:7px;width:100%;text-align:left;background:none;border:0;border-radius:4px;padding:3px 7px;line-height:1.4;cursor:pointer;white-space:nowrap}
+.row::before{content:'';flex:none;width:7px;height:7px;border-radius:2px;background:var(--dc);align-self:center}
+.row .r-t{flex:0 1 auto;max-width:46%;overflow:hidden;text-overflow:ellipsis;font-weight:550}
+.row .r-w{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:12px}.row .r-w i{font-style:normal;color:var(--faint)}
+.row .r-s{flex:none;font-size:11px;color:var(--faint)}.row.st-unknown .r-s{color:var(--warn)}
+.row time{flex:none;font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums}
+.row:hover,.row.hl,.row:focus-visible{background:var(--rule)}.row.selected{background:var(--rule);box-shadow:inset 2px 0 var(--dc)}
+.row.shut .r-t{color:var(--muted);font-style:italic;font-weight:400}.row.shut::before{opacity:.4}
+#older[open] summary{margin-bottom:2px}
+.districts{display:flex;flex-wrap:wrap;gap:4px}
+.districts button{background:none;border:1px solid var(--rule);border-radius:12px;padding:3px 9px;font-size:11.5px;color:var(--muted);cursor:pointer}
+.districts button[data-zoom]:not([data-zoom=""])::before{content:'';display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:5px;background:var(--dc)}
+.districts button:hover{color:var(--fg);border-color:var(--muted)}.districts button[aria-pressed="true"]{color:var(--fg);border-color:var(--fg)}
+#map.campus{cursor:grab}#map.campus.panning,#map.campus.placing{cursor:grabbing}
+/* the land: forest floor, the clearing, and a grid that shows only while you move a building */
+#map .floor{fill:var(--floor)}#map .clearing{fill:var(--grass)}
+#map .grid{opacity:0;transition:opacity .2s ease}#map .grid line{stroke:var(--fg);stroke-opacity:.12;stroke-width:.6}#map.placing .grid{opacity:1}
+#map .tree{pointer-events:none}#map .tree .trunk{fill:var(--trunk)}#map .tree .la{fill:var(--leaf-a)}#map .tree .lb{fill:var(--leaf-b)}#map .tree .shade{fill:#000;fill-opacity:.18}
+/* footpaths: only recorded connections. Solid: linked or used. Stepping stones: suggested */
+#map .fp{fill:none;stroke:var(--path);stroke-width:4.5;stroke-linecap:round;stroke-linejoin:round;opacity:.55;cursor:pointer;outline:none}
+#map .fp.suggested{stroke-width:4;stroke-dasharray:.1 8;opacity:.6}#map .fp.stale{opacity:.35}
+#map .fp-hit{fill:none;stroke:transparent;stroke-width:14;cursor:pointer}
+#map .fp:hover,#map .fp.hl,#map .fp.selected,#map .fp:focus-visible{opacity:1}
+#map .fp.linked.hl,#map .fp.linked.selected{stroke:color-mix(in srgb,var(--green) 70%,var(--path))}
+#map .fp.suggested.hl,#map .fp.suggested.selected{stroke:color-mix(in srgb,var(--red) 70%,var(--path))}
+#map .bld{cursor:pointer;outline:none}
+#map .plot{fill:var(--dc);fill-opacity:.16;stroke:none;vector-effect:non-scaling-stroke}
+#map .bld polygon,#map .bld rect,#map .bld ellipse,#map .bld path{stroke:color-mix(in srgb,var(--dc) 30%,#000);stroke-width:.6;stroke-linejoin:round;vector-effect:non-scaling-stroke}
+#map .bld .f-l{fill:color-mix(in srgb,var(--dc) 52%,#000)}#map .bld .f-r{fill:color-mix(in srgb,var(--dc) 74%,#000)}
+#map .bld .f-t,#map .bld .dome{fill:color-mix(in srgb,var(--dc) 72%,#fff)}#map .bld .roof.f-l,#map .bld .cap{fill:color-mix(in srgb,var(--dc) 62%,#000)}#map .bld .roof.f-r{fill:color-mix(in srgb,var(--dc) 88%,#fff)}
+#map .bld .glaze{fill:color-mix(in srgb,var(--dc) 28%,#000)}
+#map .bld .plot{stroke:none}
+#map .bld .log{stroke:color-mix(in srgb,var(--dc) 25%,#000);stroke-width:.5;stroke-opacity:.6}
+#map .bld .win{fill:color-mix(in srgb,var(--dc) 18%,#000);stroke:none}#map .bld .win.lit{fill:#ffd36e}
+#map .bld .lattice,#map .bld .spire,#map .bld .arm{stroke:color-mix(in srgb,var(--dc) 55%,#fff);stroke-width:.7}
+#map .bld .rocket{fill:#ece5d6}#map .bld .nose,#map .bld .fin{fill:var(--red)}
+#map .bld .pole{stroke:var(--fg);stroke-opacity:.7;stroke-width:.9}#map .bld .flag{fill:var(--red);stroke:none}
+/* shuttered: paused or archived work keeps its place, greyed, its windows boarded */
+#map .bld.shut{--dc:color-mix(in srgb,var(--g-other) 55%,var(--bg));opacity:.75}#map .bld .win.shutter{fill:color-mix(in srgb,var(--muted) 80%,#fff)}#map .bld .slat{stroke:color-mix(in srgb,var(--dc) 30%,#000);stroke-width:.7}
+/* finished work carries a tick, an unrecognised status a question mark; neither counts in the budget */
+#map .bld.st-done{opacity:.7}
+#map .bld .badge circle{fill:var(--bg);stroke:var(--muted);stroke-width:.8;vector-effect:non-scaling-stroke}#map .bld .badge text{fill:var(--fg);font:700 7px system-ui,sans-serif}
+#map .bld.st-unknown .badge circle{stroke:var(--warn)}#map .bld.st-unknown .badge text{fill:var(--warn)}
+#map .bld:hover .plot,#map .bld.hl .plot,#map .bld:focus-visible .plot,#map .bld.selected .plot{fill:var(--dc);fill-opacity:.42;stroke:var(--ring);stroke-width:1.4}
+/* moving: the building follows the pointer tile by tile; a taken tile turns red */
+#map .bld.lifting{opacity:.9}#map .bld.blocked .plot{fill:var(--red);fill-opacity:.55}
+#map.placing .c-label{opacity:0!important}
+#map .d-label{fill:var(--dc);font-size:calc(var(--u,1px)*11);font-family:system-ui,sans-serif;letter-spacing:.09em;text-transform:uppercase;paint-order:stroke;stroke:var(--grass);stroke-width:calc(var(--u,1px)*3);stroke-linejoin:round;opacity:.85}
+#map .c-label{fill:var(--fg);font-size:calc(var(--u,1px)*11.5);font-family:system-ui,sans-serif;paint-order:stroke;stroke:var(--bg);stroke-width:calc(var(--u,1px)*3.5);stroke-linejoin:round;pointer-events:none;opacity:0}
+#map .c-label.keep{font-weight:600}#map .c-label.show,#map .c-label.on,#map .c-label.selected,#map.finding .c-label.match{opacity:1}
+#map.finding .bld:not(.match){opacity:.18}
+#map .bld,#map .c-label,#map .tree,#map .fp,#map .d-label{transition:opacity .2s ease}
 
 /* ── the side sheet ── */
-.sheet{position:fixed;top:0;right:0;bottom:0;z-index:3;width:min(360px,92vw);padding:22px 26px 32px;overflow:auto;overscroll-behavior:contain;
+.sheet{position:fixed;top:0;right:0;bottom:0;z-index:5;width:min(360px,92vw);padding:22px 26px 32px;overflow:auto;overscroll-behavior:contain;
   background:var(--sheet);border-left:1px solid var(--rule);transform:translateX(102%);transition:transform .28s ease,visibility 0s .28s;visibility:hidden}
 .sheet.open{transform:none;visibility:visible;transition:transform .28s ease}
 .sheet-open .tools{right:378px}
@@ -127,14 +261,25 @@ form input{background:none;border:0;border-bottom:1px solid var(--rule);padding:
 /* ── phones: tools along the bottom, the sheet rises from below ── */
 @media (max-width:640px){
   .top{top:12px;left:14px}h1{font-size:16px}
-  .tools{top:auto;bottom:10px;left:10px;right:10px;justify-content:space-between;overflow-x:auto;background:var(--bg);border-top:1px solid var(--rule);padding-top:4px}
-  #search{width:90px;flex:1 1 90px}
+  .tools{top:auto;bottom:10px;left:10px;right:10px;justify-content:space-between;background:var(--bg);border-top:1px solid var(--rule);padding-top:4px}
+  #search{width:70px;flex:1 1 70px;min-width:0}
+  .menu>button,.tools>button{padding:8px 8px} /* a finger-sized target */
+  /* menus rise from the toolbar across the width of the screen */
+  .pop{position:fixed;left:10px;right:10px;top:auto;bottom:58px;width:auto}
+  .opt{padding:10px 10px}
+  .intro{top:52px}
   .sheet-open .tools{right:10px;visibility:hidden}
   /* above the toolbar, so a long status line can wrap freely; an open sheet covers it */
   .caption{left:14px;right:14px;bottom:60px}
   #empty{bottom:86px}
+  /* city: the buildings above, the activity below */
+  .campus-mode .campus-list{left:0;right:0;width:auto;top:50vh;bottom:56px;gap:6px;padding:8px 14px 0;background:var(--bg);border-top:1px solid var(--rule);border-right:0}
+  .campus-mode .act-head{display:none}
+  .row{padding:7px 7px} /* a finger-sized target */
+  .districts button{padding:7px 11px;font-size:12.5px} /* a finger-sized target */
+  .campus-mode .caption{display:none}
   /* the sheet lists a project's material by name, so in focus the map shows only its shape */
   #map.focused .node.in:not(.project):not(.hl):not(.selected) .label{opacity:0}
   .sheet{top:auto;left:0;width:100%;height:54vh;border-left:0;border-top:1px solid var(--rule);border-radius:12px 12px 0 0;transform:translateY(102%);padding:18px 20px 28px}
 }
-@media (prefers-reduced-motion:reduce){*,#map .node,#map .member,#map .share,#map .edge,.label{transition:none!important}}
+@media (prefers-reduced-motion:reduce){*,#map .grid,#map .node,#map .member,#map .share,#map .edge,.label{transition:none!important}}

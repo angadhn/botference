@@ -8,20 +8,50 @@
   <div class="where">
     <h1><button id="overview" type="button" title="Back to all projects (Esc)">Project connections</button><span id="focus-name"></span></h1>
     <p id="status" role="status">Loading project records…</p>
+    <button id="back" class="back" type="button" hidden>← Back to map</button>
   </div>
 </header>
 <nav class="tools" aria-label="Map tools">
   <select id="root" aria-label="Council" hidden></select>
-  <input id="search" type="search" placeholder="find  /" aria-label="Find a project, reading or output" autocomplete="off">
-  <label class="tog sug" title="Show agent suggestions (S)"><input type="checkbox" id="suggestions" checked><span>suggested</span></label>
-  <label class="tog dis" title="Show dismissed connections (D)"><input type="checkbox" id="dismissed"><span>dismissed</span></label>
-  <label class="tog" title="Show archived projects (A)"><input type="checkbox" id="archived"><span>archived</span></label>
-  <button id="fit" type="button" title="Fit everything in view (F)">fit</button>
-  <button id="refresh" type="button" title="Re-read files and look for new suggestions">refresh</button>
+  <input id="search" class="graph-only" type="search" placeholder="find  /" aria-label="Find a project, reading or output" autocomplete="off">
+  <div class="menu">
+    <button id="view" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="view-menu">View: <b id="view-name">Map</b> <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="view-menu" class="pop" role="group" aria-label="Choose a view" hidden>
+      <button type="button" class="opt" data-view="map"><span class="tick" aria-hidden="true"></span><span>Map<small>Projects as dots, in four rough groups</small></span></button>
+      <button type="button" class="opt" data-view="city"><span class="tick" aria-hidden="true"></span><span>City<small>Projects as buildings you can arrange</small></span></button>
+    </div>
+  </div>
+  <div class="menu">
+    <button id="filters-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="filters">Filters <span class="caret" aria-hidden="true">▾</span></button>
+    <div id="filters" class="pop" role="group" aria-label="Filters" hidden>
+      <label class="opt"><input type="checkbox" id="suggestions" checked><span class="tick" aria-hidden="true"></span><span>Suggested links<small>Dashed: an agent thinks two projects relate</small></span><kbd>S</kbd></label>
+      <label class="opt graph-only"><input type="checkbox" id="dismissed"><span class="tick" aria-hidden="true"></span><span>Dismissed links<small>Suggestions you turned down</small></span><kbd>D</kbd></label>
+      <label class="opt"><input type="checkbox" id="archived"><span class="tick" aria-hidden="true"></span><span>Archived projects</span><kbd>A</kbd></label>
+      <label class="opt graph-only"><input type="checkbox" id="alllinks"><span class="tick" aria-hidden="true"></span><span>All links<small>Every line at once, not only on hover</small></span><kbd>C</kbd></label>
+      <label class="opt graph-only"><input type="checkbox" id="recency" checked><span class="tick" aria-hidden="true"></span><span>Recent emphasis<small>Fade projects you have not touched lately</small></span><kbd>R</kbd></label>
+      <button id="refresh" type="button" class="opt plain" title="Re-read files and look for new suggestions"><span class="tick" aria-hidden="true"></span><span>Look for new links</span></button>
+    </div>
+  </div>
+  <button id="fit" type="button" title="Fit everything in view (F)">Fit</button>
+  <button id="help" type="button" title="What this page shows" aria-label="What this page shows" aria-expanded="false" aria-controls="intro">?</button>
   <button id="scheme" type="button" title="Light or dark (T)" aria-label="Switch between light and dark">◐</button>
 </nav>
+<section id="intro" class="intro" role="dialog" aria-labelledby="intro-head" hidden>
+  <h2 id="intro-head">What you are looking at</h2>
+  <p>These are your projects, shown two ways; switch between them under <b>View</b>. The <b>map</b> shows each project as a dot in one of four rough groups (writing, teaching, research and ventures, other), guessed from its title; being near each other means nothing more. The <b>city</b> shows the same projects as buildings you can drag into your own arrangement: lit windows are readings updated in the last month, shutters mean paused or archived. A line on the map, or a footpath in the city, means a connection between two projects was recorded: solid when you linked them or your writing uses one in the other, dashed when an agent only suggested it. A faint grey line on the map only means both projects hold the same reading or piece of writing. Click a project to see its readings, writing and chats; the Back button returns you to where you were.</p>
+  <button id="intro-ok" type="button">Got it</button>
+</section>
 <div id="empty" hidden></div>
-<p class="caption">Closeness on this map is only arrangement. It does not measure similarity.</p>
+<aside id="campus-list" class="campus-list" aria-label="Activity: projects by their latest change">
+  <p id="capacity"></p>
+  <div id="districts" class="districts" role="group" aria-label="Zoom the city to a district"></div>
+  <div class="city-tools"><input id="campus-find" type="search" placeholder="find a project" aria-label="Find a project" autocomplete="off"><button id="tidy" type="button" title="Lay out again, by group, every building you have not placed yourself">tidy</button></div>
+  <h2 class="act-head">Activity</h2>
+  <p id="week"></p>
+  <div id="campus-rows"></div>
+  <p id="placed-note" class="fine"></p>
+</aside>
+<p class="caption" id="caption">Closeness on this map is only arrangement. It does not measure similarity.</p>
 <div id="tip" role="tooltip" hidden></div>
 <aside id="detail" class="sheet" aria-live="polite" aria-label="Details"></aside>
 <script type="module" src="/network-assets/network.js"></script></body></html>
