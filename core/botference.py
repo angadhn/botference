@@ -670,10 +670,23 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 def _extract_write_access_request(text: str) -> tuple[str, str] | None:
-    match = _WRITE_ACCESS_REQUEST_RE.match(text.strip())
+    """The first write-access tag anywhere in *text*, as (path, reason)."""
+    match = _WRITE_ACCESS_REQUEST_RE.search(text)
     if not match:
         return None
     return match.group(1).strip(), match.group(2).strip()
+
+
+def _strip_write_access_request(text: str) -> str:
+    """*text* without its write-access tags (the prose around them)."""
+    return _WRITE_ACCESS_REQUEST_RE.sub("", text).strip()
+
+
+def _mentions_write_access_without_tag(text: str) -> bool:
+    """True when a reply talks about write access but sends no tag."""
+    if _WRITE_ACCESS_REQUEST_RE.search(text):
+        return False
+    return bool(_WRITE_ACCESS_PROSE_RE.search(text))
 
 
 # ── Auto-routing ───────────────────────────────────────────
@@ -1444,8 +1457,19 @@ class WritePermissionRequest:
     reason: str
 
 
+# Found anywhere in a reply, not only when it is the whole reply: bots wrap
+# the tag in a sentence or a checklist, and an anchored match left those
+# requests unanswered (no prompt, the bot just complained).
 _WRITE_ACCESS_REQUEST_RE = re.compile(
-    r'^\s*<write-access-request\s+path="([^"\n]+)"\s+reason="([^"\n]+)"\s*/>\s*$',
+    r'<write-access-request\s+path="([^"\n]+)"\s+reason="([^"\n]+)"\s*/?>',
+    re.IGNORECASE,
+)
+
+# A bot talking about write access in prose instead of sending the tag.
+_WRITE_ACCESS_PROSE_RE = re.compile(
+    r"\b(?:write|edit)[ -](?:access|permissions?)\b"
+    r"|\bpermission to (?:write|edit)\b"
+    r"|\b(?:is ?n[o']t|not) writable\b",
     re.IGNORECASE,
 )
 
@@ -1822,6 +1846,7 @@ class Botference:
             )
         self._base_plan_write_roots = normalize_write_roots(list(roots))
         self._granted_plan_write_roots: list[Path] = []
+        self._pending_write_reminders: set[str] = set()  # models due a "you may already write" note
         self._apply_planner_write_config()
         self._persist_session()
 
@@ -2384,11 +2409,13 @@ class Botference:
             resolved = resolved.parent
         elif not resolved.exists() and resolved.suffix:
             resolved = resolved.parent
-        project_root = self.paths.project_root.resolve()
-        if not _is_relative_to(resolved, project_root):
-            return None, "path is outside the project root"
-        if ".git" in resolved.relative_to(project_root).parts:
+        # A folder outside the project is allowed here: the reader decides
+        # in the prompt. Inside the project nothing needs asking (the whole
+        # project is writable unless project.json narrows it).
+        if ".git" in resolved.parts:
             return None, "paths under .git are never writable"
+        if resolved == Path(resolved.anchor) or resolved == Path.home().resolve():
+            return None, "too broad: name a folder, not the whole disk or home"
         return resolved, ""
 
     def _is_write_root_allowed(self, candidate: Path) -> bool:
@@ -2780,7 +2807,12 @@ class Botference:
                     resolved, error = self._resolve_requested_write_root(str(raw_root))
                     if resolved is not None and not error:
                         resolved_roots.append(resolved)
-                self._base_plan_write_roots = normalize_write_roots(resolved_roots)
+                # today's roots first, then whatever the chat saved: a chat
+                # saved when only work/ was writable must not shrink the
+                # whole-project default back down on restore
+                self._base_plan_write_roots = normalize_write_roots(
+                    list(self._base_plan_write_roots) + resolved_roots
+                )
             saved_granted_roots = payload.get("granted_plan_write_roots")
             if isinstance(saved_granted_roots, list):
                 resolved_grants = []
@@ -6934,6 +6966,9 @@ class Botference:
             # by _send_message before dispatch), so context_since picks it
             # up.  Passing "" avoids injecting the user message twice.
             context = self.transcript.context_since(model, "")
+            if model in self._pending_write_reminders:
+                self._pending_write_reminders.discard(model)
+                context = f"[System: {self._write_access_reminder(model)}]\n{context}"
             # …and the attachments block on EVERY turn, not only the first: a
             # resumed session's replayed history is uneven and a relay drops it
             # whole, so the only thing a turn can rely on carrying is the turn.
@@ -6958,6 +6993,11 @@ class Botference:
             permission_request = _extract_write_access_request(resp.text)
             if not permission_request:
                 break
+            # a tag inside a longer reply: show the words around it, which
+            # would otherwise vanish when the follow-up turn replaces resp
+            prose = RoomFooter.strip_footer(_strip_write_access_request(resp.text))
+            if prose:
+                self._add_room_entry(ui, model, prose, stream_id=resp.stream_id)
             follow_up = await self._handle_write_access_request(
                 model,
                 permission_request,
@@ -6995,6 +7035,11 @@ class Botference:
                     output_preview="worktree changed",
                     output_blocks=diff_blocks,
                 ))
+
+        if _mentions_write_access_without_tag(resp.text):
+            # handed over at the top of the bot's next turn (a transcript note
+            # added now would be marked seen along with this reply)
+            self._pending_write_reminders.add(model)
 
         tool_display = _tool_summary_display_text(resp.tool_summaries)
         if tool_display:
@@ -7049,7 +7094,10 @@ class Botference:
         """
         name = model.capitalize()
         other = "Codex" if model == "claude" else "Claude"
-        parts = [room_preamble(name, other, self._plan_write_roots_display())]
+        parts = [room_preamble(
+            name, other, self._plan_write_roots_display(),
+            whole_project=self._is_write_root_allowed(self.paths.project_root),
+        )]
         parts.append(free_form_protocol(name, other))
         if self._build is not None:
             # a session relayed mid-build would otherwise lose the build's
@@ -7100,6 +7148,22 @@ class Botference:
             parts.append(block)
         parts.extend(["--- Room History ---", backfill])
         return "\n\n".join(parts)
+
+    def _write_access_reminder(self, model: str) -> str:
+        """A note for a bot that asked for write access in plain words."""
+        name = model.capitalize()
+        if self._is_write_root_allowed(self.paths.project_root):
+            return (
+                f"Note to {name}: you already have write access to the whole "
+                "project, so edit any file in it without asking. Only a folder "
+                "outside the project needs a request, sent as "
+                '<write-access-request path="/abs/path" reason="short reason" />.'
+            )
+        return (
+            f"Note to {name}: to ask for write access, send "
+            '<write-access-request path="relative/path" reason="short reason" />; '
+            "the reader gets a prompt for it."
+        )
 
     async def _handle_write_access_request(
         self,
@@ -7378,7 +7442,10 @@ class Botference:
         other = "Codex"
         self.transcript.add(
             "system",
-            adopt_room_note(name, other, self._plan_write_roots_display()),
+            adopt_room_note(
+                name, other, self._plan_write_roots_display(),
+                whole_project=self._is_write_root_allowed(self.paths.project_root),
+            ),
         )
         self._add_room_entry(
             ui, "system",

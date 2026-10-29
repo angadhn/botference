@@ -1469,7 +1469,8 @@ This means:
 
 - `plan` and `research-plan` may write anywhere under `botference/`
 - `build` may write anywhere under `botference/`
-- the rest of the project stays read-only by default
+- the rest of the project stays read-only, because this file names narrower
+  roots (with no `write_roots` for a mode, the whole project is writable)
 - anything outside declared `write_roots` is blocked at runtime and by post-run audit
 
 In practice, this gives you two common workflows:
@@ -2227,22 +2228,32 @@ interactive Claude context can continue across Botference restarts.
 
 ### Protected write approvals
 
-Plan mode still starts with the write roots from `botference/project.json` (or
-the default Botference work directory in legacy layouts). If a model wants to
-edit somewhere else, it must first request a runtime grant for the narrowest
-directory it needs.
+With no `write_roots` in `project.json`, the bots may create and edit any file
+in the project, and they may run git and commit when you ask. They do not ask
+first, and you see no prompt. `.git` itself stays out of reach of file edits.
+A `project.json` with `write_roots` narrows this to the folders it names.
 
-In the Ink UI, this appears as a three-way prompt:
+`project.json` lives in `botference/project.json`, or at the project root.
+When `botference` is a file (the launcher script in botference's own repo),
+the root `project.json` is used.
+
+Only a folder outside the project (or outside the named roots) needs your
+answer. A bot asks with a tag anywhere in its reply:
+`<write-access-request path="/abs/path" reason="..." />`. If a bot talks
+about write access in plain words and sends no tag, botference tells it on
+its next turn that it already has access to the whole project, and that only
+an outside folder needs the tag.
+
+In the Ink UI, a request appears as a three-way prompt:
 `[ Allow once ]  [ Allow always ]  [ Deny ]`. Choosing `Allow once` expands
 the planner write roots for the rest of the current session and records that
 grant in the resumable session snapshot. `Allow always` does the same and also
 writes the directory into `write_roots.plan` and `write_roots.build` in
-`botference/project.json` (creating the file if needed, keeping the roots that
-were in force and every other key), so it is a base root on every later
-launch and the prompt never comes back for it. For a repo the bots are
-building, `Allow always` on the repo root is the natural first answer; `.git`
-stays unwritable whatever is granted. Choosing `Deny` keeps the current roots
-unchanged and the model must continue without writing there.
+`project.json` (creating the file if needed, keeping the roots that were in
+force and every other key), so it is a base root on every later launch and
+the prompt never comes back for it. `.git` stays unwritable whatever is
+granted. Choosing `Deny` keeps the current roots unchanged and the model must
+continue without writing there.
 
 ### Navigation and input
 
@@ -2320,10 +2331,12 @@ There are two options for planning:
 (Claude + Codex TUI) is the default; use `--claude` for solo Claude. No
 structured prompts or system instructions are injected.
 
-Plan mode keeps the project tree read-only, but the models may write inside the
-Botference work directory (`botference/` in project-local mode, `work/` in the
-self-hosted layout). `/draft [rounds]` still drives the main plan-writing flow
-and updates:
+In the council, the models may create and edit any file in the project, and
+run git and commit when you ask (see [Protected write approvals](#protected-write-approvals)).
+A `project.json` with `write_roots` narrows this. Notes and scratch files go in
+the Botference work directory (`botference/` in project-local mode, `work/` in
+the self-hosted layout). `/draft [rounds]` still drives the main plan-writing
+flow and updates:
 
 - the project-local `implementation-plan.md`
 - reviewer comment files beside the plan in the Botference state directory

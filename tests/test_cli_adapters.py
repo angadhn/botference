@@ -41,6 +41,7 @@ from cli_adapters import (
     planner_write_config,
     planner_write_roots_for_env,
     add_project_write_root,
+    project_config_path,
     tmux_capture_can_complete_turn,
     tmux_capture_delta,
     tmux_capture_has_busy_marker,
@@ -1439,6 +1440,30 @@ class TestCommandConstruction:
             (project_root / "projects").resolve(),
             (tmp_path / "shared").resolve(),
         ]
+
+    def test_default_write_roots_include_the_project_root(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS", raising=False)
+        monkeypatch.delenv("BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS", raising=False)
+        monkeypatch.delenv("BOTFERENCE_PROJECT_DIR_NAME", raising=False)
+        work = tmp_path / "work"
+        for mode in ("plan", "build"):
+            roots = planner_write_roots_for_env(tmp_path, work, mode=mode)
+            assert tmp_path.resolve() in roots
+        config = planner_write_config(
+            tmp_path, planner_write_roots_for_env(tmp_path, work))
+        # the work folder stays the working directory; the project rides along
+        assert config.claude_cwd == str(work.resolve())
+        assert str(tmp_path.resolve()) in config.codex_add_dirs
+        root_abs = tmp_path.resolve().as_posix().lstrip("/")
+        assert f"Edit(//{root_abs}/**)" in config.claude_settings["permissions"]["allow"]
+
+    def test_config_path_falls_back_when_botference_is_a_file(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PROJECT_DIR_NAME", raising=False)
+        (tmp_path / "botference").write_text("#!/bin/sh\n")  # the launcher
+        assert project_config_path(tmp_path) == tmp_path / "project.json"
+        path = add_project_write_root(tmp_path, tmp_path / "src")
+        assert path == tmp_path / "project.json"
+        assert json.loads(path.read_text())["write_roots"]["plan"] == ["src"]
 
     def test_add_project_write_root_keeps_other_keys_and_stores_relative(
         self, tmp_path, monkeypatch,

@@ -469,15 +469,21 @@ def project_config_path(project_root: str | Path) -> Path:
 
     `<project>/botference/project.json` (or the `--project-dir` slug), else a
     `project.json` at the project root when only that one exists. A path that
-    does not exist yet is the botference/ one, which is where a new file goes.
+    does not exist yet is the botference/ one, which is where a new file goes,
+    unless `<project>/botference` is a file (the launcher script in
+    botference's own repo): then it is always the root `project.json`.
     """
     project_root_path = Path(project_root).resolve()
     config_name = os.environ.get("BOTFERENCE_PROJECT_DIR_NAME", "botference")
-    project_config = project_root_path / config_name / "project.json"
-    if not project_config.exists():
-        root_config = project_root_path / "project.json"
-        if root_config.exists():
-            return root_config
+    root_config = project_root_path / "project.json"
+    config_dir = project_root_path / config_name
+    # In botference's own repo `botference` is the launcher script, a file:
+    # no project.json can live under it, so the root one is the place.
+    if config_dir.exists() and not config_dir.is_dir():
+        return root_config
+    project_config = config_dir / "project.json"
+    if not project_config.exists() and root_config.exists():
+        return root_config
     return project_config
 
 
@@ -576,7 +582,11 @@ def planner_write_roots_for_env(
     *,
     mode: str = "plan",
 ) -> list[Path]:
-    """Resolve explicit write roots from Botference env for a mode."""
+    """The folders a bot may write in this mode.
+
+    Env roots win, then `write_roots.<mode>` from project.json, else the work
+    folder plus the whole project root.
+    """
     project_root_path = Path(project_root).resolve()
     project_config = project_config_path(project_root_path)
     env_name = "BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS" if mode == "plan" else "BOTFERENCE_BUILD_EXTRA_WRITE_ROOTS"
@@ -593,13 +603,20 @@ def planner_write_roots_for_env(
             data = json.loads(project_config.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
-        roots = []
-        for root in data.get("write_roots", {}).get(mode, []):
-            resolved = _resolve_write_root_entry(project_root_path, str(root))
-            if resolved is not None:
-                roots.append(resolved)
-        return roots
-    return [Path(fallback_dir).resolve()]
+        named = data.get("write_roots") if isinstance(data, dict) else None
+        named = named.get(mode) if isinstance(named, dict) else None
+        if isinstance(named, list):
+            roots = []
+            for root in named:
+                resolved = _resolve_write_root_entry(project_root_path, str(root))
+                if resolved is not None:
+                    roots.append(resolved)
+            return roots
+    # Nothing names roots for this mode: the whole project is writable. The
+    # work folder stays first so the CLIs keep it as their working directory
+    # (Claude files its saved chats under that folder; moving it would lose
+    # them), and the project root rides along as an extra writable folder.
+    return normalize_write_roots([Path(fallback_dir).resolve(), project_root_path])
 
 
 def normalize_write_roots(write_roots: list[str | Path]) -> list[Path]:

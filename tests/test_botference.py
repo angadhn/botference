@@ -1576,12 +1576,16 @@ class TestBotferenceMessageRouting:
         assert payload["transcript"][1]["speaker"] == "claude"
 
     async def test_permission_request_can_grant_runtime_write_root(self, tmp_path):
+        # only a folder OUTSIDE the project needs asking for
+        project = tmp_path / "proj"
+        project.mkdir()
+        outside = (tmp_path / "shared").resolve()
         c, claude, codex, ui = _make_botference(
             claude_responses=[
-                _ok('<write-access-request path="src" reason="Need to update existing app code" />'),
+                _ok(f'<write-access-request path="{outside}" reason="Need the shared assets" />'),
                 _ok("Updated plan after approval"),
             ],
-            tmp_path=tmp_path,
+            tmp_path=project,
         )
         ui.permission_responses = [True]
 
@@ -1590,26 +1594,29 @@ class TestBotferenceMessageRouting:
         assert len(ui.permission_requests) == 1
         request = ui.permission_requests[0]
         assert request.model == "claude"
-        assert request.path == "src"
+        assert request.path == str(outside)
         assert any(
-            "Granted write access to src" in text
+            f"Granted write access to {outside}" in text
             for speaker, text in ui.room_entries
             if speaker == "system"
         )
-        assert any(root.name == "src" for root in c._plan_write_roots())
-        assert any(path.endswith("/src") for path in codex.add_dirs)
-        session_path = tmp_path / "work" / "sessions" / f"{c.session_id}.json"
+        assert outside in c._plan_write_roots()
+        assert str(outside) in codex.add_dirs
+        session_path = project / "work" / "sessions" / f"{c.session_id}.json"
         payload = json.loads(session_path.read_text(encoding="utf-8"))
-        assert "src" in payload["granted_plan_write_roots"]
-        assert claude.resume_calls[-1].startswith("Write access to src is now approved")
+        assert str(outside) in payload["granted_plan_write_roots"]
+        assert claude.resume_calls[-1].startswith(f"Write access to {outside} is now approved")
 
     async def test_permission_request_can_be_denied(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        outside = (tmp_path / "shared").resolve()
         c, claude, codex, ui = _make_botference(
             claude_responses=[
-                _ok('<write-access-request path="src" reason="Need to update existing app code" />'),
-                _ok("I cannot edit src without approval."),
+                _ok(f'<write-access-request path="{outside}" reason="Need the shared assets" />'),
+                _ok("I cannot edit it without approval."),
             ],
-            tmp_path=tmp_path,
+            tmp_path=project,
         )
         ui.permission_responses = [False]
 
@@ -1617,13 +1624,60 @@ class TestBotferenceMessageRouting:
 
         assert len(ui.permission_requests) == 1
         assert any(
-            "Denied write access to src." == text
+            f"Denied write access to {outside}." == text
             for speaker, text in ui.room_entries
             if speaker == "system"
         )
-        assert not any(root.name == "src" for root in c._plan_write_roots())
-        assert not any(path.endswith("/src") for path in codex.add_dirs)
-        assert claude.resume_calls[-1].startswith("Write access to src was denied")
+        assert outside not in c._plan_write_roots()
+        assert str(outside) not in codex.add_dirs
+        assert claude.resume_calls[-1].startswith(f"Write access to {outside} was denied")
+
+    async def test_inside_project_request_needs_no_prompt(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok('<write-access-request path="src" reason="edit the app" />'),
+                _ok("Done."),
+            ],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude update the app", ui)
+        assert ui.permission_requests == []
+        assert claude.resume_calls[-1].startswith("Write access to src is already available")
+
+    async def test_request_tag_inside_prose_gets_a_prompt(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        outside = (tmp_path / "shared").resolve()
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("Plan:\n- [ ] Grant write access so I can copy the logo: "
+                    f'<write-access-request path="{outside}" reason="copy the logo" /> '
+                    "then I rebuild the page."),
+                _ok("Copied."),
+            ],
+            tmp_path=project,
+        )
+        ui.permission_responses = [True]
+        await c.handle_input("@claude copy the logo", ui)
+        assert [r.path for r in ui.permission_requests] == [str(outside)]
+        # the words around the tag still reach the room
+        assert any(
+            speaker == "claude" and "copy the logo:" in text and "<write-access" not in text
+            for speaker, text in ui.room_entries
+        )
+
+    async def test_prose_request_without_tag_gets_a_reminder(self, tmp_path):
+        c, claude, codex, ui = _make_botference(
+            claude_responses=[
+                _ok("Please grant write access to frontends/council so I can fix it."),
+                _ok("Fixed."),
+            ],
+            tmp_path=tmp_path,
+        )
+        await c.handle_input("@claude fix the council page", ui)
+        assert ui.permission_requests == []
+        await c.handle_input("@claude go on", ui)
+        assert "already have write access to the whole project" in claude.resume_calls[-1]
 
     async def test_tool_summaries_displayed_as_folded_tree(self):
         resp = _ok("Found it", tool_summaries=[
@@ -6548,24 +6602,28 @@ class TestBuildThread:
 @pytest.mark.asyncio
 class TestAllowAlways:
     async def test_allow_always_saves_the_root_to_project_json(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        outside = (tmp_path / "shared").resolve()
         c, claude, codex, ui = _make_botference(
             claude_responses=[
-                _ok('<write-access-request path="src" reason="edit the app" />'),
+                _ok(f'<write-access-request path="{outside}" reason="shared assets" />'),
                 _ok("Done."),
             ],
-            tmp_path=tmp_path,
+            tmp_path=project,
         )
         ui.permission_responses = ["always"]
 
         await c.handle_input("@claude update the app", ui)
 
-        data = json.loads((tmp_path / "botference" / "project.json").read_text())
-        assert "src" in data["write_roots"]["plan"]
-        assert "src" in data["write_roots"]["build"]
+        data = json.loads((project / "botference" / "project.json").read_text())
+        assert str(outside) in data["write_roots"]["plan"]
+        assert str(outside) in data["write_roots"]["build"]
         # the roots in force before the grant stay (a new project.json
-        # replaces the default work folder rather than adding to it)
+        # replaces the default roots rather than adding to them)
         assert "work" in data["write_roots"]["plan"]
-        assert any(root.name == "src" for root in c._plan_write_roots())
+        assert "." in data["write_roots"]["plan"]
+        assert outside in c._plan_write_roots()
 
 
 @pytest.mark.asyncio

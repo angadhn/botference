@@ -59,7 +59,7 @@ The reviewer is asked to count new tests against that rule and flag overreach as
 
 The terminal prompt gets a third choice: `Allow always`. Choosing it writes the directory into `write_roots.plan` and `write_roots.build` in `botference/project.json`, creating the file if needed, and grants it for the session as now. From then on that root is in the base roots on every launch, so the prompt never comes back for it. `Allow once` and `Deny` keep their current meaning. The same keys apply: Y allows once, A allows always, N denies.
 
-For a repo being used to build itself, the natural first answer is `Allow always` on the repo root. The `.git` folder stays unwritable whatever is granted, as now.
+Update 2026-10-29: with no `write_roots` in `project.json`, the whole project is writable from the start, so the prompt now appears only for a folder outside the project (or outside the roots a `project.json` names). When `botference` is a file (the launcher in botference's own repo), the grant is saved to `project.json` at the project root. The `.git` folder stays unwritable whatever is granted, as now.
 
 ### 5. `botference` opens the room
 

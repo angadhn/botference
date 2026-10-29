@@ -539,9 +539,11 @@ faithful annotations of source charts use the ordinary builder, not generation.
 Session management, including per-participant model and effort switches.
 Effort levels: Claude low/medium/high/xhigh/max; Codex low/medium/high/xhigh/max/ultra.
 Models added 2026-09-23: claude-opus-5-5, gpt-6-sol, gpt-6-luna.
-A bot that asks to write outside its roots gets a terminal prompt:
+The bots may create and edit any file in the project, and run git and
+commit when asked, with no prompt (a project.json with write_roots narrows
+this). Only a folder outside those roots needs a prompt:
 \fBY\fR allows once (this session), \fBA\fR allows always (also saved to
-write_roots.plan and write_roots.build in botference/project.json, so the
+write_roots.plan and write_roots.build in project.json, so the
 prompt never returns for that folder), \fBN\fR or Esc denies.
 .B /fresh @claude|@codex|@both
 restarts a bot with no memory of the chat: no summary, no history; only what

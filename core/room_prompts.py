@@ -217,7 +217,8 @@ def build_turn_status(turn: int, elapsed_s: float, hours: float) -> str:
     ])
 
 
-def adopt_room_note(name: str, other: str, writable_roots: str) -> str:
+def adopt_room_note(name: str, other: str, writable_roots: str, *,
+                    whole_project: bool = True) -> str:
     """Transcript note for a native CLI chat adopted into the council.
 
     The adopted session never saw the botference initial prompt, so this
@@ -229,8 +230,8 @@ def adopt_room_note(name: str, other: str, writable_roots: str) -> str:
         f"(botference). You are {name}; the room also has {other} (another "
         f"AI) and the human user you have been talking to.\n"
         f"{free_form_protocol(name, other)}\n"
-        f"Room write rules now apply: only write inside these roots: "
-        f"{writable_roots}.\n"
+        f"Room write rules now apply. "
+        f"{write_scope_rule(writable_roots, whole_project=whole_project)}"
         f"First task: write a concise handoff so {other} can join this "
         "conversation mid-stream — the goal, decisions made, current "
         "state, and open questions. Then hand the floor back to @user.]"
@@ -643,20 +644,43 @@ def writing_style_rule() -> str:
 ROOM_ROLE_SUFFIX = "\nRespond in your planning room role."
 
 
-def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)") -> str:
+def write_scope_rule(writable_roots: str = "(unspecified)", *,
+                     whole_project: bool = True) -> str:
+    """What a bot may write, and how it asks for more. One place, so the
+    initial prompt and the adopted-chat note say the same thing."""
+    if whole_project:
+        scope = (
+            "You may create and edit any file in this project. Do not ask for "
+            "permission for anything inside the project, and do not tell the "
+            "reader you lack it. "
+        )
+    else:
+        scope = (
+            f"You may create and edit files in these folders: {writable_roots}. "
+            "Do not ask for permission for anything inside them. "
+        )
+    return (
+        scope
+        + "You may run git and make commits when the reader asks for them. "
+        "Codex's sandbox keeps .git read-only, so a commit is Claude's job: "
+        "Codex hands the floor to @claude with the commit message, Claude commits.\n"
+        "Only a folder outside the project needs permission. For that one case, "
+        "put this tag in your reply and the reader gets a prompt: "
+        "<write-access-request path=\"/absolute/path\" reason=\"short reason\" />\n"
+    )
+
+
+def room_preamble(name: str, other: str, writable_roots: str = "(unspecified)",
+                  *, whole_project: bool = True) -> str:
     """Shared planning room context for model initialization."""
     return (
         f"You are {name} in a shared planning room with {other} "
         f"and a human user.\n"
         f"You are collaborating on creating an implementation plan.\n"
-        "You may create or update files inside the Botference work directory "
-        "(project-local `botference/` or self-hosted `work/`) when the user "
-        "explicitly asks for it, but do not modify project source files outside that area.\n"
-        f"Current writable roots for this session: {writable_roots}.\n"
-        "If you need write access outside those roots, do not continue with the task yet. "
-        "Respond with only this exact tag format, using the narrowest directory you need: "
-        "<write-access-request path=\"relative/path\" reason=\"short reason\" />\n"
-        "If your work produces rendered or visual output (HTML, plots, charts, PDFs, "
+        "Keep notes and scratch files in the Botference work directory "
+        "(project-local `botference/` or self-hosted `work/`).\n"
+        + write_scope_rule(writable_roots, whole_project=whole_project)
+        + "If your work produces rendered or visual output (HTML, plots, charts, PDFs, "
         "web UI, or images), follow `specs/visual-verification.md`: do not claim "
         "\"done\" or \"verified\" unless you rendered and inspected the output, and "
         "use `visual_check_html` for HTML when available.\n"

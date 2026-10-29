@@ -88,6 +88,14 @@ class TestRoomPreamble:
         assert "implementation plan" in result
         assert "Botference work directory" in result
 
+    def test_does_not_tell_bots_to_ask_inside_the_project(self):
+        result = room_preamble("Claude", "Codex", "work, .")
+        assert "any file in this project" in result
+        assert "Do not ask for permission" in result
+        assert "git" in result
+        assert "do not modify project source files" not in result
+        assert "Respond with only this exact tag" not in result
+
     def test_symmetric(self):
         a = room_preamble("Claude", "Codex")
         b = room_preamble("Codex", "Claude")
@@ -287,3 +295,10 @@ class TestWritingStyle:
         assert "ASD-STE100" in WRITING_STYLE_RULE
         assert WRITING_STYLE_RULE in room_preamble("Claude", "Codex")
         assert WRITING_STYLE_RULE in claude_style_contract()
+
+
+class TestCommitRouting:
+    def test_commits_are_routed_to_claude(self):
+        from room_prompts import write_scope_rule
+        text = write_scope_rule()
+        assert "commit is Claude's job" in text
