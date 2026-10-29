@@ -4567,6 +4567,57 @@ cut -f2 "$snapshot"
         assert "botference/projects/demo/node_modules/pkg/index.js" not in paths
         assert "botference/projects/demo/.netlify/functions/handler.js" not in paths
 
+    @staticmethod
+    def _git_snapshot_audit(tmp_path, change, extra_env=""):
+        """Snapshot a temp git repo, run `change`, audit, return changed paths."""
+        repo_root = Path(__file__).resolve().parent.parent
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / "tracked.md").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "tracked.md"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"],
+            cwd=tmp_path,
+            check=True,
+        )
+        (tmp_path / "edited.png").write_bytes(b"\x89PNG" + b"\0" * 64)
+        (tmp_path / "untouched.png").write_bytes(b"\x89PNG" + b"\1" * 64)
+        cmd = f'''
+source "{repo_root / "lib" / "config.sh"}"
+source "{repo_root / "lib" / "post-run.sh"}"
+export BOTFERENCE_HOME="{repo_root}"
+export BOTFERENCE_PROJECT_ROOT="{tmp_path}"
+{extra_env}
+init_botference_paths
+before=$(mktemp); after=$(mktemp)
+plan_write_state_snapshot "$before" plan
+{change}
+plan_write_state_snapshot "$after" plan
+plan_collect_changed_paths "$before" "$after"
+'''
+        result = subprocess.run(
+            ["bash", "-c", cmd], capture_output=True, text=True, cwd=tmp_path, timeout=20
+        )
+        assert result.returncode == 0, result.stderr
+        return set(filter(None, result.stdout.splitlines()))
+
+    def test_git_snapshot_reports_edited_files_only(self, tmp_path):
+        changed = self._git_snapshot_audit(
+            tmp_path,
+            "printf 'more bytes' >> edited.png; printf 'two\\n' > tracked.md; "
+            "printf new > added.md",
+        )
+        assert changed == {"edited.png", "tracked.md", "added.md"}
+
+    def test_git_snapshot_skips_stat_above_untracked_limit(self, tmp_path):
+        changed = self._git_snapshot_audit(
+            tmp_path,
+            "printf 'more bytes' >> edited.png; printf new > added.md",
+            extra_env="export BOTFERENCE_SNAPSHOT_STAT_LIMIT=1",
+        )
+        # Above the limit untracked files are listed by path only: a new file
+        # still shows up, an edit to an existing untracked file does not.
+        assert changed == {"added.md"}
+
     def test_project_local_plan_policy_allows_any_work_file(self, tmp_path):
         repo_root = Path(__file__).resolve().parent.parent
         project_dir = tmp_path / "botference"

@@ -299,22 +299,70 @@ plan_write_state_snapshot() {
     return 0
   fi
 
-  while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    local sig
-    if [ -f "$path" ]; then
-      sig=$(git hash-object "$path" 2>/dev/null || cksum < "$path" | awk '{print $1}')
-    else
-      sig="__missing__"
-    fi
-    printf '%s\t%s\n' "$sig" "$path" >> "$snapshot_file"
-  done < <(
-    {
-      git diff --name-only 2>/dev/null
-      git diff --cached --name-only 2>/dev/null
-      git ls-files --others --exclude-standard 2>/dev/null
-    } | awk 'NF' | sort -u
-  )
+  # Git repo: snapshot only files git reports as changed or untracked
+  # (ignored files never appear). The signature is size, mtime, inode and
+  # ctime from one batched stat call, not a content hash, so a launch costs
+  # a few processes however many files there are. The audit compares two
+  # snapshots made by this same code, so any stable signature works.
+  local tracked_list untracked_list
+  tracked_list=$(mktemp)
+  untracked_list=$(mktemp)
+  {
+    git diff --name-only 2>/dev/null
+    git diff --cached --name-only 2>/dev/null
+  } | awk 'NF' | sort -u > "$tracked_list"
+  git ls-files --others --exclude-standard 2>/dev/null | awk 'NF' | sort -u > "$untracked_list"
+
+  _snapshot_stat_paths < "$tracked_list" >> "$snapshot_file"
+  local untracked_count limit=${BOTFERENCE_SNAPSHOT_STAT_LIMIT:-5000}
+  untracked_count=$(wc -l < "$untracked_list" | tr -d ' ')
+  if [ "$untracked_count" -gt "$limit" ]; then
+    # Too many untracked files: record the paths only. New and removed
+    # untracked files still show up in the audit; edits to them do not.
+    awk '{ printf "__untracked__\t%s\n", $0 }' "$untracked_list" >> "$snapshot_file"
+  else
+    _snapshot_stat_paths < "$untracked_list" >> "$snapshot_file"
+  fi
+  rm -f "$tracked_list" "$untracked_list"
+  sort -u "$snapshot_file" -o "$snapshot_file"
+}
+
+# Read paths (one per line) on stdin and print "<signature>\t<path>" for each,
+# using one stat process per batch rather than one process per file. A path
+# that no longer exists prints "__missing__".
+_snapshot_stat_paths() {
+  local fmt_flag fmt
+  if stat -f '%z' . >/dev/null 2>&1; then
+    fmt_flag=-f fmt='%Fm:%z:%i:%Fc	%N'
+  elif stat -c '%s' . >/dev/null 2>&1; then
+    fmt_flag=-c fmt='%.9Y:%s:%i:%.9Z	%n'
+    stat -c '%.9Y' . >/dev/null 2>&1 || fmt='%Y:%s:%i:%Z	%n'
+  else
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      printf '%s\t%s\n' "$(_snapshot_sig_for_path "$path")" "$path"
+    done
+    return 0
+  fi
+  python3 -c '
+import os, subprocess, sys
+sys.stdout.reconfigure(errors="surrogateescape")
+paths = [p for p in sys.stdin.read().split("\n") if p]
+files = [p for p in paths if os.path.isfile(p)]
+seen = set()
+if files:
+    out = subprocess.run(["xargs", "-0", "stat", sys.argv[1], sys.argv[2]],
+                         input="\0".join(files).encode(), stdout=subprocess.PIPE,
+                         stderr=subprocess.DEVNULL).stdout.decode("utf-8", "surrogateescape")
+    for line in out.splitlines():
+        sig, sep, name = line.partition("\t")
+        if sep:
+            seen.add(name)
+            sys.stdout.write(line + "\n")
+for p in paths:
+    if p not in seen:
+        sys.stdout.write("__missing__\t" + p + "\n")
+' "$fmt_flag" "$fmt"
 }
 
 plan_collect_changed_paths() {
