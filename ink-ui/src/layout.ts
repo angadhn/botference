@@ -462,6 +462,21 @@ export interface LineSegment {
   underline?: boolean;
   strikethrough?: boolean;
   backgroundColor?: string;
+  /** Link target. The text stays the visible label; the renderer wraps it in
+   * an OSC 8 terminal hyperlink so the label is clickable. */
+  href?: string;
+}
+
+// OSC 8 hyperlink, terminated with BEL. Ink's ANSI tokenizer
+// (@alcalzone/ansi-tokenize) only recognises the BEL form as a zero-width
+// link code; the ESC-backslash form would be measured as visible text and
+// break the layout. Terminals without OSC 8 support ignore the sequence and
+// just show the label. Control characters are stripped from the URL so a
+// hostile link cannot smuggle other escape sequences into the output.
+export function osc8Link(href: string, text: string): string {
+  const safe = href.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  if (!safe) return text;
+  return `\u001b]8;;${safe}\u0007${text}\u001b]8;;\u0007`;
 }
 
 export interface Entry {
@@ -1105,7 +1120,8 @@ function stylesEqual(
     && left.italic === right.italic
     && left.underline === right.underline
     && left.strikethrough === right.strikethrough
-    && left.backgroundColor === right.backgroundColor;
+    && left.backgroundColor === right.backgroundColor
+    && left.href === right.href;
 }
 
 function pushHighlightedSegment(
@@ -1278,7 +1294,41 @@ function mergeInlineStyle(
     underline: extra.underline ?? base.underline,
     strikethrough: extra.strikethrough ?? base.strikethrough,
     backgroundColor: extra.backgroundColor ?? base.backgroundColor,
+    href: extra.href ?? base.href,
   };
+}
+
+// Link targets the terminal can open: web pages (local previews on
+// localhost / 127.0.0.1 included), files and mail. Anything else (a relative
+// path, an anchor) keeps its target printed after the label.
+const LINKABLE_URL_RE = /^(?:https?:\/\/|file:\/\/|mailto:)\S+$/i;
+const BARE_URL_RE = /^https?:\/\/[^\s<>"'`]+/i;
+
+// A bare URL in prose usually ends before trailing punctuation ("see
+// http://x.com." or "(http://x.com)"). Closing brackets are kept only when
+// the URL opened them itself, as in Wikipedia links.
+function trimBareUrl(url: string): string {
+  let end = url.length;
+  while (end > 0) {
+    const ch = url[end - 1]!;
+    if (/[.,;:!?*_~]/.test(ch)) {
+      end -= 1;
+      continue;
+    }
+    const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+    const open = pairs[ch];
+    if (open) {
+      const body = url.slice(0, end);
+      const opens = body.split(open).length - 1;
+      const closes = body.split(ch).length - 1;
+      if (closes > opens) {
+        end -= 1;
+        continue;
+      }
+    }
+    break;
+  }
+  return url.slice(0, end);
 }
 
 function findClosingMarker(line: string, marker: string, start: number): number {
@@ -1297,7 +1347,7 @@ function findClosingMarker(line: string, marker: string, start: number): number 
 // process. Beyond this depth the text renders unstyled, which is fine.
 const MAX_INLINE_MARKDOWN_DEPTH = 8;
 
-function parseInlineMarkdownSegments(
+export function parseInlineMarkdownSegments(
   rawLine: string,
   baseStyle: Omit<LineSegment, "text">,
   depth = 0,
@@ -1349,13 +1399,27 @@ function parseInlineMarkdownSegments(
       if (labelEnd > index + 1 && line[labelEnd + 1] === "(") {
         const urlEnd = findClosingMarker(line, ")", labelEnd + 2);
         if (urlEnd > labelEnd + 2) {
-          append(line.slice(index + 1, labelEnd), {
-            color: "cyan",
-            underline: true,
-          });
-          const url = line.slice(labelEnd + 2, urlEnd);
-          if (url) append(` (${url})`, { color: "gray" });
+          const label = line.slice(index + 1, labelEnd);
+          const url = line.slice(labelEnd + 2, urlEnd).trim();
+          if (LINKABLE_URL_RE.test(url)) {
+            append(label, { color: "cyan", underline: true, href: url });
+          } else {
+            append(label, { color: "cyan", underline: true });
+            if (url) append(` (${url})`, { color: "gray" });
+          }
           index = urlEnd + 1;
+          continue;
+        }
+      }
+    }
+
+    if ((char === "h" || char === "H") && (index === 0 || !/\w/.test(line[index - 1]!))) {
+      const bare = BARE_URL_RE.exec(line.slice(index));
+      if (bare) {
+        const url = trimBareUrl(bare[0]);
+        if (/^https?:\/\/\S/i.test(url)) {
+          append(url, { color: "cyan", underline: true, href: url });
+          index += url.length;
           continue;
         }
       }
@@ -1412,6 +1476,8 @@ function parseInlineMarkdownSegments(
       const found = line.indexOf(special, index + 1);
       if (found !== -1 && found < nextSpecial) nextSpecial = found;
     }
+    const urlStart = line.slice(index + 1).search(/https?:\/\//i);
+    if (urlStart !== -1 && index + 1 + urlStart < nextSpecial) nextSpecial = index + 1 + urlStart;
     append(line.slice(index, nextSpecial));
     index = nextSpecial;
   }
@@ -1419,7 +1485,7 @@ function parseInlineMarkdownSegments(
   return segments.length > 0 ? segments : [{ text: "", ...activeBaseStyle }];
 }
 
-function wrapSegments(segments: LineSegment[], width: number): LineSegment[][] {
+export function wrapSegments(segments: LineSegment[], width: number): LineSegment[][] {
   if (width <= 0) return [segments];
   const lines: LineSegment[][] = [];
   let current: LineSegment[] = [];
@@ -1720,6 +1786,246 @@ function sliceRangeForWrappedLine(
   };
 }
 
+// ── Markdown tables ─────────────────────────────────────────
+
+export type TableAlign = "left" | "right" | "center";
+
+export interface ParsedTable {
+  header: string[];
+  aligns: TableAlign[];
+  rows: string[][];
+}
+
+const TABLE_SEPARATOR_CELL_RE = /^:?-{1,}:?$/;
+const TABLE_MIN_COLUMN_WIDTH = 3;
+
+// Split one pipe row into cells. Pipes inside `code` spans and escaped pipes
+// (\|) stay in the cell; the outer leading and trailing pipes are dropped.
+export function splitTableRow(line: string): string[] {
+  let body = line.trim();
+  if (body.startsWith("|")) body = body.slice(1);
+  if (body.endsWith("|") && !body.endsWith("\\|")) body = body.slice(0, -1);
+  const cells: string[] = [];
+  let current = "";
+  let inCode = false;
+  for (let index = 0; index < body.length; index++) {
+    const ch = body[index]!;
+    if (ch === "\\" && body[index + 1] === "|") {
+      current += "|";
+      index += 1;
+      continue;
+    }
+    if (ch === "`") inCode = !inCode;
+    if (ch === "|" && !inCode) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+function parseTableSeparator(line: string): TableAlign[] | null {
+  if (!line.trim().startsWith("|")) return null;
+  const cells = splitTableRow(line);
+  if (cells.length === 0) return null;
+  const aligns: TableAlign[] = [];
+  for (const cell of cells) {
+    const compact = cell.replace(/\s+/g, "");
+    if (!TABLE_SEPARATOR_CELL_RE.test(compact)) return null;
+    const left = compact.startsWith(":");
+    const right = compact.endsWith(":");
+    aligns.push(left && right ? "center" : right ? "right" : "left");
+  }
+  return aligns;
+}
+
+/**
+ * Detect a markdown table starting at `start`: a header row, a separator row
+ * of dashes (colons set alignment), then one or more body rows, every line
+ * starting with `|`. Returns the table and how many lines it used, or null
+ * when the lines there are not a table (they then render as plain text).
+ */
+export function parseMarkdownTable(
+  lines: string[],
+  start: number,
+): { table: ParsedTable; lineCount: number } | null {
+  const headerLine = lines[start];
+  const separatorLine = lines[start + 1];
+  if (headerLine === undefined || separatorLine === undefined) return null;
+  if (!headerLine.trim().startsWith("|")) return null;
+  const header = splitTableRow(headerLine);
+  const aligns = parseTableSeparator(separatorLine);
+  if (!aligns || aligns.length !== header.length) return null;
+
+  const rows: string[][] = [];
+  let index = start + 2;
+  while (index < lines.length && lines[index]!.trim().startsWith("|")) {
+    const cells = splitTableRow(lines[index]!);
+    const row = cells.slice(0, header.length);
+    while (row.length < header.length) row.push("");
+    rows.push(row);
+    index += 1;
+  }
+  if (rows.length === 0) return null;
+  return { table: { header, aligns, rows }, lineCount: index - start };
+}
+
+function segmentsWidth(segments: LineSegment[]): number {
+  return segments.reduce((sum, segment) => sum + stringWidth(segment.text), 0);
+}
+
+/**
+ * Column widths for a table that must fit in `available` columns of cell
+ * text (borders already subtracted). Columns keep their natural width when
+ * everything fits; otherwise the space is shared out so narrow columns keep
+ * their size and the wide ones split what is left. Returns null when even
+ * the minimum width per column does not fit.
+ */
+export function fitTableColumnWidths(natural: number[], available: number): number[] | null {
+  const columns = natural.length;
+  if (columns === 0) return null;
+  const wanted = natural.map((width) => Math.max(TABLE_MIN_COLUMN_WIDTH, width));
+  if (available < columns * TABLE_MIN_COLUMN_WIDTH) return null;
+  const total = wanted.reduce((sum, width) => sum + width, 0);
+  if (total <= available) return wanted;
+
+  const widths: number[] = new Array(columns).fill(0);
+  let open = wanted.map((_, index) => index);
+  let remaining = available;
+  // Water-filling: any column narrower than an equal share keeps its natural
+  // width; repeat with the rest until every open column needs more than its
+  // share, then split the remainder evenly (left columns get the spare cells).
+  for (;;) {
+    const share = Math.floor(remaining / open.length);
+    const small = open.filter((index) => wanted[index]! <= share);
+    if (small.length === 0) {
+      let spare = remaining - share * open.length;
+      for (const index of open) {
+        widths[index] = Math.max(TABLE_MIN_COLUMN_WIDTH, share + (spare > 0 ? 1 : 0));
+        if (spare > 0) spare -= 1;
+      }
+      break;
+    }
+    for (const index of small) {
+      widths[index] = wanted[index]!;
+      remaining -= wanted[index]!;
+    }
+    open = open.filter((index) => !small.includes(index));
+    if (open.length === 0) break;
+  }
+  return widths;
+}
+
+// Wrapped cell pieces can start or end with the space the wrap broke at;
+// trim both ends so cell text sits flush against its alignment.
+function trimSegments(segments: LineSegment[]): LineSegment[] {
+  const out = segments.map((segment) => ({ ...segment }));
+  while (out.length > 0) {
+    const last = out[out.length - 1]!;
+    const trimmed = last.text.replace(/\s+$/, "");
+    if (trimmed.length > 0) {
+      last.text = trimmed;
+      break;
+    }
+    out.pop();
+  }
+  while (out.length > 0) {
+    const first = out[0]!;
+    const trimmed = first.text.replace(/^\s+/, "");
+    if (trimmed.length > 0) {
+      first.text = trimmed;
+      break;
+    }
+    out.shift();
+  }
+  return out;
+}
+
+function alignCell(
+  segments: LineSegment[],
+  width: number,
+  align: TableAlign,
+  style: Omit<LineSegment, "text">,
+): LineSegment[] {
+  const content = trimSegments(segments);
+  const gap = Math.max(0, width - segmentsWidth(content));
+  const leftPad = align === "right" ? gap : align === "center" ? Math.floor(gap / 2) : 0;
+  const rightPad = gap - leftPad;
+  const out: LineSegment[] = [];
+  if (leftPad > 0) out.push({ text: " ".repeat(leftPad), ...style });
+  out.push(...content);
+  if (rightPad > 0) out.push({ text: " ".repeat(rightPad), ...style });
+  return out;
+}
+
+/**
+ * Lay out a parsed table as rows of segments that fit `width` columns:
+ * light box-drawing borders, bold header, a rule under the header, columns
+ * sized to content and capped to the width, long cells wrapped inside their
+ * column. Returns null when the table cannot fit (too many columns).
+ */
+export function layoutMarkdownTable(
+  table: ParsedTable,
+  width: number,
+  baseStyle: Omit<LineSegment, "text">,
+): LineSegment[][] | null {
+  const columns = table.header.length;
+  const borderStyle: Omit<LineSegment, "text"> = { color: "gray" };
+  const headerStyle = mergeInlineStyle(baseStyle, { bold: true });
+  const headerCells = table.header.map((cell) => parseInlineMarkdownSegments(cell, headerStyle));
+  const bodyCells = table.rows.map((row) => row.map((cell) => parseInlineMarkdownSegments(cell, baseStyle)));
+
+  const natural = new Array<number>(columns).fill(0);
+  for (const row of [headerCells, ...bodyCells]) {
+    row.forEach((cell, index) => {
+      natural[index] = Math.max(natural[index]!, segmentsWidth(cell));
+    });
+  }
+  // Each column costs its text plus "│ " before and " " after; one more "│"
+  // closes the row.
+  const overhead = columns * 3 + 1;
+  const widths = fitTableColumnWidths(natural, width - overhead);
+  if (!widths) return null;
+
+  const rule = (left: string, mid: string, right: string): LineSegment[] => [{
+    text: left + widths.map((w) => "─".repeat(w + 2)).join(mid) + right,
+    ...borderStyle,
+  }];
+
+  const rowLines = (cells: LineSegment[][], cellStyle: Omit<LineSegment, "text">): LineSegment[][] => {
+    const wrappedCells = cells.map((cell, index) => wrapSegments(cell, widths[index]!));
+    const height = Math.max(1, ...wrappedCells.map((cell) => cell.length));
+    const out: LineSegment[][] = [];
+    for (let lineIndex = 0; lineIndex < height; lineIndex++) {
+      const line: LineSegment[] = [];
+      for (let col = 0; col < columns; col++) {
+        line.push({ text: col === 0 ? "│ " : " │ ", ...borderStyle });
+        const piece = wrappedCells[col]?.[lineIndex] ?? [];
+        line.push(...alignCell(piece, widths[col]!, table.aligns[col] ?? "left", cellStyle));
+      }
+      line.push({ text: " │", ...borderStyle });
+      const merged: LineSegment[] = [];
+      for (const segment of line) {
+        const { text, ...style } = segment;
+        pushMergedSegment(merged, text, style);
+      }
+      out.push(merged);
+    }
+    return out;
+  };
+
+  return [
+    rule("┌", "┬", "┐"),
+    ...rowLines(headerCells, headerStyle),
+    rule("├", "┼", "┤"),
+    ...bodyCells.flatMap((cells) => rowLines(cells, baseStyle)),
+    rule("└", "┴", "┘"),
+  ];
+}
+
 function renderTextBlock(
   block: TextBlock,
   options: {
@@ -1731,15 +2037,36 @@ function renderTextBlock(
 ): void {
   const { textWidth, labelWidth, defaultColor, pushLine } = options;
   let inToolBlock = false;
+  const contentWidth = Math.max(4, textWidth - labelWidth);
 
-  for (const rawLine of block.lines) {
+  for (let lineIndex = 0; lineIndex < block.lines.length; lineIndex++) {
+    const rawLine = block.lines[lineIndex]!;
+
+    if (!inToolBlock && rawLine.trimStart().startsWith("|")) {
+      const parsed = parseMarkdownTable(block.lines, lineIndex);
+      const tableLines = parsed
+        ? layoutMarkdownTable(parsed.table, contentWidth, { color: defaultColor })
+        : null;
+      if (parsed && tableLines) {
+        for (const segments of tableLines) {
+          pushLine({
+            text: segments.map((segment) => segment.text).join(""),
+            segments,
+            bodyColor: defaultColor,
+            bodyBold: false,
+          });
+        }
+        lineIndex += parsed.lineCount - 1;
+        continue;
+      }
+    }
+
     const {
       bodyColor,
       bodyBold,
       startsToolBlock,
       endsToolBlock,
     } = classifyTextLine(rawLine, defaultColor, inToolBlock);
-    const contentWidth = Math.max(4, textWidth - labelWidth);
     const baseStyle: Omit<LineSegment, "text"> = { color: bodyColor };
     const inlineSegments = parseInlineMarkdownSegments(rawLine, baseStyle);
     const wrapped = wrapSegments(inlineSegments, contentWidth);

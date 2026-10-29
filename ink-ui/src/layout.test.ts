@@ -282,7 +282,7 @@ describe("preRenderLines", () => {
       text: "Use **bold**, *italic*, ***both***, `code`, and [docs](https://example.com).",
     }];
     const lines = preRenderLines(entries, 100);
-    assert.equal(lines[0]!.text, "Use bold, italic, both, code, and docs (https://example.com).");
+    assert.equal(lines[0]!.text, "Use bold, italic, both, code, and docs.");
 
     const bold = lines[0]!.segments?.find((segment) => segment.text === "bold");
     const italic = lines[0]!.segments?.find((segment) => segment.text === "italic");
@@ -296,6 +296,7 @@ describe("preRenderLines", () => {
     assert.equal(both?.italic, true);
     assert.equal(code?.backgroundColor, "blackBright");
     assert.equal(docs?.underline, true);
+    assert.equal(docs?.href, "https://example.com");
   });
 
   it("preserves inline markdown styles across wrapped rows", () => {

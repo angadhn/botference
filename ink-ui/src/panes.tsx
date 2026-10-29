@@ -14,6 +14,7 @@ import React, { useState, useEffect } from "react";
 import { Box, Text } from "ink";
 import {
   computeViewportSlice,
+  osc8Link,
   truncateTitle,
   type FlatLine,
 } from "./layout.js";
@@ -165,7 +166,7 @@ function PaneRowImpl({ line, lineIndex, pane, dimmed, selection }: PaneRowProps)
                 underline={!dimmed && segment.underline}
                 strikethrough={!dimmed && segment.strikethrough}
               >
-                {segment.text}
+                {segment.href ? osc8Link(segment.href, segment.text) : segment.text}
               </Text>
             ))
             : line.text}

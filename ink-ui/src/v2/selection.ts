@@ -135,13 +135,57 @@ export function selectedTextFromLines(
   const normalized = normalizedSelection(selection);
   if (!normalized) return "";
   const selected: string[] = [];
+  // A link shows only its label on screen; copying it adds the address in
+  // brackets after the label so the pasted text keeps it. A link can wrap
+  // over several rows, so its pieces are gathered until the link ends.
+  let pendingLink: { href: string; label: string } | null = null;
+  const flushLink = (): string => {
+    if (!pendingLink) return "";
+    const { href, label } = pendingLink;
+    pendingLink = null;
+    return label.replace(/\s+/g, "") === href ? "" : ` (${href})`;
+  };
   for (let index = normalized.startLine; index <= normalized.endLine; index++) {
     const line = lines[index];
     if (!line) continue;
     const range = selectionRangeForLine(selection, selection.pane, index, line.text);
     if (!range) continue;
-    selected.push(line.text.slice(range.start, range.end).trimEnd());
+    const segments = line.segments;
+    if (!segments || !segments.some((segment) => segment.href)
+      || segments.map((segment) => segment.text).join("") !== line.text) {
+      const suffix = flushLink();
+      if (suffix && selected.length > 0) selected[selected.length - 1] += suffix;
+      selected.push(line.text.slice(range.start, range.end).trimEnd());
+      continue;
+    }
+    let text = "";
+    let offset = 0;
+    for (const segment of segments) {
+      const start = offset;
+      const end = offset + segment.text.length;
+      offset = end;
+      if (end <= range.start || start >= range.end) {
+        if (start >= range.end) break;
+        continue;
+      }
+      const piece = segment.text.slice(
+        Math.max(0, range.start - start),
+        Math.min(segment.text.length, range.end - start),
+      );
+      if (pendingLink && pendingLink.href !== segment.href) text += flushLink();
+      if (segment.href) {
+        if (!pendingLink) pendingLink = { href: segment.href, label: "" };
+        pendingLink.label += segment.text;
+      }
+      text += piece;
+    }
+    // The link carries on to the next row only when that row starts with it.
+    const next = lines[index + 1]?.segments?.[0];
+    const continues = index < normalized.endLine && pendingLink && next?.href === pendingLink.href;
+    if (!continues) text = text.trimEnd() + flushLink();
+    selected.push(text.trimEnd());
   }
+  if (pendingLink && selected.length > 0) selected[selected.length - 1] += flushLink();
   return selected.join("\n").trim();
 }
 
