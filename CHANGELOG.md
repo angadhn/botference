@@ -2,6 +2,8 @@
 
 ## 2026-10-29
 
+- **The bots can reach any website, with no `/allow-host` needed.** Fetching a URL now works as it does in a plain Claude Code session. Claude's shell sandbox gets `allowedDomains: ["*"]` (every host) and `allowLocalBinding`, so it can also reach servers on this machine at 127.0.0.1 or localhost. Codex already had full network. This is the default for the council room (terminal and web), the Discuss plugin and summoned build agents. File writes stay limited to the write roots as before. The old short list of sites is still there: start botference with `BOTFERENCE_PLAN_NETWORK=allowlist` and `/allow-host` works as before. In the default mode `/allow-host` says the network is open and the command is not needed, and the bots are no longer told to ask you for a site. `BOTFERENCE_PLAN_ALLOW_NETWORK=0` still turns the network off. Running bridges pick this up at their next start.
+
 - **One house writing style, on every surface the bots write on.** About 80 percent of the way to ASD-STE100, the Simplified Technical English of aircraft manuals: one topic per paragraph, sentences of about 20 words with one idea each, active voice, the same word for the same thing, plain words with terms defined where first used, and the hedges of an honest argument kept. The rule lives once in `core/room_prompts.py` and rides the council room preamble and Claude's system-prompt contract (TUI and web), rule 0 of the Discuss plugin's bridge prompt (replies, suggestions, comment threads), and, at its strictest, the first-draft prompt of `/draft-blog`, where it also keeps the reader's own voice. Running bridges pick it up at their next start.
 
 ## 2026-10-27

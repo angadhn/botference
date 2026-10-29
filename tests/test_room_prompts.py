@@ -153,6 +153,13 @@ class TestWebAccessNote:
     def test_codex_gets_no_note(self):
         assert web_access_note("codex") == ""
 
+    def test_only_allowlist_mode_tells_claude_to_ask_for_a_host(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
+        monkeypatch.delenv("BOTFERENCE_PLAN_NETWORK", raising=False)
+        assert "/allow-host" not in web_access_note("claude")
+        monkeypatch.setenv("BOTFERENCE_PLAN_NETWORK", "allowlist")
+        assert "/allow-host" in web_access_note("claude")
+
 
 # -- ROOM_ROLE_SUFFIX -------------------------------------------------------
 

@@ -1115,6 +1115,23 @@ class TestAgentsCommand:
 
 @pytest.mark.asyncio
 class TestAllowHost:
+    @pytest.fixture(autouse=True)
+    def _allowlist_mode(self, monkeypatch):
+        # /allow-host only does anything when the network is an allowlist
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
+        monkeypatch.setenv("BOTFERENCE_PLAN_NETWORK", "allowlist")
+
+    async def test_open_network_says_the_command_is_not_needed(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.delenv("BOTFERENCE_PLAN_NETWORK")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("/allow-host example.org", ui)
+        assert any("not needed" in t for s, t in ui.room_entries if s == "system")
+        import cli_adapters
+        assert cli_adapters.granted_network_hosts() == []
+
     async def test_grant_persists_and_reaches_the_sandbox_allowlist(
         self, tmp_path, monkeypatch
     ):

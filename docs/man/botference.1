@@ -576,12 +576,20 @@ and not the discussion \- and reports each claim confirmed, contradicted
 or not checkable. On by default, per chat; skipped when the final message
 is too short to be a claim or the room has no source to check against.
 .TP
-.B /allow-host [<domain>]
-Grant the bots' sandbox network access to a site (e.g.
-.BR example.org ).
-Persists per workspace and applies from each bot's next turn \- no
-restarts. Without arguments, lists current grants. The bots are
-instructed to ask for this instead of working around a blocked fetch.
+.B /allow-host [<domain>|remove <domain>]
+Not needed by default: the bots can reach any website, and servers on
+this machine, as in a plain Claude Code session. It only matters when
+botference is started with
+.BR BOTFERENCE_PLAN_NETWORK=allowlist ,
+which limits the bots to a short list of sites. In that mode it grants a
+site (e.g.
+.BR example.org ),
+or takes one away with
+.BR remove .
+Grants are kept per workspace and apply from each bot's next turn, with
+no restart. Without arguments, lists current grants.
+.B BOTFERENCE_PLAN_ALLOW_NETWORK=0
+turns the bots' network off.
 .TP
 .B /watch <url> [question]
 Have Gemini watch a public YouTube video and post the report into the

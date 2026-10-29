@@ -294,6 +294,44 @@ def _plan_network_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+# The sandbox setting that means "any website": Claude Code 2.1.312 takes a
+# bare "*" in allowedDomains as every host (checked by hand on 2026-10-29: a
+# curl to example.org got 200 with ["*"] and a proxy 403 with ["github.com"]).
+OPEN_NETWORK_DOMAINS = ("*",)
+
+
+def plan_network_mode() -> str:
+    """How much of the network the bots' shell sandbox may reach.
+
+    "open" (the default): any website, plus servers on this machine
+    (127.0.0.1 / localhost), the same as a plain Claude Code session.
+    "allowlist": only the built-in hosts plus what /allow-host granted; set
+    BOTFERENCE_PLAN_NETWORK=allowlist to get it.
+    "off": no network at all; BOTFERENCE_PLAN_ALLOW_NETWORK=0.
+    """
+    if not _plan_network_enabled():
+        return "off"
+    raw = os.environ.get("BOTFERENCE_PLAN_NETWORK", "").strip().lower()
+    if raw == "allowlist":
+        return "allowlist"
+    return "open"
+
+
+def _plan_sandbox_network() -> dict | None:
+    """The sandbox.network block for the current mode (None: no network)."""
+    mode = plan_network_mode()
+    if mode == "off":
+        return None
+    if mode == "allowlist":
+        return {"allowedDomains": _plan_allowed_hosts()}
+    # allowLocalBinding is what lets a sandboxed curl reach 127.0.0.1;
+    # without it local servers refuse the connection even with "*".
+    return {
+        "allowedDomains": list(OPEN_NETWORK_DOMAINS),
+        "allowLocalBinding": True,
+    }
+
+
 def _granted_hosts_file() -> Path:
     root = os.environ.get("BOTFERENCE_PROJECT_ROOT", "").strip() or "."
     return Path(root) / ".botference" / "allowed-hosts.json"
@@ -592,8 +630,9 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
         "enabled": True,
         "allowUnsandboxedCommands": False,
     }
-    if _plan_network_enabled():
-        sandbox["network"] = {"allowedDomains": _plan_allowed_hosts()}
+    network = _plan_sandbox_network()
+    if network is not None:
+        sandbox["network"] = network
 
     seen = set()
     for root in normalized_roots:
@@ -1068,8 +1107,10 @@ class ClaudeAdapter:
             settings = self.settings
             # Refresh the sandbox network allowlist at spawn time so hosts
             # granted mid-chat with /allow-host apply from the next turn.
+            # Open network ("*") has nothing to refresh.
             net = settings.get("sandbox", {}).get("network")
-            if isinstance(net, dict) and "allowedDomains" in net:
+            if (isinstance(net, dict) and "allowedDomains" in net
+                    and list(net["allowedDomains"]) != list(OPEN_NETWORK_DOMAINS)):
                 settings = json.loads(json.dumps(settings))
                 settings["sandbox"]["network"]["allowedDomains"] = (
                     _plan_allowed_hosts()

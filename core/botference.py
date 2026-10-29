@@ -35,6 +35,7 @@ from cli_adapters import (
     granted_network_hosts,
     remove_network_host,
     blocked_network_hosts,
+    plan_network_mode,
     is_credit_error,
     is_safeguard_refusal,
     normalize_claude_transport,
@@ -463,7 +464,7 @@ COMMAND_HELP: list[dict] = [
     {"cmd": "/notify", "args": "[on|off]", "group": "Settings",
      "hint": "Desktop notice when the bots finish", "scope": _ALL},
     {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "group": "Settings",
-     "hint": "Let the bots fetch from a website (remove: take one away)", "scope": _ALL},
+     "hint": "Only for allowlist mode: let the bots reach a site", "scope": _ALL},
     {"cmd": "/permissions", "args": "", "group": "Settings",
      "hint": "Where the bots may write files", "scope": _ALL},
 
@@ -3352,6 +3353,15 @@ class Botference:
         The grant is a workspace file the Claude adapter re-reads at every
         spawn, so it applies from each bot's next turn — no restarts.
         """
+        if plan_network_mode() == "open":
+            self._show_room_notice(
+                ui, "system",
+                "The bots can already reach any website, and servers on this "
+                "machine, so /allow-host is not needed. It only matters if you "
+                "start botference with BOTFERENCE_PLAN_NETWORK=allowlist, "
+                "which limits the bots to a short list of sites.",
+            )
+            return
         raw = body.strip()
         if not raw:
             granted = granted_network_hosts()

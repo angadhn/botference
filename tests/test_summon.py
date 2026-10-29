@@ -859,6 +859,8 @@ class TestHostAllowlist:
 class TestAllowHostRemove:
     async def test_the_command_takes_a_default_away(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
+        monkeypatch.setenv("BOTFERENCE_PLAN_NETWORK", "allowlist")
         c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
         await c.handle_input("/allow-host remove planetarymaps.usgs.gov", ui)
         note = [t for sp, t in ui.room_entries if sp == "system"][-1]

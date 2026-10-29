@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import lasso
+from cli_adapters import plan_network_mode
 
 # -- Skills -----------------------------------------------------------------
 
@@ -306,17 +307,21 @@ def web_access_note(model: str) -> str:
     """
     if model.lower() != "claude":
         return ""
-    return (
+    note = (
         "--- Web access fallback ---\n"
         "If WebFetch fails on a URL (403, anti-bot block, or a domain "
         "verification error), do not give up: fetch it via Bash with "
         '`curl -sL -A "botference/1.0 (planning council)" <url>` '
         "(truncate long pages, e.g. `| head -c 20000`). "
-        "Use WebSearch when you only need to discover sources. "
-        "If a fetch is refused because the sandbox blocks that host, do not "
-        "work around it — ask the user to grant the site with "
-        "`/allow-host <domain>`; the grant applies from your next turn."
+        "Use WebSearch when you only need to discover sources."
     )
+    if plan_network_mode() == "allowlist":
+        note += (
+            " If a fetch is refused because the sandbox blocks that host, do "
+            "not work around it; ask the user to grant the site with "
+            "`/allow-host <domain>`; the grant applies from your next turn."
+        )
+    return note
 
 
 # -- Video ------------------------------------------------------------------

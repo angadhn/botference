@@ -1492,14 +1492,26 @@ class TestCommandConstruction:
         assert not any(";" in rule or " " in rule.split("(", 1)[1] for rule in deny
                        if rule.startswith("Bash("))
 
-    def test_plan_network_enabled_by_default(self, monkeypatch):
+    def test_plan_network_is_open_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
-        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
+        monkeypatch.delenv("BOTFERENCE_PLAN_NETWORK", raising=False)
         settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
-        assert "github.com" in settings["sandbox"]["network"]["allowedDomains"]
+        assert settings["sandbox"]["network"] == {
+            "allowedDomains": ["*"],
+            "allowLocalBinding": True,
+        }
 
         config = planner_write_config("/repo", ["/repo/botference"])
         assert config.codex_network_access is True
+
+    def test_open_network_is_not_narrowed_at_spawn_time(self, monkeypatch):
+        monkeypatch.delenv("BOTFERENCE_PLAN_ALLOW_NETWORK", raising=False)
+        monkeypatch.delenv("BOTFERENCE_PLAN_NETWORK", raising=False)
+        settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
+        adapter = ClaudeAdapter(settings=settings)
+        cmd = adapter._build_cmd(resume=False)
+        sent = json.loads(cmd[cmd.index("--settings") + 1])
+        assert sent["sandbox"]["network"]["allowedDomains"] == ["*"]
 
     def test_plan_network_can_be_explicitly_disabled(self, monkeypatch):
         monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "0")
@@ -1509,8 +1521,9 @@ class TestCommandConstruction:
         config = planner_write_config("/repo", ["/repo/botference"])
         assert config.codex_network_access is False
 
-    def test_plan_network_enabled_populates_claude_allowlist(self, monkeypatch):
+    def test_allowlist_mode_populates_claude_allowlist(self, monkeypatch):
         monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "1")
+        monkeypatch.setenv("BOTFERENCE_PLAN_NETWORK", "allowlist")
         monkeypatch.delenv("BOTFERENCE_PLAN_ALLOWED_HOSTS", raising=False)
         settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
         hosts = settings["sandbox"]["network"]["allowedDomains"]
@@ -1524,6 +1537,7 @@ class TestCommandConstruction:
         # folder so this test sees the custom list alone
         monkeypatch.setenv("BOTFERENCE_PROJECT_ROOT", str(tmp_path))
         monkeypatch.setenv("BOTFERENCE_PLAN_ALLOW_NETWORK", "1")
+        monkeypatch.setenv("BOTFERENCE_PLAN_NETWORK", "allowlist")
         monkeypatch.setenv(
             "BOTFERENCE_PLAN_ALLOWED_HOSTS",
             "example.com, *.internal.corp",
