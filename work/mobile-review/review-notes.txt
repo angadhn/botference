@@ -1,0 +1,18 @@
+Mobile changes by Codex, 2026-10-30. No delegated implementation. Not committed.
+Status: structurally checked; visual verification pending Claude's review.
+
+Changed production files: frontends/shared/network-ui/network.html, network.css, network.js.
+Activity drawer starts collapsed on phones and short landscape screens. It expands on tap, closes on Escape, and has a scrollable list. City framing and the minimap use the actual header and panel boundaries.
+Controls have larger touch targets. Search gets its own toolbar row. Toolbar height is measured, including the council selector. Safe-area insets and dynamic viewport heights accommodate phone browser chrome. Zoom buttons operate around the visible map area. Project details use a bottom sheet; the header has an opaque background for contrast.
+Desktop retains its sidebar. No placement persistence or presence contracts changed.
+
+Two new tests: mobile activity toggle/Escape with refitting; zoom around visible city without moving buildings. Existing tests remain intact.
+Validation: tests/project-network-ui.test.mjs, tests/project-network.test.mjs, tests/council-presence.test.mjs pass (32 tests). Node syntax checks and git diff --check pass. Full output: work/mobile-review/tests.txt.
+
+Preview sources and generated fixtures: work/projects/hi-there-i-want-you/artifacts/network-v2/build.mjs, mobile-*.html. Regenerate with /opt/homebrew/bin/node work/projects/hi-there-i-want-you/artifacts/network-v2/build.mjs mobile from the repo root.
+Fixtures: mobile-city, mobile-activity, mobile-detail, mobile-filters, mobile-map, mobile-multiroot, mobile-light.
+Review at 320x568, 390x844, 844x390, and 1440x900. Check horizontal overflow, list scrolling, filter popup, search with keyboard, sheet close, zoom, pan/pinch and long-press building movement. Check narrow-to-desktop resizing, and desktop sidebar regression.
+
+Rendering was attempted before and after changes with botference see. Chrome aborted in this sandbox and no see-broker is running. The existing spool helper also received no response. CUA reported no browser available. No after screenshots were produced or inspected. This is NOT visually verified.
+Renderer's requested service command: botference service start see-broker -- botference see --serve
+Claude is the requested reviewer; no user approval is needed for the project edits.

@@ -1,0 +1,122 @@
+[
+  {
+    "id": "agent-claude-walk-se-2",
+    "family": "claude",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 2,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "LEFT leg directly under hips supporting weight, RIGHT knee bent with right foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Passing stride A: the near-side leg is straight and planted vertically under the hips. The FAR-side knee is bent forward toward SCREEN RIGHT, far-side boot is visibly raised off the ground, toes down. Near-side arm slightly back. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-2e794638-6387-41b3-854d-e8eded74d1c9.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-08f3b09a-96a2-4f31-80ea-0936bcc017b4.png"
+  },
+  {
+    "id": "agent-claude-walk-se-4",
+    "family": "claude",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 4,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "RIGHT leg directly under hips supporting weight, LEFT knee bent with left foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Passing stride B, opposite of A: the FAR-side leg is straight and planted vertically under the hips. The NEAR-side knee is bent FORWARD toward SCREEN RIGHT, its boot clearly raised at the RIGHT edge of the silhouette and toes down. Near-side arm forward and far-side arm back. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-fb142238-f3ac-43e5-9220-e5d67b01966c.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-08f3b09a-96a2-4f31-80ea-0936bcc017b4.png"
+  },
+  {
+    "id": "agent-claude-walk-se-1",
+    "family": "claude",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 1,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "LEFT leg forward, heel contacting ground; RIGHT leg stretched behind, toe on ground. RIGHT arm forward, LEFT arm back. Wide but natural walking stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Contact stride A: near-side leg extends FORWARD toward screen LOWER-RIGHT, near-side boot prominently at lower-right of the silhouette. Far-side leg reaches back toward screen upper-left. Near-side arm swings BACK to screen left; far-side arm swings forward right. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-6d17637e-03bd-4c69-bbf1-02a2a56f23d2.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-08f3b09a-96a2-4f31-80ea-0936bcc017b4.png"
+  },
+  {
+    "id": "agent-claude-walk-sw-3",
+    "family": "claude",
+    "pose": "walk",
+    "direction": "sw",
+    "frame": 3,
+    "facing": "FRONT-LEFT, travelling diagonally toward screen lower-left. Face and front waistcoat visible.",
+    "phase": "RIGHT leg forward, heel contacting ground; LEFT leg stretched behind, toe on ground. LEFT arm forward, RIGHT arm back. Wide but natural walking stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point LEFT, toward screen lower-left. Change only arms and legs to this walking phase: Contact stride B: near-side leg extends BACK behind the hips toward screen LOWER-RIGHT, heel lifted; FAR-side leg reaches FORWARD toward screen LOWER-LEFT, heel striking ground. The near-side hand/forearm swings FORWARD toward screen left across the chest, elbow visibly bent. Far-side arm goes back to screen right. This is the OPPOSITE leg-and-arm phase from a near-leg-forward stride. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-02323f26-e01a-4918-9b34-dfc9f9ce3a40.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-57812a3d-d99c-440c-888d-e0ec79f4818a.png"
+  },
+  {
+    "id": "agent-claude-walk-sw-4",
+    "family": "claude",
+    "pose": "walk",
+    "direction": "sw",
+    "frame": 4,
+    "facing": "FRONT-LEFT, travelling diagonally toward screen lower-left. Face and front waistcoat visible.",
+    "phase": "RIGHT leg directly under hips supporting weight, LEFT knee bent with left foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point LEFT, toward screen lower-left. Change only arms and legs to this walking phase: Passing stride B: FAR-side leg is the straight planted support under the hips. Lift the NEAR-side knee FORWARD toward screen LEFT, with the near-side boot visibly suspended at the LEFT EDGE of the figure, toes pointing down. NEAR-side forearm swings BACK toward screen right, far-side arm forward. Only the far-side boot touches ground. This must differ visibly from lifting the far-side knee behind the body. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-0c6441b4-d5a9-4771-a95b-006193e21c5b.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-57812a3d-d99c-440c-888d-e0ec79f4818a.png"
+  },
+  {
+    "id": "agent-codex-walk-se-4",
+    "family": "codex",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 4,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "RIGHT leg directly under hips supporting weight, LEFT knee bent with left foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Passing stride B, opposite of A: the FAR-side leg is straight and planted vertically under the hips. The NEAR-side knee is bent FORWARD toward SCREEN RIGHT, its boot clearly raised at the RIGHT edge of the silhouette and toes down. Near-side arm forward and far-side arm back. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-da1605a9-3e2b-4f81-9f76-b36aeb1b4f7a.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-9dcd1e83-dfeb-484b-b46c-b9c72cfd5b1d.png"
+  },
+  {
+    "id": "agent-codex-walk-se-1",
+    "family": "codex",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 1,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "LEFT leg forward, heel contacting ground; RIGHT leg stretched behind, toe on ground. RIGHT arm forward, LEFT arm back. Wide but natural walking stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Contact stride A: near-side leg extends FORWARD toward screen LOWER-RIGHT, near-side boot prominently at lower-right of the silhouette. Far-side leg reaches back toward screen upper-left. Near-side arm swings BACK to screen left; far-side arm swings forward right. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-2de70b54-9ae7-4e1d-ba95-e553418728ca.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-9dcd1e83-dfeb-484b-b46c-b9c72cfd5b1d.png"
+  },
+  {
+    "id": "agent-codex-walk-sw-3",
+    "family": "codex",
+    "pose": "walk",
+    "direction": "sw",
+    "frame": 3,
+    "facing": "FRONT-LEFT, travelling diagonally toward screen lower-left. Face and front waistcoat visible.",
+    "phase": "RIGHT leg forward, heel contacting ground; LEFT leg stretched behind, toe on ground. LEFT arm forward, RIGHT arm back. Wide but natural walking stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point LEFT, toward screen lower-left. Change only arms and legs to this walking phase: Contact stride B: near-side leg extends BACK behind the hips toward screen LOWER-RIGHT, heel lifted; FAR-side leg reaches FORWARD toward screen LOWER-LEFT, heel striking ground. The near-side hand/forearm swings FORWARD toward screen left across the chest, elbow visibly bent. Far-side arm goes back to screen right. This is the OPPOSITE leg-and-arm phase from a near-leg-forward stride. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-fd186696-578c-4038-8ad7-f89bde4dcda7.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-15e06bdf-8cb3-4ea6-829b-310ec94f587a.png"
+  },
+  {
+    "id": "agent-codex-walk-se-2",
+    "family": "codex",
+    "pose": "walk",
+    "direction": "se",
+    "frame": 2,
+    "facing": "FRONT-RIGHT, travelling diagonally toward screen lower-right. Face and front waistcoat visible.",
+    "phase": "LEFT leg directly under hips supporting weight, RIGHT knee bent with right foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point RIGHT, toward screen lower-right. Preserve reference's RIGHT-facing head. Do NOT turn left. Change only arms and legs to this walking phase: Passing stride A: the near-side leg is straight and planted vertically under the hips. The FAR-side knee is bent forward toward SCREEN RIGHT, far-side boot is visibly raised off the ground, toes down. Near-side arm slightly back. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-dfcfc2dd-ee07-40b6-a2cf-eaf2b7f82e99.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-9dcd1e83-dfeb-484b-b46c-b9c72cfd5b1d.png"
+  },
+  {
+    "id": "agent-codex-walk-sw-4",
+    "family": "codex",
+    "pose": "walk",
+    "direction": "sw",
+    "frame": 4,
+    "facing": "FRONT-LEFT, travelling diagonally toward screen lower-left. Face and front waistcoat visible.",
+    "phase": "RIGHT leg directly under hips supporting weight, LEFT knee bent with left foot lifted passing the planted leg. Arms near the middle of their swing. Narrow passing stride.",
+    "prompt": "Use case: precise-object-edit. Edit target: reference character. Produce ONE isolated full-body walk animation frame. Keep identity, costume, head, slim proportions, upper-left light, transparent background, painterly pixel texture. CRITICAL DIRECTION: torso, FACE, nose and BOOTS must point LEFT, toward screen lower-left. Change only arms and legs to this walking phase: Passing stride B: FAR-side leg is the straight planted support under the hips. Lift the NEAR-side knee FORWARD toward screen LEFT, with the near-side boot visibly suspended at the LEFT EDGE of the figure, toes pointing down. NEAR-side forearm swings BACK toward screen right, far-side arm forward. Only the far-side boot touches ground. This must differ visibly from lifting the far-side knee behind the body. No notebook or tools. Upright steady head and torso, no leaning. Full figure, no cropping, no ground or cast shadow, no text, no extra figures, no logos. Genuine transparent RGBA background.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-0fb825df-4acb-4786-a070-18b5cae2cedf.png",
+    "ref": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-15e06bdf-8cb3-4ea6-829b-310ec94f587a.png"
+  }
+]

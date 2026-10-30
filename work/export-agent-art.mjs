@@ -1,0 +1,27 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+const root=path.resolve('../frontends/shared/network-ui/art');
+const out=path.resolve('../projects/hi-there-i-want-you/artifacts/agents');
+const mirror=path.resolve('projects/hi-there-i-want-you/artifacts/agents');
+const report=JSON.parse(fs.readFileSync(path.join(root,'validation.json')));
+assert.equal(report.status,'passed');assert.equal(report.sprites,155);assert.equal(report.agentValidation?.bodyFrames,40);
+const manifest=JSON.parse(fs.readFileSync(path.join(root,'manifest.json')));
+const pack=path.resolve('agent-art-package');fs.mkdirSync(pack,{recursive:true});
+fs.mkdirSync(out,{recursive:true});fs.mkdirSync(mirror,{recursive:true});
+const files=['sample-agents.png','agent-catalogue.png','sprite-catalogue.png','agent-walk-proof.png','agent-walk-proof.gif','agent-role-proof.png','generation-agents.json','agent-registration.json','sample-scene-agents.json','validation.json','AGENT-SPRITES.md'];
+for(const f of files){fs.copyFileSync(path.join(root,f),path.join(pack,f));fs.copyFileSync(path.join(root,f),path.join(out,f));}
+const subset={...manifest,sprites:manifest.sprites.filter(s=>s.category==='agent'),sample:manifest.samples.find(s=>s.file==='sample-agents.png'),samples:manifest.samples.filter(s=>s.file==='sample-agents.png')};
+fs.writeFileSync(path.join(pack,'manifest.json'),JSON.stringify(subset,null,2)+'\n');
+fs.cpSync(path.join(root,'agents'),path.join(pack,'agents'),{recursive:true});
+fs.cpSync(path.join(root,'source/agents'),path.join(pack,'source/agents'),{recursive:true});
+const integration=path.join(pack,'integration');fs.mkdirSync(integration,{recursive:true});
+for(const f of ['build-agents.mjs','verify-agents.mjs','verify-art.mjs','manifest-set-3.json'])fs.copyFileSync(path.join(root,f),path.join(integration,f));
+fs.copyFileSync(path.join(root,'manifest.json'),path.join(integration,'full-city-manifest.json'));
+fs.writeFileSync(path.join(integration,'README.txt'),'These build and verification files belong in frontends/shared/network-ui/art/ in the Botference repository. They depend on the earlier city art and generation metadata there. The archive root manifest contains only this standalone agent set.\n');
+const zip=path.join(out,'botference-agent-art.zip');
+execFileSync('zip',['-q','-r',zip,'.'],{cwd:pack,maxBuffer:4*1024*1024});
+execFileSync('unzip',['-tq',zip],{maxBuffer:4*1024*1024});
+for(const f of fs.readdirSync(out))fs.copyFileSync(path.join(out,f),path.join(mirror,f));
+console.log(JSON.stringify({output:out,workspaceArtifactMirror:mirror,archiveBytes:fs.statSync(zip).size,files:fs.readdirSync(out),sprites:subset.sprites.length},null,2));

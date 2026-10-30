@@ -1,0 +1,110 @@
+[
+  {
+    "id": "agent-role-engineer-sw",
+    "kind": "overlay",
+    "role": "engineer",
+    "direction": "sw",
+    "desc": "ENGINEER GOGGLES with two small round tinted lenses, weathered brass rims and a short dark strap. No head or face.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY ENGINEER GOGGLES with two small round tinted lenses, weathered brass rims and a short dark strap. No head or face. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-fbcd1c7d-46c6-4720-b232-2c01c8e2120a.png"
+  },
+  {
+    "id": "agent-role-writer-sw",
+    "kind": "overlay",
+    "role": "writer",
+    "direction": "sw",
+    "desc": "a soft rust and cream WRITER SCARF wrapped around an invisible neck with two short draped ends over chest. No neck or body.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a soft rust and cream WRITER SCARF wrapped around an invisible neck with two short draped ends over chest. No neck or body. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-c9e523c4-7384-4761-a200-bb06b196eeb0.png"
+  },
+  {
+    "id": "agent-role-writer-se",
+    "kind": "overlay",
+    "role": "writer",
+    "direction": "se",
+    "desc": "a soft rust and cream WRITER SCARF wrapped around an invisible neck with two short draped ends over chest. No neck or body.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a soft rust and cream WRITER SCARF wrapped around an invisible neck with two short draped ends over chest. No neck or body. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-723febeb-ee5a-4b00-a3bc-759f4ee3779b.png"
+  },
+  {
+    "id": "agent-role-engineer-se",
+    "kind": "overlay",
+    "role": "engineer",
+    "direction": "se",
+    "desc": "ENGINEER GOGGLES with two small round tinted lenses, weathered brass rims and a short dark strap. No head or face.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY ENGINEER GOGGLES with two small round tinted lenses, weathered brass rims and a short dark strap. No head or face. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-9528997c-2571-475c-b08d-be6ca4f988e3.png"
+  },
+  {
+    "id": "agent-role-teacher-sw",
+    "kind": "overlay",
+    "role": "teacher",
+    "direction": "sw",
+    "desc": "a TEACHER CHALK HOLDER: a short ivory chalk stick held in a tiny brass sleeve attached to a small slate pocket tab, chalk angled upward. No hand or body.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a TEACHER CHALK HOLDER: a short ivory chalk stick held in a tiny brass sleeve attached to a small slate pocket tab, chalk angled upward. No hand or body. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-dc8be00d-db0a-4d8c-844d-164c605e9943.png"
+  },
+  {
+    "id": "agent-role-scientist-sw",
+    "kind": "overlay",
+    "role": "scientist",
+    "direction": "sw",
+    "desc": "a SCIENTIST LAB COAT, off-white linen, open front, two pockets, sleeves hanging down naturally at sides, hem just above knees. Empty invisible mannequin: no head, hands, legs, shirt, trousers or shoes. Transparent gap inside open front.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a SCIENTIST LAB COAT, off-white linen, open front, two pockets, sleeves hanging down naturally at sides, hem just above knees. Empty invisible mannequin: no head, hands, legs, shirt, trousers or shoes. Transparent gap inside open front. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-b878f3cf-cc7c-4012-b2eb-7f9b85605fec.png"
+  },
+  {
+    "id": "agent-role-scientist-se",
+    "kind": "overlay",
+    "role": "scientist",
+    "direction": "se",
+    "desc": "a SCIENTIST LAB COAT, off-white linen, open front, two pockets, sleeves hanging down naturally at sides, hem just above knees. Empty invisible mannequin: no head, hands, legs, shirt, trousers or shoes. Transparent gap inside open front.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a SCIENTIST LAB COAT, off-white linen, open front, two pockets, sleeves hanging down naturally at sides, hem just above knees. Empty invisible mannequin: no head, hands, legs, shirt, trousers or shoes. Transparent gap inside open front. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-e2558bbb-aef0-46d8-956b-a05c4787c045.png"
+  },
+  {
+    "id": "agent-role-teacher-se",
+    "kind": "overlay",
+    "role": "teacher",
+    "direction": "se",
+    "desc": "a TEACHER CHALK HOLDER: a short ivory chalk stick held in a tiny brass sleeve attached to a small slate pocket tab, chalk angled upward. No hand or body.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a TEACHER CHALK HOLDER: a short ivory chalk stick held in a tiny brass sleeve attached to a small slate pocket tab, chalk angled upward. No hand or body. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-b25aeedd-8a70-48f3-b743-46253a08e711.png"
+  },
+  {
+    "id": "agent-role-builder-se",
+    "kind": "overlay",
+    "role": "builder",
+    "direction": "se",
+    "desc": "a BUILDER HELMET, a muted ochre hard hat, dome and short brim, appropriate to perch atop an oversized emblem head. No head or face.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a BUILDER HELMET, a muted ochre hard hat, dome and short brim, appropriate to perch atop an oversized emblem head. No head or face. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-34f7891c-5221-4c52-850c-7f4cf5199ed6.png"
+  },
+  {
+    "id": "agent-role-builder-sw",
+    "kind": "overlay",
+    "role": "builder",
+    "direction": "sw",
+    "desc": "a BUILDER HELMET, a muted ochre hard hat, dome and short brim, appropriate to perch atop an oversized emblem head. No head or face.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY a BUILDER HELMET, a muted ochre hard hat, dome and short brim, appropriate to perch atop an oversized emblem head. No head or face. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-8adbb718-6132-4692-85fe-b81764d061be.png"
+  },
+  {
+    "id": "agent-role-reviewer-sw",
+    "kind": "overlay",
+    "role": "reviewer",
+    "direction": "sw",
+    "desc": "REVIEWER GLASSES: thin dark slate reading spectacles, two clear lenses and simple temple arms. No eyes, face or head.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY REVIEWER GLASSES: thin dark slate reading spectacles, two clear lenses and simple temple arms. No eyes, face or head. The invisible wearer faces FRONT-LEFT screen lower-left, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-b3e815f8-2e3b-4644-aada-66558c1bde70.png"
+  },
+  {
+    "id": "agent-role-reviewer-se",
+    "kind": "overlay",
+    "role": "reviewer",
+    "direction": "se",
+    "desc": "REVIEWER GLASSES: thin dark slate reading spectacles, two clear lenses and simple temple arms. No eyes, face or head.",
+    "prompt": "Use case: stylized-concept. Asset type: ONE separate wearable accessory overlay sprite for the referenced slim humanoid city character. Generate ONLY REVIEWER GLASSES: thin dark slate reading spectacles, two clear lenses and simple temple arms. No eyes, face or head. The invisible wearer faces FRONT-RIGHT screen lower-right, elevated 2:1 isometric camera matching the reference. Same restrained painterly pixel aesthetic and upper-left daylight. Preserve material colours, no heavy outlines. Isolated accessory centered, fully visible, generous margins, true RGBA transparency. Do not render any portion of the character, no backdrop, no cast shadow, no floor, no label, no watermark. This overlay will be placed on BOTH sunburst and knotted-ring family idle sprites.",
+    "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a18879-93e8-7031-83b5-308e6e60bd35/exec-414a3941-8bf1-4a51-9ef7-b5d5af5abb1a.png"
+  }
+]

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-scheme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en" data-scheme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Project connections · Botference</title><link rel="stylesheet" href="/network-assets/network.css"></head>
 <body>
 <svg id="map" role="img" aria-label="Map of projects and the connections between them"></svg>
@@ -17,7 +17,7 @@
   <div class="menu">
     <button id="view" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="view-menu">View: <b id="view-name">Map</b> <span class="caret" aria-hidden="true">▾</span></button>
     <div id="view-menu" class="pop" role="group" aria-label="Choose a view" hidden>
-      <button type="button" class="opt" data-view="map"><span class="tick" aria-hidden="true"></span><span>Map<small>Projects as dots, in four rough groups</small></span></button>
+      <button type="button" class="opt" data-view="map"><span class="tick" aria-hidden="true"></span><span>Map<small>Projects as dots, in five rough groups</small></span></button>
       <button type="button" class="opt" data-view="city"><span class="tick" aria-hidden="true"></span><span>City<small>Projects as buildings you can arrange</small></span></button>
     </div>
   </div>
@@ -29,6 +29,7 @@
       <label class="opt"><input type="checkbox" id="archived"><span class="tick" aria-hidden="true"></span><span>Archived projects</span><kbd>A</kbd></label>
       <label class="opt graph-only"><input type="checkbox" id="alllinks"><span class="tick" aria-hidden="true"></span><span>All links<small>Every line at once, not only on hover</small></span><kbd>C</kbd></label>
       <label class="opt graph-only"><input type="checkbox" id="recency" checked><span class="tick" aria-hidden="true"></span><span>Recent emphasis<small>Fade projects you have not touched lately</small></span><kbd>R</kbd></label>
+      <label class="opt city-only"><input type="checkbox" id="routes"><span class="tick" aria-hidden="true"></span><span>Show routes<small>Fade the buildings and trees so every road shows</small></span><kbd>P</kbd></label>
       <button id="refresh" type="button" class="opt plain" title="Re-read files and look for new suggestions"><span class="tick" aria-hidden="true"></span><span>Look for new links</span></button>
     </div>
   </div>
@@ -36,20 +37,36 @@
   <button id="help" type="button" title="What this page shows" aria-label="What this page shows" aria-expanded="false" aria-controls="intro">?</button>
   <button id="scheme" type="button" title="Light or dark (T)" aria-label="Switch between light and dark">◐</button>
 </nav>
+<div class="mobile-zoom" role="group" aria-label="Map zoom"><button id="zoom-in" type="button" aria-label="Zoom in">+</button><button id="zoom-out" type="button" aria-label="Zoom out">−</button></div>
 <section id="intro" class="intro" role="dialog" aria-labelledby="intro-head" hidden>
   <h2 id="intro-head">What you are looking at</h2>
-  <p>These are your projects, shown two ways; switch between them under <b>View</b>. The <b>map</b> shows each project as a dot in one of four rough groups (writing, teaching, research and ventures, other), guessed from its title; being near each other means nothing more. The <b>city</b> shows the same projects as buildings you can drag into your own arrangement: lit windows are readings updated in the last month, shutters mean paused or archived. A line on the map, or a footpath in the city, means a connection between two projects was recorded: solid when you linked them or your writing uses one in the other, dashed when an agent only suggested it. A faint grey line on the map only means both projects hold the same reading or piece of writing. Click a project to see its readings, writing and chats; the Back button returns you to where you were.</p>
+  <p>These are your projects, shown two ways; switch between them under <b>View</b>. The <b>map</b> shows each project as a dot in one of five rough groups (writing, teaching, research and ventures, health and wellbeing, other), guessed from its title and possibly wrong; a project in two groups sits between them, and being near each other means nothing more. A line means a connection between two projects was recorded: solid when you linked them or your writing uses one in the other, dashed when an agent only suggested it. A faint grey line only means both projects hold the same reading or piece of writing. Click a project to see its readings, writing and chats; the Back button returns you to where you were.</p>
+  <p>In the <b>city</b> each building is a project; its kind and the tint of its lawn are a first guess at its group, from the title. A building that says paused or archived, with its shutters closed, is one where work has stopped. A red flag means a dated update in the last 7 days. Point at a building to see how many of its readings were updated in the last 30 days, and to bring out its own roads. The windows, people, lamps and boats are decoration.</p>
+  <p>Roads follow recorded connections only: paved when linked or used in your writing, stepping stones when only suggested. Turn on Show routes under Filters to see them all. A linked road crosses water by a bridge and comes down a terrace by stairs; a suggested one never does. A cobbled square is where three or more linked projects meet. The ground is scenery chosen by what a building is for: a low terraced hill under observatories and lecture halls, an island under launch sites, woodland plain for the rest.</p>
+  <p>Connected projects are placed near each other. Drag empty ground to pan. Pinch or use the zoom buttons on a phone. To move a building on a phone, hold it still briefly, then drag; with a mouse, drag it directly. Drag it past the edge of the land and new ground is made for it there; the panel that opens then has <b>Undo move</b>. Positions and new land are saved in this browser only.</p>
   <button id="intro-ok" type="button">Got it</button>
 </section>
 <div id="empty" hidden></div>
 <aside id="campus-list" class="campus-list" aria-label="Activity: projects by their latest change">
+  <button id="activity-toggle" type="button" aria-expanded="false" aria-controls="activity-content">Projects &amp; activity <span aria-hidden="true">▴</span></button>
+  <div id="activity-content">
   <p id="capacity"></p>
+  <p class="city-key" aria-label="Key to the city">
+    <span><svg width="54" height="14" viewBox="-27 -16 54 16" aria-hidden="true"><rect x="-26" y="-15" width="52" height="14" rx="7" fill="#e6e1d6" stroke="#59604f"/><path d="M -20 -11 v6 M -17 -11 v6" stroke="#3a4034" stroke-width="1.6"/><text x="5" y="-4.5" text-anchor="middle" font-size="9" font-weight="600" fill="#3a4034" font-family="system-ui,sans-serif">paused</text></svg>stopped, shutters closed</span>
+    <span><svg width="26" height="6" viewBox="0 0 26 6" aria-hidden="true"><line x1="2" y1="3" x2="24" y2="3" stroke="#17200f" stroke-opacity=".55" stroke-width="5" stroke-linecap="round"/><line x1="2" y1="3" x2="24" y2="3" stroke="#7fcf8a" stroke-width="2.4" stroke-linecap="round"/></svg>linked</span>
+    <span><svg width="26" height="6" viewBox="0 0 26 6" aria-hidden="true"><line x1="2" y1="3" x2="24" y2="3" stroke="#e07c69" stroke-width="3.4" stroke-linecap="round" stroke-dasharray=".1 6.5"/></svg>suggested</span>
+  </p>
   <div id="districts" class="districts" role="group" aria-label="Zoom the city to a district"></div>
-  <div class="city-tools"><input id="campus-find" type="search" placeholder="find a project" aria-label="Find a project" autocomplete="off"><button id="tidy" type="button" title="Lay out again, by group, every building you have not placed yourself">tidy</button></div>
+  <div class="city-tools"><input id="campus-find" type="search" placeholder="find a project" aria-label="Find a project" autocomplete="off"><button id="tidy" type="button" title="Lay out again, by their connections, every building you have not placed yourself">tidy</button></div>
   <h2 class="act-head">Activity</h2>
   <p id="week"></p>
   <div id="campus-rows"></div>
   <p id="placed-note" class="fine"></p>
+  </div>
+</aside>
+<aside id="minimap" class="minimap" aria-label="The whole city from above">
+  <div class="mm-head"><span class="mm-title">Whole city</span><button id="mm-toggle" type="button" aria-expanded="true" aria-controls="mm-body">−</button></div>
+  <div id="mm-body" class="mm-body"><canvas id="mm-canvas" role="img" aria-label="Projects as dots coloured by group, roads as lines in their link colours, and a frame round the part of the city on screen. Click or drag to move the city."></canvas><div id="mm-view" class="mm-view" aria-hidden="true"></div></div>
 </aside>
 <p class="caption" id="caption">Closeness on this map is only arrangement. It does not measure similarity.</p>
 <div id="tip" role="tooltip" hidden></div>

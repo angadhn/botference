@@ -1,0 +1,53 @@
+{
+  "tool": "built-in image_gen",
+  "date": "2026-10-29",
+  "useCase": "stylized-concept",
+  "transparentBackground": true,
+  "jobs": [
+    {
+      "id": "planet-blog",
+      "prompt": "Use case: stylized-concept. Asset type: transparent single-frame isometric game sprite for the Botference city. Generate ONE small floating destination world, an island about three 128x64 isometric tiles across (native island width 384 px; output high resolution for later downsampling). Style reference: detailed restrained painterly pixel architecture, mature limestone and slate city, not a cartoon. Orthographic 2:1 isometric camera, screen axes slope +/- 1/2, see roof and two sides. Muted palette: limestone #c9bd98 highlights #ded4b8, slate #58666b, weathered copper #6e9485, warm brick #9b6f58, foliage #72875b #597949 #344f3f, soft shadow #3d5149. Soft daylight upper left, darker right walls. Transparent RGBA background, no background colour, no ground shadow detached from island, no labels, no text or watermark. Lightly tinted glass, irregular foliage, no heavy outlines or toy colours. Miniature buildings should read at small sprite size; uncluttered silhouette. Whole island and all attachments visible, centered with ample transparent margin. Soft tapering underside of weathered rock with a few delicate dangling roots, small drifting cloud wisp. A clearly visible short copper cable projecting below the FRONT of island, ending in a round brass mooring eye for a route connection; keep it distinct from roots. No animation frames. Subject: BLOG world. A cosy compact circular island garden: one clear glass dome on a low limestone base, a warmly lit writing desk clearly visible under the glass, a little wooden bookcase packed with books beside it; a small recognisable antique printing press standing on a side terrace; copper aerial on the dome. Keep the dome transparent enough to see the desk lamp. Lush but restrained plants and bookshelves. The rock underside should be short, soft and rounded, not a huge jagged mountain. Match the previously viewed city artwork's texture and materials.",
+      "cat": "planet",
+      "footprint": [
+        3,
+        3
+      ],
+      "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a1876e-3a9c-7be1-92dd-d778cd10770b/exec-0e338617-3263-40f1-b616-58d416aff00c.png",
+      "source": "source/set-3/planet-blog.png",
+      "routeSourcePx": [
+        614,
+        1056
+      ]
+    },
+    {
+      "id": "planet-spacehq",
+      "prompt": "Use case: stylized-concept. Asset type: transparent single-frame isometric game sprite for the Botference city. Generate ONE small floating destination world, an island about three 128x64 isometric tiles across (native island width 384 px; output high resolution for later downsampling). Style reference: detailed restrained painterly pixel architecture, mature limestone and slate city, not a cartoon. Orthographic 2:1 isometric camera, screen axes slope +/- 1/2, see roof and two sides. Muted palette: limestone #c9bd98 highlights #ded4b8, slate #58666b, weathered copper #6e9485, warm brick #9b6f58, foliage #72875b #597949 #344f3f, soft shadow #3d5149. Soft daylight upper left, darker right walls. Transparent RGBA background, no background colour, no ground shadow detached from island, no labels, no text or watermark. Lightly tinted glass, irregular foliage, no heavy outlines or toy colours. Miniature buildings should read at small sprite size; uncluttered silhouette. Whole island and all attachments visible, centered with ample transparent margin. Soft tapering underside of weathered rock with a few delicate dangling roots, small drifting cloud wisp. A clearly visible short copper cable projecting below the FRONT of island, ending in a round brass mooring eye for a route connection; keep it distinct from roots. No animation frames. Subject: SPACEHQ world. A tiny weathered limestone hangar with broad open slate-roof doors, next to a low glass mission-control dome with visible consoles and copper antennae. A compact ivory-and-copper rocket docked upright on its own side pad, clearly separate from the dome. Thin wispy cloud rings drift around the shallow rock underside. A few plants soften the base. Short rounded rock underside, not a mountain. Match the previous Blog planet and city artwork's detailed pixel-painterly texture; similar size and muted materials. Ensure a front brass cable mooring eye remains visible below the island.",
+      "cat": "planet",
+      "footprint": [
+        3,
+        3
+      ],
+      "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a1876e-3a9c-7be1-92dd-d778cd10770b/exec-92f32abe-b736-4a30-ba14-9fce07d6d383.png",
+      "source": "source/set-3/planet-spacehq.png",
+      "routeSourcePx": [
+        749,
+        953
+      ]
+    },
+    {
+      "id": "planet-textbook",
+      "prompt": "Use case: stylized-concept. Asset type: transparent single-frame isometric game sprite for the Botference city. Generate ONE small floating destination world, an island about three 128x64 isometric tiles across (native island width 384 px; output high resolution for later downsampling). Style reference: detailed restrained painterly pixel architecture, mature limestone and slate city, not a cartoon. Orthographic 2:1 isometric camera, screen axes slope +/- 1/2, see roof and two sides. Muted palette: limestone #c9bd98 highlights #ded4b8, slate #58666b, weathered copper #6e9485, warm brick #9b6f58, foliage #72875b #597949 #344f3f, soft shadow #3d5149. Soft daylight upper left, darker right walls. Transparent RGBA background, no background colour, no ground shadow detached from island, no labels, no text or watermark. Lightly tinted glass, irregular foliage, no heavy outlines or toy colours. Miniature buildings should read at small sprite size; uncluttered silhouette. Whole island and all attachments visible, centered with ample transparent margin. Soft tapering underside of weathered rock with a few delicate dangling roots, small drifting cloud wisp. A clearly visible short copper cable projecting below the FRONT of island, ending in a round brass mooring eye for a route connection; keep it distinct from roots. No animation frames. Subject: TEXTBOOK world. A compact open-air semicircular limestone lecture amphitheatre with tiered benches facing one dark slate chalkboard with faint unlettered chalk marks. A clearly visible small brass orrery with orbit rings beside stacked books on the front terrace. Behind, one small observatory with weathered copper dome and a visible telescope slot. Sparing ivy, low shrubs, muted flowers. Short softly tapered rock underside with delicate roots and one small drifting cloud wisp. Front short copper cable ending in a visible brass mooring eye below the island. Match previous Blog and SpaceHQ worlds' size and mature city textures. True clean transparent cutout; absolutely no coloured background haze or vignette. No legible text.",
+      "cat": "planet",
+      "footprint": [
+        3,
+        3
+      ],
+      "generatedFile": "/Users/angadhnanjangud/.codex/generated_images/01a1876e-3a9c-7be1-92dd-d778cd10770b/exec-6b9a55e2-d43d-44ef-bd07-6a89f1a1690f.png",
+      "source": "source/set-3/planet-textbook.png",
+      "routeSourcePx": [
+        768,
+        958
+      ]
+    }
+  ]
+}

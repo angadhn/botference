@@ -1,0 +1,864 @@
+{
+  "version": 1,
+  "tile": {
+    "width": 128,
+    "height": 64
+  },
+  "projection": {
+    "type": "isometric",
+    "ratio": "2:1",
+    "axisU": [
+      64,
+      32
+    ],
+    "axisV": [
+      -64,
+      32
+    ]
+  },
+  "anchorConvention": "Subtract anchorPx from the projected tile coordinate. Ground anchors are tile centres. Upright sprite anchors are front ground contacts; a building footprint extends backwards from that contact.",
+  "light": {
+    "from": "upper-left",
+    "shadowTowards": "lower-right"
+  },
+  "sample": {
+    "file": "sample-neighbourhood.png",
+    "scene": "sample-scene.json",
+    "sizePx": [
+      1600,
+      1000
+    ],
+    "scale": 0.25
+  },
+  "sprites": [
+    {
+      "id": "library-a",
+      "file": "buildings/library-a.png",
+      "category": "building",
+      "footprintTiles": [
+        8,
+        8
+      ],
+      "anchorPx": [
+        516,
+        1087
+      ],
+      "sizePx": [
+        1032,
+        1091
+      ],
+      "source": "source/library-a.png",
+      "sha256": "6749c97ecf07b090de9694358bbe83788a58856b1135194ab498f869af6f60eb"
+    },
+    {
+      "id": "library-b",
+      "file": "buildings/library-b.png",
+      "category": "building",
+      "footprintTiles": [
+        8,
+        8
+      ],
+      "anchorPx": [
+        516,
+        813
+      ],
+      "sizePx": [
+        1032,
+        817
+      ],
+      "source": "source/library-b.png",
+      "sha256": "cf0c7c30d2172c0eb95bc261cac8fb55ec853ab37e71f4c08b739708704b735b"
+    },
+    {
+      "id": "reading-room-a",
+      "file": "buildings/reading-room-a.png",
+      "category": "building",
+      "footprintTiles": [
+        5,
+        5
+      ],
+      "anchorPx": [
+        324,
+        577
+      ],
+      "sizePx": [
+        648,
+        581
+      ],
+      "source": "source/reading-room-a.png",
+      "sha256": "4d02ff66e2b054b5f0fe08b89eb7368fdfe0c2412fefcefb4e714588f5bdcf7f"
+    },
+    {
+      "id": "reading-room-b",
+      "file": "buildings/reading-room-b.png",
+      "category": "building",
+      "footprintTiles": [
+        5,
+        5
+      ],
+      "anchorPx": [
+        324,
+        643
+      ],
+      "sizePx": [
+        648,
+        647
+      ],
+      "source": "source/reading-room-b.png",
+      "sha256": "24d177b46412912efc34058818c8585af955f4377a4d4c5f15de95b15cc54f0c"
+    },
+    {
+      "id": "lecture-hall-a",
+      "file": "buildings/lecture-hall-a.png",
+      "category": "building",
+      "footprintTiles": [
+        8,
+        8
+      ],
+      "anchorPx": [
+        516,
+        909
+      ],
+      "sizePx": [
+        1032,
+        913
+      ],
+      "source": "source/lecture-hall-a.png",
+      "sha256": "ebffd196f9f40bfeea1c9913f37198ae215efe5ecd1234a2f2be1f70ca992779"
+    },
+    {
+      "id": "lecture-hall-b",
+      "file": "buildings/lecture-hall-b.png",
+      "category": "building",
+      "footprintTiles": [
+        8,
+        8
+      ],
+      "anchorPx": [
+        516,
+        785
+      ],
+      "sizePx": [
+        1032,
+        789
+      ],
+      "source": "source/lecture-hall-b.png",
+      "sha256": "54573a000b7ffbfa1240526d0197c39610e30165c0dc290c1aa2ee03a63d36d7"
+    },
+    {
+      "id": "workshop-a",
+      "file": "buildings/workshop-a.png",
+      "category": "building",
+      "footprintTiles": [
+        7,
+        7
+      ],
+      "anchorPx": [
+        452,
+        512
+      ],
+      "sizePx": [
+        904,
+        516
+      ],
+      "source": "source/workshop-a.png",
+      "sha256": "157664c81dac5f4220bbf1014bfeede657e1e23b803d2b0c57c51cffa16d2b27"
+    },
+    {
+      "id": "workshop-b",
+      "file": "buildings/workshop-b.png",
+      "category": "building",
+      "footprintTiles": [
+        7,
+        7
+      ],
+      "anchorPx": [
+        452,
+        757
+      ],
+      "sizePx": [
+        904,
+        761
+      ],
+      "source": "source/workshop-b.png",
+      "sha256": "4a26918dae5fc51255bea3bfddaede753bf9282df428f3b23fd7929050be3ed7"
+    },
+    {
+      "id": "launch-gantry-a",
+      "file": "buildings/launch-gantry-a.png",
+      "category": "building",
+      "footprintTiles": [
+        5,
+        5
+      ],
+      "anchorPx": [
+        324,
+        1178
+      ],
+      "sizePx": [
+        648,
+        1182
+      ],
+      "source": "source/launch-gantry-a.png",
+      "sha256": "a05f634a1a029686ce6f4ef883fe2eb37815d56d6209d78fc105585d52919e8e"
+    },
+    {
+      "id": "launch-gantry-b",
+      "file": "buildings/launch-gantry-b.png",
+      "category": "building",
+      "footprintTiles": [
+        5,
+        5
+      ],
+      "anchorPx": [
+        324,
+        1250
+      ],
+      "sizePx": [
+        648,
+        1254
+      ],
+      "source": "source/launch-gantry-b.png",
+      "sha256": "52628734e39df776c2d2a3a2844cbf8987fb0450748f7b52339dc4f8388d4ccc"
+    },
+    {
+      "id": "greenhouse-a",
+      "file": "buildings/greenhouse-a.png",
+      "category": "building",
+      "footprintTiles": [
+        6,
+        6
+      ],
+      "anchorPx": [
+        388,
+        552
+      ],
+      "sizePx": [
+        776,
+        556
+      ],
+      "source": "source/greenhouse-a.png",
+      "sha256": "67cf94a1855e04143be76a38d19ba84a6d4841d47a27347bb5f0d7c1ddfb19fc"
+    },
+    {
+      "id": "greenhouse-b",
+      "file": "buildings/greenhouse-b.png",
+      "category": "building",
+      "footprintTiles": [
+        6,
+        6
+      ],
+      "anchorPx": [
+        388,
+        608
+      ],
+      "sizePx": [
+        776,
+        612
+      ],
+      "source": "source/greenhouse-b.png",
+      "sha256": "a9f81378983fa7e01c0a1183fa3f443f7be8ddbea2be5347b3573218ad70c67f"
+    },
+    {
+      "id": "observatory-a",
+      "file": "buildings/observatory-a.png",
+      "category": "building",
+      "footprintTiles": [
+        6,
+        6
+      ],
+      "anchorPx": [
+        388,
+        784
+      ],
+      "sizePx": [
+        776,
+        788
+      ],
+      "source": "source/observatory-a.png",
+      "sha256": "2be746bffc1765a6dfc7fbe86a021c4f2a3de8a8a16f7717cdd8854eff4044f5"
+    },
+    {
+      "id": "observatory-b",
+      "file": "buildings/observatory-b.png",
+      "category": "building",
+      "footprintTiles": [
+        6,
+        6
+      ],
+      "anchorPx": [
+        388,
+        817
+      ],
+      "sizePx": [
+        776,
+        821
+      ],
+      "source": "source/observatory-b.png",
+      "sha256": "83b78688df8da2f9351c5b09c991f8744405edc8c3672f4b6e02c60e26acd4bf"
+    },
+    {
+      "id": "cottage-stone-a",
+      "file": "buildings/cottage-stone-a.png",
+      "category": "building",
+      "footprintTiles": [
+        4,
+        4
+      ],
+      "anchorPx": [
+        260,
+        598
+      ],
+      "sizePx": [
+        520,
+        602
+      ],
+      "source": "source/cottage-stone-a.png",
+      "sha256": "72f00b3fcbb1fb2603df4b2c5a38b884e843df7b8ea3a9229759c0f81424a933"
+    },
+    {
+      "id": "cottage-stone-b",
+      "file": "buildings/cottage-stone-b.png",
+      "category": "building",
+      "footprintTiles": [
+        4,
+        4
+      ],
+      "anchorPx": [
+        260,
+        548
+      ],
+      "sizePx": [
+        520,
+        552
+      ],
+      "source": "source/cottage-stone-b.png",
+      "sha256": "dabbbda467ae6a42564b95ca90f4ba7c4ddb04c817aa9d1fd6dc8ef6dcc12477"
+    },
+    {
+      "id": "cottage-brick-a",
+      "file": "buildings/cottage-brick-a.png",
+      "category": "building",
+      "footprintTiles": [
+        4,
+        4
+      ],
+      "anchorPx": [
+        260,
+        683
+      ],
+      "sizePx": [
+        520,
+        687
+      ],
+      "source": "source/cottage-brick-a.png",
+      "sha256": "89c40b95d528439e9e564897041ab322b1e6585906d962be96a35c0e15560348"
+    },
+    {
+      "id": "cottage-brick-b",
+      "file": "buildings/cottage-brick-b.png",
+      "category": "building",
+      "footprintTiles": [
+        4,
+        4
+      ],
+      "anchorPx": [
+        260,
+        678
+      ],
+      "sizePx": [
+        520,
+        682
+      ],
+      "source": "source/cottage-brick-b.png",
+      "sha256": "3438c4f9f88b9a11424df572d3aafff63fb017986ccea452d3547c2d848db52d"
+    },
+    {
+      "id": "tree-oak",
+      "file": "vegetation/tree-oak.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        3,
+        3
+      ],
+      "anchorPx": [
+        360,
+        544
+      ],
+      "sizePx": [
+        719,
+        548
+      ],
+      "source": "source/tree-oak.png",
+      "sha256": "f199c0b6f4d4276f6ae5b063c0bda86d4c65b34dce01c1179f907bbc061078d9"
+    },
+    {
+      "id": "tree-birch",
+      "file": "vegetation/tree-birch.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        2,
+        2
+      ],
+      "anchorPx": [
+        149,
+        484
+      ],
+      "sizePx": [
+        297,
+        488
+      ],
+      "source": "source/tree-birch.png",
+      "sha256": "eb3878c75f7837555548be1fd85d0b851f9b4cc5572c0dd68be19dbf6bf25bc0"
+    },
+    {
+      "id": "tree-copper-beech",
+      "file": "vegetation/tree-copper-beech.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        3,
+        3
+      ],
+      "anchorPx": [
+        301,
+        524
+      ],
+      "sizePx": [
+        602,
+        528
+      ],
+      "source": "source/tree-copper-beech.png",
+      "sha256": "cd51934bd06f7f616e77e22eaeb4a7346a187f4bfb457d425635765a899082b5"
+    },
+    {
+      "id": "tree-apple",
+      "file": "vegetation/tree-apple.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        2,
+        2
+      ],
+      "anchorPx": [
+        196,
+        364
+      ],
+      "sizePx": [
+        391,
+        368
+      ],
+      "source": "source/tree-apple.png",
+      "sha256": "19fd03b95d08cfc5620896cf6f90cc15060fef8c5dcfc3823107d40d48d5ef2a"
+    },
+    {
+      "id": "hedge-straight",
+      "file": "vegetation/hedge-straight.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        3,
+        1
+      ],
+      "anchorPx": [
+        135,
+        184
+      ],
+      "sizePx": [
+        270,
+        188
+      ],
+      "source": "source/hedge-straight.png",
+      "sha256": "b286a9f56ebe35805e809caefac709bd98fd0ae8a6663d66ddb4082221751df0"
+    },
+    {
+      "id": "hedge-corner",
+      "file": "vegetation/hedge-corner.png",
+      "category": "vegetation",
+      "footprintTiles": [
+        2,
+        2
+      ],
+      "anchorPx": [
+        182,
+        184
+      ],
+      "sizePx": [
+        364,
+        188
+      ],
+      "source": "source/hedge-corner.png",
+      "sha256": "21ccb8d7d29902a35b7a9fe0b7287039f40371e7c84ea6534f8cfe5df5e678fa"
+    },
+    {
+      "id": "grass",
+      "file": "ground/grass.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/grass.png",
+      "sha256": "885e97d6f49d88418ce0e1c335fda1ace205430541ee9f65d2e0f9fd1774b9f0"
+    },
+    {
+      "id": "meadow",
+      "file": "ground/meadow.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/meadow.png",
+      "sha256": "4be1504eedbeb953d754a14d8ac341157e6648874a09006b225fd06862b4fc79"
+    },
+    {
+      "id": "path-straight",
+      "file": "ground/path-straight.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/path-straight.png",
+      "sha256": "6b29eba9e6931e574cfa1ffb4a115c153f83e5b938f80e43edd6ca081c5992ce"
+    },
+    {
+      "id": "path-corner",
+      "file": "ground/path-corner.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/path-corner.png",
+      "sha256": "f6281074a67210eb2d0b16e2797e5c9137ebde069ea80c76eec843d6ecd9eef6"
+    },
+    {
+      "id": "cobbled-square",
+      "file": "ground/cobbled-square.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/cobbled-square.png",
+      "sha256": "3a6c6f15d1892e258824a6e3bb6343913fe4ba5fbebc64d13d11bf6973ce5ba2"
+    },
+    {
+      "id": "water-edge",
+      "file": "ground/water-edge.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/water-edge.png",
+      "sha256": "148d1ae21e5cdc24cc5892134da1865b09f2e0b77e9d6c0ff9812596288a45d9"
+    },
+    {
+      "id": "woodland-floor",
+      "file": "ground/woodland-floor.png",
+      "category": "ground",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        64,
+        32
+      ],
+      "sizePx": [
+        128,
+        64
+      ],
+      "source": "source/woodland-floor.png",
+      "sha256": "f13bf281463aeef4a841764898682a0475ae3aa15fd25db2224b5aaf4780b3cb"
+    },
+    {
+      "id": "scientist-notebook-a",
+      "file": "residents/scientist-notebook-a.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        31,
+        132
+      ],
+      "sizePx": [
+        61,
+        136
+      ],
+      "source": "source/scientist-notebook-a.png",
+      "sha256": "e05e9bf791eee8f1025fffbfae7017d37788595ccf327e9fab4449eb8051cf9e",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "scientist-notebook-b",
+      "file": "residents/scientist-notebook-b.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        33,
+        132
+      ],
+      "sizePx": [
+        65,
+        136
+      ],
+      "source": "source/scientist-notebook-b.png",
+      "sha256": "32c12f6182abddbc0b8514b6d4b6b0bb405d60b889759a7f302296d116a156c2",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "scientist-notebook-c",
+      "file": "residents/scientist-notebook-c.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        31,
+        132
+      ],
+      "sizePx": [
+        62,
+        136
+      ],
+      "source": "source/scientist-notebook-c.png",
+      "sha256": "c15ac9ead90b6098e599b8dbfe253c26c2c41cfff21ad8029b9ae3df26f051f0",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "scientist-notebook-d",
+      "file": "residents/scientist-notebook-d.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        35,
+        132
+      ],
+      "sizePx": [
+        69,
+        136
+      ],
+      "source": "source/scientist-notebook-d.png",
+      "sha256": "2ba1428f059279dc57039de19449c0d6071a27fc2e43df2b95b1c9a1940afef8",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "engineer-ladder",
+      "file": "residents/engineer-ladder.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        63,
+        172
+      ],
+      "sizePx": [
+        126,
+        176
+      ],
+      "source": "source/engineer-ladder.png",
+      "sha256": "91d21945fc107fc9bafb84f3bd144d11a1b953680aeef047fa55a06676b7fb61",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "engineer-plans",
+      "file": "residents/engineer-plans.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        42,
+        132
+      ],
+      "sizePx": [
+        84,
+        136
+      ],
+      "source": "source/engineer-plans.png",
+      "sha256": "41b7b07bb838b16191c0bd954e73459880782d4fd1b2406e7c8f2bc6b6042985",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "writer-pages",
+      "file": "residents/writer-pages.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        73,
+        132
+      ],
+      "sizePx": [
+        165,
+        136
+      ],
+      "source": "source/writer-pages.png",
+      "sha256": "4d3e7afe639644dc67596449d03d467c77c37d37bb10dbd6403b62f397098874",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "writer-notebook",
+      "file": "residents/writer-notebook.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        19,
+        132
+      ],
+      "sizePx": [
+        54,
+        136
+      ],
+      "source": "source/writer-notebook.png",
+      "sha256": "9e3acf11df3f5cbd26f5f193c83eebdf626c282cba395c6b311eab39fd6f1c1d",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "gardener",
+      "file": "residents/gardener.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        41,
+        132
+      ],
+      "sizePx": [
+        81,
+        136
+      ],
+      "source": "source/gardener.png",
+      "sha256": "7bb2c05d67559128810e1324ef35169022b042eb2103501e6d90becfc92ac2ad",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "student-books",
+      "file": "residents/student-books.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        31,
+        132
+      ],
+      "sizePx": [
+        61,
+        136
+      ],
+      "source": "source/student-books.png",
+      "sha256": "b2a8680668e5d206dbb4c729a0c8f9ca5e391b1f4f743eb0a46f27d843131006",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "student-satchel",
+      "file": "residents/student-satchel.png",
+      "category": "resident",
+      "footprintTiles": [
+        1,
+        1
+      ],
+      "anchorPx": [
+        18,
+        132
+      ],
+      "sizePx": [
+        63,
+        136
+      ],
+      "source": "source/student-satchel.png",
+      "sha256": "beb36747f39f72fcb10577f20e5365ce07131509153c0a53570743947650dd08",
+      "figureHeightPx": 128
+    },
+    {
+      "id": "cat",
+      "file": "residents/cat.png",
+      "category": "resident",
+      "footprintTiles": [
+        0.5,
+        0.5
+      ],
+      "anchorPx": [
+        19,
+        46
+      ],
+      "sizePx": [
+        37,
+        50
+      ],
+      "source": "source/cat.png",
+      "sha256": "4a91ec84f210831e8ab6f62c8acfb715eb37f82f1ced828ce3f7f546d5042f27",
+      "figureHeightPx": 42
+    }
+  ]
+}

@@ -1,0 +1,562 @@
+[
+  {
+    "id": "agent-claude-idle-sw",
+    "sourceCrop": "512x1507+197+155",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      43,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-idle-se",
+    "sourceCrop": "487x1497+193+156",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      42,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-working-sw",
+    "sourceCrop": "522x1502+204+154",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      44,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-working-se",
+    "sourceCrop": "531x1490+174+159",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-sw-1",
+    "sourceCrop": "524x1489+194+155",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      45,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-sw-2",
+    "sourceCrop": "542x1509+187+133",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-sw-3",
+    "sourceCrop": "746x1557+85+101",
+    "placedPx": [
+      50,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      61,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-sw-4",
+    "sourceCrop": "709x1515+85+123",
+    "placedPx": [
+      48,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      60,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-se-1",
+    "sourceCrop": "706x1523+135+113",
+    "placedPx": [
+      54,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      59,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-se-2",
+    "sourceCrop": "599x1481+206+129",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      52,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-se-3",
+    "sourceCrop": "549x1417+191+180",
+    "placedPx": [
+      56,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      50,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-se-4",
+    "sourceCrop": "655x1480+187+160",
+    "placedPx": [
+      57,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      57,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-nw-1",
+    "sourceCrop": "532x1496+201+126",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-nw-2",
+    "sourceCrop": "499x1469+208+129",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      43,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-nw-3",
+    "sourceCrop": "543x1454+179+157",
+    "placedPx": [
+      57,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      48,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-nw-4",
+    "sourceCrop": "491x1450+220+169",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      43,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-ne-1",
+    "sourceCrop": "538x1490+209+154",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-ne-2",
+    "sourceCrop": "487x1440+209+159",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      43,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-ne-3",
+    "sourceCrop": "507x1441+206+162",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      45,
+      128
+    ]
+  },
+  {
+    "id": "agent-claude-walk-ne-4",
+    "sourceCrop": "518x1439+206+161",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-idle-sw",
+    "sourceCrop": "439x1396+234+266",
+    "placedPx": [
+      61,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      40,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-idle-se",
+    "sourceCrop": "477x1488+223+177",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      41,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-working-sw",
+    "sourceCrop": "514x1405+185+228",
+    "placedPx": [
+      56,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      47,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-working-se",
+    "sourceCrop": "499x1381+286+84",
+    "placedPx": [
+      61,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      46,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-sw-1",
+    "sourceCrop": "536x1389+186+227",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      49,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-sw-2",
+    "sourceCrop": "470x1347+223+262",
+    "placedPx": [
+      59,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      45,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-sw-3",
+    "sourceCrop": "719x1452+92+197",
+    "placedPx": [
+      50,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      63,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-sw-4",
+    "sourceCrop": "692x1430+90+177",
+    "placedPx": [
+      48,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      62,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-se-1",
+    "sourceCrop": "678x1467+148+159",
+    "placedPx": [
+      54,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      59,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-se-2",
+    "sourceCrop": "577x1485+171+123",
+    "placedPx": [
+      56,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      50,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-se-3",
+    "sourceCrop": "510x1343+217+251",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      49,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-se-4",
+    "sourceCrop": "680x1472+126+122",
+    "placedPx": [
+      55,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      59,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-nw-1",
+    "sourceCrop": "501x1251+226+301",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      51,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-nw-2",
+    "sourceCrop": "472x1348+232+233",
+    "placedPx": [
+      61,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      45,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-nw-3",
+    "sourceCrop": "507x1312+197+279",
+    "placedPx": [
+      56,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      49,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-nw-4",
+    "sourceCrop": "452x1301+254+267",
+    "placedPx": [
+      61,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      44,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-ne-1",
+    "sourceCrop": "532x1371+203+252",
+    "placedPx": [
+      57,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      50,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-ne-2",
+    "sourceCrop": "472x1331+237+239",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      45,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-ne-3",
+    "sourceCrop": "520x1325+222+267",
+    "placedPx": [
+      58,
+      16
+    ],
+    "headCentrePx": 80,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      50,
+      128
+    ]
+  },
+  {
+    "id": "agent-codex-walk-ne-4",
+    "sourceCrop": "438x1340+242+251",
+    "placedPx": [
+      60,
+      16
+    ],
+    "headCentrePx": 80.5,
+    "groundBaselinePx": 144,
+    "contentSizePx": [
+      42,
+      128
+    ]
+  }
+]

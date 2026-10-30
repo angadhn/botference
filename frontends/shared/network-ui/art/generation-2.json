@@ -1,0 +1,671 @@
+{
+  "tool": "built-in image_gen",
+  "jobs": [
+    {
+      "id": "hospital-a",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one production isometric city sprite. Subject: Solarpunk hospital A, gracious low warm limestone hospital with two wings embracing a glass courtyard, planted green roofs, copper solar canopy above entrance, tall daylight windows, small healing garden integrated along facade. No signage. Fine painterly pixel clusters matching the inspected Botference architecture, realistic proportions. Strict orthographic 2:1 isometric, axes slope +/-0.5, verticals vertical. Daylight upper left, right facades darker, shadows lower right. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, grass #72875b, foliage #597949, shadows #3d5149. Isolated full building, generous transparent margins, no ground plinth or detached lawn island, no text, no black outlines, no cartoon. Square PNG with genuine alpha. Footprint 8x8 tiles at 128x64 tile scale, entry door around one eighth building width.",
+      "done": true,
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-10b5a6b6-62a5-434a-9f08-efae64d5f8dd.png"
+    },
+    {
+      "id": "hospital-b",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "subject": "Solarpunk hospital variant B: compact two-storey warm limestone clinical pavilion around an open glass-roof courtyard, stepped planted roofs, broad copper solar canopy shading accessible entrance. Distinct low horizontal architecture, ivy and sedum, no ground plinth. Human-scale entrance.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Solarpunk hospital variant B: compact two-storey warm limestone clinical pavilion around an open glass-roof courtyard, stepped planted roofs, broad copper solar canopy shading accessible entrance. Distinct low horizontal architecture, ivy and sedum, no ground plinth. Human-scale entrance.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-9a42be74-9a3a-403b-a4ce-14f19b563fbb.png",
+      "done": true
+    },
+    {
+      "id": "rehabilitation-garden",
+      "cat": "vegetation",
+      "footprint": [
+        5,
+        5
+      ],
+      "height": 330,
+      "subject": "One accessible rehabilitation garden, a flat isometric square with a looping pale gravel walking path, parallel brass rehabilitation handrails, raised herb beds, a small shaded timber sitting nook. No people. Low planted edges. Transparent outside the garden footprint.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One accessible rehabilitation garden, a flat isometric square with a looping pale gravel walking path, parallel brass rehabilitation handrails, raised herb beds, a small shaded timber sitting nook. No people. Low planted edges. Transparent outside the garden footprint.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-c8117fb4-5391-483c-b9df-7c72457a8701.png",
+      "done": true
+    },
+    {
+      "id": "stone-stair-ramp",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "One tile of a broad stone stair ramp joining a shallow 16px terrace step. 2:1 isometric diamond grassy tile with four wide pale limestone stair treads crossing it parallel to axis U. Green grass margins, full diamond tile, no thick base.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One tile of a broad stone stair ramp joining a shallow 16px terrace step. 2:1 isometric diamond grassy tile with four wide pale limestone stair treads crossing it parallel to axis U. Green grass margins, full diamond tile, no thick base.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-b5e6c43d-a188-43e4-a700-a53a97269b91.png",
+      "done": true
+    },
+    {
+      "id": "bridge-straight",
+      "cat": "prop",
+      "footprint": [
+        3,
+        1
+      ],
+      "height": 150,
+      "subject": "A short straight three-tile stone canal bridge, pale warm limestone single low arch with restrained copper handrails, road deck along isometric axis U, complete standalone bridge with transparent space beneath arch, no river or land.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: A short straight three-tile stone canal bridge, pale warm limestone single low arch with restrained copper handrails, road deck along isometric axis U, complete standalone bridge with transparent space beneath arch, no river or land.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-d5c77413-02a8-4aff-98fc-51e9be38ee14.png",
+      "done": true
+    },
+    {
+      "id": "wooden-footbridge",
+      "cat": "prop",
+      "footprint": [
+        3,
+        1
+      ],
+      "height": 150,
+      "subject": "A light three-tile wooden pedestrian footbridge, simple curved timber deck, oak handrails and copper bolts, axis V orientation, no land or water; complete freestanding isolated bridge.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: A light three-tile wooden pedestrian footbridge, simple curved timber deck, oak handrails and copper bolts, axis V orientation, no land or water; complete freestanding isolated bridge.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-f70712e4-be99-46f9-965c-1af9bfa9e121.png",
+      "done": true
+    },
+    {
+      "id": "deep-water",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single seamless flat 2:1 diamond of muted deep blue-green water, gentle tiny ripples, evenly textured, no shore, foam, objects or tile thickness. Whole surface #507c7d.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single seamless flat 2:1 diamond of muted deep blue-green water, gentle tiny ripples, evenly textured, no shore, foam, objects or tile thickness. Whole surface #507c7d.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-e0ab92d1-0099-4deb-b542-b174cf1b1d9e.png",
+      "done": true
+    },
+    {
+      "id": "shoreline-u",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single flat 2:1 diamond coastal shoreline tile, grassy northwest half and muted teal water southeast half, boundary straight parallel to axis U (upper-left to lower-right), narrow sandy pebble edge, no thickness. Matching #72875b grass and #6c9190 water.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single flat 2:1 diamond coastal shoreline tile, grassy northwest half and muted teal water southeast half, boundary straight parallel to axis U (upper-left to lower-right), narrow sandy pebble edge, no thickness. Matching #72875b grass and #6c9190 water.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-1e2afe58-2cde-4ec1-aeac-6c6d3398e5e7.png",
+      "done": true
+    },
+    {
+      "id": "shoreline-v",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single flat 2:1 diamond coastal shoreline tile, grassy northeast half and muted teal water southwest half, boundary straight parallel to axis V (upper-right to lower-left), narrow sandy pebble edge, no thickness. Matching #72875b grass and #6c9190 water.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single flat 2:1 diamond coastal shoreline tile, grassy northeast half and muted teal water southwest half, boundary straight parallel to axis V (upper-right to lower-left), narrow sandy pebble edge, no thickness. Matching #72875b grass and #6c9190 water.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-2d6f871a-fa22-40f8-894e-278b0699a297.png",
+      "done": true
+    },
+    {
+      "id": "sand",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single seamless flat 2:1 diamond of pale warm sand with subtle sparse tiny grains, uniform texture to tile edges, no dunes, objects, rocks, thickness or decorative border.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single seamless flat 2:1 diamond of pale warm sand with subtle sparse tiny grains, uniform texture to tile edges, no dunes, objects, rocks, thickness or decorative border.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-7fe4b238-0c7c-41bc-9bca-6c5a3c776d8d.png",
+      "done": true
+    },
+    {
+      "id": "causeway",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single repeatable flat 2:1 diamond tile, broad straight limestone cobbled causeway strip crossing completely along isometric U axis, water either side in muted teal. Path ends must reach the northwest and southeast tile edges at equal width, no end caps, no plinth.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single repeatable flat 2:1 diamond tile, broad straight limestone cobbled causeway strip crossing completely along isometric U axis, water either side in muted teal. Path ends must reach the northwest and southeast tile edges at equal width, no end caps, no plinth.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-30285b12-1fc5-4bec-9aa4-7f5317789d39.png",
+      "done": true
+    },
+    {
+      "id": "rock-outcrop",
+      "cat": "vegetation",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 150,
+      "subject": "Small low weathered limestone and grey granite outcrop with irregular angular slabs, patches of moss and a few grass tufts. Hill scenery, no ground plinth, one isolated cluster.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Small low weathered limestone and grey granite outcrop with irregular angular slabs, patches of moss and a few grass tufts. Hill scenery, no ground plinth, one isolated cluster.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-a9e85dd7-dd49-4f98-9703-988a16ec6f29.png",
+      "done": true
+    },
+    {
+      "id": "heather",
+      "cat": "ground",
+      "footprint": [
+        1,
+        1
+      ],
+      "subject": "Single flat seamless 2:1 diamond of heath grass with low tiny muted mauve heather flowers. Uniform small texture, no tall shrubs, no thick tile base.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single flat seamless 2:1 diamond of heath grass with low tiny muted mauve heather flowers. Uniform small texture, no tall shrubs, no thick tile base.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-2b0edd06-9912-4165-800f-f0fb54d13f58.png",
+      "done": true
+    },
+    {
+      "id": "wind-turbine",
+      "cat": "prop",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 520,
+      "subject": "Elegant small solarpunk wind turbine, slender cream steel mast, three pale wood blades on copper hub, verdigris service hatch and modest stone footing. One turbine only, visible whole blades. No ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Elegant small solarpunk wind turbine, slender cream steel mast, three pale wood blades on copper hub, verdigris service hatch and modest stone footing. One turbine only, visible whole blades. No ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-6f054c06-a9ad-4d70-9003-857a86bb1c0e.png",
+      "done": true
+    },
+    {
+      "id": "copper-water-tower",
+      "cat": "prop",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 360,
+      "subject": "Victorian steampunk water tower: round weathered copper tank on four slender dark metal legs, curved copper roof, brass pipes and ladder, small ivy at foot, no steam or smoke, no ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Victorian steampunk water tower: round weathered copper tank on four slender dark metal legs, curved copper roof, brass pipes and ladder, small ivy at foot, no steam or smoke, no ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-8b70e4a0-1250-418f-bddc-2c0113c45603.png",
+      "done": true
+    },
+    {
+      "id": "solar-glass-pergola",
+      "cat": "prop",
+      "footprint": [
+        3,
+        2
+      ],
+      "height": 210,
+      "subject": "Open solarpunk pergola, delicate copper columns and blue-green solar glass roof panels, one climbing vine, transparent open sides, no people or ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Open solarpunk pergola, delicate copper columns and blue-green solar glass roof panels, one climbing vine, transparent open sides, no people or ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-ab705aee-9b2a-410f-b56e-f85555283be3.png",
+      "done": true
+    },
+    {
+      "id": "street-lamp",
+      "cat": "prop",
+      "footprint": [
+        0.5,
+        0.5
+      ],
+      "height": 240,
+      "subject": "Single elegant slender brass and dark verdigris street lamp, frosted glass globe and little copper solar cap. Daytime, no glow halo, no ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Single elegant slender brass and dark verdigris street lamp, frosted glass globe and little copper solar cap. Daytime, no glow halo, no ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-929f9a03-d6b2-4b52-915c-821df65249fe.png",
+      "done": true
+    },
+    {
+      "id": "bench",
+      "cat": "prop",
+      "footprint": [
+        1,
+        0.5
+      ],
+      "height": 70,
+      "subject": "One small public bench, weathered oak slats and curved copper legs, simple backrest, axis U orientation, no ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One small public bench, weathered oak slats and curved copper legs, simple backrest, axis U orientation, no ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-6e34a4d7-2c2d-44b8-adb7-18031a394fce.png",
+      "done": true
+    },
+    {
+      "id": "canal-boat",
+      "cat": "prop",
+      "footprint": [
+        3,
+        1
+      ],
+      "height": 115,
+      "subject": "One small moored canal narrowboat, muted green wooden hull with cream cabin, copper fittings, little solar glass roof and pot plant. Full boat, transparent background, no water, no wake, no people.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One small moored canal narrowboat, muted green wooden hull with cream cabin, copper fittings, little solar glass roof and pot plant. Full boat, transparent background, no water, no wake, no people.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-b3857ad7-fc98-4da3-b89d-741eb85fba15.png",
+      "done": true
+    },
+    {
+      "id": "tram-stop",
+      "cat": "prop",
+      "footprint": [
+        3,
+        1
+      ],
+      "height": 200,
+      "subject": "Small solarpunk tram shelter, copper frame with green solar glass canopy and oak bench, slender blank stop pole, no letters or route numbers, no tram, no tracks, no ground tile.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: Small solarpunk tram shelter, copper frame with green solar glass canopy and oak bench, slender blank stop pole, no letters or route numbers, no tram, no tracks, no ground tile.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-5f407ef6-25b7-45d9-83e6-76fe1949256d.png",
+      "done": true
+    },
+    {
+      "id": "doctor",
+      "cat": "resident",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "subject": "One adult doctor, dark skin, cream coat over muted teal clothing, stethoscope, relaxed standing pose holding a small medical bag. Realistic body and small head, isometric overhead viewpoint, entire feet visible.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One adult doctor, dark skin, cream coat over muted teal clothing, stethoscope, relaxed standing pose holding a small medical bag. Realistic body and small head, isometric overhead viewpoint, entire feet visible.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-a7c5e67c-444b-49af-a86b-2598db2da871.png",
+      "done": true
+    },
+    {
+      "id": "nurse-plant",
+      "cat": "resident",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "subject": "One adult nurse in muted sage scrubs holding a small potted green plant in both hands, dark hair tied back, natural human proportions and small head, full body and feet, gentle walking pose.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One adult nurse in muted sage scrubs holding a small potted green plant in both hands, dark hair tied back, natural human proportions and small head, full body and feet, gentle walking pose.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-892c92ca-6a49-4dae-9796-eb0dd490f42c.png",
+      "done": true
+    },
+    {
+      "id": "tinkerer-goggles",
+      "cat": "resident",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "subject": "One adult brass-goggled tinkerer, goggles on forehead, russet waistcoat over cream rolled-sleeve shirt, dark trousers and small copper tool pouch, holding a tiny spanner. Realistic small head, full body and feet.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One adult brass-goggled tinkerer, goggles on forehead, russet waistcoat over cream rolled-sleeve shirt, dark trousers and small copper tool pouch, holding a tiny spanner. Realistic small head, full body and feet.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-adc29691-fb43-4b08-bcdc-f3b1ec163db3.png",
+      "done": true
+    },
+    {
+      "id": "cyclist",
+      "cat": "resident",
+      "footprint": [
+        2,
+        1
+      ],
+      "height": 128,
+      "subject": "One adult cyclist seated upright on a slender vintage copper-frame bicycle, olive jacket and slate trousers, small helmet, whole bicycle and wheels visible, realistic small head. Travelling along isometric axis U.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One adult cyclist seated upright on a slender vintage copper-frame bicycle, olive jacket and slate trousers, small helmet, whole bicycle and wheels visible, realistic small head. Travelling along isometric axis U.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-c0440953-6191-4d24-ab2b-633c9a1f6ada.png",
+      "done": true
+    },
+    {
+      "id": "child-a",
+      "cat": "resident",
+      "footprint": [
+        0.7,
+        0.7
+      ],
+      "height": 88,
+      "subject": "One child about eight years old, short curly dark hair, warm ochre sweater and slate shorts, holding a small leaf, natural child proportions not giant cartoon head, full body and feet, isometric view.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One child about eight years old, short curly dark hair, warm ochre sweater and slate shorts, holding a small leaf, natural child proportions not giant cartoon head, full body and feet, isometric view.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-e96d8aa3-8b62-4c09-b0b4-6a79189479ed.png",
+      "done": true
+    },
+    {
+      "id": "child-b",
+      "cat": "resident",
+      "footprint": [
+        0.7,
+        0.7
+      ],
+      "height": 96,
+      "subject": "One child about ten years old, straight auburn hair, sage dungarees over cream shirt, small satchel, gently running, realistic child proportions not giant cartoon head, full body and feet.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One child about ten years old, straight auburn hair, sage dungarees over cream shirt, small satchel, gently running, realistic child proportions not giant cartoon head, full body and feet.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-294733b7-44e0-4060-8d77-085a14a49a62.png",
+      "done": true
+    },
+    {
+      "id": "terrace-ne",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: straight northeast back-right edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: straight northeast back-right edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-a70d8a32-6604-4b97-8cb7-939e5f42ea78.png",
+      "done": true
+    },
+    {
+      "id": "terrace-nw",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: straight northwest back-left edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: straight northwest back-left edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-2aac4e8a-88de-4d28-a5b3-2304589501fa.png",
+      "done": true
+    },
+    {
+      "id": "terrace-se",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: straight southeast front-right edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: straight southeast front-right edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-6f12bf79-9a93-4ee8-afb8-05525d569934.png",
+      "done": true
+    },
+    {
+      "id": "terrace-sw",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: straight southwest front-left edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: straight southwest front-left edge only. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-f868c78b-ab75-4df6-9249-19ae4d94f370.png",
+      "done": true
+    },
+    {
+      "id": "terrace-outer-s",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: outside convex southern corner with both front edges. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: outside convex southern corner with both front edges. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-b61d3d35-27da-435d-a930-75d89f6655e4.png",
+      "done": true
+    },
+    {
+      "id": "terrace-outer-n",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: outside convex northern corner with both back edges. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: outside convex northern corner with both back edges. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-dd8219b2-8379-4fd1-9deb-961344f73e63.png",
+      "done": true
+    },
+    {
+      "id": "terrace-inner-e",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: inside concave eastern corner, L shaped raised grass wrapping around lower east quadrant. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: inside concave eastern corner, L shaped raised grass wrapping around lower east quadrant. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-40b9a034-7c9d-43fc-863f-6df61258cbcf.png",
+      "done": true
+    },
+    {
+      "id": "terrace-inner-w",
+      "cat": "terrain",
+      "footprint": [
+        1,
+        1
+      ],
+      "stepPx": 16,
+      "subject": "One modular terrace cliff tile: inside concave western corner, L shaped raised grass wrapping around lower west quadrant. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "prompt": "Use case: stylized-concept. Asset type: one production Botference city sprite. Style: fine painterly pixel clusters, textured realistic proportions, restrained Victorian solarpunk/steampunk architecture. Strict orthographic 2:1 isometric, ground axes slopes +/-0.5, verticals vertical. Upper-left daylight, right faces darker, minimal lower-right contact shadow. Palette limestone #c9bd98 highlights #ded4b8, slate #58666b, verdigris #6e9485, warm brick #9b6f58, grass #72875b and #597949, water #6c9190, shadow #3d5149. Genuine transparent background and transparent negative spaces, complete isolated object with clear margins. No labels, text, frame, black outlines, cartoon proportions, extra objects or backdrop. Subject: One modular terrace cliff tile: inside concave western corner, L shaped raised grass wrapping around lower west quadrant. A full 2:1 isometric diamond top of muted grass, shallow exposed pale limestone retaining face exactly one quarter of tile diamond height (16px step at 128x64 final tile), no bevel or heavy border. The other edges connect directly to adjacent grass with zero gap. Top diamond vertices relative to its 128x80 box: (64,0),(128,32),(64,64),(0,32); stone face extends 16px below specified edge. Straight vertical ends, flush seams, no protruding rocks, plants or cast shadow. Transparent outside tile. Match #72875b grass and #c9bd98 warm stone. High resolution isolated tile, not a terrain landscape.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-927f2f30-f08e-44e3-bd1e-22dd574d1ddb.png",
+      "done": true
+    },
+    {
+      "id": "library-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "base": "library-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/library-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-9a39079c-e4c6-473d-9c46-3bcef1b94d64.png",
+      "done": true
+    },
+    {
+      "id": "library-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "base": "library-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/library-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-dd3d3e0d-c34f-4bb1-bcbe-ce5639ca5ea3.png",
+      "done": true
+    },
+    {
+      "id": "reading-room-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        5,
+        5
+      ],
+      "base": "reading-room-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/reading-room-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-36889bca-2b96-4fd6-9178-d68c15b1d78d.png",
+      "done": true
+    },
+    {
+      "id": "reading-room-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        5,
+        5
+      ],
+      "base": "reading-room-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/reading-room-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-bfbe0c67-dd3b-40e3-b0d5-39f61b0498fc.png",
+      "done": true
+    },
+    {
+      "id": "lecture-hall-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "base": "lecture-hall-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/lecture-hall-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-38588784-8386-49f8-8bad-46da7eaf73ec.png",
+      "done": true
+    },
+    {
+      "id": "lecture-hall-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        8,
+        8
+      ],
+      "base": "lecture-hall-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/lecture-hall-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-b31ac5ec-5185-42ee-83f0-96a84984c4a5.png",
+      "done": true
+    },
+    {
+      "id": "workshop-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        7,
+        7
+      ],
+      "base": "workshop-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/workshop-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-93309382-b86a-48df-b38c-cdb3703a62d1.png",
+      "done": true
+    },
+    {
+      "id": "workshop-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        7,
+        7
+      ],
+      "base": "workshop-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/workshop-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-5d1f63a1-5734-49fc-a24f-5590b9a70acd.png",
+      "done": true
+    },
+    {
+      "id": "launch-gantry-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        5,
+        5
+      ],
+      "base": "launch-gantry-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/launch-gantry-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-bbbdc2b6-0838-4d0f-a417-d0b0b3600860.png",
+      "done": true
+    },
+    {
+      "id": "launch-gantry-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        5,
+        5
+      ],
+      "base": "launch-gantry-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/launch-gantry-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-b3bbf0df-b94c-4ca8-bacf-1fa6a1472b14.png",
+      "done": true
+    },
+    {
+      "id": "greenhouse-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        6,
+        6
+      ],
+      "base": "greenhouse-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/greenhouse-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-2b905fc6-5b51-482d-9cd2-d6df4fb13230.png",
+      "done": true
+    },
+    {
+      "id": "greenhouse-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        6,
+        6
+      ],
+      "base": "greenhouse-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/greenhouse-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-1a5eb3f2-5a09-4489-9923-c793fc963ba0.png",
+      "done": true
+    },
+    {
+      "id": "observatory-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        6,
+        6
+      ],
+      "base": "observatory-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/observatory-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-cbe94c59-58f6-4df1-926e-b6efe21d36a4.png",
+      "done": true
+    },
+    {
+      "id": "observatory-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        6,
+        6
+      ],
+      "base": "observatory-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/observatory-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-6c4108f7-4156-49ec-b8f2-b087ef4d44b2.png",
+      "done": true
+    },
+    {
+      "id": "cottage-stone-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        4,
+        4
+      ],
+      "base": "cottage-stone-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/cottage-stone-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-4adbb19f-f2f0-4221-b0a6-593833735e3b.png",
+      "done": true
+    },
+    {
+      "id": "cottage-stone-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        4,
+        4
+      ],
+      "base": "cottage-stone-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/cottage-stone-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-ce1835f0-a7d8-47ad-a072-cc68920daad5.png",
+      "done": true
+    },
+    {
+      "id": "cottage-brick-a-shuttered",
+      "cat": "building",
+      "footprint": [
+        4,
+        4
+      ],
+      "base": "cottage-brick-a",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/cottage-brick-a.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-4cd8d147-32df-404d-956c-246e5d744bc4.png",
+      "done": true
+    },
+    {
+      "id": "cottage-brick-b-shuttered",
+      "cat": "building",
+      "footprint": [
+        4,
+        4
+      ],
+      "base": "cottage-brick-b",
+      "reference": "/Users/angadhnanjangud/MySiteFromObsidianVault/botference-main/frontends/shared/network-ui/art/buildings/cottage-brick-b.png",
+      "prompt": "Use case: precise-object-edit. Edit target: supplied Botference building sprite. Change only its openings and quiet-state surface tone: cover windows and doors with fitted weathered muted sage or oak boards/shutters, no interior glow. Keep exact silhouette, architecture, roof, camera, object position, transparent canvas size, footprint, greenery, light from upper left and anchor. Muted warm palette, building maintained, not ruined. For the launch site close ground control-house openings and service access; keep rocket and gantry unchanged. For glasshouses board the doors and add subdued fitted opaque shade panels inside glass walls; preserve glass roof frame. Do not add padlocks, text, signs, rubble, fog, people or ground. Transparent PNG. The original building must remain recognisable and identical in dimensions.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18710-1880-76e0-bb6a-baeb1ba3cc0c/exec-f160eb14-8a45-41bb-a132-4cdf50a038a6.png",
+      "done": true
+    }
+  ]
+}

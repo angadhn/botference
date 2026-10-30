@@ -1,0 +1,99 @@
+{
+  "status": "passed",
+  "sprites": 155,
+  "newSprites": 112,
+  "counts": {
+    "building": 38,
+    "vegetation": 8,
+    "ground": 13,
+    "resident": 18,
+    "terrain": 9,
+    "prop": 9,
+    "planet": 3,
+    "agent": 57
+  },
+  "agentValidation": {
+    "status": "passed",
+    "bodyFrames": 40,
+    "walkFrames": 32,
+    "walkCycles": 8,
+    "badges": 5,
+    "directionalRoleOverlays": 12,
+    "canvasPx": [
+      160,
+      160
+    ],
+    "anchorPx": [
+      80,
+      144
+    ],
+    "figureHeightPx": 128,
+    "maxHeadAxisErrorPx": 0.5,
+    "earlierSpritesPreserved": 98,
+    "walkStrips": [
+      "claude-sw",
+      "claude-se",
+      "claude-nw",
+      "claude-ne",
+      "codex-sw",
+      "codex-se",
+      "codex-nw",
+      "codex-ne"
+    ],
+    "sampleSizePx": [
+      1600,
+      1000
+    ],
+    "sampleScale": 0.75,
+    "limitations": [
+      "Generated walk poses are separate paintings with some texture and silhouette variation; fixed anchors do not guarantee optical-flow smoothness.",
+      "Role overlays are fitted to idle poses only.",
+      "This pack contains artwork, not live agent presence or movement code."
+    ]
+  },
+  "originalSpritesPreserved": 43,
+  "earlierSpritesPreserved": 95,
+  "shutteredPairsChecked": 18,
+  "catalogueSprites": 155,
+  "planetRouteAnchorsChecked": 3,
+  "sample3Scale": 0.5,
+  "groundTileSize": [
+    128,
+    64
+  ],
+  "terraceTileSize": [
+    128,
+    80
+  ],
+  "stepPx": 16,
+  "sampleSize": [
+    1600,
+    1000
+  ],
+  "sampleScale": 0.25,
+  "checkedInteriorGroundPixels": 466944,
+  "transparentGroundSeamPixels": 0,
+  "sample2TransparentGroundSeamPixels": 0,
+  "isolatedTerracePixelsChecked": 78336,
+  "isolatedTerraceSeamPixels": 0,
+  "cliffPixelsChecked": 2112,
+  "cliffGapPixels": 0,
+  "transparentSpritePixels": 11254608,
+  "checks": [
+    "155 PNG files, dimensions, hashes, anchors, footprints and alpha",
+    "98 earlier manifest entries unchanged",
+    "40 body frames, 5 badges, 12 directional overlays; fixed walk anchors and head axes; 1600x1000 agent sample",
+    "Three single-frame planets, three-tile width, visible route attachments and unclipped common-scale sample",
+    "All 52 requested additions present",
+    "All 18 shuttered variants retain original dimensions, footprint and anchor",
+    "All scenic sprites occur in a sample; all sprites occur in catalogue",
+    "All four 1600x1000 samples",
+    "Integer tile placement; ground seams; elevated plateau and front cliff coverage without lower-ground backing"
+  ],
+  "limitations": [
+    "Generated architectural silhouettes are close matches, not pixel-identical edits.",
+    "The terrace meshes resample shared generated lawn and limestone surfaces for exact joins.",
+    "Coverage checks certify no transparent gaps, not CAD accuracy or every possible terrain layout.",
+    "Purpose-based terrain logic and automatic selection of new sprites are a separate UI task."
+  ]
+}

@@ -1,0 +1,498 @@
+{
+  "tool": "built-in image_gen",
+  "jobs": [
+    {
+      "id": "library-a",
+      "cat": "building",
+      "subject": "Domed limestone library with copper verdigris dome, slate wings, ornate fine stonework and climbing ivy.",
+      "footprint": [
+        8,
+        8
+      ],
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-c730513f-7493-476a-8d25-adb48465543b.png",
+      "prompt": "Use case: stylized-concept. Asset type: production isometric pixel-art city sprite, a single original domed library. Reference image already inspected: tiny.london preview by Boris Starkov, used only for painterly architectural pixel detail, realistic proportions, lush muted colours; create original architecture, no copying map or text. An elegant warm limestone civic library, copper verdigris dome, slate wings, fine tall windows, recessed entrance with books visible, small climbing ivy. Strict orthographic 2:1 isometric: ground axes slope exactly +1/2 and -1/2, verticals vertical. Daylight from upper left, softly shadowed right facades. Muted palette warm stone #c9bd98, roof #58666b, copper #6e9485, leaves #597949, shadow #3d5149. No outlines, no cartoon exaggeration, no perspective vanishing point. A full isolated building with no ground plinth, no lawn tile, no text, no frame; actual transparent background including negative spaces, soft minimal contact shadow only. Canvas 1024x1024, centred with ample clear margin. Footprint 3x3 tiles, one tile 128x64 in final use; building intended to occupy 384px width, doors 42px high, library total height about 320px at final scale. Crisp painterly pixel clusters and small architectural details, not smooth 3D rendering. One sprite only. Produce PNG with real alpha."
+    },
+    {
+      "id": "library-b",
+      "cat": "building",
+      "subject": "A compact domed library variant, octagonal central verdigris dome with lower slate-roof reading wings, warm limestone, recessed arched entrance, fine windows and ivy; same camera and palette as library A.",
+      "footprint": [
+        8,
+        8
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: A compact domed library variant, octagonal central verdigris dome with lower slate-roof reading wings, warm limestone, recessed arched entrance, fine windows and ivy; same camera and palette as library A.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-8a2c303b-1bd5-4282-89b7-6bb521bf2c23.png"
+    },
+    {
+      "id": "reading-room-a",
+      "cat": "building",
+      "subject": "Small warm limestone reading room, one tall storey, slate hipped roof with two dormers, tall library windows, deep oak doorway, books visible within, ivy trained on one facade. Quiet real architecture.",
+      "footprint": [
+        5,
+        5
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small warm limestone reading room, one tall storey, slate hipped roof with two dormers, tall library windows, deep oak doorway, books visible within, ivy trained on one facade. Quiet real architecture.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-e457ea49-76df-4ae2-be7b-009dad24a87f.png"
+    },
+    {
+      "id": "reading-room-b",
+      "cat": "building",
+      "subject": "Small redbrick reading room variant, one tall storey, warm limestone window trim, slate gable roof, bay window filled with books, oak doorway, one copper chimney cap.",
+      "footprint": [
+        5,
+        5
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small redbrick reading room variant, one tall storey, warm limestone window trim, slate gable roof, bay window filled with books, oak doorway, one copper chimney cap.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-05b0de8a-2c98-4272-8e05-3d7c6bc28092.png"
+    },
+    {
+      "id": "lecture-hall-a",
+      "cat": "building",
+      "subject": "Warm limestone university lecture hall, two storeys with tall windows, central narrow clock tower, slate hipped roof, arched main entrance, restrained collegiate detail. Clock face has hands without legible lettering.",
+      "footprint": [
+        8,
+        8
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Warm limestone university lecture hall, two storeys with tall windows, central narrow clock tower, slate hipped roof, arched main entrance, restrained collegiate detail. Clock face has hands without legible lettering.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-0295314f-56fe-4617-bfce-85ce601ae5b9.png"
+    },
+    {
+      "id": "lecture-hall-b",
+      "cat": "building",
+      "subject": "Redbrick university lecture hall variant with pale limestone trim, two storeys, asymmetrical square clock tower at one corner, slate roof, tall arched auditorium windows, twin entrance doors.",
+      "footprint": [
+        8,
+        8
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Redbrick university lecture hall variant with pale limestone trim, two storeys, asymmetrical square clock tower at one corner, slate roof, tall arched auditorium windows, twin entrance doors. Keep pixel art crisp, not painterly blur. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-1de99690-bff2-42df-9fd5-11252cc0530c.png"
+    },
+    {
+      "id": "workshop-a",
+      "cat": "building",
+      "subject": "Long Victorian research workshop, muted redbrick walls, three repeating sawtooth roof bays with northlight glazing, pale stone lintels, large green double doors, small brass vents, precise believable industrial architecture.",
+      "footprint": [
+        7,
+        7
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Long Victorian research workshop, muted redbrick walls, three repeating sawtooth roof bays with northlight glazing, pale stone lintels, large green double doors, small brass vents, precise believable industrial architecture. Keep pixel art crisp, not painterly blur. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-c35591a2-bb3b-473d-8e6a-63bd7a96363e.png"
+    },
+    {
+      "id": "workshop-b",
+      "cat": "building",
+      "subject": "Research workshop variant, warm pale stone walls, two broad sawtooth roof bays with sage green framing and glazing, redbrick chimney, wide oak sliding workshop door, delicate pipework.",
+      "footprint": [
+        7,
+        7
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Research workshop variant, warm pale stone walls, two broad sawtooth roof bays with sage green framing and glazing, redbrick chimney, wide oak sliding workshop door, delicate pipework. Keep pixel art crisp, not painterly blur. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-6a15fe34-70e2-4293-8563-57c7a83bbfe4.png"
+    },
+    {
+      "id": "launch-gantry-a",
+      "cat": "building",
+      "subject": "Small scholarly experimental rocket launch gantry, slender ivory sounding rocket with muted copper nose, realistic metal lattice support tower, warm stone equipment shed at base, modest engineering proportions, no fire smoke people text or ground slab.",
+      "footprint": [
+        5,
+        5
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small scholarly experimental rocket launch gantry, slender ivory sounding rocket with muted copper nose, realistic metal lattice support tower, warm stone equipment shed at base, modest engineering proportions, no fire smoke people text or ground slab. Keep pixel art crisp, not painterly blur. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-8a63d533-4b8e-49c3-874c-2db5e76bc870.png"
+    },
+    {
+      "id": "launch-gantry-b",
+      "cat": "building",
+      "subject": "Alternate experimental rocket gantry, slim ivory and muted slate sounding rocket, slender dark green steel service tower, small redbrick instrument cabin, brass pipe details, realistic scholarly engineering, no fire smoke people text ground slab.",
+      "footprint": [
+        5,
+        5
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Alternate experimental rocket gantry, slim ivory and muted slate sounding rocket, slender dark green steel service tower, small redbrick instrument cabin, brass pipe details, realistic scholarly engineering, no fire smoke people text ground slab. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-bddfaa7c-d4b1-4f1b-9cfc-990ce4beac00.png"
+    },
+    {
+      "id": "greenhouse-a",
+      "cat": "building",
+      "subject": "Victorian botanical greenhouse with pitched sage-green iron frame, lightly blue-tinted transparent panes showing rich ferns inside, low warm limestone base and a central glass door, fine believable glazing bars.",
+      "footprint": [
+        6,
+        6
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Victorian botanical greenhouse with pitched sage-green iron frame, lightly blue-tinted transparent panes showing rich ferns inside, low warm limestone base and a central glass door, fine believable glazing bars. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-5b947928-e8c7-4fb5-86a5-fe9d37c1a504.png"
+    },
+    {
+      "id": "greenhouse-b",
+      "cat": "building",
+      "subject": "Victorian greenhouse variant with curved barrel-vaulted glass roof and small central lantern, sage-green iron glazing bars, low muted redbrick base, visible ferns and potting shelves, a glazed entrance.",
+      "footprint": [
+        6,
+        6
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Victorian greenhouse variant with curved barrel-vaulted glass roof and small central lantern, sage-green iron glazing bars, low muted redbrick base, visible ferns and potting shelves, a glazed entrance. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-f620b129-7d58-4663-a7d2-b59858a3d047.png"
+    },
+    {
+      "id": "observatory-a",
+      "cat": "building",
+      "subject": "Astronomical observatory on octagonal warm limestone drum, large copper verdigris hemispherical dome with open slit and a visible small brass telescope, small slate-roof entrance wing, fine real architecture.",
+      "footprint": [
+        6,
+        6
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Astronomical observatory on octagonal warm limestone drum, large copper verdigris hemispherical dome with open slit and a visible small brass telescope, small slate-roof entrance wing, fine real architecture. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-1ed730e7-fa93-46f1-891e-73ba46ff684b.png"
+    },
+    {
+      "id": "observatory-b",
+      "cat": "building",
+      "subject": "Astronomical observatory variant, round muted redbrick drum with pale stone trim, slate metal dome partly open showing brass telescope, small attached warm-stone study and an oak entrance.",
+      "footprint": [
+        6,
+        6
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Astronomical observatory variant, round muted redbrick drum with pale stone trim, slate metal dome partly open showing brass telescope, small attached warm-stone study and an oak entrance. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-3359cfb2-fb45-4127-b147-edea47e767af.png"
+    },
+    {
+      "id": "cottage-stone-a",
+      "cat": "building",
+      "subject": "Small two-storey English stone cottage, warm limestone, slate pitched roof, one chimney, oak front door, tiny sash windows, restrained ivy; real residential proportions, no exaggerated roof.",
+      "footprint": [
+        4,
+        4
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small two-storey English stone cottage, warm limestone, slate pitched roof, one chimney, oak front door, tiny sash windows, restrained ivy; real residential proportions, no exaggerated roof. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-cca5a2b3-7bf8-4b7a-8194-06d7c14537f5.png"
+    },
+    {
+      "id": "cottage-stone-b",
+      "cat": "building",
+      "subject": "Small two-storey English stone cottage variant, warm limestone, clay tile roof, two chimneys, sage green front door, little bay window and climbing roses without garden base.",
+      "footprint": [
+        4,
+        4
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small two-storey English stone cottage variant, warm limestone, clay tile roof, two chimneys, sage green front door, little bay window and climbing roses without garden base. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-9728bd10-a0de-45d5-9bde-39328de31abc.png"
+    },
+    {
+      "id": "cottage-brick-a",
+      "cat": "building",
+      "subject": "Small two-storey English redbrick cottage, muted warm brick, pale limestone lintels, slate gable roof, one chimney, forest green front door, fine sash windows, no garden base.",
+      "footprint": [
+        4,
+        4
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small two-storey English redbrick cottage, muted warm brick, pale limestone lintels, slate gable roof, one chimney, forest green front door, fine sash windows, no garden base. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-250527fd-dcca-454c-bbc7-d9cd55da2d29.png"
+    },
+    {
+      "id": "cottage-brick-b",
+      "cat": "building",
+      "subject": "Small two-storey English redbrick cottage variant, muted brick, hipped slate roof with dormer, cream door surround and oak door, one copper rainpipe, window boxes with restrained greenery, no garden base.",
+      "footprint": [
+        4,
+        4
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: Small two-storey English redbrick cottage variant, muted brick, hipped slate roof with dormer, cream door surround and oak door, one copper rainpipe, window boxes with restrained greenery, no garden base. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-1f3823a0-afb2-44dc-95ee-1cb10159c856.png"
+    },
+    {
+      "id": "tree-oak",
+      "cat": "vegetation",
+      "subject": "A mature English oak tree with broad asymmetric leafy crown, finely clustered muted green foliage, visible branching warm brown trunk. No ground or lawn.",
+      "footprint": [
+        3,
+        3
+      ],
+      "height": 540,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: A mature English oak tree with broad asymmetric leafy crown, finely clustered muted green foliage, visible branching warm brown trunk. No ground or lawn. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-7b23e4ae-7b7a-45e8-94e7-c371afc0c868.png"
+    },
+    {
+      "id": "tree-birch",
+      "cat": "vegetation",
+      "subject": "A slender silver birch tree, white textured trunk with delicate small branches and airy pale green leaves, full natural crown. No ground or lawn.",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 480,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: A slender silver birch tree, white textured trunk with delicate small branches and airy pale green leaves, full natural crown. No ground or lawn. Crisp pixel detail. No diffuse background glow.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-d24aea6a-ae80-4552-a34d-6bff59ed115f.png"
+    },
+    {
+      "id": "tree-copper-beech",
+      "cat": "vegetation",
+      "subject": "A mature copper beech tree with natural rounded canopy of restrained burgundy brown and green leaves, detailed branches and trunk. No ground or lawn.",
+      "footprint": [
+        3,
+        3
+      ],
+      "height": 520,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: A mature copper beech tree with natural rounded canopy of restrained burgundy brown and green leaves, detailed branches and trunk. No ground or lawn. Crisp pixel foliage, full isolated cutout with true alpha and no diffuse background.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-1f530873-3f94-40a6-8123-2b237dfe0a04.png"
+    },
+    {
+      "id": "tree-apple",
+      "cat": "vegetation",
+      "subject": "A small old apple tree with irregular green canopy, a few tiny russet apples and textured twisting trunk. No ground or lawn.",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 360,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: A small old apple tree with irregular green canopy, a few tiny russet apples and textured twisting trunk. No ground or lawn. Crisp pixel foliage, full isolated cutout with true alpha and no diffuse background.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-2526b371-2449-48ac-86db-a4c92306b5b0.png"
+    },
+    {
+      "id": "hedge-straight",
+      "cat": "vegetation",
+      "subject": "One low carefully clipped English yew hedge, long rectangular prism following the isometric down-right ground axis, crisp natural fine green leaves, no ground base or lawn.",
+      "footprint": [
+        3,
+        1
+      ],
+      "height": 180,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: One low carefully clipped English yew hedge, long rectangular prism following the isometric down-right ground axis, crisp natural fine green leaves, no ground base or lawn. Crisp pixel foliage, full isolated cutout with true alpha and no diffuse background.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-1ac69cee-c564-4f9c-894a-e4c3192d5b29.png"
+    },
+    {
+      "id": "hedge-corner",
+      "cat": "vegetation",
+      "subject": "One low English yew hedge forming a right-angle L corner along the two isometric ground axes, fine realistic leaves, no ground or lawn.",
+      "footprint": [
+        2,
+        2
+      ],
+      "height": 180,
+      "prompt": "Use case: stylized-concept. Asset type: one original game sprite for a coherent painterly pixel-art scholarly town. Strict orthographic 2:1 isometric camera, ground axes exactly slope +0.5 and -0.5, verticals vertical, two facades visible. Fine restrained architectural pixel detail, textured surfaces in discrete pixel clusters, realistic proportions, no outlines, no cartoon exaggeration, no smooth toy 3D. Daylight upper left, right faces softly shaded, minimal soft contact shadow down right. Palette warm limestone #c9bd98, pale stone #ded4b8, slate #58666b, copper #6e9485, brick #9b6f58, grass #72875b, leaves #597949 and #344f3f. Isolated object on actual transparent background. No ground plinth, no grass island, no backdrop, no labels, no text or watermark. Full object centred with clear margin, no cropped parts. Architectural sprites should have doors at about 1/8 of their width, consistent human scale. High-resolution PNG with real alpha. Subject: One low English yew hedge forming a right-angle L corner along the two isometric ground axes, fine realistic leaves, no ground or lawn. Crisp pixel foliage, full isolated cutout with true alpha and no diffuse background.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-c9e0b44f-045e-41ab-8647-670d403066ff.png"
+    },
+    {
+      "id": "grass",
+      "cat": "ground",
+      "subject": "Uniform lush muted grass texture #72875b with tiny fine grass clusters; no flowers or objects.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Uniform lush muted grass texture #72875b with tiny fine grass clusters; no flowers or objects. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-ee608487-962b-4186-aa14-debb4e00f3d3.png"
+    },
+    {
+      "id": "meadow",
+      "cat": "ground",
+      "subject": "Lush muted meadow grass #72875b with a few tiny cream and muted yellow wildflowers, delicate short stems, seamless vegetation.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Lush muted meadow grass #72875b with a few tiny cream and muted yellow wildflowers, delicate short stems, seamless vegetation. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-cf1a513c-222b-47ee-80c3-0c945dbb99ac.png"
+    },
+    {
+      "id": "path-straight",
+      "cat": "ground",
+      "subject": "Warm compacted pale limestone gravel footpath, perfectly straight constant-width band travelling from midpoint of the northwest edge through centre to midpoint of southeast edge, grass on both sides. Path occupies central 60 percent of tile, aligned to ground down-right axis.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Warm compacted pale limestone gravel footpath, perfectly straight constant-width band travelling from midpoint of the northwest edge through centre to midpoint of southeast edge, grass on both sides. Path occupies central 60 percent of tile, aligned to ground down-right axis. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-7e51d7bc-7db9-4d89-964a-f9fe60b3141b.png"
+    },
+    {
+      "id": "path-corner",
+      "cat": "ground",
+      "subject": "Warm compacted pale limestone gravel footpath turning 90 degrees within the tile, from midpoint of northwest edge to centre then midpoint of northeast edge, muted green grass filling outside corner; road width 60 percent of tile edge.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Warm compacted pale limestone gravel footpath turning 90 degrees within the tile, from midpoint of northwest edge to centre then midpoint of northeast edge, muted green grass filling outside corner; road width 60 percent of tile edge. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-4761ef6d-1be3-43c7-a0c1-c5e51965d4f6.png"
+    },
+    {
+      "id": "cobbled-square",
+      "cat": "ground",
+      "subject": "Warm grey limestone cobbles #b2ad96, small neatly laid believable varied paving stones, subtle moss joints, uniform texture edge to edge.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Warm grey limestone cobbles #b2ad96, small neatly laid believable varied paving stones, subtle moss joints, uniform texture edge to edge. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-f705fe42-2173-4ea4-a41a-261cb4f5afbe.png"
+    },
+    {
+      "id": "water-edge",
+      "cat": "ground",
+      "subject": "Muted still teal water #6c9190 on left half and lush grass #72875b on right half divided by a low natural gently curved stone bank, tiny reeds. Shoreline follows isometric down-right axis, no raised soil sides.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Muted still teal water #6c9190 on left half and lush grass #72875b on right half divided by a low natural gently curved stone bank, tiny reeds. Shoreline follows isometric down-right axis, no raised soil sides. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-114a13c1-6510-4ae8-8e85-6faa00a50f3c.png"
+    },
+    {
+      "id": "woodland-floor",
+      "cat": "ground",
+      "subject": "Muted woodland ground cover, moss #597949, leaf litter #83735a and fine tiny leaves, a few fern tips, flat seamless woodland floor. No trees.",
+      "footprint": [
+        1,
+        1
+      ],
+      "prompt": "Use case: stylized-concept. Asset type: single seamless isometric ground tile for painterly pixel-art town. Subject: Muted woodland ground cover, moss #597949, leaf litter #83735a and fine tiny leaves, a few fern tips, flat seamless woodland floor. No trees. One perfectly flat rhombus, width exactly twice height, four straight clean edges, 2:1 isometric ground plane. No thickness, NO soil sides, NO bevel, NO border, no shadows on any edge, no raised plinth. Texture evenly covers the entire diamond to all four edges, consistent brightness across tile so copies join without visible tile borders. Crisp fine natural pixel texture, muted natural daylight upper left, realistic small scale. Centred diamond alone on actual transparent background with generous padding. No objects outside diamond. No text. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-0ae97817-7d4f-4b0b-ac61-283b5b0f9747.png"
+    },
+    {
+      "id": "scientist-notebook-a",
+      "cat": "resident",
+      "subject": "A woman scientist with dark skin and short curly hair wearing a cream lab coat over muted slate trousers, looking into a small notebook held open, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A woman scientist with dark skin and short curly hair wearing a cream lab coat over muted slate trousers, looking into a small notebook held open, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-a4170bd9-9e31-4aa9-8dfd-f395a12d1420.png"
+    },
+    {
+      "id": "scientist-notebook-b",
+      "cat": "resident",
+      "subject": "An older East Asian man scientist with grey hair wearing a cream laboratory coat, walking while making a note in an open notebook, three-quarter view facing lower right.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: An older East Asian man scientist with grey hair wearing a cream laboratory coat, walking while making a note in an open notebook, three-quarter view facing lower right. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-50e34f4c-4b26-4d85-bd80-8a6e06b591a1.png"
+    },
+    {
+      "id": "scientist-notebook-c",
+      "cat": "resident",
+      "subject": "A South Asian scientist with brown skin, round glasses, sage jacket and cream shirt, thoughtfully studying a notebook, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A South Asian scientist with brown skin, round glasses, sage jacket and cream shirt, thoughtfully studying a notebook, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-c3e0ccfb-0bc6-4754-9d31-6d9a5637c97a.png"
+    },
+    {
+      "id": "scientist-notebook-d",
+      "cat": "resident",
+      "subject": "A scientist with light skin and auburn tied-back hair, cream coat, muted russet scarf and open notebook, three-quarter view facing lower right.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A scientist with light skin and auburn tied-back hair, cream coat, muted russet scarf and open notebook, three-quarter view facing lower right. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-d92858a6-5bf5-432c-8719-07500965b0dd.png"
+    },
+    {
+      "id": "engineer-ladder",
+      "cat": "resident",
+      "subject": "An engineer with dark skin wearing muted blue work clothes and a tan tool belt, carefully carrying a wooden ladder diagonally over one shoulder, entire ladder visible, three-quarter view facing lower right.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: An engineer with dark skin wearing muted blue work clothes and a tan tool belt, carefully carrying a wooden ladder diagonally over one shoulder, entire ladder visible, three-quarter view facing lower right. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-0a05346f-724c-48f4-9cc3-ff0f7e2fca16.png"
+    },
+    {
+      "id": "engineer-plans",
+      "cat": "resident",
+      "subject": "An engineer with light skin, short dark hair, olive work clothes and brown boots, carrying a rolled drawing under one arm and holding an unfolded plan in the other hand, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: An engineer with light skin, short dark hair, olive work clothes and brown boots, carrying a rolled drawing under one arm and holding an unfolded plan in the other hand, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-c7396e90-58ff-46ab-ae8f-8cfeee6a7aae.png"
+    },
+    {
+      "id": "writer-pages",
+      "cat": "resident",
+      "subject": "A writer in brown tweed jacket, cream shirt and dark trousers, leaning forward and chasing exactly three loose cream manuscript pages blowing just ahead, all pages close to figure and fully visible, restrained funny pose, three-quarter view facing lower right.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A writer in brown tweed jacket, cream shirt and dark trousers, leaning forward and chasing exactly three loose cream manuscript pages blowing just ahead, all pages close to figure and fully visible, restrained funny pose, three-quarter view facing lower right. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural adult human anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels, so clean readable silhouette, details resolve at small scale. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-b0fe8c08-c142-4bab-9287-f253d91d1ac6.png"
+    },
+    {
+      "id": "writer-notebook",
+      "cat": "resident",
+      "subject": "A writer with brown skin and curly dark hair, muted rust cardigan and slate trousers, walking with a small notebook and pencil, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A writer with brown skin and curly dark hair, muted rust cardigan and slate trousers, walking with a small notebook and pencil, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels; cat much smaller at 42px including tail, so clean readable silhouette. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-4bf9c5d8-684c-4c29-ac22-d06a5a0eaca0.png"
+    },
+    {
+      "id": "gardener",
+      "cat": "resident",
+      "subject": "A gardener with straw hat, faded sage overalls and russet shirt, holding a small watering can and a hand trowel, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A gardener with straw hat, faded sage overalls and russet shirt, holding a small watering can and a hand trowel, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels; cat much smaller at 42px including tail, so clean readable silhouette. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-4b437036-30ae-449b-8cd9-8701f350434b.png"
+    },
+    {
+      "id": "student-books",
+      "cat": "resident",
+      "subject": "A student with dark skin, cream shirt and blue-grey trousers, carrying a slightly awkward stack of three books, three-quarter view facing lower right.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A student with dark skin, cream shirt and blue-grey trousers, carrying a slightly awkward stack of three books, three-quarter view facing lower right. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels; cat much smaller at 42px including tail, so clean readable silhouette. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-fd478f9f-c9c5-47bb-81c7-02d69e1ef27b.png"
+    },
+    {
+      "id": "student-satchel",
+      "cat": "resident",
+      "subject": "A student with light skin, dark bob haircut, muted ochre sweater, dark trousers and russet satchel, reading a book while walking, three-quarter view facing lower left.",
+      "footprint": [
+        1,
+        1
+      ],
+      "height": 128,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: A student with light skin, dark bob haircut, muted ochre sweater, dark trousers and russet satchel, reading a book while walking, three-quarter view facing lower left. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels; cat much smaller at 42px including tail, so clean readable silhouette. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-640a382b-b5bc-441d-8a8f-4bba6faee109.png",
+      "originalSource": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-3f2135cf-e183-44a1-9dac-65895c2c26ad.png",
+      "editPrompt": "Use case: precise-object-edit. Edit target: the supplied transparent student sprite. Remove only the calico cat at the student's feet, leaving genuine transparency where it was. Preserve the student, the book, the walking pose, all clothes, the ochre sweater, satchel, face, hair, pixel texture, upper-left daylight, exact scale and viewpoint. Single student alone. Preserve transparent background. No other changes."
+    },
+    {
+      "id": "cat",
+      "cat": "resident",
+      "subject": "One small realistic ginger and white cat walking with tail gently raised, seen from elevated isometric camera, natural anatomy, no clothing, no cartoon face.",
+      "footprint": [
+        0.5,
+        0.5
+      ],
+      "height": 42,
+      "prompt": "Use case: stylized-concept. Asset type: single resident sprite for a painterly isometric pixel-art scholarly town. Subject: One small realistic ginger and white cat walking with tail gently raised, seen from elevated isometric camera, natural anatomy, no clothing, no cartoon face. Full body head to feet, elevated orthographic 2:1 isometric camera matching architectural sprites, natural anatomy and proportions, subtle restrained whimsy. Fine crisp pixel clusters, muted warm natural palette, daylight from upper left, soft contact shadow below right. No outlines, no cartoon large head, no chibi, no photorealistic skin, no base or scene, no labels or legible writing. One isolated figure with props on real transparent background, full silhouette and props inside canvas, generous clear margins. Intended final human height 128 pixels; cat much smaller at 42px including tail, so clean readable silhouette. PNG with alpha.",
+      "source": "/Users/angadhnanjangud/.codex/generated_images/01a18537-0a20-79c3-8931-440a56653db8/exec-617933d0-83ed-400c-86e6-688f12fcdca5.png"
+    }
+  ]
+}

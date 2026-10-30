@@ -1,0 +1,40 @@
+✔ concurrent turns and builds have distinct stable identities and explicit project associations (37.031041ms)
+✔ authenticated reconnect replaces runtime state; completion, reset, bridge loss and restart cannot revive workers (8.266958ms)
+✔ project map exposes evidence, safe links, dismissal and multiple outputs (1240.468875ms)
+✔ outputs and readings join their projects with member lines, never relationship edges (335.902833ms)
+✔ layout() places the same input in the same positions (48.885416ms)
+✔ a reading excerpt carries its current version, apart from the version the suggestion saw (325.283292ms)
+✔ shared-material lines take the keyboard, and focus view drops faded items from the tab order (323.294292ms)
+✔ short titles keep at most seven words, drop chat openers and never end on a dangling word (21.5125ms)
+✔ arrowheads mark only relations with a recorded direction (344.216834ms)
+✔ in the city, paused and archived buildings say so in words, and the recent-reading count is in the hover label, not over the building (153.671375ms)
+✔ in the city, a building you drag keeps its place after a reload (235.013167ms)
+✔ in the city, the week line counts a reading shared by two projects once and names its page as the source (105.986958ms)
+✔ in the city, a hidden archived project keeps its saved tile and gets it back when shown (239.374ms)
+✔ in the city, buildings placed by hand in the old one-tile city keep their place and arrangement, and the old save is kept (136.181583ms)
+✔ the URL hash carries the overview, the open project and both cameras, so a reload opens the same place (1728.685167ms)
+✔ in the city, the ground under a building depends only on its kind and project id (45.686792ms)
+✔ in the city, a linked path over a long stretch of water is bridged bank to bank, in straight spans round a bend (9.558416ms)
+✔ the sprite atlas inlined in network.js lists every sprite in the art manifest (1.881333ms)
+✔ in the city, no road passes through a building footprint, even where the straight way runs through one (105.863375ms)
+✔ in the city, dropping a building past the edge of the land makes a patch of its kind of ground at the drop tile (149.964292ms)
+✔ in the city, each presence snapshot replaces the avatars, so a run that vanished is gone (94.8105ms)
+✔ in the city, a chat whose next run is filed under another project walks its avatar from the old building to the new, labelled as a refiling and in its outfit (103.89025ms)
+✔ mobile activity can expand and close with Escape while keeping the city fitted above it (107.041125ms)
+✔ mobile zoom buttons zoom around the visible city and leave building positions unchanged (110.484416ms)
+✔ ordinary reading records do not create projects; one project has multiple outputs (714.963542ms)
+✔ a generated citation stays provisional until human-directed use; removal marks evidence stale (3021.354958ms)
+✔ dismissals survive regenerated suggestions and no file is changed by linking (946.512ms)
+✔ natural link requests are explicit and ambiguous names stay ambiguous (173.706417ms)
+✔ an older source snapshot cannot overwrite newer notes, while memberships still merge (339.885375ms)
+✔ deleting a reading removes its cached notes and dependent evidence without deleting outputs (1167.809375ms)
+✔ retrieval and layout are bounded, deterministic and preserve disconnected projects (412.645583ms)
+✔ independent processes can update the shared SQLite store without losing links (323.708125ms)
+ℹ tests 32
+ℹ suites 0
+ℹ pass 32
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 7179.008375

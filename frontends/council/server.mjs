@@ -35,6 +35,7 @@ import * as keys from '../shared/keys.mjs';
 import { isLocalDirect } from '../shared/local.mjs';
 import { transcribeRequest, whisperStatus } from '../shared/transcribe.mjs';
 import * as projectNetwork from '../shared/project-network.mjs';
+import { Presence } from './presence.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -210,6 +211,16 @@ const PARK_BRIDGES_AT = Math.max(1, Number(process.env.COUNCIL_MAX_CHATS) || 4);
 const bridges = new Map(); // bridge id -> Bridge
 let nextBridgeSeq = 1;
 let primaryId = null;      // the bridge sid-less connections attach to
+const presenceSse = new Set();
+const presenceWs = new Set();
+const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
+const presence = new Presence({ changed: publishPresence, root: ROOT, heartbeatMs: SSE_HEARTBEAT_MS });
+function publishPresence(snapshot) {
+  const json = JSON.stringify(snapshot);
+  for (const res of presenceSse) res.write(`data: ${json}\n\n`);
+  for (const ws of presenceWs) ws.send(json);
+}
+const presenceOnly = req => new URLSearchParams(String(req.url || '').split('?')[1] || '').get('scope') === 'presence';
 
 // projects/<id>/ as a list a person reads: top level, plus one level inside
 // each folder, and no further. The cap and the depth are the same defensive
@@ -298,11 +309,12 @@ const helloEvent = b => ({
   resuming: !!(b && b.resuming),
 });
 
-class Bridge {
+export class Bridge {
   constructor(claimedSid = null) {
     this.id = 'b' + nextBridgeSeq++;
     this.proc = null;
     this.available = false;
+    this.closed = false;
     this.permTimer = null;
     this.choiceTimer = null;
     // which chat this bridge drives: claimedSid is the attach target while a
@@ -393,18 +405,26 @@ class Bridge {
     this.available = true;
     this.proc.stderr.on('data', d => this.broadcast({ type: 'bridge_log', text: String(d).slice(0, 500) }));
     this.proc.on('error', err => {
-      this.available = false;
-      this.broadcast({ type: 'bridge_exit', code: -1, error: err.message });
-      despawnBridge(this);
+      this.disconnect({ code: -1, error: err.message });
     });
     this.proc.on('exit', code => {
       if (!this.available) return; // already handled (clean 'exit' event or error)
-      this.available = false;
-      this.broadcast({ type: 'bridge_exit', code });
-      despawnBridge(this);
+      this.disconnect({ code });
+    });
+    // EOF means we can no longer observe the runtime, even if the child has
+    // not exited. Do not leave its last start event working forever.
+    this.proc.stdout.on('end', () => {
+      if (this.available) this.disconnect({ reason: 'bridge_stream_closed' });
     });
   }
+  disconnect(detail = {}) {
+    this.available = false;
+    this.broadcast({ type: 'bridge_exit', ...detail });
+    despawnBridge(this);
+  }
   handle(ev) {
+    if (this.closed) return; // ignore buffered output from a retired process
+    presence.handle(this.id, ev);
     if (ev.type === 'completion_context') {
       this.pinnedCtx = ev;
       this.broadcast(ev, false); // pinned + replayed on connect, never in history
@@ -427,6 +447,7 @@ class Bridge {
       return;
     }
     if (ev.type === 'ready') {
+      presence.closeBridge(this.id, 'interrupted', 'ready_without_terminal');
       this.busy = false;
       // a spawn-time /resume is done at the ready that ENDS its turn — the
       // bridge's startup ready arrives first and must not clear the claim
@@ -453,6 +474,7 @@ class Bridge {
     }
     if (ev.type === 'choice_cleared') clearTimeout(this.choiceTimer);
     if (ev.type === 'clear_panes') {
+      presence.closeBridge(this.id, 'interrupted', 'chat_reset');
       // a resume/new-chat wipes the transcript: drop stale history so a
       // reload doesn't replay the previous chat's events over the new one
       this.history.length = 0;
@@ -501,6 +523,9 @@ function spawnBridge(claimedSid = null) {
   return b;
 }
 function despawnBridge(b) {
+  b.closed = true;
+  b.available = false;
+  presence.closeBridge(b.id);
   clearTimeout(b.permTimer);
   clearTimeout(b.choiceTimer);
   bridges.delete(b.id);
@@ -542,7 +567,7 @@ function sessionKnownMissing(sid) {
 function reapIdleBridge() {
   let victim = null;
   for (const b of bridges.values()) {
-    if (b.busy || b.subscriberCount() > 0) continue;
+    if (b.busy || presence.hasBridge(b.id) || b.subscriberCount() > 0) continue;
     if (!victim || b.lastUsed < victim.lastUsed) victim = b;
   }
   if (victim) despawnBridge(victim);
@@ -578,7 +603,6 @@ function bridgeForPost(data) {
 // once, disable Nagle, and pad the first chunk past typical edge buffering
 // thresholds with an SSE comment (EventSource ignores comment lines) —
 // otherwise the edge holds the response and the browser sees zero events.
-const SSE_HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const SSE_PAD = ':' + ' '.repeat(2048) + '\n\n';
 function sseOpen(res) {
   res.writeHead(200, {
@@ -761,7 +785,7 @@ const appliesWhen = () => (anyBridgeAvailable() ? 'next-bridge' : 'now');
 // common case instead of leaving the reader to guess they needed a restart.
 function retireIdleBridges() {
   for (const b of [...bridges.values()]) {
-    if (!b.busy) despawnBridge(b);
+    if (!b.busy && !presence.hasBridge(b.id)) despawnBridge(b);
   }
 }
 
@@ -774,6 +798,10 @@ export function handler(req, res) {
   if (GATED && req.method === 'POST' && url === '/auth') { authEndpoint(req, res); return; }
   if (!authorized(req)) { denied(req, res); return; }
 
+  if (req.method === 'GET' && url === '/presence') {
+    res.writeHead(200, JSON_HEAD).end(JSON.stringify(presence.snapshot()));
+    return;
+  }
   if (req.method === 'GET' && (url === '/project-network/view' || /^\/network-assets\/network\.(js|css)$/.test(url))) {
     const name = url === '/project-network/view' ? 'network.html' : path.basename(url);
     serveFile(res, path.join(COUNCIL, '../shared/network-ui', name));
@@ -824,6 +852,13 @@ export function handler(req, res) {
     return;
   }
   if (req.method === 'GET' && url === '/events') {
+    if (presenceOnly(req)) {
+      sseOpen(res);
+      res.write(`data: ${JSON.stringify(presence.snapshot())}\n\n`);
+      presenceSse.add(res);
+      req.on('close', () => presenceSse.delete(res));
+      return;
+    }
     const { bridge: b, error } = attachTarget(chatParamOf(req.url));
     sseOpen(res);
     replayTo(ev => res.write(`data: ${JSON.stringify(ev)}\n\n`), b, error);
@@ -1039,6 +1074,12 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
     path: '/ws',
     authorize: authorized,
     onOpen(ws, req) {
+      if (presenceOnly(req)) {
+        ws.send(JSON.stringify(presence.snapshot()));
+        presenceWs.add(ws);
+        ws.onclose = () => presenceWs.delete(ws);
+        return;
+      }
       const { bridge: b, error } = attachTarget(chatParamOf(req && req.url));
       replayTo(ev => ws.send(JSON.stringify(ev)), b, error);
       b.wsClients.add(ws);
@@ -1053,9 +1094,16 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
   // heartbeat: keeps tunnel/proxy connections warm and lets dead clients
   // surface — an SSE comment (EventSource ignores it) and a WS ping event
   setInterval(() => {
+    // A full heartbeat snapshot lets clients detect stale/lost transports
+    // and recover without an event cursor or transcript replay.
+    publishPresence(presence.snapshot());
     for (const b of bridges.values()) {
       for (const res of b.clients) res.write(': ping\n\n');
       for (const ws of b.wsClients) ws.send('{"type":"ping"}');
     }
   }, SSE_HEARTBEAT_MS).unref();
+  for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+    for (const b of [...bridges.values()]) despawnBridge(b);
+    process.exit(0);
+  });
 }

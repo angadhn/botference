@@ -27,3 +27,9 @@ work/artifacts/
 work/visual-checks/
 # one-off maintenance scripts
 scrub-*.sh
+
+# City art scratch: proof images the art build scripts write while packing, and the exported
+# agent-art package, and the raw generation sources (manifest "source" fields are provenance only; pack.mjs reads "file").
+frontends/shared/network-ui/art/.packing*/
+work/agent-art-package/
+frontends/shared/network-ui/art/source/

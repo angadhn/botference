@@ -6028,12 +6028,26 @@ class Botference:
         stream_id = self._next_stream_id(model, pane)
         old_callback = getattr(adapter, "stream_callback", None)
         extra = dict(extra or {})
+        # Presence follows the chat's explicit filing, never the sidebar lens
+        # or a project name in prose. Verify an exact project id; get() also
+        # accepts fuzzy titles, which must not establish an association here.
+        try:
+            project = self.project_store.get(self.session_project_id) if self.session_project_id else None
+        except OSError:
+            project = None  # unavailable project metadata must not prevent a call
+        project_id = project.id if project and project.id == self.session_project_id else None
+        context = {
+            "chat_id": self.session_id,
+            "project_id": project_id,
+            "project_association": "session" if project_id else "unknown",
+        }
         self._emit_stream_event(ui, {
             "kind": "start",
             "stream_id": stream_id,
             "pane": pane,
             "model": model,
             **extra,
+            **context,
         })
 
         def _callback(event: dict[str, Any]) -> None:
@@ -6043,22 +6057,32 @@ class Botference:
                 "pane": pane,
                 "model": model,
                 **extra,
+                **context,
             })
 
         adapter.stream_callback = _callback
+        outcome = "failed"
         try:
             resp = await call()
+            outcome = "completed" if resp.exit_code == 0 else "failed"
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
         finally:
             adapter.stream_callback = old_callback
+            # Failure/cancellation used to skip done entirely. Emit the same
+            # terminal boundary on every exit, including wait_for timeouts.
+            self._emit_stream_event(ui, {
+                "kind": "done",
+                "stream_id": stream_id,
+                "pane": pane,
+                "model": model,
+                **extra,
+                **context,
+                "outcome": outcome,
+            })
 
         resp.stream_id = stream_id
-        self._emit_stream_event(ui, {
-            "kind": "done",
-            "stream_id": stream_id,
-            "pane": pane,
-            "model": model,
-            **extra,
-        })
         return resp
 
     def _emit_room_entry(
