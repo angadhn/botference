@@ -89,6 +89,37 @@ test('see accepts a bare :port and a single custom viewport',
   assert.match(files[0], /-portform-500x500\.png$/);
 });
 
+test('a phone viewport narrower than 500 px yields a PNG of exactly that size',
+  { skip: CHROME ? false : 'no Chrome/Chromium installed' }, async t => {
+  // Headless Chrome will not make a window narrower than 500 px; a plain
+  // --window-size=390,844 shot is a 500 px layout cut off at the right.
+  // see emulates the phone screen instead, so the PNG (and the page's
+  // innerWidth) match the request.
+  const port = await freePort();
+  const seen = []; // the page reports the size it laid out at
+  const srv = await new Promise(resolve => {
+    const s = http.createServer((q, rs) => {
+      if (q.url.startsWith('/size?')) { seen.push(q.url.slice(6)); rs.end(); return; }
+      rs.writeHead(200, { 'content-type': 'text/html' }).end(
+        '<meta name="viewport" content="width=device-width,initial-scale=1"><body style="margin:0;background:#d97757"><script>fetch("/size?"+innerWidth+"x"+innerHeight)</script></body>');
+    });
+    s.listen(port, '127.0.0.1', () => resolve(s));
+  });
+  t.after(() => srv.close());
+  const out = fs.mkdtempSync(path.join(os.tmpdir(), 'see-'));
+  const r = await see([`http://127.0.0.1:${port}/`, 'phone', '--viewport', '390x844', '--viewport', '320x568', '--out', out]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /NOT a real phone layout/, 'no fallback to the cut-off window render');
+  for (const [w, h] of [[390, 844], [320, 568]]) {
+    const f = fs.readdirSync(out).find(n => n.endsWith(`-phone-${w}x${h}.png`));
+    assert.ok(f, `shot for ${w}x${h}`);
+    const png = fs.readFileSync(path.join(out, f));
+    assert.equal(png.toString('latin1', 1, 4), 'PNG');
+    assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [w, h], 'PNG is the requested pixel size');
+  }
+  assert.deepEqual(seen.sort(), ['320x568', '390x844'], 'the page itself laid out at the requested size');
+});
+
 test('sandboxed lane: requests are served by the see-broker with identical output', async t => {
   // No real Chrome anywhere in this test: a fake chrome script writes a
   // stub PNG, proving the spool protocol end-to-end deterministically.

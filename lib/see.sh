@@ -18,6 +18,11 @@
 # `botference service` (resolved from the ledgers; the listening port is
 # read from the live process, so agents never need to know ports).
 
+# Narrowest window headless Chrome will make (measured on Chrome 156,
+# macOS: --window-size=390,844 gives innerWidth 500). Narrower viewports
+# are emulated by lib/see-phone.mjs instead.
+SEE_MIN_WIDTH=500
+
 see_usage() {
   cat <<'HELP'
 Usage: botference see <url | :port | service-name> [label] [options]
@@ -39,6 +44,9 @@ Target forms:
 Options:
   --viewport WxH     Add a viewport (repeatable). Default when none
                      given: 390x844 (phone) and 1440x900 (desktop).
+                     A width under 500 is shot as an emulated phone
+                     of exactly WxH (pixel ratio 3, mobile user agent,
+                     touch): headless Chrome makes no narrower window.
   --basic-auth U:P   Send HTTP basic auth (embedded for the navigation).
   --out DIR          Output directory (default ./.botference/shots).
   --serve            Run the see-broker: watch every registered
@@ -392,6 +400,23 @@ run_see_mode() {
     [ -n "$chrome" ] || continue
     size="${vp/x/,}"
     file="${out}/${ts}-${label}-${vp}.png"
+    # Headless Chrome will not make a window narrower than SEE_MIN_WIDTH
+    # (measured: 500 px on Chrome 156). A narrower --window-size quietly
+    # lays the page out at 500 px and cuts the shot off at the right, so
+    # phone widths go through see-phone.mjs, which emulates a phone of
+    # exactly WxH (plus pixel ratio, mobile user agent and touch).
+    local vw="${vp%%x*}" vh="${vp##*x}" node_bin="" cut=false
+    if [ "$vw" -lt "$SEE_MIN_WIDTH" ]; then
+      node_bin=$(command -v node 2>/dev/null || true)
+      if [ -n "$node_bin" ] && "$node_bin" "${BOTFERENCE_HOME}/lib/see-phone.mjs" \
+          "$chrome" "$url" "$vw" "$vh" "$file" >/dev/null 2>&1 && [ -s "$file" ]; then
+        echo "wrote: $file"
+        wrote=$((wrote + 1))
+        continue
+      fi
+      rm -f "$file"
+      cut=true
+    fi
     # virtual-time budget fast-forwards timers/network so client-drawn
     # UIs (charts!) finish rendering before the shot is taken
     # `|| true`: the launcher runs `set -e`, and a sandbox-killed Chrome
@@ -400,6 +425,7 @@ run_see_mode() {
       --run-all-compositor-stages-before-draw --virtual-time-budget=8000 \
       --window-size="$size" --screenshot="$file" "$url" >/dev/null 2>&1 || true
     if [ -s "$file" ]; then
+      if $cut; then echo "Warning: could not emulate a ${vw} px wide screen, so ${file} is a ${SEE_MIN_WIDTH} px layout with its right edge cut off, NOT a real phone layout." >&2; fi
       echo "wrote: $file"
       wrote=$((wrote + 1))
     else

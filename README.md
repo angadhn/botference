@@ -1375,9 +1375,12 @@ Layout and design failures produce no errors and no warnings — an agent
 that only reads code and logs will ship a page that "works" but looks
 broken. `botference see` closes that loop with zero new dependencies:
 it renders a page in headless system Chrome and writes one PNG per
-viewport (defaults: 390x844 phone + 1440x900 desktop — the phone shot
-is real mobile layout, since responsive CSS responds to the viewport),
-printing each path for the agent to read back with its image tooling.
+viewport (defaults: 390x844 phone + 1440x900 desktop), printing each
+path for the agent to read back with its image tooling. Headless Chrome
+will not make a window narrower than 500 px, so any viewport under
+500 px wide is shot as an emulated phone screen of exactly that size
+(the page sees `innerWidth` 390, a pixel ratio of 3, a mobile user
+agent and touch input; the PNG is 390 by 844 pixels).
 
 ```bash
 botference see fitlog                        # a RUNNING service by name — port discovered live

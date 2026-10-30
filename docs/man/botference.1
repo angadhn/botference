@@ -410,7 +410,9 @@ for agents: layout and design failures produce no errors or warnings,
 so an agent that only reads code and logs will ship a page that "works"
 but looks broken \- after any UI change, look at it. The default
 viewports are 390x844 (phone) and 1440x900 (desktop); \fB\-\-viewport
-WxH\fR (repeatable) replaces them. The target may be a full URL, a bare
+WxH\fR (repeatable) replaces them. A width under 500 px is shot as an
+emulated phone screen of exactly that size (pixel ratio 3, mobile user
+agent, touch), because headless Chrome will not make a narrower window. The target may be a full URL, a bare
 \fB:port\fR on localhost, an existing local file (HTML, SVG \- rendered
 via file:// with no server), or the name of a running \fBbotference
 service\fR \- the listening port is discovered from the live process,
