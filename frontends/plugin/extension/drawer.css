@@ -267,6 +267,8 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   overflow: hidden;
 }
 .bubble[hidden] { display: none }
+/* a NEW comment's bubble has no messages yet: no empty band above its composer */
+.bubble.bnew .bbody:has(> .bstack:empty) { display: none }
 /* MANY OF THEM, and the one you last touched in front. z-index rather than DOM
    order: re-parenting an element blurs whatever is focused inside it, and
    "click into a background bubble's reply box" would lose the caret every

@@ -2146,7 +2146,7 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // Never fatal: a fetch that fails costs this turn its links and nothing else.
   let webContext = '';
   try {
-    const w = await lasso.webForTurn(text);
+    const w = await lasso.webForTurn(text, { notPage: store.pageKey(page.url) });
     if (w.note) webContext = `${w.note}\n${w.block}`;
   } catch { webContext = ''; }
   const { position, wait } = c.submit({
@@ -2900,15 +2900,21 @@ export function handler(req, res) {
     // exactly what a reader reported); so the companion FETCHES it, here, on
     // this machine, and the chip carries a digest the bots can read without
     // anybody granting anything (lasso.lassoUrl).
-    if (lasso.isHttpUrl(query)) {
+    //
+    // A link with words after it (`/lasso https://… can you see this?`) is
+    // still a link: before, only a URL alone on the line counted, and the rest
+    // fell through to a word search of the whole sentence. Each link found is
+    // lassoed; the leftover words come back as `rest`.
+    if (lasso.urlsIn(query).length) {
       const dir = page ? path.join(lasso.ATTACH_DIR, store.pageKey(page.url)) : lasso.WEB_DIR;
-      return void lasso.lassoUrl(query, { dir, notPage: page ? store.pageKey(page.url) : '' })
+      return void lasso.lassoUrls(query, { dir, notPage: page ? store.pageKey(page.url) : '' })
         .then(r => ok(res, { query, attached, head: r.head, results: r.results,
+          ...(r.rest ? { rest: r.rest } : {}),
           ...(r.error ? { error: r.error } : {}) }))
         .catch(e => ok(res, { query, attached, results: [],
           error: String((e && e.message) || e),
           head: lasso.headline({ kind: 'failed', error: `could not fetch: ${(e && e.message) || 'error'}`,
-            host: lasso.hostOf(query) }) }));
+            host: lasso.hostOf(lasso.urlsIn(query)[0]) }) }));
     }
     const results = lasso.search(query, { limit: Number(q.get('limit')) || undefined });
     return ok(res, { query, results, attached,

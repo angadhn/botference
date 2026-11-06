@@ -4841,6 +4841,18 @@ async function main() {
       await POST(lb, '/detach', { url: PAGE1, path: a.json.attachment.path });
     });
 
+    await test('GET /lasso with a URL AND a question is still a URL lasso, words kept as rest',
+      async () => {
+        const r = await GET(lb, '/lasso?q=' + encodeURIComponent(
+          `${ORIGIN}/rockets-1 Can you see the page? Does it have callout boxes?`)
+          + '&url=' + encodeURIComponent(PAGE1));
+        assert.equal(r.status, 200);
+        assert.equal(r.json.results.length, 1, 'one chip, not a word search');
+        assert.equal(r.json.results[0].kind, 'web');
+        assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (127.0.0.1)');
+        assert.equal(r.json.rest, 'Can you see the page? Does it have callout boxes?');
+      });
+
     await test('…and a link that refuses us is a chip that says so, with the header', async () => {
       const r = await GET(lb, '/lasso?q=' + encodeURIComponent(`${ORIGIN}/refused`));
       assert.equal(r.status, 200);

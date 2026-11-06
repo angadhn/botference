@@ -5969,9 +5969,9 @@ ${bubbleShellHtml()}`;
       + 'instant = shown the moment it lands (and always, if your system asks for less motion)';
     const TYPE_MODES = ['type', 'instant'];
     const TYPE_LABEL = { type: 'typed', instant: 'instant' };
-    const BUB_TIP = 'where a comment is read when you click its highlight: '
-      + 'panel = the drawer, as always; bubbles = a small card beside the mark, '
-      + 'with the panel left shut';
+    const BUB_TIP = 'where a comment is read when you click its highlight, and written '
+      + 'when you start one on a selection: panel = the drawer, as always; '
+      + 'bubbles = a small card beside the passage, with the panel left shut';
     const BUB_MODES = ['panel', 'bubbles'];
 
     // The popover's switch idiom, in one place: two positions, a middle dot,
@@ -6626,6 +6626,9 @@ ${bubbleShellHtml()}`;
       'bubble-pip': (btn, target) => bubbleToFoot(target),
       'bubble-panel': (btn, target) => {
         const id = target || frontBubble();
+        // a comment not yet sent moves to the panel's own new-comment card,
+        // draft and all — the same card a selection opens there
+        if (id === NEW_ID) { newToPanel(); return; }
         hideAllBubbles();
         open('comments');
         focus(id);
@@ -7482,6 +7485,24 @@ ${bubbleShellHtml()}`;
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (D.lasso.searching !== target || D.lasso.query !== query) return;  // overtaken
       D.lasso.searching = '';
+      // THE WORDS AFTER THE LINK. "/lasso https://… can you see the page?" is
+      // a link to fetch AND a question; the companion takes the link and hands
+      // the question back as `rest`. It goes back into the box it came from —
+      // NOT sent: nothing is attached until the reader clicks a chip, and the
+      // question is only worth asking once something is. A box the reader has
+      // already started typing in again is left alone.
+      const rest = String((r && r.rest) || '').trim();
+      if (rest) {
+        const box = composerBox(target);
+        if (!(box ? box.value : D.drafts[target] || '').trim()) {
+          D.drafts[target] = rest;
+          if (box) {
+            box.value = rest;
+            const comp = box.closest('.composer');
+            if (comp) comp.classList.add('has-draft');
+          }
+        }
+      }
       if (!r || r.ok === false) {
         D.lasso.err = (r && r.error) || 'that search could not be run';
         lassoPaint();
@@ -7608,6 +7629,10 @@ ${bubbleShellHtml()}`;
       const newId = (res.thread_id || (res.thread && res.thread.id)) || null;
       if (target === '__new__') {
         D.pending = null;
+        // a new comment started in a bubble STAYS in that bubble: the same
+        // box, the same place, now the real thread's — so the bots' answer
+        // arrives where the reader is looking
+        if (newId) rekeyBubble(NEW_ID, newId);
         // the spotlight follows the thread the composer just became
         if (D.focused === '__new__') D.focused = newId;
         // …and the Send's hold with it: the card the reader is watching is
@@ -9985,7 +10010,9 @@ ${bubbleShellHtml()}`;
       // every opening goes through, so there is no route — a highlight click,
       // the toolbar, a keyboard shortcut, the bubble's own "open in panel" —
       // that can leave a card floating over the article beside the drawer.
-      hideAllBubbles();
+      // (A new comment still being written moves INTO the panel rather than
+      // being thrown away: its card is drawn there from the same D.pending.)
+      hideAllBubbles(true);
       // being taken to another pane is the reader doing something else: the
       // held card is not even on screen there, and coming back should be a
       // fresh arrival rather than a spotlight they had forgotten about
@@ -10030,6 +10057,24 @@ ${bubbleShellHtml()}`;
       if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       if (!CAPS.highlights) return D;   // nothing can be anchored here
       if (standDown()) return D;        // …and no new threads on a review page
+      // WHERE THE READER HAS ASKED FOR BUBBLES, a new comment starts in one
+      // too — beside the passage it is about, with the panel left shut. The
+      // reader's words: "I like the little popup… can we also START chats with
+      // this kind of popup bubble instead of loading the side panel?" Same
+      // pending anchor, same composer, same Send, same endpoint: the only thing
+      // that differs is where the composer is drawn. With the panel already
+      // open the panel is where the reader is working, so it is used as before.
+      if (bubblesOn() && !D.opened) {
+        // a second selection while one new comment is still unsent replaces
+        // it, exactly as it does in the panel — content.js has already moved
+        // the provisional paint, so the old bubble goes without a cancel
+        if (isBubbleOpen(NEW_ID)) hideBubble(NEW_ID, true);
+        // …and its place is chosen afresh: the offset was from the OLD passage
+        delete B.off[NEW_ID]; delete B.moved[NEW_ID]; delete B.fan[NEW_ID];
+        D.pending = anchor;
+        showBubble(NEW_ID);
+        return D;
+      }
       D.pending = anchor;
       // the composer arrives already under the spotlight: the box being
       // filled in is "the" card, everything else recedes until send or cancel
@@ -10362,6 +10407,9 @@ ${bubbleShellHtml()}`;
       note: {},      // threadId -> a brief line in its header ("oldest closed")
       ro: {},        // threadId -> a ResizeObserver on its box (see makeBubbleEl)
       retry: {},     // threadId -> how many times we have waited for its paint
+      grow: {},      // threadId -> true for a bubble that STARTED as a new comment
+                     // (see onBubbleResize): it was placed when it held nothing
+                     // but a composer, and the answer then grows it
       drag: null,    // {id, mode:'move'|'size', …} while a gesture is in flight
       wired: false,
     };
@@ -10378,6 +10426,18 @@ ${bubbleShellHtml()}`;
     const r1 = n => Math.round(n * 10) / 10;
 
     const bubbleEl = id => (id && B.el[id]) || null;
+    // THE ONE BUBBLE THAT IS NOT A THREAD YET. A new comment started from a
+    // selection has a passage and a composer but no id until the companion
+    // mints one; it goes by the same '__new__' the panel's pending card does,
+    // its paint is content.js's provisional mark under that same name, and the
+    // moment the thread exists the bubble is re-keyed onto it (rekeyBubble).
+    const NEW_ID = '__new__';
+    // What a bubble is ABOUT: the thread, or — for the new one — the pending
+    // anchor dressed as a thread with nothing in it yet.
+    function bubbleThread(id) {
+      if (id !== NEW_ID) return threadById(id);
+      return D.pending ? { id: NEW_ID, quote: D.pending.quote || '', msgs: [], mark: D.pending.mark } : null;
+    }
     const isBubbleOpen = id => !!bubbleEl(id);
     // "is ANY bubble up" — content.js's Esc and click paths ask this, and the
     // panel's own rules ask it. There is no "the" bubble any more.
@@ -10493,7 +10553,7 @@ ${bubbleShellHtml()}`;
       // of them is an event this file would otherwise hear about — so the box
       // is watched, and a change of size re-places it and redraws its line.
       try {
-        const ro = new ResizeObserver(() => { if (isBubbleOpen(id)) placeBubble(id); });
+        const ro = new ResizeObserver(() => onBubbleResize(id));
         ro.observe(el);
         B.ro[id] = ro;
       } catch (_) { /* no ResizeObserver: the line lags a repaint, nothing worse */ }
@@ -10611,21 +10671,29 @@ ${bubbleShellHtml()}`;
     // state in it — the card list, the composer — is created empty or created
     // whole HERE, and from then on it is only ever patched around.
     function buildBubble(box, t) {
+      const fresh = t.id === NEW_ID;
+      const struck = fresh && t.mark === 'strike';
+      box.classList.toggle('bnew', fresh);
+      box.setAttribute('aria-label', fresh ? 'new comment' : 'comment');
       box.innerHTML = `
         <div class="bhrow">
           <span class="bgrip" aria-hidden="true"></span>
           <span class="bq"></span>
           <span class="bnote" hidden></span>
           <button class="brebtn bpanel" type="button" data-act="bubble-panel" data-target="${esc(t.id)}"
-            title="open this thread in the panel" aria-label="open in panel">${PANEL_SVG}</button>
+            title="${fresh ? 'write this comment in the side panel instead' : 'open this thread in the panel'}"
+            aria-label="open in side panel">${PANEL_SVG}</button>
           <button class="brebtn bx" type="button" data-act="bubble-close" data-target="${esc(t.id)}"
-            title="close this bubble (Esc)" aria-label="close">✕</button>
+            title="${fresh ? 'cancel this comment (Esc)' : 'close this bubble (Esc)'}" aria-label="close">✕</button>
         </div>
         <div class="bbody"><div class="bstack"></div></div>
         <button class="bpip" type="button" data-act="bubble-pip" data-target="${esc(t.id)}" hidden
           title="jump to the newest message">new reply ↓</button>
         <div class="bstatus"></div>
-        ${composerHtml(t.id, 'Reply…', '', '', true)}
+        ${fresh
+          ? composerHtml(NEW_ID, struck ? 'Why it should go — optional…' : 'Comment on this passage…', '',
+              struck ? 'Send files the strikeout — a note is optional' : '', true)
+          : composerHtml(t.id, 'Reply…', '', '', true)}
         <span class="bsize" title="drag to resize · double-click to reset"
           aria-hidden="true">${SIZE_SVG}</span>`;
       // the reader reaching the foot themselves answers the pip as surely as
@@ -10652,16 +10720,16 @@ ${bubbleShellHtml()}`;
     function renderOneBubble(id) {
       const box = bubbleEl(id);
       if (!box) return;
-      const t = threadById(id);
+      const t = bubbleThread(id);
       // the thread went away under us (deleted in another tab, a refetch that
       // no longer carries it): there is nothing to be beside
-      if (!t) { hideBubble(id); return; }
+      if (!t) { hideBubble(id, true); return; }
       if (!box.querySelector('.bstack')) buildBubble(box, t);
 
       // the thread's own colour, on the bubble AND on its connector: the line
       // is drawn in the same ink as the card's left edge, and the overlay is a
       // sibling rather than a child, so its group has to be told
-      const ink = speakerColor(threadAuthor(t));
+      const ink = id === NEW_ID ? MY_COLOR : speakerColor(threadAuthor(t));
       box.style.setProperty('--author', ink);
       const g = connGroup(id, true);
       if (g) g.style.setProperty('--author', ink);
@@ -10717,6 +10785,12 @@ ${bubbleShellHtml()}`;
       const ta = box.querySelector('.composer textarea');
       const comp = box.querySelector('.composer');
       if (ta && comp) comp.classList.toggle('has-draft', !!ta.value.trim());
+      // …and its Send. doSend locks the button "until the render below", which
+      // in the panel means until the composer is rebuilt; a bubble's never is,
+      // so the lock is released here — held only while a NEW thread's first
+      // message is in flight, the one case where a second click must not land
+      const send = box.querySelector('.composer .send');
+      if (send) send.disabled = id === NEW_ID && inFlight(NEW_ID);
     }
 
     // Every open bubble, repainted. Called from render(), BEFORE fillMarkdown
@@ -10812,6 +10886,12 @@ ${bubbleShellHtml()}`;
         box.style.maxWidth = 'none';
         box.style.maxHeight = 'none';
       }
+      // NO PAINT, BUT PLACED BEFORE: stay exactly where it is. The marks are
+      // repainted wholesale on every setPage, and a new comment's paint is
+      // re-keyed from '__new__' to its real id a moment before its bubble is
+      // — in that gap the fallback below would fling the box to the middle
+      // of the glass for a frame. drawConnector hides the line and looks again.
+      if (box.style.left && !markRects(id).length) { drawConnector(id, null); return; }
       const bw = box.offsetWidth || 320, bh = box.offsetHeight || 160;
       const home = bubbleCandidates(id, bw, bh)[0];
       const o = B.off[id] || { dx: 0, dy: 0 };
@@ -10822,6 +10902,33 @@ ${bubbleShellHtml()}`;
         left: home.x + o.dx, top: home.y + o.dy,
         right: home.x + o.dx + bw, bottom: home.y + o.dy + bh,
         cx: home.x + o.dx + bw / 2, cy: home.y + o.dy + bh / 2 });
+    }
+    // A BUBBLE THAT STARTED AS A NEW COMMENT was placed when it held only a
+    // composer — a few lines tall — and then the bot's answer grows it, often
+    // far past the room it was given, which put its own reply box below the
+    // fold. So while its passage is on the glass and the reader has neither
+    // dragged nor sized it, a bubble like that whose growth has carried it off
+    // the glass, or down over its own words, is placed again by the same
+    // scoring the first placement used
+    // (fanning does the same, for the same reason). Only then: a bubble that
+    // fits is never moved under the reader, and every other bubble keeps the
+    // never-re-picked rule exactly as before.
+    function onBubbleResize(id) {
+      if (!isBubbleOpen(id)) return;
+      if (B.grow[id] && !B.moved[id] && !B.size[id] && !B.drag) {
+        const box = bubbleEl(id);
+        const u = unionRect(markRects(id));
+        if (box && u && u.bottom > 0 && u.top < window.innerHeight) {
+          const r = box.getBoundingClientRect();
+          // …or grown DOWN over its own passage, which is what a box placed
+          // above its words does when it gets taller
+          const onWords = markRects(id).some(m => overlaps(r, m));
+          if (onWords || offGlass({ x: r.left, y: r.top }, r.width, r.height) > 0) {
+            B.off[id] = chooseOffset(id, r.width, r.height);
+          }
+        }
+      }
+      placeBubble(id);
     }
     function placeAllBubbles() {
       const svg = D.el.bconn;
@@ -11082,16 +11189,31 @@ ${bubbleShellHtml()}`;
       return D;
     }
     // `id` omitted means the front-most one, which is what Esc means.
-    function hideBubble(id) {
+    // Closing the NEW comment's bubble (✕, Esc, the switch going back to
+    // panel) is cancelling it, as closing the panel on its card always was —
+    // unless `keepNew`, which is the panel taking it over (open()), or the
+    // bubble being replaced by a fresh selection. A message already on its way
+    // is never cancelled under itself: the thread will exist in a moment.
+    function hideBubble(id, keepNew) {
       if (!D.mounted) return D;
       const who = id || frontBubble();
       if (!who || !isBubbleOpen(who)) return D;
+      const cancel = who === NEW_ID && !keepNew && !!D.pending && !inFlight(NEW_ID);
       harvestDrafts();                    // a half-typed reply is not thrown away
       const el = B.el[who];
+      // …and the panel's own copy of this composer is brought up to date with
+      // it. The panel's box was never typed in while the bubble held the
+      // thread, and the next render's harvest reads the PANEL's box — empty —
+      // which would delete the very draft just saved ("open in panel" arrived
+      // with an empty box).
+      D.shadow.querySelectorAll('.composer[data-target="' + cssq(who) + '"] textarea').forEach(ta => {
+        if (!el || !el.contains(ta)) ta.value = D.drafts[who] || '';
+      });
       if (el && el.parentNode) el.parentNode.removeChild(el);
       try { if (B.ro[who]) B.ro[who].disconnect(); } catch (_) { /* gone already */ }
       delete B.ro[who];
       delete B.retry[who];
+      delete B.grow[who];
       delete B.el[who];
       B.open = B.open.filter(x => x !== who);
       if (B.drag && B.drag.id === who) B.drag = null;
@@ -11099,10 +11221,62 @@ ${bubbleShellHtml()}`;
       delete B.note[who];
       applyZ();
       if (!B.open.length && D.el.bconn) D.el.bconn.setAttribute('hidden', '');
+      if (cancel) cancelNew();
       return D;
     }
-    function hideAllBubbles() {
-      for (const id of B.open.slice()) hideBubble(id);
+    function hideAllBubbles(keepNew) {
+      for (const id of B.open.slice()) hideBubble(id, keepNew);
+      return D;
+    }
+    // THE NEW COMMENT BECOMES ITS THREAD. Same element, same place on the
+    // glass, same size and fan state, same z-order — only the name changes,
+    // and the shell is rebuilt once so its buttons and composer name the real
+    // thread (the composer is empty: its words have just been sent). The
+    // ResizeObserver closes over the old name and is made again.
+    function rekeyBubble(from, to) {
+      if (!from || !to || from === to || !isBubbleOpen(from) || isBubbleOpen(to)) return;
+      const el = B.el[from];
+      try { if (B.ro[from]) B.ro[from].disconnect(); } catch (_) { /* gone already */ }
+      delete B.ro[from];
+      delete B.el[from];
+      B.el[to] = el;
+      B.open = B.open.map(x => (x === from ? to : x));
+      for (const k of ['off', 'moved', 'size', 'fan', 'conn', 'note']) {
+        if (B[k][from] !== undefined) { B[k][to] = B[k][from]; delete B[k][from]; }
+      }
+      delete B.retry[from];
+      if (B.drag && B.drag.id === from) B.drag.id = to;
+      const g = connGroup(from, false);
+      if (g) g.setAttribute('data-thread', to);
+      el.setAttribute('data-thread', to);
+      el.classList.remove('bnew');
+      B.grow[to] = true;
+      // keep the caret where it was: a reader who just pressed Enter is still
+      // in this box and may well type the next line straight away
+      const hadFocus = !!(D.shadow.activeElement && el.contains(D.shadow.activeElement));
+      el.innerHTML = '';
+      try {
+        const ro = new ResizeObserver(() => onBubbleResize(to));
+        ro.observe(el);
+        B.ro[to] = ro;
+      } catch (_) { /* no ResizeObserver: as in makeBubbleEl */ }
+      renderOneBubble(to);
+      if (hadFocus) {
+        const ta = el.querySelector('.composer textarea');
+        if (ta) { try { ta.focus({ preventScroll: true }); } catch (_) { ta.focus(); } }
+      }
+    }
+    // "write this in the side panel instead": the unsent comment, draft and
+    // address and all, onto the panel's own new-comment card — which is where
+    // a selection would have put it with the switch at panel.
+    function newToPanel() {
+      hideAllBubbles(true);               // harvests the draft on the way out
+      if (!D.pending) return D;
+      D.focused = NEW_ID;
+      open('comments');
+      render();
+      const ta = D.shadow.querySelector('.card.pending textarea');
+      if (ta) { ta.focus(); D.el.comments.scrollTop = 0; }
       return D;
     }
     // Fanning a stack open is the one thing that changes a bubble's size

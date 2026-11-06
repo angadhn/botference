@@ -636,6 +636,65 @@ await test('…and a host the reader HAS granted is left to the bots', async () 
   assert.equal(w.block, '');
 });
 
+await test('/lasso <url> with a question after it is a URL lasso, not a word search', async () => {
+  // the reported case: an annotated page, then a question, on one line
+  const http = httpOf({});
+  const q = `${THE_PAPER.url} Can you see the page and the ongoing chats? Does it have callout boxes?`;
+  assert.ok(!lasso.isHttpUrl(q), 'the old check missed this');
+  const r = await lasso.lassoUrls(q, { dir: WEBDIR, http });
+  assert.equal(http.asked.length, 0, 'their own copy, nothing fetched');
+  assert.equal(r.results.length, 1);
+  assert.equal(r.results[0].kind, 'page');
+  assert.equal(r.results[0].id, store.pageKey(THE_PAPER.url));
+  assert.match(r.head, /^lasso · you have annotated “A spinning tether for orbital transfer”/);
+  assert.equal(r.rest, 'Can you see the page and the ongoing chats? Does it have callout boxes?');
+});
+
+await test('…several links each get a chip, and the leftover words are kept', async () => {
+  const http = httpOf({
+    [ROCKETS]: { body: html('Rockets, part 1', 'The first stage.') },
+    [FT]: { status: 403, body: 'no' },
+  });
+  const r = await lasso.lassoUrls(`compare ${ROCKETS} and ${FT}.`, { dir: WEBDIR, http });
+  assert.equal(r.results.length, 2);
+  assert.deepEqual(r.results.map(x => x.kind), ['web', 'web']);
+  assert.equal(r.results[1].failed, true);
+  assert.match(r.head, /^lasso · 2 links — fetched “Rockets, part 1” \(angadh\.com\); could not fetch: HTTP 403 — ft\.com$/);
+  assert.equal(r.rest, 'compare and');
+  assert.ok(!r.error, 'one link worked, so the whole is not an error');
+});
+
+await test('a pasted link the reader ALREADY annotated rides the turn as their own copy', async () => {
+  const http = httpOf({ [THE_PAPER.url]: { body: html('nope', 'the live web copy') } });
+  const w = await lasso.webForTurn(`does ${THE_PAPER.url} have callout boxes?`,
+    { dir: WEBDIR, http, hosts: ['github.com'] });
+  assert.equal(http.asked.length, 0, 'no live fetch');
+  assert.equal(w.urls.length, 1);
+  assert.match(w.note, /is a page the reader has already annotated/);
+  assert.match(w.block, /Fetched for THIS message only/);
+  assert.match(w.block, /A spinning tether for orbital transfer \(page\) — /);
+  const m = /— (\S+\.md) —/.exec(w.block);
+  assert.ok(m, 'a digest path');
+  const digest = fs.readFileSync(m[1], 'utf8');
+  assert.match(digest, /## The page itself/);
+  assert.match(digest, /## The margin/);
+  // …even when the bots could fetch that host themselves: they could not see the margin
+  const w2 = await lasso.webForTurn(`see ${THE_PAPER.url}`,
+    { dir: WEBDIR, http, hosts: ['example.org'] });
+  assert.match(w2.block, /\(page\) — /);
+  // …and nothing was recorded on the page
+  assert.ok(!(store.readPage(THE_PAPER.url).attachments || []).length);
+});
+
+await test('…but not the page the reader is standing on', async () => {
+  const http = httpOf({});
+  const w = await lasso.webForTurn(`see ${THE_PAPER.url}`,
+    { dir: WEBDIR, http, hosts: ['github.com'], notPage: store.pageKey(THE_PAPER.url) });
+  assert.equal(http.asked.length, 0);
+  assert.equal(w.note, '');
+  assert.equal(w.block, '');
+});
+
 await test('a message with no links costs nothing at all', async () => {
   const http = httpOf({});
   const w = await lasso.webForTurn('no links in this one', { dir: WEBDIR, http });

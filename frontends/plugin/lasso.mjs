@@ -1011,6 +1011,20 @@ export function headline(state = {}) {
 }
 
 /**
+ * The reader's own record of this link, if they have actually WORKED on it —
+ * a thread with messages, some page chat, or a saved snapshot. A page that was
+ * merely opened once is not "theirs" in any way the bots could use. `null`
+ * otherwise.
+ */
+export function annotatedPage(url) {
+  const known = readPage(normUrl(String(url == null ? '' : url).trim()));
+  if (!known) return null;
+  const annotated = (known.threads || []).some(t => (t.msgs || []).length)
+    || (known.page_chat || []).length || hasSnapshot(pageKey(known.url));
+  return annotated ? known : null;
+}
+
+/**
  * `/lasso <a url>` — the whole of it, header and chip.
  *
  * Three outcomes and never an empty one: the reader has this page already (a
@@ -1022,10 +1036,8 @@ export async function lassoUrl(query, { dir = WEB_DIR, http = null, notPage = ''
   const host = hostOf(url);
   // theirs already? then the thing to hand over is the record, not the page —
   // it has the margin on it, which the live web page does not
-  const known = readPage(url);
-  const annotated = known && ((known.threads || []).some(t => (t.msgs || []).length)
-    || (known.page_chat || []).length || hasSnapshot(pageKey(known.url)));
-  if (known && annotated) {
+  const known = annotatedPage(url);
+  if (known) {
     const key = pageKey(known.url);
     if (notPage && key === notPage) return { query, head: headline({ kind: 'here' }), results: [] };
     return {
@@ -1056,6 +1068,44 @@ export async function lassoUrl(query, { dir = WEB_DIR, http = null, notPage = ''
 }
 
 /**
+ * `/lasso <a url> and some words` — a link with a question after it.
+ *
+ * A reader reported typing `/lasso https://npr.org/… Can you see the page?`
+ * and getting "8 matches for <the whole sentence>": the URL was not alone on
+ * the line, so it fell through to the word search. Any http(s) link in the
+ * query now makes it a URL lasso — of each link found (up to
+ * WEB_URLS_PER_MESSAGE), one chip per link — and the words that are left over
+ * come back as `rest`, so whoever asked can still send them as a message.
+ *
+ * `{query, head, results, rest, urls, error?}`.
+ */
+export async function lassoUrls(query, opts = {}) {
+  const urls = urlsIn(query);
+  const rest = restOf(query);
+  if (!urls.length) return { query, head: headline({ query, count: 0 }), results: [], rest, urls };
+  if (urls.length === 1) return { ...(await lassoUrl(urls[0], opts)), query, rest, urls };
+  const each = [];
+  for (const u of urls) each.push(await lassoUrl(u, opts));
+  const results = each.flatMap(r => r.results || []);
+  const errs = each.filter(r => r.error).map(r => r.error);
+  return {
+    query, rest, urls, results,
+    head: `lasso · ${urls.length} links — ${each.map(r => String(r.head || '')
+      .replace(/^lasso · /, '')).join('; ')}`,
+    ...(errs.length === urls.length ? { error: errs[0] } : {}),
+  };
+}
+
+/** The words of a query with its links taken out (their trailing punctuation stays out too). */
+export function restOf(text) {
+  return String(text == null ? '' : text)
+    .replace(URL_IN_TEXT, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s.,;:!?)\]}”’'"-]+/, '')
+    .trim();
+}
+
+/**
  * The links in one message that the BOTS cannot reach, fetched for them.
  *
  * `{note, block, urls}` — one system line naming the hosts, plus the same
@@ -1068,14 +1118,36 @@ export async function lassoUrl(query, { dir = WEB_DIR, http = null, notPage = ''
  * page they can read is a page they cannot.
  */
 export async function webForTurn(text, { dir = WEB_DIR, http = null, hosts = null,
-  max = WEB_URLS_PER_MESSAGE, timeout = WEB_TIMEOUT_MS } = {}) {
+  max = WEB_URLS_PER_MESSAGE, timeout = WEB_TIMEOUT_MS, notPage = '' } = {}) {
   const found = urlsIn(text, { max: max * 2 });
   if (!found.length) return { note: '', block: '', urls: [] };
   const allow = hosts || allowedHosts();
-  const want = found.filter(u => !hostAllowed(hostOf(u), allow)).slice(0, max);
-  if (!want.length) return { note: '', block: '', urls: [] };
   const rows = [];
   const notes = [];
+  // A link the reader has ALREADY annotated goes to the bots as their own
+  // record — the saved article, their margin threads and the page chat — and
+  // not as a fresh fetch of the live page, which knows none of that. This
+  // holds whatever the allow-list says: a bot that can fetch the page itself
+  // still cannot see the reader's comments on it. The page the reader is
+  // standing on is skipped (the turn carries it already). Per turn, like the
+  // rest: the digest is written, nothing is recorded on the page.
+  const own = [];
+  const others = [];
+  for (const u of found) {
+    const known = annotatedPage(u);
+    if (known && notPage && pageKey(known.url) === notPage) continue;
+    if (known) own.push(known); else others.push(u);
+  }
+  for (const known of own.slice(0, max)) {
+    const built = buildAttachment(dir, { kind: 'page', id: pageKey(known.url) });
+    if (built.error) continue;
+    rows.push({ id: normUrl(known.url), title: built.title, path: built.path,
+      summary: built.summary, kind: 'page' });
+    notes.push(`The link ${hostOf(known.url)} is a page the reader has already annotated; `
+      + 'their saved copy, with their comments on it, is in the file below.');
+  }
+  const want = others.filter(u => !hostAllowed(hostOf(u), allow)).slice(0, Math.max(0, max - rows.length));
+  if (!rows.length && !want.length) return { note: '', block: '', urls: [] };
   for (const u of want) {
     const host = hostOf(u);
     let row = null;
@@ -1093,7 +1165,7 @@ export async function webForTurn(text, { dir = WEB_DIR, http = null, hosts = nul
     note: notes.join('\n'),
     block: rows.length
       ? `${WEB_TURN_HEADER}\n${rows.map(r =>
-        `- ${r.title} (web) — ${r.path} — ${r.summary}`).join('\n')}\n`
+        `- ${r.title} (${r.kind || 'web'}) — ${r.path} — ${r.summary}`).join('\n')}\n`
       : '',
     urls: rows.map(r => r.id),
   };

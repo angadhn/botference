@@ -3306,7 +3306,10 @@
         if (!r.ok) return failure(r);
         const d = r.data || {};
         return { ok: true, results: d.results || [], attached: d.attached || [],
-                 path: d.path || '', head: d.head || '', error: d.error || '' };
+                 path: d.path || '', head: d.head || '', error: d.error || '',
+                 // the words typed after a link ("/lasso https://… can you see
+                 // it?"), which the drawer hands back to the composer
+                 rest: typeof d.rest === 'string' ? d.rest : '' };
       },
       onLassoAttach: async (kind, id, library) => {
         // the record has to exist before anything can hang off it — a page the

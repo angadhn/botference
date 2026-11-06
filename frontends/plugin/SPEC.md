@@ -11422,3 +11422,60 @@ second /snapshot for the same page replaces the first"; harness `?selftest=1`
 gains a header-only `<article>` beside the prose and the late-hydration
 watcher (fires on new words, re-sends the snapshot, ignores mutations that
 change no words). 54/54 poses green.
+
+## Amendment (2026-11-06): a new comment starts in a bubble too
+
+The reader, after living with bubbles: *"When I click on a discussed section, I
+get a nice little popup to see that chat history, instead of loading the side
+panel. I really like this. Can we also START chats with this kind of popup
+bubble instead of loading the side panel?"*
+
+This is the item the 2026-09-10 amendment left out ("a new comment from a
+selection still opens the drawer"). It now follows the same switch: with
+`comments: bubbles` on and the panel **shut**, the selection pill opens the new
+comment's composer in a bubble beside the passage. No new setting and no new
+command; with the switch at `panel`, or with the panel already open, the pill
+does exactly what it always did.
+
+- **One pending comment, two places to draw it.** `beginNew` keeps `D.pending`
+  and content.js's provisional `__new__` paint as before; the bubble is keyed
+  `__new__` (`NEW_ID`), so `markRects`, the connector and `scopeFor` work on it
+  unchanged. `bubbleThread(id)` dresses the pending anchor as an empty thread.
+  The composer is `composerHtml('__new__', …)` — the same pills, @-menu, drafts,
+  strike hint and `doSend` → `onSave` → `POST /thread` with the same route.
+- **The bubble becomes the thread.** When `deliver` learns the minted id,
+  `rekeyBubble('__new__', id)` moves the same element, place, size, z-order and
+  connector onto it and rebuilds the shell once, so the bots' answer arrives in
+  the bubble the reader is looking at.
+- **Closing it is cancelling it** (✕, Esc, the switch back to `panel`), as
+  closing the panel on its card always was — except a message already in flight,
+  which is never cancelled under itself. `hideBubble(id, keepNew)` /
+  `hideAllBubbles(keepNew)`: `open()` passes `keepNew`, so the panel opening
+  takes the pending comment into its own card rather than throwing it away.
+- **Open in side panel** (the header's sidebar glyph) on a new comment is
+  `newToPanel()`: the panel's pending card, focused, with the draft carried.
+- **Fixes this needed in the bubble module**, which also help existing bubbles:
+  the bubble's Send button is released in `renderOneBubble` (it was locked
+  after the first send, since a bubble's composer is never rebuilt); hiding a
+  bubble copies its draft into the panel's copy of the composer (the next
+  render's harvest read the panel's empty box and deleted the draft); a placed
+  bubble whose mark is momentarily unpainted holds still instead of jumping to
+  the middle of the glass for a frame.
+- **Growth.** A bubble that started as a new comment was placed when it held
+  only a composer. While its passage is on the glass and the reader has not
+  dragged or sized it, if the answer grows it off the glass or down over its
+  own words, it is placed again by `chooseOffset` (`B.grow`, `onBubbleResize`).
+  Every other bubble keeps the never-re-picked rule.
+
+### Testing
+
+- `?bubbles=new&selftest=1` — 40 checks: the pill opens a bubble and not the
+  panel, its quote/pills/composer/connector, ✕ and Esc cancel and unpaint and
+  post nothing, open-in-panel carries the draft, Send shows the message at once
+  and locks, exactly one `/thread` with the mention, the same box re-keyed to
+  the real id with its buttons, composer and connector, the answer arriving in
+  it with the reply box still on the glass and off the passage, a second reply
+  reaching the record, and the panel road unchanged both ways.
+- Screenshots: `?bubbles=new`, `?bubbles=newsent`.
+- `?bubbles=1&selftest=1` has one pre-existing timing flake ("each line ends on
+  its OWN mark"), seen on the unchanged code too.

@@ -371,6 +371,15 @@
                      all — that with the switch off nothing whatsoever has
                      changed.
                      `?pdf=1&bubbles=1&selftest=1` is the same on a PDF.
+    ?bubbles=new     a NEW comment started in a bubble: the switch on, the panel
+                     shut, a passage selected and the pill pressed — the
+                     composer beside the passage with a question typed in it.
+                     `?bubbles=newsent` sends it to @claude and lets the answer
+                     arrive in the same bubble. `?bubbles=new&selftest=1` runs
+                     the start-in-a-bubble road: ✕ and Esc cancel, open-in-panel
+                     carries the draft, Send makes exactly one thread and the
+                     bubble becomes that thread's in place, the bot's answer
+                     lands in it, and the panel road is untouched.
     ?selftest=canon  …and run the identity assertions instead of the article ones
     ?selftest=1      drive the whole loop and write the tally into the status
                      bar (also on #h-log[data-detail] for `chrome --dump-dom`)
@@ -2835,6 +2844,17 @@ function companion(method, path, body) {
     // refuses, one chip that says so. Never an empty result and never the
     // page the reader happens to be standing on.
     if (/^https?:\/\//i.test(q)) {
+      // the words after the link come back as `rest` (lasso.restOf), as the
+      // companion sends them; the link alone is what is fetched
+      const link = q.split(/\s+/)[0];
+      const rest = q.slice(link.length).trim();
+      if (rest) {
+        const host1 = (link.split('/')[2] || '').replace(/^www\./, '');
+        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(), rest,
+          head: 'lasso · fetched “Rockets, part 1” (' + host1 + ')',
+          results: [{ kind: 'web', id: link, title: 'Rockets, part 1', url_or_path: link, when: now(),
+            hit: 'The first stage is the whole argument, and the rest is bookkeeping.' }] } };
+      }
       const host = (q.split('/')[2] || '').replace(/^www\./, '');
       if (/paywall/.test(q)) {
         return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(),
@@ -9190,6 +9210,217 @@ async function selftestBubbles() {
   console.log(out.join('\n'));
 }
 
+// Select the demo passage and press the pill, exactly as a reader does, and
+// hand back the composer that opened — in a bubble if the setting says so,
+// or null if none did.
+// The passage is the last paragraph's opening clause: unmarked in every
+// record this pose can have (?bubbles adds a third thread to the paragraph
+// demoSelect uses, which splits the text node it looks for).
+const BUBNEW_PHRASE = 'Whether it survives contact with a European draw';
+function bubbleNewDrag(phrase) {
+  const w = phrase || BUBNEW_PHRASE;
+  const p = [...document.querySelectorAll('article p')].find(el => el.textContent.includes(w));
+  const t = p && [...p.childNodes].find(n => n.nodeType === 3 && n.data.includes(w));
+  if (!t) { log('bubbles: the new-comment passage is not on the page'); return; }
+  const r = document.createRange();
+  const at = t.data.indexOf(w);
+  r.setStart(t, at); r.setEnd(t, at + w.length);
+  // on the glass, as a passage a reader has just selected always is
+  const pr = r.getBoundingClientRect();
+  if (pr.bottom > innerHeight || pr.top < 0) p.scrollIntoView({ block: 'center' });
+  const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+}
+async function bubbleNewSelect(phrase) {
+  bubbleNewDrag(phrase);
+  const d = window.__bfp.drawer, S = d.shadow;
+  await sleep(320);                   // content.js floats the pill a tick after mouseup
+  const pill = S.querySelector('.selbtn');
+  if (!pill) return null;
+  pill.click();
+  return await until(() => S.querySelector('.bubble[data-thread="__new__"] .composer textarea'), 2000);
+}
+
+// ?bubbles=new&selftest=1 — A CONVERSATION STARTED IN A BUBBLE.
+//
+//   THE ASK: "When I click on a discussed section, I get a nice little popup
+//   to see that chat history, instead of loading the side panel. I really
+//   like this. Can we also START chats with this kind of popup bubble instead
+//   of loading the side panel?" So with the switch at bubbles and the panel
+//   shut, the selection pill opens the new comment's composer in a bubble
+//   beside the passage. Everything about sending is the panel's: the same
+//   pending anchor, the same POST /thread, the same mention routing — and the
+//   moment the thread exists the bubble IS that thread's bubble, where the
+//   answer arrives. The panel is one click away, and the panel road (switch
+//   at panel, or the panel already open) is exactly what it always was.
+async function selftestBubblesNew() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const NEW = '__new__';
+  const bub = id => S.querySelector('.bubble[data-thread="' + id + '"]');
+  const bubs = () => [...S.querySelectorAll('.bubble')];
+  const newMark = () => document.querySelector('mark.bfp-hl[data-bfp="__new__"]');
+  const posts = () => apiCalls.filter(c => c.path === '/thread').length;
+  const QUESTION = '@claude what would you cut from this section?';
+
+  await until(() => document.querySelector('mark.bfp-hl'), 5000);
+  d.setBubbles('bubbles');
+  await sleep(120);
+  check('(pose) bubbles on, panel shut', d.bubbleState().on && !d.isOpen());
+
+  // ---- the selection pill opens a bubble, not the panel -------------------
+  const t0 = posts();
+  let ta = await bubbleNewSelect();
+  check('pressing the selection pill opens a NEW comment in a bubble', !!ta && !!bub(NEW));
+  check('…and leaves the panel shut', !d.isOpen());
+  check('…with the provisional highlight painted on the passage', !!newMark());
+  check('…the passage quoted in the bubble\'s header',
+    ((bub(NEW) && bub(NEW).querySelector('.bq') || {}).textContent || '').indexOf(BUBNEW_PHRASE) >= 0);
+  check('…a composer asking for a comment, focused and ready',
+    !!ta && /Comment on this passage/.test(ta.placeholder) && S.activeElement === ta);
+  check('…with the drawer\'s own address pills (Note · Claude · Codex · All)',
+    bub(NEW).querySelectorAll('.composer .rpill').length >= 3);
+  check('…an obvious way into the side panel',
+    !!bub(NEW).querySelector('[data-act="bubble-panel"]'));
+  check('…and no message cards yet: there is nothing to show',
+    !bub(NEW).querySelector('.bstack > *'));
+  await sleep(200);
+  const st0 = d.bubbleState(NEW);
+  const mb = markBox(NEW);
+  check('it sits beside the passage, joined to it by the curve',
+    !!st0.conn && inBox(st0.conn.to, mb, 4));
+  check('nothing was sent by opening it', posts() === t0);
+
+  // ---- ✕ cancels, as closing the panel on its card always did -------------
+  hit(bub(NEW) && bub(NEW).querySelector('[data-act="bubble-close"]'), 'the new bubble\'s ✕');
+  await sleep(160);
+  check('✕ cancels the new comment: no bubble', !bub(NEW) && !bubs().length);
+  check('…and the provisional highlight comes off the page', !newMark());
+  check('…and nothing was sent', posts() === t0);
+
+  // ---- Esc cancels too ------------------------------------------------------
+  ta = await bubbleNewSelect();
+  check('(pose) a second new bubble', !!ta);
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  await sleep(160);
+  check('Esc cancels it the same way', !bub(NEW) && !newMark());
+
+  // ---- open in the side panel carries the draft ---------------------------
+  ta = await bubbleNewSelect();
+  ta.value = 'half a thought';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  hit(bub(NEW) && bub(NEW).querySelector('[data-act="bubble-panel"]'), 'the new bubble\'s open-in-panel');
+  await sleep(420);
+  const pend = S.querySelector('.pane[data-pane="comments"] .card.pending');
+  check('open-in-panel puts the comment in the panel', d.isOpen() && !!pend && !bubs().length);
+  check('…with the words already typed', !!pend && pend.querySelector('textarea').value === 'half a thought');
+  check('…the provisional highlight still on the passage', !!newMark());
+  check('…and nothing sent', posts() === t0);
+  d.close();
+  await sleep(200);
+  check('closing the panel then cancels it, as it always has', !newMark());
+
+  // ---- Send: one thread, and the bubble becomes it -------------------------
+  ta = await bubbleNewSelect();
+  ta.value = QUESTION;
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  // WHERE IT IS, as the bubble keeps it: an offset from its passage. (Not
+  // its rect on the glass — the panel just closed above, and the article is
+  // still sliding back under it, carrying its bubbles with it, as it should.)
+  const before = d.bubbleState(NEW).offset;
+  const el0 = bub(NEW);
+  slowPost = 600;
+  bub(NEW).querySelector('.composer .send').click();
+  await sleep(30);
+  check('the message is on the bubble the moment Send is pressed',
+    !!bub(NEW) && /what would you cut/.test((bub(NEW).querySelector('.reply.sending') || {}).textContent || ''));
+  check('…its box emptied', bub(NEW).querySelector('.composer textarea').value === '');
+  check('…and Send locked while the thread has no id yet',
+    bub(NEW).querySelector('.composer .send').disabled === true);
+  bub(NEW).querySelector('.composer textarea').dispatchEvent(
+    new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  slowPost = 0;
+  const id = await until(() => { const l = d.bubbleList(); return l.length === 1 && l[0] !== NEW ? l[0] : null; }, 4000);
+  check('exactly one thread was created', posts() === t0 + 1);
+  check('…by the same POST /thread the panel uses, carrying the mention',
+    /@claude/.test((threadBodies[threadBodies.length - 1] || { msg: {} }).msg.text || ''));
+  check('the bubble is now that thread\'s bubble', !!id && !!bub(id) && !bub(NEW));
+  check('…the panel still shut', !d.isOpen());
+  check('…the very same box, not a new one in its place', !!id && bub(id) === el0 && !!before);
+  check('…the highlight re-keyed to the real thread',
+    !newMark() && !!document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]'));
+  check('…the comment shown as a card in it',
+    !!id && /what would you cut/.test((bub(id).querySelector('.bstack .bcard') || {}).textContent || ''));
+  check('…its buttons and composer naming the real thread',
+    !!id && !bub(id).querySelector('[data-target="__new__"]')
+    && !!bub(id).querySelector('.composer[data-target="' + id + '"]'));
+  check('…and its connector too',
+    !!id && !!S.querySelector('.bconn g[data-thread="' + id + '"]') && !S.querySelector('.bconn g[data-thread="__new__"]'));
+  const answered = await until(() => id && bub(id) && bub(id).querySelector('.bstack .bcard.bot'), 8000);
+  check('the bot\'s answer arrives in the bubble', !!answered);
+  await sleep(250);
+  check('…and the grown bubble still has its reply box on the glass', (() => {
+    const c = id && bub(id) && bub(id).querySelector('.composer');
+    if (!c) return false;
+    const r = c.getBoundingClientRect();
+    return r.top >= 0 && r.bottom <= window.innerHeight + 1;
+  })());
+  check('…and it does not lie over the passage it is about', (() => {
+    const r = id && bub(id) && bub(id).getBoundingClientRect(), m = markBox(id);
+    return !!r && !!m && !(r.left < m.right && m.left < r.right && r.top < m.bottom && m.top < r.bottom);
+  })());
+  check('…and the reply box is live again',
+    !!id && bub(id).querySelector('.composer .send').disabled === false);
+
+  // ---- a reply from the bubble still works afterwards ---------------------
+  const rta = id && bub(id).querySelector('.composer textarea');
+  if (rta) {
+    rta.value = 'thanks — one more question';
+    rta.dispatchEvent(new Event('input', { bubbles: true }));
+    bub(id).querySelector('.composer .send').click();
+  }
+  const replied = await until(() => (RECORD.threads.find(t => t.id === id) || { msgs: [] })
+    .msgs.some(m => /one more question/.test(m.text)), 3000);
+  check('a second message from the same bubble reaches the thread', !!replied);
+  d.hideAllBubbles();
+  await sleep(150);
+
+  // ---- the panel road is untouched ----------------------------------------
+  d.open('comments');
+  await sleep(250);
+  bubbleNewDrag('seems especially worried about the answer');
+  await sleep(320);
+  const pill2 = S.querySelector('.selbtn');
+  if (pill2) pill2.click();
+  await sleep(250);
+  check('with the panel already open, a new comment is the panel\'s card',
+    !!S.querySelector('.card.pending textarea') && !bubs().length);
+  d.close();
+  await sleep(200);
+  d.setBubbles('panel');
+  await sleep(120);
+  bubbleNewDrag('seems especially worried about the answer');
+  await sleep(320);
+  const pill3 = S.querySelector('.selbtn');
+  if (pill3) pill3.click();
+  await sleep(300);
+  check('with the switch at panel, the pill opens the panel exactly as before',
+    d.isOpen() && !!S.querySelector('.card.pending textarea') && !bubs().length);
+  d.close();
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (bubbles-new) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?pdf=1&bubbles=1&selftest=1 — THE SAME THING ON A PDF.
 //
 //   There is no PDF code in the bubble and there must not be. A mark in a
@@ -10596,6 +10827,23 @@ async function selftestLasso() {
     })());
     check('…and never the words “that is this page”',
       !/that is this page/.test(pane().textContent || ''));
+
+    // ---- a link with a question after it ----
+    // "/lasso https://… Can you see the page?" — the link is fetched as a chip
+    // and the question goes BACK into the box, unsent, so it can be sent once
+    // the reader has chosen to attach the page.
+    const said = (RECORD.page_chat || []).length;
+    const att0 = lassoAttaches.length;
+    await lassoCmd('/lasso https://angadh.com/rockets-1 Can you see the page?');
+    check('a link with words after it is still fetched as a link',
+      lassoSearches[lassoSearches.length - 1] === 'https://angadh.com/rockets-1 Can you see the page?'
+      && headOf() === 'lasso · fetched “Rockets, part 1” (angadh.com)');
+    check('…and the words after it come back into the box', box().value === 'Can you see the page?');
+    check('…NOT sent, and nothing attached',
+      (RECORD.page_chat || []).length === said && lassoAttaches.length === att0);
+    // the reader's own typing is never overwritten by a late answer
+    box().value = '';
+    box().dispatchEvent(new Event('input', { bubbles: true }));
 
     await lassoCmd('/lasso https://paywall.test/behind-it');
     check('a link that refuses us says which host and what to do instead',
@@ -12894,7 +13142,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // there does not need to be: what is under test is the offer, not the parse
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
-      setTimeout(BUBBLES ? (PDFV ? selftestBubblesPdf : selftestBubbles)
+      setTimeout(BUBBLES ? (PDFV ? selftestBubblesPdf
+          : BUBBLES === 'new' ? selftestBubblesNew : selftestBubbles)
         : CHECKS === '1' ? selftestChecks
         : LASSO === '1' ? selftestLasso
         : FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
@@ -12945,6 +13194,21 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         // placement the feature actually does.
         if (BUBBLES === 'many') {
           RECORD.threads.forEach((t, i) => setTimeout(() => clickStackedMark(t.id), 280 * i));
+          return;
+        }
+        // ?bubbles=new / newsent — a comment STARTED in a bubble, through the
+        // real selection path: select, the pill, the composer beside the words
+        if (BUBBLES === 'new' || BUBBLES === 'newsent') {
+          // a passage in the first screenful, so the shot needs no scroll
+          bubbleNewSelect('sentence that survives a season and outlives a manager').then(ta => {
+            if (!ta) return log('bubbles: the new comment did not open in a bubble');
+            ta.value = '@claude what would you cut from this section?';
+            ta.dispatchEvent(new Event('input', { bubbles: true }));
+            if (BUBBLES === 'newsent') {
+              const b = d.shadow.querySelector('.bubble[data-thread="__new__"] .composer .send');
+              if (b) b.click();
+            }
+          });
           return;
         }
         clickStackedMark(MAIN);
