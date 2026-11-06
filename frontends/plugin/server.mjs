@@ -425,7 +425,14 @@ function checkFileText(page) {
     if (!st.isFile() || st.size > CHECK_FILE_MAX) return '';
     // blog.sourceText: a notebook is checked against its text projection,
     // never its JSON
-    return checks.plainText(blog.sourceText(file));
+    const src = blog.sourceText(file);
+    // …and a markdown source in BOTH forms: a bot may quote the file
+    // (`the [IEA](https://…) says`) or the words the page renders ("the IEA
+    // says") — the same wording either way, and neither is "not in the file"
+    if (!/\.(html?|svg)$/i.test(file)) {
+      return `${checks.plainText(src)}\u0000${collateral.docBlocks(blog.mdDoc(src)).join(' ')}`;
+    }
+    return checks.plainText(src);
   } catch { return ''; }
 }
 function checksFor(page, text) {
@@ -595,6 +602,15 @@ const CHANGES_KEEP = 50;
 // suggest mode the answer is thrown away — so it must not be computed until
 // after the boolean that decides whether anyone will look at it. Passing the
 // value would put the work back where it was.
+// A page whose source the bots edit as MARKDOWN (a blog or book post, not an
+// .html/.svg page that is its own source): the pages renderAnchors may repair.
+function renderableSource(url) {
+  try {
+    const bg = blogOf(url);
+    return !!(bg && bg.source_path && !/\.(html?|svg)$/i.test(bg.source_path));
+  } catch { return false; }
+}
+
 function withCollateral(url, payload, seen, ev, after) {
   if (seen.noCollateral) return;
   const page = store.readPage(url);
@@ -793,7 +809,10 @@ function reportCollateral(page, seen, after, ev) {
   const author = store.isAgentAuthor(agents[0]) ? agents[0] : 'claude';
   let made = 0;
   try {
-    const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who });
+    // the conversation the turn answered: a change made for it is told as such,
+    // and one that landed inside its own passage is adopted by it
+    const origin = (ev && typeof ev.target === 'string') ? ev.target : '';
+    const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who, origin });
     // …and FIRST, the repairs. A region whose old text was a reader's own
     // quoted passage does not become a new thread announcing the change — it
     // goes back into the thread that was about to orphan, which is where the
@@ -803,7 +822,7 @@ function reportCollateral(page, seen, after, ev) {
       const thread = (page.threads || []).find(t => t && t.id === h.thread_id);
       if (!thread) continue;
       const done = store.healThread(thread, {
-        quote: h.quote, prefix: h.prefix, suffix: h.suffix, deleted: h.deleted,
+        quote: h.quote, prefix: h.prefix, suffix: h.suffix, deleted: h.deleted, inserted: h.inserted,
       });
       if (!done.ok || !done.changed) continue;
       // the narration the bot never wrote, in the reader's own thread — and it
@@ -819,6 +838,11 @@ function reportCollateral(page, seen, after, ev) {
       thread.auto = true;
       if (t.summary) thread.auto_summary = true;
       if (t.prior_quote) thread.prior_quote = t.prior_quote;
+      // new words where there were none: painted as an arrival, nothing struck
+      else if (t.kind === 'insert') thread.inserted = true;
+      // …and the conversation it came out of, which the drawer links both ways
+      if (t.origin_thread) thread.origin_thread = t.origin_thread;
+      if (t.origin) thread.origin = t.origin;
       // the amber middle state, straight away: a bot has been here and it is the
       // reader's turn to look, which is what this thread IS
       store.setAddressed(thread, true, author);
@@ -988,11 +1012,10 @@ function reportBlogChanges(url, seen, ev) {
   // owner's rebuild command instead of landing on the old build
   holdForRebuild(url, bg, payload);
   if (changed.includes(own)) {
-    // …and the edits nobody commented on, diffed on the SOURCE. The threads it
-    // opens carry markdown wording, which anchors on the rendered page for
-    // ordinary prose and does not for a passage that is mostly markup — an
-    // orphaned thread the reader can still read, which is better than a silent
-    // rewrite. (SPEC amendment: the anchoring caveat.)
+    // …and the edits nobody commented on, diffed on the SOURCE — in the words
+    // the page renders (blog.mdDoc takes every paragraph through anchor.js's
+    // plainOf first), so the threads it opens anchor on the page instead of
+    // being born orphaned on a link's brackets.
     withCollateral(url, payload, seen, ev,
       () => blog.sourceDoc(sourceSnapshot(seen.source), seen.source));
   }
@@ -3926,6 +3949,10 @@ export function handler(req, res) {
     // a project artifact's mirror of a council chat is brought level with the
     // session file first, if the council has written since it was last read
     const page = freshenMirror(store.readPage(u));
+    // auto-threads written in markdown before the diff spoke the page's words
+    // (collateral.renderAnchors): given their rendered form, once, on a page
+    // whose source is markdown
+    if (page && renderableSource(u) && collateral.renderAnchors(page)) store.savePage(page);
     // …minus the transcripts of the chats that have been SET ASIDE here. The
     // drawer needs to know how many there are and what they were called (that
     // is what puts the "archive ▾" chooser on the dock and fills it); it has no

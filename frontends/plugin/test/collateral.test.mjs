@@ -474,5 +474,135 @@ const reader = (over = {}) => ({
   check('a resolved thread refuses to be healed', store.healThread(t, { quote: 'x y z' }).ok === false);
 }
 
+// ---- the conversation a change was made FOR (2026-11-06) --------------------
+//
+// The report: a reader highlighted "energy. EpochAI" and asked for a joining
+// sentence; the bot wrote it in between those words. The reader's comment was
+// split and orphaned, and the sentence they asked for arrived as an auto-thread
+// "changed while answering a comment elsewhere" — written in markdown, so it
+// orphaned too, and nothing at all showed on the page.
+console.log('\norigin — a change stays connected to the comment it answered');
+{
+  const blog = await import('../blog.mjs');
+  const para = s => `Demand is an insatiable appetite for energy. ${s}`
+    + '[EpochAI forecasts](https://e.example/x) training runs for AI models.';
+  const added = 'The [IEA’s 2025 base case](https://www.iea.org/r) projects around 945 TWh in 2030. ';
+  const before = blog.mdDoc(`# Why\n\n${para('')}\n\nAnother paragraph that stays.\n`);
+  const after = blog.mdDoc(`# Why\n\n${para(added)}\n\nAnother paragraph that stays.\n`);
+  const ask = () => ({
+    id: 't-ask', quote: 'energy. EpochAI', prefix: 'es to an insatiable appetite for',
+    suffix: 'forecasts training runs for AI m', orphaned: true,
+    msgs: [
+      { author: 'angadh', ts: '2026-11-06T19:21:58.000Z', text: 'add a joining sentence here' },
+      { author: 'codex', ts: '2026-11-06T19:22:47.600Z', text: 'I added the linked IEA sentence.' },
+    ],
+  });
+
+  // ADOPT: the insertion split the asking comment's own passage
+  const page = { url: 'http://127.0.0.1:4000/p/', threads: [ask()], page_chat: [] };
+  const plan = C.collateral(before, after, page, { since: '2026-11-06T19:22:00.000Z', who: '@codex', origin: 't-ask' });
+  eq('no stranger\'s thread is opened for the sentence the reader asked for', plan.threads.length, 0);
+  eq('…the asking comment adopts it instead', plan.heals.length, 1);
+  const h = plan.heals[0];
+  eq('…its own thread', h.thread_id, 't-ask');
+  check('…as an insertion', h.inserted === true && h.kind === 'insert' && !h.deleted);
+  eq('…on the new words, as the page shows them', h.quote, 'The IEA’s 2025 base case projects around 945 TWh in 2030.');
+  check('…with the old highlight named in the note', /energy\. EpochAI/.test(h.text) && /in answer to this comment/.test(h.text));
+  check('…and never the phrase that would re-anchor it again', !/now reads/i.test(h.text));
+  const t = page.threads[0];
+  const done = store.healThread(t, h);
+  check('the heal applies', done.ok && done.changed);
+  eq('the comment now sits on the inserted words', t.quote, h.quote);
+  check('nothing is struck: no prior_quote', !t.prior_quote);
+  check('the page is told to paint an arrival', t.inserted === true);
+  eq('where the comment used to stand is kept for the card', t.adopted_from, 'energy. EpochAI');
+  check('no longer orphaned', t.orphaned === false);
+
+  // LINK: the turn's change landed somewhere else entirely
+  const elsewhere = { url: 'x', threads: [{ ...ask(), quote: 'Another paragraph that stays.', orphaned: false }], page_chat: [] };
+  const p2 = C.collateral(before, after, elsewhere, { who: '@codex', origin: 't-ask' });
+  eq('a change away from the comment\'s passage gets its own thread', p2.threads.length, 1);
+  eq('…linked to the conversation it came from', p2.threads[0].origin_thread, 't-ask');
+  check('…which its note names', /while answering the comment on “Another paragraph that stays\.”/.test(p2.threads[0].text));
+  check('…and does not call it "a comment elsewhere"', !/comment elsewhere/.test(p2.threads[0].text));
+  eq('…painted as an insertion: nothing it replaced', p2.threads[0].prior_quote, '');
+  eq('…kind insert', p2.threads[0].kind, 'insert');
+
+  // the page chat (a figure-editor batch, say)
+  const p3 = C.collateral(before, after, { url: 'x', threads: [], page_chat: [] }, { who: '@codex', origin: store.PAGE_CHAT });
+  eq('a page-chat turn tags its change', p3.threads[0].origin, 'page');
+  check('…and says so', /while answering in the page chat/.test(p3.threads[0].text));
+  check('…with its quote in rendered words too', !/\]\(/.test(p3.threads[0].quote));
+
+  // no origin at all: the old wording, unchanged
+  const p4 = C.collateral(before, after, { url: 'x', threads: [], page_chat: [] }, { who: '@codex' });
+  check('no known conversation: the standing note', /comment elsewhere/.test(p4.threads[0].text) && !p4.threads[0].origin_thread);
+
+  // another reader's comment split by the same insertion is NOT adopted
+  const other = { url: 'x', threads: [{ ...ask(), id: 't-other' }], page_chat: [] };
+  const p5 = C.collateral(before, after, other, { who: '@codex', origin: 't-ask-gone' });
+  eq('only the turn\'s own conversation adopts', p5.heals.length, 0);
+  eq('…the change gets its own thread', p5.threads.length, 1);
+
+  // a resolved asking comment is closed: nothing is dragged back
+  const filed = { url: 'x', threads: [{ ...ask(), resolved: true }], page_chat: [] };
+  eq('a filed comment adopts nothing', C.collateral(before, after, filed, { origin: 't-ask' }).heals.length, 0);
+}
+
+console.log('\nnarration in markdown — the "now reads" path on a markdown source');
+{
+  const blog = await import('../blog.mjs');
+  const before = blog.mdDoc('Para one stays.\n\nThe old sentence about the grid is here.\n');
+  const after = blog.mdDoc('Para one stays.\n\nThe [IEA](https://iea.example) sentence about the grid is here.\n');
+  const narrated = { id: 't-n', quote: 'The old sentence about the grid is here.', prefix: '', suffix: '', addressed: true,
+    msgs: [{ author: 'claude', ts: '2026-11-06T10:00:00.000Z',
+      text: 'Done — this passage now reads: "The [IEA](https://iea.example) sentence about the grid is here."' }] };
+  const plan = C.collateral(before, after, { url: 'x', threads: [narrated], page_chat: [] }, { origin: 't-n' });
+  check('a bot that narrated in markdown is recognised: no auto-thread, no heal',
+    plan.threads.length === 0 && plan.heals.length === 0 && plan.skipped.length === 1);
+  // …and the page's /reanchor accepts the rendered form of that claim
+  const r = store.reanchorThread({ ...narrated, msgs: narrated.msgs.slice() },
+    { quote: 'The IEA sentence about the grid is here.', prefix: '', suffix: '' });
+  check('/reanchor accepts the claim in the words the page shows', r.ok && r.changed);
+  const wrong = store.reanchorThread({ ...narrated }, { quote: 'Something else.', prefix: '', suffix: '' });
+  check('…and still refuses words nobody claimed', !wrong.ok);
+}
+
+console.log('\nrenderAnchors — threads born in markdown, repaired on load');
+{
+  const born = '2026-11-06T19:22:47.720Z';
+  const page = {
+    url: 'x', page_chat: [],
+    threads: [
+      { id: 't-ask', quote: 'energy. EpochAI', orphaned: true,
+        msgs: [{ author: 'codex', ts: '2026-11-06T19:22:47.665Z', text: 'I added the linked IEA sentence.' }] },
+      { id: 't-auto', auto: true, addressed: true, orphaned: true,
+        quote: 'The [International Energy Agency’s 2025 base case](https://www.iea.org/reports/energy-and-ai/energy-demand-from-ai) projects that data centres worldwide will consume around 945 TWh.',
+        prefix: ' insatiable appetite for energy.', suffix: '[EpochAI forecasts](https://www.',
+        msgs: [{ author: 'codex', ts: born, text: '✎ @codex changed this passage while answering a comment elsewhere in the document.' }] },
+      { id: 't-fine', auto: true, addressed: true, orphaned: true, quote: 'Plain words only, already rendered.',
+        msgs: [{ author: 'codex', ts: born, text: '✎' }] },
+      { id: 't-reader', quote: 'A [reader](x) quoted this?', orphaned: true, msgs: [] },
+    ],
+  };
+  eq('one thread repaired', C.renderAnchors(page), 1);
+  const t = page.threads[1];
+  eq('the quote in rendered words', t.quote,
+    'The International Energy Agency’s 2025 base case projects that data centres worldwide will consume around 945 TWh.');
+  eq('the cut-off link in the suffix becomes its text', t.suffix, 'EpochAI forecasts');
+  eq('the prefix is plain', t.prefix, 'insatiable appetite for energy.');
+  check('nothing it replaced: painted as an insertion', t.inserted === true && !t.prior_quote);
+  eq('…and linked to the one conversation a bot answered seconds before', t.origin_thread, 't-ask');
+  eq('a thread already in rendered words is left alone', page.threads[2].quote, 'Plain words only, already rendered.');
+  eq('a reader\'s own thread is never touched', page.threads[3].quote, 'A [reader](x) quoted this?');
+  eq('idempotent', C.renderAnchors(page), 0);
+  // two candidate conversations is a guess, and a guess is not written down
+  const two = { url: 'x', threads: [
+    { id: 'a', msgs: [{ author: 'codex', ts: '2026-11-06T19:22:40.000Z', text: 'x' }] },
+    { id: 'b', msgs: [{ author: 'claude', ts: '2026-11-06T19:22:45.000Z', text: 'y' }] },
+  ], page_chat: [] };
+  eq('an ambiguous origin is not guessed', C.guessOrigin(two, { msgs: [{ ts: born }] }), null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail);

@@ -372,7 +372,65 @@ await test('markdown is presented to the diff one paragraph per block', async ()
   const collateral = await import(path.join(PLUGIN, 'collateral.mjs'));
   const blocks = collateral.docBlocks(doc);
   assert.equal(blocks.length, 3, `front matter and two paragraphs — got ${JSON.stringify(blocks)}`);
-  assert.equal(blocks[2], 'Two <em>three</em>.', 'markdown that looks like markup survives the round trip');
+  // in the words the PAGE shows: inline HTML in markdown renders as its text
+  // (the quote the diff synthesizes has to be findable on the rendered post)
+  assert.equal(blocks[2], 'Two three.', 'inline HTML is the words it wraps');
+  const prose = collateral.docBlocks(blog.mdDoc('If a < b && c > d, stop.'));
+  assert.equal(prose[0], 'If a < b && c > d, stop.', 'prose that merely looks like markup survives the round trip');
+});
+
+await test('markdown is diffed in the words the rendered page shows', async () => {
+  const collateral = await import(path.join(PLUGIN, 'collateral.mjs'));
+  const blocks = collateral.docBlocks(blog.mdDoc(
+    'The [IEA’s base case](https://www.iea.org/x) says **945 TWh**, `n`[^a] and *more*.\n\n'
+    + '[[Space Data Center Analysis|Starcloud]] {: .wide}\n\n'
+    + '> [!note] Agent check: five times\n> | a | b |\n> |---|:-:|\n> | 1 | 2 |\n\n'
+    + '<!--more-->\n\n'
+    + 'A\\*literal\\* star.\n\n[^a]: The note.'));
+  assert.deepEqual(blocks, [
+    'The IEA’s base case says 945 TWh, n1 and more.',
+    'Starcloud',
+    'Agent check: five times a b 1 2',
+    'A*literal* star.',
+    'The note.',
+  ], JSON.stringify(blocks));
+  assert.deepEqual(blog.footnoteNumbers('x[^b] y[^a] z[^b]\n\n[^a]: A\n[^b]: B'), { b: 1, a: 2 },
+    'footnotes are numbered in order of first use, as kramdown prints them');
+});
+
+await test('a sentence a bot added inside a paragraph: one INSERTION, quoted as the page shows it', async () => {
+  // the 2026-11-06 report, verbatim in shape: a linked sentence added between
+  // "energy." and "EpochAI forecasts" in direct-edit mode
+  const collateral = await import(path.join(PLUGIN, 'collateral.mjs'));
+  const para = s => `Demand translates to an insatiable appetite for energy. ${s}`
+    + '[EpochAI forecasts](https://www.lesswrong.com/posts/x) training runs for AI models.';
+  const added = 'The [International Energy Agency’s 2025 base case](https://www.iea.org/reports/energy-and-ai) '
+    + 'projects that data centres will consume around 945 TWh in 2030. ';
+  const before = blog.mdDoc(`# Why build them?\n\n${para('')}\n\nNext.\n`);
+  const after = blog.mdDoc(`# Why build them?\n\n${para(added)}\n\nNext.\n`);
+  const { regions } = collateral.regionsFrom(before, after);
+  assert.equal(regions.length, 1);
+  const r = regions[0];
+  assert.equal(r.kind, 'insert', 'nothing left, so it is an insertion, not a rewrite of nothing');
+  assert.equal(r.old, '');
+  assert.equal(r.quote, 'The International Energy Agency’s 2025 base case projects that data centres will consume around 945 TWh in 2030.');
+  assert.ok(!/[[\]()]|https?:/.test(r.quote + r.prefix + r.suffix), `no markdown anywhere in the anchor — ${JSON.stringify(r)}`);
+  assert.match(r.prefix, /appetite for energy\.$/);
+  assert.match(r.suffix, /^EpochAI forecasts/);
+  // …and it LOCATES on the rendered page, which is the whole point
+  const Anchor = (await import('node:module')).createRequire(import.meta.url)(path.join(PLUGIN, 'extension', 'anchor.js'));
+  const page = 'Why build them? Demand translates to an insatiable appetite for energy. The International Energy '
+    + 'Agency’s 2025 base case projects that data centres will consume around 945 TWh in 2030. EpochAI forecasts '
+    + 'training runs for AI models. Next.';
+  const at = Anchor.locate(page, { quote: r.quote, prefix: r.prefix, suffix: r.suffix });
+  assert.ok(at.ok && at.unique, 'the auto-thread anchors on the page');
+});
+
+await test('a change to markup alone (a link\'s address) is no change on the page', async () => {
+  const collateral = await import(path.join(PLUGIN, 'collateral.mjs'));
+  const { regions } = collateral.regionsFrom(blog.mdDoc('See [the report](https://a.example/1).'),
+    blog.mdDoc('See [the report](https://a.example/2).'));
+  assert.equal(regions.length, 0);
 });
 
 await test('an edit to one paragraph is one region, not the whole post', async () => {

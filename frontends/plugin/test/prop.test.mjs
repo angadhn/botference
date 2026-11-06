@@ -230,6 +230,25 @@ const card = (o) => ({ id: 'sg1', state: 'open', current: 'quick brown fox', pro
   eq('an empty-text link is nothing (its words live elsewhere)',
     P('1. [](content.Gravitational-Force)\n2. [Orbits](o.md)'), 'Orbits');
   eq('plain prose is unchanged', P('The quick brown fox.'), 'The quick brown fox.');
+  // what a Jekyll post carries besides CommonMark (2026-11-06: a collateral
+  // quote written in markdown never anchored on the rendered post)
+  eq('a wikilink shows its alias', P('see [[Space Data Center Analysis|Starcloud]] now'), 'see Starcloud now');
+  eq('…or its name', P('see [[Orbits]] now'), 'see Orbits now');
+  eq('inline HTML: an inline tag is nothing', P('a <em>big</em>. b'), 'a big. b');
+  eq('…a <br> is a space', P('a<br>b'), 'a b');
+  eq('a < that opens no tag is prose', P('if a < b then'), 'if a < b then');
+  eq('comments and scripts are not words', P('a <!--more--> b <script>x()</script> c'), 'a b c');
+  eq('entities decode', P('Q&amp;A &mdash; &#8217;s'), 'Q&A — ’s');
+  eq('a kramdown attribute list is nothing', P('{: start="2"}\n2. two {:.wide}'), 'two');
+  eq('Liquid is nothing', P('a {% include x.html %} b {{ page.title }} c'), 'a b c');
+  eq('a footnote ref is its number, when known', P('cooling.[^iea] Next', { footnotes: { iea: 4 } }), 'cooling.4 Next');
+  eq('…and nothing when not', P('cooling.[^iea] Next'), 'cooling. Next');
+  eq('a footnote definition shows its text', P('[^iea]: The IEA report.'), 'The IEA report.');
+  eq('a callout shows its title', P('> [!note]- Agent check: five times\n> body'), 'Agent check: five times body');
+  eq('a table is its cells', P('| a | b |\n|---|:-:|\n| 1 | 2 |'), 'a b 1 2');
+  eq('an escaped star is a star', P('a \\*b\\* c'), 'a *b* c');
+  eq('an autolink shows its address', P('<https://a.example/x>'), 'https://a.example/x');
+  eq('math is still left alone', P('so $x_1$ and \\(y\\)'), 'so $x_1$ and \\(y\\)');
   eq('null is empty', P(null), '');
 }
 

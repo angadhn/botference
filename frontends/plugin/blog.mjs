@@ -61,10 +61,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { readConfig, saveConfig } from './store.mjs';
 // the projects `botference init` / `botference site` registered, by marker
 // (markers.mjs) — read here as if they were `blog_sites` rows
 import { loadMarkers } from './markers.mjs';
+// anchor.js is the extension's own file (UMD-lite: CommonJS in node). Its
+// `plainOf` is THE markdown→rendered-words rule; see mdDoc.
+const Anchor = createRequire(import.meta.url)('./extension/anchor.js');
 // The review engine's Jupyter Book reader, imported and not forked: the same
 // text projection of a notebook (markdown cells verbatim, code cells as
 // ```{code-cell} fences), the same cell-surgical writer, the same _toc.yml
@@ -1415,17 +1419,45 @@ export function scanSite(dir, kind, { includeSiteSource = false } = {}) {
 // went in. The front matter is a block like any other — a bot that changes the
 // title has changed the document, and the reader should be told.
 //
-// DORMANT BY POLICY, not obsolete (audited 2026-09-02). Every kind in
-// `KIND_RULES` is `suggest:true` today, so nothing edits a blog file directly
-// and the collateral path this feeds is never reached. It is kept, with
-// blog.test.mjs:361-377 keeping it honest, for the day a `suggest:false` kind
-// lands — at which point the backstop has to work on the FIRST post, not after
-// somebody rediscovers why the diff reported the whole file as one region.
+// …AND IN THE WORDS THE PAGE SHOWS. Every region the diff reports becomes a
+// thread whose quote/prefix/suffix the PAGE has to find — and the page is the
+// rendered post, where `[the IEA’s base case](https://…)` reads "the IEA’s base
+// case". A quote cut from the markdown carries the link's brackets and address,
+// is on no page anywhere, and the thread is born orphaned: the reader is never
+// shown the change at all (2026-11-06, a sentence a bot added in direct-edit
+// mode). So each paragraph is taken through `plainOf` — anchor.js's own
+// markdown→visible-text rule, the one the page already uses to find a
+// proposal's `current:` — BEFORE it is blocked, and the diff, its narrowing,
+// its context and its prior_quote are all in rendered words from the start.
+// One rule, two runtimes: this file borrows the browser's copy rather than
+// growing a second one that could disagree with it.
+//
+// Two things only the whole post knows are worked out here and handed in:
+// the number kramdown prints for each `[^label]` (it counts first uses across
+// the post), and code fences, whose ``` lines are drawn as a box, not text.
+//
+// The cost, named: a change that touches ONLY markup — a link's address, say —
+// is no change to the rendered words, so it opens no thread. There is nothing
+// on the page to show the reader, and a thread pointing at an unchanged
+// sentence would be a stranger lie than silence.
+export function footnoteNumbers(text) {
+  const out = {};
+  let n = 0;
+  const re = /\[\^([^\]\s]+)\](?!:)/g;
+  let m;
+  while ((m = re.exec(String(text || '')))) if (!out[m[1]]) out[m[1]] = ++n;
+  return out;
+}
+
 export function mdDoc(text) {
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return String(text == null ? '' : text)
+  const src = String(text == null ? '' : text);
+  const footnotes = footnoteNumbers(src);
+  return src
     .split(/\r?\n\s*\r?\n/)
     .map(b => b.trim())
+    .filter(Boolean)
+    .map(b => Anchor.plainOf(b.replace(/^[ \t]*(`{3,}|~{3,})[^\n]*$/gm, ' '), { footnotes }))
     .filter(Boolean)
     .map(b => `<p>${esc(b)}</p>`)
     .join('\n');

@@ -348,13 +348,39 @@
     return refs.length === 1 && refs[0].start === 0 && refs[0].end === s.length ? refs[0] : null;
   }
 
+  // A few named entities a markdown writer actually types, and every numeric
+  // one. Decoded LAST, after the tags are gone, so `&lt;b&gt;` stays words.
+  const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', mdash: '—',
+    ndash: '–', hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', times: '×',
+    minus: '−', middot: '·', deg: '°', shy: '' };
+  function decodeEnt(s) {
+    return s.replace(/&(#\d{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z]{2,8});/g, (m, e) => {
+      if (e[0] === '#') {
+        const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        try { return n >= 9 && n <= 0x10ffff ? String.fromCodePoint(n) : m; } catch (_) { return m; }
+      }
+      const hit = ENT[e.toLowerCase()];
+      return hit === undefined ? m : hit;
+    });
+  }
+
+  // `opts.footnotes` — {label: number}, the number kramdown will print for a
+  // `[^label]` reference (it numbers them in order of first use across the
+  // WHOLE post, which only a caller holding the whole post can know). Without
+  // it a reference is nothing, which is the near miss: the page shows "cooling.1".
+  const HTML_BLOCKISH = /^(address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|iframe|li|ol|p|pre|section|table|tbody|td|tfoot|th|thead|tr|ul)$/i;
   function plainOf(md, opts) {
     const keep = !!(opts && opts.keepImages);
+    const notes = (opts && opts.footnotes) || null;
     let s = String(md == null ? '' : md);
     // the wholes, swapped for placeholders no markup rule below can match
     // (\u0001 is never typed, and none of the patterns touch it)
     const held = [];
     const hold = raw => '\u0001' + (held.push(raw) - 1) + '\u0001';
+    // raw HTML the browser never draws as words: comments (`<!--more-->`),
+    // and scripts and styles, body and all (an embedded tweet's loader)
+    s = s.replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ');
     const pics = imageRefs(s);
     if (pics.length) {
       const parts = [];
@@ -367,12 +393,37 @@
       s = parts.join('');
     }
     s = s.replace(MATH_LITE, hold);
+    // a backslash-escaped character is that character, and no rule below may
+    // read it as markup (`\*` is an asterisk, not emphasis). After the maths,
+    // whose \( and \[ are delimiters, not escapes.
+    s = s.replace(/\\([\\`*_{}\[\]()#+\-.!|<>~])/g, (_, c) => hold(c));
     // line furniture, per line, before the lines are folded together
-    s = s.split('\n').map(line => line
-      .replace(/^\s{0,3}#{1,6}\s+/, '')
-      .replace(/^\s*(?:>\s*)+/, '')
-      .replace(/^\s*(?:\d+[.)]|[-*+])\s+/, '')).join('\n');
+    s = s.split('\n').map(line => {
+      line = line.replace(/^\s*(?:>\s*)+/, '');
+      // a table's |---|:-:| rule row is drawn, never text; its other rows'
+      // pipes are cell walls
+      if (/^\s*\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line)) return '';
+      if (/^\s*\|/.test(line)) line = line.replace(/\|/g, ' ');
+      return line
+        .replace(/^\s{0,3}#{1,6}\s+/, '')
+        // an Obsidian callout's type tag (`> [!note] Title` shows "Title")
+        .replace(/^\s*\[![\w-]+\][+-]?\s*/, '')
+        // a footnote's own definition line shows its text, not its label
+        .replace(/^\s*\[\^[^\]\s]+\]:\s*/, '')
+        .replace(/^\s*(?:\d+[.)]|[-*+])\s+/, '');
+    }).join('\n');
     s = s
+      // Liquid is the template, not the page
+      .replace(/\{%[\s\S]*?%\}|\{\{[\s\S]*?\}\}/g, ' ')
+      // kramdown attribute lists — `{: start="2"}`, `{:.wide}`, `{#id}`
+      .replace(/\{:[^}\n]*\}|\{#[\w-]+\}/g, ' ')
+      // <https://x> autolinks show the address
+      .replace(/<((?:https?|mailto):[^>\s]+)>/g, '$1')
+      // [[Note|shown]] and [[Note]] wikilinks show the alias, else the name
+      .replace(/!?\[\[([^\]|\n]*)\|([^\]\n]*)\]\]/g, '$2')
+      .replace(/!?\[\[([^\]\n]*)\]\]/g, '$1')
+      // a footnote reference is the number kramdown prints, when it is known
+      .replace(/\[\^([^\]\s]+)\](?!:)/g, (_, k) => (notes && notes[k] ? String(notes[k]) : ''))
       // {role}`text <target>` keeps the text; {role}`x` keeps x
       .replace(/\{[\w:.-]+\}`([^`]*?)\s*<[^`>]*>`/g, '$1')
       .replace(/\{[\w:.-]+\}`([^`]*)`/g, '$1')
@@ -386,7 +437,13 @@
       .replace(/__(?=\S)([\s\S]*?\S)__/g, '$1')
       .replace(/\*(?=\S)([^*]*?\S)\*/g, '$1')
       // an underscore inside a word is a snake_case name, not emphasis
-      .replace(/(^|[^\w])_(?=\S)([^_]*?\S)_(?![\w])/g, '$1$2');
+      .replace(/(^|[^\w])_(?=\S)([^_]*?\S)_(?![\w])/g, '$1$2')
+      // inline HTML: an inline tag leaves nothing where it stood (`<em>x</em>.`
+      // is "x." on the page), a block-level one or a <br> a space (`a<br>b`
+      // is two words); a `<` that opens no tag is prose
+      .replace(/<\/?([A-Za-z][\w:-]*)(?:\s[^<>]*)?\/?>/g,
+        (m, tag) => (HTML_BLOCKISH.test(tag) ? ' ' : ''));
+    s = decodeEnt(s);
     // folded, THEN the wholes put back: a $$ block or a figure fence keeps its
     // own line breaks, which is what its renderer needs
     return s.replace(/\s+/g, ' ').trim().replace(/\u0001(\d+)\u0001/g, (_, n) => held[+n]);

@@ -185,6 +185,12 @@
                      the arrival underline and the card's before→after all have
                      to appear with no narration to parse and no /reanchor
                      posted. `&selftest=1` runs those assertions.
+    ?colledit=insert a sentence the bots ADDED (nothing replaced): painted as an
+                     arrival with nothing struck, the card says "this passage
+                     was added", it links back to the comment it was made in
+                     answer to (origin_thread) and that comment links to it,
+                     and ✓ approves it from the BUBBLE as well as the panel.
+                     `&selftest=1` runs those assertions.
     ?orphanheal=1    ORPHAN HEALING: a bot rewrote the passage the READER'S own
                      comment was anchored to and said nothing about it, so
                      there is no "now reads" line to locate and the thread
@@ -2387,6 +2393,29 @@ if (Q.get('run') === 'long') {
 // narration to parse and no /reanchor ever posted.
 // `&selftest=1` runs the assertions; without it, it is the screenshot state.
 const COLLEDIT = Q.get('colledit') === '1';
+// ?colledit=insert — the 2026-11-06 report: a sentence a bot ADDED in answer to
+// a comment. Nothing was replaced, so there is no prior_quote and nothing to
+// strike; the thread names the conversation it came out of.
+const COLLINS = Q.get('colledit') === 'insert';
+const COLLINS_ID = 't-1754500950-c1ns';
+const COLLINS_NOW = 'It is a description of the plan.';
+const COLLINS_FROM = 't-1754500100-c3d4';   // thread #2, the five-message one
+if (COLLINS) {
+  RECORD.threads.push({
+    id: COLLINS_ID,
+    quote: COLLINS_NOW,
+    prefix: 'here. It is not an excuse.',
+    suffix: 'The report called it a structural',
+    orphaned: false,
+    auto: true, inserted: true, origin_thread: COLLINS_FROM,
+    addressed: true, addressed_at: iso(2), addressed_by: 'codex',
+    msgs: [
+      { author: 'codex', ts: iso(2),
+        text: '✎ @codex added this passage while answering the comment on “called it a structural failure”. '
+          + 'Nothing here was commented on. ✓ files it; ↺ puts it back in the open list.' },
+    ],
+  });
+}
 const COLL_ID = 't-1754500900-c01l';
 const COLL_NOW = 'It is not an excuse. It is a description of the plan.';
 const COLL_WAS = 'It is not an alibi. It is the plan, stated plainly.';
@@ -12716,6 +12745,72 @@ async function selftestColledit() {
   console.log(out.join('\n'));
 }
 
+// ?colledit=insert&selftest=1 — a sentence the bots added, kept connected to
+// the comment it answered, and approvable from where the reader is reading.
+async function selftestCollInsert() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const cardFor = id => S.querySelector('.pane[data-pane="comments"] .card[data-thread="' + id + '"]')
+    || S.querySelector('.card[data-thread="' + id + '"]');
+  const markFor = id => document.querySelector('mark.bfp-hl[data-bfp="' + id + '"]');
+  const wasFor = id => document.querySelector('del.bfp-was[data-bfp="' + id + '"]');
+  const bub = id => S.querySelector('.bubble[data-thread="' + id + '"]');
+  try {
+  // ---- the page ----------------------------------------------------------
+  check('the added sentence is highlighted', !!await until(() => markFor(COLLINS_ID), 8000));
+  check('…amber: the bots have been here, your turn', markFor(COLLINS_ID).classList.contains('bfp-ready'));
+  check('…on exactly the words that arrived',
+    markFor(COLLINS_ID).textContent.replace(/\s+/g, ' ').trim() === COLLINS_NOW);
+  check('…carrying the arrival underline though nothing was replaced',
+    !!await until(() => markFor(COLLINS_ID).classList.contains('bfp-ins'), 4000));
+  check('…and its hover says it was added', /added/.test(markFor(COLLINS_ID).getAttribute('title') || ''));
+  check('nothing is struck through: nothing left', !wasFor(COLLINS_ID));
+
+  // ---- the card, and the link both ways ----------------------------------
+  const card = cardFor(COLLINS_ID);
+  check('the card says the passage was added', !!card && !!card.querySelector('.wasnow[data-inserted="1"]')
+    && /this passage was added/.test(card.textContent));
+  const back = card && card.querySelector('.fromchange [data-act="strike-view"]');
+  check('…and names the comment it answered', !!back
+    && /in answer to the comment on/.test(card.querySelector('.fromchange').textContent)
+    && back.dataset.target === COLLINS_FROM);
+  const fwd = cardFor(COLLINS_FROM) && cardFor(COLLINS_FROM).querySelector('.fromchange [data-act="strike-view"]');
+  check('the comment it answered links to it', !!fwd && fwd.dataset.target === COLLINS_ID
+    && /changed the page for this/.test(cardFor(COLLINS_FROM).querySelector('.fromchange').textContent));
+  back.click();
+  check('"view" takes the reader to that conversation',
+    !!await until(() => cardFor(COLLINS_FROM) && cardFor(COLLINS_FROM).classList.contains('focused'), 3000));
+
+  // ---- ✓ from the bubble --------------------------------------------------
+  d.close();
+  d.setBubbles('bubbles');
+  await sleep(150);
+  clickStackedMark(COLLINS_ID);
+  check('a click on the added sentence opens its bubble', !!await until(() => bub(COLLINS_ID), 4000));
+  const ok = bub(COLLINS_ID) && bub(COLLINS_ID).querySelector('.bres [data-act="resolve"]');
+  check('…which carries ✓, so the change can be approved where it is read', !!ok);
+  ok.click();
+  check('✓ files it: the passage turns sage',
+    !!await until(() => markFor(COLLINS_ID) && markFor(COLLINS_ID).classList.contains('bfp-done'), 6000));
+  check('…and the record agrees', !!(RECORD.threads.find(t => t.id === COLLINS_ID) || {}).resolved
+    || !!(window.__bfp.page && (window.__bfp.page.threads || []).find(t => t.id === COLLINS_ID && t.resolved)));
+  check('…and the bubble offers the undo, ↺',
+    !!await until(() => bub(COLLINS_ID) && bub(COLLINS_ID).querySelector('.bres [data-act="reopen"]'), 3000));
+  d.setBubbles('panel');
+  } catch (e) { check('threw: ' + (e && e.message), false); }
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (colledit=insert) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
 // ?tasks=1&selftest=1 · ?checklist=1&selftest=1 — THE CARD AS THE READER FINDS IT.
 //
 // Both flags seed a checklist into the RECORD, so the drawer derives its tasks
@@ -13789,7 +13884,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : STRIKE_ELSEWHERE ? selftestStrikeElsewhere
         : STRIKE ? selftestPdfStrike : PDF_SCAN ? selftestPdfScan : PDFV ? selftestPdf
         : FRESH ? selftestFresh : REVIEWPAGE ? selftestReviewPage
-        : MORE ? selftestMore : COLLEDIT ? selftestColledit
+        : MORE ? selftestMore : COLLEDIT ? selftestColledit : COLLINS ? selftestCollInsert
         : HEAL ? selftestOrphanHeal
         : TICKMODE === 'done' ? selftestRoundDone : TICKER ? selftestRoundTicker
         : SENDFOCUS ? selftestSendFocus

@@ -3859,6 +3859,21 @@ ${bubbleShellHtml()}`;
       // somewhere to stand. Word-diffing "the sentence that left" against "the
       // paragraph that outlived it" would render as an edit that never
       // happened, so the card says the plain thing instead.
+      // AN INSERTION is not a rewrite either: words arrived where there were
+      // none, so there is no "was" to diff against. Said as what it is — and,
+      // when the reader's own comment was moved onto the new words, where that
+      // comment used to stand.
+      if (t.inserted || (t.auto && !t.prior_quote && !t.auto_summary && !t.deleted_passage)) {
+        const added = String(t.quote || '').trim();
+        if (!added) return '';
+        const from = String(t.adopted_from || '').trim();
+        return `<div class="wasnow" data-inserted="1">`
+          + `<span class="wnhead">this passage was added</span>`
+          + `<div class="wndiff"><ins>${esc(added)}</ins></div>`
+          + (from ? `<div class="wnstack"><div class="wnrow"><span class="wnlab">your comment was on</span>`
+            + `<span class="wnval">${esc(from)}</span></div></div>` : '')
+          + `</div>`;
+      }
       if (t.deleted_passage) {
         const gone = String(t.prior_quote || '').trim();
         if (!gone) return '';
@@ -3916,6 +3931,45 @@ ${bubbleShellHtml()}`;
         <span>from a discussion${t.updated ? ', its note rewritten since' : ''}</span>
         <button class="rebtn" type="button" data-act="strike-view"
           data-target="${esc(src.id)}" title="go to the conversation this was decided in">view</button>
+      </div>`;
+    }
+
+    // A CHANGE AND THE CONVERSATION IT CAME OUT OF. The companion's turn-end
+    // diff (collateral.mjs) writes a thread at every passage a turn changed that
+    // no comment stood on — and since 2026-11-06 it records WHICH conversation
+    // the turn was answering (`origin_thread`, or `origin: 'page'`). Without
+    // the link the reader saw a stranger's note, "changed while answering a
+    // comment elsewhere", for the very sentence they had asked for. So the
+    // change names its conversation, with the jump to it…
+    function originHtml(t) {
+      if (!t || !t.auto) return '';
+      if (t.origin === 'page') {
+        return `<div class="fromdisc fromchange"><span>made in answer to the page chat</span></div>`;
+      }
+      if (!t.origin_thread) return '';
+      const threads = (D.page && D.page.threads) || [];
+      const src = threads.find(x => x && x.id === t.origin_thread);
+      if (!src) return '';
+      const q = String(src.quote || '');
+      return `<div class="fromdisc fromchange">
+        <span>in answer to the comment on “${esc(q.length > 60 ? q.slice(0, 60) + '…' : q)}”</span>
+        <button class="rebtn" type="button" data-act="strike-view"
+          data-target="${esc(src.id)}" title="go to the conversation this change was made in">view</button>
+      </div>`;
+    }
+    // …and the conversation names its changes, numbered in document order like
+    // a discussion's strikeouts, so the reader asking for a sentence can get
+    // from their comment to the sentence wherever it landed.
+    function changesHtml(t) {
+      const threads = (D.page && D.page.threads) || [];
+      const kids = threads.filter(x => x && x.auto && x.origin_thread === t.id && x.id !== t.id);
+      if (!kids.length) return '';
+      const links = kids.map((x, i) => `<button class="rebtn" type="button" data-act="strike-view"
+        data-target="${esc(x.id)}" title="${esc('“' + String(x.quote || '').slice(0, 80) + '”')}"
+        >${kids.length === 1 ? 'view' : String(i + 1)}</button>`).join('<span class="broodsep">·</span>');
+      return `<div class="fromdisc brood fromchange">
+        <span>${kids.length === 1 ? 'the bots changed the page for this' : `the bots changed the page for this — ${kids.length} places`}</span>
+        ${links}
       </div>`;
     }
 
@@ -3997,6 +4051,8 @@ ${bubbleShellHtml()}`;
         ${whereHtml(t)}
         ${fromDiscussionHtml(t)}
         ${broodHtml(t)}
+        ${originHtml(t)}
+        ${changesHtml(t)}
         ${memoryLineHtml(t)}
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
@@ -10845,6 +10901,7 @@ ${bubbleShellHtml()}`;
           <span class="bgrip" aria-hidden="true"></span>
           <span class="bq"></span>
           <span class="bnote" hidden></span>
+          <span class="bres"></span>
           <button class="brebtn bpanel" type="button" data-act="bubble-panel" data-target="${esc(t.id)}"
             title="${fresh ? 'write this comment in the side panel instead' : 'open this thread in the panel'}"
             aria-label="open in side panel">${PANEL_SVG}</button>
@@ -10908,6 +10965,25 @@ ${bubbleShellHtml()}`;
         const n = B.note[id] || '';
         if (note.textContent !== n) note.textContent = n;
         note.hidden = !n;
+      }
+
+      // ---- ✓ / ↺, the thread's verdict, from the bubble too ----
+      // A change the bots made is approved by filing its thread, and a reader
+      // reading in bubbles never opens the panel — so the ✓ (and its undo, ↺)
+      // sit in the bubble's own header, wired to the panel's same doResolve.
+      const res = box.querySelector('.bres');
+      if (res) {
+        const html = id === NEW_ID ? ''
+          : D.resolving[id] ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
+          : t.resolved
+            ? `<button class="brebtn breopen" type="button" data-act="reopen" data-target="${esc(id)}"
+                title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`
+            : `<button class="brebtn bresolve" type="button" data-act="resolve" data-target="${esc(id)}"
+                title="${isAddressed(t) ? 'approve — files this thread and the highlight turns green'
+                  : 'resolve — it files itself and the highlight turns green'}" aria-label="resolve this thread">✓</button>`;
+        // keyed on the markup we wrote, not on innerHTML (which the browser
+        // re-serializes): an unchanged verdict leaves the button alone
+        if (res._k !== html) { res._k = html; res.innerHTML = html; }
       }
 
       // ---- the card list, patched ----

@@ -346,6 +346,10 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .brebtn:hover { opacity: 1; color: var(--accent); background: var(--rail) }
 .brebtn svg { display: block }
+/* the bubble's ✓ / ↺: the panel's verdict buttons, at the bubble's own size */
+.bres { display: inline-flex; flex: none }
+.brebtn.bresolve:hover { color: var(--done-line) }
+.brebtn.busy { opacity: .85; cursor: default }
 
 .bbody { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 10px }
 .bstack { display: flex; flex-direction: column }

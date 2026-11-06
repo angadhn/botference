@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { sanitizeHandle } from './hosted.mjs';
 // tmp + rename, once, for the whole tree — the atomic-write rule this file's
 // header states was being held in three separate copies of six lines
@@ -2551,6 +2552,14 @@ export function newWording(thread) {
 // tags and lines, not a byte copy of what the bot typed
 const looseSame = (a, b) =>
   String(a || '').replace(/\s+/g, ' ').trim() === String(b || '').replace(/\s+/g, ' ').trim();
+// anchor.js's markdown→rendered-words rule. On a markdown source a bot quotes
+// the FILE ("now reads: \"the [IEA](https://…) says\"") and the page finds the
+// words it renders ("the IEA says"); both are the wording the bot claimed.
+let plainOfRef = null;
+const plainOf = s => {
+  if (!plainOfRef) plainOfRef = createRequire(import.meta.url)('./extension/anchor.js').plainOf;
+  return plainOfRef(s);
+};
 
 export function reanchorThread(thread, anchor) {
   if (!thread) return { ok: false, reason: 'unknown thread' };
@@ -2559,7 +2568,9 @@ export function reanchorThread(thread, anchor) {
   if (!want) return { ok: false, reason: 'no bot in this thread quoted a new wording' };
   const quote = String((anchor && anchor.quote) || '').trim();
   if (!quote) return { ok: false, reason: 'no quote' };
-  if (!looseSame(quote, want)) return { ok: false, reason: 'that is not the wording the bot quoted back' };
+  if (!looseSame(quote, want) && !looseSame(quote, plainOf(want))) {
+    return { ok: false, reason: 'that is not the wording the bot quoted back' };
+  }
   // idempotent: a second tab locating the same passage is not a second rewrite
   if (looseSame(thread.quote, quote)) return { ok: true, thread, changed: false };
   if (!thread.prior_quote) thread.prior_quote = thread.quote;
@@ -2600,7 +2611,12 @@ export function reanchorThread(thread, anchor) {
 //
 // Not exposed over HTTP. No client asks for this — it happens at turn-end, from
 // bytes on disk, or not at all.
-export function healThread(thread, { quote, prefix, suffix, deleted } = {}) {
+// `inserted` — the words are NEW and nothing left: the comment moves onto them
+// (the turn's own conversation adopting its answer, collateral.adoptableBy)
+// with NO prior_quote, so nothing is struck, and `inserted` tells the page to
+// paint the arrival. The words it was on are kept as `adopted_from`, which the
+// card shows so the reader can see where their comment used to stand.
+export function healThread(thread, { quote, prefix, suffix, deleted, inserted } = {}) {
   if (!thread) return { ok: false, reason: 'unknown thread' };
   // a filed thread is closed: dragging it back onto the page under a green
   // highlight is not a repair, it is an unasked-for reopening
@@ -2610,7 +2626,16 @@ export function healThread(thread, { quote, prefix, suffix, deleted } = {}) {
   // idempotent, like reanchorThread: a re-run of the same turn-end is not a
   // second rewrite, and must not overwrite prior_quote with the new wording
   if (looseSame(thread.quote, next)) return { ok: true, thread, changed: false };
-  if (!thread.prior_quote) thread.prior_quote = thread.quote;
+  if (inserted) {
+    thread.adopted_from = thread.quote;
+    thread.inserted = true;
+    // nothing left, so nothing is struck — an older rewrite's original would
+    // otherwise be drawn as if these new words had replaced it
+    delete thread.prior_quote;
+  } else {
+    if (!thread.prior_quote) thread.prior_quote = thread.quote;
+    delete thread.inserted;
+  }
   thread.quote = next;
   if (typeof prefix === 'string') thread.prefix = prefix.slice(-32);
   if (typeof suffix === 'string') thread.suffix = suffix.slice(0, 32);

@@ -5263,6 +5263,7 @@ drives a selftest, and every one of them is expected green:
 ?checks=1&selftest=1
 ?figedit=1&selftest=1
 ?figedit=deployed&selftest=1
+?colledit=insert&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
@@ -11686,3 +11687,77 @@ Tests: `parallel.test.mjs` (moves to an idle child; never with a queued turn;
 `project_busy`), `blog.test.mjs` (two posts of one repo answer at once, and
 only the post that changed reports the change), harness `?selftest=1` (the
 two new wait lines).
+
+## Amendment (2026-11-06): a bot's change stays on the page and in its conversation
+
+**The report.** On the local Jekyll blog (direct-edit mode, so bots write the
+markdown), a reader highlighted "energy. EpochAI" and asked for a joining
+sentence. Codex inserted one. Nothing showed on the page. Two faults:
+
+1. **The auto-thread was written in markdown.** `blog.mdDoc` blocked the source
+   by paragraph but left its markup in, so the region's quote was
+   `The [International Energy Agency’s 2025 base case](https://…) projects…`.
+   No rendered page shows a link's brackets, so the thread was born orphaned.
+2. **The change lost its conversation.** It was told as "changed while
+   answering a comment elsewhere", and the reader's own highlight, split in two
+   by the insertion, orphaned as well.
+
+**Rendered words, from the start.** `blog.mdDoc` now takes every paragraph
+through `Anchor.plainOf` (anchor.js, loaded in node through `createRequire`)
+before blocking it, so the diff, its narrowing, prefix/suffix and prior_quote
+are all in the words the page shows. One rule in two runtimes, not two rules.
+`plainOf` learned what a Jekyll/Obsidian post carries besides CommonMark:
+wikilinks (`[[Note|alias]]`), inline HTML (inline tags leave nothing,
+block-level tags and `<br>` leave a space), comments, scripts, entities,
+kramdown attribute lists, Liquid, footnote references (numbered by
+`blog.footnoteNumbers`, in order of first use, as kramdown prints them),
+footnote definitions, callout tags, table pipes and rule rows, backslash
+escapes and autolinks. The cost: a change to markup alone (a link's address)
+changes no rendered word and opens no thread.
+
+**Insertions are insertions.** A sentence added inside a paragraph narrows to
+nothing on the old side; it is now `kind: 'insert'`, stored with `inserted: true`
+and no prior_quote. content.js paints it with the arrival underline and
+nothing struck (`isInsertion`, which also covers older auto-threads with no
+prior_quote); the card says "this passage was added".
+
+**The conversation is kept.** `reportCollateral` passes the turn's target to
+`collateral.collateral({origin})`:
+
+- **Adopt**: an insertion that split the asking comment's own passage (the
+  passage is no longer anywhere on the page, and the paragraph it was in is the
+  one the insertion landed in) moves that comment onto the new words
+  (`healThread({inserted})`: `inserted`, `adopted_from`, no prior_quote). There
+  is no second thread, and the conversation carries on where it was. Only the
+  turn's own conversation adopts.
+- **Link**: any other change gets its own auto-thread carrying `origin_thread`
+  (or `origin: 'page'` for the page chat, which is where figure-editor batches
+  land). Its note names the comment ("while answering the comment on …"), and
+  the drawer draws the link both ways: "in answer to the comment on … · view"
+  on the change, and "the bots changed the page for this · view" on the comment.
+- With no known conversation the old wording stands.
+
+**Narration in markdown.** A bot that writes `now reads: "the [IEA](…) says"`
+is matched in rendered form everywhere it is read. `coveredBy` and `claimFor`
+compare the plain form. content.js `relocateRewritten` falls back to it.
+`store.reanchorThread` accepts it. The claim checker's file text for a
+markdown source holds both forms.
+
+**Repair on load.** `GET /page` on a page whose source is markdown runs
+`collateral.renderAnchors`: an orphaned auto-thread whose quote reads
+differently with its markup off gets the rendered quote. Context halves cut
+mid-link are closed or dropped, and folded line furniture is stripped by shape.
+A thread with no prior_quote is marked `inserted`. Where exactly one
+conversation got a bot reply in the 15 s before the thread was written, that
+conversation becomes its `origin_thread`. The repair is idempotent and never
+touches a reader's own thread.
+
+**Approve from the bubble.** A bubble's header now carries ✓ (and ↺ once
+filed), wired to the panel's `doResolve`, so a change can be approved where it
+is being read.
+
+Tests: `collateral.test.mjs` (origin adopt/link/page-chat, markdown narration,
+renderAnchors), `blog.test.mjs` (rendered blocks, the insertion case and that it
+locates, markup-only changes), `prop.test.mjs` (the new plainOf rules), harness
+`?colledit=insert&selftest=1`.
+

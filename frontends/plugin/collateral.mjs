@@ -44,7 +44,13 @@
 // granularity, dedupe and caps is testable without a server, a bridge or a
 // browser (test/collateral.test.mjs).
 
-import { newWording, isAgentAuthor } from './store.mjs';
+import { createRequire } from 'node:module';
+import { newWording, isAgentAuthor, PAGE_CHAT } from './store.mjs';
+// anchor.js's `plainOf`: a bot narrating a markdown source quotes MARKDOWN
+// ("now reads: \"the [IEA](https://…) says\""), and on a blog the regions below
+// are in the words the page shows (blog.mdDoc). The two are compared in the
+// page's words, through the same rule the page uses.
+const { plainOf } = createRequire(import.meta.url)('./extension/anchor.js');
 
 // ---- caps ----------------------------------------------------------------
 //
@@ -141,6 +147,10 @@ export function docBlocks(html) {
 // The comparable form of a fragment — the same fold anchor.js matches under,
 // so "covers" here means what "locates" means there.
 export const fold = s => String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+// …and the looser fold anchor.js matches under: curly quotes and dashes are the
+// straight ones. A reader's quote is cut from a page kramdown made "smart"; the
+// markdown it came from may say it straight.
+const loose = s => fold(s).replace(/[‘’‚‹›]/g, "'").replace(/[“”„«»]/g, '"').replace(/[–—−‑‐]/g, '-');
 
 // ---- the diff ------------------------------------------------------------
 //
@@ -309,7 +319,10 @@ export function regionsFrom(beforeHtml, afterHtml) {
     const one = (h.oldEnd - h.oldStart) === 1 && (h.newEnd - h.newStart) === 1;
     const n = one ? narrow(oldText, newText) : { old: fold(oldText), new: fold(newText), prefix: '', suffix: '' };
     regions.push({
-      kind: 'edit',
+      // a sentence added INSIDE a paragraph narrows to nothing on the old side:
+      // that is an insertion, and is told and painted as one (green new words,
+      // nothing struck), not as a rewrite of nothing
+      kind: n.old ? 'edit' : 'insert',
       quote: clipQuote(n.new),
       old: fold(n.old),
       prefix: ctxBefore(after, h.newStart, n.prefix),
@@ -371,7 +384,7 @@ export function regionsFrom(beforeHtml, afterHtml) {
 // the second-turn case above.
 const MIN_OVERLAP = 16;
 const covers = (a, b) => {
-  const x = fold(a), y = fold(b);
+  const x = loose(a), y = loose(b);
   if (!x || !y) return false;
   if (Math.min(x.length, y.length) < MIN_OVERLAP) return x === y;
   return x.includes(y) || y.includes(x);
@@ -380,7 +393,10 @@ const covers = (a, b) => {
 export function coveredBy(region, threads) {
   for (const t of (threads || [])) {
     if (!t) continue;
-    if (covers(newWording(t), region.quote)) return t;
+    const said = newWording(t);
+    if (covers(said, region.quote)) return t;
+    // …in the page's words, too: on a markdown source the bot quotes the file
+    if (said && covers(plainOf(said), region.quote)) return t;
     if (covers(t.quote, region.quote)) return t;
   }
   return null;
@@ -475,6 +491,56 @@ export function healText(region, claim, who) {
     + '✓ files this thread; ↺ puts it back in the open list.';
 }
 
+// ---- the comment the change was made FOR -----------------------------------
+//
+// A turn answers ONE conversation — a thread, or the page chat — and every
+// change it makes was made in that conversation's name. Before this, the diff
+// threw that away and every region it found said "changed while answering a
+// comment elsewhere": true of a cross-reference two sections down, and
+// nonsense for the sentence the reader had just ASKED for. Seen 2026-11-06: a
+// reader highlighted "energy. EpochAI" and asked for a joining sentence; the bot
+// wrote it in between those two words — so the reader's own highlight was split
+// and orphaned, and the sentence they asked for turned up as a stranger's note
+// with no route back to the conversation that produced it.
+//
+// Two rules, both keyed on the turn's own conversation (`origin`):
+//
+//   ADOPT — an INSERTION that landed inside the passage the comment was on,
+//     splitting it so it no longer stands anywhere on the page. That is the
+//     reader's request, answered where they made it: the comment moves onto the
+//     new words, painted as an insertion, and the conversation carries straight
+//     on. No second thread. (A REWRITE of that passage needs no rule here:
+//     `healableBy` already moves any reader's comment onto what replaced its
+//     words.)
+//   LINK — anything else the turn changed still gets a thread of its own,
+//     but that thread names the conversation it came from (`origin_thread`,
+//     or `origin: 'page'` for the page chat), and the drawer draws the link
+//     both ways: "in answer to …" on the change, "changed …" on the comment.
+//
+// Only the turn's own conversation is ever adopted into. Another reader's
+// comment split by the same insertion is not theirs to be answered with, so it
+// is left exactly as before.
+export function adoptableBy(region, t, afterFlat, used) {
+  if (!region || region.kind !== 'insert' || !t) return false;
+  if (t.auto || t.resolved || !t.quote) return false;
+  if (used && used.has(t.id)) return false;
+  // still on the page as written: the comment has a place, nothing to adopt
+  if (afterFlat && afterFlat.includes(loose(t.quote))) return false;
+  const was = (region.whole && region.whole.old) || '';
+  return !!was && loose(was).includes(loose(t.quote));
+}
+
+const clipQ = (q, n = 60) => {
+  const s = fold(q);
+  return s.length > n ? `${s.slice(0, n).replace(/\s+\S*$/, '')}…` : s;
+};
+
+export function adoptText(region, t, who) {
+  return `${MARK} ${who} added this passage in answer to this comment. It went in between the `
+    + `words you highlighted (“${clipQ(t.quote)}”), so the comment now sits on the new wording, `
+    + 'marked as an insertion. ✓ files it once you are happy with it; ↺ puts it back in the open list.';
+}
+
 // ---- what the bot said it also changed ------------------------------------
 //
 // Layer (a): the prompt asks a bot that edited outside the passage it was
@@ -508,7 +574,7 @@ export function claimsSince(page, sinceIso) {
       ALSO_CHANGED_RE.lastIndex = 0;
       let hit;
       while ((hit = ALSO_CHANGED_RE.exec(text))) {
-        out.push({ author: m.author, wording: fold(hit[1]), line: fold(hit[0]), where });
+        out.push({ author: m.author, wording: fold(hit[1]), plain: plainOf(hit[1]), line: fold(hit[0]), where });
       }
     }
   };
@@ -517,7 +583,8 @@ export function claimsSince(page, sinceIso) {
   return out;
 }
 
-const claimFor = (region, claims) => (claims || []).find(c => covers(c.wording, region.quote)) || null;
+const claimFor = (region, claims) => (claims || [])
+  .find(c => covers(c.wording, region.quote) || (c.plain && covers(c.plain, region.quote))) || null;
 
 // ---- the threads themselves ----------------------------------------------
 
@@ -525,24 +592,38 @@ const MARK = '✎';
 const WHY = 'This passage changed while the bots were working on a comment somewhere else in the '
   + 'document — nobody commented here. The wording it replaced is struck through on the page. '
   + '✓ files this once you are happy with it; ↺ puts it back in the open list.';
+// The same note when the conversation is known: it is named, and linked from
+// the card, so the reader can go and see why.
+const WHY_FROM = 'Nobody commented on this passage itself; the change came out of the conversation '
+  + 'named above, which links back here. The wording it replaced is struck through on the page. '
+  + '✓ files this once you are happy with it; ↺ puts it back in the open list.';
+
+// "while answering …" — the conversation, in a few words
+function whileAnswering(origin) {
+  if (origin && origin.quote) return `while answering the comment on “${clipQ(origin.quote)}”`;
+  if (origin && origin.page) return 'while answering in the page chat';
+  return 'while answering a comment elsewhere in the document';
+}
 
 // The message an auto-thread opens with. The bot's own sentence when it gave
 // one, the standing explanation when it did not — and NEVER the phrase
 // `now reads`, which is rule 5's and would set this thread re-anchoring itself
 // onto the wording it is already anchored to.
-export function autoText(region, claim, who) {
-  const head = `${MARK} ${who} changed this passage while answering a comment elsewhere in the document.`;
-  if (claim && claim.line) return `${head}\n\n> ${claim.line}\n\n${WHY}`;
+export function autoText(region, claim, who, origin) {
+  const where = whileAnswering(origin);
+  const why = origin && (origin.quote || origin.page) ? WHY_FROM : WHY;
+  const head = `${MARK} ${who} changed this passage ${where}.`;
+  if (claim && claim.line) return `${head}\n\n> ${claim.line}\n\n${why}`;
   if (region.kind === 'insert') {
-    return `${MARK} ${who} added this passage while answering a comment elsewhere in the document. `
+    return `${MARK} ${who} added this passage ${where}. `
       + 'Nothing here was commented on. ✓ files it; ↺ puts it back in the open list.';
   }
   if (region.kind === 'delete') {
-    return `${MARK} ${who} removed a passage from just here while answering a comment elsewhere in `
-      + 'the document. The wording that left is struck through on the page, before the paragraph '
+    return `${MARK} ${who} removed a passage from just here ${where}. `
+      + 'The wording that left is struck through on the page, before the paragraph '
       + 'that outlived it. ✓ files this; ↺ puts it back in the open list.';
   }
-  return `${head}\n\n${WHY}`;
+  return `${head}\n\n${why}`;
 }
 
 // …and the ONE thread a turn that changed the document extensively gets. Not a
@@ -565,28 +646,39 @@ export function summaryText(regions, who, why) {
 }
 
 // The whole decision, as data: what a turn-end should do to the page record.
-// Returns {threads:[{quote, prefix, suffix, prior_quote, text, kind, summary}],
-//          heals:[{thread_id, quote, prefix, suffix, deleted, text, kind}],
+// Returns {threads:[{quote, prefix, suffix, prior_quote, text, kind, summary,
+//                    origin_thread? | origin?}],
+//          heals:[{thread_id, quote, prefix, suffix, deleted, inserted?, text, kind}],
 //          regions, skipped, extensive}. Applying them is the server's job —
 // this says WHAT, and is pure so the whole rule set is unit-testable.
 //
-// A region is routed exactly once, and the order of the three fates is the
-// design: already-covered (nothing to do) → heals an existing orphan → gets a
-// thread of its own. A region absorbed into a reader's thread must NEVER also
+// A region is routed exactly once, and the order of the four fates is the
+// design: already-covered (nothing to do) → heals an existing orphan → is
+// adopted by the comment the turn was answering → gets a thread of its own.
+// `origin` is that comment's thread id, or store.PAGE_CHAT, or ''. A region absorbed into a reader's thread must NEVER also
 // spawn an auto-thread; that would be two cards and two highlights over one
 // change, which is the failure this whole feature exists to avoid.
-export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots' } = {}) {
+export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots', origin = '' } = {}) {
   const { regions, extensive, reason } = regionsFrom(beforeHtml, afterHtml);
   const threads = (page && page.threads) || [];
+  // the conversation this turn answered: a thread on this page, or the page chat
+  const from = origin && origin !== PAGE_CHAT ? threads.find(t => t && t.id === origin) || null : null;
+  const originRef = from ? { id: from.id, quote: from.quote || '' }
+    : origin === PAGE_CHAT ? { page: true } : null;
+  const afterFlat = from ? loose(docBlocks(afterHtml).join(' ')) : '';
   const fresh = [];
   const skipped = [];
   const healed = [];
+  const adopted = [];
   const usedThreads = new Set();
   for (const r of regions) {
     const hit = coveredBy(r, threads);
     if (hit) { skipped.push({ region: r, thread_id: hit.id }); continue; }
     const orphan = healableBy(r, threads, usedThreads);
     if (orphan) { usedThreads.add(orphan.id); healed.push({ thread: orphan, region: r }); continue; }
+    if (adoptableBy(r, from, afterFlat, usedThreads)) {
+      usedThreads.add(from.id); adopted.push({ thread: from, region: r }); continue;
+    }
     fresh.push(r);
   }
   // The reasons ride with the heals too: a bot that DID say "also changed"
@@ -605,6 +697,23 @@ export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots
       text: healText(region, claimFor(region, healClaims), who),
     };
   });
+  // …and the reader's request, answered where they made it: the comment moves
+  // onto the inserted words themselves (not the whole paragraph — the point is
+  // to show which words are new), with nothing struck, because nothing left.
+  for (const { thread, region } of adopted) {
+    heals.push({
+      thread_id: thread.id,
+      quote: region.quote,
+      prefix: region.prefix,
+      suffix: region.suffix,
+      deleted: false,
+      inserted: true,
+      kind: 'insert',
+      text: adoptText(region, thread, who),
+    });
+  }
+  const tag = t => (originRef && originRef.id ? { ...t, origin_thread: originRef.id }
+    : originRef && originRef.page ? { ...t, origin: 'page' } : t);
   // Heals are not capped with the fresh regions below and are never replaced by
   // a summary note: they are repairs to comments the reader wrote by hand, and
   // "the document changed a lot" is no reason to leave one of those pointing at
@@ -615,21 +724,92 @@ export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots
   if (extensive || fresh.length > REGIONS_MAX) {
     const at = fresh[0];
     return {
-      threads: [{
+      threads: [tag({
         quote: at.quote, prefix: at.prefix, suffix: at.suffix,
         prior_quote: at.old || '', kind: 'summary', summary: true,
         text: summaryText(fresh, who, extensive ? reason : 'too-many'),
-      }],
+      })],
       heals, regions, skipped, extensive: true,
     };
   }
   const claims = claimsSince(page, since);
   return {
-    threads: fresh.map(r => ({
+    threads: fresh.map(r => tag({
       quote: r.quote, prefix: r.prefix, suffix: r.suffix,
       prior_quote: r.old || '', kind: r.kind, summary: false,
-      text: autoText(r, claimFor(r, claims), who),
+      text: autoText(r, claimFor(r, claims), who, originRef),
     })),
     heals, regions, skipped, extensive: false,
   };
+}
+
+// ---- repairing threads born in markdown -------------------------------------
+//
+// Before blog.mdDoc spoke the page's words, an auto-thread on a markdown source
+// was written in MARKDOWN — `The [IEA’s base case](https://…) projects…` — and
+// orphaned on arrival, because no page shows a link's brackets. Its record is
+// still sitting there, pointing at nothing. So on load, an ORPHANED auto-thread
+// whose quote reads differently with its markup off is given the rendered
+// form, and the page gets one more chance to find it. Generic, idempotent (a
+// rendered quote renders to itself, so a second pass changes nothing), and it
+// never touches a reader's own thread — their quote came from the page.
+//
+// Context is cut mid-markup as often as not (`[EpochAI forecasts](https://www.`),
+// so prefix and suffix have their dangling link halves closed or dropped first.
+//
+// …and the record was FOLDED when it was written: its line breaks are gone, so
+// the furniture plainOf strips at the start of a line (a callout's `> [!note]`,
+// a table's pipes and rule row, a heading's hashes, a list's number) now sits
+// mid-string. Those are taken off by shape here, where the alternative is a
+// thread that stays orphaned anyway.
+const unfold = s => String(s || '')
+  .replace(/\|(\s*:?-+:?\s*\|)+/g, ' ')                    // |---|:-:| rule rows
+  .replace(/(^|\s)>(?=\s|$)/g, '$1')                        // quote bars
+  .replace(/\[![\w-]+\][+-]?/g, ' ')                         // callout tags
+  .replace(/(^|\s)\|(?=\s|$)/g, '$1')                       // cell walls
+  .replace(/(^|\s)#{1,6}(?=\s)/g, '$1')                     // heading hashes
+  .replace(/(^|\s)(?:\d+[.)]|[-*+])(?=\s)/g, '$1');         // list numbers, bullets
+const fragPlain = s => plainOf(unfold(String(s || '')
+  .replace(/\]\([^)]*$/, ']()')                  // a link cut off in its address
+  .replace(/\[([^\]]*)$/, '$1')                  // …or in its text
+  .replace(/^([^[\]]*)\]\([^)]*\)/, '$1')));     // a link whose start was cut off
+
+// The conversation a thread made before `origin_thread` existed most likely
+// came from: the ONE conversation a bot answered in during the seconds before
+// the thread was written (the census runs at turn-end, right after the reply).
+// Two candidates is a guess, and a guess is not written down.
+const ORIGIN_WINDOW_MS = 15000;
+export function guessOrigin(page, t) {
+  const born = Date.parse((t && t.msgs && t.msgs[0] && t.msgs[0].ts) || '') || 0;
+  if (!born) return null;
+  const near = msgs => (msgs || []).some(m => m && m.kind !== 'tools' && isAgentAuthor(m.author)
+    && (() => { const at = Date.parse(m.ts || '') || 0; return at <= born && born - at <= ORIGIN_WINDOW_MS; })());
+  const hits = [];
+  for (const o of (page && page.threads) || []) {
+    if (o && o !== t && !o.auto && near(o.msgs)) hits.push({ thread: o.id });
+  }
+  if (near(page && page.page_chat)) hits.push({ page: true });
+  return hits.length === 1 ? hits[0] : null;
+}
+
+export function renderAnchors(page) {
+  let n = 0;
+  for (const t of (page && page.threads) || []) {
+    if (!t || !t.auto || t.resolved || !t.orphaned || !t.quote) continue;
+    const q = clipQuote(fragPlain(t.quote));
+    if (!q || q === fold(t.quote)) continue;
+    t.quote = q;
+    t.prefix = fragPlain(t.prefix).slice(-32);
+    t.suffix = fragPlain(t.suffix).slice(0, 32);
+    if (t.prior_quote) t.prior_quote = fragPlain(t.prior_quote);
+    else if (!t.auto_summary && !t.deleted_passage) t.inserted = true;
+    if (!t.origin_thread && !t.origin) {
+      const o = guessOrigin(page, t);
+      if (o && o.thread) t.origin_thread = o.thread;
+      else if (o && o.page) t.origin = 'page';
+    }
+    t.rendered_at = new Date().toISOString();
+    n++;
+  }
+  return n;
 }

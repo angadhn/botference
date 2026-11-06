@@ -1360,26 +1360,49 @@
     + 'than once here, so the change is shown in the comment rather than inline';
   const WHY_LONG = 'this passage was rewritten — too long to show the old wording '
     + 'inline, so the change is shown in the comment';
+  const WHY_ADDED = 'the bots added this passage — nothing was here before it; '
+    + '✓ on its comment approves it';
 
   // Ask the page about the wording a bot said the passage NOW reads. Only for
   // a thread the bots have answered and the reader has not filed: an open
   // thread has had no claim made about it, and a filed one is finished.
   function relocateRewritten(t, raw) {
     if (!t || !t.addressed || t.resolved) return null;
-    const now = Anchor.newWording(t);
-    if (!now) return null;
+    const said = Anchor.newWording(t);
+    if (!said) return null;
     // the OLD context still applies: a rewrite replaces the passage, not the
     // paragraph around it, so prefix/suffix are exactly what disambiguates
-    const r = Anchor.locate(raw, { quote: now, prefix: t.prefix, suffix: t.suffix });
+    let now = said;
+    let r = Anchor.locate(raw, { quote: now, prefix: t.prefix, suffix: t.suffix });
+    // …and on a markdown source the bot quotes the FILE, `the [IEA](https://…)
+    // says`, where the page shows "the IEA says": the same claim, in the words
+    // the page renders (the companion's /reanchor accepts either form)
+    if (!r.ok) {
+      const plain = Anchor.plainOf(said);
+      if (plain && plain !== Anchor.normalize(said)) {
+        now = plain;
+        r = Anchor.locate(raw, { quote: now, prefix: t.prefix, suffix: t.suffix });
+      }
+    }
     if (!r.ok) return null;
     return { start: r.start, end: r.end, unique: !!r.unique, quote: now };
   }
 
   // What this thread's inline markup should say, if anything. `was` is the
   // wording that left; there is nothing to show without one.
+  // A thread on words that ARRIVED where there were none — the turn-end diff's
+  // insertion (`inserted`, or an older auto-thread with nothing it replaced) —
+  // has no `was` and is still a change to show: the arrival underline, and
+  // nothing struck.
+  const isInsertion = t => !!(t && (t.inserted
+    || (t.auto && !t.prior_quote && !t.auto_summary && !t.deleted_passage)));
   function noteTrack(t, r, was) {
     if (!t.addressed || t.resolved) return;
     was = String(was || '').trim();
+    if (!was && isInsertion(t)) {
+      tracks[t.id] = { was: '', insert: true, unique: r.unique !== false, long: false };
+      return;
+    }
     if (!was) return;
     const now = String(t.quote || '');
     tracks[t.id] = {
@@ -1440,6 +1463,11 @@
       // Ambiguous or oversized: the highlight still moved (the thread has a
       // place again) but the old wording is not put inline, and the mark says
       // why for anyone who hovers it.
+      if (info.insert) {
+        Anchor.unpaintWas(id);
+        Anchor.markInserted(id, true, WHY_ADDED);
+        continue;
+      }
       if (!info.unique || info.long) {
         Anchor.unpaintWas(id);
         Anchor.markInserted(id, true, info.long ? WHY_LONG : WHY_AMBIGUOUS);
