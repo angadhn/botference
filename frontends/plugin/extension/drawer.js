@@ -1867,8 +1867,10 @@
       // is ATTACHED is not here at all — it lives on the page record, which is
       // why it survives a reload. `declined` holds the ts of a bot's `lasso:`
       // offer the reader waved away, per tab, exactly like `projects.declined`.
+      // `done` is the one-line "attached “…”" a link lasso leaves behind when
+      // everything went through (doLassoLinks); it clears itself.
       lasso: { target: '', query: '', results: [], head: '', err: '', busy: '',
-               searching: '', declined: [] },
+               searching: '', declined: [], done: '' },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
       // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
@@ -3148,6 +3150,10 @@ ${bubbleShellHtml()}`;
     /** The find row, wherever it was asked for — a composer, or a bot's reply. */
     function lassoFindHtml(find) {
       if (!find) return '';
+      // a link lasso that went through: one quiet line, nothing to press
+      if (find.done) {
+        return `<div class="lassofind lassodone"><div class="lassohead"><span>lasso · ${esc(find.done)}</span></div></div>`;
+      }
       const rows = Array.isArray(find.results) ? find.results : [];
       // THE HEADER SAYS WHAT HAPPENED, in one line and in plain words. The
       // companion writes it (lasso.headline) because the companion is what
@@ -6670,7 +6676,7 @@ ${bubbleShellHtml()}`;
         const bot = btn.closest && btn.closest('.frombot');
         const row = bot && bot.closest && bot.closest('[data-ts]');
         if (row && row.dataset.ts) D.lasso.declined.push(String(row.dataset.ts));
-        else D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '' };
+        else D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '', done: '' };
         lassoPaint();
       },
       'lasso-x': (btn) => doDetach(btn.dataset.path),
@@ -7477,8 +7483,13 @@ ${bubbleShellHtml()}`;
     // chips live above ITS composer as well — so a repaint here is whichever
     // of the two the reader is looking at.
     const lassoPaint = () => { if (D.view === 'pages') renderLibrary(); else render(); };
+    // a link anywhere in the words makes it a LINK lasso (the companion's own
+    // test is lasso.urlsIn; this is the same question asked of the same text)
+    const LASSO_LINK = /\bhttps?:\/\/\S/i;
+    let lassoDoneTimer = 0;
     async function doLasso(target, query) {
-      D.lasso = { ...D.lasso, target, query, results: [], head: '', err: '', searching: target };
+      clearTimeout(lassoDoneTimer);
+      D.lasso = { ...D.lasso, target, query, results: [], head: '', err: '', done: '', searching: target };
       lassoPaint();
       let r = null;
       try { r = await cb('onLasso')(query); }
@@ -7487,22 +7498,17 @@ ${bubbleShellHtml()}`;
       D.lasso.searching = '';
       // THE WORDS AFTER THE LINK. "/lasso https://… can you see the page?" is
       // a link to fetch AND a question; the companion takes the link and hands
-      // the question back as `rest`. It goes back into the box it came from —
-      // NOT sent: nothing is attached until the reader clicks a chip, and the
-      // question is only worth asking once something is. A box the reader has
-      // already started typing in again is left alone.
+      // the question back as `rest`.
       const rest = String((r && r.rest) || '').trim();
-      if (rest) {
-        const box = composerBox(target);
-        if (!(box ? box.value : D.drafts[target] || '').trim()) {
-          D.drafts[target] = rest;
-          if (box) {
-            box.value = rest;
-            const comp = box.closest('.composer');
-            if (comp) comp.classList.add('has-draft');
-          }
-        }
+      // A LINK the reader typed is not an offer to weigh up: they named the
+      // thing, and naming it IS the click. So it attaches on the spot and the
+      // question goes out as an ordinary message (doLassoLinks). A word search
+      // and a bot's `lasso:` still offer, and attach nothing without a click.
+      if (r && r.ok !== false && LASSO_LINK.test(query)) {
+        await doLassoLinks(target, query, r, rest);
+        return;
       }
+      lassoRestBack(target, rest);
       if (!r || r.ok === false) {
         D.lasso.err = (r && r.error) || 'that search could not be run';
         lassoPaint();
@@ -7519,6 +7525,73 @@ ${bubbleShellHtml()}`;
       D.lasso.head = r.head || '';
       D.lasso.err = r.error || '';
       lassoPaint();
+    }
+    // The words go back into the box they came from, unsent — for a search
+    // (nothing is attached until a click) and for a link that failed (the
+    // question is about a page the bots will not have). A box the reader has
+    // already started typing in again is left alone.
+    function lassoRestBack(target, rest) {
+      if (!rest) return;
+      const box = composerBox(target);
+      if ((box ? box.value : D.drafts[target] || '').trim()) return;
+      D.drafts[target] = rest;
+      if (box) {
+        box.value = rest;
+        const comp = box.closest('.composer');
+        if (comp) comp.classList.add('has-draft');
+      }
+    }
+    // `/lasso <link> [words]`: attach what each link brought back, through the
+    // same doAttach the attach button uses, then send the words through the
+    // same doSend a typed message uses — AFTER the attach, so the bots' turn
+    // carries it. A link that is the page the reader is on comes back with no
+    // row (the bots have it already) and is simply skipped. If anything failed
+    // the box stays with the reason on it, and the words go back unsent.
+    async function doLassoLinks(target, query, r, rest) {
+      const rows = (r.results || []).slice();
+      const good = rows.filter(x => x && !x.failed && x.id);
+      D.lasso.results = rows;
+      D.lasso.head = r.head || '';
+      D.lasso.err = '';
+      lassoPaint();
+      const titles = [];
+      for (const row of good) {
+        await doAttach(row.kind, row.id);
+        if (D.lasso.target !== target || D.lasso.query !== query) return;  // overtaken
+        if (D.lasso.err) break;
+        titles.push(row.title || row.id);
+      }
+      const failed = rows.some(x => x && x.failed) || (!good.length && !!r.error);
+      if (D.lasso.err || failed) {
+        if (!D.lasso.err && !D.lasso.head) D.lasso.err = r.error || 'that link could not be fetched';
+        lassoRestBack(target, rest);
+        lassoPaint();
+        return;
+      }
+      const done = titles.length
+        ? 'attached ' + titles.map(t => '“' + t + '”').join(', ')
+        : String(r.head || '').replace(/^lasso · /, '') || 'nothing to attach';
+      D.lasso = { ...D.lasso, target, query: '', results: [], head: '', err: '', done };
+      lassoPaint();
+      if (rest) lassoSend(target, rest);
+      clearTimeout(lassoDoneTimer);
+      lassoDoneTimer = setTimeout(() => {
+        if (D.lasso.done !== done || D.lasso.target !== target) return;
+        D.lasso = { ...D.lasso, target: '', done: '' };
+        lassoPaint();
+      }, lassoDoneMs);
+    }
+    let lassoDoneMs = 4000;
+    // The words, sent exactly as if typed: they go into the box and doSend
+    // takes them from there, so @-mentions, the route pills, the optimistic
+    // copy and the dedupe all behave as they do for a typed message. A box the
+    // reader has started typing in again is theirs, and is not sent.
+    function lassoSend(target, rest) {
+      const box = composerBox(target);
+      if ((box ? box.value : D.drafts[target] || '').trim()) return;
+      D.drafts[target] = rest;
+      if (box) box.value = rest;
+      doSend(target);
     }
     async function doAttach(kind, id) {
       if (!kind || !id) return;
@@ -10129,7 +10202,7 @@ ${bubbleShellHtml()}`;
       // the first.
       if (was !== (page && page.url ? String(page.url) : '')) {
         D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '',
-                    busy: '', searching: '', declined: [] };
+                    busy: '', searching: '', declined: [], done: '' };
       }
       clearAnsweredWaits();
       if (D.mounted) {
@@ -10785,6 +10858,17 @@ ${bubbleShellHtml()}`;
       const ta = box.querySelector('.composer textarea');
       const comp = box.querySelector('.composer');
       if (ta && comp) comp.classList.toggle('has-draft', !!ta.value.trim());
+      // …and what a `/lasso` typed here is doing, drawn above the composer as
+      // in the panel. Only that block is swapped, never the composer.
+      if (comp && comp.parentNode) {
+        const lh = lassoHtml(id);
+        if (box._lassoHtml !== lh) {
+          box._lassoHtml = lh;
+          comp.parentNode.querySelectorAll(':scope > .lassostrip, :scope > .lassofind')
+            .forEach(n => { if (!n.classList.contains('frombot')) n.remove(); });
+          if (lh) comp.insertAdjacentHTML('beforebegin', lh);
+        }
+      }
       // …and its Send. doSend locks the button "until the render below", which
       // in the panel means until the composer is rebuilt; a bubble's never is,
       // so the lock is released here — held only while a NEW thread's first
@@ -11773,6 +11857,9 @@ ${bubbleShellHtml()}`;
       setLibrary: page => { D.library.page = page || null; if (D.view === 'pages') renderLibrary(); },
       refreshLibrary: () => { if (D.view === 'pages') loadLibrary(); },
       libraryTarget: () => LIBRARY_TARGET,
+      // how long a link lasso's "attached …" line stays (the harness holds it
+      // still for a screenshot)
+      lassoDoneMs: ms => { if (ms > 0) lassoDoneMs = ms; return lassoDoneMs; },
       // Where the companion is, learned from the background worker after the
       // drawer already exists (the `hello` that wakes a page can land either
       // side of create()). Repaint, because a /files/ link already drawn was

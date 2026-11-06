@@ -2540,6 +2540,10 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .lassorow.failed .lassohit { white-space: normal; overflow: visible }
 /* the same offers under a bot's reply, where the chip conventions rule */
 .lassofind.frombot { margin: 8px 0 2px }
+/* a link lasso that went through: one quiet line that goes by itself */
+.lassofind.lassodone { border-style: solid; padding: 3px 8px }
+.lassofind.lassodone .lassohead { margin-bottom: 0 }
+.lassofind.lassodone .lassohead span { color: var(--muted) }
 
 /* ---- the claim checker's stamp -----------------------------------------
    A mechanical result, so it is drawn as a mark rather than a card: no border

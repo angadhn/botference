@@ -9542,7 +9542,9 @@ attach becomes a FILE the bots read on demand.
    `store.snapshotFile`, "BOTS READ THE WHOLE DOCUMENT"): a forty-page transcript
    inlined into every turn buries the turn it is supposed to inform.
 2. **Nothing attaches without a click.** A bot may ASK for a search (`lasso:`,
-   below) and still attaches nothing. Same discipline as `file-in:`; deliberately
+   below) and still attaches nothing. A link or a file path the reader TYPED
+   after `/lasso` counts as the click: they named the thing (amendment
+   2026-11-06, "a link lasso attaches and sends"). Same discipline as `file-in:`; deliberately
    NOT `watch:`'s, which does act — watching a video reads nothing of the
    reader's, and this reads their own things.
 
@@ -9625,7 +9627,7 @@ matches render as chips above the composer — title · kind · the matching lin
 attached shows as small chips with a ✕ above the page-chat (and library)
 composer from then on, because it is on the record. `/lasso ~/path/to/a.pdf`
 attaches that file with no chip to click: a reader who has typed a path has
-already chosen.
+already chosen. So does `/lasso <link> [words]` (amendment 2026-11-06).
 
 **The council.** `/lasso` is a controller command (`core/lasso.py`,
 `InputKind.LASSO`) with the same behaviour, drawn as a card with attach buttons
@@ -11479,3 +11481,54 @@ does exactly what it always did.
 - Screenshots: `?bubbles=new`, `?bubbles=newsent`.
 - `?bubbles=1&selftest=1` has one pre-existing timing flake ("each line ends on
   its OWN mark"), seen on the unchanged code too.
+
+## Amendment (2026-11-06): a link lasso attaches and sends
+
+The reader: *"Why does the lasso not send it directly? Why do I have to write a
+new message?"* They typed `/lasso <npr link> <question>`, then had to click
+attach, dismiss the leftover lasso box, and send the question a second time.
+
+A link the reader typed is not an offer to weigh up — they named it, and naming
+it is the click. So in the drawer (`doLasso` → `doLassoLinks`), when the
+`/lasso` text contains a link:
+
+1. **Each link's result attaches by itself**, through the same `doAttach` →
+   `POST /attach` the attach button uses, so the record is the same. A link
+   that is the page the reader is on comes back with no row (the bots already
+   have it) and is skipped.
+2. **The leftover words (`rest`) are sent at once**, from the composer the
+   `/lasso` came from (page chat, a thread's reply box, a bubble — new or
+   existing), AFTER the attach succeeds so the bots' turn carries it. They go
+   into that box and through the ordinary `doSend` (`lassoSend`), so
+   @-mentions, the route pills, the optimistic copy and dedupe all behave as
+   for a typed message. A box the reader has started typing in again is theirs
+   and is not touched.
+3. **No box left hanging.** When everything went through, the lasso box shrinks
+   to one line, `lasso · attached “<title>”` (or the companion's own line, e.g.
+   "that link is the page you are on…", when there was nothing to attach), and
+   goes away by itself after 4s (`lassoDoneMs`).
+4. **A failure keeps the box**: a link that could not be fetched, or an attach
+   the companion refused, leaves the box with the reason on it, sends nothing,
+   and puts the words back in the composer as before. Links that did fetch are
+   still attached.
+
+Unchanged: a word search (`/lasso kalman`) and a bot's `lasso:` still OFFER and
+attach nothing without a click; a bare path still attaches on the spot. The
+companion is unchanged — the drawer tells a link lasso by a link in the words,
+the same question `lasso.urlsIn` asks.
+
+Bubbles: a bubble's composer is never rebuilt, so `renderOneBubble` now swaps
+the lasso block above it (`lassoHtml(id)`, only when it changed), and a
+`/lasso` typed in a bubble shows its "looking…", its failure or its one-line
+note there.
+
+### Testing
+
+- `?lasso=1&selftest=1` — 57 checks: a link alone attaches with no click and
+  leaves the one-line note, sends nothing, and the note goes by itself; a link
+  with a question attaches, then sends the question as a page-chat message
+  (after the attach); a link to this page attaches nothing and still sends; a
+  refused link keeps the box, attaches and sends nothing, and puts the words
+  back; in a thread's reply box the words are a reply in that thread.
+- `?bubbles=new&selftest=1` — 43 checks: `/lasso <link> <words>` in a bubble
+  attaches, replies in that thread, and shows then clears the note.

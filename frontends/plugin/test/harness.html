@@ -316,8 +316,11 @@
                      composer offers /lasso and Enter completes it.
                      `?lasso=strip` is the far end: two things already attached
                      on load. `?lasso=web` / `?lasso=refused` are the two
-                     screenshot states of a pasted link: the chip the companion
-                     fetched, and the row saying why it could not.
+                     screenshot states of a pasted link: attached on the spot
+                     (on the strip), and the row saying why it could not.
+                     `?lasso=sent` / `?lasso=refusedq` add a question after
+                     the link: attached and sent with the "attached" line held
+                     still, or refused with the question back in the box.
     ?checks=1        the claim checker's stamp on a bot reply (checks.mjs). A
                      quote of six words or more that a bot presents as coming
                      from the page is looked up in the page's own text by the
@@ -2659,7 +2662,10 @@ function stampMsg(text) { return { author: 'angadh', ts: now(), text }; }
 // .docx on every mention. Absent fields stay absent — an assertion that a
 // message carried "no article_text" must be able to tell undefined from ''.
 function captured(route, text, body) {
-  return { route, text,
+  return { route, text, thread_id: body.thread_id,
+    // how many /attach calls had been made when this message went — a
+    // `/lasso <link> <question>` must attach BEFORE it sends
+    attachedBefore: typeof lassoAttaches !== 'undefined' ? lassoAttaches.length : 0,
     article_text: body.article_text,
     article_changed: body.article_changed,
     docx_b64: body.docx_b64 };
@@ -2848,25 +2854,25 @@ function companion(method, path, body) {
       // companion sends them; the link alone is what is fetched
       const link = q.split(/\s+/)[0];
       const rest = q.slice(link.length).trim();
-      if (rest) {
-        const host1 = (link.split('/')[2] || '').replace(/^www\./, '');
-        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(), rest,
-          head: 'lasso · fetched “Rockets, part 1” (' + host1 + ')',
-          results: [{ kind: 'web', id: link, title: 'Rockets, part 1', url_or_path: link, when: now(),
-            hit: 'The first stage is the whole argument, and the rest is bookkeeping.' }] } };
-      }
-      const host = (q.split('/')[2] || '').replace(/^www\./, '');
-      if (/paywall/.test(q)) {
-        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(),
+      const extra = rest ? { rest } : {};
+      const host = (link.split('/')[2] || '').replace(/^www\./, '');
+      if (/paywall/.test(link)) {
+        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(), ...extra,
           error: 'could not fetch: HTTP 403',
           head: 'lasso · could not fetch: HTTP 403 — ' + host,
-          results: [{ kind: 'web', id: q, title: host, url_or_path: q, failed: true, when: '',
+          results: [{ kind: 'web', id: link, title: host, url_or_path: link, failed: true, when: '',
             hit: 'could not fetch: HTTP 403 — open it in the browser with the plugin '
               + 'once and lasso it by title' }] } };
       }
-      return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(),
+      // the page the reader is standing on: no row, the bots have it already
+      if (/here\.test/.test(link)) {
+        return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(), ...extra,
+          head: 'lasso · that link is the page you are on — the bots already have it',
+          results: [] } };
+      }
+      return { ok: true, status: 200, data: { ok: true, query: q, attached: lassoOn(), ...extra,
         head: 'lasso · fetched “Rockets, part 1” (' + host + ')',
-        results: [{ kind: 'web', id: q, title: 'Rockets, part 1', url_or_path: q, when: now(),
+        results: [{ kind: 'web', id: link, title: 'Rockets, part 1', url_or_path: link, when: now(),
           hit: 'The first stage is the whole argument, and the rest is bookkeeping.' }] } };
     }
     const words = q.toLowerCase().split(/\s+/).filter(Boolean);
@@ -9384,6 +9390,26 @@ async function selftestBubblesNew() {
   const replied = await until(() => (RECORD.threads.find(t => t.id === id) || { msgs: [] })
     .msgs.some(m => /one more question/.test(m.text)), 3000);
   check('a second message from the same bubble reaches the thread', !!replied);
+
+  // ---- /lasso <link> <words> in a bubble: attached, then a reply in it ----
+  const lta = id && bub(id) && bub(id).querySelector('.composer textarea');
+  if (lta) {
+    const a0 = lassoAttaches.length, p0 = postedMsgs.length;
+    lta.value = '/lasso https://angadh.com/rockets-1 does this page agree?';
+    lta.dispatchEvent(new Event('input', { bubbles: true }));
+    bub(id).querySelector('.composer .send').click();
+    await until(() => postedMsgs.length > p0, 3000);
+    check('/lasso <link> <words> in a bubble attaches the link, then replies in that thread',
+      lassoAttaches.length === a0 + 1 && postedMsgs.length === p0 + 1
+      && postedMsgs[p0].route === '/reply' && postedMsgs[p0].thread_id === id
+      && postedMsgs[p0].text === 'does this page agree?' && postedMsgs[p0].attachedBefore === a0 + 1);
+    const done = await until(() => bub(id) && bub(id).querySelector('.lassofind.lassodone'), 2000);
+    check('…the bubble shows the one-line “attached” note, and its box is empty',
+      !!done && /attached “Rockets, part 1”/.test(done.textContent)
+      && bub(id).querySelector('.composer textarea').value === '');
+    await until(() => !(bub(id) && bub(id).querySelector('.lassofind')), 6000);
+    check('…which goes away by itself', !!bub(id) && !bub(id).querySelector('.lassofind'));
+  }
   d.hideAllBubbles();
   await sleep(150);
 
@@ -10816,36 +10842,73 @@ async function selftestLasso() {
       await until(() => pane().querySelector('.lassofind:not(.frombot):not(.lassobusy)'), 3000);
     };
 
-    await lassoCmd('/lasso https://angadh.com/rockets-1');
-    check('a LINK is fetched, and the header says so by name',
-      headOf() === 'lasso · fetched “Rockets, part 1” (angadh.com)');
-    check('…as one chip, marked web, carrying the first of what it says', (() => {
-      const rows = pane().querySelectorAll('.lassofind:not(.frombot) .lassorow');
-      return rows.length === 1 && /web/.test(rows[0].querySelector('.lassokind').textContent)
-        && /first stage is the whole argument/.test(rows[0].textContent)
-        && !!rows[0].querySelector('[data-act="lasso-attach"]');
-    })());
-    check('…and never the words “that is this page”',
-      !/that is this page/.test(pane().textContent || ''));
+    // ---- a LINK the reader typed: naming it is the click ----
+    // The reported failure: "/lasso <npr link> <question>", then attach, then
+    // dismiss, then send the question again. A link is not an offer to weigh
+    // up — it attaches on the spot, and the words go out as a message.
+    const lassoSend = (text) => {
+      const n = lassoSearches.length;
+      box().value = text;
+      box().dispatchEvent(new Event('input', { bubbles: true }));
+      hit(S.querySelector('.composer[data-target="__page__"] .send'), 'Send');
+      return until(() => lassoSearches.length > n, 3000);
+    };
+    let said = (RECORD.page_chat || []).length;
+    let att0 = lassoAttaches.length;
+    let posted0 = postedMsgs.length;
+    await lassoSend('/lasso https://angadh.com/rockets-1');
+    await until(() => lassoAttaches.length > att0, 3000);
+    check('a LINK alone attaches by itself, no attach click',
+      lassoAttaches.length === att0 + 1 && lassoAttaches[att0].kind === 'web'
+      && lassoAttaches[att0].id === 'https://angadh.com/rockets-1');
+    await until(() => pane().querySelector('.lassofind.lassodone'), 3000);
+    check('…and leaves one line saying so, with nothing to press',
+      headOf() === 'lasso · attached “Rockets, part 1”'
+      && !pane().querySelector('.lassofind:not(.frombot) button'));
+    check('…nothing sent, the box empty, never “that is this page”',
+      postedMsgs.length === posted0 && (RECORD.page_chat || []).length === said
+      && box().value === '' && !/that is this page/.test(pane().textContent || ''));
+    check('…and it is on the strip',
+      /rockets-1/.test((pane().querySelector('.lassostrip') || {}).textContent || ''));
+    await until(() => !pane().querySelector('.lassofind.lassodone'), 6000);
+    check('the line goes away by itself', !pane().querySelector('.lassofind:not(.frombot)'));
 
     // ---- a link with a question after it ----
-    // "/lasso https://… Can you see the page?" — the link is fetched as a chip
-    // and the question goes BACK into the box, unsent, so it can be sent once
-    // the reader has chosen to attach the page.
-    const said = (RECORD.page_chat || []).length;
-    const att0 = lassoAttaches.length;
-    await lassoCmd('/lasso https://angadh.com/rockets-1 Can you see the page?');
+    att0 = lassoAttaches.length;
+    posted0 = postedMsgs.length;
+    await lassoSend('/lasso https://angadh.com/rockets-2 Can you see the page?');
     check('a link with words after it is still fetched as a link',
-      lassoSearches[lassoSearches.length - 1] === 'https://angadh.com/rockets-1 Can you see the page?'
-      && headOf() === 'lasso · fetched “Rockets, part 1” (angadh.com)');
-    check('…and the words after it come back into the box', box().value === 'Can you see the page?');
-    check('…NOT sent, and nothing attached',
-      (RECORD.page_chat || []).length === said && lassoAttaches.length === att0);
-    // the reader's own typing is never overwritten by a late answer
-    box().value = '';
-    box().dispatchEvent(new Event('input', { bubbles: true }));
+      lassoSearches[lassoSearches.length - 1] === 'https://angadh.com/rockets-2 Can you see the page?');
+    await until(() => postedMsgs.length > posted0, 3000);
+    check('the link is attached and the words are SENT, as a page-chat message',
+      lassoAttaches.length === att0 + 1 && postedMsgs.length === posted0 + 1
+      && postedMsgs[posted0].text === 'Can you see the page?'
+      && postedMsgs[posted0].thread_id === '__page__');
+    check('…sent only AFTER the attach went through',
+      postedMsgs[posted0].attachedBefore === att0 + 1);
+    check('…and it shows in the chat straight away',
+      /Can you see the page\?/.test(pane().textContent || ''));
+    check('…the box is empty and the lasso box is one line, not a menu',
+      box().value === '' && headOf() === 'lasso · attached “Rockets, part 1”'
+      && !pane().querySelector('.lassofind:not(.frombot) .lassorow'));
 
-    await lassoCmd('/lasso https://paywall.test/behind-it');
+    // ---- the page they are standing on: nothing to attach, the words still go ----
+    att0 = lassoAttaches.length;
+    posted0 = postedMsgs.length;
+    await lassoSend('/lasso https://here.test/this-page what is the main claim?');
+    await until(() => postedMsgs.length > posted0, 3000);
+    check('a link to THIS page attaches nothing and sends the words',
+      lassoAttaches.length === att0 && postedMsgs.length === posted0 + 1
+      && postedMsgs[posted0].text === 'what is the main claim?');
+    check('…saying why there was nothing to attach',
+      /the page you are on/.test(headOf()));
+
+    // ---- a link that refuses us: the box stays, the words come back unsent ----
+    att0 = lassoAttaches.length;
+    posted0 = postedMsgs.length;
+    await lassoSend('/lasso https://paywall.test/behind-it what does it say?');
+    await until(() => pane().querySelector('.lassofind:not(.frombot) .lassorow.failed'), 3000);
+    await sleep(120);
     check('a link that refuses us says which host and what to do instead',
       headOf() === 'lasso · could not fetch: HTTP 403 — paywall.test');
     check('…still a row, because an empty result tells the reader nothing', (() => {
@@ -10855,6 +10918,36 @@ async function selftestLasso() {
           .test(rows[0].textContent)
         && !rows[0].querySelector('[data-act="lasso-attach"]');
     })());
+    check('…nothing attached, nothing sent, and the words back in the box',
+      lassoAttaches.length === att0 && postedMsgs.length === posted0
+      && box().value === 'what does it say?');
+    box().value = '';
+    box().dispatchEvent(new Event('input', { bubbles: true }));
+
+    // ---- in a comment thread: the words are a REPLY in that thread ----
+    d.open('comments');
+    await sleep(160);
+    const tbox0 = S.querySelector('.pane[data-pane="comments"] .card[data-thread]:not([data-thread="__new__"]) .composer[data-target]');
+    const tid = tbox0 && tbox0.dataset.target;
+    const rbox = () => S.querySelector('.pane[data-pane="comments"] .composer[data-target="' + tid + '"] textarea');
+    check('a thread reply box to type in', !!tid && !!rbox());
+    if (tid && rbox()) {
+      att0 = lassoAttaches.length;
+      posted0 = postedMsgs.length;
+      const n = lassoSearches.length;
+      rbox().value = '/lasso https://angadh.com/rockets-3 is this the same argument?';
+      rbox().dispatchEvent(new Event('input', { bubbles: true }));
+      hit(S.querySelector('.pane[data-pane="comments"] .composer[data-target="' + tid + '"] .send'), 'Send');
+      await until(() => lassoSearches.length > n, 3000);
+      await until(() => postedMsgs.length > posted0, 3000);
+      check('/lasso <link> <words> in a thread attaches, then replies IN that thread',
+        lassoAttaches.length === att0 + 1 && postedMsgs.length === posted0 + 1
+        && postedMsgs[posted0].route === '/reply' && postedMsgs[posted0].thread_id === tid
+        && postedMsgs[posted0].text === 'is this the same argument?'
+        && postedMsgs[posted0].attachedBefore === att0 + 1);
+    }
+    d.open('chat');
+    await sleep(160);
 
     await lassoCmd('/lasso zzzqqq nothing of mine');
     check('and nothing matched says what to try next',
@@ -13465,6 +13558,24 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // as screenshots: the chip the companion fetched, and the row that says why
     // it could not. Neither can be posed from the record — both are the answer
     // to a command — so the pose types the command.
+    // ?lasso=sent — `/lasso <link> <question>`: attached, the question sent,
+    // the one-line note held still. ?lasso=refusedq — the same with a link
+    // that refuses us: the box stays, the question back in the composer.
+    if (LASSO === 'sent' || LASSO === 'refusedq') {
+      setTimeout(() => {
+        d.open('chat');
+        d.lassoDoneMs(10 * 60 * 1000);
+        const ta = d.shadow.querySelector('.pane[data-pane="chat"] .composer textarea');
+        if (!ta) return log('lasso: no composer');
+        ta.value = LASSO === 'sent'
+          ? '/lasso https://www.npr.org/2026/11/05/rockets Can you see the page?'
+          : '/lasso https://paywall.test/behind-it what does it say?';
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        d.shadow.querySelector('.pane[data-pane="chat"] .composer .send').click();
+        log('lasso: a link with a question, ' + (LASSO === 'sent' ? 'attached and sent' : 'refused')
+          + ' (screenshot state)');
+      }, 300);
+    }
     if (LASSO === 'web' || LASSO === 'refused') {
       setTimeout(() => {
         d.open('chat');
