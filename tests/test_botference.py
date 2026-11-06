@@ -798,6 +798,48 @@ class TestVideoWatch:
         system = [e.text for e in c.transcript.entries if e.speaker == "system"]
         assert not any("[Watched video:" in t for t in system)
 
+    async def test_only_the_users_own_words_are_scanned_for_links(
+        self, tmp_path, monkeypatch
+    ):
+        # The browser plugin's envelope replays the chat's history, so an old
+        # link sits in every later turn. Only the reader's NEW words count.
+        calls: list = []
+        self._stub(monkeypatch, calls=calls)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        envelope = (
+            "@all Earlier in this thread:\n"
+            f"angadh: @all on Panthalassa: {self.YT}\n\n"
+            "@all what about this npr piece https://www.npr.org/x"
+        )
+        await c.handle_input(
+            envelope, ui,
+            watch_text="@all what about this npr piece https://www.npr.org/x",
+        )
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert calls == []
+        assert "[Watched video:" not in sent and "[Video not watched" not in sent
+        # …and a link that IS in the new words is still watched
+        new = "@all and this one https://youtu.be/newvid00001"
+        await c.handle_input(f"{envelope}\n{new}", ui, watch_text=new)
+        assert calls == [("https://youtu.be/newvid00001", None)]
+
+    async def test_a_link_that_failed_is_not_retried_automatically(
+        self, tmp_path, monkeypatch
+    ):
+        import video_watch as vw
+        calls: list = []
+        self._stub(monkeypatch, calls=calls, result=vw.WatchResult(
+            url=self.YT, error="Gemini took longer than 120s."))
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input(f"@claude {self.YT}", ui)
+        await c.handle_input(f"@claude again {self.YT}", ui)
+        assert len(calls) == 1, "the second message does not wait on it again"
+        sent = [e.text for e in c.transcript.entries if e.speaker == "user"][-1]
+        assert "[Video not watched again:" in sent and "/watch" in sent
+        # an explicit /watch still tries
+        await c.handle_input(f"/watch {self.YT}", ui)
+        assert len(calls) == 2
+
     async def test_at_most_three_videos_a_message(self, tmp_path, monkeypatch):
         calls: list = []
         self._stub(monkeypatch, calls=calls)

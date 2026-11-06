@@ -44,6 +44,10 @@ _executor = ThreadPoolExecutor(max_workers=1)
 class QueuedInput:
     text: str
     attachments: list[dict] = field(default_factory=list)
+    # The part of `text` that is the user's own words, when a frontend wraps
+    # them in an envelope (the browser plugin's page chat). Only links in
+    # this are auto-watched; None means "all of text is the user's".
+    watch: str | None = None
 
 
 def emit(obj: dict) -> None:
@@ -628,7 +632,9 @@ class InputTurnQueue:
             or (self._current_turn is not None and not self._current_turn.done())
         )
 
-    def submit(self, text: str, attachments: list[dict]) -> None:
+    def submit(
+        self, text: str, attachments: list[dict], watch: str | None = None,
+    ) -> None:
         # Mid-turn input first tries steering — injected into the active
         # bot's in-flight turn (read after its current tool call), like
         # typing in Claude Code. Falls through to the queue when the turn
@@ -637,7 +643,9 @@ class InputTurnQueue:
             if self._botference.steer_active(text, self._bridge):
                 return
         was_running = self.is_running
-        self._pending.append(QueuedInput(text=text, attachments=attachments))
+        self._pending.append(
+            QueuedInput(text=text, attachments=attachments, watch=watch)
+        )
         if was_running:
             self._emit_queue_state()
         if not self.is_running:
@@ -674,6 +682,8 @@ class InputTurnQueue:
                     item.text,
                     self._bridge,
                     attachments=item.attachments,
+                    # only when a frontend said which words are the user's
+                    **({"watch_text": item.watch} if item.watch is not None else {}),
                 )
             )
             should_exit = await _wait_for_turn(
@@ -843,7 +853,11 @@ async def main() -> None:
         if msg.get("type") == "input":
             text = msg.get("text", "")
             attachments = msg.get("attachments", [])
-            turn_queue.submit(text, attachments)
+            watch = msg.get("watch")
+            turn_queue.submit(
+                text, attachments,
+                watch=watch if isinstance(watch, str) else None,
+            )
             continue
 
         if msg.get("type") == "interrupt":

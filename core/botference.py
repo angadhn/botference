@@ -1788,6 +1788,11 @@ class Botference:
         self._video_no_key_told: bool = False
         # The last video watched in this chat — what `ask gemini:` is about.
         self._last_watched_url: str = ""
+        # (session id, video id) for every AUTOMATIC watch that failed: the
+        # same link in a later message of the same chat is not tried again
+        # (a timeout costs the whole turn two minutes). /watch and a bot's
+        # `watch:` line are explicit and still retry.
+        self._video_auto_failed: set[tuple[str, str]] = set()
         # model -> questions put to Gemini during the current user turn.
         self._gemini_asks: dict[str, int] = {}
         # model -> build agents summoned during the current user turn
@@ -3211,7 +3216,14 @@ class Botference:
 
     async def handle_input(
         self, raw: str, ui: UIPort, *, attachments: list | None = None,
+        watch_text: Optional[str] = None,
     ) -> None:
+        """One line from a frontend.
+
+        *watch_text*, when given, is the part of *raw* that is the user's own
+        words — the browser plugin wraps them in an envelope that replays the
+        chat's history, and only links in the NEW words are auto-watched.
+        """
         parsed = parse_input(raw)
 
         if parsed.kind is InputKind.MESSAGE and parsed.parallel and not parsed.body:
@@ -3373,7 +3385,9 @@ class Botference:
             await self._run_finalize(ui)
             return
 
-        await self._send_message(parsed, ui, attachments=attachments)
+        await self._send_message(
+            parsed, ui, attachments=attachments, watch_text=watch_text,
+        )
 
     # ── /allow-host ───────────────────────────────────────
 
@@ -3492,6 +3506,11 @@ class Botference:
             )
         took = time.monotonic() - started
         result.seconds = took
+        if not result.error:
+            # a retry that worked (/watch, a bot's `watch:`) lifts the
+            # "failed here, do not try again" mark
+            self._video_auto_failed.discard(
+                (self.session_id, video_watch.video_id(url) or url))
         # What it saw is posted as its own message (see _post_video_report),
         # which carries the duration — a second "watched it in 12s" note here
         # would only say it twice.
@@ -3505,13 +3524,28 @@ class Botference:
         })
         return result
 
-    async def _append_video_reports(self, body: str, ui: UIPort) -> str:
-        """Append a Gemini report for each YouTube link the user sent."""
+    async def _append_video_reports(
+        self, body: str, ui: UIPort, scan: Optional[str] = None,
+    ) -> str:
+        """Append a Gemini report for each YouTube link the user sent.
+
+        *scan* is where to look for links when it is not the whole body: the
+        user's own words inside a frontend's envelope (see handle_input).
+        """
         if not self._video_watch_auto_enabled():
             return body
-        urls = video_watch.find_youtube_urls(body)
+        urls = video_watch.find_youtube_urls(body if scan is None else scan)
+        # a link that already failed in this chat is not tried again
+        # automatically — say so, so nobody waits on it or wonders
+        skipped = [u for u in urls if self._video_failed_here(u)]
+        urls = [u for u in urls if u not in skipped]
+        skip_note = "\n\n".join(
+            f"[Video not watched again: {u} — Gemini could not watch it earlier "
+            "in this chat. Ask with /watch (or a `watch:` line) to retry.]"
+            for u in skipped
+        )
         if not urls:
-            return body
+            return f"{body}\n\n{skip_note}" if skip_note else body
         if not video_watch.gemini_key():
             if self._video_no_key_told:
                 return body
@@ -3529,13 +3563,22 @@ class Botference:
             # the same report inside the message they are about to answer
             self._post_video_report(result, ui, for_the_bots=False)
             blocks.append(video_watch.format_report(result))
+            if result.error:
+                self._video_auto_failed.add(
+                    (self.session_id, video_watch.video_id(url) or url))
         if len(urls) > self._VIDEO_WATCH_CAP:
             blocks.append(
                 f"[{len(urls)} YouTube links were sent; the first "
                 f"{self._VIDEO_WATCH_CAP} were watched. Ask for the rest with "
                 "/watch <url>.]"
             )
+        if skip_note:
+            blocks.append(skip_note)
         return body + "\n\n" + "\n\n".join(blocks)
+
+    def _video_failed_here(self, url: str) -> bool:
+        key = (self.session_id, video_watch.video_id(url) or url)
+        return key in self._video_auto_failed
 
     async def _run_watch_cmd(self, body: str, ui: UIPort) -> None:
         """/watch <url> [question] — have Gemini watch a video for the room."""
@@ -6191,6 +6234,7 @@ class Botference:
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
         *, attachments: list | None = None, watch_links: bool = True,
+        watch_text: Optional[str] = None,
     ) -> None:
         route = self.router.resolve(parsed)
         # each user turn buys each bot a fresh (small) allowance of questions
@@ -6240,7 +6284,7 @@ class Botference:
         # A YouTube link is watched for the bots (they cannot take video) and
         # the report travels with the message.
         if watch_links:
-            body = await self._append_video_reports(body, ui)
+            body = await self._append_video_reports(body, ui, scan=watch_text)
 
         self.transcript.add("user", body)
         self._persist_session()

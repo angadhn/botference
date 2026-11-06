@@ -404,6 +404,19 @@ def test_503_falls_through_the_model_chain(tmp_path):
     assert r.model == vw.FALLBACK_MODELS[-1]
 
 
+def test_a_report_written_by_a_fallback_model_is_a_cache_hit(tmp_path):
+    # On a busy day the report comes from a fallback model and is cached under
+    # it; the next watch starts with the first model and must still find it.
+    import video_watch as vw
+    url = "https://www.youtube.com/watch?v=SvcPM6oBsRM"
+    vw.cache_write(vw.WatchResult(url=url, text="Lite report.",
+                                  model=vw.FALLBACK_MODELS[-1]), cache_dir=tmp_path)
+    calls: list = []
+    r = vw.watch(url, key="k", cache_dir=tmp_path,
+                 http=_fake_http(200, _ok_payload(), record=calls))
+    assert r.cached and r.text == "Lite report." and calls == []
+
+
 def test_request_sends_the_canonical_url_not_the_phone_one():
     import video_watch as vw
     raw = "https://m.youtube.com/watch?v=NXs3QpkYm7g&pp=ygUVYmljZXBzIGZlbW9yaXMgdGVuZG9u0gcJCYsCo7VqN5tD&ra=m"

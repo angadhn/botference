@@ -1336,7 +1336,13 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     current.capturing = !!step.capture;
     if (step.before) step.before();
     ready = false;
-    send({ type: 'input', text: step.text, attachments: [] });
+    // `watch` is the reader's OWN words for this turn, when the step is a
+    // turn rather than a control command: the controller looks for YouTube
+    // links to hand to Gemini in this, and never in the envelope — whose
+    // replayed history would otherwise re-watch every video ever posted in
+    // the chat, on every turn after it.
+    send({ type: 'input', text: step.text, attachments: [],
+      ...(typeof step.watch === 'string' ? { watch: step.watch } : {}) });
   }
 
   // The control steps this job needs are computed when it REACHES the front of
@@ -1502,6 +1508,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         nearbyContext: job.nearbyContext || '',
         verbosity: readConfig().verbosity }),
       capture: true,
+      // the only text whose YouTube links get watched: what the reader just
+      // wrote. A summary or a question card is filing, not a message, so
+      // nothing in it is watched.
+      watch: (job.summary || job.card) ? '' : String(job.text || ''),
       // the new chat becomes visible to the bridge's own panel only now that
       // it has an entry — this is the first moment its sid can be trusted
       // (…and a borrowed turn's chat is the PROJECT's, not the page's: writing

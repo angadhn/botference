@@ -491,6 +491,14 @@ async function main() {
       'and the question-vault offer rides after it, never before');
   });
 
+  await test('a turn tells the bridge which words are the reader\'s own (only those are watched)', () => {
+    // the envelope replays the thread's history, so an old YouTube link would
+    // ride every later turn; the controller scans `watch` and nothing else
+    const lines = allLines(logFile).filter(e => e.type === 'input');
+    assert.equal(lines[4].watch, '@claude does that hold outside peak season?');
+    assert.ok(lines.slice(0, 4).every(e => !('watch' in e)), 'control steps carry no watch field');
+  });
+
   await test('the session id from the projects event is stored on the page', async () => {
     // the sid only becomes visible after the turn, so the capture is a wait
     const page = await waitFor(async () => {

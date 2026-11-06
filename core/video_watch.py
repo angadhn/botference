@@ -476,9 +476,14 @@ def watch(
         )
 
     if use_cache:
-        hit = cache_read(url, question, model, cache_dir=cache_dir)
-        if hit is not None:
-            return hit
+        # A report is cached under the model that WROTE it, which on a busy
+        # day is a fallback (a 503 on the first model). Look under every model
+        # this call could end up using, or a video watched by the lite model
+        # is fetched again — and may time out — every time it comes back.
+        for m in (model, *_fallbacks):
+            hit = cache_read(url, question, m, cache_dir=cache_dir)
+            if hit is not None:
+                return hit
 
     body = json.dumps(build_request_body(url, question)).encode("utf-8")
     endpoint = f"{API_BASE}/{model}:generateContent"

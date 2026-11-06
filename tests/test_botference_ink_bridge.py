@@ -297,6 +297,32 @@ class TestInkBridgeInputQueue:
         ]
 
 
+    async def test_the_users_own_words_ride_through_as_watch_text(
+        self, tmp_path, monkeypatch
+    ):
+        # The browser plugin sends an envelope (page context + replayed chat
+        # history) and, beside it, the reader's own words: only those may be
+        # scanned for videos to watch. A frontend that sends no `watch` field
+        # (TUI, council web) gets the old call, with no watch_text at all.
+        monkeypatch.setattr(binkb, "emit", lambda obj: None)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        seen: list[dict] = []
+
+        async def handle_input(text, bridge, attachments=None, **kw):
+            seen.append({"text": text, **kw})
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("@all envelope with old links", [], watch="@all new words")
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        queue.submit("plain", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert seen == [
+            {"text": "@all envelope with old links", "watch_text": "@all new words"},
+            {"text": "plain"},
+        ]
+
+
 @pytest.mark.asyncio
 class TestSteeringSubmit:
     async def _running_queue(self, tmp_path, monkeypatch, emitted):
