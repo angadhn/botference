@@ -3395,6 +3395,85 @@ the same order, lit at the bot this page chat last addressed, a typed tag
 lighting that bot live, clearing it handing the row back, and a click aiming the
 next message. (The old assertion "page chat has no pill row" is what flipped.)
 
+### Amendment (2026-11-06): page chat has no Note
+
+**The complaint.** "Note makes no sense in Page chat." Page chat is where the
+reader talks TO the bots; a note to yourself there is a message nobody answers.
+And in use it was worse than pointless: on an ordinary page the row started at
+Note, so an untagged page-chat question went to nobody and the reader waited for
+a reply that was never coming.
+
+**The rule now.** Page chat — and the library, which is a page chat on the wire —
+offers `Claude · Codex · All` only. It starts at **All** when the reader has
+never picked, on every page (artifact or not), and remembers the last pick as
+before. A remembered Note (an old message stamped with no route, a pick held
+from before this change, a `none` from an old drawer) reads as All. Note stays
+in margin threads and bubbles, where a note under a passage is a real thing to
+want.
+
+- **Drawer.** `isChatTarget` (`__page__`, `__library__`); `defaultRouteOf` is
+  `all` for those and `none` for threads; `chatRoute` maps a held or sticky
+  `none` to `all`; `routesHtml` leaves Note out of the row there. The old
+  "a Note on an artifact page chat settles back on All" special case is gone —
+  there is no Note to settle from. Page chat's hint (and the library's) is
+  *plain text goes to the bot lit above — or tag one*.
+- **Companion.** `untaggedGoesToAll` is now just "page chat, no mention" — no
+  artifact condition — and stays the LAST rung of `addressOf`. `addressOf`
+  ignores a `none` pill in page chat (it falls through to the sticky address,
+  then the room). `summon` applies the room default only when the caller
+  supplied neither `addressed` nor a `routeHint`, so make-artifact's own
+  agent is not overruled. On an unconfirmed root the summon is refused with
+  the reason, which the drawer shows — an answer, not silence. The one caller
+  that is not the reader's composer, a review-mirror block comment
+  (`POST /review-comments`), keeps its old narrow rule (`artifactRoom`): it
+  summons on a confirmed artifact or when it tags a bot.
+- **Phone reader** sends no route from page chat, so the companion's default
+  (All) applies there too.
+
+**Tests.** `companion.test.mjs`: a `none` route in page chat goes to the
+remembered bot; an untagged page chat nobody addressed goes `@all` on an
+ordinary page and both bots answer. `workspace.test.mjs`: the same `none` case
+on an artifact; an ordinary page's untagged page chat goes to the room; an
+unconfirmed root refuses with a reason. Harness `?selftest=1`: page chat's row
+is `claude,codex,all`; the library's row is the same and lit at All; hints
+updated (`?workspace=1&selftest=1` too).
+
+### Amendment (2026-11-06): a `<source>` ate the article
+
+**The bug.** An NPR story was saved as a 1.2 KB snapshot: section label, h1,
+date, "Heard on Morning Edition", the byline link — and nothing after. Not the
+extension's choice of container: `articleRoot()` picked `article.story`, which
+holds all ~9 KB of the story. The SANITIZER dropped it. `source` is in `KILL`
+(dropped with its contents), and a KILL tag that is not self-closed opened a
+"dropped subtree" waiting for `</source>`. But `<source>` is a void element: a
+browser's `innerHTML` writes `<source srcset="…">` with no `/>` and no close
+tag, ever. NPR's byline photo is a `<picture><source>…<img></picture>`, so
+everything after the byline was swallowed, silently.
+
+**The fix.** `KILL_VOID` (`source`, `track`, `input`, `link`, `meta`, `base`,
+`embed`, `param`, `area`, `frame`, `keygen`): dropped as single tags, never as
+subtrees. Checked against live NPR, BBC, Guardian and Wikipedia pages
+(container choice and sanitized text both whole).
+
+**The safety net** (`lasso.mjs`). When an annotated web page's saved copy has
+under `THIN_SNAPSHOT_CHARS` (1000) characters of text — or none —
+`liveForThin` fetches the live page through `fetchWeb` (the `/lasso <url>`
+path) and `pageDigest` writes its text under "## The page itself", saying the
+saved copy was nearly empty and where the text came from, with the reader's
+margin and page chat below as before. Called from `lassoUrl` (known page),
+`webForTurn` (a pasted link to an annotated page) and `POST /attach`
+(`prepareAttach`, for a page chip picked from a search). Held ten minutes per
+page; a failed fetch leaves the digest as it was. The saved copy itself is not
+rewritten from here — the extension re-captures it with the next message sent
+from that page (every page-chat message now summons, so every one
+re-snapshots), and the fixed sanitizer keeps the whole story.
+
+**Tests.** `sanitize.test.mjs`: every void KILL tag takes only itself; a
+`<picture><source>` byline does not swallow the story. `lasso.test.mjs`: a thin
+copy is thin and a real one is not; `lassoUrl`, `webForTurn` and
+`prepareAttach` each fetch the live page once and the digest carries it beside
+the notes; a failed fetch leaves the notes; a full copy is never re-fetched.
+
 ### Amendment (2026-08-24, shipped): a single-page app moved the reader
 
 **The bug.** One reader's comment on a Medium article was filed against a

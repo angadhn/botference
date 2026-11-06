@@ -47,6 +47,14 @@ const KEEP = new Set(['p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
 
 // nothing inside them, so nothing to close
 const VOID = new Set(['br', 'hr', 'img', 'wbr', 'col']);
+// …and the VOID elements among the dropped ones. A browser serializes a void
+// element as `<source srcset="…">` — no `/>`, and never a `</source>` — so
+// treating one as the start of a subtree waited for a close tag that never
+// comes and silently dropped EVERYTHING after it. That is how an NPR story
+// (a byline photo is a <picture><source>…</picture>) was saved as its header
+// and nothing else (2026-11-06). These are dropped as single tags.
+const KILL_VOID = new Set(['source', 'track', 'input', 'link', 'meta', 'base',
+  'embed', 'param', 'area', 'frame', 'keygen']);
 
 // per-element attribute allowlist; '*' applies to everything kept
 const ATTRS = {
@@ -166,7 +174,7 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX }
       const name = tok.name;
       if (KILL.has(name)) {
         dropped++;
-        if (!tok.self && !VOID.has(name)) { killDepth = 1; killTag = name; }
+        if (!tok.self && !VOID.has(name) && !KILL_VOID.has(name)) { killDepth = 1; killTag = name; }
         continue;
       }
       if (!KEEP.has(name)) { dropped++; continue; } // unwrap: keep the words

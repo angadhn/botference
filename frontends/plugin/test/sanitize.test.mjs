@@ -44,13 +44,38 @@ test('every event handler goes, whatever its spelling', () => {
 });
 
 test('iframes, objects, embeds and svg are removed with their contents', () => {
-  for (const tag of ['iframe', 'object', 'embed', 'svg', 'math', 'canvas', 'video', 'audio',
-    'form', 'input', 'button', 'template', 'noscript', 'link', 'meta', 'base']) {
+  for (const tag of ['iframe', 'object', 'svg', 'math', 'canvas', 'video', 'audio',
+    'form', 'button', 'template', 'noscript']) {
     const out = clean(`<p>a</p><${tag}>inner</${tag}><p>b</p>`);
     assert.ok(!out.includes(`<${tag}`), `${tag} survived`);
     assert.ok(!out.includes('inner'), `${tag} contents survived`);
     assert.ok(out.includes('<p>a</p>') && out.includes('<p>b</p>'), `${tag} ate the prose`);
   }
+});
+
+// VOID elements have no contents and no close tag — a browser's innerHTML
+// writes `<source srcset="…">`, never `</source>`. Waiting for a close that
+// never comes dropped the rest of the article: an NPR story whose byline photo
+// is a <picture><source> was saved as its header and nothing else (2026-11-06).
+test('a dropped VOID element (source, input, link, …) takes only itself', () => {
+  for (const tag of ['source', 'track', 'input', 'link', 'meta', 'base', 'embed', 'param', 'area']) {
+    const out = clean(`<p>a</p><${tag} src="https://x.test/y"><p>b</p>`);
+    assert.ok(!out.includes(`<${tag}`), `${tag} survived`);
+    assert.ok(out.includes('<p>a</p>') && out.includes('<p>b</p>'), `${tag} ate the prose after it`);
+  }
+});
+
+test('a byline photo as <picture><source> does not swallow the story after it', () => {
+  const html = '<h1>Head</h1><div class="byline"><a href="https://n.test/p"><picture>'
+    + '<source srcset="https://n.test/a.webp" type="image/webp">'
+    + '<source srcset="https://n.test/a.jpg" type="image/jpeg">'
+    + '<img src="https://n.test/a.jpg" alt="photo"></picture></a></div>'
+    + '<div id="storytext"><p>The first paragraph of the story itself.</p><p>And the second.</p></div>';
+  const out = clean(html);
+  assert.ok(/The first paragraph of the story itself\./.test(out), 'the body survived');
+  assert.ok(/And the second\./.test(out));
+  assert.ok(/<img src="https:\/\/n\.test\/a\.jpg" alt="photo">/.test(out), 'the picture keeps its <img>');
+  assert.ok(!/<source/.test(out));
 });
 
 test('javascript: and data: URLs never become links', () => {

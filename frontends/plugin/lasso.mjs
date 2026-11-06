@@ -461,6 +461,56 @@ export const looksLikePath = s => /^\s*[~/]/.test(String(s == null ? '' : s));
 // not for a person reading a note: headings it can navigate, the whole text
 // rather than an extract, and the conversation in the order it happened.
 
+// ---- a saved copy too thin to be the page ---------------------------------
+//
+// A snapshot is the extension's capture, and a capture can fail quietly: an
+// NPR story was once saved as its section label, headline, date and byline and
+// nothing else (a sanitizer bug, sanitize.mjs KILL_VOID), and the reader who
+// lassoed it handed the bots their notes on an article the bots could not see.
+// So when an annotated web page's saved copy carries almost no text, the
+// companion fetches the LIVE page (the same fetchWeb path `/lasso <url>` uses)
+// and the digest carries that text beside the reader's own notes. The saved
+// copy is never overwritten from here — the extension owns it, and the next
+// message sent from the page re-captures it.
+export const THIN_SNAPSHOT_CHARS = 1000;
+export const LIVE_TTL_MS = 10 * 60 * 1000;
+const liveHeld = new Map();     // pageKey -> {url, text, at, ms} | {error, ms}
+export const forgetLive = () => liveHeld.clear();
+
+/** Is this page's saved copy missing, or too thin to be the page? */
+export function thinSnapshot(key) {
+  if (!hasSnapshot(key)) return true;
+  return htmlText(readSnapshot(key)).length < THIN_SNAPSHOT_CHARS;
+}
+
+/**
+ * Fetch the live page for an annotated page whose saved copy is thin, and
+ * hold its text for pageDigest. Never throws; answers the held row or null.
+ * Only http(s) pages — a local PDF, a Google Doc behind a login, the library
+ * are not fetchable and keep what they have.
+ */
+export async function liveForThin(page, { http = null, timeout = WEB_TIMEOUT_MS } = {}) {
+  if (!page || !isHttpUrl(page.url) || isLibrary(page.url)) return null;
+  const key = pageKey(page.url);
+  if (!thinSnapshot(key)) return null;
+  const held = liveHeld.get(key);
+  if (held && Date.now() - held.ms < LIVE_TTL_MS) return held.text ? held : null;
+  let got;
+  try { got = await fetchWeb(page.url, { http, timeout }); }
+  catch (e) { got = { error: String((e && e.message) || e) }; }
+  const row = got.error
+    ? { error: got.error, ms: Date.now() }
+    : { url: got.url, text: got.text, at: new Date().toISOString(), ms: Date.now() };
+  liveHeld.set(key, row);
+  return row.text ? row : null;
+}
+
+/** Before attaching: a page chip whose saved copy is thin gets the live text. */
+export async function prepareAttach({ kind, id } = {}, opts = {}) {
+  if (kind !== 'page') return;
+  try { await liveForThin(readPageByKey(String(id || '')), opts); } catch { /* never fatal */ }
+}
+
 function pageDigest(page) {
   const key = pageKey(page.url);
   const lines = [`# ${displayTitle(page)}`, '', `- url: ${page.url}`];
@@ -468,7 +518,15 @@ function pageDigest(page) {
   if (page.updated_at) lines.push(`- last touched: ${page.updated_at}`);
   lines.push('');
   const body = hasSnapshot(key) ? htmlText(readSnapshot(key)) : '';
-  if (body) {
+  const heldLive = body.length < THIN_SNAPSHOT_CHARS ? liveHeld.get(key) : null;
+  const live = heldLive && heldLive.text ? heldLive : null;
+  if (live) {
+    lines.push('## The page itself', '',
+      `(the saved copy of this page was nearly empty${body ? ` — only: “${clip(body, 300)}”` : ''}; `
+        + `the companion fetched the live page at ${live.url} on ${live.at}, and this is its text. `
+        + 'The reader\'s notes below are from their own record.)', '',
+      live.text.slice(0, DIGEST_TEXT_MAX), '');
+  } else if (body) {
     lines.push('## The page itself', '', body.slice(0, DIGEST_TEXT_MAX), '');
   } else {
     lines.push('## The page itself', '',
@@ -497,7 +555,8 @@ function pageDigest(page) {
   return {
     text: lines.join('\n').trimEnd() + '\n',
     summary: clip(`A page the reader annotated: “${displayTitle(page)}” (${page.url}). `
-      + `${counts.join(', ')}.${body ? ' The saved text of the page is in the file.' : ''}`,
+      + `${counts.join(', ')}.${live ? ' The saved copy was nearly empty, so the live page\'s text '
+        + '(fetched just now) is in the file.' : body ? ' The saved text of the page is in the file.' : ''}`,
     SUMMARY_MAX),
   };
 }
@@ -1040,6 +1099,9 @@ export async function lassoUrl(query, { dir = WEB_DIR, http = null, notPage = ''
   if (known) {
     const key = pageKey(known.url);
     if (notPage && key === notPage) return { query, head: headline({ kind: 'here' }), results: [] };
+    // a saved copy too thin to be the page: fetch the live one now, while the
+    // reader waits for the chip, so attaching it carries the article too
+    await liveForThin(known, { http, timeout });
     return {
       query,
       head: headline({ kind: 'known', title: displayTitle(known), host }),
@@ -1139,6 +1201,7 @@ export async function webForTurn(text, { dir = WEB_DIR, http = null, hosts = nul
     if (known) own.push(known); else others.push(u);
   }
   for (const known of own.slice(0, max)) {
+    await liveForThin(known, { http, timeout });
     const built = buildAttachment(dir, { kind: 'page', id: pageKey(known.url) });
     if (built.error) continue;
     rows.push({ id: normUrl(known.url), title: built.title, path: built.path,

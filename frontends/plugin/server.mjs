@@ -1850,14 +1850,26 @@ function guestRefusal(me) {
 // message here is routed @all, decided in the one place that knows the page is
 // an artifact at all.
 //
-// Deliberately narrow. Comment THREADS keep the Discuss rule everywhere,
-// artifact pages included: a highlight with an untagged note under it is a
-// note to yourself and summons nobody. So does page chat on every ordinary
-// page. And an UNCONFIRMED root is excluded — the reader has not yet said the
-// folder is theirs, and an untagged sentence must not be the thing that first
-// asks them to.
+// EVERY PAGE CHAT, NOT ONLY THE ARTIFACT'S (2026-11-06). Page chat is where
+// the reader talks to the bots, and its pill row no longer offers Note: it
+// starts at All and remembers the last pick. An untagged page-chat message on
+// an ordinary page used to go to nobody — a reader asked a question there and
+// waited for an answer that was never coming. So the room is now the default
+// of every page chat nobody has addressed (addressOf applies it last), and the
+// drawer's row is lit at All to say so. On an unconfirmed root the summon is
+// refused with the reason, which is still an answer rather than silence.
+//
+// Comment THREADS keep the Discuss rule everywhere, artifact pages included:
+// a highlight with an untagged note under it is a note to yourself and
+// summons nobody.
 function untaggedGoesToAll(page, target, text) {
-  if (target !== store.PAGE_CHAT || hasMention(text)) return false;
+  return target === store.PAGE_CHAT && !hasMention(text);
+}
+// The narrower, older rule — a confirmed project artifact's page chat is the
+// council's room — kept for the one caller that is not the reader's own
+// composer: a review-mirror block comment (POST /review-comments), written by
+// somebody else on the document, which summons only where it always did.
+function artifactRoom(page) {
   const art = artifactOf(page.url);
   return !!(art && art.confirmed);
 }
@@ -1889,9 +1901,12 @@ function addressOf(target, text, pill, msgs, page = null) {
   const tagged = routePrefix(text);
   if (tagged) return tagged;
   const p = String(pill || '').trim().toLowerCase().replace(/^@/, '');
-  // `none` is a real answer and stops here: it is how a reader writes a note
-  // in a conversation they have been having, on a project artifact included.
-  if (p && Object.prototype.hasOwnProperty.call(PILL_ROUTE, p)) return PILL_ROUTE[p];
+  // `none` is a real answer and stops here in a THREAD: it is how a reader
+  // writes a note in a conversation they have been having. Page chat has no
+  // Note (2026-11-06): a `none` arriving there — an old drawer, a stale
+  // pick — falls through to the memory and then the room, like no pill at all.
+  const chatNone = p === 'none' && target === store.PAGE_CHAT;
+  if (p && !chatNone && Object.prototype.hasOwnProperty.call(PILL_ROUTE, p)) return PILL_ROUTE[p];
   const sticky = stickyRoute(msgs);
   if (sticky) return sticky;
   return (page && untaggedGoesToAll(page, target, text)) ? '@all ' : '';
@@ -1899,7 +1914,7 @@ function addressOf(target, text, pill, msgs, page = null) {
 
 // an @-mention in any message — first comment or tenth reply — summons the
 // bots, and so does a thread's sticky address or a composer pill (addressOf),
-// and so does a project artifact's page chat (untaggedGoesToAll)
+// and so does an untagged page-chat message, on any page (untaggedGoesToAll)
 // `extras.forceAll` is the send-review turn saying "this one is the room's,
 // whatever the text looks like": its body quotes the reader's own margin
 // comments, and an "@claude" typed at one thread weeks ago is not the address
@@ -2009,11 +2024,15 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // after the words, the pill and the conversation's memory). Without it the
   // flag would overrule them all — and a reader who picked Note on an artifact
   // page would be answered by the room they had just stepped out of.
-  const untaggedAll = !!forceAll || (!addressed && untaggedGoesToAll(page, target, text));
   // the thread's own address, resolved by the caller and carried through
   // `extras` into the job, where chat.routeOf turns it into the envelope's
   // prefix for a message that never typed one
   const routeHint = String(extras.routeHint || '');
+  // …and a caller that supplied an address (make-artifact's own agent) has
+  // answered the question too: the room default must not overrule it, since
+  // `untaggedAll` wins over a hint in chat.routeOf.
+  const untaggedAll = !!forceAll
+    || (!addressed && !routeHint && untaggedGoesToAll(page, target, text));
   if (!hasMention(text) && !untaggedAll && !routeHint) return {};
   // The three ways a summon is refused all end the same way — say so in the
   // thread the reader is looking at, and hand the caller a reason instead of a
@@ -2930,7 +2949,12 @@ export function handler(req, res) {
   // spends a turn on a decision that has not been made.
   if (req.method === 'POST' && url === '/attach') {
     if (notOwner(req, res)) return;
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
+      // A page chip whose saved copy is too thin to be the page (a failed
+      // capture) gets the live page fetched first, so the digest written
+      // below carries the article and not only the reader's notes on it
+      // (lasso.liveForThin). Never fatal, and a no-op for every other kind.
+      await lasso.prepareAttach({ kind: String(data.kind || ''), id: data.id });
       // …and the OTHER caller, which is not a page at all. The council's own
       // `/lasso` runs in the controller (Python), and the whole point of it
       // reaching this door is that there is ONE index and one digest writer on
@@ -4170,9 +4194,13 @@ export function handler(req, res) {
         // Guests are governed by grants.json exactly as they are everywhere.
         if (fresh && data.summon && target) {
           const me = { handle: author, owner: false };
+          // page chat: the review mirror's block comment is somebody else's
+          // word on the document, and summons only where it always did — on a
+          // confirmed artifact, or when it tags a bot (artifactRoom)
           const routeHint = target === store.PAGE_CHAT
-            ? '' : addressOf(target, text, '', []);
-          const r = await summon(page, target, text, { routeHint }, me);
+            ? (hasMention(text) ? '' : (artifactRoom(page) ? '@all ' : ''))
+            : addressOf(target, text, '', []);
+          const r = await summon(page, target, text, { routeHint, addressed: true }, me);
           if (r && r.reason) refusals.push({ id: origin.id, reason: r.reason });
         }
       }

@@ -4323,8 +4323,10 @@ async function selftest() {
   {
     const row = S.querySelector('.pane[data-pane="chat"] .composer .routes');
     check('page chat carries a pill row', !!row);
-    check('\u2026the same four, in the same order',
-      [...row.querySelectorAll('.rpill')].map(b => b.dataset.route).join(',') === 'none,claude,codex,all');
+    // …WITHOUT Note (2026-11-06): page chat is talking to the bots, so a note
+    // to yourself has no place in its row. Threads keep it (checked above).
+    check('\u2026Claude, Codex and All only \u2014 no Note in page chat',
+      [...row.querySelectorAll('.rpill')].map(b => b.dataset.route).join(',') === 'claude,codex,all');
     const lit = () => [...row.querySelectorAll('.rpill.on')].map(b => b.dataset.route).join(',');
     check('\u2026lit at the bot this page chat last addressed', lit() === 'claude');
     const box = S.querySelector('.pane[data-pane="chat"] .composer textarea');
@@ -5631,8 +5633,14 @@ async function selftest() {
     /All annotated pages/.test(pane().querySelector('.list-head').textContent) &&
     pane().querySelector('.libpane').compareDocumentPosition(pane().querySelector('.pages-list'))
       === Node.DOCUMENT_POSITION_FOLLOWING);
-  check('…with the same invitation as every other composer here',
-    /@claude, @codex or @all/.test(pane().querySelector('.libchat .hint').textContent));
+  // (2026-11-06) …and the page-chat rule: no Note, so plain text goes to the
+  // bot lit in the row, which on a library nobody has addressed is All
+  check('…with the page-chat invitation: plain text goes to whoever is lit',
+    /plain text goes to the bot lit above/.test(pane().querySelector('.libchat .hint').textContent));
+  check('…a pill row of Claude, Codex and All \u2014 no Note',
+    [...pane().querySelectorAll('.libchat .composer .rpill')].map(b => b.dataset.route).join(',') === 'claude,codex,all');
+  check('…lit at All on a library nobody has addressed yet',
+    [...pane().querySelectorAll('.libchat .composer .rpill.on')].map(b => b.dataset.route).join(',') === 'all');
   check('an empty library says so rather than looking broken',
     /Ask about everything you.{0,3}ve read/.test(pane().querySelector('.libchat .empty').textContent));
 
@@ -7042,7 +7050,7 @@ async function selftest() {
     !!S.querySelector('.pane[data-pane="comments"] .empty') &&
     !S.querySelector('.pane[data-pane="chat"] .reply'));
   check('…with the composer still inviting the bots',
-    /@claude, @codex or @all to bring in the bots/.test(
+    /plain text goes to the bot lit above/.test(
       S.querySelector('.pane[data-pane="chat"] .composer .hint').textContent));
 
   // ---- a cold worker is not an offline companion -------------------------
@@ -12552,9 +12560,11 @@ async function selftestWorkspace() {
   // composer has to SAY so, or the reader types a sentence expecting a note
   // and gets two bots. Comment threads on the same page keep the ordinary
   // Discuss rule, and the ordinary line.
-  check('the page-chat hint says plain text goes to the room',
+  // (2026-11-06: every page chat now says the same — plain text goes to the
+  // bot lit in the row, which has no Note, and starts at All.)
+  check('the page-chat hint says plain text goes to whoever is lit',
     ((S.querySelector('.pane[data-pane="chat"] .composer .hint') || {}).textContent || '')
-      .startsWith('plain text goes to @all \u2014 or tag one bot'));
+      .startsWith('plain text goes to the bot lit above \u2014 or tag one'));
   d.open('comments');
   await sleep(60);
   const thints = [...S.querySelectorAll('.pane[data-pane="comments"] .composer .hint')];

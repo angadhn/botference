@@ -1320,6 +1320,8 @@ console.log('\ncompanion — the mirror stays level with the council');
 // artifact's Page chat is a COUNCIL chat, and the council's rule is that plain
 // text is addressed to everyone — so on those pages, and only there, an
 // untagged page-chat message is routed @all by the companion.
+// (2026-11-06: every page chat now — page chat has no Note, so the room is its
+// default on ordinary pages too. Comment threads keep the note rule.)
 console.log('\ncompanion — untagged page chat on an artifact goes to @all');
 
 {
@@ -1381,19 +1383,21 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
     assert.ok(turn.startsWith('@codex '), `the memory beats the artifact default — got ${JSON.stringify(turn.slice(0, 40))}`);
   });
 
-  await test('Note on an artifact page chat summons nobody, and the room is the default again', async () => {
+  // NO NOTE IN PAGE CHAT (2026-11-06): a `none` on the wire there is a stale
+  // pick from an old drawer, and reads as no pill — the memory answers.
+  await test('a `none` route on an artifact page chat is not a note: the memory answers', async () => {
     fs.writeFileSync(logFile, '');
     const r = await POST(base, '/reply',
       { url: a.url, thread_id: '__page__', text: 'jotting this down', route: 'none' });
-    assert.ok(!r.json.queued, 'Note is a real choice, artifact or not');
-    await sleep(400);
-    assert.equal(inputs(logFile).length, 0, 'and no turn was sent');
-    // …and with nobody addressed any more, the artifact rule is what is left
-    const again = await POST(base, '/reply', { url: a.url, thread_id: '__page__', text: 'so what next?' });
-    assert.equal(again.json.queued, true);
-    await waitFor(() => inputs(logFile).some(t => /so what next\?/.test(t)), 'the turn');
-    const turn = inputs(logFile).find(t => /so what next\?/.test(t));
-    assert.ok(turn.startsWith('@all '), `back to the room — got ${JSON.stringify(turn.slice(0, 40))}`);
+    assert.equal(r.json.queued, true, 'page chat has no Note to pick');
+    await waitFor(() => inputs(logFile).some(t => /jotting this down/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /jotting this down/.test(t));
+    assert.ok(turn.startsWith('@codex '), `still talking to codex — got ${JSON.stringify(turn.slice(0, 40))}`);
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(a.url))).json;
+      const last = (page.page_chat || []).slice(-1)[0];
+      return last && last.author === 'codex';
+    }, 'codex to have answered');
   });
 
   await test('an untagged COMMENT THREAD on the same page still summons nobody', async () => {
@@ -1411,22 +1415,30 @@ console.log('\ncompanion — untagged page chat on an artifact goes to @all');
     assert.equal(inputs(logFile).length, 0);
   });
 
-  await test('an untagged page chat on an ORDINARY page still summons nobody', async () => {
+  // (2026-11-06) Page chat on an ORDINARY page has no Note either: an
+  // untagged message there goes to the room, the row's default.
+  await test('an untagged page chat on an ORDINARY page goes to the room too', async () => {
     fs.writeFileSync(logFile, '');
     const u = 'https://example.test/some-article';
     await POST(base, '/page', { url: u, title: 'Some article', site: 'example.test' });
     const r = await POST(base, '/reply', { url: u, thread_id: '__page__', text: 'a thought for later' });
-    assert.ok(!r.json.queued);
-    await sleep(400);
-    assert.equal(inputs(logFile).length, 0);
+    assert.equal(r.json.queued, true, 'never to nobody');
+    await waitFor(() => inputs(logFile).some(t => /a thought for later/.test(t)), 'the turn');
+    const turn = inputs(logFile).find(t => /a thought for later/.test(t));
+    assert.ok(turn.startsWith('@all '), `the room — got ${JSON.stringify(turn.slice(0, 40))}`);
+    await waitFor(async () => {
+      const page = (await GET(base, '/page?url=' + enc(u))).json;
+      const who = new Set((page.page_chat || []).map(m => m.author));
+      return who.has('claude') && who.has('codex');
+    }, 'both bots to have answered');
   });
 
-  await test('an untagged message on an UNCONFIRMED root summons nobody either', async () => {
+  await test('an untagged message on an UNCONFIRMED root is refused WITH the reason, not dropped', async () => {
     fs.writeFileSync(logFile, '');
     await POST(base, '/page', { url: ua.url, title: 'Artifact', site: 'spaceship-engineering' });
     const r = await POST(base, '/reply', { url: ua.url, thread_id: '__page__', text: 'is this thing on?' });
-    assert.ok(!r.json.queued, 'an untagged sentence must not be what asks for the folder');
-    assert.equal(r.json.reason, undefined, 'and it is not refused — it is simply a note');
+    assert.ok(!r.json.queued, 'the folder is not vouched for yet');
+    assert.ok(r.json.reason, 'and the reader is told why nobody answered');
     await sleep(400);
     assert.equal(inputs(logFile).length, 0);
   });

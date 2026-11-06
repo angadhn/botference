@@ -401,11 +401,13 @@ async function main() {
   await test('POST /reply appends to a thread and to the page chat', async () => {
     const a = await POST(base, '/reply', { url: PAGE1, thread_id: t1.id, text: 'Second thought.' });
     assert.equal(a.json.msg.text, 'Second thought.');
-    const b = await POST(base, '/reply', { url: PAGE1, thread_id: '__page__', text: 'General note.' });
-    assert.equal(b.json.ok, true);
+    // (The page-chat half of this moved to "returning to the first page"
+    // below on 2026-11-06: an untagged page-chat message now summons the
+    // room, and a turn here would spend the cold bridge the next test is
+    // about. That test appends to the page chat through the same door.)
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     assert.equal(page.threads[0].msgs.length, 2);
-    assert.equal(page.page_chat.length, 1);
+    assert.equal(page.page_chat.length, 0);
     assert.equal(page.threads.length, 1);
   });
 
@@ -566,7 +568,7 @@ async function main() {
     assert.ok(sent[1].includes('The user asked about this page:'), 'page-chat envelope');
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     // the /resume replayed a `restored` room entry — it must not be persisted
-    assert.deepEqual(page.page_chat.map(m => m.author), ['angadh', 'angadh', 'claude']);
+    assert.deepEqual(page.page_chat.map(m => m.author), ['angadh', 'claude']);
   });
 
   // --- a rename follows the page into its chat, lazily -------------------
@@ -2456,18 +2458,37 @@ async function main() {
       assert.ok((await turnFor('one more page thing')).startsWith('@codex '));
     });
 
-    await test('…and Note in the page chat summons nobody, and unsticks it', async () => {
+    // NO NOTE IN PAGE CHAT (2026-11-06). Page chat is talking to the bots: a
+    // stale `none` on the wire (an old drawer) is read as no pill at all, and
+    // an untagged message on a page nobody has addressed goes to the room —
+    // never to nobody, which is how a reader's question once went unanswered.
+    await test('a `none` route in page chat is not a note: the memory still answers', async () => {
       fs.writeFileSync(stickyLog, '');
       const r = await POST(sticky.base, '/reply',
-        { url: SU, thread_id: '__page__', text: 'a note to myself about this page', route: 'none' });
-      assert.ok(!r.json.queued, 'Note is a real choice here too');
-      await sleep(300);
-      assert.equal(sent().length, 0, 'and no turn was sent');
-      const again = await POST(sticky.base, '/reply',
-        { url: SU, thread_id: '__page__', text: 'and another note' });
-      assert.ok(!again.json.queued, 'an ordinary page with no address left is a notebook again');
-      await sleep(300);
-      assert.equal(sent().length, 0);
+        { url: SU, thread_id: '__page__', text: 'a stale note pick', route: 'none' });
+      assert.equal(r.json.queued, true, 'page chat has no Note to pick');
+      assert.ok((await turnFor('a stale note pick')).startsWith('@codex '),
+        'it goes where the page chat was already talking');
+      await waitFor(async () => {
+        const q = (await GET(sticky.base, `/page?url=${encodeURIComponent(SU)}`)).json;
+        return (q.page_chat || []).filter(m => m.author === 'codex').length >= 2;
+      }, 'codex to have answered it');
+    });
+
+    await test('an untagged page chat nobody has addressed goes to the room, on an ordinary page', async () => {
+      fs.writeFileSync(stickyLog, '');
+      const U2 = 'https://example.test/never-addressed';
+      await POST(sticky.base, '/page', { url: U2, title: 'Never addressed', site: 'example.test' });
+      const r = await POST(sticky.base, '/reply', { url: U2, thread_id: '__page__', text: 'is anyone there?' });
+      assert.equal(r.json.queued, true, 'not a note to self');
+      assert.ok((await turnFor('is anyone there?')).startsWith('@all '), 'the default is All');
+      await waitFor(async () => {
+        const q = (await GET(sticky.base, `/page?url=${encodeURIComponent(U2)}`)).json;
+        const who = new Set((q.page_chat || []).map(m => m.author));
+        return who.has('claude') && who.has('codex');
+      }, 'both bots to have answered');
+      const q = (await GET(sticky.base, `/page?url=${encodeURIComponent(U2)}`)).json;
+      assert.equal(q.page_chat[0].route, '@all ', 'and the record remembers it');
     });
 
     await test('a nonsense route on the wire is ignored, not obeyed', async () => {

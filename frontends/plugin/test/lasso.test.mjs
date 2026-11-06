@@ -39,14 +39,14 @@ async function test(name, fn) {
 // ---- fixtures --------------------------------------------------------------
 
 /** A page with a snapshot, a thread and some page chat. */
-function page({ url, title, body = '', quote = '', comment = '', chatText = '' }) {
+function page({ url, title, body = '', quote = '', comment = '', chatText = '', filler = '' }) {
   const p = store.upsertPage({ url, title, site: 'example.org', kind: 'article' });
   if (quote) {
     p.threads = [{ id: 't1', quote, page: 0, msgs: [{ author: 'you', ts: 1, text: comment }] }];
   }
   if (chatText) p.page_chat = [{ author: 'you', ts: 2, text: chatText }];
   store.savePage(p);
-  if (body) store.saveSnapshot(url, `<article><p>${body}</p></article>`);
+  if (body) store.saveSnapshot(url, `<article><p>${body}</p>${filler ? `<p>${filler}</p>` : ''}</article>`);
   return store.readPage(url);
 }
 
@@ -87,6 +87,9 @@ const THE_PAPER = page({
   quote: 'released early',
   comment: 'this is the bit I never understood about libration',
   chatText: 'remind me what the libration limit was',
+  // a saved copy long enough to BE the page: under lasso.THIN_SNAPSHOT_CHARS
+  // the companion would fetch the live page as well (see the thin-copy tests)
+  filler: 'The remainder of the paper concerns other matters entirely. '.repeat(20),
 });
 page({
   url: 'https://example.org/kettle',
@@ -700,6 +703,78 @@ await test('a message with no links costs nothing at all', async () => {
   const w = await lasso.webForTurn('no links in this one', { dir: WEBDIR, http });
   assert.equal(http.asked.length, 0);
   assert.equal(w.block, '');
+});
+
+// ---- a saved copy too thin to be the page ----------------------------------
+// An NPR story was once saved as its header and nothing else (a sanitizer bug,
+// sanitize.mjs KILL_VOID), so the bots got the reader's notes on an article
+// they could not see. When the saved copy carries almost no text, the live
+// page is fetched and rides in the same digest, beside the notes.
+const THIN = page({
+  url: 'https://news.example/space-data-centres',
+  title: 'Data centers in space',
+  body: 'Deep Dive. Big tech wants data centers in space. April 3, 2026.',
+  quote: 'data centers in space',
+  comment: 'is the cooling argument real?',
+});
+const LIVE_BODY = 'Radiating waste heat in vacuum needs enormous panels, and that is the whole problem. '
+  .repeat(20);
+
+await test('thinSnapshot: a header-only saved copy is thin, a real one is not', () => {
+  assert.equal(lasso.thinSnapshot(store.pageKey(THIN.url)), true);
+  assert.equal(lasso.thinSnapshot(store.pageKey(THE_PAPER.url)), false);
+});
+
+await test('a lassoed link with a THIN saved copy also fetches the live page, and the digest carries both', async () => {
+  lasso.forgetLive();
+  const http = httpOf({ [THIN.url]: { body: html('Data centers in space', LIVE_BODY) } });
+  const r = await lasso.lassoUrl(THIN.url, { dir: WEBDIR, http });
+  assert.equal(r.results[0].kind, 'page', 'still the reader\'s own page chip');
+  assert.equal(http.asked.length, 1, 'the live page was fetched once');
+  const built = lasso.buildAttachment(WEBDIR, { kind: 'page', id: store.pageKey(THIN.url) });
+  const md = fs.readFileSync(built.path, 'utf8');
+  assert.match(md, /Radiating waste heat in vacuum/, 'the article text is in the digest');
+  assert.match(md, /saved copy of this page was nearly empty/, 'and it says where it came from');
+  assert.match(md, /## The margin/);
+  assert.match(md, /is the cooling argument real\?/, 'with the reader\'s notes beside it');
+  assert.match(built.summary, /live page/);
+});
+
+await test('…and a pasted link to it on a turn does the same', async () => {
+  lasso.forgetLive();
+  const http = httpOf({ [THIN.url]: { body: html('Data centers in space', LIVE_BODY) } });
+  const w = await lasso.webForTurn(`what about ${THIN.url} ?`, { dir: WEBDIR, http, hosts: ['github.com'] });
+  assert.equal(http.asked.length, 1);
+  const m = /— (\S+\.md) —/.exec(w.block);
+  assert.ok(m, 'a digest path');
+  assert.match(fs.readFileSync(m[1], 'utf8'), /Radiating waste heat in vacuum/);
+});
+
+await test('…and an attach from a search chip (prepareAttach) does the same', async () => {
+  lasso.forgetLive();
+  const http = httpOf({ [THIN.url]: { body: html('Data centers in space', LIVE_BODY) } });
+  await lasso.prepareAttach({ kind: 'page', id: store.pageKey(THIN.url) }, { http });
+  assert.equal(http.asked.length, 1);
+  const built = lasso.buildAttachment(WEBDIR, { kind: 'page', id: store.pageKey(THIN.url) });
+  assert.match(fs.readFileSync(built.path, 'utf8'), /Radiating waste heat in vacuum/);
+});
+
+await test('a live fetch that fails leaves the digest as it was — the notes still go', async () => {
+  lasso.forgetLive();
+  const http = httpOf({ [THIN.url]: { status: 403 } });
+  const r = await lasso.lassoUrl(THIN.url, { dir: WEBDIR, http });
+  assert.equal(r.results[0].kind, 'page');
+  const built = lasso.buildAttachment(WEBDIR, { kind: 'page', id: store.pageKey(THIN.url) });
+  const md = fs.readFileSync(built.path, 'utf8');
+  assert.match(md, /Big tech wants data centers in space/, 'the thin copy, as it was');
+  assert.match(md, /is the cooling argument real\?/);
+});
+
+await test('a full saved copy is never re-fetched', async () => {
+  lasso.forgetLive();
+  const http = httpOf({ [THE_PAPER.url]: { body: html('nope', 'the live web copy') } });
+  await lasso.prepareAttach({ kind: 'page', id: store.pageKey(THE_PAPER.url) }, { http });
+  assert.equal(http.asked.length, 0);
 });
 
 

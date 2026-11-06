@@ -334,8 +334,10 @@
   // has to say so, or the reader types a sentence expecting a note and gets
   // two bots. Threads on the same page keep the ordinary rule and the ordinary
   // hint — the difference is real, so it is stated where it applies.
-  const COUNCIL_HINT = 'plain text goes to @all — or tag one bot · ' + KEY_HINT;
-  const CHAT_HINT = '@claude, @codex or @all to bring in the bots · ' + KEY_HINT;
+  // Page chat has no Note any more (see THE PILL ROW below): plain text goes
+  // to whoever is lit in the row, on every page, artifact or not.
+  const COUNCIL_HINT = 'plain text goes to the bot lit above — or tag one · ' + KEY_HINT;
+  const CHAT_HINT = COUNCIL_HINT;
   // THE PILL ROW, and the rule it draws.
   //
   // A thread is a conversation with somebody: once the reader has tagged a bot
@@ -359,6 +361,19 @@
   // rules is to draw the address, not to hide it. So page chat has the row,
   // lit at All on a confirmed artifact and at Note elsewhere, and it remembers
   // who the reader last wrote to exactly as a thread does.
+  //
+  // …WITHOUT NOTE (2026-11-06). Page chat is where the reader talks TO the
+  // bots; a "note to yourself" there is a message nobody answers, and in use it
+  // was exactly that — an untagged page-chat sentence on an ordinary page went
+  // to nobody and the reader waited for a reply that was never coming. So page
+  // chat (and the library, which is a page chat too) offers Claude · Codex ·
+  // All only, starts at All when the reader has never picked, and remembers
+  // their last pick after that. A remembered Note — an old message stamped
+  // with no route, or a pick from before this change — reads as All. The
+  // companion's rule is the same one (server.mjs untaggedGoesToAll / addressOf):
+  // an untagged page-chat message goes to whoever the row shows, never nobody.
+  // Note stays in margin threads and bubbles, where a note under a passage is
+  // a real thing to want.
   const ROUTE_LABEL = { none: 'Note', all: 'All' };
   const routeLabel = h => ROUTE_LABEL[h] || (h.charAt(0).toUpperCase() + h.slice(1));
   const ROUTE_TIP = {
@@ -3410,16 +3425,23 @@ ${bubbleShellHtml()}`;
     // which is a council chat, and the council's rule is that plain text is
     // the room's (server.mjs untaggedGoesToAll). The pill has to say so or it
     // lies about the very message it sits under.
+    // (2026-11-06) …and page chat, on EVERY page, starts at All: it has no
+    // Note to start at. The library is a page chat on the wire and counts too.
+    const isChatTarget = target => target === PAGE_TARGET || target === LIBRARY_TARGET;
     function defaultRouteOf(target) {
-      return (target === PAGE_TARGET && D.project && D.project.confirmed) ? 'all' : 'none';
+      return isChatTarget(target) ? 'all' : 'none';
     }
+    // Page chat cannot be aimed at nobody: a remembered Note (a pick from
+    // before Note left the row, or an old message stamped with no route) is
+    // read as the default, All.
+    const chatRoute = (target, r) => (r === 'none' && isChatTarget(target)) ? 'all' : r;
     function stickyRouteOf(target) {
       const msgs = realMsgs(target);
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
         if (!m || m.kind === 'tools' || isBot(m.author)) continue;
-        return routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '')
-          || defaultRouteOf(target);
+        return chatRoute(target, routeWordOf(m.text) || String(m.route || '').trim().replace(/^@/, '')
+          || defaultRouteOf(target));
       }
       return defaultRouteOf(target);
     }
@@ -3430,11 +3452,11 @@ ${bubbleShellHtml()}`;
     function routeNow(target) {
       const typed = routeWordOf(D.drafts[target] || '');
       if (typed) return typed;
-      return D.routes[target] || stickyRouteOf(target);
+      return chatRoute(target, D.routes[target]) || stickyRouteOf(target);
     }
     function routesHtml(target) {
       const now = routeNow(target);
-      const pills = ['none'].concat(agentRoster(), ['all']);
+      const pills = (isChatTarget(target) ? [] : ['none']).concat(agentRoster(), ['all']);
       return `<div class="routes" role="group" aria-label="who this message is for">`
         + pills.map(h => `<button class="rpill${h === now ? ' on' : ''}" type="button"
             data-act="route" data-target="${esc(target)}" data-route="${esc(h)}"
@@ -3452,7 +3474,7 @@ ${bubbleShellHtml()}`;
       if (!row) return;
       const target = box.getAttribute('data-target');
       const typed = routeWordOf(ta.value);
-      const now = typed || D.routes[target] || stickyRouteOf(target);
+      const now = typed || chatRoute(target, D.routes[target]) || stickyRouteOf(target);
       row.querySelectorAll('.rpill').forEach(b => {
         const on = b.dataset.route === now;
         b.classList.toggle('on', on);
@@ -3465,7 +3487,7 @@ ${bubbleShellHtml()}`;
     function pickRoute(target, route) {
       if (!target || !route) return;
       harvestDrafts();
-      D.routes[target] = route;
+      D.routes[target] = chatRoute(target, route);
       render();
       const box = composerBox(target);
       if (box) box.focus();
@@ -5636,7 +5658,7 @@ ${bubbleShellHtml()}`;
             : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
           ${note}
           ${statusHtml(T)}
-          ${composerHtml(T, 'Ask about everything you’ve read…', '', '', true)}
+          ${composerHtml(T, 'Ask about everything you’ve read…', '', CHAT_HINT, true)}
         </div>`;
       // The whole shadow root, not just this pane: fillMarkdown empties the
       // slot map as it goes, so filling a subtree would strand every slot the
@@ -7452,13 +7474,8 @@ ${bubbleShellHtml()}`;
         // also SETTLES the row — a message that typed "@codex" leaves Codex lit,
         // so the next untagged reply goes where the reader can see it will.
         const route = routeNow(target);
-        // …with one honest exception. On a confirmed artifact's page chat a
-        // Note is a choice about THIS message only: the companion has no way to
-        // stamp "nobody" on the record, so the next untagged message there goes
-        // to the room again (untaggedGoesToAll). The row must show what will
-        // actually happen, not what the reader last clicked.
-        D.routes[target] = (route === 'none' && defaultRouteOf(target) === 'all')
-          ? 'all' : route;
+        // (Page chat never holds Note — routeNow already read it as All.)
+        D.routes[target] = route;
         // …and the thread the reader just wrote in becomes the one they are
         // looking at, and stays it while the answer arrives (holdOn). The
         // spotlight is the focus the drawer already has; a new thread is
