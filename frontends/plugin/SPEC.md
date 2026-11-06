@@ -5255,6 +5255,8 @@ drives a selftest, and every one of them is expected green:
 ?workspace=1&nopublish=1&selftest=1
 ?lasso=1&selftest=1
 ?checks=1&selftest=1
+?figedit=1&selftest=1
+?figedit=deployed&selftest=1
 ```
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were

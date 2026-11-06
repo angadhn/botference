@@ -2027,6 +2027,8 @@
     // the next load arms the context again rather than treating the lost turn
     // as the first one.
     pageHasSession = !!PAGE.session_id;
+    // a figure editor on this page was promised a chat; if that chat moved, say so
+    fteNoteSession();
     reanchorAll();
     if (drawer) drawer.setPage(PAGE);
     // a rename arrives as a `page` event, which lands here — so this is also
@@ -2594,6 +2596,72 @@
     return cssWanted;
   }
 
+  // ---- one message into a conversation on this page --------------------------
+  // The drawer's composer (onReply) and the local figure-text editor's bridge
+  // (figure edits, below) both post through here, so a batch of figure edits
+  // is an ordinary message from the reader in every respect: same record-
+  // then-snapshot-then-message order, same first-turn context, same optimistic
+  // append, same send watch.
+  //
+  // The message is already on screen when the drawer calls this (it appended
+  // it optimistically before this ran), so everything here is reconciliation:
+  // the companion's own copy of the message replaces the pending one.
+  //
+  // {deduped:true} is the companion saying "I already had this" — the retry
+  // of a send whose answer got lost, or a double-submit that beat the
+  // client's own guard. It is a SUCCESS, and the msg it echoes is the
+  // existing one: the `ts` check below is what keeps it from being appended
+  // a second time.
+  //
+  // Answers what the drawer always read, plus `msg` (the stored message, when
+  // the companion echoed one) and, on a failure, the HTTP `status` — which
+  // the figure bridge needs and the drawer ignores.
+  async function postReply(threadId, text, route) {
+    // the first-ever message on a page can be a page-chat question: the
+    // same record-then-snapshot-then-message order as onSave
+    const wasNew = !registered;
+    const reg = await ensureRegistered();
+    if (!reg.ok) return Object.assign(failure(reg), { status: reg.status });
+    // a reply into a thread that sits on page N is a turn about page N: if
+    // that page was never captured (this thread was made before the viewer
+    // could, or on the phone), this is the moment it can be
+    await capturePage(pageOfThread(threadId));
+    const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
+    const ctx = await mentionContext(text, route);
+    applyContext(body, ctx);
+    await snapshotBeforeSend(wasNew, text, route);
+    const r = await api('POST', '/reply', body);
+    if (!r.ok) return Object.assign(failure(r), { status: r.status });
+    commitContext(ctx);
+    const msg = r.data && r.data.msg;
+    if (msg) {
+      const list = !PAGE ? null : threadId === PAGE_TARGET
+        ? PAGE.page_chat
+        : ((PAGE.threads || []).find(t => t.id === threadId) || {}).msgs;
+      if (list && !list.some(m => m.ts === msg.ts)) list.push(msg);
+      // writing into a thread REOPENS it (the companion's appendMsg does
+      // this for every write, wherever it came from) — so the highlight
+      // goes back to yellow now, with the message, rather than a round
+      // trip later when the `page` broadcast lands
+      const t = ((PAGE && PAGE.threads) || []).find(x => x.id === threadId);
+      if (t && t.resolved) { delete t.resolved; Anchor.markResolved(threadId, false); }
+      // …and it is no longer "ready for review" either: the reader has
+      // just asked something new here, so whatever a bot claimed about
+      // this thread a moment ago is stale (store.appendMsg says the same
+      // thing server-side; this is the optimistic half of it)
+      if (t && t.addressed) { delete t.addressed; Anchor.markAddressed(threadId, false); }
+      if (drawer && PAGE) drawer.setPage(PAGE);
+    } else if (r.data && r.data.deduped) {
+      // deduped with nothing echoed: the record is the only truth left
+      await loadPage();
+    }
+    watchSend();
+    return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
+             wait: r.data && r.data.wait,
+             reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped),
+             msg: msg || null };
+  }
+
   // ---- drawer wiring ---------------------------------------------------------
   function makeDrawer() {
     ensureMathFonts();
@@ -2728,50 +2796,7 @@
       // client's own guard. It is a SUCCESS, and the msg it echoes is the
       // existing one: the `ts` check below is what keeps it from being appended
       // a second time.
-      onReply: async (threadId, text, route) => {
-        // the first-ever message on a page can be a page-chat question: the
-        // same record-then-snapshot-then-message order as onSave
-        const wasNew = !registered;
-        const reg = await ensureRegistered();
-        if (!reg.ok) return failure(reg);
-        // a reply into a thread that sits on page N is a turn about page N: if
-        // that page was never captured (this thread was made before the viewer
-        // could, or on the phone), this is the moment it can be
-        await capturePage(pageOfThread(threadId));
-        const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
-        const ctx = await mentionContext(text, route);
-        applyContext(body, ctx);
-        await snapshotBeforeSend(wasNew, text, route);
-        const r = await api('POST', '/reply', body);
-        if (!r.ok) return failure(r);
-        commitContext(ctx);
-        const msg = r.data && r.data.msg;
-        if (msg) {
-          const list = threadId === PAGE_TARGET
-            ? PAGE.page_chat
-            : ((PAGE.threads || []).find(t => t.id === threadId) || {}).msgs;
-          if (list && !list.some(m => m.ts === msg.ts)) list.push(msg);
-          // writing into a thread REOPENS it (the companion's appendMsg does
-          // this for every write, wherever it came from) — so the highlight
-          // goes back to yellow now, with the message, rather than a round
-          // trip later when the `page` broadcast lands
-          const t = (PAGE.threads || []).find(x => x.id === threadId);
-          if (t && t.resolved) { delete t.resolved; Anchor.markResolved(threadId, false); }
-          // …and it is no longer "ready for review" either: the reader has
-          // just asked something new here, so whatever a bot claimed about
-          // this thread a moment ago is stale (store.appendMsg says the same
-          // thing server-side; this is the optimistic half of it)
-          if (t && t.addressed) { delete t.addressed; Anchor.markAddressed(threadId, false); }
-          drawer.setPage(PAGE);
-        } else if (r.data && r.data.deduped) {
-          // deduped with nothing echoed: the record is the only truth left
-          await loadPage();
-        }
-        watchSend();
-        return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
-                 wait: r.data && r.data.wait,
-                 reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped) };
-      },
+      onReply: (threadId, text, route) => postReply(threadId, text, route),
 
       // A checkbox in a bot's markdown checklist was clicked. The companion
       // owns the text — it rewrites the "- [ ]" in the stored message and
@@ -3180,6 +3205,9 @@
           { root: (drawer && drawer.blogRoot && drawer.blogRoot()) || '', confirm: !!confirm });
         if (!r.ok) return failure(r);
         loadBlog();
+        // a figure-text editor on this page was told "confirm first": it can
+        // send now, so it is told to ask again
+        if (confirm) fteAnnounce();
         return { ok: true, state: (r.data && r.data.state) || '' };
       },
       onProjectSessions: async () => {
@@ -4023,6 +4051,320 @@
     }
   }
 
+  // ---- figure edits from the reader's own local preview ----------------------
+  // The reader's Jekyll site, served by `jekyll serve` on localhost, can carry
+  // a figure-text editor (in the blog repo: assets/js/figure-text-editor.js).
+  // The reader retypes a label in a figure, the page only PREVIEWS the change,
+  // and "Send changes" hands the batch to this script over window.postMessage
+  // (channel "botference.figure-edits", version 1). It lands in this page's
+  // Page chat exactly as if the reader had typed it there — postReply, the
+  // drawer's own path — and the bots apply it to the source.
+  //
+  // CONDITIONAL, and deliberately narrow. The bridge answers only when ALL of:
+  //   · the message came from this very window (not a figure iframe, not
+  //     another tab) and from this page's own origin;
+  //   · that origin is loopback (localhost / 127.0.0.1 / [::1]) — a deployed
+  //     site never hears a word back, not even "incapable";
+  //   · the companion says the page is a page of a JEKYLL site the reader
+  //     registered AND confirmed (the same /blog-page record the drawer's
+  //     "is this your site?" card reads), served over http, not opened as a
+  //     file, and not a council artifact or a site adapter's page.
+  // On a loopback page that fails the last test the editor gets a plain
+  // "incapable" hello-ack with the reason, and nothing else ever happens.
+  //
+  // Only a click may post. The editor sends `send` synchronously inside the
+  // click handler of its Send button, so the window still holds transient user
+  // activation when this listener runs — and navigator.userActivation, read
+  // from a content script's isolated world, does reflect the page's click
+  // (verified in Chromium: a click reads true, a timer-posted message false).
+  // A batch is authorised by that click once; retransmits and retries of the
+  // same batch_id are accepted without a fresh one but never post twice.
+  const FTE_CHANNEL = 'botference.figure-edits';
+  const FTE_CAP = 'figure-edits.send';
+  const FTE_SCHEMA = 'botference.figure-edits/1';
+  const FTE_BATCH_ID = /^fte-\d{8}T\d{4}-[0-9a-f]{8}$/;
+  const FTE_MAX_EDITS = 100;
+  const FTE_MAX_TEXT = 60000;
+  const FTE_MAX_FIELD = 2000;
+  const FTE_GAP_MS = 2000;          // at most one /reply per page per 2s
+  const LOOPBACK_ORIGIN = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i;
+  // batch_id -> {state:'inflight'|'acked'|'failed', authorised, request_ids,
+  // ack, url, text, at, mine}. Memory first; the worker's session storage
+  // (background.js 'fte-ledger') is what survives this script being reloaded.
+  const fteBatches = new Map();
+  let fteLastReplyAt = 0;
+  let fteAdvertised = null;         // {session_id} last promised in a hello-ack
+  const fteRealOrigin = () => { try { return location.origin; } catch { return ''; } };
+  // both the document's real origin and the address this script believes it
+  // is on (the harness pins the latter with __BFP_HREF; a browser has one)
+  const fteOriginOk = () => {
+    if (!LOOPBACK_ORIGIN.test(fteRealOrigin())) return false;
+    try { return LOOPBACK_ORIGIN.test(new URL(liveHref()).origin); } catch { return false; }
+  };
+  function ftePost(msg) {
+    try {
+      window.postMessage(Object.assign({ channel: FTE_CHANNEL, v: 1, from: 'extension' }, msg), fteRealOrigin());
+    } catch { /* a page that went away mid-send has nobody to tell */ }
+  }
+  // localhost and 127.0.0.1 are one server to the reader and two origins to a
+  // browser (blog.mjs twinOrigin): either may serve the registered site
+  const fteTwin = o => (/^http:\/\/localhost(:\d+)?$/i.test(o) ? o.replace(/localhost/i, '127.0.0.1')
+    : /^http:\/\/127\.0\.0\.1(:\d+)?$/.test(o) ? o.replace('127.0.0.1', 'localhost') : '');
+
+  // Is this page a figure-edit destination, and if so which chat? Asked
+  // afresh for every hello and every send: the reader may have confirmed the
+  // site, switched chats or stopped the companion in between.
+  async function fteBinding() {
+    if (!extensionAlive()) return { ok: false, message: RELOAD_NOTE };
+    if (FILE_DOC || PROJECT || SITE) {
+      return { ok: false, message: 'This page is not a locally served page of your site.' };
+    }
+    let live = '';
+    try { live = new URL(liveHref()).origin; } catch { live = ''; }
+    if (!LOOPBACK_ORIGIN.test(live)) {
+      return { ok: false, message: 'Figure edits are only taken from a locally served preview.' };
+    }
+    // the harness names its own record (the same isolated-world escape as
+    // __BFP_BLOG everywhere else); a browser asks the companion
+    let blog = null;
+    if (window.__BFP_BLOG && typeof window.__BFP_BLOG === 'object') {
+      blog = window.__BFP_BLOG;
+    } else {
+      const r = await api('GET', '/blog-page?url=' + encodeURIComponent(URL_NOW));
+      if (!r || !r.ok) {
+        if (r && r.status === 403) return { ok: false, message: 'This Discuss companion belongs to someone else.' };
+        return { ok: false, message: 'The Discuss companion is not running.' };
+      }
+      blog = (r.data && r.data.blog) || null;
+    }
+    if (!blog) return { ok: false, message: 'This page is not part of a site registered with Discuss.' };
+    if (blog.kind !== 'jekyll') return { ok: false, message: 'Figure edits are only taken on a Jekyll site.' };
+    if (blog.declined) return { ok: false, message: 'You told Discuss this repository is not your site.' };
+    if (!blog.confirmed) {
+      return { ok: false, message: 'Open the Discuss drawer and confirm this is your site first.' };
+    }
+    if (blog.via === 'file') return { ok: false, message: 'Open this page through the local server, not as a file.' };
+    const so = String(blog.serve_origin || '');
+    if (!so || (so !== live && fteTwin(so) !== live)) {
+      return { ok: false, message: 'This page is not served from your registered site.' };
+    }
+    // the chat itself: this page's Page chat, and the council session it is
+    // bound to right now (none until the first turn makes one)
+    let rec = (active && PAGE && PAGE.url === URL_NOW) ? PAGE : null;
+    if (!rec) {
+      const pr = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
+      if (!pr || !pr.ok) return { ok: false, message: 'The Discuss companion is not running.' };
+      const got = pr.data && pr.data.page !== undefined ? pr.data.page : pr.data;
+      rec = got && got.url ? got : null;
+    }
+    const title = (rec && displayTitle(rec)) || headline() || URL_NOW;
+    const sid = (rec && rec.session_id) || '';
+    return { ok: true, destination: {
+      url: URL_NOW, thread_id: PAGE_TARGET, label: 'Page chat · ' + title,
+      ...(sid ? { session_id: String(sid) } : {}),
+    } };
+  }
+
+  // The worker's copy of the ledger (survives a reload of this script).
+  async function fteLedger(op, batchId, entry) {
+    const r = await bg({ t: 'fte-ledger', op, batch_id: batchId, ...(entry ? { entry } : {}) });
+    return (r && r.ok && r.entry) || null;
+  }
+  function fteSave(id, e) {
+    fteLedger('put', id, { state: e.state, authorised: !!e.authorised, ack: e.ack || null,
+                           url: e.url, text_len: (e.text || '').length, at: e.at });
+  }
+  const fteErr = (rid, batchId, code, message, retryable) =>
+    ftePost({ type: 'error', request_id: rid, batch_id: batchId, code, message, retryable: !!retryable });
+
+  function fteBadBatch(d) {
+    const b = d.batch;
+    if (typeof d.batch_id !== 'string' || !FTE_BATCH_ID.test(d.batch_id)) return ['bad_request', 'The batch id is malformed.'];
+    if (typeof d.text !== 'string' || !d.text.trim()) return ['bad_request', 'The batch has no message text.'];
+    if (!b || typeof b !== 'object' || b.schema !== FTE_SCHEMA || b.batch_id !== d.batch_id || !Array.isArray(b.edits)) {
+      return ['bad_request', 'The batch does not match ' + FTE_SCHEMA + '.'];
+    }
+    if (!b.edits.length) return ['bad_request', 'The batch has no edits.'];
+    if (!d.expect_destination || typeof d.expect_destination !== 'object') {
+      return ['bad_request', 'The batch names no destination.'];
+    }
+    if (b.edits.length > FTE_MAX_EDITS) return ['too_large', 'Send at most ' + FTE_MAX_EDITS + ' edits at once.'];
+    if (d.text.length > FTE_MAX_TEXT) return ['too_large', 'This batch is too large to send in one message.'];
+    for (const e of b.edits) {
+      if (!e || typeof e !== 'object') return ['bad_request', 'An edit is malformed.'];
+      if (typeof e.original !== 'string' || typeof e.replacement !== 'string') return ['bad_request', 'An edit is missing its text.'];
+      if (e.original.length > FTE_MAX_FIELD || e.replacement.length > FTE_MAX_FIELD) {
+        return ['too_large', 'One edit is longer than ' + FTE_MAX_FIELD + ' characters.'];
+      }
+    }
+    return null;
+  }
+
+  // The chat moved under the editor if the page, the thread or the bound
+  // session is not the one it was promised. One allowance: a chat that had no
+  // session yet ("new chat") and now has one has simply started — most often
+  // by this bridge's own previous send. A switch the READER makes happens in
+  // the drawer and lands in loadPage, which re-announces (fteNoteSession).
+  function fteMoved(expect, now) {
+    if (String(expect.url || '') !== now.url || String(expect.thread_id || '') !== now.thread_id) return true;
+    const was = String(expect.session_id || '');
+    return !!was && was !== String(now.session_id || '');
+  }
+  // called from loadPage: a different chat is now bound to this page, so an
+  // editor that was told about the old one is told to ask again
+  function fteNoteSession() {
+    if (!fteAdvertised || !PAGE) return;
+    const sid = String(PAGE.session_id || '');
+    if (sid === fteAdvertised.session_id) return;
+    fteAdvertised = null;
+    ftePost({ type: 'ready', request_id: 'ready-' + Date.now().toString(36) });
+  }
+
+  // The stored message a batch already became, if it became one: a send whose
+  // answer was lost (the tab reloaded mid-send, the worker restarted) must ack
+  // the message that exists rather than post the same text a second time.
+  async function fteFindPosted(text) {
+    const pr = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
+    const rec = pr && pr.ok ? (pr.data && pr.data.page !== undefined ? pr.data.page : pr.data) : null;
+    const chat = (rec && rec.page_chat) || [];
+    for (let i = chat.length - 1; i >= 0; i--) {
+      if (chat[i] && chat[i].text === text) return chat[i];
+    }
+    return null;
+  }
+
+  async function fteSend(d, activated) {
+    const rid = d.request_id;
+    const bad = fteBadBatch(d);
+    if (bad) return fteErr(rid, typeof d.batch_id === 'string' ? d.batch_id.slice(0, 64) : '', bad[0], bad[1], false);
+    const id = d.batch_id;
+    let e = fteBatches.get(id) || null;
+    if (!e) {
+      const stored = await fteLedger('get', id);
+      if (stored && stored.url === URL_NOW) {
+        e = { ...stored, request_ids: [], text: '', mine: false };
+        fteBatches.set(id, e);
+      }
+    }
+    // delivered already: the same ack again, whoever asks
+    if (e && e.state === 'acked' && e.ack) {
+      return ftePost({ ...e.ack, type: 'ack', request_id: rid, batch_id: id, deduped: true });
+    }
+    // in flight in THIS script: one more listener for the same answer
+    if (e && e.state === 'inflight' && e.mine) {
+      if (!e.request_ids.includes(rid)) e.request_ids.push(rid);
+      return ftePost({ type: 'received', request_id: rid, batch_id: id });
+    }
+    if (!(e && e.authorised) && !activated) {
+      return fteErr(rid, id, 'not_authorized', 'Click Send changes again.', true);
+    }
+    const bind = await fteBinding();
+    if (!bind.ok) return fteErr(rid, id, 'no_destination', bind.message, true);
+    if (fteMoved(d.expect_destination, bind.destination)) {
+      return fteErr(rid, id, 'destination_changed',
+        'The Discuss chat for this page changed — check where it now sends, then send again.', true);
+    }
+    for (const [other, o] of fteBatches) {
+      if (other !== id && o.state === 'inflight' && o.mine) {
+        return fteErr(rid, id, 'companion_error', 'busy — another batch is still being sent.', true);
+      }
+    }
+    if (Date.now() - fteLastReplyAt < FTE_GAP_MS) {
+      return fteErr(rid, id, 'companion_error', 'busy — try again in a moment.', true);
+    }
+    const retry = !!e;
+    e = { state: 'inflight', authorised: true, request_ids: [rid], ack: null, url: URL_NOW,
+          text: d.text, at: Date.now(), mine: true };
+    fteBatches.set(id, e);
+    fteSave(id, e);
+    ftePost({ type: 'received', request_id: rid, batch_id: id });
+    fteLastReplyAt = Date.now();
+
+    let res = null;
+    let msg = retry ? await fteFindPosted(d.text) : null;
+    if (msg) {
+      res = { ok: true, deduped: true, queued: false, reason: '' };
+    } else {
+      // the drawer is where the message is going to be read and answered, so
+      // it has to exist: woken exactly as an annotated page wakes (shut)
+      if (!active) await activate(false);
+      res = await postReply(PAGE_TARGET, d.text);
+      msg = res && res.ok ? (res.msg || null) : null;
+      // a {deduped:true} with nothing echoed: postReply reloaded the record
+      if (res && res.ok && !msg) {
+        const chat = (PAGE && PAGE.page_chat) || [];
+        for (let i = chat.length - 1; i >= 0 && !msg; i--) if (chat[i] && chat[i].text === d.text) msg = chat[i];
+      }
+    }
+    const rids = e.request_ids.slice();
+    if (res && res.ok && msg && msg.ts != null) {
+      const after = await fteBinding();
+      const dest = after.ok ? after.destination : bind.destination;
+      const ack = {
+        accepted: { message_ts: msg.ts, author: String(msg.author || AUTHOR), thread_id: PAGE_TARGET, url: URL_NOW },
+        destination: dest,
+        deduped: !!res.deduped, queued: !!res.queued, reason: String(res.reason || ''),
+      };
+      e.state = 'acked'; e.ack = ack;
+      fteSave(id, e);
+      if (after.ok) fteAdvertised = { session_id: String(dest.session_id || '') };
+      for (const r of rids) ftePost({ ...ack, type: 'ack', request_id: r, batch_id: id });
+      return;
+    }
+    e.state = 'failed';
+    fteSave(id, e);
+    const notOwner = res && res.status === 403;
+    const why = (res && res.error) || (res && res.ok ? 'The companion saved nothing it could point to.' : 'the companion did not answer');
+    for (const r of rids) {
+      if (notOwner) fteErr(r, id, 'not_owner', why, false);
+      else fteErr(r, id, 'companion_error', why, true);
+    }
+  }
+
+  async function fteHello(d) {
+    const bind = await fteBinding();
+    if (!bind.ok) {
+      return ftePost({ type: 'hello-ack', request_id: d.request_id, capabilities: [], message: bind.message });
+    }
+    let version = '';
+    try { version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || ''; } catch { version = ''; }
+    fteAdvertised = { session_id: String(bind.destination.session_id || '') };
+    ftePost({ type: 'hello-ack', request_id: d.request_id, capabilities: [FTE_CAP],
+              extension: { name: 'discuss', version: String(version || '') },
+              destination: bind.destination });
+  }
+
+  function onFigureMessage(ev) {
+    // Cheap silence first: the overwhelming majority of messages on any page
+    // are somebody else's, and a figure iframe's own chatter carries no channel.
+    const d = ev && ev.data;
+    if (!d || typeof d !== 'object' || d.channel !== FTE_CHANNEL) return;
+    if (ev.source !== window) return;
+    // a deployed site never hears from this bridge at all
+    if (!fteOriginOk() || ev.origin !== fteRealOrigin()) return;
+    if (d.v !== 1 || d.from !== 'page' || typeof d.request_id !== 'string'
+        || !d.request_id || d.request_id.length > 64) return;
+    // read NOW, synchronously, while the event that carries the click is
+    // still being dispatched
+    let activated = false;
+    try { activated = !!(navigator.userActivation && navigator.userActivation.isActive); } catch { activated = false; }
+    if (d.type === 'hello') { fteHello(d); return; }
+    if (d.type === 'send') {
+      fteSend(d, activated).catch(err => fteErr(d.request_id, String(d.batch_id || '').slice(0, 64),
+        'companion_error', String((err && err.message) || err || 'failed'), true));
+    }
+  }
+  window.addEventListener('message', onFigureMessage);
+  // A page that carries the editor (its <script data-fte-local>) is told the
+  // extension is here, so it need not wait out its hello back-off. Only on
+  // loopback, only on such a page, and only once the companion has said this
+  // page is a confirmed site's: everywhere else this script stays silent.
+  function fteAnnounce() {
+    if (!fteOriginOk() || FILE_DOC || PROJECT || SITE) return;
+    if (!document.querySelector('script[data-fte-local]')) return;
+    fteBinding().then(b => { if (b.ok) ftePost({ type: 'ready', request_id: 'ready-1' }); });
+  }
+
   function boot() {
     watchSpaNavigation();
     consumeAutoOpen();
@@ -4030,6 +4372,7 @@
     loadPageComments();
     loadTrackChanges();
     startLiveness();
+    fteAnnounce();
     bg({ t: 'hello', url: IDENT_HREF }).then(r => {
       if (!r || !r.ok) return;
       noteBase(r);

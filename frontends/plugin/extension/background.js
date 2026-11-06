@@ -832,6 +832,48 @@ chrome.runtime.onConnect.addListener(port => {
   });
 });
 
+// ---- the figure-edit ledger ----------------------------------------------
+// One small map in session storage (gone when the browser goes): batch_id ->
+// {state, authorised, ack, url, at}, kept 24 hours. Only ids of the editor's
+// own shape are accepted, and only a handful of plain fields are kept.
+const FTE_KEY = 'bfp:fte-ledger';
+const FTE_ID = /^fte-\d{8}T\d{4}-[0-9a-f]{8}$/;
+const FTE_TTL_MS = 24 * 60 * 60 * 1000;
+const FTE_MAX = 500;
+let fteChain = Promise.resolve();
+function fteLedger(msg) {
+  const id = String((msg && msg.batch_id) || '');
+  if (!FTE_ID.test(id)) return Promise.resolve({ ok: false, error: 'bad batch id' });
+  // one read-modify-write at a time, so two tabs cannot lose each other's put
+  const run = fteChain.then(async () => {
+    const area = sessionArea();
+    if (!area) return { ok: true, entry: null };
+    let map = {};
+    try { map = ((await area.get(FTE_KEY)) || {})[FTE_KEY] || {}; } catch { map = {}; }
+    const now = Date.now();
+    for (const k of Object.keys(map)) if (!map[k] || now - (map[k].at || 0) > FTE_TTL_MS) delete map[k];
+    if (msg.op === 'get') return { ok: true, entry: map[id] || null };
+    if (msg.op !== 'put' || !msg.entry || typeof msg.entry !== 'object') return { ok: false, error: 'bad op' };
+    const e = msg.entry;
+    map[id] = {
+      state: ['inflight', 'acked', 'failed'].includes(e.state) ? e.state : 'failed',
+      authorised: !!e.authorised,
+      ack: e.ack && typeof e.ack === 'object' ? e.ack : null,
+      url: String(e.url || '').slice(0, 2000),
+      at: now,
+    };
+    const keys = Object.keys(map);
+    if (keys.length > FTE_MAX) {
+      keys.sort((a, b) => (map[a].at || 0) - (map[b].at || 0));
+      for (const k of keys.slice(0, keys.length - FTE_MAX)) delete map[k];
+    }
+    try { await area.set({ [FTE_KEY]: map }); } catch { /* memory in the tab still holds */ }
+    return { ok: true, entry: map[id] };
+  });
+  fteChain = run.catch(() => {});
+  return run;
+}
+
 // ---- message router ------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender && sender.tab ? sender.tab.id : null;
@@ -891,6 +933,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true, tabId: tab && tab.id };
       }
       case 'open-options': return openOptions(msg.agent);
+      // The figure-edit bridge's ledger (content.js, "figure edits from the
+      // reader's own local preview"): batch_id -> what became of it, so a
+      // batch sent, then the tab reloaded, then sent again is answered with
+      // the ack it already earned instead of being posted twice. Session
+      // storage lives here and not in the content script, because a content
+      // script cannot read chrome.storage.session without the worker widening
+      // its access for every content script on every site.
+      case 'fte-ledger': return fteLedger(msg);
       default:
         return { ok: false, error: 'unknown message ' + JSON.stringify(msg && msg.t) };
     }

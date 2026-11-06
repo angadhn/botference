@@ -263,6 +263,15 @@
                      `&selftest=1` runs the blog-page assertions — including
                      that there is no publish control anywhere on the drawer,
                      which is the design and not an omission.
+    ?figedit=1       FIGURE EDITS FROM THE LOCAL PREVIEW: the blog repo's real
+                     figure-text editor (test/fixtures/figure-text-editor.js, a
+                     byte copy) on the ?blog=1 page, connected to content.js
+                     over window.postMessage — the panel open, one label
+                     retyped. `?figedit=sent` goes on to Send (a stand-in
+                     click); `?figedit=unconfirmed` is the site not yet
+                     confirmed (no capability, and the reason). `&selftest=1`
+                     runs the bridge assertions; `?figedit=deployed&selftest=1`
+                     checks that a non-loopback address hears nothing at all.
     ?suggest=1       SUGGEST MODE, which only exists on a blog source page and
                      so turns one on for itself. A bot has answered a comment
                      with two proposed changes to the markdown: each is drawn
@@ -601,7 +610,11 @@ const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
 // answered states; `sweep` is a whole-page spell-check in page chat, which is
 // the case the collateral summary-collapse must never be allowed to eat.
 const SUGGEST = Q.get('suggest') || '';
-const BLOG = Q.get('blog') || (SUGGEST ? '1' : '');
+// ?figedit=… — the local figure-text editor's bridge (content.js, "figure edits
+// from the reader's own local preview"). It only exists on a blog page, so the
+// pose turns one on for itself (see the pose's own block further down).
+const FIGEDIT = Q.get('figedit') || '';
+const BLOG = Q.get('blog') || (SUGGEST ? '1' : FIGEDIT === 'unconfirmed' ? 'unconfirmed' : FIGEDIT ? '1' : '');
 const BLOG_ROOT = '/Users/reader/sites/angadhn.github.io';
 // `?blog=file` — a page of the same site that IS ITS OWN SOURCE: a
 // scrollytelling HTML file under assets/, opened straight off the disk. The
@@ -657,6 +670,68 @@ if (BLOG_PAGE) {
   window.__BFP_NO_RELOAD = true;
 }
 const blogRootAnswers = [];
+
+// ── ?figedit=… — figures retyped on the local preview, sent to Page chat ──
+// The REAL editor (test/fixtures/figure-text-editor.js is a byte copy of the
+// blog repo's assets/js/figure-text-editor.js) on the ?blog=1 page, talking to
+// the real content.js over window.postMessage, exactly as on
+// `jekyll serve`. Two things are stood in for:
+//   · navigator.userActivation — a selftest cannot click with a real hand,
+//     so the pose decides whether "the click" happened (window.__fteActivation).
+//     In a browser the content script reads the real one; that it sees the
+//     page's click from its isolated world was checked in Chromium by hand.
+//   · the worker's ledger (background.js 'fte-ledger'), below in the fake
+//     chrome.runtime, which a selftest can pre-seed.
+//   `?figedit=1`           connected; `&selftest=1` runs the bridge assertions
+//   `?figedit=unconfirmed` the site is registered but not yet confirmed: the
+//                          editor is told why it cannot send (screenshot state)
+//   `?figedit=deployed`    the same page claiming a deployed address: the
+//                          extension says NOTHING at all (`&selftest=1`)
+const fteLedgerStore = {};          // batch_id -> entry, as background.js keeps it
+const fteLedgerCalls = [];
+const fteSeen = [];                 // every figure-edit message on this window, both ways
+if (FIGEDIT) {
+  // like the real thing, a "click" is active for a short while after it (the
+  // browser's transient activation lasts a few seconds), long enough for the
+  // message it caused to be dispatched; window.__fteActivation = true starts one
+  let fteActiveUntil = 0;
+  Object.defineProperty(window, '__fteActivation', { configurable: true,
+    get: () => Date.now() < fteActiveUntil,
+    set: v => { fteActiveUntil = v ? Date.now() + 1000 : 0; } });
+  try {
+    Object.defineProperty(navigator, 'userActivation', { configurable: true,
+      get: () => ({ isActive: !!window.__fteActivation, hasBeenActive: true }) });
+  } catch { /* no override: the selftest will say so */ }
+  // the address `jekyll serve` gives this post (BLOG_PAGE.url_path), or, for
+  // `deployed`, the address the live site gives it
+  window.__BFP_HREF = FIGEDIT === 'deployed' ? 'https://angadh.com/large-space-stations/space-balloons/'
+    : 'http://localhost:4000/large-space-stations/space-balloons/';
+  window.addEventListener('message', ev => {
+    const d = ev.data;
+    if (d && typeof d === 'object' && d.channel === 'botference.figure-edits') fteSeen.push(JSON.parse(JSON.stringify(d)));
+  });
+  // the editor keeps drafts per page in localStorage; a selftest starts clean
+  if (Q.get('selftest')) {
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith('figure-text-editor:')) localStorage.removeItem(k);
+    } catch { /* nothing to clear */ }
+  }
+  // one inline figure of the kind the editor attaches to (data-figure-editable),
+  // an SVG with labels — the Epoch walkthrough's shape, not an iframe
+  const by = document.querySelector('article .byline');
+  if (by) by.insertAdjacentHTML('afterend',
+    '<figure id="fte-fig" data-figure-editable="harness-stack" data-figure-title="Harness stack"' +
+    ' data-figure-source="assets/imgs/harness/_build-stack.py" style="margin:0 0 1.6rem">' +
+    '<svg viewBox="0 0 420 120" width="100%" role="img" aria-label="three boxes" style="font:14px ui-sans-serif,system-ui,sans-serif">' +
+    '<g id="t-tools"><rect x="10" y="30" width="120" height="50" rx="6" fill="#e8dfd0"/><text x="70" y="60" text-anchor="middle">Fab tools</text></g>' +
+    '<g id="t-power"><rect x="150" y="30" width="120" height="50" rx="6" fill="#d9e4ef"/><text x="210" y="60" text-anchor="middle">Power</text></g>' +
+    '<g id="t-orbit"><rect x="290" y="30" width="120" height="50" rx="6" fill="#e3ecd9"/><text x="350" y="60" text-anchor="middle">Orbit</text></g>' +
+    '</svg><figcaption style="font-size:13px;color:var(--pmuted)">A stand-in figure for the editor.</figcaption></figure>');
+  window.FigureTextEditorPage = { source: '_posts/2026-08-20-space-balloons.md', sourceSha256: null,
+    title: 'Space balloons', builtAt: '2026-11-06T16:25:48+00:00' };
+  // exactly as _includes/figure-text-editor.html emits it: deferred, marked local
+  document.write('<script src="fixtures/figure-text-editor.js" data-fte-local defer><\/script>');
+}
 
 // ── filing an ORDINARY page under a council project ─────────────────────
 // Not a project artifact: a PDF of somebody's manuscript, which lives nowhere
@@ -3967,6 +4042,14 @@ window.chrome = {
             is_owner: !ownerOnly,
             base: 'http://127.0.0.1:4189', remote: false, auth: false };
           case 'badge': badges.push(msg.count); return { ok: true };
+          // background.js fteLedger: the figure-edit ledger, in memory here
+          case 'fte-ledger': {
+            fteLedgerCalls.push({ op: msg.op, batch_id: msg.batch_id, state: msg.entry && msg.entry.state });
+            if (!/^fte-\d{8}T\d{4}-[0-9a-f]{8}$/.test(String(msg.batch_id || ''))) return { ok: false, error: 'bad batch id' };
+            if (msg.op === 'get') return { ok: true, entry: fteLedgerStore[msg.batch_id] || null };
+            fteLedgerStore[msg.batch_id] = Object.assign({}, msg.entry, { at: Date.now() });
+            return { ok: true, entry: fteLedgerStore[msg.batch_id] };
+          }
           // stands in for background.js's openPage(): there are no tabs here,
           // so record the ask and arm the same one-shot flag the real worker
           // writes — the flag is the contract the next page load reads
@@ -9750,6 +9833,288 @@ async function selftestStackPick() {
 //   unauthenticated and, on a page with a strict CSP, not even attempted); a
 //   link to anything else becomes a link AT THE COMPANION, because the same
 //   href left relative pointed at whatever website the reader was standing on.
+// ?figedit=1&selftest=1 — FIGURE EDITS FROM THE LOCAL PREVIEW.
+//
+//   The blog repo's real figure-text editor, on a confirmed blog page, sending
+//   its batch through the real content.js into Page chat. Pinned: the bridge
+//   answers only this window (never a figure iframe), only the protocol it
+//   speaks, only a click; a batch posts ONCE however often it is resent or
+//   retried (memory, the worker's ledger, and a message that is already in the
+//   chat); the chat it was promised is the chat it lands in; and a site that
+//   is not confirmed, or not Jekyll, gets a reason and no capability.
+const FTE_CH = 'botference.figure-edits';
+const fteEd = () => window.FigureTextEditor && window.FigureTextEditor.editor;
+const fteFrom = (type, rid) => fteSeen.filter(m => m.from === 'extension' && m.type === type
+  && (rid == null || m.request_id === rid));
+const ftePage = msg => window.postMessage(Object.assign({ channel: FTE_CH, v: 1, from: 'page' }, msg), location.origin);
+const fteReplies = () => postedMsgs.filter(m => m.route === '/reply');
+function fteRetype(label, to) {
+  const E = fteEd();
+  const fig = E && E.figs.find(f => f.spec.id === 'harness-stack');
+  const el = fig && [...fig.root.querySelectorAll('text')].find(t => t.textContent.trim() === label);
+  if (!el) return false;
+  E.setEditing(true);
+  E.openPop(fig, el.firstChild);
+  E.ui.pop.input.value = to;
+  E.applyPop(false);
+  return true;
+}
+// a batch the editor would build, by hand, for the paths the editor cannot
+// be made to take (a malformed one, a stale one, another batch mid-flight)
+function fteBatch(id, edits, dest, text) {
+  const list = edits || [{ original: 'Power', replacement: 'Grid power' }];
+  return { type: 'send', request_id: 'send-' + Math.random().toString(16).slice(2, 14), batch_id: id,
+    expect_destination: dest || (fteEd() && fteEd().bridge.destination),
+    batch: { schema: 'botference.figure-edits/1', batch_id: id, edits: list },
+    text: text || ('Figure text edits from the local preview: harness batch ' + id) };
+}
+
+async function selftestFigEdit() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const finish = () => {
+    const bad = out.filter(l => l[0] === '✗');
+    logQuiet = true;
+    const el = document.getElementById('h-log');
+    el.style.color = bad.length ? '#b3403a' : '#2ea043';
+    el.textContent = 'SELFTEST (figedit) ' + (out.length - bad.length) + '/' + out.length +
+      (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+    el.dataset.detail = out.join(' | ') +
+      (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+    console.log(out.join('\n'));
+  };
+  check('the stand-in for a click is in place', navigator.userActivation && navigator.userActivation.isActive === false);
+  const E = await until(() => fteEd(), 4000);
+  check('the real editor booted on this loopback page', !!E);
+  if (!E) return finish();
+
+  // ---- the handshake --------------------------------------------------
+  check('the extension announced itself with `ready` (the page carries the editor)',
+    fteFrom('ready').length >= 1);
+  await until(() => E.bridge.state === 'ready', 5000);
+  const dest = E.bridge.destination || {};
+  check('…and the editor is connected', E.bridge.state === 'ready');
+  check('the destination is THIS page’s Page chat', dest.url === window.__bfp.url && dest.thread_id === '__page__');
+  check('…under a name the reader recognises', /^Page chat · /.test(dest.label || ''));
+  const acks = fteFrom('hello-ack');
+  check('every hello-ack echoes a hello the page sent', acks.length > 0 && acks.every(a =>
+    fteSeen.some(m => m.from === 'page' && m.type === 'hello' && m.request_id === a.request_id)));
+  check('…and names the extension and its capability', acks.some(a =>
+    a.extension && a.extension.name === 'discuss' && (a.capabilities || []).includes('figure-edits.send')));
+  E.setEditing(true);
+  await sleep(80);
+  check('the panel says where Send goes',
+    /sends to “Page chat · /.test((document.querySelector('.fte-bridge') || {}).textContent || ''));
+
+  // ---- what is NOT listened to ---------------------------------------
+  const nAcks = fteFrom('hello-ack').length;
+  const ifr = document.createElement('iframe');
+  ifr.style.display = 'none';
+  ifr.srcdoc = '<script>parent.postMessage({channel:"' + FTE_CH + '",v:1,from:"page",type:"hello",request_id:"hello-iframe"}, "*")<\/script>';
+  document.body.appendChild(ifr);
+  ftePage({ type: 'hello', request_id: 'hello-v2', v: 2 });
+  ftePage({ type: 'hello', request_id: 'hello-from-ext', from: 'extension' });
+  ftePage({ type: 'hello', request_id: 'x'.repeat(65) });
+  ftePage({ type: 'hello' });
+  window.postMessage({ type: 'compute-stack-height', h: 400 }, '*');
+  await sleep(700);
+  check('a hello from a figure iframe is not answered (source is not this window)',
+    fteFrom('hello-ack', 'hello-iframe').length === 0);
+  check('…nor one in another protocol version, from the wrong side, or with no usable id',
+    fteFrom('hello-ack').length === nAcks);
+  ifr.remove();
+
+  // ---- a send needs a click ------------------------------------------
+  check('a figure label can be retyped through the editor’s own popover', fteRetype('Fab tools', 'Fab equipment'));
+  check('…and it is a draft, previewed on the page', E.store.drafts().length === 1
+    && /Fab equipment/.test(document.getElementById('fte-fig').textContent));
+  const sendBtn = () => document.querySelector('.fte-send');
+  const r0 = fteReplies().length;
+  window.__fteActivation = false;
+  sendBtn().click();
+  await until(() => !E.sending, 6000);
+  check('without a click, nothing is posted', fteReplies().length === r0);
+  check('…the page is told not_authorized, retryable', fteFrom('error').some(e => e.code === 'not_authorized' && e.retryable === true));
+  check('…and the draft is kept', E.store.drafts().length === 1);
+  check('…with "Not delivered" on the panel',
+    /Not delivered/.test((document.querySelector('.fte-result') || {}).textContent || ''));
+
+  // ---- the click ------------------------------------------------------
+  await sleep(2100);                     // the per-page gap since the last /reply
+  window.__fteActivation = true;
+  sendBtn().click();
+  await until(() => !E.sending, 8000);
+  const last = E.sender.last || {};
+  check('with a click the batch is delivered', last.kind === 'delivered');
+  const posted = fteReplies().slice(r0);
+  check('…by exactly one /reply', posted.length === 1);
+  const sent = fteSeen.filter(m => m.from === 'page' && m.type === 'send').pop() || {};
+  const p0 = posted[0] || {};
+  check('…into Page chat of this page, never a focused thread',
+    p0.thread_id === '__page__' && replyUrls[replyUrls.length - 1] === window.__bfp.url);
+  check('…carrying the editor’s text byte for byte', p0.text === sent.text);
+  check('…which reads as figure edits with the batch as JSON',
+    /^Figure text edits from the local preview/.test(p0.text || '') && /```json/.test(p0.text || ''));
+  check('`received` came before the `ack`', (() => {
+    const i = fteSeen.findIndex(m => m.type === 'received' && m.request_id === sent.request_id);
+    const j = fteSeen.findIndex(m => m.type === 'ack' && m.request_id === sent.request_id);
+    return i >= 0 && j > i;
+  })());
+  const ack = fteFrom('ack', sent.request_id)[0] || {};
+  const inChat = (window.__bfp.page.page_chat || []).find(m => m.text === sent.text);
+  check('the ack names the message the chat now holds', !!inChat && ack.accepted && ack.accepted.message_ts === inChat.ts);
+  check('…and the chat it went to', ack.destination && ack.destination.thread_id === '__page__'
+    && ack.destination.url === window.__bfp.url && ack.accepted.thread_id === '__page__');
+  check('the panel says Delivered, naming the chat',
+    /Delivered to “Page chat · /.test((document.querySelector('.fte-result') || {}).textContent || ''));
+  check('nothing is left to send', E.store.drafts().length === 0 && sendBtn().disabled);
+  window.__bfp.drawer.open('chat');
+  check('the drawer shows it as the reader\u2019s own message in Page chat', !!await until(() =>
+    [...window.__bfp.drawer.shadow.querySelectorAll('.pane[data-pane="chat"] .reply.mine')]
+      .some(m => /Figure text edits from the local preview/.test(m.textContent)), 2000));
+  check('the worker’s ledger went inflight, then acked',
+    fteLedgerCalls.some(c => c.op === 'put' && c.batch_id === sent.batch_id && c.state === 'inflight')
+    && (fteLedgerStore[sent.batch_id] || {}).state === 'acked');
+
+  // ---- a batch posts once ---------------------------------------------
+  const r1 = fteReplies().length;
+  ftePage(Object.assign({}, sent));                                   // a retransmit
+  ftePage(Object.assign({}, sent, { request_id: 'send-again000001' })); // a retry
+  await sleep(500);
+  check('a retransmit and a retry of a delivered batch post nothing', fteReplies().length === r1);
+  const again = fteFrom('ack', 'send-again000001')[0] || {};
+  check('…the retry gets the stored ack, deduped, same message',
+    again.deduped === true && again.accepted && again.accepted.message_ts === ack.accepted.message_ts);
+
+  // a batch the worker remembers from before this script was loaded
+  fteLedgerStore['fte-20261106T1200-0000beef'] = { state: 'acked', authorised: true, url: window.__bfp.url, at: Date.now(),
+    ack: { accepted: { message_ts: 4242, author: 'angadh', thread_id: '__page__', url: window.__bfp.url },
+           destination: dest, deduped: false, queued: false, reason: '' } };
+  const old = fteBatch('fte-20261106T1200-0000beef');
+  ftePage(old);
+  await sleep(400);
+  check('a batch acked before a reload is answered from the worker’s ledger',
+    (fteFrom('ack', old.request_id)[0] || {}).accepted?.message_ts === 4242 && fteReplies().length === r1);
+  // …and one that was in flight when the tab went, and DID land
+  const landed = fteBatch('fte-20261106T1201-0000cafe');
+  RECORD.page_chat.push({ author: 'angadh', ts: 5151, text: landed.text });
+  fteLedgerStore['fte-20261106T1201-0000cafe'] = { state: 'inflight', authorised: true, url: window.__bfp.url, at: Date.now() };
+  await sleep(2100);
+  ftePage(landed);
+  await until(() => fteFrom('ack', landed.request_id).length || fteFrom('error', landed.request_id).length, 3000);
+  const la = fteFrom('ack', landed.request_id)[0] || {};
+  check('a batch lost mid-send that is already in the chat is acked, not posted again',
+    la.accepted && la.accepted.message_ts === 5151 && la.deduped === true && fteReplies().length === r1);
+
+  // ---- refusals -------------------------------------------------------
+  await sleep(2100);
+  window.__fteActivation = true;
+  const malformed = fteBatch('nope');
+  ftePage(malformed);
+  const big = fteBatch('fte-20261106T1202-00000101',
+    Array.from({ length: 101 }, (_, i) => ({ original: 'a' + i, replacement: 'b' + i })));
+  ftePage(big);
+  const long = fteBatch('fte-20261106T1203-00000102', [{ original: 'x', replacement: 'y'.repeat(2001) }]);
+  ftePage(long);
+  const moved = fteBatch('fte-20261106T1204-00000103', null,
+    Object.assign({}, dest, { session_id: 'some-other-chat' }));
+  ftePage(moved);
+  const elsewhere = fteBatch('fte-20261106T1205-00000104', null,
+    Object.assign({}, dest, { url: 'http://localhost:4000/another-post/' }));
+  ftePage(elsewhere);
+  await sleep(600);
+  const err = m => fteFrom('error', m.request_id)[0] || {};
+  check('a malformed batch id is bad_request, not retryable', err(malformed).code === 'bad_request' && err(malformed).retryable === false);
+  check('101 edits is too_large', err(big).code === 'too_large' && err(big).retryable === false);
+  check('a 2001-character replacement is too_large', err(long).code === 'too_large');
+  check('a batch promised to another chat session is destination_changed', err(moved).code === 'destination_changed');
+  check('…and one promised to another page', err(elsewhere).code === 'destination_changed');
+  check('none of them posted anything', fteReplies().length === r1);
+
+  // two batches at once: the second waits its turn
+  await sleep(2100);
+  window.__fteActivation = true;
+  const a1 = fteBatch('fte-20261106T1206-00000105');
+  const a2 = fteBatch('fte-20261106T1206-00000106');
+  ftePage(a1); ftePage(a2);
+  await until(() => fteFrom('ack', a1.request_id).length, 3000);
+  check('a second batch while one is being sent is refused as busy',
+    err(a2).code === 'companion_error' && /busy/.test(err(a2).message || '') && err(a2).retryable === true);
+  check('…and only the first posted', fteReplies().length === r1 + 1);
+
+  // ---- where the bridge says no ----------------------------------------
+  const blog = window.__BFP_BLOG;
+  blog.confirmed = false;
+  E.bridge.hello(true);
+  await until(() => E.bridge.state !== 'ready', 2000);
+  check('an UNCONFIRMED site: the editor is told why and cannot send',
+    E.bridge.state === 'unavailable' && /confirm this is your site/.test(E.bridge.reason || ''));
+  // the reader says yes in the drawer: the editor hears about it at once
+  const readies = fteFrom('ready').length;
+  const D = window.__bfp.drawer;
+  D.setBlog(blog);
+  D.open('chat');
+  await sleep(150);
+  const yes = D.shadow.querySelector('.pane[data-pane="chat"] [data-act="blogroot-yes"]');
+  check('the drawer asks "is this your site?"', !!yes);
+  if (yes) yes.click();
+  await until(() => E.bridge.state === 'ready', 3000);
+  check('…and confirming the site in the drawer reconnects it without a reload',
+    fteFrom('ready').length > readies && E.bridge.state === 'ready');
+  blog.confirmed = true;
+  blog.kind = 'jupyterbook';
+  E.bridge.hello(true);
+  await sleep(400);
+  check('a site that is not Jekyll: incapable', E.bridge.state === 'unavailable' && /Jekyll/.test(E.bridge.reason || ''));
+  blog.kind = 'jekyll';
+  E.bridge.hello(true);
+  await until(() => E.bridge.state === 'ready', 2000);
+  check('…and back to connected once it is', E.bridge.state === 'ready');
+  finish();
+}
+
+// ?figedit=deployed&selftest=1 — the same editor and page, at an address that
+// is not loopback: the bridge must not say anything, not even "incapable".
+async function selftestFigEditDeployed() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const E = await until(() => fteEd(), 4000);
+  check('the editor booted (its own gate is the page origin)', !!E);
+  await sleep(1500);
+  ftePage({ type: 'hello', request_id: 'hello-deployed' });
+  window.__fteActivation = true;
+  ftePage(fteBatch('fte-20261106T1300-0000dead', null, { url: 'https://angadh.com/x/', thread_id: '__page__', label: 'x' }));
+  await sleep(800);
+  check('the identity is the deployed address', /^https:\/\/angadh\.com\//.test(window.__bfp.url));
+  check('no ready, no hello-ack, no received, no error: silence', fteSeen.filter(m => m.from === 'extension').length === 0);
+  check('the editor stays unavailable', !E || E.bridge.state === 'unavailable');
+  check('nothing was posted', postedMsgs.filter(m => m.route === '/reply').length === 0);
+  check('the companion was not even asked', !apiCalls.some(c => /^\/blog-page/.test(c.path)));
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (figedit-deployed) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+}
+
+// the screenshot poses: the panel open, connected, one label retyped; and
+// `?figedit=sent` the same after a (stand-in) click on Send changes
+async function figeditPose() {
+  const E = await until(() => fteEd(), 4000);
+  if (!E) return log('figedit: the editor did not boot');
+  E.setEditing(true);
+  if (FIGEDIT === 'unconfirmed') return;
+  await until(() => E.bridge.state === 'ready', 5000);
+  fteRetype('Fab tools', 'Fab equipment');
+  if (FIGEDIT !== 'sent') return;
+  await sleep(2100);
+  window.__fteActivation = true;
+  document.querySelector('.fte-send').click();
+}
+
 async function selftestFiles() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
@@ -13267,6 +13632,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : QUESTION_TAB ? selftestMemorize
           : QUESTION_REVISE ? selftestQuestionRevise
             : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
+        // ?figedit=… turns a blog page on for itself too
+        : FIGEDIT === 'deployed' ? selftestFigEditDeployed : FIGEDIT ? selftestFigEdit
         // …and the more specific flag first here too: ?suggest=… turns a blog
         // page on for itself, so it must be tried before the blog pose
         : SUGGEST ? selftestSuggest
@@ -13285,6 +13652,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // inside the paint, because content.js reads clientX/clientY. `fan` then
     // presses the stack open, and `dragged` carries the whole thing off across
     // the glass, which is the state the curve was drawn for.
+    if (FIGEDIT && Q.get('selftest') !== '1') { figeditPose(); }
     if (BUBBLES && Q.get('selftest') !== '1') {
       setTimeout(() => {
         d.setBubbles('bubbles');
