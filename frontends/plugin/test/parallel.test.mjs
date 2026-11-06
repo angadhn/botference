@@ -164,25 +164,65 @@ await test('two turns on ONE page are strictly serial, on one child', () => {
   assert.equal(made[0].running(), A, 'the second turn follows the first, in order');
 });
 
-await test('a bound lane never moves, even when a child sits idle beside it', () => {
-  // Two children, three pages: C has to share, and it shares with the primary.
+await test('a page whose child is busy with ANOTHER page moves to an idle child', () => {
+  // Two children, three pages: C binds to whichever child is free when it
+  // first speaks — here the primary, which A has just finished with.
   const { pool, made } = poolOn({ max: 2 });
-  pool.submit(turn(A)); made[0].boot(); made[0].finish();
+  pool.submit(turn(A)); made[0].boot();
   pool.submit(turn(B)); made[1].boot(); made[1].finish();
+  made[0].finish();
   pool.submit(turn(C)); made[0].finish();
   assert.equal(pool.size(), 2, 'the cap holds');
-  assert.equal(pool.laneMap().get('pg:' + C), 0, 'C shares the primary with A');
+  assert.equal(pool.laneMap().get('pg:' + C), 0, 'C was served by the primary');
 
-  // Now A takes the floor and C wants to speak. Child 1 is IDLE — there is
-  // capacity right there — and the dispatcher must refuse to use it: moving C
-  // would put two children on one session id, and the session file is rewritten
-  // whole with no lock. C waits instead.
+  // Now A takes the primary and C wants to speak. C has nothing of its own
+  // on the primary — every turn it ever gave it is finished — so the primary
+  // is not driving C's session, and child 1 is idle. Waiting behind A would be
+  // a wait on a different website for no reason at all: C moves.
   pool.submit(turn(A));
   assert.equal(made[0].running(), A);
-  const held = pool.submit(turn(C));
-  assert.equal(pool.laneMap().get('pg:' + C), 0, 'no migration');
-  assert.equal(made[1].running(), null, 'the idle child was not handed the lane');
-  assert.equal(held.wait, 'pool_busy', 'and the reader is told it is somebody else in the way');
+  const moved = pool.submit(turn(C));
+  assert.equal(pool.laneMap().get('pg:' + C), 1, 'C moved to the idle child');
+  assert.equal(made[1].running(), C, 'and is answered at once, beside A');
+  assert.equal(moved.wait, null);
+});
+
+await test('a page with a turn still queued on its child never moves', () => {
+  // the ordering rule: a queued turn is going to drive that session, so
+  // everything after it must run on the same child, after it
+  const { pool, made } = poolOn({ max: 2 });
+  pool.submit(turn(A)); made[0].boot();
+  pool.submit(turn(B)); made[1].boot();
+  pool.submit(turn(C));                  // full: C queues behind A or B
+  const home = pool.laneMap().get('pg:' + C);
+  const other = home === 0 ? 1 : 0;
+  made[other].finish();                  // the other child goes idle
+  assert.equal(made[other].running(), null);
+  const again = pool.submit(turn(C));
+  assert.equal(pool.laneMap().get('pg:' + C), home, 'C stays behind its own queued turn');
+  assert.equal(again.wait, 'busy', "the reader's own earlier turn is what is in the way");
+  assert.ok(made[home].jobs().filter(j => j.url === C).length === 2, 'both C turns, one child, in order');
+});
+
+await test('at the cap with every child busy, a bound page waits — and is told how many are running', () => {
+  const { pool, made } = poolOn({ max: 2 });
+  pool.submit(turn(C)); made[0].boot(); made[0].finish();   // C bound to the primary
+  pool.submit(turn(A));                                       // A: primary (idle)
+  pool.submit(turn(B)); made[1].boot();                       // B: a second child
+  assert.equal(made[0].running(), A);
+  assert.equal(made[1].running(), B);
+  const r = pool.submit(turn(C));
+  assert.equal(pool.laneMap().get('pg:' + C), 0, 'nowhere better to go: it stays');
+  assert.equal(r.wait, 'pool_busy');
+  assert.deepEqual(r.wait_detail, { running: 2, cap: 2 }, 'the drawer can say "2 chats already running"');
+});
+
+await test('a new page goes to an idle child before a new one is spawned', () => {
+  const { pool, made } = poolOn({ max: 3 });
+  pool.submit(turn(A)); made[0].boot(); made[0].finish();
+  pool.submit(turn(B));
+  assert.equal(pool.size(), 1, 'the primary was idle: no second process for B');
+  assert.equal(made[0].running(), B);
 });
 
 await test('at the cap, a new lane joins the least encumbered child', () => {
@@ -233,8 +273,8 @@ await test('a dead child strands only its own lanes, and the others keep working
 
 await test('an idle child beyond the first is reaped, and gives its lanes back', () => {
   const { pool, made, tick } = poolOn({ max: 3, idleMs: 1000 });
-  pool.submit(turn(A)); made[0].boot(); made[0].finish();
-  pool.submit(turn(B)); made[1].boot(); made[1].finish();
+  pool.submit(turn(A)); made[0].boot();
+  pool.submit(turn(B)); made[1].boot(); made[1].finish(); made[0].finish();
   assert.equal(pool.size(), 2);
   tick(2000);
   pool.reapNow();
@@ -256,8 +296,8 @@ await test('a busy child is never reaped however long the pool has been up', () 
 
 await test('idleMs 0 never reaps anything', () => {
   const { pool, made, tick } = poolOn({ max: 3, idleMs: 0 });
-  pool.submit(turn(A)); made[0].boot(); made[0].finish();
-  pool.submit(turn(B)); made[1].boot(); made[1].finish();
+  pool.submit(turn(A)); made[0].boot();
+  pool.submit(turn(B)); made[1].boot(); made[1].finish(); made[0].finish();
   tick(999999);
   pool.reapNow();
   assert.equal(pool.size(), 2);
@@ -265,8 +305,8 @@ await test('idleMs 0 never reaps anything', () => {
 
 await test('controlFor reaches the child holding that page, and nobody else', () => {
   const { pool, made } = poolOn({ max: 3 });
-  pool.submit(turn(A)); made[0].boot(); made[0].finish();
-  pool.submit(turn(B)); made[1].boot(); made[1].finish();
+  pool.submit(turn(A)); made[0].boot();
+  pool.submit(turn(B)); made[1].boot(); made[1].finish(); made[0].finish();
   assert.equal(pool.controlFor(B, '/delete sess-9'), true);
   assert.deepEqual(made[1].jobs().map(j => j.control), [true]);
   assert.deepEqual(made[0].jobs(), [], 'the other child was told nothing');
@@ -515,7 +555,7 @@ await test('two pages in ONE project are serial; two projects run at once', asyn
     'beta finished while alpha was still going — different projects do not block each other');
   // alpha/two must WAIT for alpha/one: same project, same writable directory
   const ra = await POST(base, '/reply', { url: a2.url, thread_id: '__page__', text: '@claude [mock:sleep:50] hi' });
-  assert.equal(ra.json.wait, 'busy', 'the project already has the floor');
+  assert.equal(ra.json.wait, 'project_busy', 'another page of the project has the floor — and the drawer can say so');
   assert.equal(stream.events.some(e => e.kind === 'turn-start' && e.url === a2.url), false);
   await waitFor(() => stream.events.some(e => e.kind === 'turn-end' && e.url === a2.url), 'alpha two answered');
   const alpha = stream.events.filter(e => /^turn-/.test(e.kind || '') && (e.url === a1.url || e.url === a2.url));

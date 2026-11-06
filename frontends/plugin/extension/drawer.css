@@ -363,14 +363,31 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .bcard + .bcard { margin-left: 4px }
 .bcard + .bcard + .bcard { margin-left: 8px }
 .bcard:last-child { margin-bottom: 0 }
-/* no action column in here, so the who-line gets its width back — the one
-   affordance the bubble keeps is a delete on the reader's own message, and it
-   rides the end of that line rather than floating over the text */
-.bcard .who { padding-right: 0 }
+/* no action column in here, so the who-line gets its width back — the
+   message's controls (⧉, and ✎ ✕ on your own) ride the end of that line
+   rather than floating over the text */
+/* .reply.bcard, not .bcard: the panel's own `.reply .who` padding is declared
+   further down and would otherwise win */
+.reply.bcard .who, .reply.bcard.mine .who { padding-right: 0; align-items: center }
 .bcard .who .when { margin-left: auto }
-.bcard .who .bdel { margin-left: 4px; width: 18px; height: 18px; opacity: .3 }
-.bcard:hover .who .bdel { opacity: .8 }
-.bcard .who .bdel:hover { color: var(--bad); background: transparent }
+.reply.bcard .who .acts { position: static; margin-left: 4px }
+.reply.bcard .who .acts .rebtn { min-width: 18px; min-height: 18px; padding: 0 3px; font-size: 12px; opacity: .3 }
+.reply.bcard:hover .who .acts .rebtn, .reply.bcard .who .acts .rebtn:focus-visible { opacity: .8 }
+.reply.bcard .who .acts .rebtn:hover { opacity: 1 }
+.reply.bcard .who .acts .rebtn.done { opacity: 1 }
+/* a message opened for editing in a bubble: the box keeps the card's width,
+   and grows only as tall as the words need (the stack scrolls past that) */
+.bcard .ctext:has(> .composer) { margin-top: 2px }
+/* contain: the textarea sizes to its content (field-sizing), and in a
+   max-content bubble a long line would otherwise widen the bubble off the
+   glass — the edit takes the card's width, it never sets it */
+.bcard .composer[data-target="__edit__"] { margin-top: 4px; contain: inline-size }
+.bcard .composer[data-target="__edit__"] textarea { width: 100%; box-sizing: border-box;
+  min-height: 34px; max-height: 22vh; padding: 6px 8px; font-size: 13.5px }
+.bcard .composer[data-target="__edit__"] .crow { margin-top: 5px; justify-content: flex-end }
+.bcard .composer[data-target="__edit__"] .hint { display: none }
+.bcard .composer[data-target="__edit__"] .send,
+.bcard .composer[data-target="__edit__"] .cancel { padding: 3px 10px; min-height: 24px; font-size: 12.5px }
 .bcard .ctext.md { overflow-wrap: anywhere }
 /* the panel indents your own messages 26px to set them off in a 420px column;
    in a 340px bubble that is a tenth of the width, so the same distinction is

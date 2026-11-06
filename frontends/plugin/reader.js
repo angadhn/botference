@@ -269,7 +269,9 @@
   }
   function waitLabel(w) {
     if (w === 'bridge_starting') return '◐ waking the agents…';
-    if (w === 'busy') return '◐ queued behind another chat…';
+    if (w === 'busy') return '◐ waiting for the bots to finish an earlier message on this page…';
+    if (w === 'pool_busy') return '◐ waiting: every agent is busy with another chat…';
+    if (w === 'project_busy') return '◐ waiting for another page of this project to finish…';
     return '◐ working…';
   }
 

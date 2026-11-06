@@ -266,8 +266,8 @@
     ?figedit=1       FIGURE EDITS FROM THE LOCAL PREVIEW: the blog repo's real
                      figure-text editor (test/fixtures/figure-text-editor.js, a
                      byte copy) on the ?blog=1 page, connected to content.js
-                     over window.postMessage — the panel open, one label
-                     retyped. `?figedit=sent` goes on to Send (a stand-in
+                     over window.postMessage — one label retyped (the tray
+                     appears once an edit exists). `?figedit=sent` goes on to Send (a stand-in
                      click); `?figedit=unconfirmed` is the site not yet
                      confirmed (no capability, and the reason). `&selftest=1`
                      runs the bridge assertions; `?figedit=deployed&selftest=1`
@@ -369,7 +369,9 @@
                      other four behind a counted lip, joined to the mark by a
                      drawn curve. `&fan` fans the stack open, `&dragged` drags
                      the bubble across the glass so the curve becomes a long S,
-                     `&sized` pulls its corner grip out, and `&many` opens one
+                     `&sized` pulls its corner grip out, `=edit` opens the
+                     reader's own message with its ✎ (a @claude being added),
+                     and `&many` opens one
                      beside EVERY highlight on the page at once — which is what
                      the reader asked for and what the feature is now for.
                      `&selftest=1` runs the whole feature: the switch, two open
@@ -383,6 +385,9 @@
                      all — that with the switch off nothing whatsoever has
                      changed.
                      `?pdf=1&bubbles=1&selftest=1` is the same on a PDF.
+                     `?suggest=1&bubbles=sg` is a bot's two proposed edits in
+                     the thread's bubble; `&selftest=1` answers them there
+                     (Reject, Accept) and opens the bubble from a preview.
     ?bubbles=new     a NEW comment started in a bubble: the switch on, the panel
                      shut, a passage selected and the pill pressed — the
                      composer beside the passage with a question typed in it.
@@ -716,12 +721,15 @@ if (FIGEDIT) {
       for (const k of Object.keys(localStorage)) if (k.startsWith('figure-text-editor:')) localStorage.removeItem(k);
     } catch { /* nothing to clear */ }
   }
-  // one inline figure of the kind the editor attaches to (data-figure-editable),
-  // an SVG with labels — the Epoch walkthrough's shape, not an iframe
+  // one inline figure that declares itself to the editor the way a note's
+  // figure does — a JSON block inside it naming its id, title, source file and
+  // how to locate a label in that file — an SVG with labels, not an iframe
   const by = document.querySelector('article .byline');
   if (by) by.insertAdjacentHTML('afterend',
-    '<figure id="fte-fig" data-figure-editable="harness-stack" data-figure-title="Harness stack"' +
-    ' data-figure-source="assets/imgs/harness/_build-stack.py" style="margin:0 0 1.6rem">' +
+    '<figure id="fte-fig" style="margin:0 0 1.6rem">' +
+    '<script type="application/json" data-figure-editor>' + JSON.stringify({
+      id: 'harness-stack', title: 'Harness stack', file: 'assets/imgs/harness/_build-stack.py',
+      source: [{ when: 'g[id]', locator: 'node("{match.id}")' }, { locator: '#fte-fig' }] }) + '<\/script>' +
     '<svg viewBox="0 0 420 120" width="100%" role="img" aria-label="three boxes" style="font:14px ui-sans-serif,system-ui,sans-serif">' +
     '<g id="t-tools"><rect x="10" y="30" width="120" height="50" rx="6" fill="#e8dfd0"/><text x="70" y="60" text-anchor="middle">Fab tools</text></g>' +
     '<g id="t-power"><rect x="150" y="30" width="120" height="50" rx="6" fill="#d9e4ef"/><text x="210" y="60" text-anchor="middle">Power</text></g>' +
@@ -2014,6 +2022,9 @@ let HOLD_QUEUE = Q.get('queued') === '1' || Q.get('round') === '1';
 // somebody else's page). null = an older companion that says nothing, which
 // must still produce the plain "queued…" line.
 let WAIT_REASON = null;
+// …and what the companion says about it: {agents, target} for 'busy',
+// {running, cap} for 'pool_busy'. null = nothing more than the reason.
+let WAIT_DETAIL = null;
 // what the vault was asked for and what it holds — observable, because the
 // point of the pending row is that a click's effect is visible before the bot
 // has written anything
@@ -2022,7 +2033,7 @@ window.__bfpQuestions = () => ({ posts: questionPosts, cards: questionVault,
                                  revised: reviseCalls, kept: quizKept });
 window.__bfpQueue = {
   hold(on) { HOLD_QUEUE = !!on; },
-  reason(r) { WAIT_REASON = r || null; },
+  reason(r, detail) { WAIT_REASON = r || null; WAIT_DETAIL = detail || null; },
   play(target, text) { playTurn(target, text); },
 };
 
@@ -2894,6 +2905,7 @@ const askedUrl = path => {
   try { return m ? decodeURIComponent(m[1]) : ''; } catch { return ''; }
 };
 
+const editPosts = [];         // every /edit the drawer sent, in order
 function companion(method, path, body) {
   if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
   // the transient failure of a cold worker, spent one call at a time
@@ -3279,7 +3291,8 @@ function companion(method, path, body) {
     const queued = mention;
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(thread.id, body.msg.text), 350); }
     return { ok: true, status: 200, data: { ok: true, thread, queued, position: queued ? queueDepth : undefined,
-                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
+                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}),
+                                            ...(queued && WAIT_REASON && WAIT_DETAIL ? { wait_detail: WAIT_DETAIL } : {}) } };
   }
   // the PDF's own comments, projected in. The rule is the origin marker and
   // nothing else: one already filed is left alone, however often it is sent.
@@ -3347,7 +3360,8 @@ function companion(method, path, body) {
     const queued = mention;
     if (queued) { queueDepth++; if (!HOLD_QUEUE) setTimeout(() => playTurn(body.thread_id, body.text, body.url), 350); }
     return { ok: true, status: 200, data: { ok: true, msg, queued, position: queued ? queueDepth : undefined,
-                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}) } };
+                                            ...(queued && WAIT_REASON ? { wait: WAIT_REASON } : {}),
+                                            ...(queued && WAIT_REASON && WAIT_DETAIL ? { wait_detail: WAIT_DETAIL } : {}) } };
   }
   // POST /rename-page {url, title} — the reader's own name for a page, which
   // wins over the scraped one everywhere. '' takes it back off. Owner-only on
@@ -3381,6 +3395,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: { ok: true, tags } };
   }
   if (method === 'POST' && route === '/edit') {
+    editPosts.push(Object.assign({}, body));
     const list = body.thread_id === '__page__'
       ? RECORD.page_chat : (RECORD.threads.find(t => t.id === body.thread_id) || { msgs: [] }).msgs;
     const m = list.find(x => x.ts === body.ts);
@@ -5056,19 +5071,19 @@ async function selftest() {
     !!S.querySelector('.pane[data-pane="chat"] .status-chip .spin'));
   check('…as a wait, not as a problem',
     !S.querySelector('.pane[data-pane="chat"] .status-chip.err'));
-  window.__bfpQueue.reason('busy');
+  window.__bfpQueue.reason('busy', { agents: ['claude'], target: '__page__' });
   (await until(freeChat, 8000)).value = '@claude and this one behind it';
   chatSend().click();
-  check('a turn behind this conversation\u2019s own last one says that instead',
-    !!await until(() => (/queued \(#2\)|behind this conversation/.test(chatStatusText()) ? true : null), 6000));
+  check('a turn behind this conversation\u2019s own last one says whose and why',
+    !!await until(() => (/waiting for Claude to finish your previous message here/.test(chatStatusText()) ? true : null), 6000));
   // …and the OTHER wait, which the single queue could never tell apart from it:
   // every agent in the building is on somebody else's page (SPEC "parallel
   // turns"). Position wins over both when there is a queue to count.
-  window.__bfpQueue.reason('pool_busy');
+  window.__bfpQueue.reason('pool_busy', { running: 3, cap: 3 });
   (await until(freeChat, 8000)).value = '@claude and one more behind that';
   chatSend().click();
-  check('a turn waiting on a free agent says that instead again',
-    !!await until(() => (/queued \(#\d\)|behind another chat/.test(chatStatusText()) ? true : null), 6000));
+  check('a turn waiting on a free agent says how many chats are already running',
+    !!await until(() => (/3 chats already running/.test(chatStatusText()) ? true : null), 6000));
   // let the held turns run: a wait that never ends is the bug above, not this one
   window.__bfpQueue.hold(false);
   window.__bfpQueue.reason(null);
@@ -9000,9 +9015,12 @@ async function selftestBubbles() {
     cards(LONG).every(c => !!c.querySelector('.who .author') && !!c.querySelector('.who .when')));
   check('…and a bot\'s card says it is a bot\'s',
     cards(LONG).some(c => c.classList.contains('bot') && !!c.querySelector('.badge.bot-badge')));
-  check('the panel\'s copy and edit controls are NOT in here',
-    !bub(LONG).querySelector('[data-act="copy"]') && !bub(LONG).querySelector('[data-act="edit"]'));
-  check('…but the reader can still delete their own message',
+  check('every card carries the panel\'s ⧉ copy',
+    cards(LONG).every(c => !!c.querySelector('.acts [data-act="copy"]')));
+  check('…the reader\'s own messages the panel\'s ✎ edit, and a bot\'s do not',
+    !!bub(LONG).querySelector('.reply.mine [data-act="edit"]')
+    && !bub(LONG).querySelector('.reply.bot [data-act="edit"]'));
+  check('…and the reader can still delete their own message (and only theirs)',
     !!bub(LONG).querySelector('.reply.mine [data-act="del-msg"]')
     && !bub(LONG).querySelector('.reply.bot [data-act="del-msg"]'));
 
@@ -9207,6 +9225,55 @@ async function selftestBubbles() {
     up(LONG) && bub(LONG).textContent.indexOf(REPLY) >= 0);
   check('…with the box emptied', !!box(LONG) && !box(LONG).value.trim());
 
+  // ---- ✎ EDIT, FROM THE BUBBLE --------------------------------------------
+  // THE ASK: "in the bubble I can't edit a message I already sent". The panel's
+  // ✎ is how a forgotten @claude gets added — saving re-sends the message, so
+  // the bots answer — and a bubble must do exactly that, through the same
+  // /edit, without the bubble jumping while the reader types.
+  const mineCard = () => cards(LONG).find(c => c.classList.contains('mine')
+    && c.textContent.indexOf(REPLY) >= 0);
+  if (!mineCard() && fan(LONG)) { hit(fan(LONG), 'the squashed stack'); await sleep(240); }
+  check('(pose) the reply just sent is a card of the reader\'s own', !!mineCard());
+  const preEdit = rectOf(LONG);
+  hit(mineCard() && mineCard().querySelector('[data-act="edit"]'), 'the bubble card\'s ✎');
+  await sleep(200);
+  const eta = mineCard() && mineCard().querySelector('.composer[data-target="__edit__"] textarea');
+  check('✎ opens the message for editing, inside the bubble', !!eta && up(LONG) && !d.isOpen());
+  check('…holding the message as it was written', !!eta && eta.value === REPLY);
+  check('…and the bubble stays where it was', (() => {
+    const r = rectOf(LONG);
+    return !!r && Math.abs(r.left - preEdit.left) < 2 && Math.abs(r.top - preEdit.top) < 2;
+  })());
+  check('…no wider (or narrower) than it was', Math.abs(rectOf(LONG).width - preEdit.width) < 2);
+  if (eta) eta.value = 'something else entirely';
+  (eta || document).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+  await sleep(240);
+  check('Esc in the editor cancels the edit', !!mineCard()
+    && !mineCard().querySelector('textarea') && mineCard().textContent.indexOf(REPLY) >= 0);
+  check('…leaving the bubble up', up(LONG));
+  check('…and sending nothing', !editPosts.some(p => p.thread_id === LONG));
+  hit(mineCard() && mineCard().querySelector('[data-act="edit"]'), 'the bubble card\'s ✎ again');
+  await sleep(200);
+  const eta2 = mineCard() && mineCard().querySelector('.composer[data-target="__edit__"] textarea');
+  const TAGGED = REPLY + ' @claude';
+  if (eta2) {
+    eta2.value = TAGGED;
+    eta2.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  hit(mineCard() && mineCard().querySelector('.composer[data-target="__edit__"] .send'), 'the edit\'s Save');
+  await until(() => editPosts.some(p => p.thread_id === LONG), 3000);
+  await sleep(320);
+  const sentEdit = editPosts.filter(p => p.thread_id === LONG).pop();
+  check('Save re-sends it through the same /edit the panel uses, with the new @-tag',
+    !!sentEdit && sentEdit.text === TAGGED && !!sentEdit.ts);
+  check('…the card shows the new words', !!mineCard() && /@claude/.test(mineCard().textContent)
+    && !mineCard().querySelector('textarea'));
+  check('…and says "(edited)"', !!mineCard() && !!mineCard().querySelector('.who .edited'));
+  check('…and the bubble never moved', (() => {
+    const r = rectOf(LONG);
+    return !!r && Math.abs(r.left - preEdit.left) < 2 && Math.abs(r.top - preEdit.top) < 2;
+  })());
+
   // ---- ✕, ESC AND SHIFT+ESC ----------------------------------------------
   hit(bub(LONG).querySelector('[data-act="bubble-close"]'), 'the bubble\'s ✕');
   await sleep(220);
@@ -9301,6 +9368,107 @@ async function selftestBubbles() {
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
   el.textContent = 'SELFTEST (bubbles) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+  console.log(out.join('\n'));
+}
+
+// ?suggest=1&bubbles=sg&selftest=1 — A BOT'S PROPOSED EDITS, ANSWERED FROM
+// THE BUBBLE. The ask: "each proposed edit should be approvable right in the
+// bubble" — the panel's own suggestion cards, its Accept and Reject, the same
+// /suggest-accept and /suggest-reject, and the page's preview following along,
+// with the panel never opened. And a click on a thread card's preview on the
+// page opens that thread's bubble at the card, rather than the panel.
+async function selftestBubblesSuggest() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
+  const d = window.__bfp.drawer, S = d.shadow;
+  const LONG = 't-1754500100-c3d4';
+  const bub = () => S.querySelector('.bubble[data-thread="' + LONG + '"]');
+  const sg = id => bub() && bub().querySelector('.sgcard[data-sg="' + id + '"]');
+  const card = id => ((RECORD.threads.find(t => t.id === LONG) || { msgs: [] }).msgs
+    .flatMap(m => m.suggestions || [])).find(c => c.id === id) || {};
+  const prev = id => document.querySelector('mark.bfp-prop[data-bfp-prop="' + id + '"], ins.bfp-prop-ins[data-bfp-prop="' + id + '"]');
+
+  await until(() => document.querySelector('mark.bfp-hl[data-bfp="' + LONG + '"]'), 5000);
+  d.setBubbles('bubbles');
+  d.close();
+  await sleep(200);
+  clickStackedMark(LONG);
+  await until(() => bub(), 3000);
+  await sleep(300);
+  check('(pose) the thread\'s bubble is up, with the panel shut', !!bub() && !d.isOpen());
+  check('the bot\'s proposed edits are drawn in the bubble, as the panel draws them',
+    !!bub().querySelector('.sgstack .sghead') && !!sg('sg1') && !!sg('sg2'));
+  check('…each a before-and-after, with why',
+    !!sg('sg1').querySelector('.wasnow del') && !!sg('sg1').querySelector('.wasnow ins')
+    && /direct quotation/.test((sg('sg1').querySelector('.sgwhy') || {}).textContent || ''));
+  check('…and both answers on each, plus Accept all',
+    !!sg('sg1').querySelector('[data-act="sg-yes"]') && !!sg('sg1').querySelector('[data-act="sg-no"]')
+    && !!sg('sg2').querySelector('[data-act="sg-yes"]') && !!bub().querySelector('[data-act="sg-all"]'));
+  check('(pose) the page previews both while they are open', !!prev('sg1') && !!prev('sg2'));
+
+  // ---- a click on a preview opens the thread's bubble at the card ----------
+  d.hideAllBubbles();
+  await sleep(200);
+  const pm = prev('sg1');
+  if (pm) {
+    const r = pm.getBoundingClientRect();
+    pm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
+      clientX: Math.round(r.left + 2), clientY: Math.round(r.top + r.height / 2) }));
+  }
+  await until(() => sg('sg1'), 3000);
+  check('clicking a thread card\'s preview on the page opens THAT thread\'s bubble',
+    !!bub() && !d.isOpen());
+  check('…with the card in it, flashed', !!sg('sg1') && sg('sg1').classList.contains('tasksrc'));
+  await sleep(200);
+  const at = bub().getBoundingClientRect();
+  // the passage as the bubble measures it: every piece of its marking, as one
+  // box (a bubble sits under it, so its left edge and its foot are what count)
+  const markAt = () => {
+    const rs = [...document.querySelectorAll('mark.bfp-hl[data-bfp="' + LONG + '"]')]
+      .flatMap(m => [...m.getClientRects()]);
+    return rs.length ? { left: Math.min(...rs.map(r => r.left)), top: Math.max(...rs.map(r => r.bottom)) }
+      : { left: 0, top: 0 };
+  };
+  const m0 = markAt();
+
+  // ---- Reject, from the bubble --------------------------------------------
+  hit(sg('sg2') && sg('sg2').querySelector('[data-act="sg-no"]'), 'Reject in the bubble');
+  await until(() => card('sg2').state === 'rejected', 3000);
+  await sleep(300);
+  check('Reject in the bubble turns the card down on the record (the panel\'s /suggest-reject)',
+    card('sg2').state === 'rejected');
+  check('…and the bubble\'s card says so, with nothing left to press',
+    !!bub() && !!bub().querySelector('.sgcard.passed')
+    && /Turned down/.test(bub().querySelector('.sgcard.passed').textContent)
+    && !bub().querySelector('.sgcard.passed [data-act]'));
+  check('…its preview leaves the page', !prev('sg2'));
+  check('…and the other is still the reader\'s to answer', !!sg('sg1') && !!sg('sg1').querySelector('[data-act="sg-yes"]'));
+
+  // ---- Accept, from the bubble --------------------------------------------
+  hit(sg('sg1') && sg('sg1').querySelector('[data-act="sg-yes"]'), 'Accept in the bubble');
+  await until(() => card('sg1').state === 'applied', 3000);
+  await sleep(300);
+  check('Accept in the bubble applies it (the panel\'s /suggest-accept)', card('sg1').state === 'applied');
+  check('…the bubble\'s card says "Applied to the post."',
+    !!bub() && !!bub().querySelector('.sgcard.done')
+    && /Applied to the post/.test(bub().querySelector('.sgcard.done').textContent));
+  check('…its preview leaves the page', !prev('sg1'));
+  check('…the panel stayed shut throughout', !d.isOpen());
+  check('…and the bubble did not jump: it moved only as far as its passage did', (() => {
+    const r = bub() && bub().getBoundingClientRect(), m1 = markAt();
+    return !!r && Math.abs((r.left - at.left) - (m1.left - m0.left)) < 2
+      && Math.abs((r.top - at.top) - (m1.top - m0.top)) < 2;
+  })());
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (bubbles-suggest) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
@@ -9853,10 +10021,9 @@ function fteRetype(label, to) {
   const fig = E && E.figs.find(f => f.spec.id === 'harness-stack');
   const el = fig && [...fig.root.querySelectorAll('text')].find(t => t.textContent.trim() === label);
   if (!el) return false;
-  E.setEditing(true);
-  E.openPop(fig, el.firstChild);
-  E.ui.pop.input.value = to;
-  E.applyPop(false);
+  E.openField(fig, el.firstChild);
+  E.ui.field.input.value = to;
+  E.commitField(false);
   return true;
 }
 // a batch the editor would build, by hand, for the paths the editor cannot
@@ -9901,7 +10068,6 @@ async function selftestFigEdit() {
     fteSeen.some(m => m.from === 'page' && m.type === 'hello' && m.request_id === a.request_id)));
   check('…and names the extension and its capability', acks.some(a =>
     a.extension && a.extension.name === 'discuss' && (a.capabilities || []).includes('figure-edits.send')));
-  E.setEditing(true);
   await sleep(80);
   check('the panel says where Send goes',
     /sends to “Page chat · /.test((document.querySelector('.fte-bridge') || {}).textContent || ''));
@@ -9916,7 +10082,7 @@ async function selftestFigEdit() {
   ftePage({ type: 'hello', request_id: 'hello-from-ext', from: 'extension' });
   ftePage({ type: 'hello', request_id: 'x'.repeat(65) });
   ftePage({ type: 'hello' });
-  window.postMessage({ type: 'compute-stack-height', h: 400 }, '*');
+  window.postMessage({ type: 'figure-height', h: 400 }, '*');
   await sleep(700);
   check('a hello from a figure iframe is not answered (source is not this window)',
     fteFrom('hello-ack', 'hello-iframe').length === 0);
@@ -9925,7 +10091,7 @@ async function selftestFigEdit() {
   ifr.remove();
 
   // ---- a send needs a click ------------------------------------------
-  check('a figure label can be retyped through the editor’s own popover', fteRetype('Fab tools', 'Fab equipment'));
+  check('a figure label can be retyped through the editor’s own in-place field', fteRetype('Fab tools', 'Fab equipment'));
   check('…and it is a draft, previewed on the page', E.store.drafts().length === 1
     && /Fab equipment/.test(document.getElementById('fte-fig').textContent));
   const sendBtn = () => document.querySelector('.fte-send');
@@ -10105,7 +10271,6 @@ async function selftestFigEditDeployed() {
 async function figeditPose() {
   const E = await until(() => fteEd(), 4000);
   if (!E) return log('figedit: the editor did not boot');
-  E.setEditing(true);
   if (FIGEDIT === 'unconfirmed') return;
   await until(() => E.bridge.state === 'ready', 5000);
   fteRetype('Fab tools', 'Fab equipment');
@@ -13611,7 +13776,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     if (PDFANNOT) window.__bfp.pdfAnnots(PDF_ANNOT_LIST);
     if (Q.get('selftest') === '1') {
       setTimeout(BUBBLES ? (PDFV ? selftestBubblesPdf
-          : BUBBLES === 'new' ? selftestBubblesNew : selftestBubbles)
+          : BUBBLES === 'new' ? selftestBubblesNew
+            : BUBBLES === 'sg' ? selftestBubblesSuggest : selftestBubbles)
         : CHECKS === '1' ? selftestChecks
         : LASSO === '1' ? selftestLasso
         : FILEIN === 'new' || FILEIN === 'made' ? selftestProjectArtifact
@@ -13688,6 +13854,21 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
             const f = d.shadow.querySelector('.bubble[data-thread="' + MAIN + '"] .bfan');
             if (f) f.click(); else log('bubbles: no stack to fan');
           }
+          // ?bubbles=edit — the reader's own message opened with its ✎, in
+          // the bubble, a forgotten @claude being added (the stack fanned so
+          // their message is one of the cards on show)
+          if (BUBBLES === 'edit') {
+            const sel = '.bubble[data-thread="' + MAIN + '"] ';
+            const f = d.shadow.querySelector(sel + '.bfan');
+            if (f) f.click();
+            setTimeout(() => {
+              const pen = d.shadow.querySelector(sel + '.reply.mine [data-act="edit"]');
+              if (!pen) return log('bubbles: no ✎ on the reader\'s own card');
+              pen.click();
+              const ta = d.shadow.querySelector(sel + '.composer[data-target="__edit__"] textarea');
+              if (ta) { ta.value = ta.value.replace(/\s*$/, '') + ' @claude'; ta.dispatchEvent(new Event('input', { bubbles: true })); }
+            }, 260);
+          }
           if (BUBBLES === 'dragged') dragBubble(MAIN, -210, 150);
           if (BUBBLES === 'sized') sizeBubble(MAIN, 230, 210);
           // ?bubbles=scrolled — the anchoring rule, mid-gesture: the page taken
@@ -13741,7 +13922,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
     // screenshot of this feature has to be of
     // …and where the pose is a suggestion stack, the pane it is IN: a stack
     // written into a thread is in the margin, a whole-page sweep is in chat
-    if (BLOG && Q.get('selftest') !== '1') {
+    if (BLOG && !BUBBLES && Q.get('selftest') !== '1') {
       setTimeout(() => d.open(SUGGEST === '1' || SUGGEST === 'approx' || SUGGEST === 'rich' || SUGGEST === 'picture' ? 'comments' : 'chat'), 300);
     }
     // ?workspace=1&picker=1 — the project's chat archive, open: the list the

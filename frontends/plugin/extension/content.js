@@ -2657,7 +2657,7 @@
     }
     watchSend();
     return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
-             wait: r.data && r.data.wait,
+             wait: r.data && r.data.wait, wait_detail: r.data && r.data.wait_detail,
              reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped),
              msg: msg || null };
   }
@@ -2780,7 +2780,7 @@
         return { ok: true, queued: r.data && r.data.queued, position: r.data && r.data.position,
                  // why it is waiting, in the companion's words (bridge_starting
                  // | busy): the drawer turns it into the line by the composer
-                 wait: r.data && r.data.wait,
+                 wait: r.data && r.data.wait, wait_detail: r.data && r.data.wait_detail,
                  reason: r.data && r.data.reason, deduped: !!(r.data && r.data.deduped),
                  thread_id: thread && thread.id };
       },
@@ -3412,7 +3412,7 @@
         const d = r.data || {};
         if (d.msg) pushLibraryMsg(d.msg);
         return { ok: true, queued: d.queued, position: d.position,
-                 wait: d.wait, reason: d.reason, deduped: d.deduped };
+                 wait: d.wait, wait_detail: d.wait_detail, reason: d.reason, deduped: d.deduped };
       },
       onExportPage: async (url, mode) => {
         const r = await api('POST', '/export', { url, mode });
@@ -3708,6 +3708,10 @@
       e.preventDefault();
       activate(false).then(d => {
         if (!d) return;
+        // with bubbles on and the panel shut, a THREAD's card opens in that
+        // thread's bubble instead (the drawer decides, and says if it did)
+        if (where.target !== PAGE_TARGET && d.bubbleState && d.bubbleState().on && !d.isOpen()
+            && d.focusSuggestion && d.focusSuggestion(where.target, where.ts, pid)) return;
         d.open(where.target === PAGE_TARGET ? 'chat' : 'comments');
         if (d.focusSuggestion) d.focusSuggestion(where.target, where.ts, pid);
       });
@@ -3766,6 +3770,9 @@
     // own state is, exactly as the chooser is. Esc takes the FRONT one, which
     // is the one the reader last touched; Shift+Esc takes the lot, for a
     // reader who has a wall of them and wants the article back.
+    // (…unless the Esc was typed into a message being edited in a bubble:
+    // that cancels the edit and leaves the bubble up)
+    if (!e.shiftKey && drawer.cancelBubbleEdit && drawer.cancelBubbleEdit(e)) return;
     if (drawer.bubbleOpen && drawer.bubbleOpen()) {
       if (e.shiftKey) drawer.hideAllBubbles(); else drawer.hideBubble();
       return;

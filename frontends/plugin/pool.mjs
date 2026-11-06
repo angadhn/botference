@@ -23,20 +23,33 @@
 // serialization had to be invented; it was already load-bearing for Phase 2's
 // write scope, and this file was written to leave it exactly alone.
 //
-// ── WHY A LANE NEVER MOVES OFF A LIVE CHILD ───────────────────────────────
+// ── WHEN A LANE MAY MOVE, AND WHEN IT MAY NOT ─────────────────────────────
 // The controller's session file (`<work>/sessions/<sid>.json`) is rewritten
-// whole on every persisted turn — atomically, but with no lock and no version
-// check: last writer wins the entire transcript. Two children driving one
-// session id is therefore a silent whole-turn loss, and the invariant that
-// stops it is held here, in Node, because nothing in Python enforces it.
+// whole on every persisted turn — atomically, with no lock. Two children
+// DRIVING one session id at once is therefore a silent whole-turn loss, and
+// the invariant that stops it is held here, in Node.
 //
-// So a lane binds to a child on its first turn and STAYS THERE for as long as
-// that child exists. Load is balanced at binding time and never afterwards.
-// A lane is released only when its child is gone — reaped (we killed it) or
-// dead (it exited) — which is exactly the condition under which the old child
-// can no longer write that session file. The imbalance this costs (two lanes
-// sharing a child while another sits idle) is the price of that guarantee, and
-// it is a wait, not a corruption.
+// A lane binds to a child on its first turn. Until 2026-11-06 it then stayed
+// there for as long as that child lived, which is what made a reader wait on a
+// different website: pages A and C shared a child, A was talking, C queued
+// behind A while another child sat idle. So a lane now MOVES — but only when
+// it is provably safe to:
+//
+//   · the lane has NOTHING on its old child: no turn running, none queued.
+//     Its turns are strictly serial, so the old child has finished every turn
+//     it was ever given for this session and is not driving it.
+//   · the old child is busy with somebody else's turn (moving off an idle
+//     child would buy a /resume for nothing).
+//   · there is somewhere better to go: an idle child, or room for a new one.
+//
+// What the old child can still do to the session it is leaving is ONE save:
+// `/resume` persists the chat it is switching away from (core/botference.py
+// _resume_session). That copy is the one already on disk — that child was the
+// last to write it — and if the new child has written since, the old copy is
+// SHORTER, which core/session_store.py refuses (StaleSessionWrite) rather than
+// overwrites. So the worst a move can cost is a logged refusal, never a turn.
+// A lane with a turn queued on its child never moves: ordering is the lane's
+// meaning, and the queued turn is going to drive that session.
 //
 // ── WHAT IS STILL SHARED, HONESTLY ────────────────────────────────────────
 // Every child in this pool works in the same root and files under the same
@@ -118,22 +131,40 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
 
   // WHICH CHILD RUNS THIS LANE.
   //
-  //   1. the one it is already bound to           ordering, and the session rule
-  //   2. a child holding no lanes at all          free capacity, no sharing
-  //   3. a new child, if under the cap            parallelism is the point
-  //   4. the least-encumbered child               fewest lanes, then shortest queue
+  //   bound lane:
+  //     1. stay, if this lane has a turn on its child     ordering + session rule
+  //     2. stay, if its child is idle                     nothing to gain
+  //     3. move to an idle child, or a new one under cap  parallelism is the point
+  //     4. stay and wait                                   the cap is reached
+  //   new lane:
+  //     1. an idle child (a running one before a cold one)
+  //     2. a new child, if under the cap
+  //     3. the child with the shortest queue, then fewest lanes
   //
-  // Note what is NOT here: taking a lane off a busy child because another is
-  // idle. That is the migration the session store cannot survive.
-  function pick(lane) {
+  // "Idle" is the child's own queue, not how many lanes it has ever held:
+  // a lane is a binding, not a load, and judging by lanes is what sent a new
+  // page to a busy child while one that had served three pages sat idle.
+  const idleChild = (except) => {
+    const free = members.filter(m => m !== except && load(m) === 0);
+    if (!free.length) return null;
+    const warm = m => (m.chat.state() === 'running' ? 1 : 0);
+    free.sort((a, b) => (warm(b) - warm(a)) || (laneCount(a) - laneCount(b)));
+    return free[0];
+  };
+  function pick(lane, url) {
     const held = lanes.get(lane);
-    if (held && members.includes(held)) return held;
-    let m = members.find(x => laneCount(x) === 0);
-    if (!m && members.length < cap) m = add();
+    if (held && members.includes(held)) {
+      if (load(held) === 0 || held.chat.busyFor(url)) return held;
+      const m = idleChild(held) || (members.length < cap ? add() : null);
+      if (!m) return held;
+      lanes.set(lane, m);
+      return m;
+    }
+    let m = idleChild(null) || (members.length < cap ? add() : null);
     if (!m) {
       m = members.reduce((a, b) => {
-        const d = laneCount(b) - laneCount(a);
-        return (d < 0 || (d === 0 && load(b) < load(a))) ? b : a;
+        const d = load(b) - load(a);
+        return (d < 0 || (d === 0 && laneCount(b) < laneCount(a))) ? b : a;
       });
     }
     lanes.set(lane, m);
@@ -172,7 +203,7 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
     // rules above name; the ordering inside the lane is the child's own FIFO.
     submit(job) {
       const lane = laneOf(job && job.url);
-      const m = pick(lane);
+      const m = pick(lane, job && job.url);
       m.at = now();
       // sampled BEFORE the push, or it would always be true: this is the
       // difference between "your own conversation is still talking" and "every
@@ -181,7 +212,14 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
       const res = m.chat.submit(job);
       // chat.mjs says 'busy' for any warm child with the floor taken. Only the
       // pool knows whose floor it is.
-      if (res && res.wait === 'busy' && !mine) return { ...res, wait: 'pool_busy' };
+      // …and when it is somebody else's, the only way that happens now is that
+      // every child is busy and the cap is reached — so the drawer can say
+      // exactly that: "3 chats already running".
+      if (res && res.wait === 'busy' && !mine) {
+        const running = members.filter(x => load(x) > 0).length;
+        const { wait_detail: _ignored, ...rest } = res;
+        return { ...rest, wait: 'pool_busy', wait_detail: { running, cap } };
+      }
       return res;
     },
     // A process-wide setting (/model, /effort). Every child that exists gets

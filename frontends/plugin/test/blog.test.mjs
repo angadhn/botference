@@ -498,13 +498,39 @@ console.log('\ncompanion — blog source pages');
     assert.match(turn, /_site\//);
   });
 
-  await test('a second post in the same repo shares that one child', async () => {
+  await test('two posts in the same repo answer at once, every child scoped to the repo', async () => {
+    // One child per repo made every post of the reader's own blog wait on
+    // every other one. Now each post is its own lane in the repo's pool.
     const other = `${ORIGIN}/pinned-forever/`;
     await POST(base, '/page', { url: other, title: 'Pinned', site: 'localhost' });
-    await POST(base, '/reply', { url: other, thread_id: '__page__', text: '@claude a word here' });
-    await waitFor(() => inputs(logFile).some(t => t.includes('a word here')), 'the turn');
-    assert.equal(spawnEnvs().filter(e => writeRootOf(e) === root).length, 1,
-      'one repo, one child, one FIFO — the child IS the write lock');
+    const slowUrl = POST_URL.replace(/\/$/, '');
+    // start from quiet: the turns of the tests above have all ended
+    await waitFor(async () => (await GET(base, '/health')).json.queue === 0, 'the companion to go quiet');
+    const endsBefore = events.of('chat').length;
+    const turnEnd = u => events.of('chat').slice(endsBefore).some(e => e.kind === 'turn-end' && e.url === u);
+    await POST(base, '/reply', { url: POST_URL, thread_id: '__page__', text: '@claude [mock:sleep:2500] think slowly' });
+    await waitFor(() => inputs(logFile).some(t => t.includes('think slowly')), 'the slow turn to start');
+    // …and while it thinks, the OTHER post's bot rewrites the other post — a
+    // real copy, front matter and all, so the post is still that post
+    const pinnedSrc = path.join(root, '_posts', '2026-08-21-pinned.md');
+    const newer = path.join(tmp('pinned-new'), 'pinned.md');
+    fs.writeFileSync(newer, '---\ntitle: Pinned\npermalink: /pinned-forever/\n---\n\nA rewritten body.\n');
+    const filesBefore = events.of('blog-files').length;
+    await POST(base, '/reply', { url: other, thread_id: '__page__',
+      text: `@claude [mock:copy:${newer}|${pinnedSrc}] a word here` });
+    await waitFor(() => events.of('chat').slice(endsBefore).some(e => e.kind === 'turn-end'
+      && e.url !== slowUrl), 'the second post answered');
+    assert.equal(turnEnd(slowUrl), false, 'the second post did not wait for the first');
+    const scoped = spawnEnvs().filter(e => writeRootOf(e) === root);
+    assert.ok(scoped.length >= 2, `two children for two posts at once — got ${scoped.length}`);
+    // the census: the rewrite is the OTHER post's, and only it reports it
+    await waitFor(() => events.of('blog-files').length > filesBefore, 'the rewrite to be reported');
+    await waitFor(() => turnEnd(slowUrl), 'the slow turn to end', 6000);
+    await sleep(400);
+    const reports = events.of('blog-files').slice(filesBefore);
+    assert.deepEqual(reports.map(e => e.source), ['_posts/2026-08-21-pinned.md'],
+      `one report, for the post that changed — got ${JSON.stringify(reports.map(e => [e.url, e.files]))}`);
+    assert.notEqual(reports[0].url, slowUrl, 'the slow post never claimed the other post\u2019s rewrite');
   });
 
   // ---- a local file of the reader's own site ------------------------------
@@ -542,8 +568,8 @@ console.log('\ncompanion — blog source pages');
       assert.ok(turn.includes(SCROLLY), 'the envelope names the file');
       assert.match(turn, /THIS VERY FILE/, 'and does not tell a photocopy story about it');
       assert.match(turn, /DO NOT RUN GIT/);
-      assert.equal(spawnEnvs().filter(e => writeRootOf(e) === root).length, 1,
-        'the same one child as the served pages: one repo, one lane');
+      assert.ok(spawnEnvs().filter(e => writeRootOf(e)).every(e => writeRootOf(e) === root),
+        'the same repo pool as the served pages: no child with any other write root');
     });
 
   await test('rewriting that file reloads the file: tab', async () => {

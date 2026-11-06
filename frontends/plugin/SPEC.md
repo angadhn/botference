@@ -3856,6 +3856,9 @@ speaks, which is a wait the drawer already knows how to say. `0` never reaps.
 | `busy` | queued behind this conversation… | this lane's own previous turn has the floor |
 | `pool_busy` | queued behind another chat… | every child is on somebody else's lane |
 
+*(Wording and a fourth value changed 2026-11-06 — see "Amendment: no waiting
+across pages".)*
+
 Only the pool can tell the last two apart, so `chat.mjs` reports `busy` for any
 warm child and `pool.submit` refines it by asking `busyFor(url)` **before** the
 push.
@@ -3866,6 +3869,9 @@ live one said "waking the agents…" through the entire wait and `busy` was
 unreachable. It now reads `!available || !running`, which is what cold meant.
 
 #### 5. WHY A LANE NEVER MOVES OFF A LIVE CHILD
+
+*(Superseded 2026-11-06 — a lane with nothing queued now moves off a busy
+child; see "Amendment: no waiting across pages" at the end of this file.)*
 
 The controller's session file (`<work>/sessions/<sid>.json`) is rewritten whole
 on every persisted turn — atomically, but with **no lock and no version check**
@@ -11613,3 +11619,70 @@ note there.
   back; in a thread's reply box the words are a reply in that thread.
 - `?bubbles=new&selftest=1` — 43 checks: `/lasso <link> <words>` in a bubble
   attaches, replies in that thread, and shows then clears the note.
+
+## Amendment: no waiting across pages (2026-11-06)
+
+The complaint: "How come I am in a queue for a response on a different
+website?" Three things serialised turns that had nothing to do with each other.
+
+1. **A lane never moved.** A page bound to a child on its first turn and stayed
+   there, so page C waited behind page A on a shared child while another child
+   sat idle. Now (pool.mjs `pick`) a bound page moves when ALL of: it has no
+   turn running or queued on its child; that child is busy with someone else;
+   and an idle child exists or the cap has room. The session rule still holds:
+   with nothing of its own on the old child, that child is not driving the
+   session. The one write the old child can still make to it is the
+   leaving-save in `/resume` (`_resume_session`) — the copy already on disk —
+   and if the new child has written since, `core/session_store.py` refuses the
+   shorter copy (`StaleSessionWrite`). A page with a turn still queued never
+   moves (ordering).
+2. **New pages were placed by lane count, not load.** "A child holding no
+   lanes" is never true after three pages, so a new page went to the child
+   with fewest bindings even if it was busy and another was idle. New pages now
+   go to an idle child (a warm one first), then a new child under the cap, then
+   the shortest queue.
+3. **One child per blog repo.** Every post of the reader's own site waited on
+   every other post. `blogChatFor` now makes a POOL per repo (same cap,
+   `bridge_pool`), every child with the repo as its one write root. Concurrent
+   writes land on different files (each post's own markdown) and nothing holds a
+   file open across a turn. The shared part is the turn-end census, which scans
+   the whole repo: `noteOverlap` tells every scan the source files of turns
+   that overlapped it in the same folder, and `claimOnce` drops those, plus any
+   file another overlapping turn already reported. So post A never reloads,
+   threads or (in direct authoring) re-front-matters post B's rewrite.
+   **Known limit:** a file that is nobody's own source — a brand-new draft, a
+   picture under `assets/` — made while two posts' turns overlap goes to
+   whichever turn ends first. There is no way to tell from the disk who wrote
+   it.
+
+Project-artifact pages are unchanged: one child per (council root, project) is
+the project's write lock, and pages of one project still take turns.
+
+**What the wait line says** (`wait` + new `wait_detail`):
+
+| `wait` | the drawer says |
+| --- | --- |
+| `bridge_starting` | waking the agents… |
+| `busy` | waiting for Claude to finish your previous message here… / …to finish a reply in another thread (the page chat) on this page… (`wait_detail` = `{agents, target}` of the nearest turn of this page ahead) |
+| `pool_busy` | waiting: N chats already running — yours starts when one finishes… (`wait_detail` = `{running, cap}`); only reachable at the cap now |
+| `project_busy` | waiting for another page of this project to finish (one at a time per project)… (server.mjs, a project child busy with a different page) |
+
+**Not built: threads on one page in parallel.** A page's chat and all its
+margin threads are ONE controller session (`page.session_id`), so a new
+thread waits for the page chat's turn. Giving each thread its own lane means a
+`thread.session_id` and its choreography (`/new`, capture, `/resume`), a
+per-turn rather than per-url census map (`turnScans` is keyed by url),
+per-turn interrupt and drop, the send-review round counter, and a choice about
+the decision log, which today relies on the page's turns being serial. On a
+project page it would also scatter sessions into the council project, and on
+a blog page it would put two writers on the same post. Proposal for a later
+round: ordinary (read-only) pages only, a thread's FIRST bot turn forks a
+session (`/new` + the thread's quote and history + a page digest, which the
+envelope already carries), the lane key becomes `pg:<url>#<thread>`, and
+`turnScans`/`busyFor`/`interrupt`/`dropQueued` take `(url, target)`.
+
+Tests: `parallel.test.mjs` (moves to an idle child; never with a queued turn;
+`pool_busy` carries `{running, cap}`; idle child before a spawn;
+`project_busy`), `blog.test.mjs` (two posts of one repo answer at once, and
+only the post that changed reports the change), harness `?selftest=1` (the
+two new wait lines).

@@ -296,20 +296,36 @@ function workspaceChatFor(root, projectId, projectDir) {
 // repo is somewhere the bots may EDIT; it is not somewhere this companion
 // files conversations, and writing session records into a website's git repo
 // would be a surprise nobody asked for.
-const blogChats = new Map();        // repo root → chat
+//
+// …and since 2026-11-06 one POOL of children per repo, not one child. The
+// single child made every page of the reader's own blog wait on every other
+// one: a question on one post queued behind a rewrite of another. Each post
+// is its own lane (pool.mjs — one session, strictly serial), and different
+// posts run at once, up to `bridge_pool` children per repo. Every child in
+// the pool has the same one write root, the repo, so two turns may write in
+// it at the same time. In practice they edit
+// DIFFERENT files — each post's own markdown — and that is safe: nothing here
+// holds a file open across a turn. What is shared is the turn-end census,
+// which scans the whole repo; turns that overlap in one repo exclude each
+// other's posts from what they report (noteOverlap below), so post A's turn
+// never claims post B's rewrite. What two overlapping turns cannot be told
+// apart on is a file NEITHER page owns — a brand-new draft, a picture under
+// assets/ — which goes to whichever turn ends first (claimOnce).
+const blogChats = new Map();        // repo root → pool
 
 function blogChatFor(root, kind = 'jekyll') {
   let c = blogChats.get(root);
   if (c) return c;
   const direct = authoring.siteForRoot(AUTHORING_ROOT);
-  c = createChat({
-    onEvent: onChatEvent,
+  const cfg = store.readConfig();
+  const spawnBlogChild = ({ onEvent, denyBash }) => createChat({
+    onEvent,
     // …and the commands this child may not run, which for every kind of blog
     // root is git and gh. The reader publishes their own website; Discuss has
     // no publish code and its bots are given no way to improvise one. See
     // blog.mjs — the rule belongs to the KIND and lives in code, so a config
     // restored onto another machine cannot arrive with it switched off.
-    denyBash: blog.deniedCommands(kind),
+    denyBash,
     // the ONE directory this child may write in. chat.mjs hands it to the CLIs
     // (BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS), so the boundary is theirs to enforce
     // and not a promise made in a prompt. It is the REPO, because a directory
@@ -335,6 +351,13 @@ function blogChatFor(root, kind = 'jekyll') {
     // …and the placement rule in short, for the one participant that never
     // sees a blog envelope: a summoned build agent (core/summon.py).
     summonNote: direct?.root === root ? authoring.builderPlacement(direct) : blog.summonPlacement(root, kind),
+  });
+  c = createPool({
+    onEvent: onChatEvent,
+    make: spawnBlogChild,
+    denyBash: blog.deniedCommands(kind),
+    max: cfg.bridge_pool,
+    idleMs: cfg.bridge_idle_ms,
   });
   blogChats.set(root, c);
   return c;
@@ -597,14 +620,56 @@ function artifactSnapshot(art) {
   } catch { return ''; }
 }
 
+// ── turns that overlap in ONE writable folder ───────────────────────────
+// A blog repo is served by a pool now (blogChatFor), so two posts' turns can
+// run at once with the same write root, and each turn's census scans the
+// whole repo. Without this, post A's turn-end would report post B's rewrite
+// as its own: reload A's tab for it, open collateral threads for it, and — in
+// direct authoring — rewrite B's front matter and file B as A's output.
+//
+// So every scan in a folder learns the SOURCE FILE of every other turn that
+// ran in the same folder at any moment during it, and drops those files from
+// what it reports. A file that is nobody's own source (a new draft, a picture)
+// cannot be attributed by looking at the disk; it goes to the first turn that
+// reports it and no later overlapping turn reports it again (claimOnce).
+function noteOverlap(url, seen) {
+  seen.t0 = Date.now();
+  seen.others = new Set();
+  for (const [u, other] of turnScans) {
+    if (u === url || !other || other.dir !== seen.dir) continue;
+    if (other.source) seen.others.add(other.source);
+    if (seen.source) (other.others ||= new Set()).add(seen.source);
+  }
+}
+const claims = new Map();   // absolute file path → {url, at}
+const CLAIMS_KEEP = 500;
+// `changed` minus the files another turn in this folder owns or has already
+// reported since this turn began. Recording what is left as this turn's.
+function claimOnce(url, seen, changed) {
+  const others = new Set([...(seen.others || [])]
+    .filter(f => f && f !== seen.source)
+    .map(f => path.relative(seen.dir, f).split(path.sep).join('/')));
+  const mine = changed.filter(rel => {
+    if (others.has(rel)) return false;
+    const c = claims.get(path.join(seen.dir, rel));
+    return !(c && c.url !== url && c.at >= (seen.t0 || 0));
+  });
+  const at = Date.now();
+  for (const rel of mine) claims.set(path.join(seen.dir, rel), { url, at });
+  while (claims.size > CLAIMS_KEEP) claims.delete(claims.keys().next().value);
+  return mine;
+}
+
 function noteTurnStart(url) {
   const writing = authoringFor(url);
   if (writing) {
     const bg = blogOf(url);
-    turnScans.set(url, { authoring: true, dir: writing.root, site: writing,
+    const seen = { authoring: true, dir: writing.root, site: writing,
       source: bg?.source_path || '', noCollateral: !bg?.source_path,
       text: bg?.source_path ? blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel) : '',
-      before: authoring.scan(writing), at: new Date().toISOString() });
+      before: authoring.scan(writing), at: new Date().toISOString() };
+    noteOverlap(url, seen);
+    turnScans.set(url, seen);
     return;
   }
   const art = url ? artifactOf(url) : null;
@@ -636,7 +701,7 @@ function noteTurnStart(url) {
 function noteBlogTurnStart(url) {
   const bg = url ? blogOf(url) : null;
   if (!bg || !bg.confirmed || !bg.source_path) return;
-  turnScans.set(url, {
+  const seen = {
     blog: true,
     dir: bg.root,
     source: bg.source_path,
@@ -666,7 +731,9 @@ function noteBlogTurnStart(url) {
     // write and the tab still has to reload for it.
     noCollateral: !!bg.suggest_mode,
     at: new Date().toISOString(),
-  });
+  };
+  noteOverlap(url, seen);
+  turnScans.set(url, seen);
 }
 
 // One source file's bytes, capped — the same read artifactSnapshot makes, and
@@ -822,7 +889,7 @@ function reportProjectChanges(ev) {
 async function reportAuthoringChanges(url, seen, ev) {
   const site = authoringFor(url);
   if (!site || site.root !== seen.dir) return;
-  const changed = workspace.diffScans(seen.before, authoring.scan(site));
+  const changed = claimOnce(url, seen, workspace.diffScans(seen.before, authoring.scan(site)));
   if (!changed.length) return;
   try {
     const posts = authoring.changedPosts(site, changed, seen.before, url, store.readConfig());
@@ -891,7 +958,7 @@ function reportBlogChanges(url, seen, ev) {
   let placed = [];
   try { placed = scratch.placeFromScratch(bg, seen.cards || []); } catch { placed = []; }
   if (placed.length) console.log(`[blog] ${scratch.placedNote(placed)} (${bg.root})`);
-  const changed = workspace.diffScans(seen.before, blog.scanSite(seen.dir, seen.kind || bg.kind));
+  const changed = claimOnce(url, seen, workspace.diffScans(seen.before, blog.scanSite(seen.dir, seen.kind || bg.kind)));
   if (!changed.length) return;
   const own = path.relative(seen.dir, seen.source).split(path.sep).join('/');
   const payload = {
@@ -2168,7 +2235,11 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
     const w = await lasso.webForTurn(text, { notPage: store.pageKey(page.url) });
     if (w.note) webContext = `${w.note}\n${w.block}`;
   } catch { webContext = ''; }
-  const { position, wait } = c.submit({
+  // A project's child is ONE child (its write lock), shared by every page of
+  // that project. chat.mjs calls any warm-but-taken child 'busy'; here only we
+  // know whether the floor is this page's own or another page's in the project.
+  const ownAhead = typeof c.controlFor !== 'function' && c.busyFor ? c.busyFor(page.url) : true;
+  const submitted = c.submit({
     url: page.url, target, text, title: page.title,
     // no tag on an artifact's page chat: the envelope gets the @all prefix the
     // reader did not have to type (chat.mjs routeOf)
@@ -2195,12 +2266,17 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...(webContext ? { webContext } : {}),
     ...extras,
   });
+  const { position } = submitted;
+  let { wait, wait_detail } = submitted;
+  if (wait === 'busy' && !ownAhead) { wait = 'project_busy'; wait_detail = null; }
   // `wait` is what the drawer says while it waits: bridge_starting (the agents
-  // are being woken), busy (this page's own previous turn still has the floor —
-  // a lane is serial by design) or pool_busy (every child is on somebody else's
-  // lane). Absent = the turn is already running and turn-start is about to say
-  // so.
-  return { queued: true, position, ...(wait ? { wait } : {}) };
+  // are being woken), busy (this page's own earlier turn still has the floor —
+  // a page is one conversation, serial by design; `wait_detail` names which
+  // bots and which thread), pool_busy (every child is busy and the cap is
+  // reached; `wait_detail` = {running, cap}) or project_busy (another page of
+  // the same council project has its one child). Absent = the turn is already
+  // running and turn-start is about to say so.
+  return { queued: true, position, ...(wait ? { wait } : {}), ...(wait && wait_detail ? { wait_detail } : {}) };
 }
 
 // A .docx may ride along with any mention (the reader is annotating a doc and
@@ -2751,7 +2827,9 @@ export function handler(req, res) {
       // (they belong to no page).
       queues: chat ? queueRows() : [],
       bridges: NO_AGENTS ? null
-        : { live: chat.size(), max: chat.cap(), workspace: workspaceChats.size, blog: blogChats.size },
+        : { live: chat.size(), max: chat.cap(), workspace: workspaceChats.size,
+          // children, not repos: one repo may run several posts at once now
+          blog: [...blogChats.values()].reduce((n, p) => n + p.size(), 0) },
       // hosted only: a remote extension has to know its own standing before it
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),

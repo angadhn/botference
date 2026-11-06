@@ -40,10 +40,12 @@
 //   {ok:true, queued, position,   normal; the bots were summoned or not.
 //    wait}                        `wait` is WHY nothing has started yet —
 //                                 'bridge_starting' (the agents are being
-//                                 woken), 'busy' (this conversation's own
-//                                 previous turn still has the floor) or
-//                                 'pool_busy' (every agent is on somebody
-//                                 else's page) — and decides the words on the
+//                                 woken), 'busy' (this page's own earlier
+//                                 turn still has the floor), 'pool_busy'
+//                                 (every agent busy, the cap reached) or
+//                                 'project_busy' (another page of the same
+//                                 project) — with `wait_detail` saying who or
+//                                 how many — and decides the words on the
 //                                 spinning wait line. Absent = under way.
 //   {ok:true, reason:'…'}         saved, but the bots will NOT run for this
 //                                 sender (a guest, or --no-agents) — shown at
@@ -2727,6 +2729,25 @@ ${bubbleShellHtml()}`;
       return `<div class="kids">${out.join('')}</div>`;
     }
 
+    // A message's own controls: ⧉ copy, ✎ edit, ✕ delete. Shared by the
+    // panel's card (replyHtml) and the bubble's (bubbleCardHtml), so the two
+    // places a message is drawn offer the same buttons wired to the same
+    // handlers — an edit made in a bubble is the panel's edit, re-sent the
+    // same way. `canDel` is the caller's: the panel lets anything be pruned,
+    // the bubble only the reader's own.
+    function msgActsHtml(target, r, mine, canDel) {
+      const ckey = target + '|' + r.ts;
+      const cp = D.copied && D.copied.key === ckey ? D.copied : null;
+      const own = !!r.restored;
+      return `<div class="acts">` +
+        `<button class="rebtn${cp && cp.ok ? ' done' : ''}" data-act="copy" data-copykey="${esc(ckey)}"` +
+        ` title="${esc(cp ? (cp.ok ? 'copied' : COPY_FAIL) : COPY_TIP)}"` +
+        ` aria-label="copy this message">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
+        (mine && !own ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
+        (canDel && !own ? `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button>` : '') +
+        `</div>`;
+    }
+
     function replyHtml(target, r, mine) {
       if (isAgentCard(r)) return agentCardHtml(target, r);
       const bot = isBot(r.author);
@@ -2737,21 +2758,13 @@ ${bubbleShellHtml()}`;
       // "copied ✓" is a piece of STATE, not a piece of DOM: a stream landing
       // in another thread rebuilds this whole pane, and a confirmation that
       // vanishes half a second after the click is a confirmation nobody sees
-      const ckey = target + '|' + r.ts;
-      const cp = D.copied && D.copied.key === ckey ? D.copied : null;
       // A RESTORED message came out of a council session record, not out of
       // this companion's page file (workspace.mjs sessionTail). Nothing here
       // owns it: there is nothing to edit and nothing to delete, and its `ts`
       // is an address rather than a date, so it is offered neither control and
       // shows no time. Copy stays — it takes nothing away.
       const own = !!r.restored;
-      const acts = `<div class="acts">` +
-        `<button class="rebtn${cp && cp.ok ? ' done' : ''}" data-act="copy" data-copykey="${esc(ckey)}"` +
-        ` title="${esc(cp ? (cp.ok ? 'copied' : COPY_FAIL) : COPY_TIP)}"` +
-        ` aria-label="copy this message">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
-        (mine && !own ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
-        (own ? '' : `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button>`) +
-        `</div>`;
+      const acts = msgActsHtml(target, r, mine, true);
       // EVERY message is markdown now, whoever wrote it — people paste links
       // into their own comments and expect them to be links. Same renderer as
       // the bots get, which is the point: it builds DOM with createElement and
@@ -4432,6 +4445,22 @@ ${bubbleShellHtml()}`;
     function focusSuggestion(target, ts, id) {
       if (!D.mounted || !id) return false;
       const chat = target === PAGE_TARGET || !CAPS.highlights;
+      // BUBBLES ON, PANEL SHUT, and the card was made in a THREAD: it opens in
+      // that thread's bubble, fanned if the card is behind the lip, and is
+      // flashed there. (A page-chat card has no passage to put a bubble
+      // beside, so it still opens the panel's chat tab, below.)
+      if (!chat && bubblesOn() && !D.opened) {
+        showBubble(target);
+        const find = () => { const b = bubbleEl(target);
+          return b && b.querySelector('.sgcard[data-sg="' + cssq(id) + '"]'); };
+        if (!find() && !B.fan[target]) fanBubble(target);
+        const card = find();
+        if (!card) return false;
+        card.scrollIntoView({ block: 'nearest' });
+        card.classList.add('tasksrc');
+        setTimeout(() => card.classList.remove('tasksrc'), 1600);
+        return true;
+      }
       if (D.view === 'pages') showThreads();
       if (D.tab !== (chat ? 'chat' : 'comments')) {
         D.tab = chat ? 'chat' : 'comments';
@@ -7222,6 +7251,10 @@ ${bubbleShellHtml()}`;
           // composer, in this shadow root — and closing it must never fall
           // through to close(), which would take the shut panel's state with it
           if (bubbleOpen() && e.target && e.target.closest && e.target.closest('.bubble')) {
+            // …and Esc in a message being edited there is about the EDIT: it
+            // puts the message back as it was and leaves the bubble up
+            const ed = e.target.closest('.composer[data-target="__edit__"]');
+            if (ed && !e.shiftKey) { const c = ed.querySelector('.cancel'); if (c) c.click(); return; }
             // Shift+Esc means "all of them" wherever Esc means "this one" —
             // the same pair content.js's own handler offers
             if (e.shiftKey) hideAllBubbles();
@@ -7400,16 +7433,31 @@ ${bubbleShellHtml()}`;
     // another page has the floor — and saying which is the difference between
     // a wait that looks alive and one that looks broken. An older companion
     // sends no `wait` field and gets the word it always used.
-    function waitText(res) {
+    function waitText(res, key) {
       if (res.wait === 'bridge_starting') return 'waking the agents…';
+      // Every other wait says exactly WHY, from what the companion sent with
+      // it (`wait_detail`). 'busy' is THIS page still talking — a page's chat
+      // and its threads are one conversation, so its turns take turns.
+      // 'pool_busy' is the cap: every agent is busy with another chat.
+      // 'project_busy' is another page of the same council project, which
+      // has one agent so its file edits never collide.
+      const d = res.wait_detail || {};
+      if (res.wait === 'busy') {
+        const names = (Array.isArray(d.agents) ? d.agents : [])
+          .map(a => String(a).charAt(0).toUpperCase() + String(a).slice(1));
+        const who = names.length ? names.join(' and ') : 'the bots';
+        if (d.target && key != null && d.target !== key) {
+          return `waiting for ${who} to finish a reply in ${d.target === PAGE_TARGET ? 'the page chat' : 'another thread'} on this page…`;
+        }
+        return `waiting for ${who} to finish your previous message here…`;
+      }
+      if (res.wait === 'pool_busy') {
+        return d.running
+          ? `waiting: ${d.running} chats already running — yours starts when one finishes…`
+          : 'waiting: every agent is busy with another chat…';
+      }
+      if (res.wait === 'project_busy') return 'waiting for another page of this project to finish (one at a time per project)…';
       if (res.position > 1) return `queued (#${res.position})`;
-      // Two different waits, since turns run several at a time. 'busy' is THIS
-      // conversation still talking — a page's chat is one session and its turns
-      // are serial on purpose. 'pool_busy' is every agent in the building taken
-      // by somebody else's page, which is the wait the old single queue used to
-      // give for both and could not tell apart.
-      if (res.wait === 'busy') return 'queued behind this conversation…';
-      if (res.wait === 'pool_busy') return 'queued behind another chat…';
       return 'queued…';
     }
     const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
@@ -7743,7 +7791,7 @@ ${bubbleShellHtml()}`;
       if (res.reason) note(key == null ? null : key, res.reason, true);
       else if (!res.queued) note(target === '__new__' ? null : target, null);
       else if (queueWindowOpen(key, epoch)) {
-        note(key, waitText(res), false, true);
+        note(key, waitText(res, key), false, true);
       } else render();   // the turn is already under way, or already over: say nothing
     }
 
@@ -7896,6 +7944,13 @@ ${bubbleShellHtml()}`;
       const target = btn.dataset.target, ts = btn.dataset.ts;
       if (!reply || reply.querySelector('textarea')) return;
       const body = reply.querySelector('.ctext');
+      // A bubble is as wide as its words (width: max-content), so swapping a
+      // message for a textarea would narrow it and shift its edges under the
+      // reader. Its width is held where it was until the edit is over.
+      // (A bubble the reader has sized already has a width of its own.)
+      const bub = reply.closest('.bubble');
+      const held = bub && !bub.style.width ? bub.getBoundingClientRect().width + 'px' : '';
+      if (held) bub.style.width = held;
       // The RAW stored text, never the rendered DOM. Messages are markdown on
       // screen now, so reading textContent back would hand the user their own
       // sentence with the syntax stripped out — and then save that as the
@@ -7908,13 +7963,21 @@ ${bubbleShellHtml()}`;
         <div class="crow"><span class="hint"></span><button class="cancel" type="button">Cancel</button><button class="send" type="button">Save</button></div></div>`;
       const ta = body.querySelector('textarea');
       ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-      body.querySelector('.cancel').addEventListener('click', ev => { ev.stopPropagation(); render(); });
+      // A BUBBLE'S CARD IS NEVER REBUILT unless what it says has changed
+      // (patchStack keys and signs every card), so render() alone would leave
+      // the editor standing after Cancel. Wiping the card's signature makes
+      // the next repaint swap it for a fresh one — the message as it is.
+      const unedit = () => {
+        if (held && bub.style.width === held) bub.style.width = '';
+        reply.removeAttribute('data-bsig'); render();
+      };
+      body.querySelector('.cancel').addEventListener('click', ev => { ev.stopPropagation(); unedit(); });
       body.querySelector('.send').addEventListener('click', async ev => {
         ev.stopPropagation();
         const v = ta.value.trim();
         if (!v) return;
         const r = await cb('onEdit')(target, ts, v);
-        if (r && r.ok === false) note(target, r.error || 'edit failed', true); else render();
+        if (r && r.ok === false) note(target, r.error || 'edit failed', true); else unedit();
       });
     }
 
@@ -10570,30 +10633,33 @@ ${bubbleShellHtml()}`;
       && a.top < b.bottom && b.top < a.bottom;
 
     // ---- the cards --------------------------------------------------------
-    // One message, one card. The panel's own affordances are deliberately not
-    // here: copy, edit, the ▸more fold, the file/strike/question/lasso chips
-    // and the suggestion stack are all work you do at a desk, and this is a
-    // card floating over the paragraph you are reading. Delete stays, and only
-    // on the reader's own messages — a comment posted by mistake should be
-    // removable from wherever you are looking at it.
+    // One message, one card. Most of the panel's affordances are deliberately
+    // not here: the ▸more fold, the file/strike/question/lasso chips and the
+    // suggestion stack are all work you do at a desk, and this is a card
+    // floating over the paragraph you are reading. The message's own three
+    // controls DO come along (msgActsHtml, the panel's own): ⧉ copy, and on
+    // the reader's own messages ✎ edit and ✕ delete. Edit is the one readers
+    // reach for to add a forgotten @claude/@codex/@all — saving re-sends, so
+    // the bots answer — and that has to work from wherever the message is.
+    // …and a bot's PROPOSED EDITS (msg.suggestions, on a blog source page)
+    // come along whole: the panel's own stack (suggestStackHtml), its
+    // Accept / Reject wired to the same doSuggest, so a change can be
+    // approved from the bubble beside the passage it changes.
     function bubbleCardHtml(target, r) {
       const bot = isBot(r.author);
       const mine = !bot && sameAuthor(r.author);
-      const own = !!r.restored;                 // a restored PDF annotation: no author to delete as
       const who = agentOf(r.author);
       const text = String(r.text == null ? '' : r.text);
       const body = text.trim()
         ? `<div class="ctext md" data-md="${esc(mdSlot(stripMore(text)))}"></div>`
         : `<div class="ctext wordless">the passage was struck through, with no note</div>`;
-      const del = (mine && !own)
-        ? `<button class="brebtn bdel" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}"
-             type="button" title="delete this message" aria-label="delete">✕</button>` : '';
+      const acts = msgActsHtml(target, r, mine, mine);
       return `<div class="reply bcard${bot ? ' bot' : ''}${who ? ' ' + who : ''}${mine ? ' mine' : ''}"
         data-ts="${esc(r.ts)}" data-author="${esc(r.author)}" style="--author:${speakerColor(r.author)}">
         <span class="who"><span class="author">${esc(r.author)}</span>${
           bot ? '<span class="badge bot-badge">bot reply</span>' : ''}${
-          r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span>${del}</span>
-        ${body}${checkStampHtml(r)}</div>`;
+          r.edited ? '<span class="edited">(edited)</span>' : ''}<span class="when">${esc(when(r.ts))}</span>${acts}</span>
+        ${body}${checkStampHtml(r)}${suggestStackHtml(r, target)}</div>`;
     }
 
     // The lip: what a squashed stack shows instead of the messages behind the
@@ -10682,7 +10748,16 @@ ${bubbleShellHtml()}`;
       const { top, kids } = nestMsgs(t.msgs || []);
       // an agent card's sig carries its status: the working card and the
       // report share a ts and an id, and the reconciler must repaint the one
-      const sigOf = m => String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : '')
+      // …and a message carrying proposed edits signs what each card says and
+      // what the panel's suggest state says about it (busy, the one-line
+      // note, the "shown at the comment's passage" note), so an Accept or a
+      // Reject repaints exactly that card
+      const sgSig = m => !(m.suggestions && m.suggestions.length) ? ''
+        : ' :: sg ' + m.suggestions.map(c => c && [c.id, c.state, c.detail || '',
+          TC.on && TC.approx.indexOf(String(c.id || '')) !== -1 ? 'a' : ''].join(':')).join(',')
+          + '|' + D.suggest.busy + '|' + (D.suggest.note && D.suggest.note.ts === String(m.ts || '')
+            ? D.suggest.note.text : '');
+      const sigOf = m => String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : '') + sgSig(m)
         + (isAgentCard(m) ? ' :: ' + m.agent.status + '|' + m.agent.elapsed_s
           + (m.agent.status === 'working' ? '|' + agentStreamKey(target, m.agent.id) : '') : '');
       for (const m of top) {
@@ -11024,7 +11099,10 @@ ${bubbleShellHtml()}`;
           // …or grown DOWN over its own passage, which is what a box placed
           // above its words does when it gets taller
           const onWords = markRects(id).some(m => overlaps(r, m));
-          if (onWords || offGlass({ x: r.left, y: r.top }, r.width, r.height) > 0) {
+          // a message opened for editing is the reader working IN the bubble:
+          // it stays where it is unless it would actually hang off the glass
+          const editing = !!box.querySelector('.composer[data-target="__edit__"]');
+          if ((onWords && !editing) || offGlass({ x: r.left, y: r.top }, r.width, r.height) > 0) {
             B.off[id] = chooseOffset(id, r.width, r.height);
           }
         }
@@ -11855,6 +11933,20 @@ ${bubbleShellHtml()}`;
       },
       // One Esc, one layer. content.js's document-level handler asks this
       // first, so a lightbox closes instead of the whole drawer.
+      // Esc typed into a message being edited inside a bubble: the edit is
+      // the innermost layer, so it is cancelled and the bubble stays up.
+      // content.js asks this before it takes the front bubble down (its
+      // document listener runs first, and only sees the shadow host as the
+      // target — so the real one is read off the composed path).
+      cancelBubbleEdit: (ev) => {
+        const t = ev && typeof ev.composedPath === 'function' ? ev.composedPath()[0] : null;
+        const ed = t && t.closest && t.closest('.bubble .composer[data-target="__edit__"]');
+        const c = ed && ed.querySelector('.cancel');
+        if (!c) return false;
+        escUsed.add(ev);
+        c.click();
+        return true;
+      },
       escape: (ev) => {
         // innermost layer first: the overlap chooser sits over the page, above
         // even a lightbox in the reader's attention, and closing it must not

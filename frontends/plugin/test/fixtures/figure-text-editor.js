@@ -7,14 +7,20 @@
  * on a loopback host, and it is the top window. A query parameter cannot turn
  * it on.
  *
- * What it does: an explicit edit mode in which clicking any text in a known
- * figure (SVG labels, HTML labels, walkthrough notes) opens a plain-text field.
+ * What it does: there is no mode and no button. Hovering editable text shows a
+ * faint dotted outline. In a figure that declares itself (see "figure
+ * declarations" below: SVG labels, HTML labels, step notes, tooltips), a click on plain text edits it in place; Enter applies and
+ * Escape cancels. Links, buttons and all page text (title, headings, prose,
+ * captions, callouts) keep their normal clicks and selection: a small ✎ at the
+ * end of the hovered text edits them instead. Tooltips stay open while the
+ * pointer is in them or their text is being edited.
  * Applying changes ONE text node's data (never innerHTML), so surrounding
  * formatting is untouched and entered text is never executed. Edits are
- * previews, persisted in localStorage per page, reviewable as a batch, and sent
- * with one "Send changes" button to the Discuss (botference) extension over a
- * versioned window.postMessage protocol. Nothing here writes source: the bots
- * apply each edit to its source file and regenerate exports after receipt.
+ * previews, persisted in localStorage per page, reviewable as a batch in a tray
+ * that appears once an edit exists, and sent with one "Send changes" button to
+ * the Discuss (botference) extension over a versioned window.postMessage
+ * protocol. Nothing here writes source (markdown included): the bots apply each
+ * edit to its source file and regenerate exports after receipt.
  *
  * Wire protocol and plugin-side contract:
  *   .botference/plugin/artifacts/figure-editor-plugin-handoff.md
@@ -179,7 +185,7 @@
     if (!c) return '';
     if (c.step === 'cover') return 'cover (before step 1)';
     if (c.step != null) return 'step ' + c.step + (c.of ? ' of ' + c.of : '') + (c.step_title ? ' (“' + c.step_title + '”)' : '');
-    if (c.tooltip) return 'tooltip for #' + c.tooltip;
+    if (c.tooltip) return 'tooltip ' + c.tooltip;
     return JSON.stringify(c);
   }
   function renderMessage(batch) {
@@ -369,94 +375,153 @@
   // ======================================================================
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
-  var SKIP = 'script, style, textarea, input, select, option, button, title, desc, noscript, template, .fte-ui';
+  var SKIP = 'script, style, textarea, input, select, option, title, desc, noscript, template, .fte-ui';
+  // text inside these is never click-to-edit: it keeps its click and shows a ✎
+  var LINKISH = 'a, button, summary, [role="link"]';
+  var WORDY = /[\p{L}\p{N}]/u;
 
-  // Figures this site knows how to trace back to source. `frame` figures are
-  // same-origin iframes whose document is the export of a generator; `inline`
-  // figures live in a note's own markdown. `context` names the state a dynamic
-  // region was showing (a scrolly step, a walkthrough step, an open tooltip),
-  // so a preview is re-applied only where it belongs.
-  var REGISTRY = [
-    {
-      id: 'compute-stack', title: 'Compute stack (ground vs orbit)',
-      frame: '/assets/imgs/space-data-centers/compute-stack.html', root: '.cs-embed',
-      generator: 'assets/imgs/space-data-centers/_build-compute-stack.py',
-      exports: ['assets/imgs/space-data-centers/compute-stack.html', 'assets/imgs/space-data-centers/compute-stack.png',
-        'assets/imgs/space-data-centers/compute-stack.jpg'],
-      context: function (fig, node) {
-        if (!closestEl(node, '.cs-card')) return null;
-        var a = fig.root.querySelector('.cs-node.is-active');
-        return { tooltip: a ? a.id : null };
-      },
-      source: function (fig, node, ctx) {
-        var gen = this.generator;
-        if (closestEl(node, '.cs-card')) {
-          var field = closestEl(node, 'strong') ? 'title (item 0)' : closestEl(node, 'a') ? 'link label (item 2 of the link tuple)' : 'text (item 1)';
-          return { file: gen, locator: 'TIPS["' + (ctx && ctx.tooltip) + '"] ' + field };
-        }
-        if (closestEl(node, '.cs-hint')) return { file: gen, locator: 'page(): the .cs-hint paragraph' };
-        var g = closestEl(node, 'g.cs-node');
-        return { file: gen, locator: 'build_svg()' + (g ? ', inside node("' + g.id + '", …)' : ''),
-          note: 'T() renders " · " as " ·  " (thin space); match the source text without it.' };
-      }
-    },
-    {
-      id: 'ai2040-scrolly', title: 'AI 2040 Plan A scrolly',
-      frame: '/assets/imgs/ai-2040/plan-a-scrolly.html', root: '[data-ai2040-embed]',
-      generator: 'assets/imgs/ai-2040/_build-scrolly.py',
-      exports: ['assets/imgs/ai-2040/plan-a-scrolly.html'],
-      exclude: '.ai2040-detail',
-      passthrough: '.scrolly-nav, .scrolly-dots button',
-      context: function (fig, node) {
-        if (!closestEl(node, '.scrolly-card')) return null;
-        var dots = Array.prototype.slice.call(fig.root.querySelectorAll('.scrolly-dots button'));
-        var i = -1;
-        dots.forEach(function (d, j) { if (d.getAttribute('aria-current') === 'true') i = j; });
-        var title = i >= 0 ? (dots[i].title || '').replace(/<[^>]*>/g, '') : '';
-        return { step: i + 1, of: dots.length, step_index: i, step_title: title };
-      },
-      source: function (fig, node, ctx) {
-        var gen = this.generator, i = ctx ? ctx.step_index : null;
-        var card = closestEl(node, '.scrolly-card');
-        if (card) {
-          var field = closestEl(node, '.card-kicker') ? 'kicker' : closestEl(node, 'h2') ? 'title' :
-            closestEl(node, '.card-body') ? 'body' : closestEl(node, '.card-links') ? 'links (label)' : null;
-          if (field) return { file: gen, locator: 'scrolly_js STEPS[' + i + '].' + field,
-            note: 'title/body are HTML strings; replace only the text, keep the spans.' };
-          return { file: gen, locator: 'scrolly_js fillCard(): the generated step hint' };
-        }
-        if (closestEl(node, '#domainCurves')) return { file: gen, locator: 'layers (the #domainCurves group)' };
-        if (closestEl(node, '#workforcePlot')) return { file: gen, locator: 'workforce_layer (the #workforcePlot group)' };
-        if (closestEl(node, 'svg') && /AI 2040: Interactive Chart/.test(node.data)) return { file: gen, locator: 'svg_out title replacement' };
-        if (closestEl(node, 'svg')) return { file: 'assets/imgs/ai-2040/plan-a-timeline.html',
-          locator: 'the timeline SVG (copied verbatim by _build-scrolly.py)', regenerate: gen };
-        return { file: gen, locator: 'page template' };
-      }
-    },
-    {
-      id: 'epoch-walkthrough', title: 'Epoch chart walkthrough',
-      inline: '#epoch-steps', root: '#epoch-steps',
-      exclude: '.step-viewer__count, .step-viewer__controls',
-      passthrough: '[data-act="prev"], [data-act="next"], [data-act="show-note"], [data-act="hide-note"]',
-      context: function (fig, node) {
-        if (!closestEl(node, '.step-viewer__note')) return null;
-        var c = fig.root.querySelector('.step-viewer__count');
-        if (!c || c.hidden) return { step: 'cover' };
-        var m = /Step (\d+) of (\d+)/.exec(c.textContent || '');
-        return m ? { step: +m[1], of: +m[2] } : { step: null };
-      },
-      source: function (fig, node, ctx) {
-        var file = fig.page.source || '(this note)';
-        if (closestEl(node, '.step-viewer__note')) {
-          var loc = ctx && ctx.step === 'cover' ? 'cover.note' : 'notes[' + (ctx && ctx.step ? ctx.step - 1 : '?') + ']';
-          return { file: file, locator: '<script> walkthrough: ' + loc,
-            note: 'A JS string of HTML; replace only the text, keep the tags and escaped quotes.' };
-        }
-        if (closestEl(node, 'figcaption')) return { file: file, locator: '<figcaption> of #epoch-steps' };
-        return { file: file, locator: '#epoch-steps markup' };
-      }
+  // The note's own text: title, headings, prose, captions, callouts. Never
+  // click-to-edit (clicks, links and selection keep working); a ✎ edits it.
+  var PAGE_TEXT = {
+    id: 'page-text', title: 'Page text', page: 'main article',
+    exclude: 'time, .byline, .article-tags, nav, .note-present, form, iframe, svg, canvas, #webmentions, .giscus, ' +
+      '#companion-music-link, [class*="newsletter"], [class*="paywall"], .reversefootnote',
+    source: function (fig, node) {
+      var file = fig.page.source || '(this page)';
+      var block = closestEl(node, 'h1, h2, h3, h4, h5, h6, p, li, figcaption, td, th, dt, dd, .callout-title, .subtitle, .featured-note') ||
+        closestEl(node, '*');
+      var tag = block.localName, where;
+      if (tag === 'h1' && block === fig.root.querySelector('h1')) where = 'front matter: title';
+      else if (block.classList.contains('subtitle')) where = 'front matter: subtitle';
+      else if (block.classList.contains('featured-note')) where = 'front matter: featured';
+      else if (block.classList.contains('callout-title')) where = 'callout title (the > [!type] line)';
+      else if (closestEl(block, '.callout-content')) where = 'callout body (lines starting with >), ' + tag;
+      else if (tag === 'figcaption') where = 'figure caption (HTML in the markdown)';
+      else where = 'markdown body, ' + (/^h\d$/.test(tag) ? 'heading' : tag === 'li' ? 'list item' : tag === 'td' || tag === 'th' ? 'table cell' : 'paragraph');
+      var heading = null;
+      Array.prototype.forEach.call(fig.root.querySelectorAll('h2, h3, h4'), function (h) {
+        if (h !== block && (h.compareDocumentPosition(block) & 4)) heading = h.textContent.replace(/\s+/g, ' ').trim();
+      });
+      var text = block.textContent.replace(/\s+/g, ' ').trim();
+      return { file: file, locator: where + (heading && where.indexOf('front matter') < 0 ? ', under “' + heading + '”' : ''),
+        block: text.length > 300 ? text.slice(0, 300) + '…' : text, heading: heading,
+        note: 'Rendered from markdown: find original inside this block in the file and replace only those words (markdown syntax may sit between them in source). The browser never edits the markdown.' };
     }
-  ];
+  };
+
+  // ------------------------------------------------- figure declarations
+  // This file names no figure. Each figure declares itself, in its own file,
+  // with one JSON object:
+  //   · a generated export shown in a same-origin iframe carries
+  //       <meta name="figure-editor" content="{…}">  (HTML-escaped JSON)
+  //   · a figure written into a note carries
+  //       <script type="application/json" data-figure-editor>{…}</script>
+  //     whose root is `root` (a selector in the page) or else the script's parent.
+  // Fields (all optional but id):
+  //   id, title       — names used in the batch (figure.id / figure.title)
+  //   root            — selector of the figure's root element in its document
+  //   generator       — the file that writes the export; exports: files it writes
+  //   file            — default source file (else: generator for an export,
+  //                     the note itself for an inline figure)
+  //   exclude         — selector of text that is never editable (controls, nav)
+  //   context: [rule] — the first rule whose `when` contains the text names the
+  //                     state it is showing, so a preview re-applies only there:
+  //       {when, tooltip: {active: sel, attr}}         → {tooltip}
+  //       {when, step: {items: sel, current, title_attr}} → {step, of, step_index, step_title}
+  //       {when, counter: {el: sel, pattern, hidden}}  → {step, of} (or `hidden` while hidden)
+  //   source: [rule]  — the first rule that matches gives the edit's source:
+  //       {when: sel, text: regex on the text, ctx: {key: value},
+  //        file, locator, note, regenerate}
+  //     `locator` and `note` fill {ctx.key}, {ctx.key-N} (a number minus N, or ?)
+  //     and {match.attr} (an attribute of the element `when` matched).
+  function parseDecl(json) {
+    var d = null;
+    try { d = JSON.parse(json || 'null'); } catch (e) { return null; }
+    if (!d || typeof d !== 'object' || typeof d.id !== 'string' || !d.id || d.id === PAGE_TEXT.id) return null;
+    return d;
+  }
+  function qs(root, sel) { try { return sel ? root.querySelector(sel) : null; } catch (e) { return null; } }
+  function qsa(root, sel) { try { return sel ? Array.prototype.slice.call(root.querySelectorAll(sel)) : []; } catch (e) { return []; } }
+  function within_(node, sel) { try { return closestEl(node, sel); } catch (e) { return null; } }
+  function matches(el, sel) { try { return !!(el && el.matches && el.matches(sel)); } catch (e) { return false; } }
+
+  function contextOf(decl, fig, node) {
+    var rules = Array.isArray(decl.context) ? decl.context : [];
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i] || {};
+      if (!r.when || !within_(node, r.when)) continue;
+      if (r.tooltip) {
+        var a = qs(fig.root, r.tooltip.active);
+        return { tooltip: a ? a.getAttribute(r.tooltip.attr || 'id') : null };
+      }
+      if (r.step) {
+        var items = qsa(fig.root, r.step.items), at = -1;
+        items.forEach(function (d, j) { if (matches(d, r.step.current || '[aria-current="true"]')) at = j; });
+        var title = at >= 0 ? (items[at].getAttribute(r.step.title_attr || 'title') || '').replace(/<[^>]*>/g, '') : '';
+        return { step: at + 1, of: items.length, step_index: at, step_title: title };
+      }
+      if (r.counter) {
+        var c = qs(fig.root, r.counter.el);
+        if (!c || c.hidden) return clone(r.counter.hidden || null);
+        var m = null;
+        try { m = new RegExp(r.counter.pattern || '(\\d+)\\D+(\\d+)').exec(c.textContent || ''); } catch (e) { m = null; }
+        return m ? { step: +m[1], of: +m[2] } : { step: null };
+      }
+      return null;
+    }
+    return null;
+  }
+  function fill(tpl, ctx, matchEl) {
+    if (typeof tpl !== 'string') return tpl;
+    return tpl.replace(/\{ctx\.(\w+)(?:-(\d+))?\}/g, function (_, k, minus) {
+      var v = ctx ? ctx[k] : null;
+      if (minus) return typeof v === 'number' && v ? String(v - +minus) : '?';
+      return String(v);
+    }).replace(/\{match\.([\w-]+)\}/g, function (_, k) {
+      return (matchEl && matchEl.getAttribute(k)) || '';
+    });
+  }
+  function sourceOf(decl, fig, node, ctx) {
+    var file = decl.file || (fig.frame && (decl.generator || fig.baseline.generator)) || fig.page.source || '(this note)';
+    var rules = Array.isArray(decl.source) ? decl.source : [];
+    for (var i = 0; i < rules.length; i++) {
+      var r = rules[i] || {}, hit = null;
+      if (r.when) { hit = within_(node, r.when); if (!hit) continue; }
+      if (r.text) { var ok = false; try { ok = new RegExp(r.text).test(node.data); } catch (e) { ok = false; } if (!ok) continue; }
+      if (r.ctx && !Object.keys(r.ctx).every(function (k) { return ctx && same(ctx[k], r.ctx[k]); })) continue;
+      var out = { file: r.file || file, locator: fill(r.locator || '', ctx, hit) };
+      if (r.regenerate) out.regenerate = r.regenerate;
+      if (r.note) out.note = fill(r.note, ctx, hit);
+      return out;
+    }
+    return { file: file, locator: decl.root || 'figure markup' };
+  }
+  // A declaration as the editor uses it (the same shape PAGE_TEXT has).
+  function specOf(decl) {
+    return {
+      id: decl.id, title: typeof decl.title === 'string' && decl.title ? decl.title : decl.id,
+      generator: typeof decl.generator === 'string' ? decl.generator : null,
+      exports: Array.isArray(decl.exports) ? decl.exports.filter(function (x) { return typeof x === 'string'; }) : [],
+      exclude: typeof decl.exclude === 'string' ? decl.exclude : null,
+      context: function (fig, node) { return contextOf(decl, fig, node); },
+      source: function (fig, node, ctx) { return sourceOf(decl, fig, node, ctx); }
+    };
+  }
+  // Every figure a document declares: [{spec, root}]
+  function declaredIn(doc) {
+    var out = [];
+    qsa(doc, 'meta[name="figure-editor"]').forEach(function (m) {
+      var d = parseDecl(m.getAttribute('content'));
+      var root = d && (d.root ? qs(doc, d.root) : doc.body);
+      if (root) out.push({ spec: specOf(d), root: root });
+    });
+    qsa(doc, 'script[type="application/json"][data-figure-editor]').forEach(function (s) {
+      var d = parseDecl(s.textContent);
+      var root = d && (d.root ? qs(doc, d.root) : s.parentElement);
+      if (root) out.push({ spec: specOf(d), root: root });
+    });
+    return out;
+  }
 
   function closestEl(node, sel) {
     var el = node && (node.nodeType === 1 ? node : node.parentElement || node.parentNode);
@@ -464,12 +529,15 @@
   }
   function isSvg(node) { var el = closestEl(node, '*'); return !!(el && el.namespaceURI === SVG_NS); }
   function eligible(fig, node) {
-    if (!node || node.nodeType !== 3 || !node.data.trim()) return false;
+    if (!node || node.nodeType !== 3 || !WORDY.test(node.data)) return false;
     if (!fig.root.contains(node)) return false;
     if (closestEl(node, SKIP)) return false;
-    if (fig.spec.exclude && closestEl(node, fig.spec.exclude)) return false;
+    if (fig.spec.exclude && within_(node, fig.spec.exclude)) return false;
+    // text inside a nested figure belongs to that figure, not to the page
+    if (closestEl(node, '[data-fte-root]') !== fig.root) return false;
     return true;
   }
+  function modeOf(fig, node) { return fig.spec.page || closestEl(node, LINKISH) ? 'icon' : 'click'; }
   function eligibleIn(fig, el) {
     var out = [];
     if (!el) return out;
@@ -477,14 +545,16 @@
     for (var n = w.nextNode(); n; n = w.nextNode()) if (eligible(fig, n)) out.push(n);
     return out;
   }
+  // the line boxes of a text node's words (its leading/trailing spaces excluded)
   function textRects(node) {
-    var r = node.ownerDocument.createRange();
-    r.selectNodeContents(node);
+    var r = node.ownerDocument.createRange(), ws = splitWs(node.data);
+    r.setStart(node, ws.lead.length); r.setEnd(node, ws.lead.length + ws.core.length);
     return Array.prototype.slice.call(r.getClientRects()).filter(function (b) { return b.width > 0 && b.height > 0; });
   }
   function within(node, x, y) {
     return textRects(node).some(function (b) { return x >= b.left - 3 && x <= b.right + 3 && y >= b.top - 3 && y <= b.bottom + 3; });
   }
+  function inRect(b, x, y) { return x >= b.left && x <= b.right && y >= b.top && y <= b.bottom; }
   function pickText(fig, x, y, target) {
     var hit = null, doc = fig.doc;
     try {
@@ -492,8 +562,10 @@
       else if (doc.caretPositionFromPoint) { var p = doc.caretPositionFromPoint(x, y); if (p) hit = p.offsetNode; }
     } catch (e) { hit = null; }
     if (hit && eligible(fig, hit) && within(hit, x, y)) return hit;
+    // SVG text often has no caret position: look among the target's own text
     var scope = closestEl(target, 'text') || (target && target.nodeType === 1 ? target : closestEl(target, '*'));
     var c = eligibleIn(fig, scope);
+    if (c.length > 40) return null;
     for (var i = 0; i < c.length; i++) if (within(c[i], x, y)) return c[i];
     return null;
   }
@@ -519,8 +591,8 @@
   function humanPath(fig, el) {
     var parts = [];
     for (var e = el; e && e !== fig.root && parts.length < 5; e = e.parentElement) {
-      var cls = typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\s+/)[0] : '';
-      parts.unshift(e.localName + (e.id ? '#' + e.id : cls));
+      var names = typeof e.className === 'string' ? e.className.trim().split(/\s+/).filter(function (c) { return c && c !== 'fte-hot'; }) : [];
+      parts.unshift(e.localName + (e.id ? '#' + e.id : names.length ? '.' + names[0] : ''));
     }
     return parts.join(' > ');
   }
@@ -585,10 +657,11 @@
 
   // ------------------------------------------------------------------ styles
   var CSS = [
-    '.fte-ui{--fte-bg:#fffdf6;--fte-ink:#2b2620;--fte-muted:#6f675a;--fte-line:#d8cfbc;--fte-accent:#9a7b52;--fte-ok:#3d6b3a;--fte-bad:#a33b2a;--fte-btn:#2b2620;--fte-btn-ink:#fffdf6;--fte-mark:rgba(216,184,138,.32);',
+    '.fte-ui{--fte-bg:#fffdf6;--fte-ink:#2b2620;--fte-muted:#6f675a;--fte-line:#d8cfbc;--fte-accent:#9a7b52;--fte-ok:#3d6b3a;--fte-bad:#a33b2a;--fte-btn:#2b2620;--fte-btn-ink:#fffdf6;--fte-mark:rgba(216,184,138,.32);--fte-hover:rgba(154,123,82,.7);',
     'font-family:Baskerville,"Libre Baskerville",Palatino,Georgia,serif;color:var(--fte-ink);font-size:15px;line-height:1.35;box-sizing:border-box}',
-    'html[data-theme="dark"] .fte-ui{--fte-bg:#262119;--fte-ink:#ece4d3;--fte-muted:#b0a691;--fte-line:#4a4236;--fte-accent:#c39a68;--fte-ok:#8fc48a;--fte-bad:#ef8f7c;--fte-btn:#ece4d3;--fte-btn-ink:#211d17;--fte-mark:rgba(195,154,104,.28)}',
+    'html[data-theme="dark"] .fte-ui{--fte-bg:#262119;--fte-ink:#ece4d3;--fte-muted:#b0a691;--fte-line:#4a4236;--fte-accent:#c39a68;--fte-ok:#8fc48a;--fte-bad:#ef8f7c;--fte-btn:#ece4d3;--fte-btn-ink:#211d17;--fte-mark:rgba(195,154,104,.28);--fte-hover:rgba(214,178,128,.75)}',
     '.fte-ui *{box-sizing:border-box}',
+    '.fte-ui[hidden],.fte-ui [hidden]{display:none!important}',
     '.fte-ui button{font:inherit;font-size:14px;line-height:1.2;color:var(--fte-ink);background:transparent;border:1px solid var(--fte-line);border-radius:4px;padding:.35rem .65rem;cursor:pointer;min-height:2rem}',
     '.fte-ui button:hover:not(:disabled){border-color:var(--fte-accent)}',
     '.fte-ui button:disabled{opacity:.45;cursor:default}',
@@ -597,17 +670,13 @@
     // the site recolours every :focus with !important; keep the editor's own colours (the outline still shows focus)
     '.fte-ui button:focus:not(#fte-x),.fte-ui textarea:focus:not(#fte-x){background:transparent!important;color:var(--fte-ink)!important}',
     '.fte-ui .fte-primary:focus:not(#fte-x){background:var(--fte-btn)!important;color:var(--fte-btn-ink)!important}',
-    '.fte-ui .fte-toggle:focus:not(#fte-x){background:var(--fte-bg)!important}',
-    '.fte-dock{position:fixed;left:1rem;bottom:1rem;z-index:2147483000;max-width:min(26rem,calc(100vw - 2rem))}',
-    '.fte-toggle{background:var(--fte-bg)!important;box-shadow:0 2px 10px rgba(43,38,32,.22);border-radius:999px!important;padding:.45rem .9rem!important}',
-    '.fte-badge{display:inline-block;margin-left:.4rem;padding:0 .4rem;border-radius:999px;background:var(--fte-accent);color:var(--fte-btn-ink);font-size:12px;font-weight:700}',
-    '.fte-panel{background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 22px rgba(43,38,32,.25);padding:.7rem .8rem .75rem;width:26rem;max-width:100%}',
-    '.fte-panel[hidden],.fte-review[hidden],.fte-toggle[hidden],.fte-pop[hidden]{display:none!important}',
-    '.fte-head{display:flex;align-items:baseline;gap:.5rem;margin:0 0 .3rem}',
+    '.fte-ui.fte-field textarea:focus:not(#fte-x){background:var(--fte-bg)!important}',
+    '.fte-ui.fte-pencil:focus:not(#fte-x){background:var(--fte-bg)!important;color:var(--fte-accent)!important}',
+    '.fte-dock{position:fixed;left:1rem;bottom:1rem;z-index:2147483000;width:26rem;max-width:calc(100vw - 2rem)}',
+    '.fte-panel{background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 22px rgba(43,38,32,.25);padding:.6rem .8rem .7rem}',
+    '.fte-head{display:flex;align-items:baseline;gap:.5rem;margin:0 0 .35rem}',
     '.fte-head strong{font-size:16px}',
     '.fte-head .fte-tag{font-size:12px;font-style:italic;color:var(--fte-muted)}',
-    '.fte-head button{margin-left:auto}',
-    '.fte-hint{margin:0 0 .5rem;font-size:14px;font-style:italic;color:var(--fte-muted)}',
     '.fte-bridge{display:flex;gap:.45rem;align-items:baseline;margin:0 0 .55rem;font-size:13.5px}',
     '.fte-dot{flex:0 0 auto;width:.6rem;height:.6rem;border-radius:50%;background:var(--fte-muted);transform:translateY(.05rem)}',
     '.fte-bridge[data-state="ready"] .fte-dot{background:var(--fte-ok)}',
@@ -626,27 +695,20 @@
     '.fte-item .fte-itemrow{display:flex;gap:.5rem;align-items:flex-start;justify-content:space-between}',
     '.fte-item button{padding:.15rem .45rem;min-height:1.6rem;font-size:12.5px}',
     '.fte-empty{font-size:13.5px;color:var(--fte-muted);font-style:italic;margin:.4rem 0}',
-    '.fte-pop{position:fixed;z-index:2147483001;width:min(24rem,calc(100vw - 1.5rem));background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 22px rgba(43,38,32,.3);padding:.6rem .7rem .65rem}',
-    '.fte-pop .fte-where{margin:0 0 .35rem;font-size:12.5px;font-style:italic;color:var(--fte-muted)}',
-    '.fte-pop textarea{display:block;width:100%;min-height:2.6rem;resize:vertical;font:inherit;font-size:15px;color:var(--fte-ink);background:transparent;border:1px solid var(--fte-line);border-radius:3px;padding:.35rem .45rem}',
-    '.fte-pop textarea:focus{outline:2px solid var(--fte-accent);outline-offset:0}',
-    '.fte-pop .fte-orig{margin:.35rem 0 .45rem;font-size:12.5px;color:var(--fte-muted);word-break:break-word}',
-    '.fte-pop .fte-row button{min-height:1.9rem}',
-    '.fte-pop .fte-keys{margin-right:auto;font-size:12px;color:var(--fte-muted);font-style:italic}',
+    // in-place field: sits exactly over the text it replaces
+    '.fte-field{position:fixed;z-index:2147483001;line-height:1.25}',
+    '.fte-field textarea{display:block;width:100%;margin:0;resize:none;overflow:hidden;padding:1px 4px;border:0;border-radius:2px;background:var(--fte-bg);color:var(--fte-ink);outline:2px solid var(--fte-accent);outline-offset:0;box-shadow:0 2px 14px rgba(43,38,32,.28);line-height:1.25}',
+    '.fte-field .fte-keys{display:block;width:max-content;max-width:min(30rem,100%);margin-top:5px;padding:1px 6px;border-radius:2px;background:var(--fte-bg);font-size:12px;font-style:italic;color:var(--fte-muted);box-shadow:0 1px 5px rgba(43,38,32,.18)}',
+    '.fte-pencil{position:fixed;z-index:2147483002;width:17px;height:17px;min-height:0!important;padding:0!important;border-radius:50%!important;border:1px solid var(--fte-accent)!important;background:var(--fte-bg)!important;color:var(--fte-accent)!important;font-size:11px!important;line-height:15px!important;text-align:center;box-shadow:0 1px 4px rgba(43,38,32,.22);cursor:pointer}',
+    '.fte-toast{position:fixed;left:50%;bottom:1rem;transform:translateX(-50%);z-index:2147483003;max-width:min(32rem,calc(100vw - 2rem));background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 18px rgba(43,38,32,.25);padding:.4rem .7rem;font-size:14px}',
     '.fte-layer{position:fixed;inset:0;pointer-events:none;z-index:2147482999}',
     '.fte-box{position:fixed;pointer-events:none;border-radius:2px}',
     '.fte-box[data-kind="edited"]{background:var(--fte-mark);border-bottom:2px solid var(--fte-accent)}',
     '.fte-box[data-kind="delivered"]{border-bottom:2px dotted var(--fte-accent)}',
-    '.fte-box[data-kind="hover"]{outline:1.5px dashed var(--fte-accent);outline-offset:1px}',
-    '.fte-box[data-kind="active"]{outline:2px solid var(--fte-accent);outline-offset:2px}',
-    'html.fte-editing [data-fte-root]{outline:2px dashed rgba(154,123,82,.55);outline-offset:4px}',
-    // narrow = the VISIBLE width (visualViewport), because a page that overflows sideways
-    // widens the layout viewport that fixed positioning and media queries measure
-    '.fte-dock.fte-narrow{left:.5rem;right:auto;bottom:.5rem;max-width:none}.fte-narrow .fte-panel{width:auto}.fte-dock.fte-narrow.is-popping{display:none}',
-    '.fte-pop.fte-narrow{left:.5rem!important;right:auto!important;top:auto!important;bottom:.5rem!important}'
+    '.fte-box[data-kind="hover"]{outline:1px dotted var(--fte-hover);outline-offset:1px}',
+    '.fte-hot{cursor:text!important}'
   ].join('\n');
-  var FRAME_CSS = 'html.fte-editing, html.fte-editing *{cursor:text!important}' +
-    'html.fte-editing .scrolly-nav, html.fte-editing .scrolly-dots button{cursor:pointer!important}';
+  var FRAME_CSS = '.fte-hot, .fte-hot *{cursor:text!important}';
 
   function el(doc, tag, cls, text) {
     var e = doc.createElement(tag);
@@ -654,27 +716,34 @@
     if (text != null) e.textContent = text;
     return e;
   }
+  function norm(t) { if (t && t.nodeType === 3) t = t.parentNode; return t && typeof t.nodeType === 'number' ? t : null; }
 
   // ------------------------------------------------------------------ editor
+  // No mode: on the local preview the editor is always listening. Hover shows
+  // what can change; a click on plain figure text edits it in place; links,
+  // buttons and all page text get a ✎ instead, so their clicks (and prose
+  // selection, which the Discuss extension uses) are left alone.
   function Editor(win, page) {
     var self = this;
     var doc = win.document;
     this.win = win; this.doc = doc; this.page = page;
     this.figs = [];
-    this.editing = false;
+    this.listened = [];
+    this.held = [];
+    this.hover = null; this.field = null; this.pressed = null; this.pointer = null;
     this.store = new Store(safeStorage(win), STORE_PREFIX + win.location.pathname);
     this.bridge = new Bridge(win);
     this.sender = new Sender(this.store, this.bridge, function () { return self.pageInfo(); });
     this.sending = false;
-    this.appliedNow = 0;
-    this.blocked = [];
     this.buildUi();
     this.bridge.onChange(function () { self.render(); });
+    this.listen(win);
     this.discover();
     new win.MutationObserver(function () { self.discover(); }).observe(doc.body, { childList: true, subtree: true });
     win.addEventListener('keydown', function (ev) {
-      if (!self.editing || ev.defaultPrevented) return;
-      if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && (ev.key === 'z' || ev.key === 'Z') && !closestEl(ev.target, 'textarea, input')) {
+      if (ev.defaultPrevented || !self.store.state.undo.length || self.field) return;
+      if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && (ev.key === 'z' || ev.key === 'Z') &&
+          !closestEl(norm(ev.target), 'textarea, input, select, [contenteditable]')) {
         ev.preventDefault(); self.undo();
       }
     });
@@ -696,44 +765,43 @@
   // -------------------------------------------------------- figure discovery
   Editor.prototype.discover = function () {
     var self = this, doc = this.doc;
-    REGISTRY.forEach(function (spec) {
-      if (spec.inline) {
-        var root = doc.querySelector(spec.inline);
-        if (root && !self.figFor(root)) self.attach(spec, root, null);
-      }
-      if (spec.frame) {
-        Array.prototype.forEach.call(doc.querySelectorAll('iframe'), function (f) {
-          if (f.__fteSpec) return;
-          var u; try { u = new URL(f.getAttribute('src') || '', self.win.location.href); } catch (e) { return; }
-          if (u.origin !== self.win.location.origin) return;
-          // by path, or by an explicit opt-in naming a registry entry (a copied or moved export)
-          if (u.pathname !== spec.frame && f.getAttribute('data-figure-editable') !== spec.id) return;
-          f.__fteSpec = spec;
-          var tryAttach = function () {
-            var d; try { d = f.contentDocument; } catch (e) { return; }
-            var root = d && d.querySelector(spec.root);
-            if (!root) return;
-            // one live attachment per frame: the same document is already handled;
-            // a reloaded document replaces the old attachment and its observer
-            var old = self.figs.filter(function (g) { return g.frame === f; })[0];
-            if (old && old.root === root) return;
-            if (old) { old.observer.disconnect(); self.figs.splice(self.figs.indexOf(old), 1); }
-            self.attach(spec, root, f);
-          };
-          f.addEventListener('load', tryAttach);
-          tryAttach();
-        });
-      }
-    });
-    // A future figure can opt in without a registry entry.
-    Array.prototype.forEach.call(doc.querySelectorAll('[data-figure-editable]:not(iframe)'), function (root) {
-      if (self.figFor(root)) return;
-      var id = root.getAttribute('data-figure-editable') || root.id || 'figure';
-      self.attach({ id: id, title: root.getAttribute('data-figure-title') || id, root: null,
-        source: function (fig) { return { file: root.getAttribute('data-figure-source') || (fig.page.source || '(this page)'), locator: '#' + (root.id || id) }; } }, root, null);
+    var page = doc.querySelector(PAGE_TEXT.page);
+    if (page && !this.figFor(page)) this.attach(PAGE_TEXT, page, null);
+    // figures written into this page
+    declaredIn(doc).forEach(function (x) { if (!self.figFor(x.root)) self.attach(x.spec, x.root, null); });
+    // same-origin iframes whose document declares a figure
+    Array.prototype.forEach.call(doc.querySelectorAll('iframe'), function (f) {
+      if (f.__fteSeen) return;
+      var u; try { u = new URL(f.getAttribute('src') || '', self.win.location.href); } catch (e) { return; }
+      if (u.origin !== self.win.location.origin) return;
+      f.__fteSeen = true;
+      var tryAttach = function () {
+        var d; try { d = f.contentDocument; } catch (e) { return; }
+        if (!d) return;
+        var found = declaredIn(d);
+        // one live attachment per declared root: the same document is already
+        // handled; a reloaded document replaces the old attachments and observers
+        var old = self.figs.filter(function (g) { return g.frame === f; });
+        if (old.length && old.every(function (g) { return g.root.ownerDocument === d; })) return;
+        old.forEach(function (g) { g.observer.disconnect(); self.figs.splice(self.figs.indexOf(g), 1); });
+        found.forEach(function (x) { self.attach(x.spec, x.root, f); });
+      };
+      f.addEventListener('load', tryAttach);
+      tryAttach();
     });
   };
   Editor.prototype.figFor = function (root) { return this.figs.filter(function (f) { return f.root === root; })[0] || null; };
+  // the innermost figure containing t (the walkthrough sits inside the page text)
+  Editor.prototype.figAt = function (w, t) {
+    if (!t) return null;
+    var best = null;
+    this.figs.forEach(function (f) { if (f.win === w && f.root.contains(t) && (!best || best.root.contains(f.root))) best = f; });
+    return best;
+  };
+  Editor.prototype.frameOf = function (w) {
+    for (var i = 0; i < this.figs.length; i++) if (this.figs[i].win === w && this.figs[i].frame) return this.figs[i].frame;
+    return null;
+  };
 
   Editor.prototype.attach = function (spec, root, frame) {
     var self = this;
@@ -747,9 +815,8 @@
     if (frame) {
       var st = fdoc.createElement('style'); st.className = 'fte-ui'; st.textContent = FRAME_CSS;
       fdoc.head.appendChild(st);
-      fdoc.documentElement.classList.toggle('fte-editing', this.editing);
     }
-    this.block(fwin, fdoc);
+    this.listen(fwin);
     // baseline: the generator digest the export carries, plus a digest of
     // exactly what was rendered (taken before any preview touches it)
     var rendered = root.outerHTML;
@@ -768,7 +835,7 @@
   };
 
   // Re-apply previews after a re-render, and notice edits the source now has.
-  Editor.prototype.reconcile = function (fig, initial) {
+  Editor.prototype.reconcile = function (fig) {
     var self = this, applied = 0;
     fig.applying = true;
     fig.live = {}; fig.missing = {};
@@ -789,7 +856,8 @@
     });
     fig.observer && fig.observer.takeRecords();
     fig.applying = false;
-    if (applied) { this.appliedNow += applied; this.render(); }
+    if (applied) { this.toast(applied + ' earlier edit' + (applied === 1 ? ' is' : 's are') + ' now in the source (applied).'); this.render(); }
+    if (Object.keys(fig.live).length) this.loop();
   };
   Editor.prototype.revertNode = function (fig, key) {
     var n = fig.live[key];
@@ -807,127 +875,203 @@
     this.figs.forEach(function (fig) {
       if (key.indexOf(fig.spec.id + '|') !== 0) return;
       self.revertNode(fig, key);
-      self.reconcile(fig, false);
+      self.reconcile(fig);
     });
   };
 
-  // ------------------------------------------- edit mode: capture all input
-  Editor.prototype.block = function (fwin, fdoc) {
-    if (this.blocked.indexOf(fwin) >= 0) return;
-    this.blocked.push(fwin);
+  // ------------------------------------------------------------ input wiring
+  // Capture-phase listeners on the top window and every figure frame. They
+  // stop an event only when it is a press on plain figure text (which edits
+  // it), or, inside the frame a field or ✎ belongs to, a pointer-leave/blur
+  // that would close the tooltip being edited. Everything else passes.
+  Editor.prototype.listen = function (w) {
+    if (this.listened.indexOf(w) >= 0) return;
+    this.listened.push(w);
     var self = this;
-    var figAt = function (t) {
-      if (!t || typeof t.nodeType !== 'number') return null;
-      for (var i = 0; i < self.figs.length; i++) { var f = self.figs[i]; if (f.win === fwin && f.root.contains(t)) return f; }
-      return null;
-    };
-    var frameOwned = fwin !== self.win;
-    var handler = function (ev) {
-      if (!self.editing) return;
-      var t = ev.target;
-      if (t && t.nodeType === 3) t = t.parentNode;
-      if (t && typeof t.nodeType === 'number' && closestEl(t, '.fte-ui')) return;
-      var fig = figAt(t);
-      if (!fig && !frameOwned) return;
-      var pass = fig && fig.spec.passthrough && closestEl(t, fig.spec.passthrough);
-      var type = ev.type;
-      if (pass && (type === 'click' || type === 'pointerdown' || type === 'pointerup' || type === 'mousedown' || type === 'mouseup')) return;
-      if (type === 'keydown') {
-        if (pass || !(ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Escape')) return;
-      }
-      if (type === 'pointermove' || type === 'mousemove') {
-        if (fig && ev.pointerType !== 'touch') self.hoverAt(fig, ev.clientX, ev.clientY, ev.target);
-      }
-      if (type !== 'focus' && type !== 'blur' && type !== 'focusin' && type !== 'focusout' &&
-          type !== 'pointermove' && type !== 'mousemove' && type.indexOf('touch') !== 0) ev.preventDefault();
+    w.addEventListener('mousemove', function (ev) { self.onMove(w, ev); }, true);
+    ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'dblclick'].forEach(function (type) {
+      w.addEventListener(type, function (ev) { self.onPress(w, ev); }, true);
+    });
+    ['pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave',
+      'focus', 'blur', 'focusin', 'focusout'].forEach(function (type) {
+      w.addEventListener(type, function (ev) { self.onPassive(w, ev); }, true);
+    });
+    w.addEventListener('scroll', function () { self.paintSoon(); }, true);
+  };
+  Editor.prototype.isUi = function (t) { return !!(t && t.ownerDocument === this.doc && closestEl(t, '.fte-ui')); };
+  Editor.prototype.toTop = function (w, x, y) {
+    if (w === this.win) return { x: x, y: y };
+    var f = this.frameOf(w);
+    if (!f) return null;
+    var r = f.getBoundingClientRect();
+    return { x: x + r.left + f.clientLeft, y: y + r.top + f.clientTop };
+  };
+
+  Editor.prototype.onMove = function (w, ev) {
+    if (this.replaying) return;
+    this.pointer = this.toTop(w, ev.clientX, ev.clientY);
+    this.releaseHeld(w);
+    if (this.field || this.sending) return;
+    if (ev.buttons) { this.setHover(null); return; }
+    var t = norm(ev.target);
+    if (this.isUi(t)) { if (closestEl(t, '.fte-pencil')) this.keepHover(); else this.setHover(null); return; }
+    var fig = this.figAt(w, t);
+    var n = fig ? pickText(fig, ev.clientX, ev.clientY, t) : null;
+    if (n && fig.spec.page) {
+      // a selection in progress belongs to the reader (and to Discuss)
+      var sel = w.getSelection && w.getSelection();
+      if (sel && !sel.isCollapsed) { this.setHover(null); return; }
+    }
+    if (n) this.setHover({ fig: fig, node: n, mode: modeOf(fig, n) });
+    else this.hoverLeaveSoon();
+  };
+
+  Editor.prototype.onPress = function (w, ev) {
+    if (this.replaying) return;
+    var type = ev.type, t = norm(ev.target);
+    if (this.isUi(t)) return;
+    if (type === 'pointerdown' || (type === 'mousedown' && !this.pointerSeen)) {
+      if (type === 'pointerdown') this.pointerSeen = true;
+      // a press anywhere else applies the open field, then acts as usual
+      if (this.field) this.commitField(true);
+      this.pressed = null;
+      if (ev.button !== 0 || this.sending || (ev.pointerType && ev.pointerType !== 'mouse')) return;
+      var fig = this.figAt(w, t);
+      var n = fig && !fig.spec.page ? pickText(fig, ev.clientX, ev.clientY, t) : null;
+      if (n && modeOf(fig, n) === 'click') this.pressed = { fig: fig, node: n, w: w };
+    }
+    var pr = this.pressed;
+    if (!pr || pr.w !== w) return;
+    // the press is on plain figure text: it edits, so the figure never sees it
+    if (type !== 'pointerdown' && type !== 'pointerup') ev.preventDefault(); // mousedown: no focus, no selection
+    ev.stopImmediatePropagation();
+    if (type === 'click') { this.pressed = null; this.openField(pr.fig, pr.node); }
+    else if (type === 'dblclick') this.pressed = null;
+  };
+
+  // Hold back what would close a tooltip whose text is being edited (or whose
+  // link's ✎ the pointer is travelling to): the field and the ✎ live in the
+  // top document, so reaching them makes the frame think the pointer left.
+  Editor.prototype.onPassive = function (w, ev) {
+    if (this.replaying || w === this.win) return;
+    var f = this.field, h = this.hover;
+    var leave = /(leave|out)$/.test(ev.type), t = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+    if (f && f.fig.win === w) {
+      if (leave && t) this.hold(w, t, ev);
       ev.stopImmediatePropagation();
-      if (type === 'click' && fig) self.clickAt(fig, ev.clientX, ev.clientY, ev.target);
-    };
-    ['click', 'dblclick', 'auxclick', 'pointerdown', 'pointerup', 'mousedown', 'mouseup',
-      'pointerover', 'pointerout', 'pointerenter', 'pointerleave', 'mouseover', 'mouseout', 'mouseenter', 'mouseleave',
-      'pointermove', 'mousemove', 'focus', 'blur', 'focusin', 'focusout', 'keydown', 'submit']
-      .forEach(function (type) { fwin.addEventListener(type, handler, true); });
-    fwin.addEventListener('scroll', function () { self.paintSoon(); }, true);
+      return;
+    }
+    if (h && h.mode === 'icon' && h.fig.win === w && leave && t && !ev.relatedTarget) {
+      this.hold(w, t, ev);
+      ev.stopImmediatePropagation();
+    }
+  };
+  Editor.prototype.hold = function (w, t, ev) {
+    if (this.held.length > 60) this.held.shift();
+    this.held.push({ w: w, el: t, type: ev.type, bubbles: ev.bubbles });
+  };
+  // Replay held leave events once the pointer is truly outside their element
+  // (and not on the ✎ or field). Called on every move and when a field closes.
+  Editor.prototype.releaseHeld = function (fromWin) {
+    if (!this.held.length || this.field) return;
+    var self = this, p = this.pointer, keep = [];
+    var onPencil = p && !this.ui.pencil.hidden && inRect(this.ui.pencil.getBoundingClientRect(), p.x, p.y);
+    this.held.forEach(function (x) {
+      if (!x.el.isConnected) return;
+      var inside = p && self.pointInEl(x.w, x.el, p);
+      if (x.w === fromWin) { if (!inside) self.replay(x); return; } // the frame is tracking the pointer again
+      if (onPencil || inside) keep.push(x); else self.replay(x);
+    });
+    this.held = keep;
+  };
+  Editor.prototype.pointInEl = function (w, elm, p) {
+    var o = this.toTop(w, 0, 0); if (!o) return false;
+    var r = elm.getBoundingClientRect();
+    return inRect({ left: r.left + o.x, right: r.right + o.x, top: r.top + o.y, bottom: r.bottom + o.y }, p.x, p.y);
+  };
+  Editor.prototype.replay = function (x) {
+    var w = x.w, C = /^pointer/.test(x.type) ? w.PointerEvent : w.MouseEvent;
+    this.replaying = true;
+    try { x.el.dispatchEvent(new C(x.type, { bubbles: x.bubbles, cancelable: false, view: w, pointerType: 'mouse' })); } catch (e) { /* gone */ }
+    this.replaying = false;
   };
 
-  Editor.prototype.setEditing = function (on) {
-    var self = this;
-    this.editing = !!on;
-    this.doc.documentElement.classList.toggle('fte-editing', this.editing);
-    this.figs.forEach(function (f) { if (f.frame) f.doc.documentElement.classList.toggle('fte-editing', self.editing); });
-    if (!this.editing) { this.closePop(); this.hover = null; }
-    if (this.editing && this.bridge.state !== 'ready') this.bridge.hello(true);
-    this.render();
-    this.loop();
-  };
-
-  Editor.prototype.hoverAt = function (fig, x, y, target) {
-    var n = pickText(fig, x, y, target);
-    this.hover = n ? { fig: fig, node: n } : null;
+  // ------------------------------------------------------------------ hover
+  Editor.prototype.setHover = function (h) {
+    clearTimeout(this.leaveTimer); this.leaveTimer = null;
+    var old = this.hover;
+    if (old && h && old.node === h.node) return;
+    if (old && old.hot) old.hot.classList.remove('fte-hot');
+    this.hover = h;
+    if (h && h.mode === 'click' && h.node.parentElement) { h.hot = h.node.parentElement; h.hot.classList.add('fte-hot'); }
     this.paintSoon();
+    if (h) this.loop();
   };
-  Editor.prototype.clickAt = function (fig, x, y, target) {
-    if (this.sending) { this.flash('Wait until this batch is delivered or fails, then edit again.'); return; }
-    var n = pickText(fig, x, y, target);
-    if (!n) { this.flash('Click directly on the words you want to change.'); return; }
-    this.openPop(fig, n);
+  Editor.prototype.keepHover = function () { clearTimeout(this.leaveTimer); this.leaveTimer = null; };
+  Editor.prototype.hoverLeaveSoon = function () {
+    var self = this;
+    if (!this.hover || this.leaveTimer) return;
+    this.leaveTimer = setTimeout(function () { self.leaveTimer = null; self.setHover(null); }, 250);
   };
 
-  // ---------------------------------------------------------------- popover
-  Editor.prototype.openPop = function (fig, node) {
-    var self = this;
-    var shownCore = coreOf(node);
+  // ------------------------------------------------------- in-place editing
+  Editor.prototype.openField = function (fig, node) {
+    if (this.sending) { this.toast('Wait until this batch is delivered or fails, then edit again.'); return; }
+    if (this.field) this.closeField();
     var key0 = fig.previewed.get(node);
     var rec = key0 ? this.store.active(key0) : null;
-    var original = rec ? rec.original : shownCore;
+    var original = rec ? rec.original : coreOf(node);
     var d = describe(fig, node, original);
     rec = this.store.active(d.key) || rec;
-    this.active = { fig: fig, node: node, desc: d, original: original, rec: rec };
-    var p = this.ui.pop;
-    var occ = d.element.occurrence.count > 1 ? ' · ' + d.element.occurrence.index + ' of ' + d.element.occurrence.count + ' identical' : '';
-    p.where.textContent = fig.spec.title + ' · ' + (d.element.kind === 'svg-text' ? 'SVG label' : 'text') +
-      (d.context ? ' · ' + contextLabel(d.context) : '') + occ;
-    p.input.value = rec ? rec.replacement : original;
-    p.input.rows = Math.min(8, Math.max(2, Math.ceil(p.input.value.length / 42)));
-    p.orig.textContent = 'Original: “' + original + '”' + (rec && rec.status === 'delivered' ? ' · delivered as “' + rec.replacement + '”, not yet applied' : '');
-    p.revert.hidden = !(rec && rec.status === 'draft');
-    p.root.hidden = false;
-    this.ui.dock.classList.add('is-popping');
-    this.placePop();
-    p.input.focus(); p.input.select();
+    this.setHover(null);
+    this.field = { fig: fig, node: node, desc: d, original: original, rec: rec };
+    var f = this.ui.field, box = this.nodeBox(fig, node);
+    var pe = node.parentElement, cs = fig.win.getComputedStyle(pe);
+    var size = isSvg(node) ? Math.max(12, Math.round(((box ? box.bottom - box.top : 16)) * 0.8)) : (parseFloat(cs.fontSize) || 16);
+    f.input.style.fontFamily = cs.fontFamily; f.input.style.fontWeight = cs.fontWeight;
+    f.input.style.fontStyle = cs.fontStyle; f.input.style.fontSize = size + 'px';
+    f.input.value = coreOf(node);
+    f.keys.textContent = 'Enter applies · Esc cancels' + (original !== f.input.value ? ' · original: “' + original + '”' : '') +
+      (rec && rec.status === 'delivered' ? ' · sent, not yet applied' : '');
+    f.root.hidden = false;
+    this.placeField(true);
+    f.input.focus(); f.input.select();
+    this.loop();
+  };
+  Editor.prototype.placeField = function (resize) {
+    var a = this.field; if (!a) return;
+    if (!a.node.isConnected || !textRects(a.node).length) {
+      this.closeField();
+      this.toast('That text left the screen (the figure moved on), so the edit was cancelled.');
+      return;
+    }
+    var b = this.nodeBox(a.fig, a.node);
+    if (!b) return; // scrolled out of its frame for now: keep the last position
+    var root = this.ui.field.root, input = this.ui.field.input;
+    var vw = this.win.innerWidth;
+    var w = Math.min(Math.max(b.right - b.left + 40, 160), vw - 16);
+    root.style.width = w + 'px';
+    root.style.left = Math.max(8, Math.min(b.left - 5, vw - w - 8)) + 'px';
+    root.style.top = Math.max(4, b.top - 3) + 'px';
+    if (resize) { input.style.height = 'auto'; input.style.height = (input.scrollHeight + 2) + 'px'; }
+  };
+  Editor.prototype.closeField = function () {
+    if (!this.field) return;
+    this.field = null;
+    this.ui.field.root.hidden = true;
+    this.releaseHeld(null);
     this.paintSoon();
   };
-  Editor.prototype.placePop = function () {
-    if (!this.active) return;
-    var p = this.ui.pop.root, r = this.nodeBox(this.active.fig, this.active.node);
-    if (this.fit() || !r) { p.style.left = ''; p.style.top = ''; return; }
-    var w = p.offsetWidth, h = p.offsetHeight, vw = this.win.innerWidth, vh = this.win.innerHeight;
-    var left = Math.max(8, Math.min(r.left, vw - w - 8));
-    var top = r.bottom + 10;
-    if (top + h > vh - 8) top = Math.max(8, r.top - h - 10);
-    p.style.left = left + 'px'; p.style.top = top + 'px';
-  };
-  // Returns true on a narrow screen, after sizing the dock and popover to what is visible.
-  Editor.prototype.fit = function () {
-    var vv = this.win.visualViewport, w = Math.round(vv ? vv.width : this.win.innerWidth);
-    var narrow = w <= 600;
-    [this.ui.dock, this.ui.pop.root].forEach(function (e) {
-      e.classList.toggle('fte-narrow', narrow);
-      e.style.width = narrow ? (w - 16) + 'px' : '';
-    });
-    return narrow;
-  };
-  Editor.prototype.closePop = function () {
-    this.active = null;
-    if (this.ui) { this.ui.pop.root.hidden = true; this.ui.dock.classList.remove('is-popping'); }
-    this.paintSoon();
-  };
-  Editor.prototype.applyPop = function (revert) {
-    var a = this.active; if (!a) return;
-    var v = revert ? a.original : this.ui.pop.input.value;
-    if (a.desc.element.kind === 'svg-text') v = v.replace(/\s*\n\s*/g, ' ');
-    if (v.length > MAX_TEXT) { this.flash('That text is longer than ' + MAX_TEXT + ' characters.'); return; }
-    if (!v.trim() && !revert) { this.flash('Empty text is not allowed; type the new words or Cancel.'); return; }
+  // fromOutside: the reader clicked elsewhere; apply if valid, otherwise drop
+  Editor.prototype.commitField = function (fromOutside) {
+    var a = this.field; if (!a) return;
+    var v = this.ui.field.input.value.replace(/\s*\n\s*/g, ' ');
+    if (v.length > MAX_TEXT || !v.trim()) {
+      var why = v.trim() ? 'That text is longer than ' + MAX_TEXT + ' characters' : 'Empty text is not allowed';
+      if (fromOutside) { this.closeField(); this.toast(why + '; the edit was cancelled.'); }
+      else this.toast(why + '; type the new words or press Esc.');
+      return;
+    }
     var key = a.desc.key, cur = this.store.find(key, 'draft'), del = this.store.find(key, 'delivered');
     var base = del ? del.replacement : a.original;
     var fig = a.fig;
@@ -945,14 +1089,15 @@
         captured_at: cur ? cur.captured_at : new Date().toISOString(), updated_at: new Date().toISOString()
       };
       this.store.putDraft(key, rec);
+      if (this.bridge.state !== 'ready') this.bridge.hello(true);
     }
-    this.closePop();
+    this.closeField();
     this.refreshKey(key);
     this.render();
   };
   Editor.prototype.undo = function () {
     var key = this.store.undo();
-    if (key) { this.refreshKey(key); this.flash('Undid the last change.'); }
+    if (key) { this.refreshKey(key); this.toast('Undid the last change.'); }
     this.render();
   };
   Editor.prototype.revertKey = function (key) {
@@ -965,36 +1110,46 @@
   Editor.prototype.send = function () {
     var self = this;
     if (this.sending || this.bridge.state !== 'ready' || !this.store.drafts().length) return;
-    this.closePop();
+    if (this.field) this.commitField(true);
     this.sending = true;
+    this.setHover(null);
     this.render();
     this.sender.send().then(function (res) {
       self.sending = false;
-      if (res.kind === 'delivered') self.figs.forEach(function (f) { self.reconcile(f, false); });
+      if (res.kind === 'delivered') self.figs.forEach(function (f) { self.reconcile(f); });
       self.render();
     });
   };
 
   // ---------------------------------------------------------------- overlay
-  Editor.prototype.nodeBox = function (fig, node) {
-    var rects = textRects(node);
-    if (!rects.length) return null;
+  // A text node's line boxes in top-window coordinates, clipped to its frame.
+  Editor.prototype.nodeRects = function (fig, node) {
     var off = { x: 0, y: 0 }, clip = null;
     if (fig.frame) {
       var fr = fig.frame.getBoundingClientRect();
       off = { x: fr.left + fig.frame.clientLeft, y: fr.top + fig.frame.clientTop };
       clip = { left: off.x, top: off.y, right: off.x + fig.frame.clientWidth, bottom: off.y + fig.frame.clientHeight };
     }
+    var out = [];
+    textRects(node).forEach(function (r) {
+      var b = { left: r.left + off.x, top: r.top + off.y, right: r.right + off.x, bottom: r.bottom + off.y };
+      if (clip) {
+        b.left = Math.max(b.left, clip.left); b.top = Math.max(b.top, clip.top);
+        b.right = Math.min(b.right, clip.right); b.bottom = Math.min(b.bottom, clip.bottom);
+        if (b.right <= b.left || b.bottom <= b.top) return;
+      }
+      out.push(b);
+    });
+    return out;
+  };
+  Editor.prototype.nodeBox = function (fig, node) {
+    var rects = this.nodeRects(fig, node);
+    if (!rects.length) return null;
     var b = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
     rects.forEach(function (r) {
-      b.left = Math.min(b.left, r.left + off.x); b.top = Math.min(b.top, r.top + off.y);
-      b.right = Math.max(b.right, r.right + off.x); b.bottom = Math.max(b.bottom, r.bottom + off.y);
+      b.left = Math.min(b.left, r.left); b.top = Math.min(b.top, r.top);
+      b.right = Math.max(b.right, r.right); b.bottom = Math.max(b.bottom, r.bottom);
     });
-    if (clip) {
-      b.left = Math.max(b.left, clip.left); b.top = Math.max(b.top, clip.top);
-      b.right = Math.min(b.right, clip.right); b.bottom = Math.min(b.bottom, clip.bottom);
-      if (b.right <= b.left || b.bottom <= b.top) return null;
-    }
     return b;
   };
   Editor.prototype.paintSoon = function () {
@@ -1003,30 +1158,48 @@
     this.paintQueued = true;
     this.win.requestAnimationFrame(function () { self.paintQueued = false; self.paint(); });
   };
+  Editor.prototype.busyPainting = function () {
+    return !!(this.hover || this.field || this.figs.some(function (f) { return Object.keys(f.live).length; }));
+  };
+  // Figures animate (scrolly, walkthrough), so marks are re-placed on a slow tick
+  // while anything is drawn; the tick stops when nothing is.
   Editor.prototype.loop = function () {
     var self = this;
-    if (this.looping || !this.editing) return;
+    if (this.looping) return;
     this.looping = true;
     (function tick() {
-      if (!self.editing) { self.looping = false; self.paint(); return; }
-      self.paint(); self.placePop();
-      self.win.setTimeout(function () { self.win.requestAnimationFrame(tick); }, 80);
+      self.paint(); self.placeField(false);
+      if (!self.busyPainting()) { self.looping = false; return; }
+      self.win.setTimeout(function () { self.win.requestAnimationFrame(tick); }, 90);
     })();
   };
   Editor.prototype.paint = function () {
     var self = this, layer = this.ui.layer, boxes = [];
-    if (this.editing) {
-      this.figs.forEach(function (fig) {
-        Object.keys(fig.live).forEach(function (k) {
-          var rec = self.store.active(k), n = fig.live[k];
-          if (!rec || !n.isConnected) return;
-          var b = self.nodeBox(fig, n);
-          if (b) boxes.push({ b: b, kind: rec.status === 'draft' ? 'edited' : 'delivered' });
+    this.figs.forEach(function (fig) {
+      Object.keys(fig.live).forEach(function (k) {
+        var rec = self.store.active(k), n = fig.live[k];
+        if (!rec || !n.isConnected) return;
+        if (self.field && self.field.node === n) return;
+        self.nodeRects(fig, n).slice(0, 40).forEach(function (b) {
+          boxes.push({ b: b, kind: rec.status === 'draft' ? 'edited' : 'delivered' });
         });
       });
-      if (this.hover && this.hover.node.isConnected) { var hb = this.nodeBox(this.hover.fig, this.hover.node); if (hb) boxes.push({ b: hb, kind: 'hover' }); }
-      if (this.active && this.active.node.isConnected) { var ab = this.nodeBox(this.active.fig, this.active.node); if (ab) boxes.push({ b: ab, kind: 'active' }); }
+    });
+    var h = this.hover, pencil = this.ui.pencil, showPencil = false;
+    if (h && !this.field && h.node.isConnected) {
+      var rs = this.nodeRects(h.fig, h.node);
+      rs.slice(0, 40).forEach(function (b) { boxes.push({ b: b, kind: 'hover' }); });
+      if (h.mode === 'icon' && rs.length) {
+        // raised at the end of the words, like a superscript, so it never covers the next word
+        var last = rs[rs.length - 1], vw = this.win.innerWidth;
+        var left = last.right + 1;
+        if (left + 18 > vw) left = last.right - 18;
+        pencil.style.left = left + 'px';
+        pencil.style.top = (last.top - 9) + 'px';
+        showPencil = true;
+      }
     }
+    pencil.hidden = !showPencil;
     while (layer.children.length < boxes.length) layer.appendChild(el(this.doc, 'div', 'fte-box'));
     Array.prototype.forEach.call(layer.children, function (d, i) {
       var x = boxes[i];
@@ -1043,17 +1216,14 @@
     var style = el(d, 'style', 'fte-ui'); style.textContent = CSS; d.head.appendChild(style);
     var layer = el(d, 'div', 'fte-ui fte-layer'); layer.setAttribute('aria-hidden', 'true'); d.body.appendChild(layer);
 
-    var dock = el(d, 'div', 'fte-ui fte-dock');
-    dock.setAttribute('role', 'region'); dock.setAttribute('aria-label', 'Figure text editor (local preview)');
-    var toggle = el(d, 'button', 'fte-toggle'); toggle.type = 'button';
-    var toggleText = el(d, 'span', null, '✎ Edit figure text'); var badge = el(d, 'span', 'fte-badge');
-    toggle.appendChild(toggleText); toggle.appendChild(badge);
-    var panel = el(d, 'div', 'fte-panel'); panel.hidden = true;
+    // the review tray: only shown once at least one edit exists
+    var dock = el(d, 'div', 'fte-ui fte-dock'); dock.hidden = true;
+    dock.setAttribute('role', 'region'); dock.setAttribute('aria-label', 'Text edits (local preview)');
+    var panel = el(d, 'div', 'fte-panel');
     var head = el(d, 'div', 'fte-head');
-    head.appendChild(el(d, 'strong', null, 'Editing figure text'));
-    head.appendChild(el(d, 'span', 'fte-tag', 'local preview'));
-    var done = el(d, 'button', null, 'Done'); done.type = 'button'; head.appendChild(done);
-    var hint = el(d, 'p', 'fte-hint');
+    var title = el(d, 'strong', null, 'Text edits');
+    var tag = el(d, 'span', 'fte-tag', 'local preview');
+    head.appendChild(title); head.appendChild(tag);
     var review = el(d, 'div', 'fte-review'); review.hidden = true;
     var bridge = el(d, 'p', 'fte-bridge'); bridge.setAttribute('aria-live', 'polite');
     var dot = el(d, 'span', 'fte-dot'); var bridgeText = el(d, 'span'); bridge.appendChild(dot); bridge.appendChild(bridgeText);
@@ -1063,68 +1233,59 @@
     var send = el(d, 'button', 'fte-primary fte-send', 'Send changes'); send.type = 'button';
     row.appendChild(undo); row.appendChild(rev); row.appendChild(send);
     var result = el(d, 'p', 'fte-result'); result.setAttribute('aria-live', 'polite');
-    [head, hint, review, bridge, row, result].forEach(function (x) { panel.appendChild(x); });
-    dock.appendChild(panel); dock.appendChild(toggle);
+    [head, review, bridge, row, result].forEach(function (x) { panel.appendChild(x); });
+    dock.appendChild(panel);
     d.body.appendChild(dock);
 
-    var pop = el(d, 'div', 'fte-ui fte-pop'); pop.hidden = true;
-    pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', 'Edit figure text');
-    var where = el(d, 'p', 'fte-where');
-    var input = el(d, 'textarea'); input.setAttribute('aria-label', 'Replacement text'); input.spellcheck = true;
-    var orig = el(d, 'p', 'fte-orig');
-    var prow = el(d, 'div', 'fte-row');
-    var keys = el(d, 'span', 'fte-keys', 'Enter applies · Esc cancels');
-    var cancel = el(d, 'button', null, 'Cancel'); cancel.type = 'button';
-    var revert = el(d, 'button', null, 'Revert'); revert.type = 'button';
-    var apply = el(d, 'button', 'fte-primary', 'Apply'); apply.type = 'button';
-    [keys, cancel, revert, apply].forEach(function (x) { prow.appendChild(x); });
-    [where, input, orig, prow].forEach(function (x) { pop.appendChild(x); });
-    d.body.appendChild(pop);
+    // the in-place field
+    var field = el(d, 'div', 'fte-ui fte-field'); field.hidden = true;
+    var input = el(d, 'textarea'); input.setAttribute('aria-label', 'Replacement text'); input.spellcheck = true; input.rows = 1;
+    var keys = el(d, 'span', 'fte-keys');
+    field.appendChild(input); field.appendChild(keys);
+    d.body.appendChild(field);
 
-    toggle.addEventListener('click', function () { self.setEditing(true); });
-    done.addEventListener('click', function () { self.setEditing(false); });
+    // the ✎ for links, buttons and page text
+    var pencil = el(d, 'button', 'fte-ui fte-pencil', '✎'); pencil.type = 'button'; pencil.hidden = true;
+    pencil.setAttribute('aria-label', 'Edit this text'); pencil.title = 'Edit this text';
+    d.body.appendChild(pencil);
+
+    var toast = el(d, 'div', 'fte-ui fte-toast'); toast.hidden = true; toast.setAttribute('role', 'status');
+    d.body.appendChild(toast);
+
     undo.addEventListener('click', function () { self.undo(); });
     rev.addEventListener('click', function () { self.reviewOpen = !self.reviewOpen; self.render(); });
     send.addEventListener('click', function () { self.send(); });
-    cancel.addEventListener('click', function () { self.closePop(); });
-    revert.addEventListener('click', function () { self.applyPop(true); });
-    apply.addEventListener('click', function () { self.applyPop(false); });
-    input.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Escape') { ev.preventDefault(); self.closePop(); }
-      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); self.applyPop(false); }
+    // keep the reader's selection and focus where they are
+    pencil.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });
+    pencil.addEventListener('click', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      var h = self.hover; if (h && h.node.isConnected) self.openField(h.fig, h.node);
     });
-    this.win.addEventListener('resize', function () { self.fit(); self.placePop(); self.paintSoon(); });
-    if (this.win.visualViewport) this.win.visualViewport.addEventListener('resize', function () { self.fit(); self.placePop(); });
-    this.win.addEventListener('scroll', function () { self.placePop(); self.paintSoon(); }, { passive: true });
-    this.ui = { dock: dock, toggle: toggle, toggleText: toggleText, badge: badge, panel: panel, hint: hint, review: review,
-      bridge: bridge, bridgeText: bridgeText, undo: undo, rev: rev, send: send, result: result, layer: layer,
-      pop: { root: pop, where: where, input: input, orig: orig, revert: revert } };
+    input.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') { ev.preventDefault(); self.closeField(); }
+      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); self.commitField(false); }
+    });
+    input.addEventListener('input', function () { self.placeField(true); });
+    this.win.addEventListener('resize', function () { self.placeField(false); self.paintSoon(); });
+    this.ui = { dock: dock, title: title, tag: tag, review: review, bridge: bridge, bridgeText: bridgeText,
+      undo: undo, rev: rev, send: send, result: result, layer: layer, pencil: pencil, toastEl: toast,
+      field: { root: field, input: input, keys: keys } };
   };
 
-  Editor.prototype.flash = function (msg) {
-    var self = this;
-    this.flashMsg = msg; this.render();
-    clearTimeout(this.flashTimer);
-    this.flashTimer = setTimeout(function () { self.flashMsg = null; self.render(); }, 3200);
+  Editor.prototype.toast = function (msg) {
+    var t = this.ui.toastEl;
+    t.textContent = msg; t.hidden = false;
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(function () { t.hidden = true; }, 3600);
   };
 
   Editor.prototype.render = function () {
     if (!this.ui) return;
     var u = this.ui, st = this.store, b = this.bridge, self = this;
     var drafts = st.drafts(), delivered = st.delivered();
-    var hasFigs = this.figs.length > 0;
-    u.dock.hidden = !hasFigs && !drafts.length && !delivered.length;
-    u.panel.hidden = !this.editing;
-    this.fit();
-    u.toggle.hidden = this.editing;
-    u.toggleText.textContent = drafts.length ? '✎ Figure text' : '✎ Edit figure text';
-    u.badge.textContent = drafts.length ? drafts.length + ' unsent' : '';
-    u.badge.hidden = !drafts.length;
-
-    var steppers = this.figs.filter(function (f) { return f.spec.passthrough; }).length;
-    u.hint.textContent = this.flashMsg || (this.sending ? 'Sending… editing is paused until the extension answers.' :
-      'Click any label or note in a figure to change its words. Links, tooltips and play are paused' +
-      (steppers ? '; the step arrows still move between steps.' : '.'));
+    u.dock.hidden = !drafts.length && !delivered.length;
+    u.tag.textContent = 'local preview' + (drafts.length ? ' · ' + drafts.length + ' unsent' : '');
 
     u.bridge.setAttribute('data-state', b.state);
     u.bridgeText.textContent = b.state === 'ready'
@@ -1138,7 +1299,7 @@
     var retry = ob && ob.state === 'failed' && ob.print === contentPrint(drafts);
     u.send.textContent = this.sending ? 'Sending…' : retry ? 'Send changes (retry)' : 'Send changes';
     u.send.disabled = this.sending || b.state !== 'ready' || !drafts.length;
-    u.send.title = b.state !== 'ready' ? 'Unavailable until the Discuss extension confirms it can take figure edits' :
+    u.send.title = b.state !== 'ready' ? 'Unavailable until the Discuss extension confirms it can take text edits' :
       !drafts.length ? 'No unsent edits' : 'Send ' + drafts.length + ' edit' + (drafts.length === 1 ? '' : 's') + ' to the chat as one batch';
 
     var res = '', kind = '';
@@ -1158,7 +1319,6 @@
       res = delivered.length + ' delivered edit' + (delivered.length === 1 ? ' is' : 's are') + ' waiting for the bots to apply and rebuild.';
       kind = 'delivered';
     }
-    if (this.appliedNow) res = (res ? res + ' ' : '') + this.appliedNow + ' earlier edit' + (this.appliedNow === 1 ? ' is' : 's are') + ' now in the source (applied).';
     u.result.textContent = res; u.result.setAttribute('data-kind', kind);
 
     u.review.hidden = !this.reviewOpen;
@@ -1219,12 +1379,7 @@
   if (window.top !== window) return;
   function boot() {
     var editor = new Editor(window, global.FigureTextEditorPage || {});
-    global.FigureTextEditor = {
-      version: VERSION,
-      enter: function () { editor.setEditing(true); },
-      exit: function () { editor.setEditing(false); },
-      editor: editor
-    };
+    global.FigureTextEditor = { version: VERSION, editor: editor };
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot();
 })(typeof window !== 'undefined' ? window : globalThis);

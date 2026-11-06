@@ -1601,6 +1601,22 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     sendStep();
   }
 
+  // The nearest turn of the same page ahead of `job` — queued, or the one in
+  // flight — as {agents, target}; null when no turn of this page is ahead.
+  function aheadOf(job) {
+    const i = queue.indexOf(job);
+    for (let k = i - 1; k >= 0; k--) {
+      const j = queue[k];
+      if (j && !j.control && j.url === job.url) {
+        return { agents: routedAgents(j.text, j.untaggedAll, j.routeHint), target: j.target };
+      }
+    }
+    if (current && !current.job.control && current.job.url === job.url) {
+      return { agents: current.agents || [], target: current.job.target };
+    }
+    return null;
+  }
+
   return {
     // a comment carrying an @-mention: queue a turn for its page/thread
     submit(job) {
@@ -1625,11 +1641,18 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       start();
       pump();
       const started = !!(current && current.job === mine);
+      const wait = started ? null : (cold ? 'bridge_starting' : 'busy');
       return {
         queued: true,
         position: queue.length + (current ? 1 : 0),
         // null once the turn is genuinely under way: turn-start says the rest
-        wait: started ? null : (cold ? 'bridge_starting' : 'busy'),
+        wait,
+        // …and, for a 'busy' wait, WHAT is in front: the turn of this same page
+        // nearest ahead of this one (which bots, which thread), so the drawer
+        // can say "waiting for Claude to finish your previous message here"
+        // rather than a bare "queued". Absent when nothing of this page is
+        // ahead — the floor is somebody else's (pool.mjs / server.mjs say whose).
+        ...(wait === 'busy' ? { wait_detail: aheadOf(mine) } : {}),
       };
     },
     // a raw slash command (model picker): queued like any turn, answered by
