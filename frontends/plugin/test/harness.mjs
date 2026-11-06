@@ -176,6 +176,10 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
         ...process.env, PORT: '0', BOTFERENCE_PROJECT_ROOT: root,
         BOTFERENCE_SECRETS_DIR: SECRETS, PLUGIN_OWNER_PASSWORD: '', REVIEW_HUB_PASSWORD: '',
         BOTFERENCE_SITES_REGISTRY: REGISTRY,
+        // which app is in front decides whose a post edit is (turnwatch.mjs);
+        // a test must not depend on the desk it runs at, so every
+        // unjournalled write during a turn is the bots'
+        PLUGIN_EDITOR_PROBE: 'none',
         ...baseEnv, ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

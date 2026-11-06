@@ -117,9 +117,22 @@ try {
     assert.equal(turns.length, 2);
     assert.ok(turns.every(s => s.includes('MAKE the change') && s.includes('direct editing')));
     assert.ok(turns.some(s => s.includes('First point.')) && turns.some(s => s.includes('Second point.')));
-    assert.match(fs.readFileSync(source, 'utf8'), /released: "2025-02-01"/);
-    assert.match(fs.readFileSync(source, 'utf8'), /First point clarified/);
+    // THE OWNERSHIP RULE (ownership.mjs): the post's prose is the owner's, so
+    // both direct edits were put back and became suggestion cards in the
+    // threads that asked — and the owner's front matter was left as written
+    await waitFor(() => fs.readFileSync(source, 'utf8') === original, 'both edits put back');
+    const page = (await GET(base, '/page?url=' + encodeURIComponent(preview))).json;
+    const cardsIn = id => page.threads.find(t => t.id === id).msgs.flatMap(m => m.suggestions || []);
+    const ca = cardsIn(a.json.thread.id), cb = cardsIn(b.json.thread.id);
+    assert.ok(ca.some(c => c.state === 'open' && /First point clarified/.test(c.proposed)), JSON.stringify(ca));
+    assert.ok(cb.some(c => c.state === 'open' && /Second point explained/.test(c.proposed)), JSON.stringify(cb));
+    // …and accepting one makes the change, in the current file
+    const holder = page.threads.find(t => t.id === b.json.thread.id).msgs.find(m => (m.suggestions || []).length);
+    const card = holder.suggestions.find(c => /Second point explained/.test(c.proposed));
+    const acc = await POST(base, '/suggest-accept', { url: preview, thread_id: b.json.thread.id, ts: holder.ts, author: holder.author, id: card.id });
+    assert.equal(acc.json.applied, true, JSON.stringify(acc.json));
     assert.match(fs.readFileSync(source, 'utf8'), /Second point explained/);
+    assert.match(fs.readFileSync(source, 'utf8'), /released: 2025-02-01/);
   });
 
   await test('a granted guest cannot use the owner-authorized site writer', async () => {

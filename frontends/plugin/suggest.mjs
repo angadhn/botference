@@ -168,7 +168,7 @@ export function parseSuggestBlock(body) {
 // index into the reply's array would be an address that moves when anything
 // else about the message does.
 let seq = 0;
-const newId = () => `sg${Date.now().toString(36)}${(seq = (seq + 1) % 46656).toString(36).padStart(3, '0')}`;
+export const newId = () => `sg${Date.now().toString(36)}${(seq = (seq + 1) % 46656).toString(36).padStart(3, '0')}`;
 
 /**
  * Every ```suggest block in a reply, lifted off the words.
@@ -247,7 +247,7 @@ const readFile = file => {
  * placed exactly is a card the reader has to settle by hand, which is what the
  * needs-manual state on the card says.
  */
-export function applyCard(file, card) {
+export function applyCard(file, card, { onWrite } = {}) {
   if (!card || card.state === 'unreadable') {
     return { ok: false, reason: 'unreadable', detail: 'this block was never readable as a suggestion' };
   }
@@ -270,6 +270,9 @@ export function applyCard(file, card) {
     catch (e) { return { ok: false, reason: 'gone', detail: `the notebook could not be written: ${String(e.message || e)}` }; }
     return { ok: true, before: read.text, after, start: at.start, end: at.end, cell: nb.cell };
   }
+  // told first, so a bot turn watching this file knows the version that is
+  // about to appear is the reader's own (turnwatch.noteUserWrite)
+  if (typeof onWrite === 'function') { try { onWrite(file, after); } catch { /* a note, not a gate */ } }
   try { fs.writeFileSync(file, after); }
   catch (e) { return { ok: false, reason: 'gone', detail: `the source file could not be written: ${String(e.message || e)}` }; }
   return { ok: true, before: read.text, after, start: at.start, end: at.end };
@@ -294,7 +297,7 @@ export function applyCard(file, card) {
  * not derailed halfway by a card that never had an address, and the refusal is
  * still reported.
  */
-export function applyStack(file, cards) {
+export function applyStack(file, cards, opts = {}) {
   const list = (cards || []).filter(c => c && c.state === 'open');
   const read = readFile(file);
   if (!read.ok) return { applied: [], stopped: { id: (list[0] || {}).id || '', ...read }, left: list.map(c => c.id) };
@@ -308,7 +311,7 @@ export function applyStack(file, cards) {
   const left = [];
   for (const row of placed) {
     if (stopped) { left.push(row.card.id); continue; }
-    const r = applyCard(file, row.card);
+    const r = applyCard(file, row.card, opts);
     if (r.ok) { applied.push(row.card.id); continue; }
     stopped = { id: row.card.id, reason: r.reason, detail: r.detail };
   }
@@ -326,10 +329,22 @@ export function applyStack(file, cards) {
  * never shown this block cannot use the convention, which is exactly the
  * safety property the idiom is built on.
  */
-export function suggestBlock() {
-  return 'HOW YOU CHANGE THIS POST: YOU DO NOT EDIT THE FILE. You PROPOSE, and the reader accepts '
-    + 'or refuses. Every change you want to make to the markdown — a word, a sentence, a whole '
-    + 'paragraph, the front matter — is written as a fenced block of its own:\n\n'
+export function suggestBlock({ direct = false } = {}) {
+  const head = direct
+    ? 'WHO OWNS WHAT IN THIS POST (the owner\'s rule, enforced by the companion at the end of every turn):\n'
+      + '  · "Agent check" callouts are YOURS. A blockquote callout whose first line is `> [!note] Agent check: …` '
+      + '(any type: note, warning, tip) — add one between paragraphs, edit inside one, or remove one, '
+      + 'directly in the file. Keep a blank line before and after the block.\n'
+      + '  · Figure scripts, generated figures, images and new draft files are yours too: write them directly.\n'
+      + '  · EVERYTHING ELSE IN THE POST\'S MARKDOWN IS THE OWNER\'S: their prose, a sentence added between two of '
+      + 'their sentences, front matter (title, dates, tags), their own callouts, their own inline "agent check" '
+      + 'prompts. DO NOT EDIT IT IN THE FILE. A direct edit there is put back at the end of your turn and '
+      + 'shown to the owner as a suggestion anyway — so propose it instead. Every change you want to make to '
+      + 'the owner\'s text is written as a fenced block of its own:\n\n'
+    : 'HOW YOU CHANGE THIS POST: YOU DO NOT EDIT THE FILE. You PROPOSE, and the reader accepts '
+      + 'or refuses. Every change you want to make to the markdown — a word, a sentence, a whole '
+      + 'paragraph, the front matter — is written as a fenced block of its own:\n\n';
+  return head
     + `    \`\`\`${SUGGEST_FENCE}\n`
     + '    current: <the passage exactly as it stands in the source file right now>\n'
     + '    proposed: <what it should say instead>\n'

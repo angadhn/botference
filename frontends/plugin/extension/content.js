@@ -899,7 +899,7 @@
       // our own highlight marks are UNWRAPPED, never removed: they wrap the
       // very text the anchors point at, so deleting them would delete the
       // sentence the comment is about
-      clone.querySelectorAll('mark.bfp-hl, mark.bfp-prop').forEach((m) => {
+      clone.querySelectorAll('mark.bfp-hl, mark.bfp-prop, mark.bfp-quiet').forEach((m) => {
         const parent = m.parentNode;
         if (!parent) return;
         while (m.firstChild) parent.insertBefore(m.firstChild, m);
@@ -1264,6 +1264,7 @@
     for (const id of Anchor.proposalIds()) Anchor.unpaintProposal(id);
     for (const t of threads) Anchor.unpaint(t.id);
     Anchor.unpaint('__new__');
+    Anchor.unpaintQuiet();
 
     const index = freshIndex();
     const nextOrphans = {};
@@ -1299,6 +1300,14 @@
       // amber, so the same glance says which passages are waiting on them
       Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
         t.resolved ? true : (t.addressed ? 'ready' : false), markOf(t));
+    }
+    // the quiet markers (a bot's Agent-check callout edit, the owner's own ✎
+    // written into the post): painted from the record, never reported as
+    // orphans — a marker that no longer locates simply is not drawn
+    for (const m of (PAGE.marks || [])) {
+      if (!m || !m.quote) continue;
+      const r = Anchor.locate(index.raw, m);
+      if (r && r.ok) Anchor.paintQuiet(index, r.start, r.end, m);
     }
     // repaint the provisional highlight if a new comment is being composed
     if (pendingSel) {
@@ -4114,9 +4123,23 @@
   // (verified in Chromium: a click reads true, a timer-posted message false).
   // A batch is authorised by that click once; retransmits and retries of the
   // same batch_id are accepted without a fresh one but never post twice.
+  //
+  // VERSION 2 (2026-11-06). The editor now sends the batch alone, no message
+  // text: each item says what it is (`kind: 'text' | 'comment'`), and this
+  // bridge ROUTES it through the companion (POST /fte-route). The owner's ✎
+  // edits to the post's prose are written straight into the markdown there;
+  // everything else — figure text, comments on any part of a figure, prose
+  // that could not be placed exactly — goes into a checklist FILE in the
+  // site's scratch folder, and Page chat gets a short message naming it
+  // (posted through postReply, as before). No batch cap any more; each item
+  // keeps its 2,000-character guard. The ack carries `routes`, so the editor
+  // can say which edits went where. Version 1 is still answered exactly as it
+  // was, for an editor script that has not been reloaded.
   const FTE_CHANNEL = 'botference.figure-edits';
   const FTE_CAP = 'figure-edits.send';
+  const FTE_CAPS_V2 = ['figure-edits.send', 'figure-edits.route', 'figure-edits.comment'];
   const FTE_SCHEMA = 'botference.figure-edits/1';
+  const FTE_SCHEMA_V2 = 'botference.figure-edits/2';
   const FTE_BATCH_ID = /^fte-\d{8}T\d{4}-[0-9a-f]{8}$/;
   const FTE_MAX_EDITS = 100;
   const FTE_MAX_TEXT = 60000;
@@ -4136,9 +4159,18 @@
     if (!LOOPBACK_ORIGIN.test(fteRealOrigin())) return false;
     try { return LOOPBACK_ORIGIN.test(new URL(liveHref()).origin); } catch { return false; }
   };
+  // which protocol version each request spoke, so every answer speaks it back
+  const fteVersion = new Map();     // request_id -> 1 | 2
   function ftePost(msg) {
     try {
-      window.postMessage(Object.assign({ channel: FTE_CHANNEL, v: 1, from: 'extension' }, msg), fteRealOrigin());
+      // `ready` is unsolicited, so it is said in both versions: each editor
+      // listens only for its own
+      if (msg.type === 'ready') {
+        for (const v of [1, 2]) window.postMessage(Object.assign({ channel: FTE_CHANNEL, v, from: 'extension' }, msg), fteRealOrigin());
+        return;
+      }
+      const v = fteVersion.get(msg.request_id) || 1;
+      window.postMessage(Object.assign({ channel: FTE_CHANNEL, v, from: 'extension' }, msg), fteRealOrigin());
     } catch { /* a page that went away mid-send has nobody to tell */ }
   }
   // localhost and 127.0.0.1 are one server to the reader and two origins to a
@@ -4215,6 +4247,28 @@
   function fteBadBatch(d) {
     const b = d.batch;
     if (typeof d.batch_id !== 'string' || !FTE_BATCH_ID.test(d.batch_id)) return ['bad_request', 'The batch id is malformed.'];
+    if (d.v === 2) {
+      if (!b || typeof b !== 'object' || b.schema !== FTE_SCHEMA_V2 || b.batch_id !== d.batch_id || !Array.isArray(b.edits)) {
+        return ['bad_request', 'The batch does not match ' + FTE_SCHEMA_V2 + '.'];
+      }
+      if (!b.edits.length) return ['bad_request', 'The batch has no edits.'];
+      if (!d.expect_destination || typeof d.expect_destination !== 'object') {
+        return ['bad_request', 'The batch names no destination.'];
+      }
+      for (const e of b.edits) {
+        if (!e || typeof e !== 'object' || typeof e.edit_id !== 'string') return ['bad_request', 'An edit is malformed.'];
+        if (e.kind === 'comment') {
+          if (typeof e.note !== 'string' || !e.note.trim()) return ['bad_request', 'A comment has no note.'];
+          if (e.note.length > FTE_MAX_FIELD) return ['too_large', 'One comment is longer than ' + FTE_MAX_FIELD + ' characters.'];
+          continue;
+        }
+        if (typeof e.original !== 'string' || typeof e.replacement !== 'string') return ['bad_request', 'An edit is missing its text.'];
+        if (e.original.length > FTE_MAX_FIELD || e.replacement.length > FTE_MAX_FIELD) {
+          return ['too_large', 'One edit is longer than ' + FTE_MAX_FIELD + ' characters.'];
+        }
+      }
+      return null;
+    }
     if (typeof d.text !== 'string' || !d.text.trim()) return ['bad_request', 'The batch has no message text.'];
     if (!b || typeof b !== 'object' || b.schema !== FTE_SCHEMA || b.batch_id !== d.batch_id || !Array.isArray(b.edits)) {
       return ['bad_request', 'The batch does not match ' + FTE_SCHEMA + '.'];
@@ -4315,8 +4369,43 @@
     ftePost({ type: 'received', request_id: rid, batch_id: id });
     fteLastReplyAt = Date.now();
 
+    // ---- v2: route first, then post only what is left for the bots --------
+    let routed = null;
+    if (d.v === 2) {
+      const reg = await ensureRegistered();
+      const rr = reg && reg.ok ? await api('POST', '/fte-route', { url: URL_NOW, batch: d.batch }) : reg;
+      if (!rr || !rr.ok) {
+        e.state = 'failed';
+        fteSave(id, e);
+        const why = (rr && (rr.error || (rr.data && rr.data.error))) || 'the companion did not answer';
+        for (const r of e.request_ids) {
+          if (rr && rr.status === 403) fteErr(r, id, 'not_owner', why, false);
+          else fteErr(r, id, 'companion_error', why, true);
+        }
+        return;
+      }
+      routed = rr.data || {};
+      e.text = String(routed.summary || '');
+      // everything was written into the post: there is no chat message to
+      // point at, and the ack says so
+      if (!e.text) {
+        const after = await fteBinding();
+        const dest = after.ok ? after.destination : bind.destination;
+        const ack = {
+          accepted: { message_ts: 'none', author: AUTHOR, thread_id: PAGE_TARGET, url: URL_NOW },
+          destination: dest, deduped: !!routed.repeated, queued: false, reason: '',
+          routes: routed.routes || [], wrote: routed.wrote || 0,
+        };
+        e.state = 'acked'; e.ack = ack;
+        fteSave(id, e);
+        for (const r of e.request_ids) ftePost({ ...ack, type: 'ack', request_id: r, batch_id: id });
+        return;
+      }
+      d = Object.assign({}, d, { text: e.text });
+    }
+
     let res = null;
-    let msg = retry ? await fteFindPosted(d.text) : null;
+    let msg = retry || (routed && routed.repeated) ? await fteFindPosted(d.text) : null;
     if (msg) {
       res = { ok: true, deduped: true, queued: false, reason: '' };
     } else {
@@ -4339,6 +4428,8 @@
         accepted: { message_ts: msg.ts, author: String(msg.author || AUTHOR), thread_id: PAGE_TARGET, url: URL_NOW },
         destination: dest,
         deduped: !!res.deduped, queued: !!res.queued, reason: String(res.reason || ''),
+        ...(routed ? { routes: routed.routes || [], wrote: routed.wrote || 0,
+                       file: (routed.files && routed.files.md) || '' } : {}),
       };
       e.state = 'acked'; e.ack = ack;
       fteSave(id, e);
@@ -4364,7 +4455,7 @@
     let version = '';
     try { version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || ''; } catch { version = ''; }
     fteAdvertised = { session_id: String(bind.destination.session_id || '') };
-    ftePost({ type: 'hello-ack', request_id: d.request_id, capabilities: [FTE_CAP],
+    ftePost({ type: 'hello-ack', request_id: d.request_id, capabilities: d.v === 2 ? FTE_CAPS_V2 : [FTE_CAP],
               extension: { name: 'discuss', version: String(version || '') },
               destination: bind.destination });
   }
@@ -4377,8 +4468,10 @@
     if (ev.source !== window) return;
     // a deployed site never hears from this bridge at all
     if (!fteOriginOk() || ev.origin !== fteRealOrigin()) return;
-    if (d.v !== 1 || d.from !== 'page' || typeof d.request_id !== 'string'
+    if ((d.v !== 1 && d.v !== 2) || d.from !== 'page' || typeof d.request_id !== 'string'
         || !d.request_id || d.request_id.length > 64) return;
+    fteVersion.set(d.request_id, d.v);
+    if (fteVersion.size > 500) fteVersion.delete(fteVersion.keys().next().value);
     // read NOW, synchronously, while the event that carries the click is
     // still being dispatched
     let activated = false;

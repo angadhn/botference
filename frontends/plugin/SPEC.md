@@ -11761,3 +11761,134 @@ renderAnchors), `blog.test.mjs` (rendered blocks, the insertion case and that it
 locates, markup-only changes), `prop.test.mjs` (the new plainOf rules), harness
 `?colledit=insert&selftest=1`.
 
+
+## Amendment (2026-11-06): who owns a blog post's words
+
+**The decision (the owner's).** On the reader's own blog in direct-edit mode
+(`blog_authoring_root`, `blogOf → direct_edit`), the bots still write the post
+file, but only one kind of text in it is theirs: an **Agent check callout**.
+Everything else in the post's markdown is the owner's. The companion enforces
+this at turn-end; the bots are also told it on every turn, so the backstop
+should rarely fire.
+
+### A. The backstop on bot edits (`ownership.mjs`, `turnwatch.mjs`)
+
+- **The matcher, one helper** (`ownership.AGENT_CHECK_RE` / `isAgentCheckHead`):
+  a line starting at column 0 with `>`, an optional space, `[!type]` (letters,
+  digits, `_`, `-`), an optional fold `+`/`-`, optional spaces, then the words
+  `Agent check` in any case, not followed by another letter. The block runs to
+  the first blank line (like `_plugins/callout.rb`, which ends a callout at
+  `\n\n`); a whitespace-only line also ends it, which can only make the block
+  shorter. Front matter and fenced code are never blocks.
+- **Bots' territory**: a change wholly inside a block's zone (the block plus the
+  whitespace either side) on both the old and new sides. That covers editing
+  inside a callout, adding a whole new one on a paragraph gap, and removing one.
+  A callout dropped into the middle of a paragraph, a whitespace-only change
+  between the owner's paragraphs, or turning the owner's own callout into an
+  Agent check are NOT.
+- **Everything else is the owner's**: rewording, deleting or moving their words, a
+  sentence inserted between two of theirs, front matter, their own callouts and
+  their inline "agent check" prompts.
+- **Turn start** (`noteTurnStart`, authoring branch, markdown source only): keep
+  the raw text and start a watch on the file. Collateral auto-threads are turned
+  off for the post's own source (bot prose changes become cards; callout changes
+  get quiet markers; what is left is the owner's own typing).
+- **Turn end** (`reportAuthoringChanges → settleOwnership`, before `changedPosts`):
+  `ownership.plan(raw, steps)` replays every version the watch saw. A user step is
+  kept; a user step over a held bot change wins, and the hold is dropped. A bot
+  callout step is kept and remembered for a marker. Any other bot step is held:
+  the owner's text from before it is what the file will say. The file is written
+  back with only the held hunks reverted, never the snapshot. The write is
+  compare-and-swap: a file that moved again is re-planned with that version as
+  one more step. Hunks come from Myers' diff, by line and then by token.
+- **Cards**: held hunks in one paragraph merge into one card. Each card widens by
+  whole words, never into a neighbouring held region, until its `current` is a
+  unique span of the reverted file. It goes on a `botference` message, with
+  `suggestions`, in the conversation that asked (`ev.target`, or Page chat). The
+  existing card machinery handles it: Accept / Reject / Accept all, bubbles, drift
+  refusal and the next-turn verdict. A side over 7,900 characters is still
+  reverted. Its card arrives as `needs-manual`, and the bots' whole version is saved
+  under `<scratch>/bot-versions/`.
+- **The owner's front matter is left alone**: `authoring.changedPosts(…,
+  {keepFront})` no longer re-front-matters a post under the rule.
+- **Quiet markers** (`page.marks`, `{kind:'bots'|'yours', quote, by, at}`, newest
+  40, aged out after 7 days): content.js paints them with
+  `Anchor.paintQuiet` as a dotted underline with no background and a tooltip, no
+  thread and no approval. A marker that does not locate is simply not drawn.
+- **Who wrote a version** (`turnwatch.mjs`): (1) the companion's own journal. Card
+  accepts, ✎ prose writes and the backstop's put-back call `noteUserWrite`
+  first, and a version with that hash is the owner's, exactly. (2) On macOS,
+  `lsappinfo` is asked once a second which app is frontmost. A version that lands
+  within 6 s of a text editor (Obsidian, VS Code, …) being frontmost is the
+  owner's. For Obsidian, if the vault's `workspace.json` says another note is
+  active, it is the bots'. (3) Otherwise it is the bots'. `PLUGIN_EDITOR_PROBE=none`
+  (set by the test harness) makes every unjournalled version the bots'.
+- **The prompt**: `authoring.context` (on a post) plus
+  `suggest.suggestBlock({direct:true})` plus the verdict. The owner's text is
+  proposed as ```suggest blocks, which are now lifted on direct-edit pages too.
+  `/suggest-*` accept on them as well.
+
+**Bent rule, stated plainly.** Bytes do not say who wrote them. The owner's
+edits made through the companion are attributed exactly. Edits typed in an
+editor are attributed by the frontmost-app probe. That errs toward the owner: a
+bot write that lands while they are typing in the post is kept as theirs.
+Without the probe (not macOS), an editor edit made during a bot turn is treated as
+the bots'. It is put back, and it is offered as a card, so it is one Accept away
+and not lost. The rule covers the page's own post. Edits the bots make to OTHER
+existing posts are not reverted.
+
+### B. The owner's own ✎ (`POST /fte-route`, protocol v2)
+
+- **Page prose** (`figure.id === 'page-text'`, region not `front-matter`): the
+  companion writes the replacement into the markdown itself, with no bot
+  (`ownership.proseEdit`). It writes only when `findSpans` finds the words exactly
+  once in the body, outside Agent-check blocks and front matter. If they occur
+  more than once, they must occur once inside the one paragraph whose `plainOf`
+  words hold the edit's rendered block. A span crossing markdown furniture is
+  refused. Refusals (`not-found`, `ambiguous`, `outside-body`, `markup`) route
+  the edit to the bots, with the reason. A "yours" quiet marker goes on each
+  written edit. A retry of the same batch gets the cached answer, and `already`
+  covers a restart.
+- **The editor** no longer offers ✎ inside an Agent check callout
+  (`agentCheckOf`: a `.callout` whose title starts "Agent check"). The editor's
+  own UI carries `bfp-ui`, so Discuss never reads the tray as page text.
+
+### C. No batch limit
+
+- The editor sends protocol **v2** (`schema botference.figure-edits/2`). It sends
+  the batch alone, with no message text and no 100-edit or 60,000-character cap.
+  Each item keeps its 2,000-character guard. content.js answers v1 exactly as
+  before (old caps, the editor's own text), and v2 by routing. `ready` is posted
+  in both versions.
+- `/fte-route` writes `<site>/.botference/plugin/artifacts/figure-edits/<batch>.json`
+  and a `.md` checklist (`figedits.checklist`: one `- [ ]` per item for the
+  bots, with every locator, and the written ones listed as done). It returns a
+  short `summary` (the first 12 items plus the file path), which content.js posts
+  through `postReply`. If everything was written, nothing is posted, and the ack
+  carries `message_ts: 'none'`. The ack adds `routes`, `wrote` and `file`. The
+  duplicate-send guarantees are unchanged: the ledger, in-flight joining, the
+  stored ack, `fteFindPosted` on the deterministic summary, and the companion's
+  text dedupe.
+
+### D. 💬 Comment on any part of a figure
+
+- Hovering any element of a declared figure (a bar, line, box, label or step card),
+  or a picture in the page, shows a 💬 at its corner and a dashed outline. The note
+  becomes a `kind:'comment'` item with the element locator (`describeEl`: tag,
+  anchor id, selector, path, text, src/alt), the figure's declared
+  generator/exports/source, and its context (the scrolly step). A picture is
+  `element.kind:'raster'` with "add an overlay or annotation". Comments leave the
+  tray once they are delivered.
+
+Tests: `ownership.test.mjs` (the matcher, blocks, callout vs prose, an
+insertion between sentences, front matter, the owner's own callout and prompt,
+four concurrency orders, unique widening, the prose matcher and its fallbacks,
+the checklist and summary, and, through a real companion: the prompt, the turn-end
+revert with cards and markers, Accept all, `/fte-route` with a retry, and an
+owner edit made mid-turn surviving). `authoring.test.mjs` now expects
+send-review prose edits to come back as cards. Harness
+`?figedit=route&selftest=1` (24 checks: prose written, routed fallback, no ✎ in an
+Agent check callout, comments on a box and a picture, quiet markers, a 150-item
+batch as one message, the retry). `?figedit=1&selftest=1` was updated for v2. The
+poses are `?figedit=routed` and `?figedit=comment`. The blog repo's editor tests
+are `test_routing.mjs` (new), plus updated `test_delivery`/`test_activation`.

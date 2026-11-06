@@ -19,8 +19,20 @@
  * previews, persisted in localStorage per page, reviewable as a batch in a tray
  * that appears once an edit exists, and sent with one "Send changes" button to
  * the Discuss (botference) extension over a versioned window.postMessage
- * protocol. Nothing here writes source (markdown included): the bots apply each
- * edit to its source file and regenerate exports after receipt.
+ * protocol. Nothing here writes source. Protocol v2: the extension ROUTES
+ * each item — the companion writes the owner's prose edits straight into the
+ * post's markdown where it can place them exactly, and everything else
+ * (figure text, comments, prose it could not place) goes to the bots as a
+ * checklist file. The ack says which went where, and the tray says so.
+ *
+ * Comments: next to ✎, a 💬 offers "comment on this part" for ANY element of
+ * a self-declared figure (a label, a line, a bar, a box, a step) and for a
+ * picture in the page. The note joins the same batch with the element's
+ * locator, so the bots can change the figure's script and rebuild.
+ *
+ * "Agent check" callouts (a callout whose title starts "Agent check") are the
+ * bots' to revise: no ✎ is offered inside them. Comment on them with a normal
+ * highlight in the Discuss drawer instead.
  *
  * Wire protocol and plugin-side contract:
  *   .botference/plugin/artifacts/figure-editor-plugin-handoff.md
@@ -30,13 +42,13 @@
 
   var VERSION = '1.0.0';
   var CHANNEL = 'botference.figure-edits';
-  var PROTOCOL = 1;
-  var SCHEMA = 'botference.figure-edits/1';
+  var PROTOCOL = 2;
+  var SCHEMA = 'botference.figure-edits/2';
   var CAPABILITY = 'figure-edits.send';
+  var ROUTE_CAPABILITY = 'figure-edits.route';
   var STORE_PREFIX = 'figure-text-editor:v1:';
-  var MAX_EDITS = 100;
+  // one item's guard; there is no batch cap (the batch travels as a file)
   var MAX_TEXT = 2000;
-  var MAX_BYTES = 60000;
   var LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/i;
 
   function isLoopbackHost(host) { return LOOPBACK.test(String(host || '')); }
@@ -96,7 +108,7 @@
   Store.prototype.delivered = function () { return this.state.edits.filter(function (e) { return e.status === 'delivered'; }); };
   Store.prototype.forFigure = function (fid) {
     var self = this, keys = {};
-    this.state.edits.forEach(function (e) { if (e.figure.id === fid) keys[e.key] = true; });
+    this.state.edits.forEach(function (e) { if (e.figure.id === fid && e.kind !== 'comment') keys[e.key] = true; });
     return Object.keys(keys).map(function (k) { return self.active(k); });
   };
   Store.prototype._setDraft = function (key, rec) {
@@ -121,6 +133,13 @@
   Store.prototype.markDelivered = function (ids, ack) {
     var self = this, at = new Date().toISOString();
     var keys = [];
+    var routes = {};
+    (Array.isArray(ack.routes) ? ack.routes : []).forEach(function (r) { if (r && r.edit_id) routes[r.edit_id] = r; });
+    // a comment has nothing to preview or to find applied later: once it is
+    // in the bots' checklist it leaves the tray
+    this.state.edits = this.state.edits.filter(function (e) {
+      return !(e.kind === 'comment' && e.status === 'draft' && ids.indexOf(e.edit_id) >= 0);
+    });
     this.state.edits.forEach(function (e) {
       if (e.status === 'draft' && ids.indexOf(e.edit_id) >= 0) keys.push(e.key);
     });
@@ -131,8 +150,10 @@
     this.state.edits.forEach(function (e) {
       if (e.status === 'draft' && ids.indexOf(e.edit_id) >= 0) {
         e.status = 'delivered';
+        var r = routes[e.edit_id] || null;
         e.delivery = { batch_id: ack.batch_id, at: at, message_ts: ack.accepted.message_ts,
-          destination: ack.destination };
+          destination: ack.destination, to: r ? r.to : 'bots' };
+        if (r && r.detail) e.delivery.why = String(r.detail);
       }
     });
     this.state.undo = this.state.undo.filter(function (u) { return keys.indexOf(u.key) < 0; });
@@ -157,15 +178,18 @@
 
   // ------------------------------------------------------------------ batch
   function editForWire(e) {
-    return {
-      edit_id: e.edit_id, figure: e.figure, element: e.element, context: e.context,
-      source: e.source, original: e.original, replacement: e.replacement, baseline: e.baseline,
+    var w = {
+      edit_id: e.edit_id, kind: e.kind === 'comment' ? 'comment' : 'text',
+      figure: e.figure, element: e.element, context: e.context,
+      source: e.source, original: e.original || '', replacement: e.replacement || '', baseline: e.baseline,
       supersedes: e.supersedes || null, captured_at: e.captured_at
     };
+    if (e.kind === 'comment') w.note = e.note;
+    return w;
   }
   function contentPrint(drafts) {
     return fingerprint(JSON.stringify(drafts.map(function (d) {
-      return [d.key, d.original, d.replacement, d.baseline];
+      return [d.key, d.original, d.replacement, d.note || '', d.baseline];
     }).sort()));
   }
   function stamp(d) {
@@ -177,7 +201,7 @@
       schema: SCHEMA, batch_id: batchId, created_at: new Date().toISOString(),
       editor: { version: VERSION },
       page: page,
-      note: 'Browser previews only: nothing has been written to source. Apply each edit to its source file, regenerate the listed exports, and report any edit that could not be placed.',
+      note: 'Browser previews only: nothing has been written to source by the page. Text edits: apply each to its source file and regenerate the listed exports. Comments: change the figure\'s script and rebuild (or annotate a picture). Report any item that could not be placed.',
       edits: drafts.map(editForWire)
     };
   }
@@ -196,12 +220,12 @@
     lines.push('These are browser previews only. Please apply each to its source, regenerate the exports, and tell me any you could not place.');
     lines.push('');
     batch.edits.forEach(function (e, i) {
-      var where = e.figure.title + ' · ' + (e.element.kind === 'svg-text' ? 'SVG label' : 'text') +
+      var where = e.figure.title + ' · ' + (e.kind === 'comment' ? 'comment' : e.element.kind === 'svg-text' ? 'SVG label' : 'text') +
         (e.element.nearest_id ? ' in #' + e.element.nearest_id : '') +
         (e.context ? ' · ' + contextLabel(e.context) : '') +
         (e.element.occurrence && e.element.occurrence.count > 1 ? ' · occurrence ' + e.element.occurrence.index + ' of ' + e.element.occurrence.count : '');
       lines.push((i + 1) + '. ' + where);
-      lines.push('   “' + e.original + '” → “' + e.replacement + '”');
+      lines.push(e.kind === 'comment' ? '   💬 ' + e.note : '   “' + e.original + '” → “' + e.replacement + '”');
       lines.push('   source: ' + e.source.file + (e.source.locator ? ' — ' + e.source.locator : ''));
     });
     lines.push('');
@@ -254,7 +278,8 @@
     this.hello = function (fresh) {
       if (fresh) helloTries = 0;
       helloId = rid('hello'); helloTries++;
-      post({ type: 'hello', request_id: helloId, page: { url: win.location.href }, editor: { version: VERSION, capabilities: [CAPABILITY] } });
+      post({ type: 'hello', request_id: helloId, page: { url: win.location.href },
+        editor: { version: VERSION, capabilities: [CAPABILITY, ROUTE_CAPABILITY, 'figure-edits.comment'] } });
       timers.clear(helloTimer);
       helloTimer = timers.set(function () {
         if (self.state === 'unavailable' && helloTries < t.helloTries) self.hello();
@@ -330,15 +355,14 @@
   Sender.prototype.prepare = function () {
     var drafts = this.store.drafts();
     if (!drafts.length) return { error: { code: 'empty', message: 'There are no unsent edits.', retryable: false } };
-    if (drafts.length > MAX_EDITS) return { error: { code: 'too_large', message: 'Send at most ' + MAX_EDITS + ' edits at once.', retryable: false } };
     var print = contentPrint(drafts);
     var ob = this.store.state.outbox;
     var batchId = ob && ob.print === print ? ob.batch_id : 'fte-' + stamp(new Date()) + '-' + randomHex(4);
     var batch = buildBatch(drafts, this.page(), batchId);
     if (ob && ob.batch_id === batchId && ob.created_at) batch.created_at = ob.created_at;
-    var text = renderMessage(batch);
-    if (text.length > MAX_BYTES) return { error: { code: 'too_large', message: 'This batch is too large to send in one message; send fewer edits.', retryable: false } };
-    return { batch: batch, text: text, print: print, ids: drafts.map(function (d) { return d.edit_id; }) };
+    // v2 sends the batch alone: the extension writes it to a file and posts a
+    // short checklist message, so there is no message text and no batch cap
+    return { batch: batch, print: print, ids: drafts.map(function (d) { return d.edit_id; }) };
   };
   Sender.prototype.send = function () {
     var self = this, st = this.store;
@@ -351,7 +375,7 @@
     return this.bridge.send(prep.batch, prep.text).then(function (ack) {
       if (ack.batch_id !== prep.batch.batch_id) throw { code: 'mismatch', message: 'An acknowledgement named a different batch.', retryable: true };
       st.markDelivered(prep.ids, ack);
-      self.last = { kind: 'delivered', ack: ack, count: prep.ids.length };
+      self.last = { kind: 'delivered', ack: ack, count: prep.ids.length, routes: summarizeRoutes(ack) };
       return self.last;
     }).catch(function (err) {
       err = err && err.code ? err : { code: 'error', message: String((err && err.message) || err), retryable: true };
@@ -363,10 +387,33 @@
     });
   };
 
+  // which items went where, from an ack: {source, bots, fallback:[why]}
+  function summarizeRoutes(ack) {
+    var out = { source: 0, bots: 0, fallback: [] };
+    (Array.isArray(ack && ack.routes) ? ack.routes : []).forEach(function (r) {
+      if (r && r.to === 'source') out.source++;
+      else { out.bots++; if (r && r.reason) out.fallback.push(str(r.detail) || str(r.reason)); }
+    });
+    if (!ack || !Array.isArray(ack.routes)) out.bots = null;
+    return out;
+  }
+  function routeText(sum) {
+    if (!sum || sum.bots === null) return '';
+    var parts = [];
+    if (sum.source) parts.push(sum.source + ' prose edit' + (sum.source === 1 ? '' : 's') + ' written straight into the post');
+    if (sum.bots) {
+      parts.push(sum.bots + ' item' + (sum.bots === 1 ? '' : 's') + ' sent to the bots as a checklist' +
+        (sum.fallback.length ? ' (' + sum.fallback.length + ' of them prose the companion could not place exactly: ' +
+          sum.fallback.slice(0, 2).join('; ') + (sum.fallback.length > 2 ? '; …' : '') + ')' : ''));
+    }
+    return parts.join(' · ');
+  }
+
   var Core = {
     VERSION: VERSION, CHANNEL: CHANNEL, PROTOCOL: PROTOCOL, SCHEMA: SCHEMA, CAPABILITY: CAPABILITY,
     isLoopbackHost: isLoopbackHost, validInbound: validInbound, Store: Store, Bridge: Bridge,
-    Sender: Sender, buildBatch: buildBatch, renderMessage: renderMessage
+    Sender: Sender, buildBatch: buildBatch, renderMessage: renderMessage,
+    summarizeRoutes: summarizeRoutes, routeText: routeText, ROUTE_CAPABILITY: ROUTE_CAPABILITY
   };
   global.FigureTextEditorCore = Core;
 
@@ -398,14 +445,19 @@
       else if (closestEl(block, '.callout-content')) where = 'callout body (lines starting with >), ' + tag;
       else if (tag === 'figcaption') where = 'figure caption (HTML in the markdown)';
       else where = 'markdown body, ' + (/^h\d$/.test(tag) ? 'heading' : tag === 'li' ? 'list item' : tag === 'td' || tag === 'th' ? 'table cell' : 'paragraph');
+      // what kind of text this is, for the companion's routing: the owner's
+      // body prose may be written straight into the post; front matter goes
+      // to the bots
+      var region = where.indexOf('front matter') === 0 ? 'front-matter' : closestEl(block, '.callout') ? 'callout'
+        : tag === 'figcaption' ? 'caption' : 'body';
       var heading = null;
       Array.prototype.forEach.call(fig.root.querySelectorAll('h2, h3, h4'), function (h) {
         if (h !== block && (h.compareDocumentPosition(block) & 4)) heading = h.textContent.replace(/\s+/g, ' ').trim();
       });
       var text = block.textContent.replace(/\s+/g, ' ').trim();
-      return { file: file, locator: where + (heading && where.indexOf('front matter') < 0 ? ', under “' + heading + '”' : ''),
+      return { file: file, region: region, locator: where + (heading && where.indexOf('front matter') < 0 ? ', under “' + heading + '”' : ''),
         block: text.length > 300 ? text.slice(0, 300) + '…' : text, heading: heading,
-        note: 'Rendered from markdown: find original inside this block in the file and replace only those words (markdown syntax may sit between them in source). The browser never edits the markdown.' };
+        note: 'Rendered from markdown: find original inside this block in the file and replace only those words (markdown syntax may sit between them in source).' };
     }
   };
 
@@ -487,7 +539,11 @@
     for (var i = 0; i < rules.length; i++) {
       var r = rules[i] || {}, hit = null;
       if (r.when) { hit = within_(node, r.when); if (!hit) continue; }
-      if (r.text) { var ok = false; try { ok = new RegExp(r.text).test(node.data); } catch (e) { ok = false; } if (!ok) continue; }
+      if (r.text) {
+        var ok = false;
+        try { ok = new RegExp(r.text).test(node.nodeType === 3 ? node.data : (node.textContent || '')); } catch (e) { ok = false; }
+        if (!ok) continue;
+      }
       if (r.ctx && !Object.keys(r.ctx).every(function (k) { return ctx && same(ctx[k], r.ctx[k]); })) continue;
       var out = { file: r.file || file, locator: fill(r.locator || '', ctx, hit) };
       if (r.regenerate) out.regenerate = r.regenerate;
@@ -528,10 +584,20 @@
     return el && el.closest ? el.closest(sel) : null;
   }
   function isSvg(node) { var el = closestEl(node, '*'); return !!(el && el.namespaceURI === SVG_NS); }
+  // An "Agent check" callout: a callout whose title starts with those words.
+  // Its text is the bots' to revise, so it is never edited here (no ✎); the
+  // owner comments on it with an ordinary highlight instead.
+  function agentCheckOf(node) {
+    var c = closestEl(node, '.callout');
+    if (!c) return null;
+    var t = c.querySelector('.callout-title');
+    return t && /^\s*agent check(?![a-z])/i.test(t.textContent || '') ? c : null;
+  }
   function eligible(fig, node) {
     if (!node || node.nodeType !== 3 || !WORDY.test(node.data)) return false;
     if (!fig.root.contains(node)) return false;
     if (closestEl(node, SKIP)) return false;
+    if (fig.spec.page && agentCheckOf(node)) return false;
     if (fig.spec.exclude && within_(node, fig.spec.exclude)) return false;
     // text inside a nested figure belongs to that figure, not to the page
     if (closestEl(node, '[data-fte-root]') !== fig.root) return false;
@@ -648,7 +714,10 @@
     // the element moved (a walkthrough note re-docked, a re-render): fall back
     // to the original text, disambiguated by occurrence within the same context
     var cands = eligibleIn(fig, fig.root).filter(function (n) {
-      return same_(fig, n, rec.context) && (coreOf(n) === rec.original || fig.previewed.get(n) === rec.key);
+      // a previewed node counts only while it still holds the whole preview:
+      // one split by someone else's markup (a Discuss highlight) is left alone
+      return same_(fig, n, rec.context) && (coreOf(n) === rec.original ||
+        (fig.previewed.get(n) === rec.key && coreOf(n) === rec.replacement));
     });
     if (cands.length === 1) return cands[0];
     if (e.occurrence && cands.length === e.occurrence.count) return cands[e.occurrence.index - 1] || null;
@@ -706,7 +775,15 @@
     '.fte-box[data-kind="edited"]{background:var(--fte-mark);border-bottom:2px solid var(--fte-accent)}',
     '.fte-box[data-kind="delivered"]{border-bottom:2px dotted var(--fte-accent)}',
     '.fte-box[data-kind="hover"]{outline:1px dotted var(--fte-hover);outline-offset:1px}',
-    '.fte-hot{cursor:text!important}'
+    '.fte-hot{cursor:text!important}',
+    '.fte-box[data-kind="chover"]{outline:1.5px dashed var(--fte-hover);outline-offset:2px}',
+    '.fte-ui.fte-cbtn{position:fixed;z-index:2147483002;width:22px;height:22px;min-height:0!important;padding:0!important;border-radius:50%!important;border:1px solid var(--fte-accent)!important;background:var(--fte-bg)!important;font-size:12px!important;line-height:20px!important;text-align:center;box-shadow:0 1px 4px rgba(43,38,32,.22);cursor:pointer}',
+    '.fte-cfield{position:fixed;z-index:2147483001;background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 18px rgba(43,38,32,.25);padding:.45rem .55rem}',
+    '.fte-cfield .fte-clabel{font-size:12.5px;font-style:italic;color:var(--fte-muted);margin:0 0 .3rem}',
+    '.fte-cfield textarea{display:block;width:100%;resize:vertical;font:inherit;font-size:14px;padding:.3rem .4rem;border:1px solid var(--fte-line);border-radius:3px;background:var(--fte-bg);color:var(--fte-ink)}',
+    '.fte-cfield .fte-row{justify-content:flex-end;margin-top:.4rem}',
+    '.fte-item .fte-note{color:var(--fte-ink)}',
+    '.fte-item .fte-to{color:var(--fte-muted);font-size:12px}'
   ].join('\n');
   var FRAME_CSS = '.fte-hot, .fte-hot *{cursor:text!important}';
 
@@ -911,11 +988,17 @@
     if (this.replaying) return;
     this.pointer = this.toTop(w, ev.clientX, ev.clientY);
     this.releaseHeld(w);
-    if (this.field || this.sending) return;
-    if (ev.buttons) { this.setHover(null); return; }
+    if (this.field || this.cfield || this.sending) return;
+    if (ev.buttons) { this.setHover(null); this.setCHover(null); return; }
     var t = norm(ev.target);
-    if (this.isUi(t)) { if (closestEl(t, '.fte-pencil')) this.keepHover(); else this.setHover(null); return; }
+    if (this.isUi(t)) {
+      if (closestEl(t, '.fte-pencil')) this.keepHover(); else this.setHover(null);
+      if (closestEl(t, '.fte-cbtn')) this.keepCHover(); else if (!closestEl(t, '.fte-pencil')) this.setCHover(null);
+      return;
+    }
     var fig = this.figAt(w, t);
+    var ct = this.commentTarget(w, t, fig);
+    if (ct) this.setCHover(ct); else this.cHoverLeaveSoon();
     var n = fig ? pickText(fig, ev.clientX, ev.clientY, t) : null;
     if (n && fig.spec.page) {
       // a selection in progress belongs to the reader (and to Discuss)
@@ -1014,10 +1097,131 @@
     this.leaveTimer = setTimeout(function () { self.leaveTimer = null; self.setHover(null); }, 250);
   };
 
+  // ------------------------------------------------------------- comments
+  // 💬 on ANY part of a declared figure (a bar, a line, a box, a label, a
+  // step card) and on a picture in the page. The owner writes a note; it joins
+  // the batch with the element's locator so the bots can change the figure's
+  // script and rebuild (or, for a picture with no source, annotate it).
+  var PICTURE = 'img, picture, canvas, video';
+  Editor.prototype.commentTarget = function (w, t, fig) {
+    if (!t || t.nodeType !== 1 || closestEl(t, SKIP)) return null;
+    if (fig && !fig.spec.page) {
+      if (!fig.root.contains(t) && fig.root !== t) return null;
+      if (fig.spec.exclude && within_(t, fig.spec.exclude)) return null;
+      return { fig: fig, el: t, raster: false };
+    }
+    var pic = closestEl(t, PICTURE);
+    if (!pic) return null;
+    var page = this.figs.filter(function (f) { return f.spec.page && f.win === w && f.root.contains(pic); })[0];
+    if (!page || closestEl(pic, '[data-fte-root]') !== page.root) return null;
+    return { fig: page, el: closestEl(pic, 'picture') || pic, raster: true };
+  };
+  Editor.prototype.setCHover = function (h) {
+    clearTimeout(this.cLeaveTimer); this.cLeaveTimer = null;
+    var old = this.chover;
+    if (old && h && old.el === h.el) return;
+    this.chover = h;
+    this.paintSoon();
+    if (h) this.loop();
+  };
+  Editor.prototype.keepCHover = function () { clearTimeout(this.cLeaveTimer); this.cLeaveTimer = null; };
+  Editor.prototype.cHoverLeaveSoon = function () {
+    var self = this;
+    if (!this.chover || this.cLeaveTimer) return;
+    this.cLeaveTimer = setTimeout(function () { self.cLeaveTimer = null; self.setCHover(null); }, 300);
+  };
+  // an element's box in top-window coordinates
+  Editor.prototype.elBox = function (fig, el) {
+    if (!el || !el.isConnected) return null;
+    var r = el.getBoundingClientRect();
+    if (!r.width && !r.height) return null;
+    var o = fig.frame ? this.toTop(fig.win, 0, 0) : { x: 0, y: 0 };
+    if (!o) return null;
+    return { left: r.left + o.x, top: r.top + o.y, right: r.right + o.x, bottom: r.bottom + o.y };
+  };
+  function describeEl(fig, el, raster) {
+    var anchor = anchorOf(fig, el);
+    var src = raster ? ((el.querySelector && el.querySelector('img')) || el) : null;
+    var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+    var out = {
+      kind: raster ? 'raster' : 'element', tag: el.localName,
+      anchor_id: anchor === fig.root ? null : anchor.id,
+      selector: relSelector(anchor, el), path: humanPath(fig, el),
+      nearest_id: (el.closest('[id]') && fig.root.contains(el.closest('[id]'))) ? el.closest('[id]').id : null,
+      text: text.length > 120 ? text.slice(0, 120) + '…' : text
+    };
+    if (src) {
+      out.src = src.getAttribute && (src.getAttribute('src') || src.currentSrc || '') || '';
+      if (src.getAttribute && src.getAttribute('alt')) out.alt = src.getAttribute('alt');
+    }
+    return out;
+  }
+  Editor.prototype.openComment = function (h) {
+    if (this.sending) { this.toast('Wait until this batch is delivered or fails, then comment again.'); return; }
+    if (this.field) this.closeField();
+    this.setHover(null);
+    this.cfield = h;
+    this.setCHover(null);
+    var f = this.ui.cfield;
+    f.input.value = '';
+    f.label.textContent = 'Comment on this part' + (h.raster ? ' (picture)' : ' of ' + h.fig.spec.title);
+    f.root.hidden = false;
+    this.placeComment();
+    f.input.focus();
+    this.loop();
+  };
+  Editor.prototype.placeComment = function () {
+    var h = this.cfield; if (!h) return;
+    var b = this.elBox(h.fig, h.el), root = this.ui.cfield.root, vw = this.win.innerWidth, vh = this.win.innerHeight;
+    if (!b) return;
+    var w = Math.min(320, vw - 16);
+    root.style.width = w + 'px';
+    root.style.left = Math.max(8, Math.min(b.left, vw - w - 8)) + 'px';
+    var top = b.bottom + 6;
+    if (top + 140 > vh) top = Math.max(8, b.top - 146);
+    root.style.top = top + 'px';
+  };
+  Editor.prototype.closeComment = function () {
+    if (!this.cfield) return;
+    this.cfield = null;
+    this.ui.cfield.root.hidden = true;
+    this.paintSoon();
+  };
+  Editor.prototype.saveComment = function () {
+    var h = this.cfield; if (!h) return;
+    var v = this.ui.cfield.input.value.trim();
+    if (!v) { this.toast('Write the note first, or press Esc.'); return; }
+    if (v.length > MAX_TEXT) { this.toast('That note is longer than ' + MAX_TEXT + ' characters.'); return; }
+    var fig = h.fig, el = h.el;
+    var ctx = h.raster ? null : (fig.spec.context ? fig.spec.context(fig, el) : null);
+    var page = this.pageInfo();
+    var src = h.raster
+      ? { file: page.source || '(this page)', locator: 'picture ' + (describeEl(fig, el, true).src || el.localName),
+          note: 'No source script for this picture: add an overlay or annotation beside it rather than editing pixels.' }
+      : (fig.spec.source || function () { return {}; }).call(fig.spec, fig, el, ctx);
+    var id = rid('e');
+    var rec = {
+      edit_id: id, key: 'c|' + fig.spec.id + '|' + id, kind: 'comment', status: 'draft',
+      figure: h.raster
+        ? { id: 'page-picture', title: (el.querySelector && el.querySelector('img') ? el.querySelector('img').getAttribute('alt') : el.getAttribute('alt')) || 'Picture in the page',
+            kind: 'raster', document: page.path, generator: null, exports: [] }
+        : { id: fig.spec.id, title: fig.spec.title, kind: fig.frame ? 'iframe' : 'inline',
+            document: fig.baseline.document, generator: fig.spec.generator || null, exports: fig.spec.exports || [] },
+      element: describeEl(fig, el, h.raster), context: ctx, source: src,
+      original: '', replacement: '', note: v, baseline: clone(fig.baseline), supersedes: null,
+      captured_at: new Date().toISOString(), updated_at: new Date().toISOString()
+    };
+    this.store.putDraft(rec.key, rec);
+    if (this.bridge.state !== 'ready') this.bridge.hello(true);
+    this.closeComment();
+    this.render();
+  };
+
   // ------------------------------------------------------- in-place editing
   Editor.prototype.openField = function (fig, node) {
     if (this.sending) { this.toast('Wait until this batch is delivered or fails, then edit again.'); return; }
     if (this.field) this.closeField();
+    if (this.cfield) this.closeComment();
     var key0 = fig.previewed.get(node);
     var rec = key0 ? this.store.active(key0) : null;
     var original = rec ? rec.original : coreOf(node);
@@ -1159,7 +1363,7 @@
     this.win.requestAnimationFrame(function () { self.paintQueued = false; self.paint(); });
   };
   Editor.prototype.busyPainting = function () {
-    return !!(this.hover || this.field || this.figs.some(function (f) { return Object.keys(f.live).length; }));
+    return !!(this.hover || this.field || this.chover || this.cfield || this.figs.some(function (f) { return Object.keys(f.live).length; }));
   };
   // Figures animate (scrolly, walkthrough), so marks are re-placed on a slow tick
   // while anything is drawn; the tick stops when nothing is.
@@ -1168,7 +1372,7 @@
     if (this.looping) return;
     this.looping = true;
     (function tick() {
-      self.paint(); self.placeField(false);
+      self.paint(); self.placeField(false); self.placeComment();
       if (!self.busyPainting()) { self.looping = false; return; }
       self.win.setTimeout(function () { self.win.requestAnimationFrame(tick); }, 90);
     })();
@@ -1200,6 +1404,25 @@
       }
     }
     pencil.hidden = !showPencil;
+    // the 💬 for the part under the pointer, at its top-right corner, and a
+    // dashed outline so it is clear which part the comment is about
+    var ch = this.cfield || this.chover, cbtn = this.ui.cbtn, showC = false;
+    if (ch && ch.el.isConnected) {
+      var cb = this.elBox(ch.fig, ch.el);
+      if (cb) {
+        boxes.push({ b: cb, kind: 'chover' });
+        if (!this.cfield) {
+          var vw2 = this.win.innerWidth;
+          var cl = Math.min(cb.right - 4, vw2 - 26);
+          // beside the ✎ when both are shown, never on top of it
+          if (showPencil && Math.abs(parseFloat(pencil.style.left) - cl) < 22 && Math.abs(parseFloat(pencil.style.top) - (cb.top - 12)) < 22) cl -= 24;
+          cbtn.style.left = cl + 'px';
+          cbtn.style.top = Math.max(2, cb.top - 12) + 'px';
+          showC = true;
+        }
+      }
+    }
+    cbtn.hidden = !showC;
     while (layer.children.length < boxes.length) layer.appendChild(el(this.doc, 'div', 'fte-box'));
     Array.prototype.forEach.call(layer.children, function (d, i) {
       var x = boxes[i];
@@ -1244,6 +1467,34 @@
     field.appendChild(input); field.appendChild(keys);
     d.body.appendChild(field);
 
+    // the 💬 for any part of a figure, and the note it opens
+    var cbtn = el(d, 'button', 'fte-ui fte-cbtn', '💬'); cbtn.type = 'button'; cbtn.hidden = true;
+    cbtn.setAttribute('aria-label', 'Comment on this part'); cbtn.title = 'Comment on this part';
+    d.body.appendChild(cbtn);
+    var cfield = el(d, 'div', 'fte-ui fte-cfield'); cfield.hidden = true;
+    cfield.setAttribute('role', 'dialog'); cfield.setAttribute('aria-label', 'Comment on this part');
+    var clabel = el(d, 'div', 'fte-clabel');
+    var cinput = el(d, 'textarea'); cinput.rows = 3; cinput.placeholder = 'What should change here? (Enter adds it to the batch)';
+    cinput.setAttribute('aria-label', 'Comment');
+    var crow = el(d, 'div', 'fte-row');
+    var csave = el(d, 'button', 'fte-primary', 'Add comment'); csave.type = 'button';
+    var ccancel = el(d, 'button', null, 'Cancel'); ccancel.type = 'button';
+    crow.appendChild(ccancel); crow.appendChild(csave);
+    cfield.appendChild(clabel); cfield.appendChild(cinput); cfield.appendChild(crow);
+    d.body.appendChild(cfield);
+    cbtn.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });
+    cbtn.addEventListener('click', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      var h = self.chover; if (h && h.el.isConnected) self.openComment(h);
+    });
+    csave.addEventListener('click', function () { self.saveComment(); });
+    ccancel.addEventListener('click', function () { self.closeComment(); });
+    cinput.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') { ev.preventDefault(); self.closeComment(); }
+      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); self.saveComment(); }
+    });
+
     // the ✎ for links, buttons and page text
     var pencil = el(d, 'button', 'fte-ui fte-pencil', '✎'); pencil.type = 'button'; pencil.hidden = true;
     pencil.setAttribute('aria-label', 'Edit this text'); pencil.title = 'Edit this text';
@@ -1251,6 +1502,11 @@
 
     var toast = el(d, 'div', 'fte-ui fte-toast'); toast.hidden = true; toast.setAttribute('role', 'status');
     d.body.appendChild(toast);
+    // the Discuss extension never reads its own UI as page text (`bfp-ui`);
+    // the editor's tray, fields and buttons are not the page's text either,
+    // and a tray that lists "old → new" would otherwise make every quote of
+    // those words ambiguous for it
+    [layer, dock, field, cfield, cbtn, pencil, toast].forEach(function (x) { x.classList.add('bfp-ui'); });
 
     undo.addEventListener('click', function () { self.undo(); });
     rev.addEventListener('click', function () { self.reviewOpen = !self.reviewOpen; self.render(); });
@@ -1270,6 +1526,7 @@
     this.win.addEventListener('resize', function () { self.placeField(false); self.paintSoon(); });
     this.ui = { dock: dock, title: title, tag: tag, review: review, bridge: bridge, bridgeText: bridgeText,
       undo: undo, rev: rev, send: send, result: result, layer: layer, pencil: pencil, toastEl: toast,
+      cbtn: cbtn, cfield: { root: cfield, input: cinput, label: clabel },
       field: { root: field, input: input, keys: keys } };
   };
 
@@ -1311,8 +1568,13 @@
       kind = 'failed';
     } else if (last && last.kind === 'failed') { res = 'Not sent: ' + last.error.message; kind = 'failed'; }
     else if (last && last.kind === 'delivered') {
-      res = 'Delivered to “' + last.ack.destination.label + '” (message ' + last.ack.accepted.message_ts + (last.ack.deduped ? ', already there' : '') +
-        '). Not applied yet: the bots still change the source and rebuild; previews stay until then.' +
+      var rt = routeText(last.routes);
+      var none = last.ack.accepted.message_ts === 'none';
+      res = (none ? 'Done' : 'Delivered to “' + last.ack.destination.label + '” (message ' + last.ack.accepted.message_ts + (last.ack.deduped ? ', already there' : '') + ')') +
+        (rt ? ': ' + rt + '.' : '.') +
+        (none ? ' The page reloads with your words once the site rebuilds.'
+          : (last.routes && last.routes.source ? ' Your prose is already in the post; the' : ' The') +
+            ' bots still have to change the rest and rebuild; previews stay until then.') +
         (typeof last.ack.reason === 'string' && last.ack.reason ? ' Note from the chat: ' + last.ack.reason : '');
       kind = 'delivered';
     } else if (delivered.length) {
@@ -1342,11 +1604,22 @@
       }
       it.appendChild(top);
       var line = el(d, 'div');
-      line.appendChild(el(d, 'del', null, rec.original));
-      line.appendChild(d.createTextNode(' → '));
-      line.appendChild(el(d, 'ins', null, rec.replacement));
+      if (rec.kind === 'comment') {
+        line.appendChild(el(d, 'span', 'fte-note', '💬 ' + rec.note));
+        if (rec.element && rec.element.text) line.appendChild(el(d, 'span', 'fte-to', ' on “' + rec.element.text.slice(0, 60) + '”'));
+      } else {
+        line.appendChild(el(d, 'del', null, rec.original));
+        line.appendChild(d.createTextNode(' → '));
+        line.appendChild(el(d, 'ins', null, rec.replacement));
+      }
       it.appendChild(line);
-      if (rec.status === 'delivered') it.appendChild(el(d, 'span', 'fte-where', 'Delivered ' + rec.delivery.at.slice(11, 16) + ' UTC to “' + rec.delivery.destination.label + '”, batch ' + rec.delivery.batch_id + ' · not applied yet'));
+      if (rec.status === 'delivered') {
+        var dl = rec.delivery;
+        it.appendChild(el(d, 'span', 'fte-where', dl.to === 'source'
+          ? 'Written into the post ' + dl.at.slice(11, 16) + ' UTC (batch ' + dl.batch_id + ') · shows once the page rebuilds'
+          : 'Sent to the bots ' + dl.at.slice(11, 16) + ' UTC via “' + dl.destination.label + '”, batch ' + dl.batch_id + ' · not applied yet' +
+            (dl.why ? ' · could not be written directly: ' + dl.why : '')));
+      }
       box.appendChild(it);
     };
     box.appendChild(el(d, 'h3', null, 'Unsent (' + drafts.length + ')'));

@@ -35,8 +35,11 @@ export function context(site, page, source = null) {
     + `Place finished assets in the site's existing folders (${assets.join(', ') || 'assets'}), following nearby posts' link conventions. `
     + `Scratch work belongs under ${blog.scratchDir(site.root)}. Requested CSS/layout fixes are permitted. `
     + `Edit source files, never _site/ build output. The companion starts or reuses the local preview after changes.\n`
-    + `For a comment or a batch review, implement its requested source change directly and reply in that comment with what changed. `
-    + `Do not return suggestion blocks unless the owner asks to see a proposal first. For a complex deliverable, delegate with this repository and exact destination in the brief.\n`
+    + (source?.source_path
+      ? `For a comment or a batch review on this post: edit Agent check callouts, figure scripts, generated figures and images directly; `
+        + `propose every change to the owner's own words in the post as a \`\`\`suggest block (the rules follow). Reply in that comment with what you did. `
+      : `For a comment or a batch review, implement its requested source change directly and reply in that comment with what changed. `)
+    + `For a complex deliverable, delegate with this repository and exact destination in the brief.\n`
     + `No git, gh, commit, push or public deployment. Network access is a separate permission: a writable site does not grant blocked image hosts. `
     + `Do not substitute generated/reconstructed data for an unavailable original chart.\n`;
 }
@@ -53,12 +56,15 @@ export function builderPlacement(site) {
     + `Scratch goes in ${blog.scratchDir(site.root)}. The companion manages the local preview. Never edit _site/ or run git, gh, commit, push or public deployment.\n`;
 }
 
-export function changedPosts(site, changed, before, sourceUrl, config = {}) {
+export function changedPosts(site, changed, before, sourceUrl, config = {}, { keepFront = [] } = {}) {
   const dir = String(config.draft_dir || '_notes').replace(/\/$/, '') + '/';
   for (const rel of changed) {
     if (!rel.startsWith(dir) || !/\.md$/i.test(rel)) continue;
     const file = path.resolve(site.root, rel);
     if (!fs.realpathSync(file).startsWith(site.root + path.sep)) continue;
+    // a post whose words are the owner's (ownership.mjs) keeps its front
+    // matter as the owner wrote it: the companion does not re-front-matter it
+    if (keepFront.some(f => path.resolve(f) === file)) continue;
     const raw = fs.readFileSync(file, 'utf8');
     const fm = blog.frontMatter(raw) || {};
     const tags = Array.isArray(fm.tags) ? fm.tags : [];

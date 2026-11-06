@@ -698,6 +698,22 @@ const blogRootAnswers = [];
 //                          editor is told why it cannot send (screenshot state)
 //   `?figedit=deployed`    the same page claiming a deployed address: the
 //                          extension says NOTHING at all (`&selftest=1`)
+const fteRouteCalls = [];           // every POST /fte-route body (protocol v2)
+const fteRouteDone = {};            // batch_id -> the answer, for a retry
+// the post's "markdown" the fake routing matches against: the article's words,
+// except the second paragraph (as if it ran across markup in the source) and
+// the Agent check callout (the bots' own territory)
+// (read once, as the page first stood: the editor's previews change the page
+// afterwards, and the source has not moved)
+let fteSourceCache = null;
+document.addEventListener('DOMContentLoaded', () => { fteSourceCache = fteSourceRead(); });
+function fteSourceText() { return fteSourceCache != null ? fteSourceCache : fteSourceRead(); }
+function fteSourceRead() {
+  const art = document.querySelector('article');
+  if (!art) return '';
+  const ps = [...art.querySelectorAll('p')].filter((p, i) => !p.closest('.callout') && !/manager said afterwards/.test(p.textContent));
+  return ps.map(p => p.textContent).join('\n\n');
+}
 const fteLedgerStore = {};          // batch_id -> entry, as background.js keeps it
 const fteLedgerCalls = [];
 const fteSeen = [];                 // every figure-edit message on this window, both ways
@@ -741,6 +757,25 @@ if (FIGEDIT) {
     '<g id="t-power"><rect x="150" y="30" width="120" height="50" rx="6" fill="#d9e4ef"/><text x="210" y="60" text-anchor="middle">Power</text></g>' +
     '<g id="t-orbit"><rect x="290" y="30" width="120" height="50" rx="6" fill="#e3ecd9"/><text x="350" y="60" text-anchor="middle">Orbit</text></g>' +
     '</svg><figcaption style="font-size:13px;color:var(--pmuted)">A stand-in figure for the editor.</figcaption></figure>');
+  // ?figedit=route|comment: the page text is editable too (the editor looks
+  // for `main article`), there is an Agent check callout the ✎ must stay out
+  // of, and a picture with no source to comment on
+  if (FIGEDIT === 'route' || FIGEDIT === 'comment' || FIGEDIT === 'routed') {
+    const art = document.querySelector('article');
+    if (art && !art.closest('main')) {
+      const m = document.createElement('main');
+      art.parentNode.insertBefore(m, art);
+      m.appendChild(art);
+    }
+    const fig = document.getElementById('fte-fig');
+    if (fig) fig.insertAdjacentHTML('afterend',
+      '<div class="callout note" id="fte-agent" style="border-left:3px solid #8a7cc8;padding:.4rem .8rem;margin:0 0 1.2rem;background:rgba(138,124,200,.08)">' +
+      '<div class="callout-title" style="font-weight:600">Agent check: is “a draw” the right word?</div>' +
+      '<div class="callout-content">The match report says it ended one–one, so yes.</div></div>' +
+      '<p id="fte-pic"><img alt="Attendance chart" width="320" height="90" src="data:image/svg+xml;base64,' +
+      btoa('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="90"><rect width="320" height="90" fill="#f1ece2"/>' +
+        '<polyline points="10,80 80,60 150,65 220,30 310,20" fill="none" stroke="#9a7b52" stroke-width="3"/></svg>') + '"></p>');
+  }
   window.FigureTextEditorPage = { source: '_posts/2026-08-20-space-balloons.md', sourceSha256: null,
     title: 'Space balloons', builtAt: '2026-11-06T16:25:48+00:00' };
   // exactly as _includes/figure-text-editor.html emits it: deferred, marked local
@@ -3086,6 +3121,35 @@ function companion(method, path, body) {
   // the reader's website repository is theirs and Discuss never commits to it.
   if (route === '/blog-page') {
     return { ok: true, status: 200, data: { ok: true, blog: BLOG_PAGE } };
+  }
+  // POST /fte-route — the companion's routing of a v2 figure-editor batch,
+  // stood in for: page prose found exactly once in the (fake) markdown is
+  // "written into the post"; anything else goes to the bots, and the answer
+  // carries the short checklist message the extension posts (server.mjs has
+  // the real one, test/ownership.test.mjs drives it)
+  if (method === 'POST' && route === '/fte-route') {
+    fteRouteCalls.push(JSON.parse(JSON.stringify(body)));
+    const b = body.batch || {};
+    const key = b.batch_id;
+    if (fteRouteDone[key]) return { ok: true, status: 200, data: Object.assign({ ok: true, repeated: true }, fteRouteDone[key]) };
+    const fold = s => String(s || '').replace(/\s+/g, ' ').trim();
+    const src = fold(fteSourceText());
+    const routes = (b.edits || []).map(e => {
+      const prose = e.kind !== 'comment' && e.figure && e.figure.id === 'page-text'
+        && (e.source || {}).region !== 'front-matter';
+      if (!prose) return { edit_id: e.edit_id, to: 'bots' };
+      const n = src.split(fold(e.original)).length - 1;
+      if (n === 1) return { edit_id: e.edit_id, to: 'source' };
+      return { edit_id: e.edit_id, to: 'bots', reason: n ? 'ambiguous' : 'not-found',
+        detail: n ? 'those words appear ' + n + ' times in the source' : 'those words are not in the source as written (they may run across a link, emphasis or other markup)' };
+    });
+    const bots = routes.filter(r => r.to === 'bots').length;
+    const md = '/site/.botference/plugin/artifacts/figure-edits/' + key + '.md';
+    const files = { md, json: md.replace(/\.md$/, '.json') };
+    const summary = bots ? 'Figure edits from the local preview: ' + b.edits.length + ' items on ' + ((b.page || {}).title || 'this page')
+      + ' (batch ' + key + ').\nFor you: ' + bots + ' items. The whole checklist, with every locator, is in `' + md + '`.' : '';
+    fteRouteDone[key] = { routes, wrote: routes.length - bots, files, summary };
+    return { ok: true, status: 200, data: Object.assign({ ok: true }, fteRouteDone[key]) };
   }
   // a suggestion's picture off the source tree: only the one the ?suggest=rich
   // pose's figure names exists "on disk"; everything else is not there
@@ -10107,7 +10171,7 @@ async function selftestFigEdit() {
   ifr.style.display = 'none';
   ifr.srcdoc = '<script>parent.postMessage({channel:"' + FTE_CH + '",v:1,from:"page",type:"hello",request_id:"hello-iframe"}, "*")<\/script>';
   document.body.appendChild(ifr);
-  ftePage({ type: 'hello', request_id: 'hello-v2', v: 2 });
+  ftePage({ type: 'hello', request_id: 'hello-v3', v: 3 });
   ftePage({ type: 'hello', request_id: 'hello-from-ext', from: 'extension' });
   ftePage({ type: 'hello', request_id: 'x'.repeat(65) });
   ftePage({ type: 'hello' });
@@ -10147,16 +10211,22 @@ async function selftestFigEdit() {
   const p0 = posted[0] || {};
   check('…into Page chat of this page, never a focused thread',
     p0.thread_id === '__page__' && replyUrls[replyUrls.length - 1] === window.__bfp.url);
-  check('…carrying the editor’s text byte for byte', p0.text === sent.text);
-  check('…which reads as figure edits with the batch as JSON',
-    /^Figure text edits from the local preview/.test(p0.text || '') && /```json/.test(p0.text || ''));
+  // protocol v2: the editor sends the batch alone; the companion routes it
+  // and the chat gets its short checklist message, never the JSON
+  const routed = fteRouteCalls[fteRouteCalls.length - 1] || {};
+  check('the editor speaks protocol v2 and sends no message text of its own',
+    sent.v === 2 && sent.text === undefined && (sent.batch || {}).schema === 'botference.figure-edits/2');
+  check('…the batch was routed through the companion first', routed.batch && routed.batch.batch_id === sent.batch_id);
+  check('…and the chat message is the companion’s short checklist, naming the file',
+    p0.text === (fteRouteDone[sent.batch_id] || {}).summary && /^Figure edits from the local preview/.test(p0.text || '')
+    && /figure-edits\/fte-.*\.md/.test(p0.text || '') && !/```json/.test(p0.text || ''));
   check('`received` came before the `ack`', (() => {
     const i = fteSeen.findIndex(m => m.type === 'received' && m.request_id === sent.request_id);
     const j = fteSeen.findIndex(m => m.type === 'ack' && m.request_id === sent.request_id);
     return i >= 0 && j > i;
   })());
   const ack = fteFrom('ack', sent.request_id)[0] || {};
-  const inChat = (window.__bfp.page.page_chat || []).find(m => m.text === sent.text);
+  const inChat = (window.__bfp.page.page_chat || []).find(m => m.text === p0.text);
   check('the ack names the message the chat now holds', !!inChat && ack.accepted && ack.accepted.message_ts === inChat.ts);
   check('…and the chat it went to', ack.destination && ack.destination.thread_id === '__page__'
     && ack.destination.url === window.__bfp.url && ack.accepted.thread_id === '__page__');
@@ -10166,7 +10236,7 @@ async function selftestFigEdit() {
   window.__bfp.drawer.open('chat');
   check('the drawer shows it as the reader\u2019s own message in Page chat', !!await until(() =>
     [...window.__bfp.drawer.shadow.querySelectorAll('.pane[data-pane="chat"] .reply.mine')]
-      .some(m => /Figure text edits from the local preview/.test(m.textContent)), 2000));
+      .some(m => /Figure edits from the local preview/.test(m.textContent)), 2000));
   check('the worker’s ledger went inflight, then acked',
     fteLedgerCalls.some(c => c.op === 'put' && c.batch_id === sent.batch_id && c.state === 'inflight')
     && (fteLedgerStore[sent.batch_id] || {}).state === 'acked');
@@ -10295,9 +10365,215 @@ async function selftestFigEditDeployed() {
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
 }
 
+// ?figedit=route&selftest=1 — PROTOCOL v2: EACH EDIT GOES WHERE IT BELONGS.
+//
+//   The owner's ✎ on page prose is written straight into the post by the
+//   companion (routed `source`); prose it cannot place exactly goes to the
+//   bots with the reason; there is no ✎ inside an Agent check callout; a 💬
+//   on any part of a figure (and on a picture with no source) joins the batch
+//   with the element's locator; a batch far past the old 100-edit cap goes as
+//   one checklist file and one short chat message.
+function fteHoverAt(node, el) {
+  // a real mousemove at the middle of a text node's first line, or an element
+  let r;
+  if (node) { const rg = document.createRange(); rg.selectNodeContents(node); r = rg.getClientRects()[0]; }
+  else r = el.getBoundingClientRect();
+  if (!r) return false;
+  const x = r.left + Math.min(r.width / 2, 40), y = r.top + r.height / 2;
+  const target = el || node.parentElement;
+  target.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: x, clientY: y, view: window }));
+  // the editor paints on animation frames, which a headless virtual clock
+  // does not always deliver on time: paint now, as the next frame would
+  const E = fteEd(); if (E) E.paint();
+  return true;
+}
+const fteTextNode = (el, re) => {
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) if (re.test(n.data)) return n;
+  return null;
+};
+async function fteComment(el, note) {
+  const E = fteEd();
+  fteHoverAt(null, el);
+  await sleep(120);
+  const btn = E.ui.cbtn;
+  if (btn.hidden) return false;
+  btn.click();
+  await sleep(60);
+  if (E.ui.cfield.root.hidden) return false;
+  E.ui.cfield.input.value = note;
+  [...E.ui.cfield.root.querySelectorAll('button')].find(b => /Add comment/.test(b.textContent)).click();
+  await sleep(60);
+  return true;
+}
+async function selftestFigRoute() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? '✓ ' : '✗ ') + name); progress(out, name); };
+  const finish = () => {
+    const bad = out.filter(l => l[0] === '✗');
+    logQuiet = true;
+    const el = document.getElementById('h-log');
+    el.style.color = bad.length ? '#b3403a' : '#2ea043';
+    el.textContent = 'SELFTEST (figedit-route) ' + (out.length - bad.length) + '/' + out.length +
+      (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+    el.dataset.detail = out.join(' | ') +
+      (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+    console.log(out.join('\n'));
+  };
+  const E = await until(() => fteEd(), 4000);
+  check('the editor booted', !!E);
+  if (!E) return finish();
+  await until(() => E.bridge.state === 'ready', 5000);
+  check('connected over protocol v2, with routing', E.bridge.state === 'ready'
+    && fteFrom('hello-ack').some(a => a.v === 2 && (a.capabilities || []).includes('figure-edits.route')));
+  const page = E.figs.find(f => f.spec.page);
+  check('the page text is editable (main article)', !!page);
+  if (!page) return finish();
+
+  // ---- no ✎ inside an Agent check callout --------------------------------
+  const agentNode = fteTextNode(document.getElementById('fte-agent'), /match report/);
+  fteHoverAt(agentNode);
+  await sleep(150);
+  check('hovering an Agent check callout offers no ✎', E.ui.pencil.hidden && !E.hover);
+  const p1 = fteTextNode(document.querySelector('article'), /Aragon opened the season/);
+  fteHoverAt(p1);
+  await sleep(150);
+  check('…while the owner’s own paragraph does', !E.ui.pencil.hidden && E.hover && E.hover.node === p1);
+  E.setHover(null);
+
+  // ---- two prose edits: one the companion can place, one it cannot ---------
+  E.openField(page, p1);
+  E.ui.field.input.value = E.ui.field.input.value.replace('with a draw', 'with a goalless draw');
+  E.commitField(false);
+  const p2 = fteTextNode(document.querySelector('article'), /manager said afterwards/);
+  E.openField(page, p2);
+  E.ui.field.input.value = E.ui.field.input.value.replace('within itself', 'inside itself');
+  E.commitField(false);
+  const drafts = E.store.drafts();
+  check('two prose edits are drafts, marked as body text', drafts.length === 2
+    && drafts.every(d => d.kind !== 'comment' && d.figure.id === 'page-text' && d.source.region === 'body'));
+
+  // ---- 💬 on a part of a figure, and on a picture with no source -----------
+  const rect = document.querySelector('#fte-fig g#t-power rect');
+  check('a 💬 on a box of the figure opens a note', await fteComment(rect, 'make this box the grid colour'));
+  const c1 = E.store.drafts().find(d => d.kind === 'comment' && d.figure.id === 'harness-stack');
+  check('…which is a draft carrying the element’s locator', !!c1 && c1.element.tag === 'rect'
+    && c1.element.anchor_id === 't-power' && /rect/.test(c1.element.path) && c1.note === 'make this box the grid colour');
+  check('…and the figure’s declared source', !!c1 && c1.source && c1.source.file === 'assets/imgs/harness/_build-stack.py');
+  const img = document.querySelector('#fte-pic img');
+  check('a 💬 on a picture in the page opens a note too', await fteComment(img, 'circle the peak'));
+  const c2 = E.store.drafts().find(d => d.kind === 'comment' && d.element.kind === 'raster');
+  check('…marked as a picture with no source, to annotate', !!c2 && c2.figure.kind === 'raster'
+    && c2.element.alt === 'Attendance chart' && /overlay or annotation/.test(c2.source.note || ''));
+  E.reviewOpen = true; E.render();
+  check('the tray lists the comments', /make this box the grid colour/.test(E.ui.review.textContent)
+    && /circle the peak/.test(E.ui.review.textContent));
+
+  // ---- the send ------------------------------------------------------------
+  const r0 = fteReplies().length, k0 = fteRouteCalls.length;
+  window.__fteActivation = true;
+  document.querySelector('.fte-send').click();
+  await until(() => !E.sending, 8000);
+  const call = fteRouteCalls[k0] || {};
+  check('the batch went to /fte-route, all four items in it', (call.batch || {}).edits && call.batch.edits.length === 4);
+  const routes = (fteRouteDone[(call.batch || {}).batch_id] || {}).routes || [];
+  const toOf = re => (routes.find(r => { const e = call.batch.edits.find(x => x.edit_id === r.edit_id); return e && re.test(e.replacement || e.note || ''); }) || {}).to;
+  check('the placeable prose is written into the post', toOf(/goalless/) === 'source');
+  check('…the unplaceable prose goes to the bots, with the reason', toOf(/inside itself/) === 'bots'
+    && routes.some(r => r.reason === 'not-found'));
+  check('…and both comments go to the bots', toOf(/grid colour/) === 'bots' && toOf(/circle the peak/) === 'bots');
+  const posted = fteReplies().slice(r0);
+  check('exactly one chat message, the short checklist naming the file', posted.length === 1
+    && /figure-edits\/fte-.*\.md/.test(posted[0].text) && posted[0].text.length < 2000);
+  const res = (document.querySelector('.fte-result') || {}).textContent || '';
+  check('the tray says which went where', /1 prose edit written straight into the post/.test(res)
+    && /3 items sent to the bots/.test(res) && /could not place exactly/.test(res));
+  const del = E.store.delivered();
+  check('the written edit is marked as written; the other as sent; comments leave the tray',
+    del.length === 2 && del.some(d => d.delivery.to === 'source') && del.some(d => d.delivery.to === 'bots' && d.delivery.why)
+    && !E.store.state.edits.some(d => d.kind === 'comment'));
+
+  // ---- quiet markers: no thread, no approval, just who changed it -----------
+  RECORD.marks = [
+    { id: 'mk1', kind: 'yours', quote: 'with a goalless draw', at: new Date().toISOString(), by: 'you' },
+    { id: 'mk2', kind: 'bots', quote: 'The match report says it ended one–one, so yes.', at: new Date().toISOString(), by: '@codex' },
+  ];
+  // the companion wrote the post and jekyll rebuilt: the page now SAYS it
+  const p1now = fteTextNode(document.querySelector('article'), /Aragon opened the season/);
+  await window.__bfp.loadPage();
+  await sleep(150);
+  const qm = [...document.querySelectorAll('mark.bfp-quiet')];
+  check('quiet markers are painted from the record: "your edit" and the bots’ callout change',
+    qm.some(m => m.dataset.kind === 'yours' && /goalless/.test(m.textContent) && m.title === 'your edit')
+    && qm.some(m => m.dataset.kind === 'bots' && /match report/.test(m.textContent) && /@codex/.test(m.title)));
+  check('…with no thread and nothing to approve', !(window.__bfp.page.threads || []).some(t => /goalless|match report/.test(t.quote || ''))
+    && qm.every(m => getComputedStyle(m).backgroundColor === 'rgba(0, 0, 0, 0)'));
+  void p1now;
+
+  // ---- no batch cap ----------------------------------------------------------
+  await sleep(2100);
+  window.__fteActivation = true;
+  const id = 'fte-20261106T1500-0000f00d';
+  const many = Array.from({ length: 150 }, (_, i) => ({ edit_id: 'm' + i, kind: 'text', figure: { id: 'harness-stack', title: 'Harness stack' },
+    element: { kind: 'svg-text' }, source: { file: 'gen.py' }, original: 'w' + i, replacement: 'W' + i }));
+  const bigSend = { type: 'send', v: 2, request_id: 'send-big0000001', batch_id: id, expect_destination: E.bridge.destination,
+    batch: { schema: 'botference.figure-edits/2', batch_id: id, edits: many } };
+  const r1 = fteReplies().length;
+  ftePage(bigSend);
+  await until(() => fteFrom('ack', 'send-big0000001').length || fteFrom('error', 'send-big0000001').length, 5000);
+  const bigAck = fteFrom('ack', 'send-big0000001')[0] || {};
+  check('a 150-edit batch is accepted (no cap), routed whole', (bigAck.routes || []).length === 150);
+  check('…as ONE short chat message pointing at the file', fteReplies().length === r1 + 1
+    && fteReplies()[r1].text.length < 2000 && /\.md`/.test(fteReplies()[r1].text));
+  ftePage(Object.assign({}, bigSend, { request_id: 'send-big0000002' }));
+  await sleep(500);
+  check('…and a retry posts nothing twice', fteReplies().length === r1 + 1
+    && (fteFrom('ack', 'send-big0000002')[0] || {}).deduped === true);
+  finish();
+}
+
 // the screenshot poses: the panel open, connected, one label retyped; and
-// `?figedit=sent` the same after a (stand-in) click on Send changes
+// `?figedit=sent` the same after a (stand-in) click on Send changes; and
+// `?figedit=routed` the tray after a v2 send that split prose and figure
+// items; `?figedit=comment` the 💬 note open on a box of the figure
 async function figeditPose() {
+  if (FIGEDIT === 'comment' || FIGEDIT === 'routed') {
+    const E = await until(() => fteEd(), 4000);
+    if (!E) return log('figedit: the editor did not boot');
+    await until(() => E.bridge.state === 'ready', 5000);
+    const page = E.figs.find(f => f.spec.page);
+    if (FIGEDIT === 'routed') {
+      const p1 = fteTextNode(document.querySelector('article'), /Aragon opened the season/);
+      E.openField(page, p1);
+      E.ui.field.input.value = E.ui.field.input.value.replace('with a draw', 'with a goalless draw');
+      E.commitField(false);
+      const p2 = fteTextNode(document.querySelector('article'), /manager said afterwards/);
+      E.openField(page, p2);
+      E.ui.field.input.value = E.ui.field.input.value.replace('within itself', 'inside itself');
+      E.commitField(false);
+      fteRetype('Fab tools', 'Fab equipment');
+      await fteComment(document.querySelector('#fte-fig g#t-power rect'), 'make this box the grid colour');
+      await sleep(2100);
+      window.__fteActivation = true;
+      document.querySelector('.fte-send').click();
+      await until(() => !E.sending, 8000);
+      RECORD.marks = [{ id: 'mk1', kind: 'yours', quote: 'with a goalless draw', at: new Date().toISOString(), by: 'you' },
+        { id: 'mk2', kind: 'bots', quote: 'The match report says it ended one–one, so yes.', at: new Date().toISOString(), by: '@codex' }];
+      await window.__bfp.loadPage();
+      E.reviewOpen = true; E.render();
+      return;
+    }
+    const rect = document.querySelector('#fte-fig g#t-power rect');
+    fteHoverAt(null, rect);
+    await sleep(150);
+    E.ui.cbtn.click();
+    await sleep(60);
+    E.ui.cfield.input.value = 'make this box the grid colour, and label it in GW';
+    return;
+  }
+  return figeditPoseV1();
+}
+async function figeditPoseV1() {
   const E = await until(() => fteEd(), 4000);
   if (!E) return log('figedit: the editor did not boot');
   if (FIGEDIT === 'unconfirmed') return;
@@ -13894,7 +14170,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
           : QUESTION_REVISE ? selftestQuestionRevise
             : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
         // ?figedit=… turns a blog page on for itself too
-        : FIGEDIT === 'deployed' ? selftestFigEditDeployed : FIGEDIT ? selftestFigEdit
+        : FIGEDIT === 'deployed' ? selftestFigEditDeployed : FIGEDIT === 'route' ? selftestFigRoute : FIGEDIT ? selftestFigEdit
         // …and the more specific flag first here too: ?suggest=… turns a blog
         // page on for itself, so it must be tried before the blog pose
         : SUGGEST ? selftestSuggest

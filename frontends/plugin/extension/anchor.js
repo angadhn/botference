@@ -988,6 +988,40 @@
     }
   }
 
+  // ---- quiet markers (2026-11-06) -------------------------------------------
+  // A passage changed without a card or a thread: a bot's edit inside an
+  // "Agent check" callout, or the owner's own ✎ written straight into the
+  // post. Nothing to approve, so nothing loud: a faint dotted underline and a
+  // tooltip that says who changed it. No background, so a thread's highlight
+  // over the same words still reads as the thread's.
+  const QUIET_CLASS = 'bfp-quiet';
+  function paintQuiet(index, start, end, mark) {
+    const id = String((mark && mark.id) || '');
+    const kind = mark && mark.kind === 'yours' ? 'yours' : 'bots';
+    const title = kind === 'yours' ? 'your edit' : 'changed by ' + String((mark && mark.by) || 'the bots')
+      + ' (an Agent check callout: no approval needed)';
+    return wrapOffsets(index, start, end, doc => {
+      const el = doc.createElement('mark');
+      el.className = QUIET_CLASS;
+      el.setAttribute('data-bfp-quiet', id);
+      el.setAttribute('data-kind', kind);
+      el.title = title;
+      el.style.cssText = 'background:transparent;color:inherit;text-decoration:underline dotted '
+        + (kind === 'yours' ? 'rgba(46,160,67,.75)' : 'rgba(130,110,200,.8)')
+        + ';text-decoration-thickness:1.5px;text-underline-offset:3px';
+      return el;
+    });
+  }
+  function unpaintQuiet() {
+    for (const mark of Array.prototype.slice.call(document.querySelectorAll('mark.' + QUIET_CLASS))) {
+      const parent = mark.parentNode;
+      if (!parent) continue;
+      while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
+      parent.removeChild(mark);
+      parent.normalize();
+    }
+  }
+
   function setFocus(id, on) {
     for (const mark of marksFor(id)) {
       mark.classList.toggle(FOCUS_CLASS, !!on);
@@ -1438,6 +1472,7 @@
     // dom
     buildTextIndex, offsetsFromRange, sectionOf,
     paintOffsets, unpaint, setFocus, scrollTo, rekey, marksFor, paintedIds,
+    paintQuiet, unpaintQuiet, QUIET_CLASS,
     marksAtPoint,
     markResolved, markAddressed, markStruck,
     paintWas, unpaintWas, wasFor, wasIds, markInserted,

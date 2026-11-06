@@ -56,6 +56,15 @@ import * as collateral from './collateral.mjs';
 import * as lasso from './lasso.mjs';
 import * as checks from './checks.mjs';
 import * as handoff from './council-handoff.mjs';
+import * as ownership from './ownership.mjs';
+import * as figedits from './figedits.mjs';
+// a figure-editor batch already routed: its answer, so a retry writes nothing
+const fteRouted = new Map();
+import * as turnwatch from './turnwatch.mjs';
+import { createRequire as ownRequire } from 'node:module';
+// anchor.js's plainOf: the page's words for a stretch of markdown (ownership
+// markers and the ✎ prose matcher speak the page's words, as collateral.mjs does)
+const { plainOf: pagePlainOf } = ownRequire(import.meta.url)('./extension/anchor.js');
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 // Write-scope changes require a companion restart, so a live conversation
@@ -677,6 +686,9 @@ function claimOnce(url, seen, changed) {
 }
 
 function noteTurnStart(url) {
+  // a turn-start with no turn-end for the last one: that watch is finished
+  const stale = url ? turnScans.get(url) : null;
+  if (stale && stale.watch) { try { stale.watch.stop(); } catch { /* gone */ } }
   const writing = authoringFor(url);
   if (writing) {
     const bg = blogOf(url);
@@ -684,6 +696,21 @@ function noteTurnStart(url) {
       source: bg?.source_path || '', noCollateral: !bg?.source_path,
       text: bg?.source_path ? blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel) : '',
       before: authoring.scan(writing), at: new Date().toISOString() };
+    // THE OWNERSHIP RULE (ownership.mjs): the post's markdown is the owner's
+    // except its Agent-check callouts. The raw text is kept and every version
+    // the turn produces is watched, so turn-end can put back the bots' edits to
+    // the owner's words without ever touching words the owner typed meanwhile.
+    // Collateral threads are off for this file: a bot change to the owner's
+    // text arrives as a card, a callout change gets a quiet marker, and what is
+    // left in a diff is the owner's own typing, which is nobody's news.
+    if (ownedSource(bg)) {
+      const raw = rawSource(bg.source_path);
+      if (raw != null) {
+        seen.raw = raw;
+        seen.watch = turnwatch.watchFile(bg.source_path);
+        seen.noCollateral = true;
+      }
+    }
     noteOverlap(url, seen);
     turnScans.set(url, seen);
     return;
@@ -763,6 +790,115 @@ function sourceSnapshot(file) {
     // diff sees cell text and never a JSON reformat
     return blog.sourceText(file);
   } catch { return ''; }
+}
+
+// ---- who owns a post's words (ownership.mjs) -------------------------------
+// A post of the owner's site in direct-edit mode, whose source is markdown the
+// bots write in place. Notebooks and .html sources are not under the rule:
+// their text is not the owner's prose in the same sense, and the rule was
+// written for posts.
+function ownedSource(bg) {
+  return !!(bg && bg.direct_edit && bg.confirmed && bg.source_path && /\.(md|markdown)$/i.test(bg.source_path));
+}
+function rawSource(file) {
+  try {
+    const st = fs.statSync(file);
+    if (!st.isFile() || st.size > collateral.SNAPSHOT_MAX) return null;
+    return fs.readFileSync(file, 'utf8');
+  } catch { return null; }
+}
+
+// Quiet markers: a passage changed without a card — a bot's edit inside an
+// Agent-check callout ('bots'), or the owner's own ✎ written straight into the
+// post ('yours'). No thread, no approval: content.js paints a faint dotted
+// underline that says who changed it. They age out on their own.
+const MARKS_MAX = 40;
+const MARK_DAYS = 7;
+function addMarks(page, list) {
+  const now = Date.now();
+  const keep = (page.marks || []).filter(m => m && now - (Date.parse(m.at || '') || 0) < MARK_DAYS * 864e5);
+  for (const m of list) {
+    const quote = String(m.quote || '').replace(/\s+/g, ' ').trim().slice(0, 600);
+    if (!quote) continue;
+    keep.push({ id: `mk${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`, kind: m.kind === 'yours' ? 'yours' : 'bots',
+      quote, ...(m.prefix ? { prefix: String(m.prefix).slice(-32) } : {}),
+      ...(m.suffix ? { suffix: String(m.suffix).slice(0, 32) } : {}),
+      ...(m.by ? { by: String(m.by).slice(0, 40) } : {}), at: new Date(now).toISOString() });
+  }
+  page.marks = keep.slice(-MARKS_MAX);
+}
+
+// Cards are stored whole (store.sanitizeCard keeps 8,000 characters of each
+// side), so a held change longer than that cannot be a card that applies. It
+// is still put back; its card says so and names where the bots' version of
+// the whole post was saved, so nothing is lost.
+const CARD_SIDE_MAX = 7900;
+
+// Turn-end for a post under the ownership rule. `steps` are the versions the
+// watch saw. Puts the bots' edits to the owner's words back (compare-and-swap:
+// a file that moved again since it was read is re-planned with that version
+// as one more step), posts the cards to the conversation that asked, and
+// leaves quiet markers on callouts the bots changed.
+function settleOwnership(url, seen, steps, ev) {
+  const file = seen.source;
+  let disk = rawSource(file);
+  if (disk == null || seen.raw == null) return null;
+  const list = steps.slice();
+  if (!list.length || list[list.length - 1].text !== disk) list.push({ text: disk, by: turnwatch.classify(file) });
+  let p = ownership.plan(seen.raw, list);
+  if (p.changed) {
+    for (let tries = 0; tries < 3; tries++) {
+      const now = rawSource(file);
+      if (now === p.final) {
+        turnwatch.noteUserWrite(file, p.result);
+        fs.writeFileSync(file, p.result);
+        break;
+      }
+      if (now == null) return null;
+      list.push({ text: now, by: turnwatch.classify(file) });
+      p = ownership.plan(seen.raw, list);
+      if (!p.changed) break;
+    }
+  }
+  if (!p.cards.length && !p.calloutText.length) return p;
+  const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
+  const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
+  const page = store.readPage(url);
+  if (!page) return p;
+  if (p.calloutText.length) {
+    addMarks(page, p.calloutText.map(t => ({ kind: 'bots', quote: pagePlainOf(t), by: who })));
+  }
+  if (p.cards.length) {
+    let saved = '';
+    const cards = p.cards.map(c => {
+      const base = { id: suggest.newId(), current: c.current, proposed: c.proposed,
+        ...(c.deletes ? { deletes: true } : {}),
+        why: `${who} wrote this into your text directly; it was put back for you to decide` };
+      if (c.current.length <= CARD_SIDE_MAX && c.proposed.length <= CARD_SIDE_MAX) return { ...base, state: 'open' };
+      if (!saved) {
+        try {
+          const dir = path.join(scratch.ensureScratch(seen.dir), 'bot-versions');
+          fs.mkdirSync(dir, { recursive: true });
+          saved = path.join(dir, `${path.basename(file, path.extname(file))}.${Date.now().toString(36)}.md`);
+          fs.writeFileSync(saved, p.final);
+        } catch { saved = ''; }
+      }
+      return { ...base, current: c.current.slice(0, CARD_SIDE_MAX), proposed: c.proposed.slice(0, CARD_SIDE_MAX),
+        state: 'needs-manual', reason: 'too-long',
+        detail: `too long to offer as one card${saved ? ` — the bots' whole version of the post is in ${path.relative(seen.dir, saved)}` : ''}` };
+    });
+    const target = (ev && typeof ev.target === 'string' && store.msgsOf(page, ev.target)) ? ev.target : store.PAGE_CHAT;
+    const n = cards.length;
+    const msg = store.appendMsg(page, target, { author: 'botference',
+      text: `${who} edited your words in the post directly. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
+        + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves your text as it is. '
+        + '(Agent check callouts, figures and new files are the bots’ to edit; everything else in the post is yours.)',
+      suggestions: cards });
+    if (msg) broadcast({ type: 'chat', kind: 'reply', url: page.url, target, msg });
+  }
+  store.savePage(page);
+  broadcast({ type: 'page', url: page.url });
+  return p;
 }
 
 // ---- the edits nobody commented on ---------------------------------------
@@ -912,11 +1048,21 @@ function reportProjectChanges(ev) {
 
 async function reportAuthoringChanges(url, seen, ev) {
   const site = authoringFor(url);
+  // the watch ends with the turn, whatever else happens
+  const steps = seen.watch ? seen.watch.stop() : null;
   if (!site || site.root !== seen.dir) return;
   const changed = claimOnce(url, seen, workspace.diffScans(seen.before, authoring.scan(site)));
   if (!changed.length) return;
+  // the owner's words first: put back what a bot wrote into them, before any
+  // other part of turn-end reads the file
+  const ownRel = seen.source ? path.relative(site.root, seen.source).split(path.sep).join('/') : '';
+  if (steps && ownRel && changed.includes(ownRel)) {
+    try { settleOwnership(url, seen, steps, ev); }
+    catch (e) { console.error('[ownership]', e.message); }
+  }
   try {
-    const posts = authoring.changedPosts(site, changed, seen.before, url, store.readConfig());
+    const posts = authoring.changedPosts(site, changed, seen.before, url, store.readConfig(),
+      { keepFront: seen.raw != null && seen.source ? [seen.source] : [] });
     forgetBlogPages();
     const bg = blogOf(url);
     const source = bg?.source_path ? path.relative(site.root, bg.source_path) : '';
@@ -1625,7 +1771,9 @@ function onChatEvent(ev) {
       // whole page" is asked there and its answer is a stack of cards.
       if (ev.msg && ev.msg.kind !== 'tools') {
         const bg = blogOf(page.url);
-        if (bg && bg.confirmed && bg.source_path && bg.suggest_mode) {
+        // …and in direct-edit mode too: the owner's words are proposed as
+        // cards there as well (ownership.mjs), only callouts are written
+        if (bg && bg.confirmed && bg.source_path && (bg.suggest_mode || ownedSource(bg))) {
           const lifted = suggest.liftSuggestions(ev.msg.text);
           if (lifted.cards.length) {
             ev.msg = { ...ev.msg, text: lifted.text, suggestions: lifted.cards };
@@ -2186,6 +2334,7 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // cannot use it, and a bot told nothing about its last suggestions assumes
   // they landed and says so.
   const blogContext = writing ? authoring.context(writing, page, bg)
+      + (ownedSource(bg) ? suggest.suggestBlock({ direct: true }) + suggestVerdict(page, target) : '')
     : (bg && bg.confirmed && bg.source_path)
     ? blog.blogBlock(bg)
       + (bg.suggest_mode ? suggest.suggestBlock() + suggestVerdict(page, target) : '')
@@ -2473,7 +2622,7 @@ function suggestTargetOf(res, data) {
     fail(res, 409, 'this page has no confirmed markdown source to change');
     return null;
   }
-  if (!bg.suggest_mode) { fail(res, 409, 'this page is not in suggest mode'); return null; }
+  if (!bg.suggest_mode && !ownedSource(bg)) { fail(res, 409, 'this page is not in suggest mode'); return null; }
   return { page, target, msg: found.msg, bg };
 }
 
@@ -3382,6 +3531,69 @@ export function handler(req, res) {
       return ok(res, { root, state });
     });
   }
+  // POST /fte-route {url, batch} — a figure-editor batch (protocol v2), routed.
+  // The owner's own ✎ edits to the post's PROSE are written straight into the
+  // markdown here, by the companion, with no bot involved — but only where
+  // the page words are a unique span of the source (ownership.proseEdit); a
+  // quiet "your edit" marker goes on each. Everything else — figure text,
+  // comments on a figure, prose that could not be placed exactly — is written
+  // to a checklist file in the site's scratch folder, and the answer carries
+  // the short chat message that names it. The extension posts that message
+  // through the ordinary /reply path. Owner-only: it writes the owner's post.
+  // A retry of the same batch gets the same answer and writes nothing twice.
+  if (req.method === 'POST' && url === '/fte-route') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const bg = blogOf(page.url);
+      if (!bg || !bg.confirmed || !bg.source_path || bg.kind !== 'jekyll') {
+        return fail(res, 409, 'this page has no confirmed markdown source of your site');
+      }
+      const batch = data.batch && typeof data.batch === 'object' ? data.batch : null;
+      if (!batch || !figedits.BATCH_ID_RE.test(String(batch.batch_id || '')) || !Array.isArray(batch.edits) || !batch.edits.length) {
+        return fail(res, 400, 'the batch is malformed');
+      }
+      for (const e of batch.edits) { const bad = figedits.badEdit(e); if (bad) return fail(res, 400, bad); }
+      const key = `${page.url}|${batch.batch_id}`;
+      const cached = fteRouted.get(key);
+      if (cached) return ok(res, { ...cached, repeated: true });
+      const routes = [];
+      const marks = [];
+      const before = blog.scanSite(bg.root, bg.kind);
+      let wrote = 0;
+      for (const e of batch.edits) {
+        const region = String((e.source && e.source.region) || '');
+        const prose = !figedits.isComment(e) && e.figure && e.figure.id === 'page-text'
+          && region !== 'front-matter' && ownedSource(bg);
+        if (!prose) { routes.push({ edit_id: e.edit_id, to: 'bots' }); continue; }
+        const src = rawSource(bg.source_path);
+        const r = src == null ? { ok: false, reason: 'gone', detail: 'the post could not be read' }
+          : ownership.proseEdit(src, { original: e.original, replacement: e.replacement, block: e.source && e.source.block }, pagePlainOf);
+        if (r.ok) {
+          turnwatch.noteUserWrite(bg.source_path, r.after);
+          fs.writeFileSync(bg.source_path, r.after);
+          wrote++;
+          routes.push({ edit_id: e.edit_id, to: 'source' });
+          marks.push({ kind: 'yours', quote: String(e.replacement), by: 'you' });
+        } else if (r.reason === 'already') {
+          routes.push({ edit_id: e.edit_id, to: 'source', already: true });
+        } else {
+          routes.push({ edit_id: e.edit_id, to: 'bots', reason: r.reason, detail: r.detail });
+        }
+      }
+      if (marks.length) { addMarks(page, marks); store.savePage(page); broadcast({ type: 'page', url: page.url }); }
+      if (wrote) announceBlogWrite(page.url, bg, before);
+      const forBots = routes.filter(r => r.to === 'bots').length;
+      let files = null;
+      try { files = figedits.writeBatch(scratch.ensureScratch(bg.root), batch, routes); }
+      catch (e) { if (forBots) return fail(res, 500, `the batch could not be saved: ${e.message}`); }
+      const answer = { routes, wrote, files, summary: forBots && files ? figedits.summary(batch, routes, files) : '' };
+      fteRouted.set(key, answer);
+      if (fteRouted.size > 200) fteRouted.delete(fteRouted.keys().next().value);
+      return ok(res, answer);
+    });
+  }
   // --- suggestion cards on a blog page -----------------------------------
   // The reader's answer to a proposal. Owner-only, all three, for the same
   // reason every route above is: the act at the end of them is a WRITE into a
@@ -3405,7 +3617,7 @@ export function handler(req, res) {
       if (!card) return fail(res, 404, 'unknown suggestion');
       if (card.state !== 'open') return fail(res, 409, `that suggestion is already ${card.state}`);
       const before = blog.scanSite(bg.root, bg.kind);
-      const r = suggest.applyCard(bg.source_path, card);
+      const r = suggest.applyCard(bg.source_path, card, { onWrite: turnwatch.noteUserWrite });
       if (!r.ok) {
         store.setCardState(card, 'needs-manual', { reason: r.reason, detail: r.detail });
         store.savePage(page);
@@ -3475,7 +3687,7 @@ export function handler(req, res) {
       const open = (msg.suggestions || []).filter(c => c.state === 'open');
       if (!open.length) return fail(res, 409, 'there is nothing left to accept here');
       const before = blog.scanSite(bg.root, bg.kind);
-      const out = suggest.applyStack(bg.source_path, open);
+      const out = suggest.applyStack(bg.source_path, open, { onWrite: turnwatch.noteUserWrite });
       for (const id of out.applied) store.setCardState(store.findCardIn(msg, id), 'applied');
       if (out.stopped) {
         store.setCardState(store.findCardIn(msg, out.stopped.id), 'needs-manual',
