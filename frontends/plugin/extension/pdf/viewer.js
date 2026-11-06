@@ -580,6 +580,10 @@ async function run() {
 
   try {
     const meta = await pdfDoc.getMetadata();
+    // the document's own date, for the reading log the Obsidian export
+    // writes to (adapters.js, exportFacts) — '' when the file has none
+    window.__BFP_PDF_DATE = Adapters && meta && meta.info
+      ? Adapters.pdfDate(meta.info.CreationDate) : '';
     setOwnTitle((meta && meta.info && meta.info.Title) || '');
   } catch { setOwnTitle(''); }
   $('doc-meta').textContent = pdfDoc.numPages + (pdfDoc.numPages === 1 ? ' page' : ' pages');

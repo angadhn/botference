@@ -32,7 +32,7 @@ import { attachWs } from '../review/ws.mjs';
 import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
-import { exportPage, exportMode } from './export.mjs';
+import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { createHosted, CORS_HEADERS, isLocalDirect, sanitizeHandle } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -5229,8 +5229,23 @@ export function handler(req, res) {
       // "comments only" would write an empty file, so it is not on offer there
       // (the drawer does not show the chooser for it either).
       const mode = store.isLibrary(page.url) ? 'all' : exportMode(data.mode);
-      try { ok(res, { path: exportPage(page, store.readConfig(), new Date(), mode), mode }); }
-      catch (e) { fail(res, 500, `export failed: ${e.message}`); }
+      const cfg = store.readConfig();
+      const now = new Date();
+      let file;
+      try { file = exportPage(page, cfg, now, mode); }
+      catch (e) { return fail(res, 500, `export failed: ${e.message}`); }
+      // …and a PDF is also logged: one row in the vault's reading log
+      // (Clippings/read-links.md), tagged papers, linking the note just
+      // written (export.mjs, logExportedPaper). `words` and `published` are
+      // what the viewer measured; an older extension sends neither and the
+      // companion's snapshot of the words answers. The note is written either
+      // way: a log that cannot be written costs the row, never the export.
+      let logged = { logged: false, log: '' };
+      try {
+        logged = logExportedPaper(page, file, cfg, now,
+          { words: data.words, published: typeof data.published === 'string' ? data.published : '' });
+      } catch (e) { console.warn(`[export] reading log not written: ${e.message}`); }
+      ok(res, { path: file, mode, logged: logged.logged, log: logged.log });
     });
   }
   // Model and effort are the reader's standing PREFERENCES, stored in

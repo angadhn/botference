@@ -609,6 +609,21 @@ The file itself never leaves your machine — nothing is uploaded, copied
 or stored anywhere. What your phone reads is the text, exactly as for
 any PDF.
 
+**A PDF you export lands in your reading log too.** If your vault keeps
+a reading log at `Clippings/read-links.md` (the table the Obsidian Web
+Clipper appends a row to for every article), exporting a PDF to Obsidian
+also adds one row for the paper: today's date, its date (the PDF's own
+metadata date, else the DOI or arXiv id found on its first pages), its
+title linked to its address (a file on your disk links to its DOI or
+arXiv page, or to nothing), its exact word count, the tag `papers`, and
+a `[[link]]` to the note just written, in a `Note` column added to the
+table if it has none. Export the same paper again and its row is updated
+in place, never doubled; no other row is touched. The drawer says
+"exported and logged". Articles are left to the Web Clipper, and a vault
+without that file is not given one. The read-links-thread Obsidian
+plugin then lists the paper under Papers in the monthly links note,
+with a link to your note when the note is public.
+
 **The comments already in the file — and the ones you write back.** A
 manuscript that has been round a supervisor arrives with comments in it:
 Acrobat highlights, Preview sticky notes, replies to replies. Discuss

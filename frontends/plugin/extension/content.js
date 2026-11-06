@@ -3068,9 +3068,15 @@
         // what backs the note, so exporting earns one
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
-        const r = await api('POST', '/export', { url: URL_NOW, mode });
+        // a PDF also tells the companion its word count and date, for the
+        // row the export adds to the vault's reading log (see export.mjs)
+        let facts = {};
+        try { facts = (SITE && typeof SITE.exportFacts === 'function' && SITE.exportFacts()) || {}; }
+        catch (_) { facts = {}; }
+        const r = await api('POST', '/export', { url: URL_NOW, mode, ...facts });
         if (!r.ok) return failure(r);
-        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
+        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode,
+                 logged: !!(r.data && r.data.logged) };
       },
 
       // ---- the PDF's own comments, in ------------------------------------
@@ -3380,7 +3386,8 @@
       onExportPage: async (url, mode) => {
         const r = await api('POST', '/export', { url, mode });
         if (!r.ok) return failure(r);
-        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode };
+        return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode,
+                 logged: !!(r.data && r.data.logged) };
       },
       // Deleting a page takes its bot session with it (`delete_session`) — a
       // page's chat is the page, and leaving an orphaned botference session

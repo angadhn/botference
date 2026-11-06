@@ -729,6 +729,29 @@
     }
     return parts.join(' ').replace(/\s+/g, ' ').trim();
   }
+  // How many words the document has, counted the way the reading log's
+  // Obsidian plugin counts them (read-links-thread's countWords, and
+  // export.mjs's): a run of letters or digits, with apostrophes and hyphens
+  // inside it. Over the same normalized text the identity is a digest of, so
+  // it is the whole document's count once every page's text layer is laid out.
+  function pdfWordCount(pages) {
+    return (pdfNormalizedText(pages).match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu) || []).length;
+  }
+
+  // A PDF date string — `D:YYYYMMDDHHmmSS+HH'mm'`, every part after the year
+  // optional — as YYYY-MM-DD (or YYYY-MM, or YYYY, as far as it goes). '' for
+  // anything that is not one. This is the file's CreationDate, the nearest
+  // thing a PDF has to a publication date; the reading log calls it Published.
+  function pdfDate(raw) {
+    const m = /^(?:D:)?(\d{4})(\d{2})?(\d{2})?/.exec(String(raw == null ? '' : raw).trim());
+    if (!m) return '';
+    const y = Number(m[1]), mo = m[2] ? Number(m[2]) : 0, d = m[3] ? Number(m[3]) : 0;
+    if (y < 1900 || y > 2999) return '';
+    if (!mo || mo > 12) return m[1];
+    const ym = m[1] + '-' + m[2];
+    return d && d <= 31 ? ym + '-' + m[3] : ym;
+  }
+
   // the site a local PDF files under: 'sha256' is what siteOf() would say about
   // the pseudo-url's hostname, and that is a number, not a place
   const LOCAL_PDF_SITE = 'local pdf';
@@ -976,6 +999,17 @@
         ).trim() || pdfNameFromUrl(src),
         pageOf(node) { try { return pdfPageOfNode(node); } catch { return 0; } },
         snapshotHtml() { return pdfSnapshotHtml(pages()); },
+        // What the Obsidian export sends beside the url, for the reading log
+        // (export.mjs, logExportedPaper): the word count of the text layer as
+        // it stands, and the document's own date, which the viewer publishes
+        // from its metadata. Either may be missing; the companion copes.
+        exportFacts() {
+          let words = 0;
+          try { words = pdfWordCount(pages()); } catch { words = 0; }
+          const published = String(
+            (typeof window !== 'undefined' && window.__BFP_PDF_DATE) || '').trim();
+          return { ...(words > 0 ? { words } : {}), ...(published ? { published } : {}) };
+        },
         async articleText() {
           ad.lastError = '';
           const text = pdfContextText(pages(), TEXT_LIMIT);
@@ -1455,6 +1489,8 @@
     // scan fallback and the fast-path cache key
     isFileUrl, isPdfHashUrl, isPdfTextUrl, isPdfIdentUrl, bytesToHex,
     pdfHashUrl, pdfTextUrl, pdfNormalizedText, pdfIdentity, pdfFileName,
+    // the reading log's two facts about a paper
+    pdfWordCount, pdfDate,
     PDF_HASH_SCHEME, PDF_TEXT_SCHEME, LOCAL_PDF_SITE,
     // Condé Nast's preloaded state (pure: script text in, words out)
     CONDE_NAST_HOSTS, condeNastHost, preloadedState, cnBlocks, cnPiece,

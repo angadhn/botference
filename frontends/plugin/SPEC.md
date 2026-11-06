@@ -158,7 +158,7 @@ All bodies JSON. All error responses `{ok:false, error:"…"}` with 4xx/5xx.
 | POST | `/orphan` | `{url, thread_id, orphaned:bool}` | extension reports anchor status |
 | POST | `/resolve` | `{url, thread_id, resolved:bool}` | files a thread / puts it back → `{ok, thread, summarizing?}` |
 | POST | `/summarize` | `{url, thread_id}` | queues the filing turn again → `{ok, summarizing}` (409 with agents off) |
-| POST | `/export` | `{url, mode?}` (`mode`: `all` (default) \| `comments`) | writes Obsidian note → `{ok, path, mode}` |
+| POST | `/export` | `{url, mode?, words?, published?}` (`mode`: `all` (default) \| `comments`; `words`/`published`: a PDF's text-layer word count and metadata date, sent by the viewer, both optional) | writes Obsidian note → `{ok, path, mode, logged, log}`. A PDF (`kind` pdf) is also logged: one row appended to `<vault>/Clippings/read-links.md` (Date, Published, Article, Words, blank comment, Tag `papers`, Note `[[note name]]`; a `Note` column is added to the header if absent), or its existing row (same url, else same title) has Words and Note updated in place. Without `words` the stored snapshot is counted; without `published`, a DOI/arXiv id from the text. A local PDF's link is its DOI/arXiv url, else none. No log file → nothing is created, `logged: false`. Articles are never logged (`log: ''`) |
 | POST | `/rename-page` | `{url, title}` | owner: the reader's own name for a page (`''` clears it) → `{ok, title, custom_title}` |
 | POST | `/tag-page` | `{url, tags:[…]}` | owner: normalised, stored, indexed → `{ok, tags}` |
 | POST | `/interrupt` | `{url}` | forwards interrupt to bridge if that page's turn is running |

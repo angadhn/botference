@@ -1245,6 +1245,60 @@ async function main() {
       ['Export Fixture (2).md', 'Export Fixture.md']);
   });
 
+  // --- the reading log: a PDF export also logs the paper -------------------
+  await test('POST /export logs a PDF in the vault\'s reading log, and only a PDF', async () => {
+    const logPath = path.join(vault, 'Clippings', 'read-links.md');
+    // no log in the vault: the export works as it always did, and none is made
+    const url = 'https://papers.test/scaling-laws.pdf';
+    await POST(base, '/page', { url, title: 'Scaling Laws', site: 'papers.test', kind: 'pdf' });
+    await POST(base, '/thread', { url, quote: 'loss falls as a power law', prefix: 'the ', suffix: ' in',
+      msg: { text: 'The whole paper in one line.' } });
+    const none = await POST(base, '/export', { url, mode: 'comments' });
+    assert.equal(none.json.ok, true);
+    assert.equal(none.json.logged, false);
+    assert.equal(none.json.log, logPath);
+    assert.ok(!fs.existsSync(logPath), 'a vault without a log is not given one');
+
+    const head = '| Date       | Published  | Article                      | Words | My comments | Tag      |\n'
+      + '| ---------- | ---------- | ---------------------------- | ----- | ----------- | -------- |\n'
+      + '| 2026-11-01 | 2026-10-31 | [An Essay](https://e.test/a) | 2865  | Good.       | #culture |\n';
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.writeFileSync(logPath, head);
+    const today = (d => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
+      String(d.getDate()).padStart(2, '0')].join('-'))(new Date());
+
+    // what the extension measured rides the body
+    const r = await POST(base, '/export', { url, mode: 'comments', words: 8123, published: '2020-01-23' });
+    assert.equal(r.json.logged, true);
+    assert.equal(r.json.path, path.join(vault, 'Web Clippings', 'Scaling Laws.md'));
+    let lines = fs.readFileSync(logPath, 'utf8').split('\n');
+    assert.ok(lines[0].endsWith('| Tag      | Note |'), lines[0]);
+    assert.ok(lines[1].endsWith('| -------- | --- |'), lines[1]);
+    assert.equal(lines[2], head.split('\n')[2], 'the rows already there are untouched');
+    assert.equal(lines[3],
+      `| ${today} | 2020-01-23 | [Scaling Laws](${url}) | 8123 | | papers | [[Scaling Laws]] |`);
+
+    // an older extension sends neither: the snapshot's words answer, and the
+    // paper's row is updated in place rather than doubled
+    await POST(base, '/snapshot', { url,
+      html: '<section><h2>Page 1</h2><p>Scaling Laws for Neural Language Models<br>We study loss.</p></section>' });
+    const again = await POST(base, '/export', { url, mode: 'comments' });
+    assert.equal(again.json.logged, true);
+    lines = fs.readFileSync(logPath, 'utf8').split('\n');
+    assert.equal(lines.filter(l => l.includes('[Scaling Laws]')).length, 1, 'one row per paper');
+    assert.equal(lines[3],
+      `| ${today} | 2020-01-23 | [Scaling Laws](${url}) | 9    | | papers | [[Scaling Laws]] |`);
+
+    // an article is the Web Clipper's job
+    const before = fs.readFileSync(logPath, 'utf8');
+    const art = await POST(base, '/export', { url: 'https://example.test/export-fixture', words: 10 });
+    assert.equal(art.json.ok, true);
+    assert.equal(art.json.logged, false);
+    assert.equal(art.json.log, '');
+    assert.equal(fs.readFileSync(logPath, 'utf8'), before, 'an article export leaves the log alone');
+    fs.rmSync(path.dirname(logPath), { recursive: true, force: true });
+  });
+
   // --- page text that moves under the reader -----------------------------
   await test('a later turn re-sends the page text only when the extension says it changed', async () => {
     const url = 'https://ledger.test/2026/living-draft';

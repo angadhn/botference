@@ -394,6 +394,30 @@ const P2 = [
   eq('every page with a text layer is read, in order', pages.map(p => p.page), [1, 2]);
   eq('…with its lines', pages[1].lines[0], 'The report called it a structural failure of oversight,');
 
+  // the reading log's two facts (the Obsidian export sends them, export.mjs
+  // logs the paper): the words, counted as the log's plugin counts them…
+  eq('the word count is the whole text layer\'s',
+    A.pdfWordCount(pages), A.pdfNormalizedText(pages).split(' ').filter(w => /[\p{L}\p{N}]/u.test(w)).length);
+  eq('…an apostrophe or hyphen inside a word keeps it one word',
+    A.pdfWordCount([{ page: 1, lines: ['it’s a well-known', 'test — 42.'] }]), 5);
+  eq('…and a scan has none', A.pdfWordCount([{ page: 1, lines: [] }]), 0);
+  // …and the document's own date, from its metadata
+  eq('a PDF date is a day', A.pdfDate("D:20240115120000+01'00'"), '2024-01-15');
+  eq('…or as much of one as it gives', [A.pdfDate('D:2023'), A.pdfDate('D:202311')], ['2023', '2023-11']);
+  eq('…and nothing that is not one', [A.pdfDate(''), A.pdfDate(undefined), A.pdfDate('yesterday')], ['', '', '']);
+  {
+    const EXT = 'chrome-extension://abcdefghijklmnopabcdefghijklmnop/pdf/viewer.html';
+    const ad = A.pick(EXT + '#raw=https://x.test/a.pdf', { identity: '', documentTitle: () => '', doc });
+    const was = globalThis.window;
+    globalThis.window = { __BFP_PDF_DATE: '2024-01-15' };
+    try {
+      eq('the adapter hands the export both', ad.exportFacts(), { words: A.pdfWordCount(pages), published: '2024-01-15' });
+      globalThis.window = {};
+      eq('…and leaves out what it does not know',
+        A.pick(EXT + '#raw=https://x.test/a.pdf', { identity: '', documentTitle: () => '', doc: docOf() }).exportFacts(), {});
+    } finally { globalThis.window = was; }
+  }
+
   const blank = A.pdfPagesFromDom(docOf(el('div', [], { 'data-bfp-pdf-page': '1' })));
   eq('a page whose text layer has not rendered yet is empty, not absent', blank, [{ page: 1, lines: [] }]);
 

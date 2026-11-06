@@ -17,9 +17,10 @@ import path from 'node:path';
 // module loaded after — a static import would have read the developer's own.
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-export-'));
 process.env.BOTFERENCE_PROJECT_ROOT = ROOT;
-const { renderNote, keptMsgs, exportMode, exportPage, withRuns, runNote, ATTACH_DIR } =
+const { renderNote, keptMsgs, exportMode, exportPage, withRuns, runNote, ATTACH_DIR,
+  countWords, paperId, paperRow, logPaperRow, logExportedPaper, READ_LOG } =
   await import('../export.mjs');
-const { pageKey, runDir } = await import('../store.mjs');
+const { pageKey, runDir, saveSnapshot } = await import('../store.mjs');
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -339,6 +340,106 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     struck.includes('> a passage merely pointed at') && !struck.includes('~~a passage'), struck);
   ok('a note with nothing struck in it is byte-for-byte what it always was',
     !renderNote(paper(), CFG, NOW, 'all').includes('~~'));
+}
+
+// ---- the reading log: one row per exported paper ---------------------------
+{
+  const HEADER = [
+    '',
+    '| Date       | Published  | Article                         | Words | My comments | Tag      |',
+    '| ---------- | ---------- | ------------------------------- | ----- | ----------- | -------- |',
+    '| 2026-11-01 | 2026-10-31 | [An Essay](https://e.test/a)    | 2865  | Good.       | #culture |',
+    '| 2026-11-02 | 2026-10-30 | [Another](https://e.test/b) | 6693 | | #technology|',
+    '',
+    '',
+  ].join('\n');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-readlog-'));
+  const log = path.join(dir, 'read-links.md');
+  const fresh = () => fs.writeFileSync(log, HEADER);
+  const lines = () => fs.readFileSync(log, 'utf8').split('\n');
+
+  eq('words are counted the way the plugin counts them',
+    countWords('Hello world, it’s a well-known test — 42 items.'), 8);
+  eq('an arXiv url is its own id', paperId('', 'https://arxiv.org/pdf/2401.01234v2.pdf'),
+    { label: 'arXiv:2401.01234v2', link: 'https://arxiv.org/abs/2401.01234v2' });
+  eq('a DOI near the top is found, trailing punctuation off',
+    paperId('Nature 5 (2020) https://doi.org/10.1038/s41586-020-2649-2. Abstract', 'bfp-pdf://text/x'),
+    { label: '10.1038/s41586-020-2649-2', link: 'https://doi.org/10.1038/s41586-020-2649-2' });
+  eq('…keeping a bracket that is its own',
+    paperId('doi:10.1016/S0006-3495(02)75174-X).', '').label, '10.1016/S0006-3495(02)75174-X');
+  eq('an arXiv stamp when there is no DOI', paperId('arXiv:2310.06825v1 [cs.CL] 10 Oct 2023', '').label,
+    'arXiv:2310.06825v1');
+  eq('nothing to go on is null', paperId('Just words.', ''), null);
+  ok('a DOI deep in the references is not the paper’s',
+    paperId('x '.repeat(4000) + '10.1000/ref.1', '') === null);
+
+  const LOCAL = { url: 'bfp-pdf://text/' + 'a'.repeat(64), title: 'Scaling | Laws', kind: 'pdf' };
+  const WEB = { url: 'https://journal.test/paper.pdf', title: 'A Web Paper', kind: 'pdf' };
+  const at = new Date(2026, 10, 6, 12);
+  eq('a web PDF keeps its url; extension facts win', paperRow(WEB, '/v/Web Clippings/A Web Paper.md',
+    { now: at, text: 'one two three', words: 9001, published: '2024-01-15' }),
+    { date: '2026-11-06', published: '2024-01-15', title: 'A Web Paper',
+      url: 'https://journal.test/paper.pdf', words: 9001, note: 'A Web Paper' });
+  eq('a local PDF borrows its DOI for a link, and counts the snapshot when the extension did not',
+    paperRow(LOCAL, '/v/Web Clippings/Scaling - Laws.md', { now: at, text: 'doi:10.1234/xy four words here' }),
+    { date: '2026-11-06', published: '10.1234/xy', title: 'Scaling | Laws',
+      url: 'https://doi.org/10.1234/xy', words: 7, note: 'Scaling - Laws' });
+  eq('…and with nothing at all, no link', paperRow(LOCAL, 'N.md', { now: at, text: '' }).url, '');
+
+  fresh();
+  eq('a missing log is left missing', logPaperRow(path.join(dir, 'nope.md'), {}), { logged: false, reason: 'no log' });
+  ok('…and not created', !fs.existsSync(path.join(dir, 'nope.md')));
+
+  const row = paperRow(LOCAL, '/v/Web Clippings/Scaling - Laws.md', { now: at, text: 'doi:10.1234/xy', words: 1234 });
+  eq('the first export appends a row', logPaperRow(log, row), { logged: true, updated: false });
+  const L = lines();
+  ok('the header gains a Note column on the end', L[1].endsWith('| Tag      | Note |'), L[1]);
+  ok('…and the separator a cell under it', L[2].endsWith('| -------- | --- |'), L[2]);
+  eq('the row goes after the last table row, before the trailing blank lines', L[5],
+    '| 2026-11-06 | 10.1234/xy | [Scaling \\| Laws](https://doi.org/10.1234/xy) | 1234 | | papers | [[Scaling - Laws]] |');
+  eq('every other row is untouched', [L[3], L[4]], HEADER.split('\n').slice(3, 5));
+  eq('…and the blank lines after it too', L.slice(6), ['', '']);
+
+  // re-export: the same row, Words and Note updated in place, padding kept
+  const padded = HEADER.replace('#technology|\n', '#technology|\n'
+    + '| 2026-11-03 |            | [Scaling \\| Laws](https://doi.org/10.1234/xy) | 12    |             | papers   |\n');
+  fs.writeFileSync(log, padded);
+  eq('a paper already logged is updated, not doubled', logPaperRow(log, { ...row, words: 99 }),
+    { logged: true, updated: true });
+  const U = lines();
+  eq('…Words keeps its width, Note is added on the end', U[5],
+    '| 2026-11-03 |            | [Scaling \\| Laws](https://doi.org/10.1234/xy) | 99    |             | papers   | [[Scaling - Laws]] |');
+  eq('…and nothing else moved', U.filter((l, i) => i !== 5 && i !== 1 && i !== 2),
+    padded.split('\n').filter((l, i) => i !== 5 && i !== 1 && i !== 2));
+  eq('…a second time changes only what changed', (logPaperRow(log, { ...row, words: 12345, note: 'Renamed' }), lines()[5]),
+    '| 2026-11-03 |            | [Scaling \\| Laws](https://doi.org/10.1234/xy) | 12345 |             | papers   | [[Renamed]]        |');
+  eq('…and the header is not given a second Note', lines()[1].match(/Note/g).length, 1);
+
+  // no url: the title is the key
+  fresh();
+  const bare = paperRow(LOCAL, 'Scaling - Laws.md', { now: at, text: '' });
+  logPaperRow(log, bare);
+  logPaperRow(log, { ...bare, words: 7 });
+  const B = lines().filter(l => l.includes('Scaling'));
+  eq('a paper with no link is one row, keyed by its title', B,
+    ['| 2026-11-06 | | Scaling \\| Laws | 7 | | papers | [[Scaling - Laws]] |']);
+
+  // the export's own entry point: PDFs only, the snapshot as a fallback
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-readvault-'));
+  const cfg = { vault_path: vault, export_folder: 'Web Clippings' };
+  eq('no log in the vault: nothing written, log path still said',
+    logExportedPaper(WEB, '/x/A Web Paper.md', cfg, at), { logged: false, log: path.join(vault, READ_LOG) });
+  fs.mkdirSync(path.join(vault, 'Clippings'));
+  fs.writeFileSync(path.join(vault, READ_LOG), HEADER);
+  eq('an article is the Web Clipper’s job, never logged here',
+    logExportedPaper({ url: 'https://e.test/c', title: 'C', kind: 'article' }, '/x/C.md', cfg, at),
+    { logged: false, log: '' });
+  saveSnapshot(WEB.url, '<section><h2>Page 1</h2><p>doi:10.5555/abc<br>Three more words</p></section>');
+  eq('a PDF is logged', logExportedPaper(WEB, '/x/A Web Paper.md', cfg, at),
+    { logged: true, log: path.join(vault, READ_LOG) });
+  ok('…counting its words from the snapshot when the extension sent none',
+    fs.readFileSync(path.join(vault, READ_LOG), 'utf8').includes(
+      '| 2026-11-06 | 10.5555/abc | [A Web Paper](https://journal.test/paper.pdf) | 7 | | papers | [[A Web Paper]] |'));
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);

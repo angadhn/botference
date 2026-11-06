@@ -5,7 +5,8 @@ import path from 'node:path';
 // the routing rules, reused rather than re-guessed: what counts as a mention
 // and who counts as a bot are decided in exactly one place
 import { hasMention, isBotAuthor } from './chat.mjs';
-import { isLibrary, pageKey, runDir, displayTitle, tagsOf, whereParts } from './store.mjs';
+import { isLibrary, pageKey, runDir, displayTitle, tagsOf, whereParts,
+  kindOf, readSnapshot, snapshotPdfText } from './store.mjs';
 // the same block parser the runner and the drawer use: a result is written
 // under the fence it came out of, found by line number rather than re-guessed
 import { codeBlocks } from './run.mjs';
@@ -315,4 +316,212 @@ export function exportPage(page, cfg, now = new Date(), mode = 'all') {
     if (old !== file) { try { fs.rmSync(old, { force: true }); } catch { /* leave it */ } }
   }
   return file;
+}
+
+// ---- the reading log: one row per paper -----------------------------------
+// The vault keeps a reading log, <vault>/Clippings/read-links.md: a markdown
+// table the Web Clipper appends one row to per article, and that the
+// read-links-thread Obsidian plugin turns into the monthly "Links I consumed"
+// site note. A PDF never passes through the Web Clipper, so a paper read here
+// was missing from it. Exporting a PDF therefore also logs it: one row, tagged
+// `papers`, with an exact word count and a wiki link to the note just written
+// (the plugin prints "you can read more about my thoughts on this paper here"
+// under it, but only when that note is a public one).
+//
+// Only PDFs. An article is the Web Clipper's job, and a second row for it from
+// here would be a duplicate. Only an EXISTING log: a vault without one has not
+// asked for this, so nothing is created. And append-only: a paper exported a
+// second time updates its own row's Words and Note cells in place, padding
+// kept, and every other row is left byte-for-byte alone.
+export const READ_LOG = path.join('Clippings', 'read-links.md');
+export const PAPER_TAG = 'papers';
+
+// Words as the plugin counts them (read-links-thread's countWords): a run of
+// letters or digits, apostrophes and hyphens inside it. The same rule on both
+// sides, so a count written here is the count the plugin would have made.
+export const countWords = text =>
+  (String(text || '').match(/[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu) || []).length;
+
+// The paper's own identifier, when it says one: an arXiv url, else a DOI or an
+// arXiv stamp near the top of the text (the first ~6000 characters, which is
+// the first page or two: a DOI further down is far more likely a reference).
+// → {label, link} or null. `label` goes in the Published cell; `link` is the
+// row's url for a local PDF, which has no web address of its own.
+const ARXIV_URL_RE = /^https?:\/\/(?:www\.|export\.)?arxiv\.org\/(?:abs|pdf)\/([^?#]+?)(?:\.pdf)?\/?(?:[?#]|$)/i;
+const DOI_RE = /\b(10\.\d{4,9}\/[^\s"<>|]+)/;
+const ARXIV_RE = /\barXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?|[a-z-]+(?:\.[a-z]{2})?\/\d{7}(?:v\d+)?)/i;
+const arxivId = id => ({ label: `arXiv:${id}`, link: `https://arxiv.org/abs/${id}` });
+export function paperId(text, url) {
+  const u = ARXIV_URL_RE.exec(String(url || ''));
+  if (u) return arxivId(u[1]);
+  const head = String(text || '').slice(0, 6000);
+  const d = DOI_RE.exec(head);
+  if (d) {
+    let doi = d[1].replace(/[.,;:'"’”\]}>]+$/, '');
+    // a closing bracket is the DOI's own only when it opened one
+    while (doi.endsWith(')') && (doi.match(/\(/g) || []).length < (doi.match(/\)/g) || []).length) {
+      doi = doi.slice(0, -1).replace(/[.,;:]+$/, '');
+    }
+    return { label: doi, link: `https://doi.org/${doi}` };
+  }
+  const a = ARXIV_RE.exec(head);
+  return a ? arxivId(a[1]) : null;
+}
+
+// a cell is one line, and a bare pipe would end it
+const cellText = s => String(s == null ? '' : s)
+  .replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/(?<!\\)\|/g, '\\|');
+const localDate = d => [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'),
+  String(d.getDate()).padStart(2, '0')].join('-');
+const isWeb = u => /^https?:\/\//i.test(String(u || ''));
+
+// The row for one exported paper, as values (not yet a line). `words` and
+// `published` are what the extension measured in the viewer when it sent them
+// (the live text layer, the PDF's metadata date); without them — an older
+// extension, an export from the pages list — the companion's own snapshot of
+// the words answers instead.
+export function paperRow(page, notePath, { now = new Date(), text = '', words, published } = {}) {
+  const id = paperId(text, page.url);
+  const n = Math.floor(Number(words));
+  const pub = cellText(published).slice(0, 80);
+  return {
+    date: localDate(now),
+    published: pub || (id ? id.label : ''),
+    title: displayTitle(page),
+    url: isWeb(page.url) ? String(page.url) : (id ? id.link : ''),
+    words: n > 0 ? n : countWords(text),
+    note: path.basename(String(notePath || ''), '.md'),
+  };
+}
+
+// The log's columns are found by header name, any order, exactly as the plugin
+// finds them. First match per cell wins, and `note` is asked before `notes`
+// (My comments), because "Note" would otherwise read as a comments column.
+const LOG_FIELDS = [
+  ['date', /^(date|read|clipped)$/i],
+  ['published', /^published/i],
+  ['link', /^(article|title|link)$/i],
+  ['words', /^words?$/i],
+  ['note', /^(note|notes? link|internal links?)$/i],
+  ['notes', /^(my )?(comments?|notes?)$/i],
+  ['tag', /^tags?$/i],
+];
+// the cells of one table line (an escaped pipe is part of its cell), or null
+function logCells(line) {
+  const t = String(line).trim();
+  if (!t.startsWith('|')) return null;
+  const ESC = '\u0000';
+  return t.slice(1, t.endsWith('|') && !t.endsWith('\\|') ? -1 : undefined)
+    .replace(/\\\|/g, ESC).split('|').map(c => c.split(ESC).join('|').trim());
+}
+function logColumns(cells) {
+  const cols = {};
+  cells.forEach((c, i) => {
+    for (const [f, re] of LOG_FIELDS) {
+      if (!(f in cols) && re.test(c)) { cols[f] = i; break; }
+    }
+  });
+  return 'date' in cols && 'link' in cols ? cols : null;
+}
+const isSeparator = cells => cells.length > 0 && cells.every(c => /^:?-+:?$/.test(c));
+// url || title, the key the plugin collapses duplicate rows by
+function rowKey(cell) {
+  const m = /^\[(.*?)\]\((\S+?)\)$/.exec(cell);
+  return m ? m[2] : cell;
+}
+// a line with one more cell on the end
+const addCell = (line, value) => `${line.replace(/\s+$/, '').replace(/\|$/, '')}| ${value} |`;
+// Cell `idx` of a row replaced in place: its span is found by walking the
+// unescaped pipes, and the new value is padded to the old width so the table
+// stays aligned. A row shorter than that gets blank cells up to it.
+function setCell(line, idx, value) {
+  const bars = [];
+  for (let j = 0; j < line.length; j++) if (line[j] === '|' && line[j - 1] !== '\\') bars.push(j);
+  let out = line;
+  let have = Math.max(0, bars.length - 1);
+  if (idx >= have) {
+    while (have < idx) { out = addCell(out, ''); have++; }
+    return addCell(out, value);
+  }
+  const start = bars[idx] + 1, end = bars[idx + 1];
+  const width = end - start;
+  const cell = ` ${value}`;
+  return out.slice(0, start) + (cell.length < width ? cell.padEnd(width) : `${cell} `) + out.slice(end);
+}
+
+// Append (or update) one paper's row. → {logged, updated, reason?}
+// `row` is what paperRow returns.
+export function logPaperRow(logPath, row) {
+  let text;
+  try { text = fs.readFileSync(logPath, 'utf8'); } catch { return { logged: false, reason: 'no log' }; }
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(eol);
+  const link = row.url ? `[${cellText(row.title)}](${row.url})` : cellText(row.title);
+  const key = row.url || String(row.title || '').replace(/\s+/g, ' ').trim();
+  const note = row.note ? `[[${row.note}]]` : '';
+  const words = row.words > 0 ? String(row.words) : '';
+
+  let cols = null, width = 0, lastRow = -1, match = -1, matchCols = null, pendingSep = false;
+  for (let i = 0; i < lines.length; i++) {
+    const cells = logCells(lines[i]);
+    if (!cells) { pendingSep = false; continue; }
+    lastRow = i;
+    const h = logColumns(cells);
+    if (h) {
+      // the header gains a Note column on the end if it has none
+      if (!('note' in h)) {
+        h.note = cells.length;
+        lines[i] = addCell(lines[i], 'Note');
+        pendingSep = true;
+      } else pendingSep = false;
+      cols = h; width = Math.max(cells.length, h.note + 1);
+      continue;
+    }
+    if (isSeparator(cells)) {
+      if (pendingSep) lines[i] = addCell(lines[i], '---');
+      pendingSep = false;
+      continue;
+    }
+    pendingSep = false;
+    if (!cols) continue;
+    const at = rowKey(cells[cols.link] || '');
+    if (at && at === key) { match = i; matchCols = cols; }
+  }
+  if (!cols) return { logged: false, reason: 'no table header' };
+
+  if (match >= 0) {
+    let line = lines[match];
+    if ('words' in matchCols && words) line = setCell(line, matchCols.words, words);
+    line = setCell(line, matchCols.note, note);
+    lines[match] = line;
+  } else {
+    const cells = new Array(width).fill('');
+    const put = (f, v) => { if (f in cols) cells[cols[f]] = v; };
+    put('date', row.date);
+    put('published', cellText(row.published));
+    put('link', link);
+    put('words', words);
+    put('tag', PAPER_TAG);
+    put('note', note);
+    lines.splice(lastRow + 1, 0, `| ${cells.join(' | ')} |`.replace(/ {2,}\|/g, ' |'));
+  }
+  const out = lines.join(eol);
+  if (out !== text) {
+    const tmp = `${logPath}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, out);
+    fs.renameSync(tmp, logPath);
+  }
+  return { logged: true, updated: match >= 0 };
+}
+
+// What POST /export calls after the note is written. `extra` is what the
+// extension measured ({words, published}), either of which may be missing.
+// → {logged, log}: `log` is the log's path for a PDF, '' for anything else.
+export function logExportedPaper(page, notePath, cfg, now = new Date(), extra = {}) {
+  if (!page || kindOf(page) !== 'pdf' || !cfg || !cfg.vault_path) return { logged: false, log: '' };
+  const log = path.join(cfg.vault_path, READ_LOG);
+  let text = '';
+  try { text = snapshotPdfText(readSnapshot(pageKey(page.url))); } catch { text = ''; }
+  const row = paperRow(page, notePath, { now, text, words: extra.words, published: extra.published });
+  return { logged: logPaperRow(log, row).logged, log };
 }

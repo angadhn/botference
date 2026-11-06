@@ -8508,7 +8508,8 @@ ${bubbleShellHtml()}`;
       D.foot = 'exporting…'; D.footErr = false; paintFoot();
       const r = await run();
       if (r && r.ok === false) { D.foot = r.error || 'export failed'; D.footErr = true; }
-      else D.foot = 'exported → ' + ((r && r.path) || 'Obsidian');
+      // a PDF also lands in the vault's reading log, and the toast says so
+      else D.foot = (r && r.logged ? 'exported and logged → ' : 'exported → ') + ((r && r.path) || 'Obsidian');
       paintFoot();
       setTimeout(() => { if (String(D.foot).startsWith('exported')) { D.foot = ''; paintFoot(); } }, 6000);
     }
