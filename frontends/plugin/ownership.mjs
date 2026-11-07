@@ -511,3 +511,76 @@ export function proseEdit(src, edit, plainOf) {
   const after = text.slice(0, sp.start) + replacement + text.slice(sp.end);
   return { ok: true, start: sp.start, end: sp.start + replacement.length, after, before: text };
 }
+
+// The owner's NEW paragraph, typed in the local editor (Enter at the end of a
+// paragraph, or the faint "+" between two): written into the markdown as an
+// insertion AFTER the paragraph it follows, with a blank line between, by the
+// same exact-match rule as proseEdit. The anchor is that paragraph's rendered
+// words (`after`, as the page shows them; `after_original`, the same with any
+// unsent preview of the owner's undone — a batch may carry both an edit to the
+// paragraph and a new one after it). It must name exactly ONE markdown
+// paragraph of the body: outside front matter and callouts, not a heading,
+// list, quote, table, fence or HTML block, whose plainOf words are those
+// words. Anything else goes to the bots with the reason.
+//
+// `text` is the new paragraph(s), joined by blank lines; each is one line.
+const PARA_RE = /[^\n]+(?:\n(?![ \t]*\n)[^\n]*)*/g;
+const NOT_PROSE = /^(?:[ \t]*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||<|```|~~~|\$\$|\{%|\[\^[^\]]*\]:))/;
+const foldWords = v => String(v || '').replace(/\s+/g, ' ').replace(/[‘’]/g, "'").replace(/[“”]/g, '"').trim();
+export function paragraphInsert(src, edit, plainOf) {
+  const text = String(src == null ? '' : src);
+  const paras = String(edit && edit.text != null ? edit.text : '').split(/\n[ \t]*\n/)
+    .map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean);
+  if (!paras.length) return { ok: false, reason: 'empty', detail: 'the new paragraph is empty' };
+  const wants = [edit && edit.after, edit && edit.after_original].map(v => foldWords(String(v || '').replace(/…$/, '')))
+    .filter((v, i, a) => v && a.indexOf(v) === i);
+  if (!wants.length) return { ok: false, reason: 'not-found', detail: 'the editor did not say which paragraph it follows' };
+  if (typeof plainOf !== 'function') return { ok: false, reason: 'not-found', detail: 'no way to read the source as rendered' };
+  const fm = frontMatterEnd(text);
+  const blocks = calloutBlocks(text);
+  // fenced code is never a paragraph to follow, nor one to count
+  const fences = [];
+  { const re = /^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm; let f; while ((f = re.exec(text))) fences.push({ start: f.index, end: f.index + f[0].length }); }
+  const all = [];
+  PARA_RE.lastIndex = 0;
+  let m;
+  while ((m = PARA_RE.exec(text))) {
+    const start = m.index, end = m.index + m[0].replace(/\s+$/, '').length;
+    if (start < fm) continue;
+    let plain = '';
+    try { plain = foldWords(plainOf(m[0])); } catch { plain = ''; }
+    if (!plain) continue;
+    const outside = !blocks.some(b => start < b.end && end > b.start) && !fences.some(f => start < f.end && end > f.start);
+    all.push({ start, end, raw: m[0], plain, usable: outside && !NOT_PROSE.test(m[0]) });
+  }
+  let hits = [];
+  for (const w of wants) { hits = all.filter(p => p.plain === w); if (hits.length) break; }
+  if (!hits.length) {
+    // the rendered page may carry a little more or less than plainOf (a
+    // footnote number, a trailing mark): one paragraph that holds the words,
+    // or that they hold, near enough in length, will do — exactly one
+    for (const w of wants) {
+      hits = all.filter(p => (p.plain.includes(w) || w.includes(p.plain)) && Math.min(p.plain.length, w.length) >= 0.85 * Math.max(p.plain.length, w.length));
+      if (hits.length) break;
+    }
+  }
+  if (!hits.length) return { ok: false, reason: 'not-found', detail: 'the paragraph it follows is not in the source as written' };
+  if (hits.length > 1) {
+    return { ok: false, reason: 'ambiguous', matches: hits.length,
+      detail: `the paragraph it follows appears ${hits.length} times in the source, so there is no telling which one is meant` };
+  }
+  const at = hits[0];
+  if (!at.usable) {
+    return { ok: false, reason: 'outside-body',
+      detail: blocks.some(b => at.start < b.end && at.end > b.start) ? 'that paragraph is inside a callout (callouts are the bots’ to write)'
+        : 'that block is not a plain paragraph in the source (a heading, list, quote, table or HTML)' };
+  }
+  const insert = paras.join('\n\n');
+  // already written? the paragraph after the anchor (past its blank lines)
+  // begins with the first new paragraph
+  const rest = text.slice(at.end).replace(/^\s*\n/, '');
+  const nextPara = (rest.match(/^[^\n]+(?:\n(?![ \t]*\n)[^\n]*)*/) || [''])[0];
+  if (nextPara && foldWords(nextPara) === foldWords(paras[0])) return { ok: false, reason: 'already', detail: 'the source already says this' };
+  const after = text.slice(0, at.end) + '\n\n' + insert + text.slice(at.end);
+  return { ok: true, start: at.end + 2, end: at.end + 2 + insert.length, after, before: text, paragraphs: paras };
+}

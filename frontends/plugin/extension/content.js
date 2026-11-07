@@ -1370,8 +1370,24 @@
     + 'than once here, so the change is shown in the comment rather than inline';
   const WHY_LONG = 'this passage was rewritten — too long to show the old wording '
     + 'inline, so the change is shown in the comment';
-  const WHY_ADDED = 'the bots added this passage — nothing was here before it; '
-    + '✓ on its comment approves it';
+  // WHO changed a passage, for the green underline's tooltip (2026-11-07: the
+  // reader was left guessing what the green meant). The companion stamps
+  // `changed_by` on the threads its turn-end diff writes or heals; an older
+  // record falls back to the bot that narrated the change in the thread.
+  const BOT_NAME = { claude: 'Claude', codex: 'Codex', gemini: 'Gemini' };
+  const botName = a => BOT_NAME[String(a || '').trim().toLowerCase().split(/\W/)[0]] || '';
+  function changedBy(t) {
+    const list = Array.isArray(t && t.changed_by) ? t.changed_by.map(botName).filter(Boolean) : [];
+    if (list.length === 1) return list[0];
+    if (list.length > 1) return 'the bots';
+    const msgs = (t && t.msgs) || [];
+    const bots = msgs.filter(m => m && m.kind !== 'tools' && botName(m.author));
+    const m = t && t.auto ? bots[0] : bots[bots.length - 1];
+    return (m && botName(m.author)) || 'the bots';
+  }
+  const whyAdded = by => 'added by ' + by + ' — nothing was here before it; ✓ on its comment approves it';
+  const whyLong = by => 'changed by ' + by + ' — ' + WHY_LONG;
+  const whyAmbiguous = by => 'changed by ' + by + ' — ' + WHY_AMBIGUOUS;
 
   // Ask the page about the wording a bot said the passage NOW reads. Only for
   // a thread the bots have answered and the reader has not filed: an open
@@ -1410,13 +1426,14 @@
     if (!t.addressed || t.resolved) return;
     was = String(was || '').trim();
     if (!was && isInsertion(t)) {
-      tracks[t.id] = { was: '', insert: true, unique: r.unique !== false, long: false };
+      tracks[t.id] = { was: '', insert: true, unique: r.unique !== false, long: false, by: changedBy(t) };
       return;
     }
     if (!was) return;
     const now = String(t.quote || '');
     tracks[t.id] = {
       was,
+      by: changedBy(t),
       unique: r.unique !== false,
       // Cap sanity: passages are prose spans, not pages. Past this the inline
       // markup stops being a change and becomes a second copy of the document
@@ -1473,17 +1490,18 @@
       // Ambiguous or oversized: the highlight still moved (the thread has a
       // place again) but the old wording is not put inline, and the mark says
       // why for anyone who hovers it.
+      const by = info.by || 'the bots';
       if (info.insert) {
         Anchor.unpaintWas(id);
-        Anchor.markInserted(id, true, WHY_ADDED);
+        Anchor.markInserted(id, true, whyAdded(by), by);
         continue;
       }
       if (!info.unique || info.long) {
         Anchor.unpaintWas(id);
-        Anchor.markInserted(id, true, info.long ? WHY_LONG : WHY_AMBIGUOUS);
+        Anchor.markInserted(id, true, info.long ? whyLong(by) : whyAmbiguous(by), by);
         continue;
       }
-      if (!Anchor.paintWas(id, info.was)) Anchor.markInserted(id, true, WHY_LONG);
+      if (!Anchor.paintWas(id, info.was, by)) Anchor.markInserted(id, true, whyLong(by), by);
     }
     if (drawer) drawer.setTrackChanges({ on: trackChanges, threads: Object.keys(tracks) });
   }
@@ -3495,7 +3513,7 @@
         // it must leave the billing switches out, not show them empty
         return { ok: true, current: d.current || {}, options: d.options || null,
                  status: d.status || null, bridge: d.bridge || '',
-                 effort: d.effort || null, verbosity: d.verbosity || '',
+                 effort: d.effort || null, verbosity: d.verbosity || '', first_reply: d.first_reply || '',
                  keys: d.keys };
       },
       // Both are stored preferences: they can be set with the agents asleep and
@@ -3516,6 +3534,11 @@
         const r = await api('POST', '/verbosity', { level });
         if (!r.ok) return failure(r);
         return { ok: true, queued: r.data && r.data.queued };
+      },
+      onSetFirstReply: async first => {
+        const r = await api('POST', '/first-reply', { first });
+        if (!r.ok) return failure(r);
+        return { ok: true };
       },
       // Which auth an agent bills. The companion applies it at the next bridge
       // spawn and tells us whether that is now or after the running turn.

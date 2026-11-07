@@ -49,6 +49,10 @@ export const DEFAULT_CONFIG = {
   // how long the bots' replies should run; the envelope carries the matching
   // instruction on every turn
   verbosity: 'short',
+  // who answers first when a turn goes to both bots (@all): 'alternate' flips
+  // it every @all turn in a conversation; 'claude' / 'codex' fix it. Carried
+  // to the controller per turn (chat.mjs firstFor → the input's `first`).
+  first_reply: 'alternate',
   // Whether a ```python block in a message may be RUN, here, as this user
   // (run.mjs). One line to switch the whole thing off: no Run button, and
   // POST /run refuses. Default on, and absent in an older config, which
@@ -117,6 +121,7 @@ export const DEFAULT_CONFIG = {
 };
 export const BRIDGE_POOL_MAX = 8;
 export const VERBOSITY_LEVELS = ['short', 'long'];
+export const FIRST_REPLY = ['alternate', 'claude', 'codex'];
 export const AGENTS = ['claude', 'codex'];
 
 // Every one of these values is interpolated into a slash command written to the
@@ -217,6 +222,7 @@ export function readConfig() {
   const merged = { ...DEFAULT_CONFIG, ...(cfg || {}) };
   // a hand-edited config must never make the envelope say something strange
   if (!VERBOSITY_LEVELS.includes(merged.verbosity)) merged.verbosity = DEFAULT_CONFIG.verbosity;
+  if (!FIRST_REPLY.includes(merged.first_reply)) merged.first_reply = DEFAULT_CONFIG.first_reply;
   merged.agents = normalizeAgents(merged.agents);
   // …and a hand-edited one must never ask for forty bridge children, or for
   // half of one. The env vars are the test escape hatch (PLUGIN_BRIDGE_CMD's

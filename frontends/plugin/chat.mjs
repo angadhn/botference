@@ -172,6 +172,22 @@ export function routedAgents(text, untaggedAll = false, routeHint = '') {
   return p === '@claude ' ? ['claude'] : p === '@codex ' ? ['codex'] : ['claude', 'codex'];
 }
 
+// WHO ANSWERS FIRST when a turn goes to both bots. The reader's setting
+// (config.json `first_reply`, the drawer gear's "first to reply"):
+// 'alternate' (the default) flips it on every @all turn of ONE conversation —
+// a comment thread, or a page's chat — so neither bot always has the last
+// word; 'claude' / 'codex' fix it. `last` is who went first last time in this
+// conversation ('' for its first @all turn, which Claude opens).
+export function nextFirst(setting, last) {
+  if (setting === 'claude' || setting === 'codex') return setting;
+  return last === 'claude' ? 'codex' : 'claude';
+}
+// does this turn go to both bots? (the same rule routedAgents applies)
+export const bothAnswer = (text, untaggedAll = false, routeHint = '') => {
+  const p = routeOf(text, untaggedAll, routeHint);
+  return p !== '@claude ' && p !== '@codex ';
+};
+
 // prior msgs of the thread, so a bot that just /resume'd (or was never in this
 // thread) still knows what it is replying into
 // A bot's earlier reply is context and may be cut short; the READER's own
@@ -1342,7 +1358,9 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // replayed history would otherwise re-watch every video ever posted in
     // the chat, on every turn after it.
     send({ type: 'input', text: step.text, attachments: [],
-      ...(typeof step.watch === 'string' ? { watch: step.watch } : {}) });
+      ...(typeof step.watch === 'string' ? { watch: step.watch } : {}),
+      // who answers first if this turn goes to both bots (firstFor)
+      ...(step.first ? { first: step.first } : {}) });
   }
 
   // The control steps this job needs are computed when it REACHES the front of
@@ -1508,6 +1526,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         nearbyContext: job.nearbyContext || '',
         verbosity: readConfig().verbosity }),
       capture: true,
+      // who answers first, when both bots answer this turn
+      first: firstFor(job, borrowed),
       // the only text whose YouTube links get watched: what the reader just
       // wrote. A summary or a question card is filing, not a message, so
       // nothing in it is watched.
@@ -1572,6 +1592,32 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   // Written straight after the /rename step completes: if the bridge died in
   // between, nothing is recorded and the next turn renames it again — which is
   // the harmless direction to fail in.
+  // Decided when the turn reaches the front of its lane, like everything else
+  // in planSteps: turns in one lane are serial, so "last time" is a fact.
+  // Remembered on the page record per conversation (page.first_reply, keyed
+  // by thread id or the page chat), so a restart does not reset the turn
+  // order; a borrowed turn's chat is the project's, remembered in memory.
+  const borrowedFirst = new Map();
+  function firstFor(job, borrowed) {
+    if (job.control || job.summary || job.card) return '';
+    if (!bothAnswer(job.text, job.untaggedAll, job.routeHint)) return '';
+    const setting = readConfig().first_reply;
+    const key = String(job.target || PAGE_CHAT);
+    if (borrowed) {
+      const k = `${job.url}|${key}`;
+      const who = nextFirst(setting, borrowedFirst.get(k) || '');
+      borrowedFirst.set(k, who);
+      return who;
+    }
+    const page = readPage(job.url);
+    const who = nextFirst(setting, (page && page.first_reply && page.first_reply[key]) || '');
+    if (page) {
+      page.first_reply = { ...(page.first_reply || {}), [key]: who };
+      savePage(page);
+    }
+    return who;
+  }
+
   function rememberSessionTitle(url, title) {
     const page = readPage(url);
     if (!page || page.session_title === title) return;

@@ -208,7 +208,7 @@ async function main() {
       effort: { current: { claude: 'medium', codex: 'medium' }, options: null },
       // the command table, likewise, is the bridge's to announce
       commands: null,
-      verbosity: 'short',
+      verbosity: 'short', first_reply: 'alternate',
       // which auth each agent would spawn with — status, never key material
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
       bridge: 'stopped',
@@ -538,6 +538,37 @@ async function main() {
     const first = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
     assert.equal(first.session_id, 'sess-1', 'and page 1 keeps its own');
     assert.deepEqual(page.threads[0].msgs.map(m => m.author), ['angadh', 'claude', 'codex']);
+  });
+
+  await test('who answers an @all turn first alternates per conversation, or is fixed by the setting', async () => {
+    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE2)}`)).json;
+    const tid = page.threads[0].id;
+    const allTurns = () => allLines(logFile).filter(e => e.type === 'input' && /^@all /.test(String(e.text)));
+    assert.equal(allTurns().at(-1).first, 'claude', 'a conversation\'s first @all turn opens with Claude');
+    const models = (await GET(base, '/models')).json;
+    assert.equal(models.first_reply, 'alternate', 'alternate is the default, and the drawer is told');
+    const reply = async text => {
+      const before = stream.events.length;
+      await POST(base, '/reply', { url: PAGE2, thread_id: tid, text });
+      await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'turn-end');
+      return allTurns().at(-1).first;
+    };
+    assert.equal(await reply('@all and the other side of it?'), 'codex', 'the next one flips');
+    assert.equal(await reply('@all once more'), 'claude', '…and flips back');
+    // one bot only: no `first`, and the alternation does not move
+    const before = stream.events.length;
+    await POST(base, '/reply', { url: PAGE2, thread_id: tid, text: '@claude just you' });
+    await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'turn-end');
+    const solo = allLines(logFile).filter(e => e.type === 'input').at(-1);
+    assert.ok(solo.text.startsWith('@claude ') && !('first' in solo), 'a one-bot turn carries no first');
+    assert.equal(await reply('@all and now?'), 'codex', 'the alternation is per @all turn');
+    // the gear's fixed choices
+    assert.equal((await POST(base, '/first-reply', { first: 'nobody' })).status, 400);
+    assert.equal((await POST(base, '/first-reply', { first: 'codex' })).json.first_reply, 'codex');
+    assert.equal(await reply('@all fixed?'), 'codex');
+    assert.equal(await reply('@all still?'), 'codex', 'a fixed choice does not alternate');
+    assert.equal((await POST(base, '/first-reply', { first: 'alternate' })).json.first_reply, 'alternate');
+    assert.equal(await reply('@all back to taking turns'), 'claude', 'alternating resumes from the last turn');
   });
 
   await test('a page whose session is never confirmed stays unbound and says so', async () => {
@@ -4190,7 +4221,7 @@ async function main() {
     assert.equal(health.json.bridge, 'disabled');
     const models = await GET(off.base, '/models');
     assert.deepEqual(models.json, { ok: true, current: null, options: null, status: null,
-      effort: null, commands: null, verbosity: 'short',
+      effort: null, commands: null, verbosity: 'short', first_reply: 'alternate',
       keys: { claude: 'unset', codex: 'unset', modes: { claude: 'auto', codex: 'auto' } },
       bridge: 'disabled' });
     const effort = await POST(off.base, '/effort', { agent: 'claude', level: 'high' });

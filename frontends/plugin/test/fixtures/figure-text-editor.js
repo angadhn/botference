@@ -42,6 +42,17 @@
  * written twice. An edit whose words the page already shows is dropped as
  * applied, never previewed a second time.
  *
+ * Writing (2026-11-07). In a prose paragraph of the page text, ✎ edits the
+ * words and Enter starts a NEW paragraph below it (from anywhere in the
+ * paragraph); the owner keeps typing, and each further Enter starts another.
+ * Enter on an empty new paragraph (or Esc, or a click elsewhere) is done. A
+ * faint "+" in the margin between paragraphs starts one there too. A new
+ * paragraph is one item in the batch (kind "paragraph"): the companion writes
+ * it into the markdown after the paragraph it follows, with a blank line
+ * between, under the same exact-match rule as other prose (else the bots get
+ * it). Never inside a callout, a list, a quote or a table. A one-line hint
+ * says how, the first time only (localStorage, best effort).
+ *
  * Wire protocol and plugin-side contract:
  *   .botference/plugin/artifacts/figure-editor-plugin-handoff.md
  */
@@ -202,7 +213,7 @@
   // ------------------------------------------------------------------ batch
   function editForWire(e) {
     var w = {
-      edit_id: e.edit_id, kind: e.kind === 'comment' ? 'comment' : 'text',
+      edit_id: e.edit_id, kind: e.kind === 'comment' ? 'comment' : e.kind === 'paragraph' ? 'paragraph' : 'text',
       figure: e.figure, element: e.element, context: e.context,
       source: e.source, original: e.original || '', replacement: e.replacement || '', baseline: e.baseline,
       supersedes: e.supersedes || null, captured_at: e.captured_at
@@ -248,7 +259,9 @@
         (e.context ? ' · ' + contextLabel(e.context) : '') +
         (e.element.occurrence && e.element.occurrence.count > 1 ? ' · occurrence ' + e.element.occurrence.index + ' of ' + e.element.occurrence.count : '');
       lines.push((i + 1) + '. ' + where);
-      lines.push(e.kind === 'comment' ? '   💬 ' + e.note : '   “' + e.original + '” → “' + e.replacement + '”');
+      lines.push(e.kind === 'comment' ? '   💬 ' + e.note
+        : e.kind === 'paragraph' ? '   new paragraph after “…' + str(e.source && e.source.after_block).slice(-60) + '”: “' + e.replacement + '”'
+        : '   “' + e.original + '” → “' + e.replacement + '”');
       lines.push('   source: ' + e.source.file + (e.source.locator ? ' — ' + e.source.locator : ''));
     });
     lines.push('');
@@ -448,7 +461,7 @@
   // ======================================================================
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
-  var SKIP = 'script, style, textarea, input, select, option, title, desc, noscript, template, .fte-ui';
+  var SKIP = 'script, style, textarea, input, select, option, title, desc, noscript, template, .fte-ui, .fte-newp';
   // text inside these is never click-to-edit: it keeps its click and shows a ✎
   var LINKISH = 'a, button, summary, [role="link"]';
   var WORDY = /[\p{L}\p{N}]/u;
@@ -615,6 +628,42 @@
   // here (no ✎); the owner comments on it with an ordinary highlight instead.
   // A plain blockquote is not a callout and stays editable.
   function calloutOf(node) { return closestEl(node, '.callout'); }
+  // ------------------------------------------------------ new paragraphs
+  // A prose paragraph of the page text: a <p> of the article that is not in
+  // a callout, a list, a quote, a table, a figure or the page's furniture.
+  // Only after one of these can the owner start a new paragraph.
+  var NOT_PROSE = 'li, blockquote, table, figure, figcaption, nav, header, footer, aside, form, .callout, .fte-ui, .fte-newp';
+  function proseParaOf(fig, node) {
+    if (!fig || !fig.spec.page) return null;
+    var p = closestEl(node, 'p');
+    if (!p || !fig.root.contains(p) || closestEl(p, NOT_PROSE)) return null;
+    if (fig.spec.exclude && within_(p, fig.spec.exclude)) return null;
+    if (closestEl(p, '[data-fte-root]') !== fig.root) return null;
+    if (!WORDY.test(p.textContent || '')) return null;
+    return p;
+  }
+  function proseParas(fig) {
+    return qsa(fig.root, 'p').filter(function (p) { return proseParaOf(fig, p) === p; });
+  }
+  function foldText(t) {
+    return String(t || '').replace(/\s+/g, ' ').replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').trim();
+  }
+  // the paragraph's words as shown, and as they were before any unsent
+  // preview of ours changed them (the source still says the latter)
+  function paraWords(fig, p) {
+    var shown = '', orig = '';
+    var w = fig.doc.createTreeWalker(p, 4, null);
+    for (var n = w.nextNode(); n; n = w.nextNode()) {
+      if (closestEl(n, '.fte-ui, .bfp-ui')) continue;
+      shown += n.data;
+      var o = fig.previewed.get(n) ? fig.originals.get(n) : null;
+      if (o != null) { var ws = splitWs(n.data); orig += ws.lead + o + ws.trail; } else orig += n.data;
+    }
+    return { shown: foldText(shown), original: foldText(orig) };
+  }
+  function previewsOf(fig, key) {
+    return qsa(fig.root, '.fte-newp').filter(function (e) { return e.getAttribute('data-fte-newp') === key; });
+  }
   function eligible(fig, node) {
     if (!node || node.nodeType !== 3 || !WORDY.test(node.data)) return false;
     if (!fig.root.contains(node)) return false;
@@ -798,7 +847,7 @@
     // the site recolours every :focus with !important; keep the editor's own colours (the outline still shows focus)
     '.fte-ui button:focus:not(#fte-x),.fte-ui textarea:focus:not(#fte-x){background:transparent!important;color:var(--fte-ink)!important}',
     '.fte-ui .fte-primary:focus:not(#fte-x){background:var(--fte-btn)!important;color:var(--fte-btn-ink)!important}',
-    '.fte-ui.fte-field textarea:focus:not(#fte-x){background:var(--fte-bg)!important}',
+    '.fte-ui.fte-field textarea:focus:not(#fte-x),.fte-ui.fte-pfield textarea:focus:not(#fte-x){background:var(--fte-bg)!important}',
     '.fte-ui.fte-pencil:focus:not(#fte-x){background:var(--fte-bg)!important;color:var(--fte-accent)!important}',
     '.fte-dock{position:fixed;left:1rem;bottom:1rem;z-index:2147483000;width:26rem;max-width:calc(100vw - 2rem)}',
     '.fte-panel{background:var(--fte-bg);border:1px solid var(--fte-line);border-left:4px solid var(--fte-accent);border-radius:4px;box-shadow:0 4px 22px rgba(43,38,32,.25);padding:.6rem .8rem .7rem}',
@@ -842,7 +891,20 @@
     '.fte-cfield textarea{display:block;width:100%;resize:vertical;font:inherit;font-size:14px;padding:.3rem .4rem;border:1px solid var(--fte-line);border-radius:3px;background:var(--fte-bg);color:var(--fte-ink)}',
     '.fte-cfield .fte-row{justify-content:flex-end;margin-top:.4rem}',
     '.fte-item .fte-note{color:var(--fte-ink)}',
-    '.fte-item .fte-to{color:var(--fte-muted);font-size:12px}'
+    '.fte-item .fte-to{color:var(--fte-muted);font-size:12px}',
+    // a new paragraph being typed: in the flow of the article, where it will be
+    '.fte-pfield{display:block;position:relative}',
+    '.fte-pfield textarea{display:block;width:100%;margin:0;resize:none;overflow:hidden;padding:2px 6px;border:0;border-radius:2px;background:var(--fte-bg);color:var(--fte-ink);outline:2px solid var(--fte-accent);outline-offset:0;box-shadow:0 2px 14px rgba(43,38,32,.18)}',
+    '.fte-pfield textarea::placeholder{color:var(--fte-muted);font-style:italic}',
+    '.fte-pfield .fte-keys{display:block;width:max-content;max-width:100%;margin-top:5px;padding:1px 6px;border-radius:2px;background:var(--fte-bg);font-size:12px;font-style:italic;color:var(--fte-muted);box-shadow:0 1px 5px rgba(43,38,32,.18)}',
+    // …and one typed but not yet sent: a soft wash and a rule in the margin
+    'p.fte-newp{background:rgba(216,184,138,.22);box-shadow:-8px 0 0 rgba(216,184,138,.22),-11px 0 0 rgba(154,123,82,.75);border-radius:1px}',
+    'p.fte-newp[data-status="delivered"]{background:transparent;box-shadow:-11px 0 0 rgba(154,123,82,.4)}',
+    'html[data-theme="dark"] p.fte-newp{background:rgba(195,154,104,.16);box-shadow:-8px 0 0 rgba(195,154,104,.16),-11px 0 0 rgba(214,178,128,.75)}',
+    // the faint "+" between paragraphs
+    '.fte-ui.fte-plus{position:fixed;z-index:2147483002;width:20px;height:20px;min-height:0!important;padding:0!important;border-radius:50%!important;border:1px solid var(--fte-line)!important;background:var(--fte-bg)!important;color:var(--fte-accent)!important;font-size:15px!important;line-height:17px!important;text-align:center;opacity:.7;cursor:pointer}',
+    '.fte-ui.fte-plus:hover{opacity:1;border-color:var(--fte-accent)!important}',
+    '.fte-box[data-kind="gap"]{border-top:1px dashed var(--fte-hover);height:0!important}'
   ].join('\n');
   var FRAME_CSS = '.fte-hot, .fte-hot *{cursor:text!important}';
 
@@ -877,7 +939,7 @@
     this.discover();
     new win.MutationObserver(function () { self.discover(); }).observe(doc.body, { childList: true, subtree: true });
     win.addEventListener('keydown', function (ev) {
-      if (ev.defaultPrevented || !self.store.state.undo.length || self.field) return;
+      if (ev.defaultPrevented || !self.store.state.undo.length || self.field || self.pfield) return;
       if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && (ev.key === 'z' || ev.key === 'Z') &&
           !closestEl(norm(ev.target), 'textarea, input, select, [contenteditable]')) {
         ev.preventDefault(); self.undo();
@@ -943,7 +1005,7 @@
     var self = this;
     var fdoc = root.ownerDocument, fwin = fdoc.defaultView;
     var fig = { spec: spec, root: root, frame: frame, doc: fdoc, win: fwin, page: this.pageInfo(),
-      previewed: new WeakMap(), originals: new WeakMap(), wrote: new WeakMap(), live: {}, missing: {}, baseline: null, applying: false };
+      previewed: new WeakMap(), originals: new WeakMap(), wrote: new WeakMap(), live: {}, missing: {}, paraAnchor: {}, baseline: null, applying: false };
     fig.page.source = (this.page && this.page.source) || null;
     root.setAttribute('data-fte-root', spec.id);
     if (frame) frame.setAttribute('data-fte-root', spec.id);
@@ -983,6 +1045,7 @@
     fig.applying = true;
     fig.live = {}; fig.missing = {};
     this.store.forFigure(fig.spec.id).forEach(function (rec) {
+      if (rec.kind === 'paragraph') { if (self.reconcilePara(fig, rec)) applied++; return; }
       var n = resolve(fig, rec);
       if (!n) { fig.missing[rec.key] = true; return; }
       var ws = splitWs(n.data);
@@ -1013,7 +1076,58 @@
     if (applied) { this.toast(applied + ' earlier edit' + (applied === 1 ? ' is' : 's are') + ' now in the source (applied).'); this.render(); }
     if (Object.keys(fig.live).length) this.loop();
   };
+  // A new paragraph's preview: one display <p> per paragraph, right after the
+  // paragraph it follows, re-made only when it is not already there as it
+  // should be. True when the page itself now carries the words (applied).
+  Editor.prototype.reconcilePara = function (fig, rec) {
+    if (this.pfield && this.pfield.key === rec.key) { fig.paraAnchor[rec.key] = this.pfield.anchor; return false; }
+    var anchor = this.findParaAnchor(fig, rec);
+    var els = previewsOf(fig, rec.key);
+    if (!anchor) { fig.missing[rec.key] = true; els.forEach(function (e) { e.parentNode.removeChild(e); }); return false; }
+    fig.paraAnchor[rec.key] = anchor;
+    var want = rec.paragraphs || [];
+    if (!els.length) {
+      // the page already has these words right after it, and they are not
+      // ours: the post says them now
+      var next = anchor.nextElementSibling;
+      while (next && closestEl(next, '.fte-ui')) next = next.nextElementSibling;
+      if (next && want.length && foldText(next.textContent) === foldText(want[0])) { this.store.markApplied(rec.key); return true; }
+    }
+    var inPlace = els.length === want.length && els.every(function (e, i) {
+      return e.textContent === want[i] && (i ? els[i - 1] : anchor) === e.previousElementSibling;
+    });
+    if (!inPlace) {
+      els.forEach(function (e) { e.parentNode.removeChild(e); });
+      var at = anchor;
+      els = want.map(function (t) {
+        var e = el(fig.doc, 'p', 'fte-newp bfp-ui', t);
+        e.setAttribute('data-fte-newp', rec.key);
+        at.parentNode.insertBefore(e, at.nextSibling);
+        at = e;
+        return e;
+      });
+    }
+    els.forEach(function (e) { e.setAttribute('data-status', rec.status); });
+    return false;
+  };
+  Editor.prototype.findParaAnchor = function (fig, rec) {
+    var a = rec.anchor || {};
+    var cands = proseParas(fig).filter(function (p) {
+      var w = paraWords(fig, p);
+      return w.shown === a.shown || w.original === a.original || w.shown === a.original;
+    });
+    if (cands.length === 1) return cands[0];
+    if (a.occurrence && cands.length === a.occurrence.count) return cands[a.occurrence.index - 1] || null;
+    return null;
+  };
   Editor.prototype.revertNode = function (fig, key) {
+    var pe = previewsOf(fig, key);
+    if (pe.length) {
+      fig.applying = true;
+      pe.forEach(function (e) { e.parentNode.removeChild(e); });
+      fig.observer.takeRecords();
+      fig.applying = false;
+    }
     var n = fig.live[key];
     if (!n) return;
     fig.applying = true;
@@ -1065,15 +1179,19 @@
     if (this.replaying) return;
     this.pointer = this.toTop(w, ev.clientX, ev.clientY);
     this.releaseHeld(w);
-    if (this.field || this.cfield || this.sending) return;
-    if (ev.buttons) { this.setHover(null); this.setCHover(null); return; }
+    if (this.field || this.cfield || this.pfield || this.sending) return;
+    if (ev.buttons) { this.setHover(null); this.setCHover(null); this.setPlus(null); return; }
     var t = norm(ev.target);
     if (this.isUi(t)) {
+      if (closestEl(t, '.fte-plus')) this.keepPlus(); else this.plusLeaveSoon();
       if (closestEl(t, '.fte-pencil')) this.keepHover(); else this.setHover(null);
       if (closestEl(t, '.fte-cbtn')) this.keepCHover(); else if (!closestEl(t, '.fte-pencil')) this.setCHover(null);
       return;
     }
     var fig = this.figAt(w, t);
+    // a new paragraph not yet sent: its ✎ edits it again
+    var np = fig && fig.spec.page ? closestEl(t, '.fte-newp') : null;
+    if (np && np.firstChild) { this.setPlus(null); this.setHover({ fig: fig, node: np.firstChild, mode: 'icon', newp: np }); return; }
     var ct = this.commentTarget(w, t, fig);
     if (ct) this.setCHover(ct); else this.cHoverLeaveSoon();
     var n = fig ? pickText(fig, ev.clientX, ev.clientY, t) : null;
@@ -1084,6 +1202,40 @@
     }
     if (n) this.setHover({ fig: fig, node: n, mode: modeOf(fig, n) });
     else this.hoverLeaveSoon();
+    // between two paragraphs: a faint "+" starts a new one there
+    var gap = !n && fig && fig.spec.page && w === this.win ? this.gapAt(fig, ev.clientX, ev.clientY) : null;
+    if (gap) this.setPlus(gap); else this.plusLeaveSoon();
+  };
+  // The paragraph whose foot the pointer is just below (in the space before
+  // the next block), within the text column: {fig, after}. `after` is a prose
+  // paragraph or one of our new-paragraph previews.
+  Editor.prototype.gapAt = function (fig, x, y) {
+    var best = null, bestD = Infinity;
+    var list = proseParas(fig).concat(qsa(fig.root, '.fte-newp'));
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i], r = p.getBoundingClientRect();
+      if (!r.height || x < r.left - 44 || x > r.right) continue;
+      var next = p.nextElementSibling;
+      while (next && (closestEl(next, '.fte-pfield') || !next.getBoundingClientRect().height)) next = next.nextElementSibling;
+      var nextTop = next ? next.getBoundingClientRect().top : r.bottom + 28;
+      var lo = r.bottom - 3, hi = Math.max(r.bottom + 8, Math.min(nextTop, r.bottom + 40) + 3);
+      if (y < lo || y > hi) continue;
+      var d = Math.abs(y - r.bottom);
+      if (d < bestD) { bestD = d; best = { fig: fig, after: p }; }
+    }
+    return best;
+  };
+  Editor.prototype.setPlus = function (g) {
+    clearTimeout(this.plusTimer); this.plusTimer = null;
+    if (this.plus && g && this.plus.after === g.after) return;
+    this.plus = g;
+    this.paintSoon();
+  };
+  Editor.prototype.keepPlus = function () { clearTimeout(this.plusTimer); this.plusTimer = null; };
+  Editor.prototype.plusLeaveSoon = function () {
+    var self = this;
+    if (!this.plus || this.plusTimer) return;
+    this.plusTimer = setTimeout(function () { self.plusTimer = null; self.setPlus(null); }, 300);
   };
 
   Editor.prototype.onPress = function (w, ev) {
@@ -1094,6 +1246,7 @@
       if (type === 'pointerdown') this.pointerSeen = true;
       // a press anywhere else applies the open field, then acts as usual
       if (this.field) this.commitField(true);
+      if (this.pfield) this.commitPara(true);
       this.pressed = null;
       if (ev.button !== 0 || this.sending || (ev.pointerType && ev.pointerType !== 'mouse')) return;
       var fig = this.figAt(w, t);
@@ -1312,7 +1465,11 @@
     f.input.style.fontFamily = cs.fontFamily; f.input.style.fontWeight = cs.fontWeight;
     f.input.style.fontStyle = cs.fontStyle; f.input.style.fontSize = size + 'px';
     f.input.value = coreOf(node);
-    f.keys.textContent = 'Enter applies · Esc cancels' + (original !== f.input.value ? ' · original: “' + original + '”' : '') +
+    var para = proseParaOf(fig, node);
+    this.field.para = para;
+    f.keys.textContent = (para && !this.hintSeen() ? HINT
+      : (para ? 'Enter: new paragraph below · Esc cancels' : 'Enter applies · Esc cancels')) +
+      (original !== f.input.value ? ' · original: “' + original + '”' : '') +
       (rec && rec.status === 'delivered' ? ' · sent, not yet applied' : '');
     f.root.hidden = false;
     this.placeField(true);
@@ -1376,6 +1533,129 @@
     this.refreshKey(key);
     this.render();
   };
+  // ------------------------------------------------- writing new paragraphs
+  var HINT = 'Type to edit · Enter for a new paragraph · Send changes saves to your post';
+  var HINT_KEY = 'fte-hint-seen';
+  Editor.prototype.hintSeen = function () {
+    if (this.hintDone) return true;
+    try { this.hintDone = this.win.localStorage.getItem(HINT_KEY) === '1'; } catch (e) { this.hintDone = false; }
+    return this.hintDone;
+  };
+  Editor.prototype.hintUsed = function () {
+    this.hintDone = true;
+    try { this.win.localStorage.setItem(HINT_KEY, '1'); } catch (e) { /* private window: shown again next time */ }
+  };
+  // the record that follows `anchor` (a prose paragraph), if there is one
+  Editor.prototype.paraKeyFor = function (fig, anchor) {
+    for (var k in fig.paraAnchor) if (fig.paraAnchor[k] === anchor && this.store.active(k)) return k;
+    return null;
+  };
+  // Open a new paragraph's field: after `anchor` (a prose paragraph of the
+  // page), at position `index` among the new paragraphs already following it;
+  // `editing` re-opens the one at `index` instead of adding one.
+  Editor.prototype.openPara = function (fig, anchor, index, editing) {
+    if (this.sending) { this.toast('Wait until this batch is delivered or fails, then write again.'); return; }
+    if (!anchor || !anchor.isConnected || proseParaOf(fig, anchor) !== anchor) return;
+    if (this.field) this.closeField();
+    if (this.cfield) this.closeComment();
+    if (this.pfield) this.closePara();
+    this.setHover(null); this.setPlus(null);
+    var key = this.paraKeyFor(fig, anchor);
+    var words = paraWords(fig, anchor);
+    if (!key) key = fig.spec.id + '|para|' + fingerprint(words.original);
+    var rec = this.store.active(key);
+    var n = rec ? (rec.paragraphs || []).length : 0;
+    index = Math.max(0, Math.min(index || 0, editing ? n - 1 : n));
+    fig.paraAnchor[key] = anchor;
+    this.pfield = { fig: fig, key: key, anchor: anchor, index: index, editing: !!editing && n > 0 };
+    var u = this.ui.pfield, els = previewsOf(fig, key);
+    var cs = fig.win.getComputedStyle(anchor);
+    ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'lineHeight', 'letterSpacing'].forEach(function (k) { u.input.style[k] = cs[k]; });
+    u.root.style.margin = cs.marginTop + ' 0 ' + cs.marginBottom;
+    u.input.value = this.pfield.editing ? rec.paragraphs[index] : '';
+    u.keys.textContent = !this.hintSeen() ? HINT
+      : 'New paragraph · Enter starts another · Enter on an empty one, or Esc: done';
+    fig.applying = true;
+    if (this.pfield.editing) { els[index].hidden = true; els[index].parentNode.insertBefore(u.root, els[index]); }
+    else { var after = index ? els[index - 1] : anchor; after.parentNode.insertBefore(u.root, after.nextSibling); }
+    u.root.hidden = false;
+    fig.observer.takeRecords();
+    fig.applying = false;
+    this.sizePara();
+    u.input.focus();
+    if (this.pfield.editing) u.input.setSelectionRange(u.input.value.length, u.input.value.length);
+  };
+  Editor.prototype.sizePara = function () {
+    var i = this.ui.pfield.input;
+    i.style.height = 'auto'; i.style.height = (i.scrollHeight + 2) + 'px';
+  };
+  Editor.prototype.closePara = function () {
+    var a = this.pfield; if (!a) return;
+    this.pfield = null;
+    var u = this.ui.pfield, fig = a.fig;
+    fig.applying = true;
+    previewsOf(fig, a.key).forEach(function (e) { e.hidden = false; });
+    u.root.hidden = true;
+    if (u.root.parentNode) u.root.parentNode.removeChild(u.root);
+    this.doc.body.appendChild(u.root);
+    fig.observer.takeRecords();
+    fig.applying = false;
+    this.paintSoon();
+  };
+  // Keep what was typed: {wrote, next} — `next` is where another new
+  // paragraph would go. fromOutside: the reader clicked elsewhere.
+  Editor.prototype.commitPara = function (fromOutside) {
+    var a = this.pfield; if (!a) return null;
+    var v = this.ui.pfield.input.value.replace(/\s*\n\s*/g, ' ').trim();
+    if (v.length > MAX_TEXT) {
+      if (fromOutside) { this.closePara(); this.toast('That paragraph is longer than ' + MAX_TEXT + ' characters; it was not kept.'); }
+      else this.toast('That paragraph is longer than ' + MAX_TEXT + ' characters; split it with Enter.');
+      return null;
+    }
+    var fig = a.fig, key = a.key;
+    var cur = this.store.find(key, 'draft'), del = this.store.find(key, 'delivered');
+    var base = (cur || del) ? ((cur || del).paragraphs || []).slice() : [];
+    var before = base.join('\n\n');
+    if (a.editing) { if (v) base[a.index] = v; else base.splice(a.index, 1); }
+    else if (v) base.splice(a.index, 0, v);
+    var next = a.index + (v ? 1 : 0);
+    this.closePara();
+    if (v) this.hintUsed();
+    if (base.join('\n\n') === before) { this.refreshKey(key); return { wrote: false, next: next }; }
+    var anchor = a.anchor, words = paraWords(fig, anchor);
+    if (!base.length || (del && base.join('\n\n') === del.replacement)) {
+      if (cur) this.store.putDraft(key, null);
+    } else {
+      var twins = proseParas(fig).filter(function (p) { return paraWords(fig, p).original === words.original; });
+      var txt = anchor.firstChild && anchor.firstChild.nodeType === 3 ? anchor.firstChild
+        : eligibleIn(fig, anchor)[0] || anchor;
+      var src = (fig.spec.source || function () { return {}; }).call(fig.spec, fig, txt, null) || {};
+      var clip = function (t, n) { return t.length > n ? t.slice(0, n) + '…' : t; };
+      var host = anchorOf(fig, anchor);
+      var rec = {
+        edit_id: cur ? cur.edit_id : rid('e'), key: key, status: 'draft', kind: 'paragraph',
+        figure: { id: fig.spec.id, title: fig.spec.title, kind: 'inline', document: fig.baseline.document, generator: null, exports: [] },
+        element: { kind: 'html-text', tag: 'p', anchor_id: host === fig.root ? null : host.id, selector: relSelector(host, anchor),
+          path: humanPath(fig, anchor), occurrence: { index: twins.indexOf(anchor) + 1, count: twins.length },
+          before: words.shown.slice(-40), after: '' },
+        context: null,
+        source: { file: src.file, region: src.region || 'body', heading: src.heading || null,
+          locator: 'new paragraph after: ' + (src.locator || 'a paragraph'),
+          block: clip(words.shown, 300), after_block: clip(words.shown, MAX_TEXT), after_block_original: clip(words.original, MAX_TEXT),
+          note: 'A NEW paragraph: insert it in the markdown after the paragraph whose rendered words are after_block, with a blank line between.' },
+        anchor: { shown: words.shown, original: words.original, occurrence: { index: twins.indexOf(anchor) + 1, count: twins.length } },
+        original: '', replacement: base.join('\n\n'), paragraphs: base, baseline: clone(fig.baseline),
+        supersedes: del ? { edit_id: del.edit_id, batch_id: del.delivery.batch_id, replacement: del.replacement } : null,
+        captured_at: cur ? cur.captured_at : new Date().toISOString(), updated_at: new Date().toISOString()
+      };
+      this.store.putDraft(key, rec);
+      if (this.bridge.state !== 'ready') this.bridge.hello(true);
+    }
+    this.refreshKey(key);
+    this.render();
+    return { wrote: !!v, next: next };
+  };
+
   Editor.prototype.undo = function () {
     var key = this.store.undo();
     if (key) { this.refreshKey(key); this.toast('Undid the last change.'); }
@@ -1451,7 +1731,7 @@
     this.win.requestAnimationFrame(function () { self.paintQueued = false; self.paint(); });
   };
   Editor.prototype.busyPainting = function () {
-    return !!(this.hover || this.field || this.chover || this.cfield || this.figs.some(function (f) { return Object.keys(f.live).length; }));
+    return !!(this.hover || this.field || this.chover || this.cfield || this.plus || this.figs.some(function (f) { return Object.keys(f.live).length; }));
   };
   // Figures animate (scrolly, walkthrough), so marks are re-placed on a slow tick
   // while anything is drawn; the tick stops when nothing is.
@@ -1511,6 +1791,22 @@
       }
     }
     cbtn.hidden = !showC;
+    // the "+" in the margin, level with the gap after its paragraph, and a
+    // dashed line across the gap so it is clear where the paragraph will go
+    var pl = this.plus, plus = this.ui.plus, showPlus = false;
+    if (pl && !this.field && !this.pfield && !this.cfield && pl.after.isConnected) {
+      var pb = pl.after.getBoundingClientRect();
+      if (pb.height) {
+        var nx = pl.after.nextElementSibling;
+        var nt = nx ? nx.getBoundingClientRect().top : pb.bottom + 24;
+        var gy = (pb.bottom + Math.min(Math.max(nt, pb.bottom), pb.bottom + 40)) / 2;
+        plus.style.left = Math.max(2, pb.left - 28) + 'px';
+        plus.style.top = (gy - 10) + 'px';
+        boxes.push({ b: { left: pb.left, right: pb.right, top: gy, bottom: gy }, kind: 'gap' });
+        showPlus = true;
+      }
+    }
+    plus.hidden = !showPlus;
     while (layer.children.length < boxes.length) layer.appendChild(el(this.doc, 'div', 'fte-box'));
     Array.prototype.forEach.call(layer.children, function (d, i) {
       var x = boxes[i];
@@ -1583,6 +1879,40 @@
       else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); self.saveComment(); }
     });
 
+    // a new paragraph, typed in the flow of the article (moved there when open)
+    var pfield = el(d, 'div', 'fte-ui fte-pfield'); pfield.hidden = true;
+    var pinput = el(d, 'textarea'); pinput.rows = 1; pinput.spellcheck = true;
+    pinput.setAttribute('aria-label', 'New paragraph'); pinput.placeholder = 'New paragraph…';
+    var pkeys = el(d, 'span', 'fte-keys');
+    pfield.appendChild(pinput); pfield.appendChild(pkeys);
+    d.body.appendChild(pfield);
+    pinput.addEventListener('keydown', function (ev) {
+      ev.stopPropagation();
+      if (ev.key === 'Escape') { ev.preventDefault(); self.closePara(); }
+      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+        ev.preventDefault();
+        var a = self.pfield;
+        var r = self.commitPara(false);
+        // written: another new paragraph right after it; empty: done
+        if (r && r.wrote && a) self.openPara(a.fig, a.anchor, r.next);
+      }
+    });
+    pinput.addEventListener('input', function () { self.sizePara(); });
+    // the faint "+" between paragraphs
+    var plus = el(d, 'button', 'fte-ui fte-plus', '+'); plus.type = 'button'; plus.hidden = true;
+    plus.setAttribute('aria-label', 'New paragraph here'); plus.title = 'New paragraph here';
+    d.body.appendChild(plus);
+    plus.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });
+    plus.addEventListener('click', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      var g = self.plus; if (!g || !g.after.isConnected) return;
+      if (g.after.classList.contains('fte-newp')) {
+        var k = g.after.getAttribute('data-fte-newp');
+        var anchor = g.fig.paraAnchor[k];
+        self.openPara(g.fig, anchor, previewsOf(g.fig, k).indexOf(g.after) + 1);
+      } else self.openPara(g.fig, g.after, 0);
+    });
+
     // the ✎ for links, buttons and page text
     var pencil = el(d, 'button', 'fte-ui fte-pencil', '✎'); pencil.type = 'button'; pencil.hidden = true;
     pencil.setAttribute('aria-label', 'Edit this text'); pencil.title = 'Edit this text';
@@ -1594,7 +1924,7 @@
     // the editor's tray, fields and buttons are not the page's text either,
     // and a tray that lists "old → new" would otherwise make every quote of
     // those words ambiguous for it
-    [layer, dock, field, cfield, cbtn, pencil, toast].forEach(function (x) { x.classList.add('bfp-ui'); });
+    [layer, dock, field, cfield, cbtn, pencil, toast, pfield, plus].forEach(function (x) { x.classList.add('bfp-ui'); });
 
     undo.addEventListener('click', function () { self.undo(); });
     rev.addEventListener('click', function () { self.reviewOpen = !self.reviewOpen; self.render(); });
@@ -1603,18 +1933,35 @@
     pencil.addEventListener('mousedown', function (ev) { ev.preventDefault(); ev.stopPropagation(); });
     pencil.addEventListener('click', function (ev) {
       ev.preventDefault(); ev.stopPropagation();
-      var h = self.hover; if (h && h.node.isConnected) self.openField(h.fig, h.node);
+      var h = self.hover; if (!h || !h.node.isConnected) return;
+      // a new paragraph not yet sent: open it again as a paragraph
+      if (h.newp) {
+        var k = h.newp.getAttribute('data-fte-newp');
+        self.openPara(h.fig, h.fig.paraAnchor[k], previewsOf(h.fig, k).indexOf(h.newp), true);
+      } else self.openField(h.fig, h.node);
     });
     input.addEventListener('keydown', function (ev) {
       ev.stopPropagation();
       if (ev.key === 'Escape') { ev.preventDefault(); self.closeField(); }
-      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); self.commitField(false); }
+      else if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+        ev.preventDefault();
+        // in a prose paragraph Enter keeps the words and starts a NEW
+        // paragraph below it, like writing; elsewhere it just applies
+        var a = self.field, para = a && a.para;
+        self.commitField(false);
+        if (para && !self.field && para.isConnected) {
+          self.hintUsed();
+          // first among any new paragraphs that already follow it
+          self.openPara(a.fig, para, 0);
+        }
+      }
     });
     input.addEventListener('input', function () { self.placeField(true); });
     this.win.addEventListener('resize', function () { self.placeField(false); self.paintSoon(); });
     this.ui = { dock: dock, title: title, tag: tag, review: review, bridge: bridge, bridgeText: bridgeText,
       undo: undo, rev: rev, send: send, result: result, layer: layer, pencil: pencil, toastEl: toast,
       cbtn: cbtn, cfield: { root: cfield, input: cinput, label: clabel },
+      pfield: { root: pfield, input: pinput, keys: pkeys }, plus: plus,
       field: { root: field, input: input, keys: keys } };
   };
 
@@ -1699,6 +2046,9 @@
       if (rec.kind === 'comment') {
         line.appendChild(el(d, 'span', 'fte-note', '💬 ' + rec.note));
         if (rec.element && rec.element.text) line.appendChild(el(d, 'span', 'fte-to', ' on “' + rec.element.text.slice(0, 60) + '”'));
+      } else if (rec.kind === 'paragraph') {
+        line.appendChild(el(d, 'span', 'fte-to', '¶ new paragraph after “…' + str(rec.source && rec.source.after_block).slice(-50) + '”: '));
+        line.appendChild(el(d, 'ins', null, (rec.paragraphs || [rec.replacement]).join(' ¶ ')));
       } else {
         line.appendChild(el(d, 'del', null, rec.original));
         line.appendChild(d.createTextNode(' → '));

@@ -322,6 +322,26 @@ class TestInkBridgeInputQueue:
             {"text": "plain"},
         ]
 
+    async def test_who_answers_first_rides_through_only_when_given(
+        self, tmp_path, monkeypatch
+    ):
+        # The browser plugin says per turn who answers an @all turn first; the
+        # TUI and council web say nothing, and their call is unchanged.
+        monkeypatch.setattr(binkb, "emit", lambda obj: None)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        seen: list[dict] = []
+
+        async def handle_input(text, bridge, attachments=None, **kw):
+            seen.append({"text": text, **kw})
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        queue.submit("@all one", [], first="codex")
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        queue.submit("@all two", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert seen == [{"text": "@all one", "first": "codex"}, {"text": "@all two"}]
+
 
 @pytest.mark.asyncio
 class TestSteeringSubmit:

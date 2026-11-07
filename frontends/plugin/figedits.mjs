@@ -31,6 +31,10 @@ const one = v => s(v).replace(/\s+/g, ' ').trim();
 const clip = (v, n) => { const t = one(v); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
 
 export const isComment = e => !!e && e.kind === 'comment';
+// a NEW paragraph the owner typed after an existing one (the editor's Enter
+// or "+"): `replacement` is its text, `source.after_block` the paragraph it
+// follows
+export const isParagraph = e => !!e && e.kind === 'paragraph';
 
 /** Where an item is, in a few words the owner recognises. */
 export function whereOf(e) {
@@ -39,6 +43,7 @@ export function whereOf(e) {
   const c = (e && e.context) || null;
   const what = isComment(e)
     ? (el.kind === 'raster' ? 'picture' : el.tag ? `<${el.tag}>` : 'element')
+    : isParagraph(e) ? 'new paragraph'
     : (el.kind === 'svg-text' ? 'SVG label' : 'text');
   const step = c && c.step != null && c.step !== 'cover'
     ? ` · step ${c.step}${c.of ? ` of ${c.of}` : ''}${c.step_title ? ` (“${clip(c.step_title, 60)}”)` : ''}`
@@ -48,6 +53,10 @@ export function whereOf(e) {
 
 function changeLine(e) {
   if (isComment(e)) return `💬 ${clip(e.note, 300)}`;
+  if (isParagraph(e)) {
+    const after = one((e.source && (e.source.after_block || e.source.block)) || '');
+    return `add after the paragraph ending “…${after.slice(-80)}”, with a blank line between: “${clip(e.replacement, 400)}”`;
+  }
   return `“${clip(e.original, 200)}” → “${clip(e.replacement, 200)}”`;
 }
 
@@ -143,6 +152,7 @@ export function badEdit(e) {
     return null;
   }
   if (typeof e.original !== 'string' || typeof e.replacement !== 'string') return 'an edit is missing its text';
+  if (isParagraph(e) && !one(e.replacement)) return 'a new paragraph is empty';
   if (e.original.length > FIELD_MAX || e.replacement.length > FIELD_MAX) return `an edit is longer than ${FIELD_MAX} characters`;
   return null;
 }

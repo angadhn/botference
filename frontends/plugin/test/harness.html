@@ -278,6 +278,10 @@
                      confirmed (no capability, and the reason). `&selftest=1`
                      runs the bridge assertions; `?figedit=deployed&selftest=1`
                      checks that a non-loopback address hears nothing at all.
+                     `?figedit=write` WRITING in the editor: Enter after a
+                     paragraph's ✎ starts a new paragraph below it, typed in
+                     place, with the one-time hint; `&selftest=1` runs it
+                     through to the routed send.
     ?suggest=1       SUGGEST MODE, which only exists on a blog source page and
                      so turns one on for itself. A bot has answered a comment
                      with two proposed changes to the markdown: each is drawn
@@ -740,7 +744,7 @@ if (FIGEDIT) {
   // the editor keeps drafts per page in localStorage; a selftest starts clean
   if (Q.get('selftest')) {
     try {
-      for (const k of Object.keys(localStorage)) if (k.startsWith('figure-text-editor:')) localStorage.removeItem(k);
+      for (const k of Object.keys(localStorage)) if (k.startsWith('figure-text-editor:') || k === 'fte-hint-seen') localStorage.removeItem(k);
     } catch { /* nothing to clear */ }
   }
   // one inline figure that declares itself to the editor the way a note's
@@ -761,7 +765,7 @@ if (FIGEDIT) {
   // for `main article`), there is a callout the ✎ must stay out of (titled
   // anything — every callout is the bots'), a one-line paragraph to insert a
   // sentence into, and a picture with no source to comment on
-  if (FIGEDIT === 'route' || FIGEDIT === 'comment' || FIGEDIT === 'routed') {
+  if (FIGEDIT === 'route' || FIGEDIT === 'comment' || FIGEDIT === 'routed' || FIGEDIT === 'write') {
     const art = document.querySelector('article');
     if (art && !art.closest('main')) {
       const m = document.createElement('main');
@@ -2118,12 +2122,15 @@ const MODELS = {
   // …and how long the answers are. A companion preference, not a bridge one:
   // it survives a sleeping bridge, which is why it is a bare string.
   verbosity: 'short',
+  // …and who answers first on an @all turn, the same kind of preference
+  first_reply: 'alternate',
   bridge: NOAGENTS ? 'disabled' : NOBRIDGE ? 'stopped' : 'running',
 };
 const modelPosts = [];      // what the drawer POSTed, for the selftest
 const relayPosts = [];      // …and every /relay body
 const effortPosts = [];     // …and every /effort body
 const verbosityPosts = [];  // …and every /verbosity body
+const firstPosts = [];      // …and every /first-reply body
 const tickPosts = [];       // …and every /tick body
 const deletePagePosts = []; // …and every /delete-page body
 let tickFail = false;       // the selftest flips this to exercise the revert
@@ -3136,10 +3143,16 @@ function companion(method, path, body) {
     if (fteRouteDone[key]) return { ok: true, status: 200, data: Object.assign({ ok: true, repeated: true }, fteRouteDone[key]) };
     const fold = s => String(s || '').replace(/\s+/g, ' ').trim();
     const src = fold(fteSourceText());
+    const paras = fteSourceText().split('\n\n').map(fold);
     const routes = (b.edits || []).map(e => {
       const prose = e.kind !== 'comment' && e.figure && e.figure.id === 'page-text'
         && (e.source || {}).region !== 'front-matter';
       if (!prose) return { edit_id: e.edit_id, to: 'bots' };
+      if (e.kind === 'paragraph') {
+        const n = paras.filter(x => x === fold((e.source || {}).after_block)).length;
+        return n === 1 ? { edit_id: e.edit_id, to: 'source' }
+          : { edit_id: e.edit_id, to: 'bots', reason: 'not-found', detail: 'the paragraph it follows is not in the source as written' };
+      }
       const n = src.split(fold(e.original)).length - 1;
       if (n === 1) return { edit_id: e.edit_id, to: 'source' };
       return { edit_id: e.edit_id, to: 'bots', reason: n ? 'ambiguous' : 'not-found',
@@ -3518,7 +3531,7 @@ function companion(method, path, body) {
     return { ok: true, status: 200, data: {
       ok: true, current: MODELS.current, options: MODELS.options,
       status: MODELS.status, bridge: MODELS.bridge,
-      effort: MODELS.effort, verbosity: MODELS.verbosity, keys: MODELS.keys } };
+      effort: MODELS.effort, verbosity: MODELS.verbosity, first_reply: MODELS.first_reply, keys: MODELS.keys } };
   }
   // POST /tick {url, thread_id, ts, index, checked} — the companion owns the
   // message text, so it rewrites the brackets and answers with the new body.
@@ -3614,6 +3627,14 @@ function companion(method, path, body) {
   }
   // POST /verbosity {level} — a companion preference, so it answers with the
   // value it settled on and broadcasts the options along with it
+  // POST /first-reply {first} — who answers first on an @all turn
+  if (method === 'POST' && route === '/first-reply') {
+    firstPosts.push({ first: body && body.first });
+    if (!/^(alternate|claude|codex)$/.test(String(body && body.first))) return { ok: false, status: 400, error: 'bad first' };
+    MODELS.first_reply = body.first;
+    setTimeout(() => toContent({ t: 'ws', ev: { type: 'models', first_reply: MODELS.first_reply } }), 40);
+    return { ok: true, status: 200, data: { ok: true, first_reply: MODELS.first_reply } };
+  }
   if (method === 'POST' && route === '/verbosity') {
     verbosityPosts.push({ level: body && body.level });
     if (!/^(short|long)$/.test(String(body && body.level))) return { ok: false, status: 400, error: 'bad verbosity' };
@@ -6580,6 +6601,19 @@ async function selftest() {
   await sleep(120);
   d.onEvent({ type: 'models', verbosity: 'long' });
   check('…and a later broadcast moves it back', vbtn('long').classList.contains('on'));
+
+  // ---- who answers first when both bots answer ----
+  const fbtn = v => S.querySelector('.popover.models .fseg[data-first="' + v + '"]');
+  const frow = () => S.querySelector('.popover.models .pop-firstrow');
+  check('the popover carries a “first to reply” switch: alternate · Claude · Codex',
+    !!frow() && !frow().hidden && frow().textContent.replace(/\s+/g, '') === 'firsttoreplyalternate·Claude·Codex');
+  check('…alternate by default', !!fbtn('alternate') && fbtn('alternate').classList.contains('on'));
+  fbtn('codex').click();
+  check('clicking Codex moves it at once', fbtn('codex').classList.contains('on') && !fbtn('alternate').classList.contains('on'));
+  check('…and POSTs /first-reply', !!await until(() => firstPosts.some(p => p.first === 'codex')));
+  await sleep(120);
+  d.onEvent({ type: 'models', first_reply: 'alternate' });
+  check('…and a broadcast moves it back to alternate', fbtn('alternate').classList.contains('on'));
 
   // ---- model and effort are PREFERENCES: settable before anyone is awake ----
   // The old rule was "a sleeping bridge disables the pickers", which meant the
@@ -9682,6 +9716,35 @@ async function selftestBubblesNew() {
   await sleep(200);
   check('closing the panel then cancels it, as it always has', !newMark());
 
+  // ---- Shift+Enter is a new line in a bubble, even with the @-menu up -----
+  // (2026-11-07: with "hello @cl" typed, the menu was open and Shift+Enter
+  // picked the name instead — "hello @claude ", no new line — and in a bubble
+  // the menu covers the last message, so nothing said why.)
+  ta = await bubbleNewSelect();
+  ta.focus();
+  ta.value = 'two lines @cl';
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  await sleep(60);
+  const menuUp = () => { const m = bub(NEW) && bub(NEW).querySelector('.mentions'); return !!m && !m.hidden && !!m.textContent.trim(); };
+  check('(pose) the @-menu is open in the bubble', menuUp());
+  const tSE = posts();
+  const se = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true, composed: true });
+  ta.dispatchEvent(se);
+  await sleep(60);
+  check('Shift+Enter in a bubble makes a new line, even with the @-menu open',
+    ta.value === 'two lines @cl\n' && se.defaultPrevented);
+  check('…closes the menu without picking a name', !menuUp() && !/@claude/.test(ta.value));
+  check('…and sends nothing', posts() === tSE);
+  ta.value = 'plain';
+  ta.setSelectionRange(5, 5);
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true, composed: true }));
+  await sleep(30);
+  check('…and with no menu, the same: a new line, no send', ta.value === 'plain\n' && posts() === tSE);
+  hit(bub(NEW) && bub(NEW).querySelector('[data-act="bubble-close"]'), 'the new bubble\'s ✕');
+  await sleep(160);
+
   // ---- Send: one thread, and the bubble becomes it -------------------------
   ta = await bubbleNewSelect();
   ta.value = QUESTION;
@@ -10408,6 +10471,151 @@ async function fteComment(el, note) {
   await sleep(60);
   return true;
 }
+const fteKey = (el, key, opts) => el.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ key, bubbles: true, cancelable: true }, opts || {})));
+// ?figedit=write&selftest=1 — WRITING, NOT JUST RETYPING (2026-11-07).
+//
+//   THE REPORT: the owner tried to keep writing after a sentence and found
+//   ✎ unintuitive — it only retypes words that are already there. Now Enter in
+//   a prose paragraph's ✎ starts a NEW paragraph below it, typed in place;
+//   each Enter starts another; Enter on an empty one is done. A faint "+"
+//   between paragraphs starts one there. A one-line hint says so, once. Each
+//   new paragraph is one item (kind "paragraph") that the companion writes
+//   after the paragraph it follows. Never in a callout.
+async function selftestFigWrite() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? '✓ ' : '✗ ') + name); progress(out, name); };
+  const finish = () => {
+    const bad = out.filter(l => l[0] === '✗');
+    logQuiet = true;
+    const el = document.getElementById('h-log');
+    el.style.color = bad.length ? '#b3403a' : '#2ea043';
+    el.textContent = 'SELFTEST (figedit-write) ' + (out.length - bad.length) + '/' + out.length +
+      (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+    el.dataset.detail = out.join(' | ') +
+      (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
+    console.log(out.join('\n'));
+  };
+  const HINT = 'Type to edit · Enter for a new paragraph · Send changes saves to your post';
+  const E = await until(() => fteEd(), 4000);
+  check('the editor booted', !!E);
+  if (!E) return finish();
+  await until(() => E.bridge.state === 'ready', 5000);
+  check('connected', E.bridge.state === 'ready');
+  const page = E.figs.find(f => f.spec.page);
+  const ins = document.getElementById('fte-ins');
+  const newps = () => [...document.querySelectorAll('p.fte-newp')];
+  const draft = () => E.store.drafts().find(d => d.kind === 'paragraph');
+  try {
+  // ---- ✎ on a paragraph, then Enter: a new paragraph below ----------------
+  const n0 = fteTextNode(ins, /Nobody expects/);
+  fteHoverAt(n0);
+  await sleep(80);
+  check('a prose paragraph offers its ✎', !E.ui.pencil.hidden);
+  E.ui.pencil.click();
+  await sleep(40);
+  check('the first time, the field shows the one-line hint', E.ui.field.keys.textContent.indexOf(HINT) === 0);
+  fteKey(E.ui.field.input, 'Enter');
+  await sleep(60);
+  check('Enter starts a NEW paragraph below it, open for typing',
+    !E.field && !!E.pfield && ins.nextElementSibling === E.ui.pfield.root && !E.ui.pfield.root.hidden);
+  check('…focused, in the flow of the article', document.activeElement === E.ui.pfield.input && !!E.ui.pfield.root.closest('article'));
+  check('…and the hint is used up: remembered, and not shown again',
+    localStorage.getItem('fte-hint-seen') === '1' && E.ui.pfield.keys.textContent.indexOf(HINT) !== 0);
+  check('nothing was drafted for an unchanged paragraph', !E.store.drafts().length);
+
+  // ---- typing, Enter, typing: two paragraphs ------------------------------
+  E.ui.pfield.input.value = 'A new paragraph I wrote.';
+  fteKey(E.ui.pfield.input, 'Enter');
+  await sleep(60);
+  check('Enter keeps it: previewed right after the paragraph it follows',
+    newps().length === 1 && ins.nextElementSibling === newps()[0] && newps()[0].textContent === 'A new paragraph I wrote.');
+  check('…and the next new paragraph opens after it', !!E.pfield && newps()[0].nextElementSibling === E.ui.pfield.root);
+  const d1 = draft();
+  check('one draft item of kind "paragraph", saying which paragraph it follows',
+    !!d1 && d1.original === '' && d1.replacement === 'A new paragraph I wrote.'
+    && d1.source.after_block === 'Nobody expects the board to comment.' && d1.source.region === 'body');
+  E.ui.pfield.input.value = 'And a second one.';
+  fteKey(E.ui.pfield.input, 'Enter');
+  await sleep(60);
+  check('a second Enter adds a second paragraph, in order',
+    newps().map(p => p.textContent).join('|') === 'A new paragraph I wrote.|And a second one.'
+    && draft().paragraphs.length === 2 && draft().replacement === 'A new paragraph I wrote.\n\nAnd a second one.');
+  check('…still ONE item: the paragraphs that follow one paragraph travel together', E.store.drafts().length === 1);
+  fteKey(E.ui.pfield.input, 'Enter');
+  await sleep(60);
+  check('Enter on an empty new paragraph is done', !E.pfield && E.ui.pfield.root.hidden && newps().length === 2);
+
+  // ---- never in a callout, nor after a heading ----------------------------
+  // a paragraph INSIDE a callout, as the site renders a callout's body
+  const callP = document.createElement('p');
+  callP.textContent = 'A second paragraph of the bots’ answer.';
+  document.querySelector('#fte-agent .callout-content').appendChild(callP);
+  const cb = callP.getBoundingClientRect();
+  const g = E.gapAt(page, cb.left + 20, cb.bottom + 1);
+  check('no "+" after a paragraph inside a callout (callouts are the bots’)', !g || g.after !== callP);
+  E.openPara(page, callP, 0);
+  check('…and no new paragraph can be opened there', !E.pfield);
+  callP.remove();
+  const h = document.querySelector('article h1, article h2');
+  if (h) {
+    const hn = fteTextNode(h, /\S/);
+    E.openField(page, hn);
+    fteKey(E.ui.field.input, 'Enter');
+    await sleep(40);
+    check('Enter in a heading applies, and starts no paragraph', !E.field && !E.pfield);
+  }
+
+  // ---- the "+" between two paragraphs -------------------------------------
+  const prose = [...document.querySelectorAll('article p')].filter(p => !p.closest('.callout, .fte-ui') && !p.classList.contains('fte-newp')
+    && p.nextElementSibling && /\S/.test(p.textContent) && p.id !== 'fte-pic');
+  const above = prose[0];
+  const ab = above.getBoundingClientRect();
+  above.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: ab.left + 30, clientY: ab.bottom + 2, view: window }));
+  E.paint();
+  check('hovering the gap under a paragraph shows a faint "+"', !E.ui.plus.hidden && E.plus && E.plus.after === above);
+  E.ui.plus.click();
+  await sleep(40);
+  check('the "+" opens a new paragraph right there', !!E.pfield && above.nextElementSibling === E.ui.pfield.root);
+  fteKey(E.ui.pfield.input, 'Escape');
+  await sleep(40);
+  check('Esc leaves it, and drafts nothing', !E.pfield && E.store.drafts().length === 1);
+
+  // ---- a new paragraph's ✎ opens it again ---------------------------------
+  fteHoverAt(newps()[0].firstChild, newps()[0]);
+  await sleep(60);
+  check('a new paragraph not yet sent has its own ✎', !E.ui.pencil.hidden && E.hover && E.hover.newp === newps()[0]);
+  E.ui.pencil.click();
+  await sleep(40);
+  check('…which opens it with its words, in its place',
+    !!E.pfield && E.pfield.editing && E.ui.pfield.input.value === 'A new paragraph I wrote.' && newps()[0].hidden);
+  E.ui.pfield.input.value = 'A new paragraph I rewrote.';
+  fteKey(E.ui.pfield.input, 'Enter');
+  await sleep(60);
+  fteKey(E.ui.pfield.input, 'Escape');
+  await sleep(40);
+  check('…and keeps the change, the order unchanged',
+    newps().map(p => p.textContent).join('|') === 'A new paragraph I rewrote.|And a second one.' && !newps()[0].hidden);
+
+  // ---- the tray, and the send ---------------------------------------------
+  E.reviewOpen = true; E.render();
+  check('the tray lists it as a new paragraph', /new paragraph after/.test(E.ui.review.textContent)
+    && /A new paragraph I rewrote\. ¶ And a second one\./.test(E.ui.review.textContent));
+  const calls0 = fteRouteCalls.length;
+  await sleep(2100);
+  window.__fteActivation = true;
+  document.querySelector('.fte-send').click();
+  await until(() => fteRouteCalls.length > calls0 && !E.sending, 8000);
+  const sent = (fteRouteCalls[fteRouteCalls.length - 1] || {}).batch || {};
+  const item = (sent.edits || []).find(e => e.kind === 'paragraph');
+  check('Send carries it as kind "paragraph", blank-line separated, after its paragraph',
+    !!item && item.replacement === 'A new paragraph I rewrote.\n\nAnd a second one.' && item.original === ''
+    && item.source.after_block === 'Nobody expects the board to comment.');
+  check('the companion wrote it into the post, and the tray let it go',
+    !E.store.drafts().length && !E.store.delivered().length && /written straight into the post/.test(E.ui.result.textContent));
+  } catch (e) { check('no exception: ' + (e && e.message), false); }
+  finish();
+}
+
 async function selftestFigRoute() {
   const out = [];
   const check = (name, cond) => { out.push((cond ? '✓ ' : '✗ ') + name); progress(out, name); };
@@ -10510,7 +10718,8 @@ async function selftestFigRoute() {
   await sleep(150);
   const qm = [...document.querySelectorAll('mark.bfp-quiet')];
   check('"your edit" is painted from the record',
-    qm.some(m => m.dataset.kind === 'yours' && /goalless/.test(m.textContent) && m.title === 'your edit'));
+    qm.some(m => m.dataset.kind === 'yours' && /goalless/.test(m.textContent)
+      && /^added by you\b/.test(m.title) && /your own edit/.test(m.title) && m.dataset.bfpBy === 'you'));
   check('…and a bot’s callout change leaves no marker on the page',
     !qm.some(m => /match report/.test(m.textContent)) && !document.querySelector('#fte-agent mark'));
   check('…with no thread and nothing to approve', !(window.__bfp.page.threads || []).some(t => /goalless|match report/.test(t.quote || ''))
@@ -10617,6 +10826,25 @@ async function selftestFigRoute() {
 // `?figedit=routed` the tray after a v2 send that split prose and figure
 // items; `?figedit=comment` the 💬 note open on a box of the figure
 async function figeditPose() {
+  if (FIGEDIT === 'write') {
+    // the owner mid-sentence: one new paragraph typed after "Nobody expects…",
+    // and the next one started, with the hint on screen
+    const E = await until(() => fteEd(), 4000);
+    if (!E) return log('figedit: the editor did not boot');
+    await until(() => E.bridge.state === 'ready', 5000);
+    const page = E.figs.find(f => f.spec.page);
+    const ins = document.getElementById('fte-ins');
+    E.openPara(page, ins, 0);
+    E.ui.pfield.input.value = 'A new paragraph I wrote, straight after the last one.';
+    fteKey(E.ui.pfield.input, 'Enter');
+    await sleep(60);
+    try { localStorage.removeItem('fte-hint-seen'); } catch { }
+    E.hintDone = false;
+    E.ui.pfield.keys.textContent = 'Type to edit · Enter for a new paragraph · Send changes saves to your post';
+    E.ui.pfield.input.value = 'And I keep typing';
+    E.sizePara();
+    return;
+  }
   if (FIGEDIT === 'comment' || FIGEDIT === 'routed') {
     const E = await until(() => fteEd(), 4000);
     if (!E) return log('figedit: the editor did not boot');
@@ -13047,6 +13275,10 @@ async function selftestColledit() {
     wasFor(COLL_ID) && wasFor(COLL_ID).textContent.trim() === COLL_WAS);
   check('the arrival carries Word’s insertion underline',
     markFor(COLL_ID).classList.contains('bfp-ins'));
+  check('…which says who changed it, on the new words and on the struck old ones',
+    /^changed by (Claude|Codex|the bots)\b/.test(markFor(COLL_ID).getAttribute('title') || '')
+    && !!markFor(COLL_ID).getAttribute('data-bfp-by')
+    && /^replaced by /.test(wasFor(COLL_ID).getAttribute('title') || ''));
 
   // ---- and the record is the ONLY thing that said so ----------------------
   check('no bot ever claimed a new wording here — there was no comment to claim it to',
@@ -13120,6 +13352,10 @@ async function selftestCollInsert() {
   check('…carrying the arrival underline though nothing was replaced',
     !!await until(() => markFor(COLLINS_ID).classList.contains('bfp-ins'), 4000));
   check('…and its hover says it was added', /added/.test(markFor(COLLINS_ID).getAttribute('title') || ''));
+  // the green is never left to guess at: it says WHO added it (2026-11-07)
+  check('…and by whom: “added by Codex”, from the bot that wrote it',
+    /^added by Codex\b/.test(markFor(COLLINS_ID).getAttribute('title') || '')
+    && markFor(COLLINS_ID).getAttribute('data-bfp-by') === 'Codex');
   check('nothing is struck through: nothing left', !wasFor(COLLINS_ID));
 
   // ---- the card, and the link both ways ----------------------------------
@@ -14249,7 +14485,8 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
           : QUESTION_REVISE ? selftestQuestionRevise
             : QUESTION_FAILS ? selftestQuestionFail : QUESTION ? selftestQuestion
         // ?figedit=… turns a blog page on for itself too
-        : FIGEDIT === 'deployed' ? selftestFigEditDeployed : FIGEDIT === 'route' ? selftestFigRoute : FIGEDIT ? selftestFigEdit
+        : FIGEDIT === 'deployed' ? selftestFigEditDeployed : FIGEDIT === 'route' ? selftestFigRoute
+        : FIGEDIT === 'write' ? selftestFigWrite : FIGEDIT ? selftestFigEdit
         // …and the more specific flag first here too: ?suggest=… turns a blog
         // page on for itself, so it must be tried before the blog pose
         : SUGGEST ? selftestSuggest

@@ -3216,13 +3216,18 @@ class Botference:
 
     async def handle_input(
         self, raw: str, ui: UIPort, *, attachments: list | None = None,
-        watch_text: Optional[str] = None,
+        watch_text: Optional[str] = None, first: Optional[str] = None,
     ) -> None:
         """One line from a frontend.
 
         *watch_text*, when given, is the part of *raw* that is the user's own
         words — the browser plugin wraps them in an envelope that replays the
         chat's history, and only links in the NEW words are auto-watched.
+
+        *first*, when given ("claude" or "codex"), is who answers first if
+        this turn goes to both bots (@all). The browser plugin decides it per
+        turn (its "first to reply" setting, alternating by default); without
+        it the order is Claude, then Codex, as it always was.
         """
         parsed = parse_input(raw)
 
@@ -3387,6 +3392,7 @@ class Botference:
 
         await self._send_message(
             parsed, ui, attachments=attachments, watch_text=watch_text,
+            first=first,
         )
 
     # ── /allow-host ───────────────────────────────────────
@@ -6234,7 +6240,7 @@ class Botference:
     async def _send_message(
         self, parsed: ParsedInput, ui: UIPort,
         *, attachments: list | None = None, watch_links: bool = True,
-        watch_text: Optional[str] = None,
+        watch_text: Optional[str] = None, first: Optional[str] = None,
     ) -> None:
         route = self.router.resolve(parsed)
         # each user turn buys each bot a fresh (small) allowance of questions
@@ -6298,6 +6304,10 @@ class Botference:
             ["claude", "codex"] if route == "@all"
             else [route.lstrip("@")]
         )
+        # a frontend may say who answers first on an @all turn (the browser
+        # plugin alternates by default); nothing said keeps Claude first
+        if route == "@all" and first == "codex":
+            targets = ["codex", "claude"]
 
         last_speaker: Optional[str] = None
         last_resp: Optional[AdapterResponse] = None
@@ -6308,7 +6318,7 @@ class Botference:
             return
         for model in targets:
             resp = await self._send_to_model(model, body, ui)
-            if resp is None and route == "@all" and model == "claude" and getattr(
+            if resp is None and route == "@all" and model == "claude" and model == targets[0] and getattr(
                 self.claude, "abort_all_on_startup_failure", False
             ):
                 self._add_room_entry(

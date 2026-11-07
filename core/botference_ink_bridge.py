@@ -48,6 +48,11 @@ class QueuedInput:
     # them in an envelope (the browser plugin's page chat). Only links in
     # this are auto-watched; None means "all of text is the user's".
     watch: str | None = None
+    # Who answers first on an @all turn ("claude" | "codex"), when a frontend
+    # decides it per turn (the browser plugin's "first to reply" setting).
+    # None keeps the controller's own order — the TUI and council web send
+    # nothing here.
+    first: str | None = None
 
 
 def emit(obj: dict) -> None:
@@ -634,6 +639,7 @@ class InputTurnQueue:
 
     def submit(
         self, text: str, attachments: list[dict], watch: str | None = None,
+        first: str | None = None,
     ) -> None:
         # Mid-turn input first tries steering — injected into the active
         # bot's in-flight turn (read after its current tool call), like
@@ -644,7 +650,7 @@ class InputTurnQueue:
                 return
         was_running = self.is_running
         self._pending.append(
-            QueuedInput(text=text, attachments=attachments, watch=watch)
+            QueuedInput(text=text, attachments=attachments, watch=watch, first=first)
         )
         if was_running:
             self._emit_queue_state()
@@ -684,6 +690,8 @@ class InputTurnQueue:
                     attachments=item.attachments,
                     # only when a frontend said which words are the user's
                     **({"watch_text": item.watch} if item.watch is not None else {}),
+                    # …and only when a frontend said who answers first
+                    **({"first": item.first} if item.first is not None else {}),
                 )
             )
             should_exit = await _wait_for_turn(
@@ -854,9 +862,11 @@ async def main() -> None:
             text = msg.get("text", "")
             attachments = msg.get("attachments", [])
             watch = msg.get("watch")
+            first = msg.get("first")
             turn_queue.submit(
                 text, attachments,
                 watch=watch if isinstance(watch, str) else None,
+                first=first if first in ("claude", "codex") else None,
             )
             continue
 

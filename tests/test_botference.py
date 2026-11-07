@@ -8542,3 +8542,30 @@ class TestWriteRootRestoreOutsideProject:
         c2, _, _, _ = _make_botference(tmp_path=ws)
         c2._restore_from_payload(payload)
         assert c2._plan_write_roots() == c1._plan_write_roots()
+
+
+# ── who answers first on an @all turn (the plugin's per-turn `first`) ──
+
+
+@pytest.mark.asyncio
+class TestFirstToReply:
+    async def _order(self, tmp_path, **kw):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@all hello", ui, **kw)
+        bots = [e.speaker for e in c.transcript.entries if e.speaker in ("claude", "codex")]
+        return bots[:2]
+
+    async def test_default_is_claude_then_codex(self, tmp_path):
+        assert await self._order(tmp_path) == ["claude", "codex"]
+
+    async def test_first_codex_reverses_an_all_turn(self, tmp_path):
+        assert await self._order(tmp_path, first="codex") == ["codex", "claude"]
+
+    async def test_first_claude_is_the_usual_order(self, tmp_path):
+        assert await self._order(tmp_path, first="claude") == ["claude", "codex"]
+
+    async def test_first_does_not_summon_a_bot_that_was_not_tagged(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude hello", ui, first="codex")
+        bots = [e.speaker for e in c.transcript.entries if e.speaker in ("claude", "codex")]
+        assert bots[:1] == ["claude"] and "codex" not in bots[:1]

@@ -185,6 +185,35 @@ await test('own-prose edits: unique spans are written, everything else goes to t
   assert.equal(gone.reason, 'already', 'a retry of an applied edit writes nothing');
 });
 
+await test('a NEW paragraph goes after the one paragraph it follows, with a blank line; anything unclear goes to the bots', () => {
+  const src = '---\ntitle: T\n---\n\nThe [International Energy Agency](https://iea.org) says demand grows.\n\nIt grows.\n\nIt grows.\n\n> [!note] Agent check\n> demand grows\n\n## A heading\n\nLast one.\n';
+  const ok = O.paragraphInsert(src, { after: 'The International Energy Agency says demand grows.', text: 'My new thought.' }, plainOf);
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  assert.match(ok.after, /says demand grows\.\n\nMy new thought\.\n\nIt grows\./, 'right after it, blank lines both sides');
+  assert.equal(ok.after.replace('\n\nMy new thought.', ''), src, 'nothing else moved');
+  const two = O.paragraphInsert(src, { after: 'Last one.', text: 'Tail A.\n\nTail B.' }, plainOf);
+  assert.equal(two.after, src + '\nTail A.\n\nTail B.\n'.replace(/^\n/, '\n'), 'at the end of the file, several paragraphs');
+  assert.ok(two.after.endsWith('Last one.\n\nTail A.\n\nTail B.\n'));
+  const amb = O.paragraphInsert(src, { after: 'It grows.', text: 'x' }, plainOf);
+  assert.equal(amb.reason, 'ambiguous');
+  const callout = O.paragraphInsert(src, { after: 'demand grows', text: 'x' }, plainOf);
+  assert.equal(callout.ok, false, 'never after a callout line');
+  const heading = O.paragraphInsert(src, { after: 'A heading', text: 'x' }, plainOf);
+  assert.equal(heading.ok, false); assert.equal(heading.reason, 'outside-body');
+  const none = O.paragraphInsert(src, { after: 'Not in the post.', text: 'x' }, plainOf);
+  assert.equal(none.reason, 'not-found');
+  // the paragraph was edited in the same batch: the original wording finds it
+  const orig = O.paragraphInsert(src, { after: 'Last one, edited.', after_original: 'Last one.', text: 'Z.' }, plainOf);
+  assert.equal(orig.ok, true);
+  assert.equal(O.paragraphInsert(ok.after, { after: 'The International Energy Agency says demand grows.', text: 'My new thought.' }, plainOf).reason,
+    'already', 'a retry finds it written');
+  assert.equal(O.paragraphInsert(src, { after: 'Last one.', text: '  ' }, plainOf).reason, 'empty');
+  assert.equal(F.badEdit({ edit_id: 'p', kind: 'paragraph', original: '', replacement: ' ' }), 'a new paragraph is empty');
+  assert.match(F.checklist({ batch_id: 'fte-x', edits: [{ edit_id: 'p', kind: 'paragraph', original: '', replacement: 'New words.',
+    figure: { id: 'page-text', title: 'Page text' }, source: { after_block: 'It grows fast.' } }] }, []),
+  /new paragraph.*add after the paragraph ending “…It grows fast\.”, with a blank line between: “New words\.”/s);
+});
+
 await test('an INSERTION (the new words contain the old) is written once; a retry finds it already there', () => {
   const src = 'Intro.\n\nThere will be strong implications on the future of humanity.\n\nEnd.\n';
   const edit = { original: 'There will be strong implications on the future of humanity.',
@@ -360,6 +389,30 @@ try {
     const again = await POST(base, '/fte-route', { url, batch: b });
     assert.equal(again.json.repeated, true);
     assert.equal(fs.readFileSync(source, 'utf8'), now);
+    fs.writeFileSync(source, ORIGINAL);
+  });
+
+  await test('/fte-route writes a NEW paragraph after the one it follows, marks it, and never twice', async () => {
+    const para = { edit_id: 'np1', kind: 'paragraph', figure: { id: 'page-text', title: 'Page text' }, element: { kind: 'html-text', tag: 'p' },
+      source: { file: '_notes/my-post.md', region: 'body', locator: 'new paragraph after: markdown body, paragraph',
+        block: 'Second paragraph is here, and it is mine. Agent check: is this date right?',
+        after_block: 'Second paragraph is here, and it is mine. Agent check: is this date right?' },
+      original: '', replacement: 'A paragraph I just wrote.' };
+    const r = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1400-0000d001', [para]) });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    assert.deepEqual(r.json.routes.map(x => x.to), ['source']);
+    const now = fs.readFileSync(source, 'utf8');
+    assert.equal(now, ORIGINAL.replace('is this date right?\n', 'is this date right?\n\nA paragraph I just wrote.\n'));
+    assert.ok((await page()).marks.some(m => m.kind === 'yours' && m.quote === 'A paragraph I just wrote.'), 'added by you, on the page');
+    const again = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1401-0000d002', [{ ...para, edit_id: 'np2' }]) });
+    assert.equal(again.json.wrote, 0);
+    assert.equal(again.json.routes[0].already, true);
+    assert.equal(fs.readFileSync(source, 'utf8'), now, 'written once');
+    // after a callout: the bots' territory, so it goes to them, with the reason
+    const inCallout = { ...para, edit_id: 'np3', source: { ...para.source, after_block: 'I think it is four.' } };
+    const r3 = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1402-0000d003', [inCallout]) });
+    assert.equal(r3.json.routes[0].to, 'bots');
+    assert.match(fs.readFileSync(r3.json.files.md, 'utf8'), /new paragraph/);
     fs.writeFileSync(source, ORIGINAL);
   });
 

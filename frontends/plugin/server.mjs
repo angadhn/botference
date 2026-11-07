@@ -558,6 +558,8 @@ function modelsPayload() {
     // its /help popup and slash menu; null until the bridge has announced it
     commands: m.commands || null,
     verbosity: store.readConfig().verbosity,
+    // who answers first on an @all turn (chat.mjs firstFor)
+    first_reply: store.readConfig().first_reply,
     // which auth each agent will spawn with — status only, never the key
     keys: keys.status(),
   };
@@ -971,6 +973,8 @@ function reportCollateral(page, seen, afterIn, ev) {
         quote: h.quote, prefix: h.prefix, suffix: h.suffix, deleted: h.deleted, inserted: h.inserted,
       });
       if (!done.ok || !done.changed) continue;
+      // who changed it, for the page's green underline ("changed by Codex")
+      if (agents.length) thread.changed_by = agents.slice();
       // the narration the bot never wrote, in the reader's own thread — and it
       // is what flips the thread amber (appendMsg sets `addressed` for an
       // agent author), so it sorts into "ready for review" like any answer
@@ -982,6 +986,8 @@ function reportCollateral(page, seen, afterIn, ev) {
         quote: t.quote, prefix: t.prefix, suffix: t.suffix, text: t.text, author,
       });
       thread.auto = true;
+      // who changed it, for the page's green underline ("added by Claude")
+      if (agents.length) thread.changed_by = agents.slice();
       if (t.summary) thread.auto_summary = true;
       if (t.prior_quote) thread.prior_quote = t.prior_quote;
       // new words where there were none: painted as an arrival, nothing struck
@@ -1551,7 +1557,8 @@ function onChatEvent(ev) {
   // chat.mjs knows nothing about config.json; the verbosity a tab renders
   // rides the same event as everything else in that panel
   if (ev.type === 'models') {
-    return broadcast({ ...ev, verbosity: store.readConfig().verbosity, keys: keys.status() });
+    return broadcast({ ...ev, verbosity: store.readConfig().verbosity,
+      first_reply: store.readConfig().first_reply, keys: keys.status() });
   }
   // the turn boundary is where the census is taken; a summary job (silent by
   // construction) emits neither of these, so filing a thread never counts
@@ -3584,7 +3591,12 @@ export function handler(req, res) {
         if (!prose) { routes.push({ edit_id: e.edit_id, to: 'bots' }); continue; }
         if (written.has(e.edit_id)) { routes.push({ edit_id: e.edit_id, to: 'source', already: true }); continue; }
         const src = rawSource(bg.source_path);
+        // a NEW paragraph (the editor's Enter, or its "+") is an insertion
+        // after the paragraph it follows; every other prose item replaces words
+        const para = figedits.isParagraph(e);
         const r = src == null ? { ok: false, reason: 'gone', detail: 'the post could not be read' }
+          : para ? ownership.paragraphInsert(src, { after: e.source && (e.source.after_block || e.source.block),
+            after_original: e.source && e.source.after_block_original, text: e.replacement }, pagePlainOf)
           : ownership.proseEdit(src, { original: e.original, replacement: e.replacement, block: e.source && e.source.block }, pagePlainOf);
         if (r.ok) {
           turnwatch.noteUserWrite(bg.source_path, r.after);
@@ -3593,7 +3605,10 @@ export function handler(req, res) {
           written.add(e.edit_id);
           page.fte_written = [...(page.fte_written || []), { edit_id: e.edit_id, at: new Date().toISOString() }].slice(-300);
           routes.push({ edit_id: e.edit_id, to: 'source' });
-          marks.push({ kind: 'yours', quote: String(e.replacement), by: 'you' });
+          // a quiet "added by you" on what the page will show: each new
+          // paragraph's rendered words, or the replacement
+          if (para) for (const p of r.paragraphs) marks.push({ kind: 'yours', quote: pagePlainOf(p).replace(/\s+/g, ' ').trim() || p, by: 'you' });
+          else marks.push({ kind: 'yours', quote: String(e.replacement), by: 'you' });
         } else if (r.reason === 'already') {
           routes.push({ edit_id: e.edit_id, to: 'source', already: true });
         } else {
@@ -5675,6 +5690,20 @@ export function handler(req, res) {
       const cfg = store.saveConfig({ verbosity: level });
       broadcast({ type: 'models', ...modelsPayload() });
       ok(res, { verbosity: cfg.verbosity });
+    });
+  }
+  // who answers first when a turn goes to both bots: 'alternate' (flips each
+  // @all turn of a conversation), 'claude' or 'codex'. A companion setting
+  // like verbosity: config.json, applied per turn by chat.mjs (firstFor),
+  // so it holds across restarts and needs no bridge.
+  if (req.method === 'POST' && url === '/first-reply') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const first = String(data.first || '');
+      if (!store.FIRST_REPLY.includes(first)) return fail(res, 400, 'first must be alternate, claude or codex');
+      const cfg = store.saveConfig({ first_reply: first });
+      broadcast({ type: 'models', ...modelsPayload() });
+      ok(res, { first_reply: cfg.first_reply });
     });
   }
   // hand an agent's own context back to it (compaction/handoff). Never worth

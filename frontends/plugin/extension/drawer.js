@@ -159,6 +159,7 @@
 //                                         panel renders inside the page you are
 //                                         reading, and its DOM is that page's)
 //   onSetVerbosity(level)               → {ok, queued} | {ok:false,error} (POST /verbosity)
+//   onSetFirstReply(first)              → {ok} | {ok:false,error} (POST /first-reply)
 //                                         level: 'short'|'long'
 //   onRelay(agent)                      → {ok, queued} | {ok:false,error} (POST /relay)
 //                                         agent: 'claude'|'codex'|'both'
@@ -3590,6 +3591,19 @@ ${bubbleShellHtml()}`;
       paintMention();
     }
 
+    // A new line at the caret, the way typing makes one: through the editing
+    // command where the browser offers it (so ⌘Z undoes it), else by hand,
+    // with the input event the draft and the box's height listen for.
+    function newLineIn(ta) {
+      const len = ta.value.length;
+      let done = false;
+      try { ta.focus(); done = !!document.execCommand && document.execCommand('insertText', false, '\n'); } catch (_) { done = false; }
+      if (done && ta.value.length > len) return;
+      const a = ta.selectionStart, b = ta.selectionEnd;
+      ta.setRangeText('\n', a, b, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
     // Completing writes "@handle " — with the trailing space, because the
     // mention is finished and the sentence goes on.
     function insertMention(handle) {
@@ -6145,6 +6159,24 @@ ${bubbleShellHtml()}`;
       return row;
     }
 
+    // Who answers first when a message goes to both bots (@all). The
+    // companion's own setting, like reply length: 'alternate' (the default)
+    // takes turns, one @all message after another, in each conversation.
+    const FIRST_TIP = 'when both bots answer: alternate = they take turns going first; or always Claude, or always Codex';
+    const FIRST_OPTS = [['alternate', 'alternate'], ['claude', 'Claude'], ['codex', 'Codex']];
+    function firstRow() {
+      const row = mk('div', 'pop-verbrow pop-firstrow');
+      const label = mk('span', 'pop-verblabel');
+      label.textContent = 'first to reply';
+      row.appendChild(label);
+      row.appendChild(segSwitch({
+        cls: 'pop-verb pop-first', seg: 'fseg', act: 'first', attr: 'data-first',
+        label: 'who answers first', title: FIRST_TIP,
+        positions: FIRST_OPTS.map(([value, label]) => ({ value, label })),
+      }));
+      return row;
+    }
+
     // The other preference in here that is not about an agent: whether a live
     // answer is typed out or dropped in. Unlike reply length this one is the
     // DRAWER's, not the companion's — nothing on the wire changes — so it is
@@ -6272,6 +6304,7 @@ ${bubbleShellHtml()}`;
       foot.appendChild(relayButton('both', 'relay both', 'both agents — ' + RELAY_TIP));
       pop.appendChild(foot);
       pop.appendChild(verbosityRow());
+      pop.appendChild(firstRow());
       pop.appendChild(typingRow());
       pop.appendChild(bubblesRow());
       pop.appendChild(keysRow());
@@ -6301,6 +6334,7 @@ ${bubbleShellHtml()}`;
         paintGauge(group, agent, st[agent]);
       }
       syncVerbosity();
+      syncFirst();
       syncTyping();
       syncBubbles();
 
@@ -6347,6 +6381,20 @@ ${bubbleShellHtml()}`;
       row.hidden = !v;
       row.querySelectorAll('.vseg').forEach(b => {
         const on = b.getAttribute('data-level') === v;
+        b.classList.toggle('on', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    }
+
+    // …and who goes first, the same way: a companion too old to report it has
+    // no row
+    function syncFirst() {
+      const row = D.el.pop && D.el.pop.querySelector('.pop-firstrow');
+      if (!row) return;
+      const v = D.models.first_reply || '';
+      row.hidden = !v;
+      row.querySelectorAll('.fseg').forEach(b => {
+        const on = b.getAttribute('data-first') === v;
         b.classList.toggle('on', on);
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
@@ -6442,6 +6490,7 @@ ${bubbleShellHtml()}`;
         // reply-length switch, rather than empty ones
         D.models.effort = r.effort || null;
         D.models.verbosity = r.verbosity || '';
+        D.models.first_reply = r.first_reply || '';
         D.models.bridge = r.bridge || '';
         if (Array.isArray(r.commands) && r.commands.length) D.commands = r.commands;
         // …and one too old to have keys at all leaves the billing row out
@@ -6674,6 +6723,25 @@ ${bubbleShellHtml()}`;
       syncModels();
     }
 
+    // Who answers first. Optimistic like reply length, put back on a refusal.
+    async function setFirstReply(first) {
+      if (!first || D.models.first_reply === first) return;
+      const prev = D.models.first_reply;
+      D.models.first_reply = first;
+      D.models.note = first === 'alternate' ? 'first to reply: they take turns' : 'first to reply: ' + (first === 'claude' ? 'Claude' : 'Codex');
+      D.models.err = false;
+      syncModels();
+      let r;
+      try { r = await cb('onSetFirstReply')(first); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      if (!r || r.ok === false) {
+        D.models.first_reply = prev;
+        D.models.note = (r && r.error) || 'could not change who answers first';
+        D.models.err = true;
+      }
+      syncModels();
+    }
+
     // Relay = hand the agent a fresh session carrying a summary of this one.
     // The companion refuses it when there is nothing to relay ("agents are
     // idle"); that refusal is normal traffic, so it lands inline in the
@@ -6725,6 +6793,7 @@ ${bubbleShellHtml()}`;
       'mic': (btn, target) => micTap(target),
       'fresh': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent, 'fresh'); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
+      'first': (btn) => setFirstReply(btn.dataset.first),
       'typing': (btn) => setTyping(btn.dataset.typing),
       'bubbles': (btn) => setBubbles(btn.dataset.bubbles),
       // ---- the bubble's own controls --------------------------------------
@@ -7243,7 +7312,14 @@ ${bubbleShellHtml()}`;
             paintMention();
             return;
           }
-          if (e.key === 'Tab' || (e.key === 'Enter' && !e.metaKey && !e.ctrlKey)) {
+          // Shift+Enter is ALWAYS a new line, menu or no menu (2026-11-07):
+          // it used to pick the highlighted name, so "hello @claude" +
+          // Shift+Enter gave "hello @claude " and no new line — and in a
+          // bubble the menu sits over the last message, so nothing on screen
+          // said why. The menu closes and the key carries on to the newline
+          // branch below.
+          if (e.key === 'Enter' && e.shiftKey && !e.metaKey && !e.ctrlKey) closeMention();
+          else if (e.key === 'Tab' || (e.key === 'Enter' && !e.metaKey && !e.ctrlKey)) {
             e.preventDefault();
             insertMention(m.items[m.index]);
             return;
@@ -7339,7 +7415,17 @@ ${bubbleShellHtml()}`;
         // with a mouse or trackpad present, Enter sends everywhere.
         const chatty = !KB && (target === PAGE_TARGET || target === LIBRARY_TARGET || target === '__edit__');
         const sends = (e.metaKey || e.ctrlKey) || (chatty ? e.shiftKey : !e.shiftKey);
-        if (!sends) return;
+        if (!sends) {
+          // Shift+Enter that is not a send is a new line, written here rather
+          // than left to the browser's default: the composer lives in a shadow
+          // root on somebody else's page, and a page script that cancels
+          // Enter would otherwise take the reader's new line with it.
+          if (e.shiftKey && !e.defaultPrevented && e.target && e.target.tagName === 'TEXTAREA') {
+            e.preventDefault();
+            newLineIn(e.target);
+          }
+          return;
+        }
         e.preventDefault();
         // the inline edit composer has its own save handler; ⌘↩ must hit that,
         // not post a fresh reply to a thread called "__edit__"
@@ -11674,6 +11760,7 @@ ${bubbleShellHtml()}`;
         // -speaks rule); verbosity is a plain string the companion owns
         if (ev.effort !== undefined) D.models.effort = ev.effort;
         if (ev.verbosity) D.models.verbosity = ev.verbosity;
+        if (ev.first_reply) D.models.first_reply = ev.first_reply;
         if (ev.bridge) D.models.bridge = ev.bridge;
         // the command table rides the same broadcast (chat.mjs modelsEvent)
         if (Array.isArray(ev.commands) && ev.commands.length) {

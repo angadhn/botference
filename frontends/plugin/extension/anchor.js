@@ -998,12 +998,20 @@
   function paintQuiet(index, start, end, mark) {
     const id = String((mark && mark.id) || '');
     const kind = 'yours';
-    const title = 'your edit';
+    // who added it, said in words: the green dotted line is the owner's own
+    // edit, and the tooltip says so rather than leaving the colour to guess
+    let when = '';
+    try {
+      const d = mark && mark.at ? new Date(mark.at) : null;
+      if (d && !isNaN(d)) when = ' · ' + d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+    } catch (_) { when = ''; }
+    const title = 'added by you' + when + ' — your own edit, written into the post';
     return wrapOffsets(index, start, end, doc => {
       const el = doc.createElement('mark');
       el.className = QUIET_CLASS;
       el.setAttribute('data-bfp-quiet', id);
       el.setAttribute('data-kind', kind);
+      el.setAttribute('data-bfp-by', 'you');
       el.title = title;
       el.style.cssText = 'background:transparent;color:inherit;text-decoration:underline dotted '
         + 'rgba(46,160,67,.75)'
@@ -1083,7 +1091,7 @@
   const wasFor = id => document.querySelector(
     'del.' + WAS_CLASS + '[data-bfp="' + String(id).replace(/"/g, '\\"') + '"]');
 
-  function paintWas(id, text) {
+  function paintWas(id, text, by) {
     const mark = marksFor(id)[0];
     if (!mark || !mark.parentNode) return null;
     const body = String(text == null ? '' : text).trim();
@@ -1093,7 +1101,7 @@
     del.className = WAS_CLASS;
     del.setAttribute('data-bfp', String(id));
     del.setAttribute('aria-hidden', 'true');
-    del.setAttribute('title', 'this passage was rewritten — click to open the comment');
+    del.setAttribute('title', (by ? 'replaced by ' + by + ' — ' : '') + 'this passage was rewritten — click to open the comment');
     // a hair space after the struck text keeps it from butting up against the
     // wording that replaced it; it lives INSIDE the del, so it leaves with it
     del.textContent = body + ' ';
@@ -1110,7 +1118,7 @@
     st.setProperty('box-decoration-break', 'clone', 'important');
     st.setProperty('-webkit-box-decoration-break', 'clone', 'important');
     mark.parentNode.insertBefore(del, mark);
-    markInserted(id, true);
+    markInserted(id, true, by ? 'changed by ' + by + ' — the old wording is struck just before it; ✓ on its comment approves it' : '', by);
     return del;
   }
 
@@ -1143,12 +1151,17 @@
   // The arrival half, on its own: a re-anchored passage whose old wording is
   // too long (or too ambiguously placed) to show inline still gets the
   // underline, with the reason in a title the reader can hover.
-  function markInserted(id, on, why) {
+  // `by` names who made the change ("Claude", "Codex", "the bots"): the green
+  // underline says WHO added it, in its tooltip and in data-bfp-by, so the
+  // colour is never left to be guessed at (2026-11-07).
+  function markInserted(id, on, why, by) {
     const marks = marksFor(id);
     for (const mark of marks) {
       mark.classList.toggle(INS_CLASS, !!on);
       if (why) mark.setAttribute('title', why);
       else if (!on) mark.removeAttribute('title');
+      if (on && by) mark.setAttribute('data-bfp-by', String(by));
+      else mark.removeAttribute('data-bfp-by');
       styleMark(mark, mark.classList.contains(FOCUS_CLASS));
     }
     return marks.length;

@@ -11946,3 +11946,91 @@ Agent check callout, comments on a box and a picture, quiet markers, a 150-item
 batch as one message, the retry). `?figedit=1&selftest=1` was updated for v2. The
 poses are `?figedit=routed` and `?figedit=comment`. The blog repo's editor tests
 are `test_routing.mjs` (new), plus updated `test_delivery`/`test_activation`.
+
+
+## Amendment (2026-11-07): writing in the editor, who added it, Shift+Enter, who goes first
+
+### A. Writing, not just retyping (the local editor, `figure-text-editor.js`)
+
+The report: the owner tried to keep writing after a sentence with ✎ and found
+it unintuitive — ✎ only retypes words already there.
+
+- **Enter in a prose paragraph's ✎** (a `<p>` of the page text that is not in
+  a callout, list, quote, table or figure: `proseParaOf`) keeps the edit and
+  opens a NEW paragraph below it, in the flow of the article (`openPara`, a
+  `.fte-pfield` moved into place). Each Enter there keeps the text and opens
+  another after it; Enter on an empty one, Esc, or a press elsewhere is done.
+  Elsewhere (a heading, a caption, a figure label) Enter still just applies.
+- **A faint "+"** in the left margin, with a dashed line across the gap, when
+  the pointer is just under a prose paragraph (`gapAt`), opens one there.
+- **Unsent new paragraphs** are previewed as `p.fte-newp.bfp-ui` right after
+  the paragraph they follow, re-made only when not already in place
+  (`reconcilePara`), and carry their own ✎ (it reopens the one hovered).
+- **One item per followed paragraph**, `kind: 'paragraph'`: `replacement` is
+  the paragraphs joined by blank lines, `original` is empty, `source.after_block`
+  is the followed paragraph's words as shown and `after_block_original` the
+  same with our own unsent previews undone (a batch may carry both an edit to
+  that paragraph and a new one after it). A record re-finds its paragraph by
+  those words (and its occurrence when they repeat).
+- **The hint** — "Type to edit · Enter for a new paragraph · Send changes saves
+  to your post" — is the field's key line the first time only; the first Enter
+  sets `localStorage['fte-hint-seen']` (wrapped in try/catch).
+- **The companion** (`ownership.paragraphInsert`, called from `/fte-route` for
+  `kind: 'paragraph'`): the followed paragraph must be exactly ONE markdown
+  paragraph of the body whose `plainOf` words are those words (or, failing
+  that, the one paragraph that holds them at ≥85% of the length) — outside
+  front matter, callouts and fences, and not a heading, list, quote, table or
+  HTML line. The text goes in after it with a blank line between; a retry finds
+  it `already` there; anything else goes to the bots with the reason
+  (`figedits` lists it as "new paragraph … add after the paragraph ending …").
+  Each written paragraph gets a quiet "yours" marker.
+
+### B. Who added the green
+
+`anchor.markInserted(id, on, why, by)` and `paintWas(id, text, by)` put the name
+in the tooltip and in `data-bfp-by`: "added by Claude — nothing was here
+before…", "changed by Codex — …", and the struck old words "replaced by …".
+`paintQuiet` reads "added by you · <date> — your own edit, written into the
+post". `reportCollateral` stamps `changed_by` (the turn's agents) on the threads
+it writes or heals; for older records content.js `changedBy` credits the bot
+that narrated the change (an auto-thread's first bot message, a healed
+thread's last), else "the bots".
+
+### C. Shift+Enter in a composer
+
+What looked like "Shift+Enter does nothing in a bubble" was the @-menu: while it
+was open, Shift+Enter picked the highlighted name ("hello @cl" → "hello
+@claude ", no new line), and in a bubble the menu sits over the last message,
+so nothing showed why. (Reproduced with real key presses through the real
+extension; nothing else in content.js, drawer.js, the PDF viewer or the site's
+scripts swallows the key.) Now Shift+Enter closes the menu and is a new line,
+and a Shift+Enter that does not send is written by the drawer itself
+(`newLineIn`: the editing command, else `setRangeText` + `input`), so a page
+script that cancels Enter cannot take it. Harness: `?bubbles=new&selftest=1`
+(+4 checks).
+
+### D. Who answers first on an @all turn
+
+Investigated: the controller's `lead` ("auto", `/lead @claude|@codex`) is about
+who WRITES a plan or draft (`_resolve_lead`, `/write`), not reply order.
+`_send_message` always sent an @all turn to Claude, then Codex.
+
+- The plugin now decides per turn: config `first_reply` (`alternate` default,
+  `claude`, `codex`; `POST /first-reply`, owner only, broadcast with `models`).
+  `chat.mjs firstFor` runs when the turn reaches the front of its lane; on
+  `alternate` it flips per conversation (`page.first_reply[<thread id or
+  __page__>]`, Claude opening the first), and only for turns both bots answer
+  (`bothAnswer`) — never control, summary or question-card turns.
+- It travels as the bridge input's optional `first` field
+  (`botference_ink_bridge.QueuedInput.first` → `handle_input(first=)` →
+  `_send_message(first=)`), which reverses the order for `first == "codex"`.
+- **Shared code path, unchanged behaviour:** the council TUI and web use the
+  same `_send_message`, but send no `first`, so they keep Claude first.
+- The drawer's gear has "first to reply: alternate · Claude · Codex"
+  (`firstRow`, `setFirstReply`, `onSetFirstReply`). No new command.
+
+Tests: `ownership.test.mjs` (paragraphInsert, `/fte-route` with a new paragraph),
+`companion.test.mjs` (alternation, fixed choices, one-bot turns), pytest
+`TestFirstToReply` and the bridge pass-through, harness `?figedit=write&selftest=1`
+(26), `?colledit=insert`/`?colledit=1` (attribution), main `?selftest=1` (the
+gear row), blog repo `test_routing.mjs` (the paragraph wire item).
