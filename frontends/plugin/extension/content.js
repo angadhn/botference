@@ -1420,10 +1420,10 @@
   // insertion (`inserted`, or an older auto-thread with nothing it replaced) —
   // has no `was` and is still a change to show: the arrival underline, and
   // nothing struck.
-  const isInsertion = t => !!(t && (t.inserted
-    || (t.auto && !t.prior_quote && !t.auto_summary && !t.deleted_passage)));
+  // (the rule itself lives in drawer.js, shared with the thread card)
+  const isInsertion = Drawer.isInsertionThread;
   function noteTrack(t, r, was) {
-    if (!t.addressed || t.resolved) return;
+    if (!t.addressed || Drawer.isResolvedThread(t)) return;
     was = String(was || '').trim();
     if (!was && isInsertion(t)) {
       tracks[t.id] = { was: '', insert: true, unique: r.unique !== false, long: false, by: changedBy(t) };

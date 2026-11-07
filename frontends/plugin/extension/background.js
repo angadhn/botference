@@ -370,14 +370,21 @@ async function ensureSocket() {
   await configReady;
   // a second caller may have won the race while we awaited the config
   if (wsState !== 'connecting') return;
+  // `sock` is THIS socket. Every handler below acts only while it is still
+  // the current one: forceReconnect() drops a socket and opens another at
+  // once, and the dropped one's onclose lands AFTER that — it used to null
+  // the shared `ws`, mark the new connection closed, tell every tab it was
+  // disconnected and schedule a second retry on top of the live one.
+  let sock;
   try {
-    ws = new WebSocket(CFG.wsUrlFor(CONF.base, CONF.password, CONF.handle));
+    sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CONF.password, CONF.handle));
   } catch {
     wsState = 'closed';
     scheduleRetry();
     return;
   }
-  ws.onopen = () => {
+  sock.onopen = () => {
+    if (sock !== ws) return;
     wsState = 'open';
     backoff = 1000;
     // `resumed` is a standing instruction, not news: a socket that has just
@@ -386,7 +393,8 @@ async function ensureSocket() {
     broadcastAll({ t: 'conn', connected: true, resumed: true });
     refreshIndex(true);
   };
-  ws.onmessage = e => {
+  sock.onmessage = e => {
+    if (sock !== ws) return;
     let ev = null;
     try { ev = JSON.parse(e.data); } catch { return; }
     if (!ev || ev.type === 'ping') return;
@@ -394,13 +402,14 @@ async function ensureSocket() {
     if (ev.type === 'chat' && ev.kind === 'reply') refreshIndexSoon();
     routeEvent(ev);
   };
-  ws.onclose = () => {
+  sock.onclose = () => {
+    if (sock !== ws) return;
     if (wsState !== 'closed') broadcastAll({ t: 'conn', connected: false });
     wsState = 'closed';
     ws = null;
     scheduleRetry();
   };
-  ws.onerror = () => { try { ws && ws.close(); } catch { /* onclose handles it */ } };
+  sock.onerror = () => { try { sock.close(); } catch { /* onclose handles it */ } };
 }
 
 function scheduleRetry() {

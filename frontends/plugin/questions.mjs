@@ -63,7 +63,9 @@ function writeJson(file, obj) {
 // A card is born PENDING — the row exists before the bot has written anything,
 // which is the only way a generation that never comes back can be VISIBLE
 // rather than silently absent. It settles into `live` or `failed`.
-export const CARD_STATES = ['pending', 'live', 'failed', 'flagged'];
+// (QUESTION_ — not CARD_STATES: store.mjs exports that name for suggestion
+// cards, a different thing with different states)
+export const QUESTION_CARD_STATES = ['pending', 'live', 'failed', 'flagged'];
 export const CARD_KINDS = ['mcq', 'truefalse', 'cloze'];
 
 export const OPTIONS_MIN = 2;
@@ -328,9 +330,16 @@ export function failCard(vault, id, error) {
 // "This card seems wrong." It leaves the rotation immediately — a card the
 // reader does not trust must not go on being asked — and keeps everything it
 // had, because phase 2 hands it back to the bots to revise.
+//
+// Only a card that has a question can be flagged: a LIVE one, or one already
+// flagged (a second flag just updates the note). A pending row has nothing to
+// distrust yet — flagging it would also stop its generation from ever settling
+// it (settle only fills a pending row) — and a failed one is already out of
+// the rotation with its reason on it.
+export const FLAGGABLE = ['live', 'flagged'];
 export function flagCard(vault, id, note) {
   const card = findCard(vault, id);
-  if (!card) return null;
+  if (!card || !FLAGGABLE.includes(card.state)) return null;
   card.state = 'flagged';
   card.flag = { at: nowIso(), note: clip(note, 300) };
   return card;

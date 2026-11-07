@@ -18,6 +18,10 @@ class RoomMode(str, Enum):
     REVIEW = "review"
 
 
+# Every mode the room can be in — the only legal values of Botference.mode.
+ROOM_MODES = frozenset(RoomMode)
+
+
 @dataclass(frozen=True)
 class StatusSnapshot:
     mode: RoomMode = RoomMode.PUBLIC

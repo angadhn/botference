@@ -300,6 +300,24 @@ function visible(msgs, fold) {
     JSON.stringify(p) + ' vs ' + JSON.stringify(flat));
 }
 
+// ---- thread status: the rules the drawer and the page share ------------------
+// (drawer.js isResolvedThread / isInsertionThread — content.js reads the same
+// two through window.BFPDrawer, so a card and the page cannot disagree)
+eq('resolved: only the reader\'s flag closes a thread',
+  [{ resolved: true }, { resolved: false }, { addressed: true }, null].map(D.isResolvedThread),
+  [true, false, false, false]);
+eq('insertion: a diff insertion, or an auto-thread that replaced nothing',
+  [
+    { inserted: true },
+    { auto: true },
+    { auto: true, prior_quote: 'old words' },
+    { auto: true, auto_summary: 'a summary' },
+    { auto: true, deleted_passage: true },
+    { prior_quote: 'old' },
+    null,
+  ].map(D.isInsertionThread),
+  [true, true, false, false, false, false, false]);
+
 // ---- report -----------------------------------------------------------------
 console.log(`\ncollapse: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }

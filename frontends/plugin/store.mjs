@@ -2197,10 +2197,14 @@ export const isAgentAuthor = a => /^(claude|codex)\b/i.test(String(a || '').trim
 //   open          proposed, and the reader has not answered
 //   applied       accepted; the span was replaced in the source file
 //   rejected      turned down by the reader; the file was never touched
-//   needs-manual  accepted, and REFUSED at the apply: the passage had drifted
-//                 or occurred more than once, so there was no one place to put
-//                 it. The apply rule never guesses, so this is where a card
-//                 that cannot be placed stops — visibly, with the reason on it
+//   needs-manual  cannot be applied by a button, with the reason on it. Two
+//                 ways in: (a) accepted, and REFUSED at the apply — the passage
+//                 had drifted or occurred more than once, so there was no one
+//                 place to put it (the apply rule never guesses); or (b) BORN
+//                 this way, never offered (server.mjs, reason 'too-long'): a
+//                 bot's direct edit put back for the reader whose two sides
+//                 are too long to show as one card. Either way it is a dead
+//                 end the reader resolves by hand — no Accept, no Reject
 //   unreadable    the block would not parse; there was never anything to apply
 //
 // The last two exist for the same reason the strike refusal chip does: a

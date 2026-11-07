@@ -3700,6 +3700,9 @@ export function handler(req, res) {
       const card = store.findCardIn(at.msg, data.id);
       if (!card) return fail(res, 404, 'unknown suggestion');
       if (card.state === 'applied') return fail(res, 409, 'that suggestion has already been applied');
+      // only an OPEN card can be turned down: a rejected one already was, and a
+      // needs-manual or unreadable one was never on offer (no buttons draw)
+      if (card.state !== 'open') return fail(res, 409, `that suggestion is already ${card.state}`);
       store.setCardState(card, 'rejected');
       store.savePage(at.page);
       broadcast({ type: 'page', url: at.page.url });
@@ -5523,7 +5526,11 @@ export function handler(req, res) {
       const done = url === '/quiz-delete'
         ? questions.deleteCard(vault, data.id)
         : questions.flagCard(vault, data.id, data.note);
-      if (!done) return fail(res, 404, 'unknown card');
+      if (!done) {
+        const there = questions.findCard(vault, data.id);
+        if (there) return fail(res, 409, `a ${there.state} card cannot be flagged`);
+        return fail(res, 404, 'unknown card');
+      }
       questions.saveVault(vault);
       const s = quizSession(req);
       if (s && s.last && s.last.id === data.id) s.last = null;

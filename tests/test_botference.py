@@ -8569,3 +8569,118 @@ class TestFirstToReply:
         await c.handle_input("@claude hello", ui, first="codex")
         bots = [e.speaker for e in c.transcript.entries if e.speaker in ("claude", "codex")]
         assert bots[:1] == ["claude"] and "codex" not in bots[:1]
+
+
+# ── hardening: the room's mode, writer votes and per-chat relay state ──
+
+
+class CancelOnResumeAdapter(MockAdapter):
+    """Resume is interrupted (task cancellation) — what Esc does mid-turn."""
+
+    def __init__(self, responses=None, cancel_after: int = 0):
+        super().__init__(responses)
+        self._cancel_after = cancel_after
+
+    async def resume(self, message: str) -> AdapterResponse:
+        self.resume_calls.append(message)
+        if len(self.resume_calls) > self._cancel_after:
+            raise asyncio.CancelledError()
+        return self._next()
+
+
+@pytest.mark.asyncio
+class TestRoomModeAlwaysReturnsToPublic:
+    async def test_interrupt_during_review_round_leaves_room_public(self, tmp_path):
+        c, claude, _, ui = _make_botference(
+            claude_responses=[_ok("claude init"), _ok("# Draft Plan v1")],
+            tmp_path=tmp_path,
+        )
+        c.codex = CancelOnResumeAdapter([_ok("codex init")])
+        c.lead = "@claude"
+        with pytest.raises(asyncio.CancelledError):
+            await c.handle_input("/draft 1", ui)
+        assert RoomMode.REVIEW in ui.modes, "the review round did start"
+        assert c.mode == RoomMode.PUBLIC
+        assert ui.modes[-1] == RoomMode.PUBLIC
+
+    async def test_interrupt_during_drafting_leaves_room_public(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("claude init")], tmp_path=tmp_path,
+        )
+        c.claude = CancelOnResumeAdapter([_ok("claude init")])
+        c.lead = "@claude"
+        with pytest.raises(asyncio.CancelledError):
+            await c.handle_input("/draft 0", ui)
+        assert c.mode == RoomMode.PUBLIC
+        assert ui.modes == [RoomMode.DRAFT, RoomMode.PUBLIC]
+
+    async def test_interrupt_during_finalize_leaves_room_public(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        (tmp_path / "work" / "implementation-plan.md").write_text("# Plan\n")
+        c.claude = CancelOnResumeAdapter([_ok("claude init")])
+        c.lead = "@claude"
+        with pytest.raises(asyncio.CancelledError):
+            await c.handle_input("/finalize", ui)
+        assert c.mode == RoomMode.PUBLIC
+        assert ui.modes[-1] == RoomMode.PUBLIC
+
+    async def test_a_normal_draft_sets_public_once_not_twice(self, tmp_path):
+        c, _, _, ui = _make_botference(
+            claude_responses=[_ok("claude init"), _ok("# Draft Plan v1")],
+            tmp_path=tmp_path,
+        )
+        c.lead = "@claude"
+        await c.handle_input("/draft 0", ui)
+        assert ui.modes == [RoomMode.DRAFT, RoomMode.PUBLIC]
+
+
+class TestRoomModeLists:
+    def test_handoff_modes_are_the_room_modes_plus_legacy_caucus(self):
+        from handoff import VALID_ROOM_MODES
+        from ui_types import ROOM_MODES
+        assert VALID_ROOM_MODES == {m.value for m in ROOM_MODES} | {"caucus"}
+
+    def test_set_mode_refuses_an_unknown_mode(self):
+        c, _, _, ui = _make_botference()
+        with pytest.raises(ValueError):
+            c._set_mode(ui, "caucus")
+        assert c.mode == RoomMode.PUBLIC
+        assert ui.modes == []
+
+
+class TestWriterVotesAreSpent:
+    def _vote(self, c, ui, model, writer):
+        c._record_writer_vote(
+            model, RoomFooter(status="continuing", next="@user", summary="", writer=writer), ui,
+        )
+
+    def test_consensus_clears_votes_so_lead_auto_starts_fresh(self):
+        c, _, _, ui = _make_botference()
+        self._vote(c, ui, "claude", "@codex")
+        self._vote(c, ui, "codex", "@codex")
+        assert c.lead == "@codex"
+        assert c._ff_writer_votes == {}
+        c._set_lead("auto", ui)
+        # one bot repeating itself is not a consensus any more
+        self._vote(c, ui, "claude", "@codex")
+        assert c.lead == "auto"
+        self._vote(c, ui, "codex", "@codex")
+        assert c.lead == "@codex"
+
+    def test_lead_command_discards_votes(self):
+        c, _, _, ui = _make_botference()
+        self._vote(c, ui, "claude", "@claude")
+        c._set_lead("@codex", ui)
+        assert c._ff_writer_votes == {}
+        c._set_lead("auto", ui)
+        self._vote(c, ui, "codex", "@claude")
+        assert c.lead == "auto", "the vote from before /lead does not count"
+
+
+class TestNewChatForgetsRelayProvenance:
+    def test_new_chat_clears_last_relay(self, tmp_path):
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c._last_relay = {"claude": {"at": "2026-11-01T00:00:00Z", "tier": "self"}}
+        c._start_new_chat("", ui)
+        assert c._last_relay == {}
+        assert c.status_snapshot().claude_last_relay_at is None

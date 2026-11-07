@@ -259,6 +259,20 @@
   // anchor.isBotAuthor both have it, so "claudette" was a person to the
   // companion and to the page, and a bot to the drawer.
   const isBot = a => /^(claude|codex|gemini)\b/i.test(String(a || '').trim());
+
+  // ---- a comment thread's status, as BOTH the drawer and the page read it --
+  // One home for two rules that were written out twice (here and content.js)
+  // and could drift into a card and a page that disagree. content.js reads
+  // them from window.BFPDrawer, which loads first (manifest.json).
+  //
+  // Resolved: closed by the reader. Nothing else closes a thread.
+  const isResolvedThread = t => !!(t && t.resolved);
+  // A thread on words that ARRIVED where there were none — the turn-end diff's
+  // insertion (`inserted`), or an older auto-thread that replaced nothing, has
+  // no summary and is not a deletion. It has no "was" half to draw: the card
+  // says "this passage was added", the page draws the arrival underline.
+  const isInsertionThread = t => !!(t && (t.inserted
+    || (t.auto && !t.prior_quote && !t.auto_summary && !t.deleted_passage)));
   // Does this device have a real keyboard? A mouse or trackpad (a fine pointer
   // that can hover) means a laptop or desktop, where Enter should SEND and
   // Shift+Enter make a new line — the convention of every chat tool. A phone or
@@ -3704,7 +3718,7 @@ ${bubbleShellHtml()}`;
       return outboxVisible(target).map(e => outboxEntryHtml(target, e)).join('');
     }
 
-    const isResolved = t => !!(t && t.resolved);
+    const isResolved = isResolvedThread;
     // The middle state. A bot has replied into this thread since the reader
     // last wrote in it, so it is waiting on the READER now, not on the bots —
     // "ready for review", never "resolved": closing the reader's question is
@@ -3877,7 +3891,7 @@ ${bubbleShellHtml()}`;
       // none, so there is no "was" to diff against. Said as what it is — and,
       // when the reader's own comment was moved onto the new words, where that
       // comment used to stand.
-      if (t.inserted || (t.auto && !t.prior_quote && !t.auto_summary && !t.deleted_passage)) {
+      if (isInsertionThread(t)) {
         const added = String(t.quote || '').trim();
         if (!added) return '';
         const from = String(t.adopted_from || '').trim();
@@ -12176,6 +12190,7 @@ ${bubbleShellHtml()}`;
 
   const api = {
     create, authorColor, isBot, HINT, PAGE_TARGET,
+    isResolvedThread, isInsertionThread,                    // content.js + test/collapse.test.mjs
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

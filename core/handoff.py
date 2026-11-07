@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from ui_types import RoomMode
+
 
 # ── Schema constants ──────────────────────────────────────
 
@@ -28,8 +30,11 @@ REQUIRED_FRONTMATTER_KEYS = frozenset({
 })
 
 VALID_MODELS = frozenset({"claude", "codex"})
-# "caucus" kept for handoff docs written before the caucus was retired.
-VALID_ROOM_MODES = frozenset({"public", "caucus", "draft", "review"})
+# The room's own modes (ui_types.RoomMode, so the two cannot drift apart),
+# plus "caucus", kept ONLY so handoff docs written before the caucus was
+# retired still validate. Nothing writes "caucus" any more.
+LEGACY_ROOM_MODES = frozenset({"caucus"})
+VALID_ROOM_MODES = frozenset(m.value for m in RoomMode) | LEGACY_ROOM_MODES
 VALID_LEADS = frozenset({"auto", "@claude", "@codex"})
 VALID_TIERS = frozenset({"self", "cross", "mechanical"})
 

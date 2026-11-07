@@ -621,6 +621,31 @@ function jekyll(tag) {
     assert.equal((await cardsOf(m.ts))[0].state, 'rejected', 'and it survives the round trip');
   });
 
+  await test('only an open card can be turned down: rejecting twice is refused, not re-stamped', async () => {
+    reset();
+    const m = await turn([
+      ...SG('It was worth doing.', 'It was worth every penny.', 'stronger')]);
+    const id = m.suggestions[0].id;
+    const first = await POST(base, '/suggest-reject', { url: PAGE, ts: m.ts, author: 'claude', id });
+    assert.equal(first.status, 200);
+    const again = await POST(base, '/suggest-reject', { url: PAGE, ts: m.ts, author: 'claude', id });
+    assert.equal(again.status, 409);
+    assert.equal((await cardsOf(m.ts))[0].at, first.json.card.at, 'the refusal keeps its first answer');
+  });
+
+  await test('a needs-manual card cannot be turned into a rejection', async () => {
+    reset();
+    const m = await turn([
+      ...SG('It was worth doing.', 'It was worth every penny.', 'stronger')]);
+    const id = m.suggestions[0].id;
+    // BODY says this sentence twice, so the accept is refused (ambiguous)
+    const acc = await POST(base, '/suggest-accept', { url: PAGE, ts: m.ts, author: 'claude', id });
+    assert.equal(acc.json.card.state, 'needs-manual');
+    const r = await POST(base, '/suggest-reject', { url: PAGE, ts: m.ts, author: 'claude', id });
+    assert.equal(r.status, 409);
+    assert.equal((await cardsOf(m.ts))[0].state, 'needs-manual');
+  });
+
   await test('an ambiguous passage goes to needs-manual, visibly, and writes nothing', async () => {
     reset();
     const m = await turn([

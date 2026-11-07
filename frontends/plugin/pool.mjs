@@ -147,7 +147,10 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
   const idleChild = (except) => {
     const free = members.filter(m => m !== except && load(m) === 0);
     if (!free.length) return null;
-    const warm = m => (m.chat.state() === 'running' ? 1 : 0);
+    // warm = actually booted, not merely spawned: a child still starting up is
+    // no quicker to answer than a fresh one (chat.mjs lifecycle)
+    const warm = m => ((m.chat.lifecycle ? m.chat.lifecycle() !== 'stopped' && m.chat.lifecycle() !== 'starting'
+      : m.chat.state() === 'running') ? 1 : 0);
     free.sort((a, b) => (warm(b) - warm(a)) || (laneCount(a) - laneCount(b)));
     return free[0];
   };

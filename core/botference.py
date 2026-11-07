@@ -60,6 +60,7 @@ from ui_types import (
     ProjectPanelSession,
     ProjectPanelState,
     ProjectPanelTask,
+    ROOM_MODES,
     RoomMode,
     StatusSnapshot,
 )
@@ -5277,6 +5278,8 @@ class Botference:
         arg = arg.strip().lower()
         if arg in ("auto", "@claude", "@codex"):
             self.lead = arg
+            # a hand-set lead (or a return to auto) discards any votes so far
+            self._ff_writer_votes = {}
             self._add_room_entry(ui, "system", f"Lead set to {self.lead}")
         else:
             self._add_room_entry(ui, "system",
@@ -6387,6 +6390,9 @@ class Botference:
         votes = set(self._ff_writer_votes.values())
         if len(self._ff_writer_votes) == 2 and len(votes) == 1:
             self.lead = f"@{vote}"
+            # the votes are spent: a later `/lead auto` starts a fresh vote
+            # instead of one stale footer re-applying this consensus
+            self._ff_writer_votes = {}
             self._add_room_entry(
                 ui, "system", f"Writer consensus → lead set to {self.lead}"
             )
@@ -7644,6 +7650,7 @@ class Botference:
         self._room_history = []
         self._ff_writer_votes = {}
         self._ff_last_output_tokens = {}
+        self._last_relay = {}  # relay provenance is per chat, like the rest
         self._models_initialized = set()
         self._warned_overlimit_models = set()
         self._yield_pressure = {}
@@ -7956,7 +7963,32 @@ class Botference:
 
     # ── /draft ────────────────────────────────────────────
 
+    def _set_mode(self, ui: UIPort, mode: RoomMode) -> None:
+        """The room's mode, set in the ONE way: our copy and the UI's together.
+
+        Only the /draft and /finalize flows leave PUBLIC, and both go back to
+        it through _back_to_public on every exit (see _run_draft)."""
+        if mode not in ROOM_MODES:
+            raise ValueError(f"unknown room mode: {mode!r}")
+        self.mode = mode
+        ui.set_mode(mode)
+
+    def _back_to_public(self, ui: UIPort) -> None:
+        """Leave DRAFT/REVIEW, if still in one — a no-op when the flow already did."""
+        if self.mode != RoomMode.PUBLIC:
+            self._set_mode(ui, RoomMode.PUBLIC)
+
     async def _run_draft(self, ui: UIPort, draft_arg: str = "") -> None:
+        # Every way out of /draft ends in PUBLIC — including an interrupt,
+        # which arrives as CancelledError and is not an Exception, so none of
+        # the `except Exception` resets below ever saw it. A room left in
+        # DRAFT/REVIEW gates the free-form and build threads until restart.
+        try:
+            await self._run_draft_steps(ui, draft_arg)
+        finally:
+            self._back_to_public(ui)
+
+    async def _run_draft_steps(self, ui: UIPort, draft_arg: str = "") -> None:
         lead = self._resolve_lead()
         if not lead:
             self._add_room_entry(
@@ -7978,8 +8010,7 @@ class Botference:
             )
             return
 
-        self.mode = RoomMode.DRAFT
-        ui.set_mode(RoomMode.DRAFT)
+        self._set_mode(ui, RoomMode.DRAFT)
         plan_display = self._planning_display_path(self._plan_path)
         self._add_room_entry(
             ui, "system",
@@ -7987,14 +8018,12 @@ class Botference:
         )
 
         if not await self._ensure_initialized(lead, ui):
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return
 
         reviewer = "codex" if lead == "claude" else "claude"
         if rounds > 0 and not await self._ensure_initialized(reviewer, ui):
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return
 
         adapter = self.claude if lead == "claude" else self.codex
@@ -8029,8 +8058,7 @@ class Botference:
                 )
                 break
 
-            self.mode = RoomMode.REVIEW
-            ui.set_mode(RoomMode.REVIEW)
+            self._set_mode(ui, RoomMode.REVIEW)
             self._add_room_entry(
                 ui, "system",
                 f"{reviewer_cap} is reviewing draft round {round_number}…",
@@ -8047,8 +8075,7 @@ class Botference:
                 )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error reviewing: {e}")
-                self.mode = RoomMode.PUBLIC
-                ui.set_mode(RoomMode.PUBLIC)
+                self._set_mode(ui, RoomMode.PUBLIC)
                 return
 
             self._update_pct(reviewer, rev_resp, ui)
@@ -8091,8 +8118,7 @@ class Botference:
                 )
                 break
 
-            self.mode = RoomMode.DRAFT
-            ui.set_mode(RoomMode.DRAFT)
+            self._set_mode(ui, RoomMode.DRAFT)
             self._add_room_entry(
                 ui, "system",
                 f"{lead_cap} is revising {self._planning_display_path(self._plan_path)} "
@@ -8111,8 +8137,7 @@ class Botference:
             current_plan = revised_plan
             completed_rounds += 1
 
-        self.mode = RoomMode.PUBLIC
-        ui.set_mode(RoomMode.PUBLIC)
+        self._set_mode(ui, RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
         self._add_room_entry(
             ui, "system",
@@ -8139,8 +8164,7 @@ class Botference:
             )
         except Exception as e:
             self._add_room_entry(ui, "system", f"Error {error_label}: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return None
 
         self._update_pct(lead, resp, ui)
@@ -8159,6 +8183,13 @@ class Botference:
     # ── /finalize ─────────────────────────────────────────
 
     async def _run_finalize(self, ui: UIPort) -> None:
+        # same rule as /draft: PUBLIC on every exit, cancellation included
+        try:
+            await self._run_finalize_steps(ui)
+        finally:
+            self._back_to_public(ui)
+
+    async def _run_finalize_steps(self, ui: UIPort) -> None:
         lead = self._resolve_lead()
         if not lead:
             self._add_room_entry(
@@ -8170,13 +8201,11 @@ class Botference:
 
         lead_cap = lead.capitalize()
         if not await self._ensure_initialized(lead, ui):
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return
 
         adapter = self.claude if lead == "claude" else self.codex
-        self.mode = RoomMode.DRAFT
-        ui.set_mode(RoomMode.DRAFT)
+        self._set_mode(ui, RoomMode.DRAFT)
         current_plan = self._current_plan_text()
         if not current_plan:
             self._add_room_entry(
@@ -8184,8 +8213,7 @@ class Botference:
                 f"No drafted plan found at {self._planning_display_path(self._plan_path)}. "
                 "Run /draft first.",
             )
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return
 
         review_bundle = self._review_bundle()
@@ -8205,8 +8233,7 @@ class Botference:
                 )
             except Exception as e:
                 self._add_room_entry(ui, "system", f"Error finalizing plan: {e}")
-                self.mode = RoomMode.PUBLIC
-                ui.set_mode(RoomMode.PUBLIC)
+                self._set_mode(ui, RoomMode.PUBLIC)
                 return
 
             self._update_pct(lead, final_resp, ui)
@@ -8233,8 +8260,7 @@ class Botference:
             )
         except Exception as e:
             self._add_room_entry(ui, "system", f"Error generating checkpoint: {e}")
-            self.mode = RoomMode.PUBLIC
-            ui.set_mode(RoomMode.PUBLIC)
+            self._set_mode(ui, RoomMode.PUBLIC)
             return
 
         self._update_pct(lead, checkpoint_resp, ui)
@@ -8259,8 +8285,7 @@ class Botference:
                 f"{self._planning_display_path(self._archived_reviewer_comments_dir())}/",
             )
 
-        self.mode = RoomMode.PUBLIC
-        ui.set_mode(RoomMode.PUBLIC)
+        self._set_mode(ui, RoomMode.PUBLIC)
         ui.set_status(self.status_snapshot())
         self._add_room_entry(
             ui, "system",

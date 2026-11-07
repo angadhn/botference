@@ -183,6 +183,9 @@ function input(text) {
     return;
   }
   if (text.startsWith('/')) { room('system', 'ok'); return ready(); }
+  // [mock:silent] — a turn that ends with nobody having said anything: no
+  // reply, no error, just the next `ready`. What a card job must not wait on.
+  if (/\[mock:silent\]/.test(text)) return ready();
 
   const models = /^@all\b/.test(text) ? ['claude', 'codex'] : [/^@codex\b/.test(text) ? 'codex' : 'claude'];
   // [mock:sleep:N] — this ONE turn takes N ms. MOCK_TURN_DELAY_MS is per

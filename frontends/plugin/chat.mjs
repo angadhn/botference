@@ -890,6 +890,24 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   let sidWaiters = [];        // pending waits on a `projects` event
   const queue = [];           // pending jobs, one in flight
   let current = null;         // {job, steps, i}
+  // THE CHILD'S LIFECYCLE, named. The flags above are the facts; this is the
+  // one place that reads them as a state, so nothing has to re-derive "is it
+  // up yet?" from a different pair of flags (`state()` below has always said
+  // 'running' for a child that is still booting — kept as it is, because
+  // /health and the drawer read it — and pool.mjs wants the stricter answer).
+  //   stopped   no child
+  //   starting  a child exists but its startup `ready` has not landed
+  //   idle      booted, between turns, nothing in flight
+  //   busy      booted, a turn in flight
+  // Every way a child goes away — it died, or we stopped it — goes through
+  // reset(), so a respawned child always starts from 'starting' with nothing
+  // remembered about the old one (no bootstrap, no opened project, no session).
+  const LIFECYCLE = Object.freeze(['stopped', 'starting', 'idle', 'busy']);
+  const lifecycle = () => {
+    const s = !proc ? 'stopped' : !running ? 'starting' : current ? 'busy' : 'idle';
+    if (!LIFECYCLE.includes(s)) throw new Error(`bridge lifecycle: unknown state ${s}`);
+    return s;
+  };
   const articleByUrl = new Map(); // transient page text, never persisted
   // model picker: the bridge announces the pickable lists once (startup
   // completion_context) and the live per-agent model on every status event.
@@ -922,12 +940,21 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // which is what makes a generation that never returns VISIBLE.
     if (job.card) {
       if (fields.kind === 'reply' && fields.msg && fields.msg.kind !== 'tools') {
+        job.cardSettled = true;
         emit({ type: 'card', url: job.url, target: job.target, card_id: job.card_id, msg: fields.msg });
       }
       // A turn that ended with nothing said is a failed generation, and the
-      // vault must hear about it rather than keeping a pending row forever.
-      if (fields.kind === 'error') {
+      // vault must hear about it rather than keeping a pending row forever —
+      // whether the turn said so with an error, or simply ended with no reply.
+      // Once per job: the vault ignores a second answer anyway (failCard only
+      // touches a pending row), but there is no reason to send one.
+      if (fields.kind === 'error' && !job.cardSettled) {
+        job.cardSettled = true;
         emit({ type: 'card', url: job.url, card_id: job.card_id, error: fields.error || 'the turn failed' });
+      }
+      if (fields.kind === 'turn-end' && !job.cardSettled) {
+        job.cardSettled = true;
+        emit({ type: 'card', url: job.url, card_id: job.card_id, error: 'the turn ended without a reply' });
       }
       return;
     }
@@ -975,7 +1002,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // key becomes ANTHROPIC_API_KEY / OPENAI_API_KEY, and anything meaning
     // "subscription" DELETES the variable rather than emptying it. This is the
     // only place either key is put anywhere.
-    proc = spawn(cmd, args, {
+    const child = proc = spawn(cmd, args, {
       cwd: HOME,
       // BOTFERENCE_HOME is where the CODE is and never moves; the working root
       // is what a workspace bridge changes — that is the council whose
@@ -1014,7 +1041,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     });
     available = true;
     let buf = '';
-    proc.stdout.on('data', d => {
+    // Every handler is bound to THIS child. After a stop() and a respawn, the
+    // old child's late `exit` (or a last line on its stdout) must not touch
+    // the new one — it used to call died(), which reads the shared `proc`, and
+    // tore the fresh child's state down.
+    child.stdout.on('data', d => {
+      if (child !== proc) return;
       buf += d;
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
@@ -1023,23 +1055,36 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         handle(ev);
       }
     });
-    proc.stderr.on('data', d => console.error(`[bridge] ${String(d).trim().slice(0, 500)}`));
-    proc.on('error', err => died(err.message));
-    proc.on('exit', code => died(code ? `bridge exited (code ${code})` : ''));
+    child.stderr.on('data', d => console.error(`[bridge] ${String(d).trim().slice(0, 500)}`));
+    child.on('error', err => { if (child === proc) died(err.message); });
+    child.on('exit', code => { if (child === proc) died(code ? `bridge exited (code ${code})` : ''); });
   }
 
-  function died(error) {
-    if (!proc) return;
+  // Back to 'stopped': forget everything that was true only of the child that
+  // is going away. The ONE place these flags are cleared — stop() used to
+  // clear only `proc` and `available`, so a respawn after a key change found
+  // `ready` still true and sent the waking turn before the child had booted,
+  // skipping the preference turns, the project bootstrap and the /resume.
+  function reset() {
     proc = null; available = false; ready = false; running = false; bootstrapped = false;
-    openedProject = '';
-    emit({ type: 'bridge', state: 'exited', ...(error ? { error } : {}) });
-    // nothing in flight can ever finish now: tell every waiting page
+    openedProject = ''; activeSid = null;
+  }
+  // every turn this child was holding, told it will not finish
+  function strand(error) {
     const stranded = current ? [current.job, ...queue] : [...queue];
     current = null; queue.length = 0;
     for (const job of stranded) {
       chat(job, { kind: 'error', error: error || 'bridge stopped' });
       chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint) });
     }
+  }
+
+  function died(error) {
+    if (!proc) return;
+    reset();
+    emit({ type: 'bridge', state: 'exited', ...(error ? { error } : {}) });
+    // nothing in flight can ever finish now: tell every waiting page
+    strand(error);
   }
 
   const modelSnapshot = () => (lastStatus
@@ -1729,6 +1774,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       return true;
     },
     state: () => (available ? 'running' : 'stopped'),
+    // the stricter, named answer (see LIFECYCLE above)
+    lifecycle,
     // which workspace this child drives, and which project it last opened —
     // the server keys its bridge map on the first and the tests assert the
     // second (a workspace bridge must never send /project create)
@@ -1778,7 +1825,18 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // one would race the reply that is about to land in it.
     busyFor: (u) => !!u && ((current && current.job.url === u)
       || queue.some(j => j && j.url === u)),
-    stop() { if (proc) { const p = proc; proc = null; available = false; try { p.kill(); } catch { } } },
+    // Deliberately stopped (an idle bridge after a key change, a reaped pool
+    // member, shutdown). No `bridge` event — a stop is housekeeping, as it
+    // always was — but the same reset() as a death, and any turn it was still
+    // holding is told so rather than left to be sent to the NEXT child as if
+    // it had already been set up.
+    stop() {
+      if (!proc) return;
+      const p = proc;
+      reset();
+      strand('bridge stopped');
+      try { p.kill(); } catch { }
+    },
   };
 }
 

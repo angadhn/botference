@@ -461,6 +461,21 @@ await test('a card the reader FLAGGED comes back to life when it is rewritten', 
   assert.equal(card.flag, undefined);
 });
 
+await test('only a card with a question can be flagged: not a pending row, not a failed one', () => {
+  const v = { version: 1, cards: [] };
+  const pending = Q.addPending(v, { source: source() });
+  assert.equal(Q.flagCard(v, pending.id, 'too early'), null);
+  assert.equal(pending.state, 'pending', 'still waiting for its generation…');
+  assert.ok(Q.settle(v, pending.id, BLOCK, 'claude'), '…which can still settle it');
+  const failed = Q.addPending(v, { source: source() });
+  Q.failCard(v, failed.id, 'the reply did not parse');
+  assert.equal(Q.flagCard(v, failed.id), null);
+  assert.equal(failed.state, 'failed');
+  assert.ok(Q.flagCard(v, pending.id, 'first'), 'a live card flags');
+  assert.ok(Q.flagCard(v, pending.id, 'second thoughts'), 'and a flagged one takes a new note');
+  assert.equal(pending.flag.note, 'second thoughts');
+});
+
 await test('a late generation can never clobber a card the reader has revised', () => {
   const v = { version: 1, cards: [] };
   const card = Q.addPending(v, { source: source() });
