@@ -154,7 +154,13 @@ def _bfp_import(name, *a, **k):
     mod = _real_import(name, *a, **k)
     plt = sys.modules.get('matplotlib.pyplot')
     if plt is not None:
-        _patch(plt)
+        # pyplot imports its own submodules while it is still loading; an
+        # import hook sees it then with no show() yet. Leave it, and the next
+        # import (there is always one) patches the finished module.
+        try:
+            _patch(plt)
+        except AttributeError:
+            pass
     return mod
 
 builtins.__import__ = _bfp_import

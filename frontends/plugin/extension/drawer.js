@@ -8190,7 +8190,7 @@ ${bubbleShellHtml()}`;
         // An unsent message has no timestamp, so it has no address — and a
         // block cannot be run before the companion has the message it is in.
         const reply = el.closest('.reply[data-ts]');
-        const card = el.closest('.card[data-thread]');
+        const card = el.closest('.card[data-thread], .bubble[data-thread]');
         if (!reply || !card) return;
         const target = card.getAttribute('data-thread');
         const ts = reply.getAttribute('data-ts');
@@ -8267,7 +8267,7 @@ ${bubbleShellHtml()}`;
         // which block this is; a message with no timestamp yet (an unsent one)
         // has no address, folds anyway, and simply does not remember
         const reply = pre.closest('.reply[data-ts]');
-        const card = pre.closest('.card[data-thread]');
+        const card = pre.closest('.card[data-thread], .bubble[data-thread]');
         const key = (reply && card)
           ? card.getAttribute('data-thread') + '|' + reply.getAttribute('data-ts') + '|' + i
           : '';
@@ -8539,7 +8539,7 @@ ${bubbleShellHtml()}`;
     // belongs to the page we are standing on. content.js turns the target into
     // the real address — the drawer only says which conversation it is.
     const targetOfEl = el => {
-      const card = el.closest && el.closest('.card[data-thread]');
+      const card = el.closest && el.closest('.card[data-thread], .bubble[data-thread]');
       return card ? card.getAttribute('data-thread') : PAGE_TARGET;
     };
 
@@ -8549,7 +8549,7 @@ ${bubbleShellHtml()}`;
     function runAddr(el) {
       const box = el.closest('.runbox[data-block]');
       const reply = el.closest('.reply[data-ts]');
-      const card = el.closest('.card[data-thread]');
+      const card = el.closest('.card[data-thread], .bubble[data-thread]');
       if (!box || !reply || !card) return null;
       const index = Number(box.getAttribute('data-block'));
       if (!isFinite(index)) return null;
@@ -8626,7 +8626,7 @@ ${bubbleShellHtml()}`;
     async function doTick(box) {
       const li = box.closest('li');
       const reply = box.closest('.reply');
-      const card = box.closest('.card[data-thread]');
+      const card = box.closest('.card[data-thread], .bubble[data-thread]');
       // A box in the TASKS CARD is a box in the message the card is showing:
       // the address travels on the card rather than on a rendered reply, and
       // everything after this point is identical — the same POST, the same
@@ -8666,7 +8666,7 @@ ${bubbleShellHtml()}`;
     // a stop that did not stop anything must say so — in the thread whose chip
     // was clicked, or in the footbar's case the page chat.
     async function doInterrupt(btn) {
-      const card = btn && btn.closest && btn.closest('.card[data-thread]');
+      const card = btn && btn.closest && btn.closest('.card[data-thread], .bubble[data-thread]');
       const target = card ? card.getAttribute('data-thread') : null;
       note(target, 'stopping…', false, true);   // a wait, not a message: the turn's end takes it away
       let r;
