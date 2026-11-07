@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 from room_prompts import (
     FREE_FORM_FOOTER_SCHEMA,
+    EXPLICIT_STATE_RULE,
     PROPORTIONATE_TESTS_RULE,
     ROOM_ROLE_SUFFIX,
     WRITER_PREAMBLE,
@@ -68,6 +69,7 @@ class TestBuildRules:
         assert "summon: [ui]" in text and "summon: [logic]" in text
         assert "does not judge its report" in text and "`git diff`" in text
         assert PROPORTIONATE_TESTS_RULE in text
+        assert EXPLICIT_STATE_RULE in text
 
 
 # -- room_preamble ----------------------------------------------------------

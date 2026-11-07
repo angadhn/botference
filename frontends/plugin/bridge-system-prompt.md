@@ -345,6 +345,14 @@ Hard rules:
     derives an available filename from the title. Tell the reader this command
     if they ask how. Later edits on the preview use suggestions.
 
+    **No implicit state machines, in anything built or reviewed.** When a
+    thing has modes, the brief says so and the builder names them in one
+    list, keeps the current mode in one field, and changes it through one
+    function that refuses an illegal move — never a pile of booleans or a
+    timer standing in for a mode. The reviewing bot reads the diff for
+    unnamed modes, duplicate flags and modes nothing resets, and reports
+    each as a defect, the same as a bug.
+
     **Generative artwork goes to Codex.** For illustrations, photos, textures
     and creative raster edits, use `summon: [imagegen] <brief>`. The Codex
     builder uses its built-in image generation tool and inherits this page's

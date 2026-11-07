@@ -145,6 +145,16 @@ PROPORTIONATE_TESTS_RULE = (
     "needs more than three new tests, say why in your report."
 )
 
+EXPLICIT_STATE_RULE = (
+    "No implicit state machines. When a thing has modes (idle, running, "
+    "done, failed; open, applied, rejected), name the modes in one list, "
+    "keep the current mode in one field, and change it in one function that "
+    "refuses an illegal move. Never represent a mode as a pile of booleans "
+    "or as a timer that has or has not expired, and never clear a mode in "
+    "several places. A reviewer treats a new unnamed mode, a flag that "
+    "duplicates a mode, or a mode nothing ever resets as a defect."
+)
+
 BUILD_STAGES = ("specifying", "building", "reviewing", "done")
 
 
@@ -185,6 +195,7 @@ def build_rules() -> str:
         "and moves to the next one. The reviewer counts the new tests against "
         "the rule below and flags overreach as a defect, the same as a bug.\n"
         f"- Tests: {PROPORTIONATE_TESTS_RULE}\n"
+        f"- State: {EXPLICIT_STATE_RULE}\n"
         "- Never commit or push unless the user asked for it."
     )
 

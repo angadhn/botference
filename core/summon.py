@@ -24,7 +24,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from room_prompts import PROPORTIONATE_TESTS_RULE
+from room_prompts import EXPLICIT_STATE_RULE, PROPORTIONATE_TESTS_RULE
 from video_watch import _FENCE_RE, _unwrap_line
 
 # `summon:` on a line of its own (light markdown tolerated), the brief after
@@ -279,7 +279,8 @@ def builder_prompt(
         "its own styles and scripts, reads well in light and dark, and sets its "
         "own background. Never start a server or a tunnel."),
         deliverables_note,
-        ("--- Tests ---\n" + PROPORTIONATE_TESTS_RULE if task != "imagegen" else ""),
+        ("--- Tests ---\n" + PROPORTIONATE_TESTS_RULE + "\n--- State ---\n" + EXPLICIT_STATE_RULE
+         if task != "imagegen" else ""),
         "--- How to report ---\n"
         "When you are done, reply in at most eight short lines: what you built, "
         "where it is, what you left out or could not do. Then END with one line "
