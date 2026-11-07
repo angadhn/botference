@@ -30,9 +30,17 @@
  * picture in the page. The note joins the same batch with the element's
  * locator, so the bots can change the figure's script and rebuild.
  *
- * "Agent check" callouts (a callout whose title starts "Agent check") are the
- * bots' to revise: no ✎ is offered inside them. Comment on them with a normal
- * highlight in the Discuss drawer instead.
+ * Callouts (any `.callout` box, whatever its title) are the bots' to write: no
+ * ✎ is offered inside them. Comment on them with a normal highlight in the
+ * Discuss drawer instead. Plain blockquotes are ordinary page text.
+ *
+ * Delivery survives the reload a delivery itself can cause (a prose edit
+ * written into the post makes the site rebuild and the page reload, sometimes
+ * before the acknowledgement arrives): a send cut short by a reload is resumed
+ * with the SAME batch id once the extension answers, and the extension and the
+ * companion answer a repeat with what the first send already did — nothing is
+ * written twice. An edit whose words the page already shows is dropped as
+ * applied, never previewed a second time.
  *
  * Wire protocol and plugin-side contract:
  *   .botference/plugin/artifacts/figure-editor-plugin-handoff.md
@@ -89,12 +97,18 @@
     var s = null;
     try { s = JSON.parse(storage.getItem(key) || 'null'); } catch (e) { s = null; }
     if (!s || s.v !== 1) s = { v: 1, edits: [], undo: [], outbox: null, applied: [] };
-    // a reload in the middle of a send: the batch may or may not have arrived;
-    // sending again reuses its id, so the extension can tell it is a retry
+    // a reload in the middle of a send: the batch may or may not have arrived
+    // (a prose edit written into the post makes the page reload, often before
+    // the ack gets back). It is RESUMED, not reported as failed: once the
+    // extension answers, the editor sends again with the same id, and the
+    // extension and the companion answer a repeat with what the first send
+    // already did (Editor: resumeIfInterrupted)
     if (s.outbox && s.outbox.state === 'sending') {
-      s.outbox.state = 'failed';
-      s.outbox.error = { code: 'interrupted', message: 'The page reloaded before an acknowledgement arrived.', retryable: true };
+      s.outbox.state = 'interrupted';
+      s.outbox.error = null;
     }
+    // a prose edit written into the post is done: nothing waits on it
+    s.edits = (s.edits || []).filter(function (e) { return !(e.status === 'delivered' && e.delivery && e.delivery.to === 'source'); });
     this.state = s;
   }
   Store.prototype.save = function () {
@@ -158,6 +172,12 @@
     });
     this.state.undo = this.state.undo.filter(function (u) { return keys.indexOf(u.key) < 0; });
     this.state.outbox = null;
+    // …and an edit the companion wrote straight into the post is finished:
+    // the post says it now, so it is dropped rather than left waiting
+    var done = this.state.edits.filter(function (e) {
+      return e.status === 'delivered' && e.delivery && e.delivery.to === 'source' && ids.indexOf(e.edit_id) >= 0;
+    });
+    done.forEach(function (e) { self.markApplied(e.key); });
     this.save();
     return keys;
   };
@@ -169,6 +189,9 @@
       this.state.applied.push({ figure: rec.figure.id, original: rec.original, replacement: rec.replacement, at: new Date().toISOString() });
       if (this.state.applied.length > 50) this.state.applied.shift();
     }
+    // nothing left to send: a send that was cut short or failed has nothing
+    // left to say either
+    if (!this.drafts().length && this.state.outbox && this.state.outbox.state !== 'sending') this.state.outbox = null;
     this.save();
   };
   Store.prototype.discardDrafts = function () {
@@ -357,7 +380,10 @@
     if (!drafts.length) return { error: { code: 'empty', message: 'There are no unsent edits.', retryable: false } };
     var print = contentPrint(drafts);
     var ob = this.store.state.outbox;
-    var batchId = ob && ob.print === print ? ob.batch_id : 'fte-' + stamp(new Date()) + '-' + randomHex(4);
+    // the same id for a retry of the same edits — and for the resume of a send
+    // a reload cut short, even if some of its edits have since been dropped as
+    // applied: the extension knows that id and answers it without sending twice
+    var batchId = ob && (ob.print === print || ob.state === 'interrupted') ? ob.batch_id : 'fte-' + stamp(new Date()) + '-' + randomHex(4);
     var batch = buildBatch(drafts, this.page(), batchId);
     if (ob && ob.batch_id === batchId && ob.created_at) batch.created_at = ob.created_at;
     // v2 sends the batch alone: the extension writes it to a file and posts a
@@ -584,20 +610,16 @@
     return el && el.closest ? el.closest(sel) : null;
   }
   function isSvg(node) { var el = closestEl(node, '*'); return !!(el && el.namespaceURI === SVG_NS); }
-  // An "Agent check" callout: a callout whose title starts with those words.
-  // Its text is the bots' to revise, so it is never edited here (no ✎); the
-  // owner comments on it with an ordinary highlight instead.
-  function agentCheckOf(node) {
-    var c = closestEl(node, '.callout');
-    if (!c) return null;
-    var t = c.querySelector('.callout-title');
-    return t && /^\s*agent check(?![a-z])/i.test(t.textContent || '') ? c : null;
-  }
+  // A callout (`> [!type] …` in the markdown, a `.callout` box on the page),
+  // whatever its title: its text is the bots' to write, so it is never edited
+  // here (no ✎); the owner comments on it with an ordinary highlight instead.
+  // A plain blockquote is not a callout and stays editable.
+  function calloutOf(node) { return closestEl(node, '.callout'); }
   function eligible(fig, node) {
     if (!node || node.nodeType !== 3 || !WORDY.test(node.data)) return false;
     if (!fig.root.contains(node)) return false;
     if (closestEl(node, SKIP)) return false;
-    if (fig.spec.page && agentCheckOf(node)) return false;
+    if (fig.spec.page && calloutOf(node)) return false;
     if (fig.spec.exclude && within_(node, fig.spec.exclude)) return false;
     // text inside a nested figure belongs to that figure, not to the page
     if (closestEl(node, '[data-fte-root]') !== fig.root) return false;
@@ -724,6 +746,43 @@
     return null;
   }
 
+  // Does the page already read as `words` AT this node — an occurrence of the
+  // new wording, in the node's block (a paragraph, a list item, an SVG
+  // <text>…), that covers this node's text and runs past it? That is only
+  // possible when the new words contain the old (an insertion, an expansion),
+  // and it is exactly the case where the old words go on matching after the
+  // edit is in. Whitespace and curly quotes fold the way a rebuilt page
+  // differs from what was typed.
+  var BLOCKS = 'p, li, h1, h2, h3, h4, h5, h6, figcaption, td, th, dt, dd, blockquote, text, foreignObject';
+  function foldMap(raw) {
+    var out = '', map = [], sp = false;
+    for (var i = 0; i < raw.length; i++) {
+      var c = raw[i];
+      if (/\s/.test(c)) { if (!sp && out) { out += ' '; } sp = true; map.push(Math.max(0, out.length - 1)); continue; }
+      sp = false;
+      map.push(out.length);
+      out += c === '\u2018' || c === '\u2019' ? "'" : c === '\u201c' || c === '\u201d' ? '"' : c;
+    }
+    return { text: out, map: map };
+  }
+  function showsAlready(node, words) {
+    var block = closestEl(node, BLOCKS) || node.parentNode;
+    if (!block) return false;
+    var raw = '', at = -1;
+    var walk = node.ownerDocument.createTreeWalker(block, 4, null);
+    for (var t = walk.nextNode(); t; t = walk.nextNode()) { if (t === node) at = raw.length; raw += t.data; }
+    if (at < 0) return false;
+    var ws = splitWs(node.data);
+    if (!ws.core) return false;
+    var f = foldMap(raw), w = foldMap(words).text.trim();
+    var s0 = f.map[at + ws.lead.length], s1 = f.map[at + ws.lead.length + ws.core.length - 1] + 1;
+    if (!w || w.length <= s1 - s0) return false;
+    for (var i = f.text.indexOf(w); i >= 0; i = f.text.indexOf(w, i + 1)) {
+      if (i <= s0 && s1 <= i + w.length) return true;
+    }
+    return false;
+  }
+
   // ------------------------------------------------------------------ styles
   var CSS = [
     '.fte-ui{--fte-bg:#fffdf6;--fte-ink:#2b2620;--fte-muted:#6f675a;--fte-line:#d8cfbc;--fte-accent:#9a7b52;--fte-ok:#3d6b3a;--fte-bad:#a33b2a;--fte-btn:#2b2620;--fte-btn-ink:#fffdf6;--fte-mark:rgba(216,184,138,.32);--fte-hover:rgba(154,123,82,.7);',
@@ -813,7 +872,7 @@
     this.sender = new Sender(this.store, this.bridge, function () { return self.pageInfo(); });
     this.sending = false;
     this.buildUi();
-    this.bridge.onChange(function () { self.render(); });
+    this.bridge.onChange(function () { self.resumeIfInterrupted(); self.render(); });
     this.listen(win);
     this.discover();
     new win.MutationObserver(function () { self.discover(); }).observe(doc.body, { childList: true, subtree: true });
@@ -884,7 +943,7 @@
     var self = this;
     var fdoc = root.ownerDocument, fwin = fdoc.defaultView;
     var fig = { spec: spec, root: root, frame: frame, doc: fdoc, win: fwin, page: this.pageInfo(),
-      previewed: new WeakMap(), originals: new WeakMap(), live: {}, missing: {}, baseline: null, applying: false };
+      previewed: new WeakMap(), originals: new WeakMap(), wrote: new WeakMap(), live: {}, missing: {}, baseline: null, applying: false };
     fig.page.source = (this.page && this.page.source) || null;
     root.setAttribute('data-fte-root', spec.id);
     if (frame) frame.setAttribute('data-fte-root', spec.id);
@@ -912,6 +971,13 @@
   };
 
   // Re-apply previews after a re-render, and notice edits the source now has.
+  //
+  // A preview is written into a node AT MOST ONCE (fig.wrote), and never where
+  // the page already shows the new words at that spot. Both matter when the
+  // new words CONTAIN the old ("…of humanity." → "…of humanity. While I…"):
+  // after the post is rebuilt, or after someone else's markup splits the
+  // previewed node, the old words still match on their own, and writing the
+  // preview over them again would add the new words once per repaint.
   Editor.prototype.reconcile = function (fig) {
     var self = this, applied = 0;
     fig.applying = true;
@@ -920,13 +986,24 @@
       var n = resolve(fig, rec);
       if (!n) { fig.missing[rec.key] = true; return; }
       var ws = splitWs(n.data);
-      if (ws.core === rec.replacement && fig.previewed.get(n) !== rec.key && rec.replacement !== rec.original) {
+      var ours = fig.previewed.get(n) === rec.key;
+      var changes = rec.replacement !== rec.original;
+      if (ws.core === rec.replacement && !ours && changes) {
         // the page itself now says what we asked for: the bots applied it
         self.store.markApplied(rec.key); applied++; return;
       }
+      if (ws.core !== rec.replacement && changes && showsAlready(n, rec.replacement)) {
+        // the words around this node already read as the new wording: the
+        // edit is in the page (rebuilt from the post, or our own preview split
+        // by other markup). Never written again; dropped if it was not ours.
+        if (!ours && fig.wrote.get(n) !== rec.key) { self.store.markApplied(rec.key); applied++; }
+        return;
+      }
       if (ws.core !== rec.replacement) {
+        if (fig.wrote.get(n) === rec.key) return;   // written once already: leave it
         fig.originals.set(n, ws.core);
         n.data = ws.lead + rec.replacement + ws.trail;
+        fig.wrote.set(n, rec.key);
       }
       fig.previewed.set(n, rec.key);
       fig.live[rec.key] = n;
@@ -942,7 +1019,7 @@
     fig.applying = true;
     var o = fig.originals.get(n);
     if (o != null) { var ws = splitWs(n.data); n.data = ws.lead + o + ws.trail; }
-    fig.previewed.delete(n); fig.originals.delete(n);
+    fig.previewed.delete(n); fig.originals.delete(n); fig.wrote.delete(n);
     delete fig.live[key];
     fig.observer.takeRecords();
     fig.applying = false;
@@ -1311,6 +1388,17 @@
   };
 
   // ---------------------------------------------------------------- sending
+  // A send a reload cut short is sent again, once, with the same batch id, as
+  // soon as the extension is connected. The extension answers a batch id it
+  // has already delivered with the ack it stored, and the companion never
+  // writes a prose edit twice — so this finds out what happened; it does not
+  // do it again.
+  Editor.prototype.resumeIfInterrupted = function () {
+    var ob = this.store.state.outbox;
+    if (!ob || ob.state !== 'interrupted' || this.sending || this.bridge.state !== 'ready') return;
+    if (!this.store.drafts().length) { this.store.state.outbox = null; this.store.save(); return; }
+    this.send();
+  };
   Editor.prototype.send = function () {
     var self = this;
     if (this.sending || this.bridge.state !== 'ready' || !this.store.drafts().length) return;
@@ -1562,6 +1650,10 @@
     var res = '', kind = '';
     var last = this.sender.last;
     if (this.sending) { res = 'Sending ' + drafts.length + ' edit' + (drafts.length === 1 ? '' : 's') + ' (batch ' + (ob ? ob.batch_id : '') + ')…'; kind = 'sending'; }
+    else if (ob && ob.state === 'interrupted') {
+      res = 'The page reloaded during a send; checking with the Discuss extension what became of batch ' + ob.batch_id + '…';
+      kind = 'sending';
+    }
     else if (ob && ob.state === 'failed') {
       res = 'Not delivered: ' + (ob.error ? ob.error.message : 'unknown error') + ' All edits are kept' +
         (retry ? '; Send changes retries the same batch (' + ob.batch_id + ').' : '; the batch changed, so the next send is a new batch.');

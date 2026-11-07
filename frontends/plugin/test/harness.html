@@ -702,7 +702,7 @@ const fteRouteCalls = [];           // every POST /fte-route body (protocol v2)
 const fteRouteDone = {};            // batch_id -> the answer, for a retry
 // the post's "markdown" the fake routing matches against: the article's words,
 // except the second paragraph (as if it ran across markup in the source) and
-// the Agent check callout (the bots' own territory)
+// the callout (the bots' own territory)
 // (read once, as the page first stood: the editor's previews change the page
 // afterwards, and the source has not moved)
 let fteSourceCache = null;
@@ -758,8 +758,9 @@ if (FIGEDIT) {
     '<g id="t-orbit"><rect x="290" y="30" width="120" height="50" rx="6" fill="#e3ecd9"/><text x="350" y="60" text-anchor="middle">Orbit</text></g>' +
     '</svg><figcaption style="font-size:13px;color:var(--pmuted)">A stand-in figure for the editor.</figcaption></figure>');
   // ?figedit=route|comment: the page text is editable too (the editor looks
-  // for `main article`), there is an Agent check callout the ✎ must stay out
-  // of, and a picture with no source to comment on
+  // for `main article`), there is a callout the ✎ must stay out of (titled
+  // anything — every callout is the bots'), a one-line paragraph to insert a
+  // sentence into, and a picture with no source to comment on
   if (FIGEDIT === 'route' || FIGEDIT === 'comment' || FIGEDIT === 'routed') {
     const art = document.querySelector('article');
     if (art && !art.closest('main')) {
@@ -770,8 +771,9 @@ if (FIGEDIT) {
     const fig = document.getElementById('fte-fig');
     if (fig) fig.insertAdjacentHTML('afterend',
       '<div class="callout note" id="fte-agent" style="border-left:3px solid #8a7cc8;padding:.4rem .8rem;margin:0 0 1.2rem;background:rgba(138,124,200,.08)">' +
-      '<div class="callout-title" style="font-weight:600">Agent check: is “a draw” the right word?</div>' +
+      '<div class="callout-title" style="font-weight:600">Answer: is “a draw” the right word?</div>' +
       '<div class="callout-content">The match report says it ended one–one, so yes.</div></div>' +
+      '<p id="fte-ins">Nobody expects the board to comment.</p>' +
       '<p id="fte-pic"><img alt="Attendance chart" width="320" height="90" src="data:image/svg+xml;base64,' +
       btoa('<svg xmlns="http://www.w3.org/2000/svg" width="320" height="90"><rect width="320" height="90" fill="#f1ece2"/>' +
         '<polyline points="10,80 80,60 150,65 220,30 310,20" fill="none" stroke="#9a7b52" stroke-width="3"/></svg>') + '"></p>');
@@ -10369,7 +10371,7 @@ async function selftestFigEditDeployed() {
 //
 //   The owner's ✎ on page prose is written straight into the post by the
 //   companion (routed `source`); prose it cannot place exactly goes to the
-//   bots with the reason; there is no ✎ inside an Agent check callout; a 💬
+//   bots with the reason; there is no ✎ inside a callout (any title); a 💬
 //   on any part of a figure (and on a picture with no source) joins the batch
 //   with the element's locator; a batch far past the old 100-edit cap goes as
 //   one checklist file and one short chat message.
@@ -10430,11 +10432,16 @@ async function selftestFigRoute() {
   check('the page text is editable (main article)', !!page);
   if (!page) return finish();
 
-  // ---- no ✎ inside an Agent check callout --------------------------------
+  // ---- no ✎ inside a callout, whatever its title -------------------------
   const agentNode = fteTextNode(document.getElementById('fte-agent'), /match report/);
   fteHoverAt(agentNode);
   await sleep(150);
-  check('hovering an Agent check callout offers no ✎', E.ui.pencil.hidden && !E.hover);
+  check('hovering a callout (titled “Answer: …”) offers no ✎', E.ui.pencil.hidden && !E.hover);
+  const quoteNode = fteTextNode(document.querySelector('article blockquote'), /unbeatable/);
+  fteHoverAt(quoteNode);
+  await sleep(150);
+  check('…while a plain blockquote is the owner’s and does', !E.ui.pencil.hidden && E.hover && E.hover.node === quoteNode);
+  E.setHover(null);
   const p1 = fteTextNode(document.querySelector('article'), /Aragon opened the season/);
   fteHoverAt(p1);
   await sleep(150);
@@ -10489,26 +10496,99 @@ async function selftestFigRoute() {
   check('the tray says which went where', /1 prose edit written straight into the post/.test(res)
     && /3 items sent to the bots/.test(res) && /could not place exactly/.test(res));
   const del = E.store.delivered();
-  check('the written edit is marked as written; the other as sent; comments leave the tray',
-    del.length === 2 && del.some(d => d.delivery.to === 'source') && del.some(d => d.delivery.to === 'bots' && d.delivery.why)
-    && !E.store.state.edits.some(d => d.kind === 'comment'));
+  check('the written edit is done and dropped; the other waits as sent; comments leave the tray',
+    del.length === 1 && del[0].delivery.to === 'bots' && del[0].delivery.why
+    && !E.store.state.edits.some(d => d.kind === 'comment' || /goalless/.test(d.replacement || '')));
 
-  // ---- quiet markers: no thread, no approval, just who changed it -----------
+  // ---- the quiet marker: "your edit", and nothing at all for a callout -------
   RECORD.marks = [
     { id: 'mk1', kind: 'yours', quote: 'with a goalless draw', at: new Date().toISOString(), by: 'you' },
+    // a record from before callout markers were dropped: never painted
     { id: 'mk2', kind: 'bots', quote: 'The match report says it ended one–one, so yes.', at: new Date().toISOString(), by: '@codex' },
   ];
-  // the companion wrote the post and jekyll rebuilt: the page now SAYS it
-  const p1now = fteTextNode(document.querySelector('article'), /Aragon opened the season/);
   await window.__bfp.loadPage();
   await sleep(150);
   const qm = [...document.querySelectorAll('mark.bfp-quiet')];
-  check('quiet markers are painted from the record: "your edit" and the bots’ callout change',
-    qm.some(m => m.dataset.kind === 'yours' && /goalless/.test(m.textContent) && m.title === 'your edit')
-    && qm.some(m => m.dataset.kind === 'bots' && /match report/.test(m.textContent) && /@codex/.test(m.title)));
+  check('"your edit" is painted from the record',
+    qm.some(m => m.dataset.kind === 'yours' && /goalless/.test(m.textContent) && m.title === 'your edit'));
+  check('…and a bot’s callout change leaves no marker on the page',
+    !qm.some(m => /match report/.test(m.textContent)) && !document.querySelector('#fte-agent mark'));
   check('…with no thread and nothing to approve', !(window.__bfp.page.threads || []).some(t => /goalless|match report/.test(t.quote || ''))
     && qm.every(m => getComputedStyle(m).backgroundColor === 'rgba(0, 0, 0, 0)'));
-  void p1now;
+
+  // ---- an INSERTION: the new words contain the old ones ---------------------
+  // so the old words go on matching after the edit is in — the case that once
+  // repainted the new sentence fifteen times over
+  const insP = document.getElementById('fte-ins');
+  const NEW = ' A statement is not expected before May.';
+  const insCount = () => (document.querySelector('article').textContent.match(/not expected before May/g) || []).length;
+  E.openField(page, insP.firstChild);
+  const insOrig = E.field.original;
+  E.ui.field.input.value = insOrig + NEW;
+  E.commitField(false);
+  const ins = E.store.drafts().find(d => /before May/.test(d.replacement || ''));
+  check('an insertion is a draft, previewed once', !!ins && ins.replacement === insOrig + NEW && insCount() === 1);
+  // other markup splits the previewed node where the old words end (as a
+  // highlight would): the old words now stand alone and still match
+  insP.firstChild.splitText(insOrig.length);
+  for (let i = 0; i < 4; i++) {
+    insP.appendChild(document.createComment('x')); await sleep(40);
+    insP.lastChild.remove(); await sleep(40);
+  }
+  check('…a split preview is never written again: the sentence is there once (no repaint loop)', insCount() === 1
+    && E.store.drafts().some(d => d === ins || d.edit_id === ins.edit_id));
+
+  // ---- reload before the ack: delivery survives the reload its write causes
+  // The extension takes the batch and the companion writes the prose, but the
+  // page reloads before the ack reaches the editor (stood in for: the batch
+  // goes straight to the extension, and the editor's store is put back in the
+  // state a reload leaves it in).
+  await sleep(2100);
+  window.__fteActivation = true;
+  const insId = 'fte-20261107T1213-87c575bb';
+  const wire = d => ({ edit_id: d.edit_id, kind: 'text', figure: d.figure, element: d.element, context: d.context,
+    source: d.source, original: d.original, replacement: d.replacement, baseline: d.baseline });
+  const k1 = fteRouteCalls.length, rr1 = fteReplies().length;
+  ftePage({ type: 'send', v: 2, request_id: 'send-ins0000001', batch_id: insId, expect_destination: E.bridge.destination,
+    batch: { schema: 'botference.figure-edits/2', batch_id: insId, edits: [wire(ins)] } });
+  await until(() => fteFrom('ack', 'send-ins0000001').length, 5000);
+  check('the extension delivered it: the prose was written', fteRouteCalls.length === k1 + 1
+    && ((fteFrom('ack', 'send-ins0000001')[0] || {}).routes || [])[0].to === 'source');
+  E.store.state.outbox = { batch_id: insId, print: 'from-before-the-reload', state: 'sending', attempts: 1, error: null };
+  E.store.save();
+  E.store = new (window.FigureTextEditorCore.Store)(E.store.storage, E.store.key);
+  E.sender.store = E.store;
+  E.render();
+  const tray = () => (document.querySelector('.fte-result') || {}).textContent || '';
+  check('after the reload the tray does not say "Not delivered"', E.store.state.outbox.state === 'interrupted'
+    && !/Not delivered/.test(tray()));
+  E.resumeIfInterrupted();
+  await until(() => !E.sending && !E.store.state.outbox, 5000);
+  const resent = fteSeen.filter(m => m.from === 'page' && m.type === 'send').pop() || {};
+  check('…the send is resumed under the same batch id, and answered with the stored ack',
+    resent.batch_id === insId && fteFrom('ack', resent.request_id).some(a => a.deduped === true));
+  check('…nothing is routed or written a second time, and no chat message is posted',
+    fteRouteCalls.length === k1 + 1 && fteReplies().length === rr1);
+  check('…the written edit is dropped, and the tray says it was delivered', !E.store.state.edits.some(d => d.edit_id === ins.edit_id)
+    && !/Not delivered/.test(tray()) && /written straight into the post/.test(tray()));
+
+  // ---- the stuck draft from before this fix: cleaned up on its own -----------
+  // a draft left behind (its ack lost), an outbox reporting "Not delivered",
+  // and the page rebuilt from the post, which now says the new words
+  E.store.putDraft(ins.key, Object.assign({}, ins, { status: 'draft' }));
+  E.store.state.outbox = { batch_id: insId, print: 'stale', state: 'failed',
+    error: { code: 'interrupted', message: 'The page reloaded before an acknowledgement arrived.', retryable: true } };
+  E.store.save();
+  insP.textContent = '';
+  insP.append(insOrig, NEW);           // the rebuilt paragraph, split as markup would
+  for (let i = 0; i < 4; i++) {
+    insP.appendChild(document.createComment('x')); await sleep(40);
+    insP.lastChild.remove(); await sleep(40);
+  }
+  E.render();
+  check('a stuck draft whose words the page already shows is dropped as applied', !E.store.drafts().length
+    && E.store.state.outbox === null && !/Not delivered/.test(tray()));
+  check('…and the sentence stays on the page exactly once', insCount() === 1);
 
   // ---- no batch cap ----------------------------------------------------------
   await sleep(2100);
@@ -10557,8 +10637,7 @@ async function figeditPose() {
       window.__fteActivation = true;
       document.querySelector('.fte-send').click();
       await until(() => !E.sending, 8000);
-      RECORD.marks = [{ id: 'mk1', kind: 'yours', quote: 'with a goalless draw', at: new Date().toISOString(), by: 'you' },
-        { id: 'mk2', kind: 'bots', quote: 'The match report says it ended one–one, so yes.', at: new Date().toISOString(), by: '@codex' }];
+      RECORD.marks = [{ id: 'mk1', kind: 'yours', quote: 'with a goalless draw', at: new Date().toISOString(), by: 'you' }];
       await window.__bfp.loadPage();
       E.reviewOpen = true; E.render();
       return;

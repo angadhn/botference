@@ -658,7 +658,23 @@ export function summaryText(regions, who, why) {
 // `origin` is that comment's thread id, or store.PAGE_CHAT, or ''. A region absorbed into a reader's thread must NEVER also
 // spawn an auto-thread; that would be two cards and two highlights over one
 // change, which is the failure this whole feature exists to avoid.
-export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots', origin = '' } = {}) {
+// A region wholly inside callouts on both sides — the bots' own text in a
+// blog post (ownership.mjs). `callouts` is {before, after}: the rendered words
+// of each callout in the two versions (blog.calloutPlains). Such a change opens
+// no thread and joins no summary: the owner asked for callout changes to leave
+// no trace on the page. A heal or an adoption still happens first — that is a
+// reader's own thread being kept on its passage, not a new marker.
+const within = (t, list) => !t || (list || []).some(c => loose(c).includes(loose(t)));
+export function calloutOnly(region, callouts) {
+  if (!callouts) return false;
+  const w = region.whole || region;
+  const nw = region.kind === 'delete' ? '' : w.quote;
+  const old = w.old || region.old || '';
+  if (!nw && !old) return false;
+  return within(nw, callouts.after) && within(old, callouts.before);
+}
+
+export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots', origin = '', callouts = null } = {}) {
   const { regions, extensive, reason } = regionsFrom(beforeHtml, afterHtml);
   const threads = (page && page.threads) || [];
   // the conversation this turn answered: a thread on this page, or the page chat
@@ -679,6 +695,7 @@ export function collateral(beforeHtml, afterHtml, page, { since, who = 'the bots
     if (adoptableBy(r, from, afterFlat, usedThreads)) {
       usedThreads.add(from.id); adopted.push({ thread: from, region: r }); continue;
     }
+    if (calloutOnly(r, callouts)) { skipped.push({ region: r, callout: true }); continue; }
     fresh.push(r);
   }
   // The reasons ride with the heals too: a bot that DID say "also changed"

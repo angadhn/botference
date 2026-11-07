@@ -11766,17 +11766,24 @@ locates, markup-only changes), `prop.test.mjs` (the new plainOf rules), harness
 
 **The decision (the owner's).** On the reader's own blog in direct-edit mode
 (`blog_authoring_root`, `blogOf → direct_edit`), the bots still write the post
-file, but only one kind of text in it is theirs: an **Agent check callout**.
-Everything else in the post's markdown is the owner's. The companion enforces
+file, but only one kind of text in it is theirs: a **callout** — any
+`> [!type] …` block, whatever its title ("Agent check: …", "Answer: …",
+"How …", "Suggested …"). Widened from Agent-check callouts only on 2026-11-07:
+the bots write the callouts, the owner writes the prose. Everything else in the
+post's markdown is the owner's, plain blockquotes (`> ` with no `[!type]`)
+included. The companion enforces
 this at turn-end; the bots are also told it on every turn, so the backstop
 should rarely fire.
 
 ### A. The backstop on bot edits (`ownership.mjs`, `turnwatch.mjs`)
 
-- **The matcher, one helper** (`ownership.AGENT_CHECK_RE` / `isAgentCheckHead`):
-  a line starting at column 0 with `>`, an optional space, `[!type]` (letters,
-  digits, `_`, `-`), an optional fold `+`/`-`, optional spaces, then the words
-  `Agent check` in any case, not followed by another letter. The block runs to
+- **The matcher, one helper** (`ownership.CALLOUT_RE` / `isCalloutHead`,
+  blocks from `calloutBlocks`): the site renderer's own rule
+  (`_plugins/callout.rb`: `^> \[!([A-Za-z]+)([^\]]*)\]`) — a line starting at
+  column 0 with `> ` (one space), then `[!type]` with a letters-only type,
+  optionally followed by more words inside the brackets. Anything may follow
+  the `]`. `>[!tip]` (no space) is a blockquote on the site, so it is the
+  owner's. The block runs to
   the first blank line (like `_plugins/callout.rb`, which ends a callout at
   `\n\n`); a whitespace-only line also ends it, which can only make the block
   shorter. Front matter and fenced code are never blocks.
@@ -11784,19 +11791,23 @@ should rarely fire.
   whitespace either side) on both the old and new sides. That covers editing
   inside a callout, adding a whole new one on a paragraph gap, and removing one.
   A callout dropped into the middle of a paragraph, a whitespace-only change
-  between the owner's paragraphs, or turning the owner's own callout into an
-  Agent check are NOT.
+  between the owner's paragraphs, or turning the owner's plain quote into a
+  callout are NOT.
 - **Everything else is the owner's**: rewording, deleting or moving their words, a
-  sentence inserted between two of theirs, front matter, their own callouts and
+  sentence inserted between two of theirs, front matter, their plain quotes and
   their inline "agent check" prompts.
 - **Turn start** (`noteTurnStart`, authoring branch, markdown source only): keep
   the raw text and start a watch on the file. Collateral auto-threads are turned
   off for the post's own source (bot prose changes become cards; callout changes
-  get quiet markers; what is left is the owner's own typing).
+  leave no trace; what is left is the owner's own typing). Where collateral does
+  run on a markdown source, a region wholly inside callouts on both sides opens
+  no thread and joins no summary (`collateral.calloutOnly`, fed by
+  `blog.calloutPlains` through `server.sourceShape`); a reader's own thread on
+  a callout is still healed.
 - **Turn end** (`reportAuthoringChanges → settleOwnership`, before `changedPosts`):
   `ownership.plan(raw, steps)` replays every version the watch saw. A user step is
   kept; a user step over a held bot change wins, and the hold is dropped. A bot
-  callout step is kept and remembered for a marker. Any other bot step is held:
+  callout step is kept, with no marker and no approval. Any other bot step is held:
   the owner's text from before it is what the file will say. The file is written
   back with only the held hunks reverted, never the snapshot. The write is
   compare-and-swap: a file that moved again is re-planned with that version as
@@ -11811,10 +11822,14 @@ should rarely fire.
   under `<scratch>/bot-versions/`.
 - **The owner's front matter is left alone**: `authoring.changedPosts(…,
   {keepFront})` no longer re-front-matters a post under the rule.
-- **Quiet markers** (`page.marks`, `{kind:'bots'|'yours', quote, by, at}`, newest
-  40, aged out after 7 days): content.js paints them with
-  `Anchor.paintQuiet` as a dotted underline with no background and a tooltip, no
-  thread and no approval. A marker that does not locate is simply not drawn.
+- **Quiet markers** (`page.marks`, `{kind:'yours', quote, by, at}`, newest
+  40, aged out after 7 days): only the owner's own ✎ written into the post.
+  content.js paints them with `Anchor.paintQuiet` as a green dotted underline
+  with no background and a "your edit" tooltip, no thread and no approval. A
+  marker that does not locate is simply not drawn. A bot's callout change gets
+  NO marker (the owner, 2026-11-07: "callouts can live happily without the
+  highlights"); an old `kind:'bots'` record is never painted and is dropped the
+  next time the list is written.
 - **Who wrote a version** (`turnwatch.mjs`): (1) the companion's own journal. Card
   accepts, ✎ prose writes and the backstop's put-back call `noteUserWrite`
   first, and a version with that hash is the owner's, exactly. (2) On macOS,
@@ -11842,16 +11857,21 @@ existing posts are not reverted.
 - **Page prose** (`figure.id === 'page-text'`, region not `front-matter`): the
   companion writes the replacement into the markdown itself, with no bot
   (`ownership.proseEdit`). It writes only when `findSpans` finds the words exactly
-  once in the body, outside Agent-check blocks and front matter. If they occur
+  once in the body, outside callout blocks and front matter. If they occur
   more than once, they must occur once inside the one paragraph whose `plainOf`
   words hold the edit's rendered block. A span crossing markdown furniture is
   refused. Refusals (`not-found`, `ambiguous`, `outside-body`, `markup`) route
   the edit to the bots, with the reason. A "yours" quiet marker goes on each
-  written edit. A retry of the same batch gets the cached answer, and `already`
-  covers a restart.
-- **The editor** no longer offers ✎ inside an Agent check callout
-  (`agentCheckOf`: a `.callout` whose title starts "Agent check"). The editor's
-  own UI carries `bfp-ui`, so Discuss never reads the tray as page text.
+  written edit. A retry of the same batch gets the cached answer. Nothing is
+  ever written twice (2026-11-07): every written `edit_id` is kept on the page
+  record (`page.fte_written`, newest 300), so a resend under a new batch id or
+  after a companion restart answers `{to:'source', already:true}`; and
+  `proseEdit` answers `already` when every match of the old words sits inside
+  an occurrence of the new ones — the INSERTION case, where the replacement
+  contains the original and the old words go on matching after the write.
+- **The editor** offers no ✎ inside any callout (`calloutOf`: any `.callout`).
+  A plain blockquote stays editable. The editor's own UI carries `bfp-ui`, so
+  Discuss never reads the tray as page text.
 
 ### C. No batch limit
 
@@ -11879,6 +11899,40 @@ existing posts are not reverted.
   generator/exports/source, and its context (the scrolly step). A picture is
   `element.kind:'raster'` with "add an overlay or annotation". Comments leave the
   tray once they are delivered.
+
+### E. Delivery that survives its own reload (2026-11-07)
+
+Found on the real post: an insertion ✎ ("…of humanity." → "…of humanity. While
+I am sure…") was written into the post, the site rebuilt, and the page reloaded
+before the ack reached the editor. The tray said "Not delivered", and the stored
+draft was previewed again over text that already held it — the old words still
+matched, so the sentence was appended on every repaint.
+
+- **A reload mid-send is `interrupted`, not failed** (`Store`). Once the
+  extension answers, `Editor.resumeIfInterrupted` sends again under the SAME
+  batch id (even if some of its edits have since been dropped as applied). The
+  extension answers a known id with its stored ack; the companion never writes
+  twice (B above). The tray says "checking…", never "Not delivered".
+- **Written prose is dropped from the tray** on its ack (`markDelivered` →
+  `markApplied`), and a stored delivered-to-`source` record is dropped on load.
+- **A preview is never written over words the page already shows**
+  (`reconcile`): `showsAlready` asks whether an occurrence of the new wording
+  in the node's block covers the node and runs past it. If so the edit is in
+  the page: dropped as applied when the node was not our preview, left alone
+  when it was (our preview split by someone's markup). And a node is written at
+  most once per edit (`fig.wrote`, cleared on revert). A stuck draft from
+  before the fix is cleaned up by this on the next load.
+- **Clicking "Send changes (retry)" on the stuck tray before this fix** sent
+  the same batch id: the companion's in-memory cache answered it without a
+  write while it had not restarted; after a restart it would have written the
+  sentence a second time (the insertion still matched). Both holes are closed.
+
+Tests: `ownership.test.mjs` (insertion written once, retry under a new batch id
+and with a new edit id, collateral skipping callouts), harness
+`?figedit=route&selftest=1` (now 35 checks: any-title callout and plain quote,
+insertion split by markup, reload-before-ack resume, stuck-draft cleanup, no
+callout marker), blog repo `test_delivery.mjs` / `test_routing.mjs` (interrupted
+resume keeps its id, written prose dropped).
 
 Tests: `ownership.test.mjs` (the matcher, blocks, callout vs prose, an
 insertion between sentences, front matter, the owner's own callout and prompt,

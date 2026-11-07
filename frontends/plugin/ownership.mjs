@@ -1,24 +1,27 @@
 // ownership.mjs — who owns which words of a blog post, enforced at turn-end.
 //
-// ── THE RULE (2026-11-06, the owner's decision) ────────────────────────────
+// ── THE RULE (2026-11-06, the owner's decision; widened 2026-11-07) ────────
 // On the reader's own blog in direct-edit mode the bots write the post's
-// markdown themselves. That stays true for exactly one kind of text: an
-// "Agent check" callout — a blockquote callout whose first line is
+// markdown themselves. That stays true for exactly one kind of text: a
+// CALLOUT — a blockquote whose first line carries a callout tag:
 //
 //     > [!note] Agent check: is "five times" right?
+//     > [!tip] Answer: yes, five
+//     > [!warning] How the 2030 figure is reached
 //
-// (any callout type: note, warning, tip …). Those blocks are the BOTS'
-// territory: they may add one between paragraphs, edit inside one, or remove
-// one, and the change stays as written with a quiet marker and no approval.
+// Any type (note, warning, tip …), any title. The owner writes the prose and
+// the bots write the callouts, so callout blocks are the BOTS' territory: they
+// may add one between paragraphs, edit inside one, or remove one, and the
+// change stays as written — no marker on the page and no approval.
 //
 // EVERY OTHER BYTE OF THE POST IS THE READER'S: their prose, a sentence added
 // between two of their sentences, their front matter, their own inline
-// "agent check" prompts, their own (non-agent) callouts. A bot change there is
-// PUT BACK in the file and turned into a propose-first suggestion card
-// (suggest.mjs's card: current → proposed → why, unique-span apply, drift
-// refusal) on the conversation that asked. The prompt asks the bots to propose
-// prose changes as ```suggest blocks in the first place; this file is the
-// backstop that holds when one forgets.
+// "agent check" prompts, their plain blockquotes (`> ` with no `[!type]`). A
+// bot change there is PUT BACK in the file and turned into a propose-first
+// suggestion card (suggest.mjs's card: current → proposed → why, unique-span
+// apply, drift refusal) on the conversation that asked. The prompt asks the
+// bots to propose prose changes as ```suggest blocks in the first place; this
+// file is the backstop that holds when one forgets.
 //
 // ── WHY STEPS, NOT ONE DIFF ────────────────────────────────────────────────
 // The reader can be typing in Obsidian while a bot turn runs. A single
@@ -29,8 +32,7 @@
 //
 //   · a USER step is kept as it is — and where it lands on a bot change that
 //     was being held back, the user's text wins and the hold is dropped;
-//   · a BOT step inside an Agent-check callout is kept, and remembered as a
-//     callout change (for the quiet marker);
+//   · a BOT step inside a callout is kept as it is;
 //   · any other BOT step is HELD: the reader's text from before it is what the
 //     file will say, and the bot's text becomes a card.
 //
@@ -43,30 +45,30 @@
 import SpanMatch from '../review/assets/span-match.js';
 const { findSpans } = SpanMatch;
 
-// ---- the one matcher: is this line the head of an Agent check callout? -----
+// ---- the one matcher: is this line the head of a callout? ------------------
 //
-// ACCEPTS, exactly: a line that starts (column 0) with `>`, an optional single
-// space, a callout tag `[!type]` whose type is letters, digits, `_` or `-`
-// (note, warning, tip, challenge, …), an optional fold marker `+` or `-`,
-// optional spaces, and then the words `Agent check` in any letter case, NOT
-// followed by another letter. What comes after is free: `: question`, ` — x`,
-// or nothing.
+// The site's own renderer decides what a callout is (_plugins/callout.rb:
+// `^> \[!([A-Za-z]+)([^\]]*)\]`), and this says the same thing: a line that
+// starts (column 0) with `> ` — one space, as the renderer wants — then a
+// callout tag `[!type]` whose type is letters, optionally followed inside the
+// brackets by more words (`[!note My title]`). What comes after the `]` is
+// free: a fold marker, a title, or nothing.
 //
 //     > [!note] Agent check: is "five times" right?       ✓
-//     > [!warning]- agent check — the date                 ✓
-//     >[!tip] Agent check                                  ✓
-//     > [!note] Agent checks pending                       ✗ (another letter)
-//     > [!note] Check: agent                               ✗
-//       > [!note] Agent check: indented                    ✗ (not column 0)
-//     Agent check: in the prose                            ✗ (not a callout)
+//     > [!tip] Answer: yes                                 ✓
+//     > [!warning]- How the date was found                 ✓
+//     > [!note My own title]                               ✓
+//     > [!note]                                            ✓
+//     > A plain quote                                      ✗ (no callout tag)
+//     >[!tip] No space                                     ✗ (the renderer shows a blockquote)
+//       > [!note] Indented                                 ✗ (not column 0)
 //
-// The block it heads runs, like the site's own renderer (_plugins/callout.rb:
-// `^> \[!…\] … (?=\n\n|\Z)`), to the first blank line or the end of the file.
-// A line of only spaces counts as blank here, which can only make the block
-// SHORTER than the renderer's — the safe direction, since anything outside the
-// block is the reader's.
-export const AGENT_CHECK_RE = /^> ?\[![A-Za-z0-9_-]+\][+-]? *agent check(?![a-z])/i;
-export const isAgentCheckHead = line => AGENT_CHECK_RE.test(String(line == null ? '' : line));
+// The block it heads runs, like the renderer's `(?=\n\n|\Z)`, to the first
+// blank line or the end of the file. A line of only spaces counts as blank
+// here, which can only make the block SHORTER than the renderer's — the safe
+// direction, since anything outside the block is the reader's.
+export const CALLOUT_RE = /^> \[![A-Za-z]+[^\]\n]*\]/;
+export const isCalloutHead = line => CALLOUT_RE.test(String(line == null ? '' : line));
 
 const lineStarts = text => {
   const out = [0];
@@ -80,8 +82,8 @@ export function frontMatterEnd(text) {
   return m ? m[0].length : 0;
 }
 
-/** Every Agent-check callout block in a markdown source, as char ranges. */
-export function agentCheckBlocks(text) {
+/** Every callout block in a markdown source, as char ranges. */
+export function calloutBlocks(text) {
   const src = String(text == null ? '' : text);
   const starts = lineStarts(src);
   const fm = frontMatterEnd(src);
@@ -98,7 +100,7 @@ export function agentCheckBlocks(text) {
       else if (line.trim().startsWith(fence)) fence = null;
       continue;
     }
-    if (fence || !isAgentCheckHead(line)) continue;
+    if (fence || !isCalloutHead(line)) continue;
     // to the first blank line
     let end = e;
     let lj = li + 1;
@@ -145,12 +147,12 @@ function sideOk(text, zones, s, e) {
 const hasInk = s => /\S/.test(s);
 
 /**
- * Is this change wholly the bots' — inside Agent-check callouts on both sides?
+ * Is this change wholly the bots' — inside callouts on both sides?
  * `a,b` is the old range in `oldText`, `c,d` the new range in `newText`.
  */
 export function calloutHunk(oldText, newText, h, zonesOld, zonesNew) {
-  const zo = zonesOld || zonesOf(oldText, agentCheckBlocks(oldText));
-  const zn = zonesNew || zonesOf(newText, agentCheckBlocks(newText));
+  const zo = zonesOld || zonesOf(oldText, calloutBlocks(oldText));
+  const zn = zonesNew || zonesOf(newText, calloutBlocks(newText));
   const oldPart = oldText.slice(h.a, h.b);
   const newPart = newText.slice(h.c, h.d);
   // a change of whitespace alone between two of the reader's paragraphs is a
@@ -270,7 +272,8 @@ const overlaps = (r, a, b) => (a === b ? (r.start < a && a < r.end) : (r.start <
  * Returns {final, result, held:[{start,end,orig}], callouts:[{start,end}]}:
  * `final` is the last version (what is on disk), `result` is what it should
  * be — final with every held bot hunk put back — and `held`/`callouts` are in
- * FINAL's coordinates.
+ * FINAL's coordinates (`callouts` is what the bots changed inside callouts:
+ * information only, nothing is painted from it).
  */
 export function settle(base, steps) {
   let cur = String(base == null ? '' : base);
@@ -280,8 +283,8 @@ export function settle(base, steps) {
     if (next === cur) continue;
     const bot = step.by !== 'user';
     const hunks = diffText(cur, next);
-    const zo = zonesOf(cur, agentCheckBlocks(cur));
-    const zn = zonesOf(next, agentCheckBlocks(next));
+    const zo = zonesOf(cur, calloutBlocks(cur));
+    const zn = zonesOf(next, calloutBlocks(next));
     const kinds = hunks.map(h => {
       if (!bot) return 'user';
       const touchesHeld = regions.some(r => r.kind === 'held' && overlaps(r, h.a, h.b));
@@ -416,19 +419,15 @@ export function cardsFor(final, result, held) {
 
 /**
  * The whole decision for one turn of one post, as data. The server writes
- * `result` (compare-and-swap against `final`), posts `cards` to the turn's
- * conversation and paints `callouts` as quiet markers.
+ * `result` (compare-and-swap against `final`) and posts `cards` to the turn's
+ * conversation. A callout change needs nothing more: it stays as written and
+ * leaves no trace on the page (the owner's call, 2026-11-07: "callouts can
+ * live happily without the highlights").
  */
 export function plan(base, steps) {
   const s = settle(base, steps);
   const cards = s.held.length ? cardsFor(s.final, s.result, s.held) : [];
-  // the callout blocks the bots touched, whole, as text the page can anchor a
-  // quiet marker on (a fragment like "five" would anchor anywhere)
-  const blocks = agentCheckBlocks(s.final);
-  const calloutText = [...new Set(s.callouts.flatMap(r => blocks
-    .filter(b => b.start < Math.max(r.end, r.start + 1) && b.end > r.start)
-    .map(b => s.final.slice(b.start, b.end))))];
-  return { ...s, cards, calloutText, changed: s.result !== s.final };
+  return { ...s, cards, changed: s.result !== s.final };
 }
 
 // ---- the reader's own ✎ on page prose ---------------------------------------
@@ -445,8 +444,8 @@ export function plan(base, steps) {
 //     block, and `original` occurs exactly once inside that paragraph.
 //
 // Anything else — the words cross markup (a link's text and the words around
-// it, emphasis that splits them), they are in front matter or in an Agent
-// check callout, they occur ambiguously, or they are not there at all — is
+// it, emphasis that splits them), they are in front matter or in a callout,
+// they occur ambiguously, or they are not there at all — is
 // NOT written. Those edits go to the bots instead, with the reason.
 export function proseEdit(src, edit, plainOf) {
   const text = String(src == null ? '' : src);
@@ -455,7 +454,7 @@ export function proseEdit(src, edit, plainOf) {
   if (!original) return { ok: false, reason: 'empty', detail: 'the edit names no words' };
   if (!replacement) return { ok: false, reason: 'empty', detail: 'the new wording is empty' };
   const fm = frontMatterEnd(text);
-  const blocks = agentCheckBlocks(text);
+  const blocks = calloutBlocks(text);
   const usable = sp => sp.start >= fm && !blocks.some(b => sp.start < b.end && sp.end > b.start);
   const all = findSpans(text, original, 50);
   let hits = all.filter(usable);
@@ -467,7 +466,18 @@ export function proseEdit(src, edit, plainOf) {
   }
   if (!hits.length) {
     return { ok: false, reason: 'outside-body',
-      detail: all.some(sp => sp.start < fm) ? 'those words are in the front matter' : 'those words are inside an Agent check callout' };
+      detail: all.some(sp => sp.start < fm) ? 'those words are in the front matter' : 'those words are inside a callout (callouts are the bots’ to write)' };
+  }
+  // Already written? When the new wording CONTAINS the old (an insertion, an
+  // expansion: "…of humanity." → "…of humanity. While I am sure…"), the old
+  // words still match after the edit landed — inside the new ones — and a
+  // second write would add the new words twice. A hit that sits inside an
+  // occurrence of the replacement is that edit, done.
+  if (replacement.includes(original)) {
+    const done = findSpans(text, replacement, 50).filter(usable);
+    const fresh = hits.filter(sp => !done.some(d => d.start <= sp.start && sp.end <= d.end));
+    if (!fresh.length) return { ok: false, reason: 'already', detail: 'the source already says this' };
+    hits = fresh;
   }
   if (hits.length > 1 && edit && edit.block && typeof plainOf === 'function') {
     // narrow to the one paragraph whose rendered words hold the block

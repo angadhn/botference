@@ -694,15 +694,15 @@ function noteTurnStart(url) {
     const bg = blogOf(url);
     const seen = { authoring: true, dir: writing.root, site: writing,
       source: bg?.source_path || '', noCollateral: !bg?.source_path,
-      text: bg?.source_path ? blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel) : '',
+      ...(bg?.source_path ? sourceShape(bg.source_path, bg.rel) : { text: '' }),
       before: authoring.scan(writing), at: new Date().toISOString() };
     // THE OWNERSHIP RULE (ownership.mjs): the post's markdown is the owner's
-    // except its Agent-check callouts. The raw text is kept and every version
+    // except its callouts. The raw text is kept and every version
     // the turn produces is watched, so turn-end can put back the bots' edits to
     // the owner's words without ever touching words the owner typed meanwhile.
     // Collateral threads are off for this file: a bot change to the owner's
-    // text arrives as a card, a callout change gets a quiet marker, and what is
-    // left in a diff is the owner's own typing, which is nobody's news.
+    // text arrives as a card, a callout change stays without a trace, and what
+    // is left in a diff is the owner's own typing, which is nobody's news.
     if (ownedSource(bg)) {
       const raw = rawSource(bg.source_path);
       if (raw != null) {
@@ -761,7 +761,7 @@ function noteBlogTurnStart(url) {
     // transform it, once at turn start and again at turn end, on every blog
     // turn, so that reportCollateral could look at one boolean and throw both
     // away. `noCollateral` is decided first now and the work is skipped.
-    text: bg.suggest_mode ? '' : blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel),
+    ...(bg.suggest_mode ? { text: '' } : sourceShape(bg.source_path, bg.rel)),
     // …the instruction NOT to diff it. Collateral threads
     // exist to catch edits nobody commented on — a change that landed silently
     // because no thread stood where it landed. In suggest mode no change lands
@@ -792,6 +792,14 @@ function sourceSnapshot(file) {
   } catch { return ''; }
 }
 
+// The source as collateral reads it: its words a paragraph at a time
+// (blog.sourceDoc), and the rendered words of its callouts, which are the
+// bots' own and never open a thread (collateral.calloutOnly).
+function sourceShape(file, name) {
+  const raw = sourceSnapshot(file);
+  return { text: blog.sourceDoc(raw, name), callouts: blog.calloutPlains(raw, name) };
+}
+
 // ---- who owns a post's words (ownership.mjs) -------------------------------
 // A post of the owner's site in direct-edit mode, whose source is markdown the
 // bots write in place. Notebooks and .html sources are not under the rule:
@@ -808,19 +816,20 @@ function rawSource(file) {
   } catch { return null; }
 }
 
-// Quiet markers: a passage changed without a card — a bot's edit inside an
-// Agent-check callout ('bots'), or the owner's own ✎ written straight into the
-// post ('yours'). No thread, no approval: content.js paints a faint dotted
-// underline that says who changed it. They age out on their own.
+// Quiet markers: the owner's own ✎ written straight into the post ('yours').
+// No thread, no approval: content.js paints a faint dotted underline that says
+// "your edit". They age out on their own. A bot's change to a callout gets NO
+// marker (the owner's call, 2026-11-07), so only 'yours' is ever kept — a
+// 'bots' record left from before is dropped the next time the list is written.
 const MARKS_MAX = 40;
 const MARK_DAYS = 7;
 function addMarks(page, list) {
   const now = Date.now();
-  const keep = (page.marks || []).filter(m => m && now - (Date.parse(m.at || '') || 0) < MARK_DAYS * 864e5);
+  const keep = (page.marks || []).filter(m => m && m.kind === 'yours' && now - (Date.parse(m.at || '') || 0) < MARK_DAYS * 864e5);
   for (const m of list) {
     const quote = String(m.quote || '').replace(/\s+/g, ' ').trim().slice(0, 600);
-    if (!quote) continue;
-    keep.push({ id: `mk${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`, kind: m.kind === 'yours' ? 'yours' : 'bots',
+    if (!quote || m.kind !== 'yours') continue;
+    keep.push({ id: `mk${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`, kind: 'yours',
       quote, ...(m.prefix ? { prefix: String(m.prefix).slice(-32) } : {}),
       ...(m.suffix ? { suffix: String(m.suffix).slice(0, 32) } : {}),
       ...(m.by ? { by: String(m.by).slice(0, 40) } : {}), at: new Date(now).toISOString() });
@@ -837,8 +846,8 @@ const CARD_SIDE_MAX = 7900;
 // Turn-end for a post under the ownership rule. `steps` are the versions the
 // watch saw. Puts the bots' edits to the owner's words back (compare-and-swap:
 // a file that moved again since it was read is re-planned with that version
-// as one more step), posts the cards to the conversation that asked, and
-// leaves quiet markers on callouts the bots changed.
+// as one more step) and posts the cards to the conversation that asked. A
+// callout the bots changed is simply left as they wrote it: no marker.
 function settleOwnership(url, seen, steps, ev) {
   const file = seen.source;
   let disk = rawSource(file);
@@ -860,42 +869,37 @@ function settleOwnership(url, seen, steps, ev) {
       if (!p.changed) break;
     }
   }
-  if (!p.cards.length && !p.calloutText.length) return p;
+  if (!p.cards.length) return p;
   const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
   const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
   const page = store.readPage(url);
   if (!page) return p;
-  if (p.calloutText.length) {
-    addMarks(page, p.calloutText.map(t => ({ kind: 'bots', quote: pagePlainOf(t), by: who })));
-  }
-  if (p.cards.length) {
-    let saved = '';
-    const cards = p.cards.map(c => {
-      const base = { id: suggest.newId(), current: c.current, proposed: c.proposed,
-        ...(c.deletes ? { deletes: true } : {}),
-        why: `${who} wrote this into your text directly; it was put back for you to decide` };
-      if (c.current.length <= CARD_SIDE_MAX && c.proposed.length <= CARD_SIDE_MAX) return { ...base, state: 'open' };
-      if (!saved) {
-        try {
-          const dir = path.join(scratch.ensureScratch(seen.dir), 'bot-versions');
-          fs.mkdirSync(dir, { recursive: true });
-          saved = path.join(dir, `${path.basename(file, path.extname(file))}.${Date.now().toString(36)}.md`);
-          fs.writeFileSync(saved, p.final);
-        } catch { saved = ''; }
-      }
-      return { ...base, current: c.current.slice(0, CARD_SIDE_MAX), proposed: c.proposed.slice(0, CARD_SIDE_MAX),
-        state: 'needs-manual', reason: 'too-long',
-        detail: `too long to offer as one card${saved ? ` — the bots' whole version of the post is in ${path.relative(seen.dir, saved)}` : ''}` };
-    });
-    const target = (ev && typeof ev.target === 'string' && store.msgsOf(page, ev.target)) ? ev.target : store.PAGE_CHAT;
-    const n = cards.length;
-    const msg = store.appendMsg(page, target, { author: 'botference',
-      text: `${who} edited your words in the post directly. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
-        + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves your text as it is. '
-        + '(Agent check callouts, figures and new files are the bots’ to edit; everything else in the post is yours.)',
-      suggestions: cards });
-    if (msg) broadcast({ type: 'chat', kind: 'reply', url: page.url, target, msg });
-  }
+  let saved = '';
+  const cards = p.cards.map(c => {
+    const base = { id: suggest.newId(), current: c.current, proposed: c.proposed,
+      ...(c.deletes ? { deletes: true } : {}),
+      why: `${who} wrote this into your text directly; it was put back for you to decide` };
+    if (c.current.length <= CARD_SIDE_MAX && c.proposed.length <= CARD_SIDE_MAX) return { ...base, state: 'open' };
+    if (!saved) {
+      try {
+        const dir = path.join(scratch.ensureScratch(seen.dir), 'bot-versions');
+        fs.mkdirSync(dir, { recursive: true });
+        saved = path.join(dir, `${path.basename(file, path.extname(file))}.${Date.now().toString(36)}.md`);
+        fs.writeFileSync(saved, p.final);
+      } catch { saved = ''; }
+    }
+    return { ...base, current: c.current.slice(0, CARD_SIDE_MAX), proposed: c.proposed.slice(0, CARD_SIDE_MAX),
+      state: 'needs-manual', reason: 'too-long',
+      detail: `too long to offer as one card${saved ? ` — the bots' whole version of the post is in ${path.relative(seen.dir, saved)}` : ''}` };
+  });
+  const target = (ev && typeof ev.target === 'string' && store.msgsOf(page, ev.target)) ? ev.target : store.PAGE_CHAT;
+  const n = cards.length;
+  const msg = store.appendMsg(page, target, { author: 'botference',
+    text: `${who} edited your words in the post directly. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
+      + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves your text as it is. '
+      + '(Callouts, figures and new files are the bots’ to edit; everything else in the post is yours.)',
+    suggestions: cards });
+  if (msg) broadcast({ type: 'chat', kind: 'reply', url: page.url, target, msg });
   store.savePage(page);
   broadcast({ type: 'page', url: page.url });
   return p;
@@ -931,8 +935,12 @@ function settleOwnership(url, seen, steps, ev) {
 // basis is deliberately the file the bots edited rather than the page the
 // reader is looking at: the rendered copy is regenerated wholesale by jekyll
 // and diffing it would attribute the build to the bots.
-function reportCollateral(page, seen, after, ev) {
+function reportCollateral(page, seen, afterIn, ev) {
   if (!page || !seen || !seen.text) return 0;
+  // a page's own bytes arrive as a string; a markdown source as sourceShape's
+  // {text, callouts}
+  const shape = afterIn && typeof afterIn === 'object' ? afterIn : { text: afterIn || '', callouts: [] };
+  const after = shape.text;
   if (!after) return 0;
   // …and never on a turn that proposed instead of writing (noteBlogTurnStart
   // says why at length). Suggestions are cards by construction; they are not
@@ -948,7 +956,9 @@ function reportCollateral(page, seen, after, ev) {
     // the conversation the turn answered: a change made for it is told as such,
     // and one that landed inside its own passage is adopted by it
     const origin = (ev && typeof ev.target === 'string') ? ev.target : '';
-    const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who, origin });
+    const callouts = (seen.callouts || []).length || (shape.callouts || []).length
+      ? { before: seen.callouts || [], after: shape.callouts || [] } : null;
+    const plan = collateral.collateral(seen.text, after, page, { since: seen.at, who, origin, callouts });
     // …and FIRST, the repairs. A region whose old text was a reader's own
     // quoted passage does not become a new thread announcing the change — it
     // goes back into the thread that was about to orphan, which is where the
@@ -1071,7 +1081,7 @@ async function reportAuthoringChanges(url, seen, ev) {
       source, page_changed: !!source && (changed.includes(source) || assetsChanged), assets_changed: assetsChanged,
       count: changed.length, files: changed.slice(0, workspace.CHANGED_LIST_MAX), at: new Date().toISOString() };
     if (source && changed.includes(source)) withCollateral(url, payload, seen, ev,
-      () => blog.sourceDoc(sourceSnapshot(bg.source_path), bg.rel));
+      () => sourceShape(bg.source_path, bg.rel));
     // Source articles must not reload merely because the local site changed.
     publishChanges(url, payload);
     for (const post of posts) {
@@ -1163,7 +1173,7 @@ function reportBlogChanges(url, seen, ev) {
     // plainOf first), so the threads it opens anchor on the page instead of
     // being born orphaned on a link's brackets.
     withCollateral(url, payload, seen, ev,
-      () => blog.sourceDoc(sourceSnapshot(seen.source), seen.source));
+      () => sourceShape(seen.source, seen.source));
   }
   publishChanges(url, payload);
 }
@@ -3562,11 +3572,17 @@ export function handler(req, res) {
       const marks = [];
       const before = blog.scanSite(bg.root, bg.kind);
       let wrote = 0;
+      // every prose edit ever written into this post, by edit_id (the editor
+      // keeps one id per draft across retries and new batches): a retry the
+      // in-memory cache above has forgotten — the companion restarted, or the
+      // batch id changed — must still never write the same edit twice
+      const written = new Set((page.fte_written || []).map(w => w && w.edit_id));
       for (const e of batch.edits) {
         const region = String((e.source && e.source.region) || '');
         const prose = !figedits.isComment(e) && e.figure && e.figure.id === 'page-text'
           && region !== 'front-matter' && ownedSource(bg);
         if (!prose) { routes.push({ edit_id: e.edit_id, to: 'bots' }); continue; }
+        if (written.has(e.edit_id)) { routes.push({ edit_id: e.edit_id, to: 'source', already: true }); continue; }
         const src = rawSource(bg.source_path);
         const r = src == null ? { ok: false, reason: 'gone', detail: 'the post could not be read' }
           : ownership.proseEdit(src, { original: e.original, replacement: e.replacement, block: e.source && e.source.block }, pagePlainOf);
@@ -3574,6 +3590,8 @@ export function handler(req, res) {
           turnwatch.noteUserWrite(bg.source_path, r.after);
           fs.writeFileSync(bg.source_path, r.after);
           wrote++;
+          written.add(e.edit_id);
+          page.fte_written = [...(page.fte_written || []), { edit_id: e.edit_id, at: new Date().toISOString() }].slice(-300);
           routes.push({ edit_id: e.edit_id, to: 'source' });
           marks.push({ kind: 'yours', quote: String(e.replacement), by: 'you' });
         } else if (r.reason === 'already') {
@@ -3582,7 +3600,8 @@ export function handler(req, res) {
           routes.push({ edit_id: e.edit_id, to: 'bots', reason: r.reason, detail: r.detail });
         }
       }
-      if (marks.length) { addMarks(page, marks); store.savePage(page); broadcast({ type: 'page', url: page.url }); }
+      if (marks.length) addMarks(page, marks);
+      if (wrote) { store.savePage(page); broadcast({ type: 'page', url: page.url }); }
       if (wrote) announceBlogWrite(page.url, bg, before);
       const forBots = routes.filter(r => r.to === 'bots').length;
       let files = null;

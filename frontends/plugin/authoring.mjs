@@ -36,7 +36,7 @@ export function context(site, page, source = null) {
     + `Scratch work belongs under ${blog.scratchDir(site.root)}. Requested CSS/layout fixes are permitted. `
     + `Edit source files, never _site/ build output. The companion starts or reuses the local preview after changes.\n`
     + (source?.source_path
-      ? `For a comment or a batch review on this post: edit Agent check callouts, figure scripts, generated figures and images directly; `
+      ? `For a comment or a batch review on this post: edit callouts (\`> [!type] …\` blocks), figure scripts, generated figures and images directly; `
         + `propose every change to the owner's own words in the post as a \`\`\`suggest block (the rules follow). Reply in that comment with what you did. `
       : `For a comment or a batch review, implement its requested source change directly and reply in that comment with what changed. `)
     + `For a complex deliverable, delegate with this repository and exact destination in the brief.\n`

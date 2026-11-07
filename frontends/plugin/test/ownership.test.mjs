@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 import * as O from '../ownership.mjs';
 import * as F from '../figedits.mjs';
 import * as suggest from '../suggest.mjs';
+import * as collateral from '../collateral.mjs';
+import * as blog from '../blog.mjs';
 import { createHarness, POST, GET, inputs } from './harness.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -30,30 +32,33 @@ Second paragraph is here, and it is mine. Agent check: is this date right?
 > [!note] Agent check: is "five times" right?
 > I think it is four.
 
-> [!tip] My own aside
-> Written by me.
+> [!tip] Answer: yes, five
+> Written by a bot.
+
+> A plain quote the owner chose.
 
 Last words.
 `;
 const bot = (base, steps) => O.plan(base, steps.map(t => ({ text: t, by: 'bot' })));
 
 // ---- the matcher -----------------------------------------------------------
-await test('the Agent check matcher accepts exactly the callout head it says', () => {
-  for (const ok of ['> [!note] Agent check: is "five times" right?', '> [!warning]- agent check — the date',
-    '>[!tip] Agent check', '> [!challenge] AGENT CHECK: x', '> [!my-type]+ Agent check']) {
-    assert.ok(O.isAgentCheckHead(ok), ok);
+await test('the callout matcher accepts any `> [!type]` head the site renders, and nothing else', () => {
+  for (const ok of ['> [!note] Agent check: is "five times" right?', '> [!warning]- How the date was found',
+    '> [!tip] Answer: yes', '> [!challenge] AGENT CHECK: x', '> [!note My own title]', '> [!note]',
+    '> [!note] Suggested wording', '> [!tip] Reading the chart', '> [!note] Is it five?']) {
+    assert.ok(O.isCalloutHead(ok), ok);
   }
-  for (const no of ['> [!note] Agent checks pending', '> [!note] Check: agent', '  > [!note] Agent check: indented',
-    'Agent check: in the prose', '> Agent check: a plain quote', '> [!note] My aside']) {
-    assert.ok(!O.isAgentCheckHead(no), no);
+  for (const no of ['  > [!note] Agent check: indented', 'Agent check: in the prose', '> Agent check: a plain quote',
+    '> A plain quote', '>[!tip] No space (the site shows a blockquote)', '[!note] no quote mark', '> [!] no type']) {
+    assert.ok(!O.isCalloutHead(no), no);
   }
 });
 
 await test('blocks run to the first blank line; front matter and code fences are never blocks', () => {
-  const src = '---\nnote: "> [!note] Agent check: no"\n---\n\n```\n> [!note] Agent check: code\n```\n\n> [!note] Agent check: yes\n> body\nlazy line\n\nprose\n';
-  const b = O.agentCheckBlocks(src);
+  const src = '---\nnote: "> [!note] Agent check: no"\n---\n\n```\n> [!note] Agent check: code\n```\n\n> [!tip] Answer: yes\n> body\nlazy line\n\n> plain quote\n\nprose\n';
+  const b = O.calloutBlocks(src);
   assert.equal(b.length, 1);
-  assert.equal(src.slice(b[0].start, b[0].end), '> [!note] Agent check: yes\n> body\nlazy line');
+  assert.equal(src.slice(b[0].start, b[0].end), '> [!tip] Answer: yes\n> body\nlazy line');
 });
 
 // ---- the backstop, as a plan ---------------------------------------------------
@@ -67,18 +72,19 @@ await test('a callout edit stays; a prose edit is put back and becomes a card', 
   assert.match(p.cards[0].current, /it is mine\./);
   assert.match(p.cards[0].proposed, /the bot’s now/);
   assert.equal(p.cards[0].ambiguous, false);
-  assert.equal(p.calloutText.length, 1);
-  assert.match(p.calloutText[0], /Agent check: is "five times" right\?/);
+  assert.equal(p.calloutText, undefined, 'no marker text: a callout change leaves no trace');
   // and the card applies to the file as it now stands
   assert.equal(suggest.resolveSpan(p.result, p.cards[0].current).ok, true);
 });
 
-await test('adding a whole new Agent check callout between paragraphs, or removing one, is the bots’', () => {
-  const added = POST_MD.replace('Last words.', '> [!warning] Agent check: the year?\n> 2026 or 2025?\n\nLast words.');
+await test('a callout with any title is the bots’: edit, add one between paragraphs, or remove one', () => {
+  const edited = bot(POST_MD, [POST_MD.replace('Written by a bot.', 'Rewritten by a bot.').replace('Answer: yes, five', 'Answer: yes, it is five')]);
+  assert.equal(edited.changed, false);
+  assert.match(edited.result, /Rewritten by a bot\./);
+  const added = POST_MD.replace('Last words.', '> [!warning] How the year was found\n> 2026, from the filing.\n\nLast words.');
   const p1 = bot(POST_MD, [added]);
   assert.equal(p1.changed, false);
   assert.equal(p1.cards.length, 0);
-  assert.match(p1.calloutText[0], /the year\?/);
   const removed = POST_MD.replace('> [!note] Agent check: is "five times" right?\n> I think it is four.\n\n', '');
   const p2 = bot(POST_MD, [removed]);
   assert.equal(p2.changed, false);
@@ -102,12 +108,15 @@ await test('a callout dropped INTO the middle of a paragraph is not callout terr
   assert.equal(p.cards.length, 1);
 });
 
-await test('front matter, the owner’s own callout, and their inline "agent check" prompt are theirs', () => {
+await test('front matter, the owner’s plain quote, and their inline "agent check" prompt are theirs', () => {
   const fm = bot(POST_MD, [POST_MD.replace('title: My post', 'title: A better post')]);
   assert.equal(fm.result, POST_MD);
   assert.match(fm.cards[0].current, /title: My post/);
-  const aside = bot(POST_MD, [POST_MD.replace('> [!tip] My own aside', '> [!tip] Agent check: my own aside')]);
-  assert.equal(aside.result, POST_MD, 'turning the owner’s callout into an Agent check is a change to their text');
+  const quote = bot(POST_MD, [POST_MD.replace('> A plain quote the owner chose.', '> A plain quote the bot chose.')]);
+  assert.equal(quote.result, POST_MD, 'a plain blockquote (no [!type]) is the owner’s');
+  assert.equal(quote.cards.length, 1);
+  const promote = bot(POST_MD, [POST_MD.replace('> A plain quote the owner chose.', '> [!note] A plain quote the owner chose.')]);
+  assert.equal(promote.result, POST_MD, 'turning the owner’s quote into a callout is a change to their text');
   const prompt = bot(POST_MD, [POST_MD.replace(' Agent check: is this date right?', '')]);
   assert.equal(prompt.result, POST_MD);
   assert.equal(prompt.cards.length, 1);
@@ -161,7 +170,7 @@ await test('own-prose edits: unique spans are written, everything else goes to t
   const ok = O.proseEdit(src, { original: 'demand grows.', replacement: 'demand rises.' }, plainOf);
   assert.equal(ok.ok, true);
   assert.match(ok.after, /says demand rises\./);
-  assert.match(ok.after, /> demand grows/, 'never inside an Agent check callout');
+  assert.match(ok.after, /> demand grows/, 'never inside a callout');
   const link = O.proseEdit(src, { original: 'International Energy Agency says', replacement: 'IEA says' }, plainOf);
   assert.equal(link.ok, false); assert.equal(link.reason, 'not-found');
   const amb = O.proseEdit(src, { original: 'It grows.', replacement: 'It rises.' }, plainOf);
@@ -174,6 +183,42 @@ await test('own-prose edits: unique spans are written, everything else goes to t
   assert.equal(fm.ok, false); assert.equal(fm.reason, 'outside-body');
   const gone = O.proseEdit(ok.after, { original: 'demand grows.', replacement: 'demand rises.' }, plainOf);
   assert.equal(gone.reason, 'already', 'a retry of an applied edit writes nothing');
+});
+
+await test('an INSERTION (the new words contain the old) is written once; a retry finds it already there', () => {
+  const src = 'Intro.\n\nThere will be strong implications on the future of humanity.\n\nEnd.\n';
+  const edit = { original: 'There will be strong implications on the future of humanity.',
+    replacement: 'There will be strong implications on the future of humanity. While I am sure they will get built, I want the reasons first.' };
+  const one = O.proseEdit(src, edit, plainOf);
+  assert.equal(one.ok, true);
+  const two = O.proseEdit(one.after, edit, plainOf);
+  assert.equal(two.ok, false, 'the old words still match inside the new ones — but the edit is done');
+  assert.equal(two.reason, 'already');
+  // a prefix insertion too
+  const pre = { original: 'End.', replacement: 'Thanks for reading. End.' };
+  const p1 = O.proseEdit(one.after, pre, plainOf);
+  assert.equal(p1.ok, true);
+  assert.equal(O.proseEdit(p1.after, pre, plainOf).reason, 'already');
+  // …while the same words elsewhere, NOT inside the replacement, still get the edit
+  const twice = 'Go on.\n\nGo on. And on.\n';
+  const r = O.proseEdit(twice, { original: 'Go on.', replacement: 'Go on. And on.', block: 'Go on.' }, plainOf);
+  assert.equal(r.ok, true, 'the one occurrence not already expanded is the one edited');
+  assert.equal(r.after, 'Go on. And on.\n\nGo on. And on.\n');
+});
+
+await test('collateral opens no thread for a change inside a callout, and still does for prose', () => {
+  const before = 'Prose one here, long enough to anchor.\n\n> [!tip] Answer: yes\n> It is five times.\n\nProse two here, long enough to anchor.\n';
+  const afterC = before.replace('It is five times.', 'It is six times, per the filing.');
+  const afterP = before.replace('Prose two here', 'Prose two, rewritten here');
+  const callouts = (a, b) => ({ before: blog.calloutPlains(a, 'p.md'), after: blog.calloutPlains(b, 'p.md') });
+  const c = collateral.collateral(blog.mdDoc(before), blog.mdDoc(afterC), { threads: [] }, { callouts: callouts(before, afterC) });
+  assert.equal(c.threads.length, 0, JSON.stringify(c.threads));
+  assert.ok(c.skipped.some(x => x.callout));
+  const p = collateral.collateral(blog.mdDoc(before), blog.mdDoc(afterP), { threads: [] }, { callouts: callouts(before, afterP) });
+  assert.equal(p.threads.length, 1);
+  const added = before.replace('Prose two', '> [!note] Agent check: new?\n> A whole new callout.\n\nProse two');
+  const a = collateral.collateral(blog.mdDoc(before), blog.mdDoc(added), { threads: [] }, { callouts: callouts(before, added) });
+  assert.equal(a.threads.length, 0, 'a whole new callout opens no thread either');
 });
 
 // ---- the batch as a file ------------------------------------------------------
@@ -242,12 +287,12 @@ try {
     await waitFor(() => inputs(log).some(s => s.includes('hello there')), 'the turn');
     const turn = inputs(log).findLast(s => s.includes('hello there'));
     assert.match(turn, /WHO OWNS WHAT IN THIS POST/);
-    assert.match(turn, /"Agent check" callouts are YOURS/);
+    assert.match(turn, /Callouts are YOURS/);
     assert.match(turn, /```suggest/);
     await waitFor(async () => (await page()).page_chat.some(m => m.author === 'claude'), 'the reply');
   });
 
-  await test('turn-end: the callout edit stays with a quiet marker, the prose edit is put back as a card', async () => {
+  await test('turn-end: the callout edit stays with no marker, the prose edit is put back as a card', async () => {
     const edited = write(work, 'edit1.md', ORIGINAL.replace('I think it is four.', 'Checked: it is five.')
       .replace('energy. EpochAI', 'energy. A bot sentence in between. EpochAI').replace('title: My post', 'title: Bot title'));
     await POST(base, '/reply', { url, text: `@codex tidy the post [mock:copy:${edited}|${source}]` });
@@ -261,7 +306,7 @@ try {
     const holder = p.page_chat.find(m => m.author === 'botference' && (m.suggestions || []).length);
     assert.match(holder.text, /@codex edited your words in the post directly/);
     assert.equal(holder.suggestions.length, 2);
-    assert.ok((p.marks || []).some(m => m.kind === 'bots' && /five times/.test(m.quote)), JSON.stringify(p.marks));
+    assert.ok(!(p.marks || []).length, 'a callout change leaves no marker: ' + JSON.stringify(p.marks));
     assert.ok(!p.threads.some(t => t.auto), 'no collateral threads for the owner’s own post');
     // Accept all, against the current file
     const r = await POST(base, '/suggest-accept-all', { url, thread_id: '__page__', ts: holder.ts, author: holder.author });
@@ -291,7 +336,7 @@ try {
     const b = batchOf('fte-20261106T1300-0000aaaa', [
       prose('e1', 'Last words.', 'Final words.'),
       prose('e2', 'is here', 'is there'),                      // a short span, still unique
-      prose('e3', 'Agent check: is "five times" right?', 'x'),  // inside an Agent check callout
+      prose('e3', 'Agent check: is "five times" right?', 'x'),  // inside a callout
       { edit_id: 'e4', kind: 'comment', note: 'make the third bar orange', figure: { id: 'fig', title: 'Fig', generator: 'gen.py' },
         element: { kind: 'element', tag: 'rect', path: 'svg > rect' } },
       { edit_id: 'e5', kind: 'text', figure: { id: 'fig', title: 'Fig' }, element: { kind: 'svg-text' }, original: 'Power', replacement: 'Grid power' },
@@ -309,12 +354,34 @@ try {
     assert.ok(r.json.files.md.startsWith(path.join(root, '.botference', 'plugin', 'artifacts')), r.json.files.md);
     const md = fs.readFileSync(r.json.files.md, 'utf8');
     assert.match(md, /make the third bar orange/);
-    assert.match(md, /inside an Agent check callout/);
+    assert.match(md, /inside a callout/);
     assert.ok((await page()).marks.some(m => m.kind === 'yours' && m.quote === 'Final words.'));
     // a retry: the same answer, nothing written twice
     const again = await POST(base, '/fte-route', { url, batch: b });
     assert.equal(again.json.repeated, true);
     assert.equal(fs.readFileSync(source, 'utf8'), now);
+    fs.writeFileSync(source, ORIGINAL);
+  });
+
+  await test('retry after a write: a new batch id with the same edit, or an insertion, never writes twice', async () => {
+    const ins = prose('i1', 'Last words.', 'Last words. And one more sentence after them.');
+    const r1 = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1213-0000c001', [ins]) });
+    assert.equal(r1.json.wrote, 1);
+    const once = fs.readFileSync(source, 'utf8');
+    assert.equal(once.split('And one more sentence').length - 1, 1);
+    // the page reloaded before the ack; the editor resends under a NEW id
+    // (its drafts changed) — the companion knows the edit id
+    const r2 = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1214-0000c002', [ins]) });
+    assert.equal(r2.json.wrote, 0);
+    assert.equal(r2.json.routes[0].to, 'source');
+    assert.equal(r2.json.routes[0].already, true);
+    // …and a fresh edit id for the same insertion (a re-made draft) finds the
+    // words already there, though the old words still match inside them
+    const r3 = await POST(base, '/fte-route', { url, batch: batchOf('fte-20261107T1215-0000c003', [{ ...ins, edit_id: 'i2' }]) });
+    assert.equal(r3.json.wrote, 0);
+    assert.equal(r3.json.routes[0].already, true);
+    assert.equal(fs.readFileSync(source, 'utf8'), once, 'the file is exactly as after the first write');
+    assert.ok((await page()).fte_written.some(w => w.edit_id === 'i1'), 'the written edit id is kept on the page record');
     fs.writeFileSync(source, ORIGINAL);
   });
 

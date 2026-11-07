@@ -332,12 +332,13 @@ export function applyStack(file, cards, opts = {}) {
 export function suggestBlock({ direct = false } = {}) {
   const head = direct
     ? 'WHO OWNS WHAT IN THIS POST (the owner\'s rule, enforced by the companion at the end of every turn):\n'
-      + '  · "Agent check" callouts are YOURS. A blockquote callout whose first line is `> [!note] Agent check: …` '
-      + '(any type: note, warning, tip) — add one between paragraphs, edit inside one, or remove one, '
-      + 'directly in the file. Keep a blank line before and after the block.\n'
+      + '  · Callouts are YOURS. Any blockquote callout — a block whose first line is `> [!type] Title`, '
+      + 'e.g. `> [!note] Agent check: …`, `> [!tip] Answer: …`, `> [!warning] How …` (any type, any title) — '
+      + 'add one between paragraphs, edit inside one, or remove one, directly in the file. Keep a blank line '
+      + 'before and after the block. Plain quotes (`> ` with no `[!type]`) are the owner\'s.\n'
       + '  · Figure scripts, generated figures, images and new draft files are yours too: write them directly.\n'
       + '  · EVERYTHING ELSE IN THE POST\'S MARKDOWN IS THE OWNER\'S: their prose, a sentence added between two of '
-      + 'their sentences, front matter (title, dates, tags), their own callouts, their own inline "agent check" '
+      + 'their sentences, front matter (title, dates, tags), their plain quotes, their own inline "agent check" '
       + 'prompts. DO NOT EDIT IT IN THE FILE. A direct edit there is put back at the end of your turn and '
       + 'shown to the owner as a suggestion anyway — so propose it instead. Every change you want to make to '
       + 'the owner\'s text is written as a fenced block of its own:\n\n'

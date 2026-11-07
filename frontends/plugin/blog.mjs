@@ -66,6 +66,7 @@ import { readConfig, saveConfig } from './store.mjs';
 // the projects `botference init` / `botference site` registered, by marker
 // (markers.mjs) — read here as if they were `blog_sites` rows
 import { loadMarkers } from './markers.mjs';
+import { calloutBlocks } from './ownership.mjs';
 // anchor.js is the extension's own file (UMD-lite: CommonJS in node). Its
 // `plainOf` is THE markdown→rendered-words rule; see mdDoc.
 const Anchor = createRequire(import.meta.url)('./extension/anchor.js');
@@ -1461,6 +1462,21 @@ export function mdDoc(text) {
     .filter(Boolean)
     .map(b => `<p>${esc(b)}</p>`)
     .join('\n');
+}
+
+/**
+ * The rendered words of each callout in a markdown source — the same words
+ * mdDoc gives that block — so collateral can tell a change inside a callout
+ * (the bots' own, ownership.mjs: no thread, no marker) from one in the
+ * owner's prose. A page that is its own source has none.
+ */
+export function calloutPlains(text, name) {
+  if (/\.(html?|svg)$/i.test(String(name || ''))) return [];
+  const src = String(text == null ? '' : text);
+  const footnotes = footnoteNumbers(src);
+  return calloutBlocks(src)
+    .map(b => Anchor.plainOf(src.slice(b.start, b.end), { footnotes }).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
 }
 
 /**

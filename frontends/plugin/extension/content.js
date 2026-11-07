@@ -1301,11 +1301,12 @@
       Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
         t.resolved ? true : (t.addressed ? 'ready' : false), markOf(t));
     }
-    // the quiet markers (a bot's Agent-check callout edit, the owner's own ✎
-    // written into the post): painted from the record, never reported as
-    // orphans — a marker that no longer locates simply is not drawn
+    // the quiet markers (the owner's own ✎ written into the post): painted
+    // from the record, never reported as orphans — a marker that no longer
+    // locates simply is not drawn. A bot's callout change has no marker (the
+    // owner's call, 2026-11-07), so an old 'bots' record is skipped.
     for (const m of (PAGE.marks || [])) {
-      if (!m || !m.quote) continue;
+      if (!m || !m.quote || m.kind !== 'yours') continue;
       const r = Anchor.locate(index.raw, m);
       if (r && r.ok) Anchor.paintQuiet(index, r.start, r.end, m);
     }
