@@ -180,6 +180,39 @@ _plugin_xml_escape() {
 # launchd agents inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin),
 # which loses homebrew node and every agent CLI. Bake in the dirs the
 # tools actually resolve from today, then the usual suspects, deduped.
+# Which python3 the companion hands its bridges and its /run code cells
+# (BOTFERENCE_PYTHON_BIN, read by chat.mjs and run.mjs). The launcher's own
+# resolver lives further down the launcher than the plugin dispatch, so it is
+# not defined yet here; this one is self-contained. Prefer a python3 that has
+# matplotlib (plots), then one with rich, then leave PATH to decide. Never
+# fails the start: a missing package shows up as a run error, not a dead
+# companion.
+_plugin_pick_python() {
+  [ -z "${BOTFERENCE_PYTHON_BIN:-}" ] || return 0
+  local want c
+  for want in matplotlib rich; do
+    for c in \
+      "${BOTFERENCE_PYTHON:-}" \
+      "${PLUGIN_PYTHON:-}" \
+      "${CONDA_PREFIX:+${CONDA_PREFIX}/bin/python3}" \
+      "$(command -v python3 2>/dev/null || true)" \
+      "$HOME/opt/anaconda3/bin/python3" \
+      "$HOME/anaconda3/bin/python3" \
+      "$HOME/miniconda3/bin/python3" \
+      "$HOME/opt/miniconda3/bin/python3" \
+      /opt/homebrew/bin/python3 \
+      /usr/local/bin/python3
+    do
+      [ -n "$c" ] && [ -x "$c" ] || continue
+      if "$c" -c "import $want" >/dev/null 2>&1; then
+        BOTFERENCE_PYTHON_BIN="$c"; export BOTFERENCE_PYTHON_BIN
+        return 0
+      fi
+    done
+  done
+  return 0
+}
+
 _plugin_autostart_path() {
   local dirs=() out="" tool p d
   for tool in node python3 claude codex; do
@@ -1105,7 +1138,7 @@ run_plugin_mode() {
   # BOTFERENCE_PYTHON_BIN. Resolve it the way the TUI does (a python3 with
   # the project's packages), or under launchd the bare Homebrew python3 on
   # PATH wins and every plot fails with "No module named matplotlib".
-  if type ensure_bridge_python >/dev/null 2>&1; then ensure_bridge_python; fi
+  _plugin_pick_python
 
   if ! $share; then
     echo ""
