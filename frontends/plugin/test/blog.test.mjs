@@ -204,6 +204,41 @@ console.log('\nblog — url to source');
     assert.match(r.why, /_opinions\/twins\.md/);
   });
 
+  await test('one address claimed by two files is ambiguous, not first-come-first-served', async () => {
+    const two = jekyll('claim', {
+      extra: {
+        // both say, in their own front matter, that they live at /launch/
+        '_posts/2026-02-01-launch.md': '---\ntitle: Launch A\npermalink: /launch/\n---\nA',
+        '_posts/2026-02-02-liftoff.md': '---\ntitle: Launch B\npermalink: /launch/\n---\nB',
+      },
+    });
+    const r = blog.resolvePath(two, '/launch/');
+    assert.equal(r.doc, null, 'no file is picked by luck');
+    assert.match(r.why, /2 files in this repo claim the address \/launch\//);
+    assert.match(r.why, /2026-02-01-launch\.md/);
+    assert.match(r.why, /2026-02-02-liftoff\.md/);
+    assert.deepEqual(blog.indexOf(two).ambiguous.get('/launch/').sort(),
+      ['_posts/2026-02-01-launch.md', '_posts/2026-02-02-liftoff.md']);
+    // …and the page carries the refusal, so suggest-accept, /fte-route and
+    // ownership have no source_path to write to
+    blog.addSite({ serve_origin: 'http://localhost:4031', root: two });
+    const page = blog.blogPageFor('http://localhost:4031/launch/');
+    assert.equal(page.source_path, '');
+    assert.match(page.why, /claim the address/);
+    blog.removeSite('http://localhost:4031');
+  });
+
+  await test('a document\'s own permalink outranks another file\'s conventional guess at the same address', async () => {
+    const r = jekyll('rank', {
+      extra: {
+        // its slug guess is /pinned-forever/ — the address the real permalink holds
+        '_posts/2026-03-01-pinned-forever.md': '---\ntitle: Guessing\n---\nC',
+      },
+    });
+    assert.equal(blog.resolvePath(r, '/pinned-forever/').doc.rel, '_posts/2026-08-21-pinned.md',
+      'the file that SAYS it lives there, whichever was listed first');
+  });
+
   await test('nothing under _site/ is ever the source', async () => {
     for (const doc of blog.indexOf(root).docs) {
       assert.ok(!doc.rel.startsWith('_site/'), `${doc.rel} is the rendered copy`);
@@ -250,6 +285,29 @@ await test('a page under a declared origin is a blog page; anything else is not'
   assert.ok(p);
   assert.equal(p.rel, '_posts/2026-08-21-pinned.md');
   assert.equal(p.confirmed, false, 'declared is not confirmed');
+});
+
+await test('a page whose served title is another site\'s gets no source to write to', async () => {
+  const store = await import(path.join(PLUGIN, 'store.mjs'));
+  const url = 'http://localhost:4000/pinned-forever/';
+  // another project's preview took :4000 — the address still maps, the page is not that post
+  store.upsertPage({ url, title: 'Getting started — Some Other Docs Site' });
+  const wrong = blog.blogPageFor(url);
+  assert.equal(wrong.source_path, '', 'no write scope');
+  assert.equal(wrong.rel, '');
+  assert.match(wrong.why, /titled “Getting started — Some Other Docs Site”/);
+  assert.match(wrong.why, /_posts\/2026-08-21-pinned\.md is titled “Pinned”/);
+  assert.match(wrong.why, /another site running on http:\/\/localhost:4000/);
+  // generous: the layout's site-name suffix, curly punctuation and case all fall away
+  store.upsertPage({ url, title: 'PINNED — A Test Site' });
+  assert.equal(blog.blogPageFor(url).rel, '_posts/2026-08-21-pinned.md');
+  // a home page whose <title> is just the site's name is the site
+  const home = 'http://localhost:4000/';
+  store.upsertPage({ url: home, title: 'A Test Site' });
+  assert.equal(blog.blogPageFor(home).rel, 'index.md');
+  // no record yet (or no title) is nothing to compare: mapped as before
+  assert.equal(blog.blogPageFor('http://localhost:4000/about/').rel, '_pages/about.md');
+  store.upsertPage({ url, title: 'Pinned' });
 });
 
 await test('confirming the repo is a separate, kept answer', async () => {
@@ -746,6 +804,37 @@ console.log('\ncompanion — blog source pages');
     const page = (await GET(base, '/page?url=' + enc(POST_URL))).json;
     assert.equal((page.threads || []).filter(x => x.auto).length, 0,
       'a page where nothing moves during a turn has no silent edits to surface');
+  });
+
+  // …and since the companion now keeps the turn-start text in suggest mode,
+  // a bot that WROTE instead of proposing is put back, and its change becomes
+  // a card — the same backstop a direct-edit post gets (settleOwnership).
+  await test('suggest mode: a bot that writes the source is put back, and its change is a card', async () => {
+    const original = [
+      '---', 'title:  "Space balloons"', '---', '',
+      'A balloon in orbit is a pressure vessel that arrived folded.', '',
+      'The mass saving is the whole argument and it is not a small one.', '',
+      'A third paragraph, left alone by every test in this file.', '',
+    ].join('\n');
+    await waitFor(async () => (await GET(base, '/health')).json.queue === 0, 'the companion to go quiet');
+    fs.writeFileSync(SOURCE, original);
+    await sleep(50);
+    const patch = path.join(workspaceRoot, 'patch-suggest.md');
+    fs.writeFileSync(patch, original.replace('A third paragraph, left alone by every test in this file.',
+      'A third paragraph, quietly rewritten by a bot.'));
+    await POST(base, '/reply', { url: POST_URL, thread_id: '__page__',
+      text: `@codex [mock:copy:${patch}|${SOURCE}] just answer, do not edit` });
+    const holder = await waitFor(async () => {
+      const pg = (await GET(base, '/page?url=' + enc(POST_URL))).json;
+      return (pg.page_chat || []).find(m => m.author === 'botference' && (m.suggestions || []).some(c =>
+        String(c.proposed).includes('quietly rewritten')));
+    }, 'the card');
+    assert.match(holder.text, /@codex edited the source directly instead of proposing/);
+    assert.equal(fs.readFileSync(SOURCE, 'utf8'), original, 'the file is as it was before the turn');
+    // Accept puts the bot's version in, through the ordinary card path
+    const r = await POST(base, '/suggest-accept-all', { url: POST_URL, thread_id: '__page__', ts: holder.ts, author: holder.author });
+    assert.equal(r.json.applied, 1, JSON.stringify(r.json));
+    assert.match(fs.readFileSync(SOURCE, 'utf8'), /quietly rewritten by a bot/);
   });
 
   await test('a DECLINED repo turns the page back into an ordinary web page', async () => {

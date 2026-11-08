@@ -47,6 +47,67 @@ export const CORS_HEADERS = {
   'access-control-max-age': '600',
 };
 
+// --- WHO IS ASKING, by the Origin header -------------------------------
+// Being on the loopback says the request came from this machine; it does not
+// say which PAGE sent it. Any website open in the owner's browser can fire a
+// request at 127.0.0.1:4189, and before this check the companion treated it as
+// the owner. Browsers stamp every cross-origin request (and every POST) with
+// an Origin they will not let a page forge, so it is the test:
+//
+//   'absent'  — no Origin at all: curl, the Python side, the review mirror and
+//               council server (node fetch sends none), a page's own top-level
+//               navigation. Trusted, as it always was.
+//   'trusted' — a browser extension (chrome-extension://…, optionally pinned
+//               to PLUGIN_EXTENSION_IDS), the companion's own pages (Origin
+//               host = the Host it was asked on, or 127.0.0.1/localhost/[::1]
+//               on the port it is listening on), or a configured public
+//               hostname (the reading room, the memorizer, PLUGIN_PUBLIC_HOSTNAMES).
+//   'foreign' — anything else, including the literal "null". On the loopback
+//               that is refused outright (server.mjs); over the tunnel the
+//               request still has to pass the password like any other, and
+//               it never gets a CORS header, so the page cannot read the answer.
+//
+// These three are the only answers; nothing else decides it.
+export const ORIGIN_VERDICTS = Object.freeze(['absent', 'trusted', 'foreign']);
+const csv = v => String(v || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+export function originVerdict(req, { publicHosts = [] } = {}) {
+  const raw = req.headers.origin;
+  if (raw === undefined || raw === '') return 'absent';
+  const o = String(raw).trim().toLowerCase();
+  if (o.startsWith('chrome-extension://')) {
+    // the companion usually does not know the extension's id (an unpacked
+    // install gets a fresh one), so any extension passes unless the owner
+    // pins the list — extensions are software the owner installed, not pages
+    const pinned = csv(process.env.PLUGIN_EXTENSION_IDS);
+    if (!pinned.length) return 'trusted';
+    return pinned.includes(o.slice('chrome-extension://'.length).replace(/\/+$/, '')) ? 'trusted' : 'foreign';
+  }
+  let u;
+  try { u = new URL(o); } catch { return 'foreign'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'foreign';
+  // the companion's own page, on whatever name it was asked by
+  const host = String(req.headers.host || '').toLowerCase();
+  if (host && u.host === host) return 'trusted';
+  const lp = req.socket && req.socket.localPort;
+  if (lp && u.protocol === 'http:' && String(u.port || '80') === String(lp)
+    && (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]')) return 'trusted';
+  const pub = new Set([...publicHosts.map(h => String(h).toLowerCase()), ...csv(process.env.PLUGIN_PUBLIC_HOSTNAMES)]);
+  if (u.protocol === 'https:' && pub.has(u.hostname)) return 'trusted';
+  return 'foreign';
+}
+// The CORS answer for one request, from its verdict. Hosted mode only (the
+// local companion never sent any, and its extension's worker needs none):
+// an origin that passed is echoed back; no Origin at all keeps the wildcard
+// (bearer, never cookies — the argument at the top of this file still holds,
+// since a wildcard cannot carry credentials); a foreign one gets nothing.
+export function corsFor(req, verdict) {
+  if (verdict === 'trusted') {
+    return { ...CORS_HEADERS, 'access-control-allow-origin': String(req.headers.origin), vary: 'Origin' };
+  }
+  if (verdict === 'absent') return CORS_HEADERS;
+  return {};
+}
+
 // a handle names messages; it is not a credential (the password is)
 export const sanitizeHandle = h => String(h || '').toLowerCase()
   .replace(/[^\w-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
@@ -250,10 +311,12 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   // POST /auth: name + password together (a phone has nowhere else to put the
   // name). Right password -> signed cookie + back to where they were headed.
   function authEndpoint(req, res) {
-    let body = '';
-    req.on('data', c => { body += c; if (body.length > 1e4) req.destroy(); });
+    const chunks = [];
+    let size = 0;
+    req.on('data', c => { chunks.push(c); size += c.length; if (size > 1e4) req.destroy(); });
     req.on('end', () => {
-      const form = new URLSearchParams(body);
+      // decoded once, whole: a name in any script survives a chunk boundary
+      const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
       const next = safeNext(form.get('next'));
       const raw = form.get('handle') || '';
       const handle = sanitizeHandle(raw);
@@ -295,8 +358,9 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
       res.writeHead(401, HTML_HEAD).end(gatePage(safeNext(String(req.url || '').split('?')[0]), false));
       return;
     }
-    res.writeHead(401, { ...JSON_HEAD, ...(hosted ? CORS_HEADERS : {}) })
-      .end('{"ok":false,"error":"auth required"}');
+    // the CORS headers, when this request earned any, were set by the
+    // caller (server.mjs, from the Origin verdict) and ride along from there
+    res.writeHead(401, JSON_HEAD).end('{"ok":false,"error":"auth required"}');
   }
 
   // --- grants: who may spend the owner's agents, and how much ------------

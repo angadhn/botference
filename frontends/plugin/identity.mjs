@@ -34,7 +34,7 @@ import crypto from 'node:crypto';
 import { secretsDir } from '../shared/secrets.mjs';
 // tmp + rename, and the constant-time compare — one copy each, in fsjson.mjs.
 // The 0o600 this file needs (it writes a password) rides as an argument.
-import { writeJson, safeEqual } from './fsjson.mjs';
+import { writeJson, safeEqual, readJsonState, warnUnreadable } from './fsjson.mjs';
 
 // ~/.botference, or wherever the tests point us. Defined once for every
 // frontend in ../shared/secrets.mjs and re-exported here, where the companion
@@ -56,10 +56,8 @@ export const deviceSecret = () =>
 
 const paperSecretsFile = () => path.join(secretsDir(), 'review-paper-secrets.json');
 const readPaperSecrets = () => {
-  try {
-    const s = JSON.parse(fs.readFileSync(paperSecretsFile(), 'utf8'));
-    return (s && typeof s === 'object') ? s : {};
-  } catch { return {}; }
+  const got = readJsonState(paperSecretsFile());
+  return (got.state === 'ok' && got.value && typeof got.value === 'object') ? got.value : {};
 };
 
 // hub.mjs's ownerPassword(), precedence and storage identical — including
@@ -69,6 +67,13 @@ const readPaperSecrets = () => {
 export function ownerPassword() {
   if (process.env.PLUGIN_OWNER_PASSWORD) return process.env.PLUGIN_OWNER_PASSWORD;
   if (process.env.REVIEW_HUB_PASSWORD) return process.env.REVIEW_HUB_PASSWORD;
+  // The shared secrets file holds the hub's other secrets too. If it is there
+  // but unreadable, generating a password and writing it back would replace
+  // all of them with one line — so say so, write nothing, and answer no owner
+  // password (the loopback is still the owner; remote owner sign-in waits
+  // until the file is fixed).
+  const got = readJsonState(paperSecretsFile());
+  if (got.state === 'unreadable') { warnUnreadable(paperSecretsFile(), got.error); return ''; }
   const s = readPaperSecrets();
   if (s.owner) return String(s.owner);
   const pw = crypto.randomBytes(12).toString('hex');

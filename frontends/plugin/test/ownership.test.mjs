@@ -354,6 +354,24 @@ try {
     fs.writeFileSync(source, ORIGINAL);
   });
 
+  // The put-back is this post's machinery; another existing post the bots
+  // wrote into is not put back (ownership.plan needs its turn-start text,
+  // which only the page's own post has) — but it is never silent.
+  await test('a bot that writes into ANOTHER existing post is reported in the thread, and that post is left', async () => {
+    const otherPost = write(root, '_posts/2026-01-01-older.md', '---\ntitle: Older\npermalink: /older/\n---\n\nThe owner wrote this long ago.\n');
+    await new Promise(r => setTimeout(r, 50));
+    const rewritten = write(work, 'older-edit.md', '---\ntitle: Older\npermalink: /older/\n---\n\nA bot rewrote this.\n');
+    await POST(base, '/reply', { url, text: `@claude while you are there [mock:copy:${rewritten}|${otherPost}]` });
+    const note = await waitFor(async () => (await page()).page_chat.find(m => m.author === 'botference'
+      && /also changed another existing post/.test(m.text)), 'the note');
+    assert.match(note.text, /@claude also changed another existing post: `_posts\/2026-01-01-older\.md`/);
+    assert.match(note.text, /left as the bots wrote them/);
+    assert.match(fs.readFileSync(otherPost, 'utf8'), /A bot rewrote this/, 'reported, not put back');
+    assert.equal(fs.readFileSync(source, 'utf8'), ORIGINAL, 'this post did not move');
+    await waitFor(async () => (await page()).page_chat.filter(m => m.author === 'claude').length >= 3, 'its reply');
+    await new Promise(r => setTimeout(r, 600));
+  });
+
   const batchOf = (id, edits) => ({ schema: 'botference.figure-edits/2', batch_id: id,
     page: { url, path: '/my-post/', title: 'My post', source: '_notes/my-post.md' }, edits });
   const prose = (id, original, replacement, block) => ({ edit_id: id, kind: 'text',

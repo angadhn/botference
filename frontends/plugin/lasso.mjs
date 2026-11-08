@@ -27,6 +27,8 @@
 // listing, and a second `/lasso` a second later costs nothing at all.
 import fs from 'node:fs';
 import os from 'node:os';
+import dns from 'node:dns';
+import net from 'node:net';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -901,25 +903,102 @@ export function hostAllowed(host, hosts) {
 
 // ---- fetching -------------------------------------------------------------
 
+// ---- never this machine, never the private network -----------------------
+//
+// A link in a message is the reader's text, but it may have been pasted from
+// anywhere, and the companion fetches it with the reader's own network
+// position: a link to 127.0.0.1, the router's admin page or a box on the LAN
+// would be read out and handed to the bots. So those are refused, by address,
+// before any request — the name is resolved and EVERY address it resolves to
+// is checked — and again at each redirect, which is followed by hand for
+// exactly that reason. No exceptions, the reader's own local preview included.
+const COMPANION_PORTS = new Set(['4189', ...(Number(process.env.PORT) > 0 ? [String(Number(process.env.PORT))] : [])]);
+const v4Private = ip => {
+  const [a, b] = ip.split('.').map(Number);
+  return a === 127 || a === 10 || a === 0
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254);
+};
+/** Loopback, private, link-local or unspecified — any address that is not the public internet's. */
+export function privateAddress(ip) {
+  const a = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  if (net.isIPv4(a)) return v4Private(a);
+  if (!net.isIPv6(a)) return true; // not an address at all: refuse rather than guess
+  if (a === '::1' || a === '::') return true;
+  // IPv4 carried inside IPv6 (::ffff:127.0.0.1, or the hex form a URL parser writes)
+  const mapped = /^(?:0{0,4}:){0,5}(?:0{0,4}:)?ffff:(.+)$/.exec(a) || /^::(\d+\.\d+\.\d+\.\d+)$/.exec(a);
+  if (mapped) {
+    const tail = mapped[1];
+    if (net.isIPv4(tail)) return v4Private(tail);
+    const m = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(tail);
+    if (m) {
+      const hi = parseInt(m[1], 16); const lo = parseInt(m[2], 16);
+      return v4Private(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
+  }
+  const first = parseInt(a.split(':')[0] || '0', 16);
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7, unique local
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10, link-local
+  return false;
+}
+/**
+ * Why the companion will not fetch this address, or '' if it will. Resolves the
+ * host (dns.promises.lookup, looked up at call time) and refuses if ANY of its
+ * addresses is private, so a public name pointed at 127.0.0.1 is refused too.
+ */
+export async function webAddressRefusal(raw) {
+  let u;
+  try { u = new URL(String(raw)); } catch { return 'that is not a web address'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'that is not a web address';
+  const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+  if (COMPANION_PORTS.has(port)) return "that is the companion's own port, which it never fetches";
+  const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const local = 'that address is on this computer or its private network, which the companion never fetches';
+  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return local;
+  if (net.isIP(host)) return privateAddress(host) ? local : '';
+  let addrs;
+  try { addrs = await dns.promises.lookup(host, { all: true, verbatim: true }); }
+  catch { return `could not find ${host}`; }
+  if (!addrs || !addrs.length) return `could not find ${host}`;
+  return addrs.some(x => privateAddress(x.address)) ? local : '';
+}
+
+const WEB_REDIRECTS_MAX = 5;
 /**
  * The default transport. Answers `{ok, status, url, contentType, body}` —
  * exactly what an injected `http` must answer, so a suite can be a function.
+ * Redirects are followed BY HAND, each hop checked like the first link.
  */
 async function defaultHttp(url, { timeout = WEB_TIMEOUT_MS } = {}) {
-  const res = await fetch(url, {
-    redirect: 'follow',
-    signal: AbortSignal.timeout(timeout),
-    headers: {
-      'user-agent': WEB_UA,
-      accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
-    },
-  });
-  const body = Buffer.from(await res.arrayBuffer());
-  return {
-    ok: res.ok, status: res.status, url: res.url || url,
-    contentType: res.headers.get('content-type') || '',
-    body: body.length > WEB_BYTES_MAX ? body.subarray(0, WEB_BYTES_MAX) : body,
-  };
+  const signal = AbortSignal.timeout(timeout);
+  let at = url;
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(at, {
+      redirect: 'manual',
+      signal,
+      headers: {
+        'user-agent': WEB_UA,
+        accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+      },
+    });
+    const loc = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+    if (loc) {
+      try { await res.body?.cancel(); } catch { /* nothing to drain */ }
+      if (hop >= WEB_REDIRECTS_MAX) throw new Error('too many redirects');
+      const next = new URL(loc, at).href;
+      const why = await webAddressRefusal(next);
+      if (why) throw new Error(`it redirects to an address it will not fetch (${why})`);
+      at = next;
+      continue;
+    }
+    const body = Buffer.from(await res.arrayBuffer());
+    return {
+      ok: res.ok, status: res.status, url: at,
+      contentType: res.headers.get('content-type') || '',
+      body: body.length > WEB_BYTES_MAX ? body.subarray(0, WEB_BYTES_MAX) : body,
+    };
+  }
 }
 
 const TITLE_RE = /<title[^>]*>([\s\S]{0,400}?)<\/title>/i;
@@ -965,6 +1044,8 @@ export function webTitle(html, url) {
  */
 export async function fetchWeb(url, { http = null, timeout = WEB_TIMEOUT_MS } = {}) {
   if (!isHttpUrl(url)) return { error: 'that is not a web address' };
+  const refused = await webAddressRefusal(url);
+  if (refused) return { error: `could not fetch: ${refused}`, status: 0 };
   const get = typeof http === 'function' ? http : defaultHttp;
   let r = null;
   try { r = await get(String(url), { timeout }); }
@@ -978,6 +1059,12 @@ export async function fetchWeb(url, { http = null, timeout = WEB_TIMEOUT_MS } = 
     return { error: `could not fetch: HTTP ${status || '?'}`, status };
   }
   const final = String(r.url || url);
+  // a transport that followed redirects itself is held to the same rule at
+  // the end of them: what it fetched from a private address is not used
+  if (final !== String(url)) {
+    const why = await webAddressRefusal(final);
+    if (why) return { error: `could not fetch: it redirects to an address it will not fetch (${why})`, status };
+  }
   const type = String(r.contentType || '').toLowerCase();
   const raw = Buffer.isBuffer(r.body) ? r.body : Buffer.from(String(r.body == null ? '' : r.body), 'utf8');
   const body = raw.length > WEB_BYTES_MAX ? raw.subarray(0, WEB_BYTES_MAX) : raw;

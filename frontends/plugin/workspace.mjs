@@ -38,7 +38,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { writeJson } from './fsjson.mjs';
+import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { readConfig, saveConfig, unwrapLine, clipTo, ROOT } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
@@ -1095,6 +1095,18 @@ export function createProject(root, { title, why = '' } = {}) {
   if (fs.existsSync(dir)) {
     return { ok: false, status: 409, error: `there is already a project called “${id}” in that council` };
   }
+  // a portfolio that is there but not JSON is every OTHER project's record:
+  // writing a fresh one with just this project in it would erase them, so
+  // nothing is made at all until it is fixed
+  const file = path.join(dirRoot, 'projects', 'portfolio.json');
+  const got = readJsonState(file);
+  if (got.state === 'unreadable') {
+    warnUnreadable(file, got.error);
+    // not 409: that status means "a project by that name exists", and a
+    // caller that retries on it (project-network.newProject) must not
+    return { ok: false, status: 422,
+      error: 'projects/portfolio.json in that council is not readable JSON — fix it first; nothing was written over it' };
+  }
   const reason = clip(String(why || '').trim(), 400) || 'TODO';
   fs.mkdirSync(dir, { recursive: true });
   // the same document botference's own `/project new` leaves behind, field for
@@ -1104,8 +1116,7 @@ export function createProject(root, { title, why = '' } = {}) {
     `# ${want}\n\n**Status:** active\n**Priority:** \n**Cadence:** weekly\n\n`
     + `## Why This Matters\n\n${reason}\n\n`
     + `## Desired Outcome\n\nTODO\n\n## Next Action\n\nTODO\n`);
-  const file = path.join(dirRoot, 'projects', 'portfolio.json');
-  const pf = readJson(file, null);
+  const pf = got.state === 'ok' ? got.value : null;
   const doc = (pf && typeof pf === 'object' && !Array.isArray(pf)) ? pf : { version: 1 };
   const rows = Array.isArray(doc.projects) ? doc.projects : [];
   doc.projects = rows.concat([{

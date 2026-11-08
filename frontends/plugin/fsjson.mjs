@@ -24,6 +24,70 @@ export const readJson = (file, fallback = null) => {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
 };
 
+// ---- a missing file is not a broken one ------------------------------------
+//
+// `readJson` answers the fallback for both, and that was fine for reading and
+// wrong for everything that writes afterwards: a config.json with one trailing
+// comma read as "no config", and the first-run code then wrote the defaults
+// over the owner's settings. So the files that get written back on the
+// strength of a read ask which it was. A file is in exactly one of these:
+//
+//   'missing'    — not there (ENOENT): use the default, and creating it is fine;
+//   'ok'         — parsed;
+//   'unreadable' — there, but not JSON (or not readable at all): use the
+//                  default for READING, say so loudly once, and never write
+//                  over it — the owner's bytes stay until the owner fixes them.
+export const JSON_FILE_STATES = Object.freeze(['missing', 'ok', 'unreadable']);
+
+/** `{state, value, error}` — `value` is the parsed JSON only when state is 'ok'. */
+export function readJsonState(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e && e.code === 'ENOENT') return { state: 'missing', value: undefined, error: null };
+    return { state: 'unreadable', value: undefined, error: e };
+  }
+  try { return { state: 'ok', value: JSON.parse(text), error: null }; } catch (e) {
+    return { state: 'unreadable', value: undefined, error: e };
+  }
+}
+
+/** The refusal a write path throws (and a route answers) when its file is broken. */
+export class UnreadableJsonError extends Error {
+  constructor(file, cause) {
+    super(`${file} is not readable JSON (${(cause && cause.message) || cause}) — fix or move it; `
+      + 'nothing was written over it');
+    this.name = 'UnreadableJsonError';
+    this.code = 'EUNREADABLEJSON';
+    this.file = file;
+  }
+}
+
+const warned = new Set();
+/** One loud line per broken file per run — a log that repeats every request is a log nobody reads. */
+export function warnUnreadable(file, error) {
+  if (warned.has(file)) return;
+  warned.add(file);
+  console.error(`!! ${new UnreadableJsonError(file, error).message}. Reading defaults in its place until then.`);
+}
+
+/**
+ * The parsed file; `fallback` when it is missing; `fallback` AND one loud
+ * warning when it is unreadable. For reads whose result may later be written
+ * back: pair it with `refuseIfUnreadable` on the write.
+ */
+export function readJsonOrWarn(file, fallback = null) {
+  const r = readJsonState(file);
+  if (r.state === 'ok') return r.value;
+  if (r.state === 'unreadable') warnUnreadable(file, r.error);
+  return fallback;
+}
+
+/** Throws UnreadableJsonError if `file` is there but broken; a missing file is fine to create. */
+export function refuseIfUnreadable(file) {
+  const r = readJsonState(file);
+  if (r.state === 'unreadable') { warnUnreadable(file, r.error); throw new UnreadableJsonError(file, r.error); }
+}
+
 /**
  * `obj` at `file`, atomically: temp beside it, then rename.
  *

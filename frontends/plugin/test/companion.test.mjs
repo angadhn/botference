@@ -2958,13 +2958,53 @@ async function main() {
         'access-control-request-headers': 'authorization,x-plugin-handle',
       });
       assert.equal(r.status, 204);
-      assert.equal(r.headers['access-control-allow-origin'], '*');
+      assert.equal(r.headers['access-control-allow-origin'], 'chrome-extension://abc',
+        'an extension origin that passed is echoed, not wildcarded');
+      assert.equal(r.headers.vary, 'Origin');
       assert.equal(r.headers['access-control-allow-headers'], 'authorization, content-type, x-plugin-handle');
       assert.match(r.headers['access-control-allow-methods'], /POST/);
       const authed = await GET(hb, '/index', ADA);
       assert.equal(authed.headers['access-control-allow-origin'], '*', 'and on the answers themselves');
       const refused = await GET(hb, '/index', REMOTE);
       assert.equal(refused.headers['access-control-allow-origin'], '*', 'including the 401, or the tab sees nothing');
+      const extRefused = await GET(hb, '/index', { ...REMOTE, origin: 'chrome-extension://abc' });
+      assert.equal(extRefused.status, 401);
+      assert.equal(extRefused.headers['access-control-allow-origin'], 'chrome-extension://abc',
+        'the 401 carries the echoed origin too');
+    });
+
+    // Being on the loopback says which MACHINE asked, not which page: any
+    // website open in the owner's browser can aim a request at 127.0.0.1.
+    await test('hosted: a loopback request from a foreign website is refused, with no CORS header', async () => {
+      for (const origin of ['https://evil.test', 'null', 'http://127.0.0.1:4000']) {
+        const r = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: 'from a web page' },
+          { host: '127.0.0.1', origin });
+        assert.equal(r.status, 403, origin);
+        assert.match(r.json.error, /other websites/);
+        assert.equal(r.headers['access-control-allow-origin'], undefined, `${origin}: never a CORS header`);
+        const pre = await request(hb, 'OPTIONS', '/reply', undefined, { host: '127.0.0.1', origin });
+        assert.equal(pre.status, 403);
+        assert.equal(pre.headers['access-control-allow-origin'], undefined);
+      }
+      // …and over the tunnel a foreign page still meets the password, and is
+      // never told it may read the answer
+      const tun = await GET(hb, '/index', { ...ADA, origin: 'https://evil.test' });
+      assert.equal(tun.status, 200, 'the bearer is what authorises a remote request');
+      assert.equal(tun.headers['access-control-allow-origin'], undefined, 'but no CORS for a foreign page');
+    });
+
+    await test('hosted: the extension, the companion\'s own pages and no-Origin callers all pass on the loopback', async () => {
+      const port = new URL(hb).port;
+      for (const origin of ['chrome-extension://abcdefghijklmnopabcdefghijklmnop',
+        `http://127.0.0.1:${port}`, `http://localhost:${port}`, 'https://discuss.botference.com']) {
+        const r = await GET(hb, '/index', { host: `127.0.0.1:${port}`, origin });
+        assert.equal(r.status, 200, origin);
+      }
+      const bare = await GET(hb, '/index', { host: '127.0.0.1' });
+      assert.equal(bare.status, 200, 'no Origin (curl, the python side, the review mirror)');
+      const guest = await POST(hb, '/reply', { url: PAGE1, thread_id: '__page__', text: 'bearer still works' },
+        { ...ADA, origin: 'chrome-extension://abc' });
+      assert.equal(guest.status, 200, 'a hosted guest with a bearer, from the remote extension');
     });
 
     // The review mirror names its own author, which is precisely the power a
@@ -4193,11 +4233,64 @@ async function main() {
   }
 
   await test('a local companion answers no preflight and sets no CORS header', async () => {
-    const r = await request(base, 'OPTIONS', '/reply', undefined, { origin: 'https://evil.test' });
+    const r = await request(base, 'OPTIONS', '/reply', undefined, { origin: 'chrome-extension://abc' });
     assert.equal(r.status, 404);
     assert.equal(r.headers['access-control-allow-origin'], undefined);
     const g = await GET(base, '/index');
     assert.equal(g.headers['access-control-allow-origin'], undefined, 'never in local mode');
+    const e = await GET(base, '/index', { origin: 'chrome-extension://abc' });
+    assert.equal(e.status, 200, 'the extension passes');
+    assert.equal(e.headers['access-control-allow-origin'], undefined, 'and still no CORS header locally');
+  });
+
+  await test('a local companion refuses a request from another website (403, no CORS header)', async () => {
+    for (const [method, p, body] of [['GET', '/index'], ['POST', '/reply', { url: PAGE1, thread_id: '__page__', text: 'csrf' }],
+      ['OPTIONS', '/reply']]) {
+      const r = await request(base, method, p, body, { origin: 'https://evil.test' });
+      assert.equal(r.status, 403, `${method} ${p}`);
+      assert.equal(r.headers['access-control-allow-origin'], undefined);
+    }
+    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+    assert.ok(!JSON.stringify(page || {}).includes('"csrf"'), 'nothing was written');
+    // a foreign page cannot open the event socket either
+    const ws = await new Promise(resolve => {
+      const { hostname, port } = new URL(base);
+      const sock = net.connect(Number(port), hostname, () => sock.write(
+        `GET /ws HTTP/1.1\r\nHost: ${hostname}:${port}\r\nOrigin: https://evil.test\r\nUpgrade: websocket\r\n`
+        + `Connection: Upgrade\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+      let buf = '';
+      sock.on('data', d => { buf += d; if (buf.includes('\r\n')) { sock.destroy(); resolve(buf.split('\r\n')[0]); } });
+      sock.on('error', () => resolve(buf.split('\r\n')[0]));
+    });
+    assert.match(ws, / 401 /, 'the socket refuses a foreign origin');
+  });
+
+  await test('bodies are JSON except on the reading room\'s form routes', async () => {
+    const plain = await request(base, 'POST', '/page', undefined, { 'content-type': 'text/plain' },
+      JSON.stringify({ url: PAGE1, title: TITLE1, site: 'ledger.test' }));
+    assert.equal(plain.status, 415, 'text/plain is what a foreign page can send without asking');
+    const form = await FORM(base, '/page', { url: PAGE1, title: 'renamed by a form' });
+    assert.equal(form.status, 415, 'a form post to a JSON-only route is refused');
+    const ok = await FORM(base, '/reply', { url: PAGE1, thread_id: '__page__', text: 'from the reading room' });
+    assert.equal(ok.status, 303, 'the reading room composer still posts its form');
+  });
+
+  await test('a multi-byte character split across body chunks arrives whole', async () => {
+    const text = 'naïve café — 日本語 ✓ 🚂';
+    const raw = Buffer.from(JSON.stringify({ url: PAGE1, thread_id: '__page__', text }), 'utf8');
+    const cut = raw.indexOf(Buffer.from('🚂')) + 2; // inside the 4-byte emoji
+    const r = await new Promise((resolve, reject) => {
+      const rq = http.request(base + '/reply', { method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': raw.length } }, res => {
+        let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b }));
+      });
+      rq.on('error', reject);
+      rq.write(raw.subarray(0, cut));
+      setTimeout(() => { rq.write(raw.subarray(cut)); rq.end(); }, 60);
+    });
+    assert.equal(r.status, 200, r.body);
+    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+    assert.ok(page.page_chat.some(m => m.text === text), 'the text is stored exactly as sent');
   });
 
   // --- --no-agents ------------------------------------------------------
@@ -4772,12 +4865,17 @@ async function main() {
       council_roots: { [fs.realpathSync(cRoot)]: true }, lasso_folders: [lFolder],
     }, null, 2));
 
+    // the far end of a "web" link is a loopback server, which the companion
+    // will never fetch; test/fake-web.mjs gives it a pretend public name
+    const FAKE_WEB_PORT_FILE = path.join(lRoot, 'fake-web-port');
     const l = await startServer({
       root: lRoot,
       env: {
         PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
         MOCK_BRIDGE_LOG: lLog, MOCK_TURN_DELAY_MS: '150',
         PLUGIN_SID_WAIT_MS: '600',
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import ${JSON.stringify(path.join(TEST, 'fake-web.mjs'))}`.trim(),
+        FAKE_WEB_PORT_FILE,
       },
     });
     const lb = l.base;
@@ -4880,7 +4978,10 @@ async function main() {
         + '<body><article><p>The first stage is the whole argument.</p></article></body></html>');
     });
     await new Promise(r => origin.listen(0, '127.0.0.1', r));
-    const ORIGIN = `http://127.0.0.1:${origin.address().port}`;
+    fs.writeFileSync(FAKE_WEB_PORT_FILE, String(origin.address().port));
+    const ORIGIN = 'http://rockets.web.test';
+    let originHits = 0;
+    origin.on('request', () => { originHits++; });
 
     await test('GET /lasso with a URL fetches the page instead of searching for it', async () => {
       const r = await GET(lb, '/lasso?q=' + encodeURIComponent(`${ORIGIN}/rockets-1`)
@@ -4891,7 +4992,7 @@ async function main() {
       assert.equal(chip.kind, 'web');
       assert.equal(chip.title, 'Rockets, part 1');
       assert.match(chip.hit, /first stage is the whole argument/);
-      assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (127.0.0.1)');
+      assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (rockets.web.test)');
       // and it is attachable on the spot, with no second trip over the wire
       const a = await POST(lb, '/attach', { url: PAGE1, kind: 'web', id: chip.id });
       assert.equal(a.status, 200);
@@ -4909,7 +5010,7 @@ async function main() {
         assert.equal(r.status, 200);
         assert.equal(r.json.results.length, 1, 'one chip, not a word search');
         assert.equal(r.json.results[0].kind, 'web');
-        assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (127.0.0.1)');
+        assert.equal(r.json.head, 'lasso · fetched “Rockets, part 1” (rockets.web.test)');
         assert.equal(r.json.rest, 'Can you see the page? Does it have callout boxes?');
       });
 
@@ -4918,8 +5019,24 @@ async function main() {
       assert.equal(r.status, 200);
       assert.equal(r.json.results.length, 1, 'never an empty result');
       assert.equal(r.json.results[0].failed, true);
-      assert.match(r.json.head, /^lasso · could not fetch: HTTP 403 — 127\.0\.0\.1$/);
+      assert.match(r.json.head, /^lasso · could not fetch: HTTP 403 — rockets\.web\.test$/);
       assert.match(r.json.results[0].hit, /open it in the browser with the plugin once/);
+    });
+
+    await test('a link to this computer is never fetched, by the lasso or for a turn', async () => {
+      const port = origin.address().port;
+      const hits = originHits;
+      const r = await GET(lb, '/lasso?q=' + encodeURIComponent(`http://127.0.0.1:${port}/rockets-1`));
+      assert.equal(r.json.results[0].failed, true);
+      assert.match(r.json.head, /could not fetch: that address is on this computer or its private network/);
+      const before = inputs(lLog).length;
+      await POST(lb, '/reply', { url: PAGE1, thread_id: '__page__',
+        text: `@claude read http://localhost:${port}/rockets-1 and http://192.168.1.1/admin` });
+      await waitFor(() => inputs(lLog).length > before, 'the turn');
+      const sent = inputs(lLog).slice(before).join('\n');
+      assert.match(sent, /could not fetch it either \(could not fetch: that address is on this computer/);
+      assert.ok(!sent.includes('Fetched for THIS message only'), 'nothing attached');
+      assert.equal(originHits, hits, 'and the loopback server was never asked');
     });
 
     await test('a link pasted into a turn is fetched FOR the bots, who were never granted it',
@@ -4933,7 +5050,7 @@ async function main() {
         const sent = inputs(lLog).slice(before)
           .find(x => /is not on the bots' allow-list/.test(x));
         assert.match(sent,
-          /The link 127\.0\.0\.1 is not on the bots' allow-list; the companion will fetch it for them\./);
+          /The link rockets\.web\.test is not on the bots' allow-list; the companion will fetch it for them\./);
         assert.match(sent, /Fetched for THIS message only/);
         assert.match(sent, /Rockets, part 1 \(web\) — /);
         // the PATH rides the turn and the page's words do not

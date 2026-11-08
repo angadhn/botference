@@ -62,7 +62,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { readConfig, saveConfig } from './store.mjs';
+import { readConfig, saveConfig, pageFile } from './store.mjs';
+import { readJson } from './fsjson.mjs';
 // the projects `botference init` / `botference site` registered, by marker
 // (markers.mjs) — read here as if they were `blog_sites` rows
 import { loadMarkers } from './markers.mjs';
@@ -510,7 +511,7 @@ const unquote = v => String(v || '').replace(/^["'](.*)["']$/, '$1').trim();
 // keys are few and the fallback is total.
 export function readSiteConfig(root) {
   const file = ['_config.yml', '_config.yaml'].map(n => path.join(root, n)).find(isFile);
-  const out = { permalink: '', collections: {} };
+  const out = { permalink: '', title: '', collections: {} };
   if (!file) return out;
   let text = '';
   try { text = fs.readFileSync(file, 'utf8'); } catch { return out; }
@@ -524,6 +525,7 @@ export function readSiteConfig(root) {
       inCollections = top[1] === 'collections' && !top[2].trim();
       current = '';
       if (top[1] === 'permalink' && top[2].trim()) out.permalink = unquote(top[2]);
+      if (top[1] === 'title' && top[2].trim()) out.title = unquote(top[2]);
       continue;
     }
     if (!inCollections) continue;
@@ -781,16 +783,52 @@ export function indexOf(root, kind) {
     const doc = readDoc(key, rel);
     if (doc) docs.push(doc);
   }
+  // ONE ADDRESS, TWO FILES. This used to be first-come-first-served, so the
+  // file that happened to be listed first got the page and a write could land
+  // in the wrong post. Now each claim has a strength — the document's own
+  // permalink (0), the site's or collection's permalink template (1, and a
+  // plain page's own path), a conventional guess (2) — the single strongest
+  // claim wins, and a tie at the top is AMBIGUOUS: recorded, and refused by
+  // resolvePath exactly the way the slug fallback refuses a shared slug.
   const byPath = new Map();
   const bySlug = new Map();
+  const claims = new Map(); // url -> {rank, docs: [doc]}
   for (const doc of docs) {
     doc.urls = candidatesFor(doc, cfg);
-    for (const u of doc.urls) if (!byPath.has(u)) byPath.set(u, doc);
+    for (const u of doc.urls) {
+      const rank = claimRank(doc, cfg, u);
+      const had = claims.get(u);
+      if (!had || rank < had.rank) claims.set(u, { rank, docs: [doc] });
+      else if (rank === had.rank && !had.docs.includes(doc)) had.docs.push(doc);
+    }
     if (doc.slug) bySlug.set(doc.slug, [...(bySlug.get(doc.slug) || []), doc]);
   }
-  const index = { docs, byPath, bySlug, cfg, root: key };
+  const ambiguous = new Map(); // url -> [rel, rel, …]
+  for (const [u, c] of claims) {
+    if (c.docs.length === 1) byPath.set(u, c.docs[0]);
+    else ambiguous.set(u, c.docs.map(d => d.rel));
+  }
+  const index = { docs, byPath, ambiguous, bySlug, cfg, root: key };
   indexCache.set(key, { stamp, mtimes: mtimesOf(key, docs), index });
   return index;
+}
+
+// How strongly a document claims an address (lower is stronger): its own
+// permalink, then the template it is served under (or, for a plain page, its
+// own path in the repo), then the conventional guesses candidatesFor adds so a
+// permalink style this module does not model still finds the file.
+function claimRank(doc, cfg, u) {
+  const n = p => (p ? normPath(p) : '');
+  if (doc.permalink) {
+    const exp = expandPermalink(doc.permalink, doc);
+    if (u === n(exp || (!PLACEHOLDER.test(doc.permalink) ? doc.permalink : ''))) return 0;
+  }
+  const tmpl = doc.collection
+    ? ((cfg.collections || {})[doc.collection] || {}).permalink
+    : (doc.kind === 'post' || doc.kind === 'draft' ? cfg.permalink : '');
+  if (tmpl && u === n(expandPermalink(tmpl, doc))) return 1;
+  if (!(doc.kind === 'post' || doc.kind === 'draft') && !doc.collection) return 1;
+  return 2;
 }
 
 // The documents' own mtimes, folded to one string — the half of the stamp a
@@ -819,6 +857,14 @@ export function resolvePath(root, urlPath, kind) {
   const index = indexOf(root, 'jekyll');
   const hit = index.byPath.get(p);
   if (hit) return { doc: hit, how: hit.permalink ? 'permalink' : 'convention' };
+  const twins = index.ambiguous && index.ambiguous.get(p);
+  if (twins) {
+    return {
+      doc: null,
+      why: `${twins.length} files in this repo claim the address ${p} `
+        + `(${twins.join(', ')}) — give one of them a permalink and reload`,
+    };
+  }
   // the slug fallback: the last real segment of the address, matched against
   // the slugs the repo actually contains. It is what carries a site whose
   // permalink style this module does not model.
@@ -1273,7 +1319,38 @@ export function blogPageFor(url) {
     }
   }
   if (!r.doc) return { ...base, source_path: '', rel: '', why: r.why };
+  // IS THIS REALLY THAT SITE? A site is declared by origin, and an origin is
+  // only a port: stop the blog's preview and start another project's on
+  // :4000, and every address there would map into the blog's repo. So before
+  // the page is given a source to write to, the title the reader is looking
+  // at is checked against the document it maps to — generously — and a
+  // mismatch is the same refusal as an unmappable page: no source, a reason.
+  const clash = servedTitleClash(url, r.doc, site);
+  if (clash) return { ...base, source_path: '', rel: '', why: clash };
   return { ...base, ...docRecord(site, r.doc, r.how) };
+}
+
+// Titles compared as letters and digits only, lowercased: punctuation, curly
+// quotes, an em dash and the site name the layout appends all fall away.
+const titleKey = t => String(t || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, '');
+/**
+ * '' when the served page plausibly IS `doc` (or there is nothing to compare
+ * yet), else the sentence the drawer shows. Plausibly: either title contains
+ * the other, or the served one carries the site's own `_config.yml` title (a
+ * home page whose <title> is just the site's name). The served title is the
+ * page record's — what the extension posted from this tab on its last visit.
+ */
+export function servedTitleClash(url, doc, site) {
+  const served = (readJson(pageFile(url), null) || {}).title;
+  const a = titleKey(served);
+  const b = titleKey(doc && doc.title);
+  if (!a || !b) return '';
+  if (a.includes(b) || b.includes(a)) return '';
+  const siteTitle = site && site.kind !== 'jupyterbook' ? titleKey(readSiteConfig(realish(site.root)).title) : '';
+  if (siteTitle.length >= 4 && a.includes(siteTitle)) return '';
+  return `the page served here is titled “${String(served).trim().slice(0, 120)}”, but ${doc.rel} is titled `
+    + `“${String(doc.title).trim().slice(0, 120)}” — is another site running on ${site.serve_origin}? `
+    + 'Nothing will be written until they match (reload once the right site is being served)';
 }
 
 /** The asset directories this repo actually has, absolute. */

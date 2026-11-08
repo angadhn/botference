@@ -1105,7 +1105,7 @@ run_plugin_mode() {
   # BOTFERENCE_PYTHON_BIN. Resolve it the way the TUI does (a python3 with
   # the project's packages), or under launchd the bare Homebrew python3 on
   # PATH wins and every plot fails with "No module named matplotlib".
-  ensure_bridge_python
+  if type ensure_bridge_python >/dev/null 2>&1; then ensure_bridge_python; fi
 
   if ! $share; then
     echo ""

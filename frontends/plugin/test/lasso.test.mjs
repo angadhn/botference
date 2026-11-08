@@ -24,6 +24,15 @@ const ROOT = tmp('root');
 process.env.BOTFERENCE_PROJECT_ROOT = ROOT;
 process.env.BOTFERENCE_HOME = ROOT;
 
+// No network here, DNS included: the companion resolves every link's host
+// before it fetches (lasso.webAddressRefusal), so names resolve through this
+// table — public by default, and the few private ones the address tests need.
+import dns from 'node:dns';
+const PRIVATE_NAMES = { 'intranet.test': '10.1.2.3', 'sneaky.test': '127.0.0.1', 'v6.test': 'fd00::1' };
+dns.promises.lookup = async host => [PRIVATE_NAMES[host]
+  ? { address: PRIVATE_NAMES[host], family: PRIVATE_NAMES[host].includes(':') ? 6 : 4 }
+  : { address: '93.184.216.34', family: 4 }];
+
 const store = await import('../store.mjs');
 const lasso = await import('../lasso.mjs');
 const workspace = await import('../workspace.mjs');
@@ -777,6 +786,56 @@ await test('a full saved copy is never re-fetched', async () => {
   assert.equal(http.asked.length, 0);
 });
 
+// ---- never this machine, never the private network ------------------------
+
+await test('private addresses are refused before any request, by literal and by what a name resolves to', async () => {
+  for (const u of ['http://127.0.0.1/x', 'http://localhost:4000/blog', 'http://10.0.0.8/', 'http://172.20.1.1/',
+    'http://192.168.1.1/admin', 'http://169.254.169.254/latest/meta-data', 'http://[::1]/', 'http://[fd12::5]/',
+    'http://[::ffff:127.0.0.1]/', 'http://printer.local/', 'http://0.0.0.0:8080/', 'http://2130706433/',
+    'https://example.org:4189/', 'http://intranet.test/', 'http://sneaky.test/', 'http://v6.test/']) {
+    const http = httpOf({});
+    const r = await lasso.fetchWeb(u, { http });
+    assert.ok(r.error, `${u} refused`);
+    assert.match(r.error, /^could not fetch: /, `${u}: said as a sentence`);
+    assert.equal(http.asked.length, 0, `${u}: never asked`);
+  }
+  assert.equal(await lasso.webAddressRefusal('https://example.org/fine'), '', 'a public name passes');
+  assert.equal(lasso.privateAddress('8.8.8.8'), false);
+  assert.equal(lasso.privateAddress('172.32.0.1'), false, 'just outside 172.16/12');
+  assert.equal(lasso.privateAddress('2606:4700::1'), false);
+});
+
+await test('a redirect to a private address is refused, and what came back is not used', async () => {
+  const http = async () => ({ ok: true, status: 200, url: 'http://192.168.0.1/router', contentType: 'text/html',
+    body: Buffer.from('<html><body><p>router admin secrets</p></body></html>') });
+  const r = await lasso.fetchWeb('https://example.org/bounce', { http });
+  assert.match(r.error || '', /redirects to an address it will not fetch/);
+  assert.ok(!JSON.stringify(r).includes('router admin secrets'));
+});
+
+await test('the default transport follows redirects by hand and checks every hop', async () => {
+  const realFetch = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (u, init) => {
+    asked.push(String(u));
+    assert.equal(init.redirect, 'manual', 'never let fetch follow on its own');
+    if (String(u).endsWith('/start')) return new Response('', { status: 302, headers: { location: 'https://example.org/two' } });
+    if (String(u).endsWith('/two')) return new Response('', { status: 301, headers: { location: 'http://127.0.0.1:4189/index' } });
+    return new Response('<p>should never be read</p>', { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+  try {
+    const r = await lasso.fetchWeb('https://example.org/start');
+    assert.match(r.error || '', /redirects to an address it will not fetch/);
+    assert.deepEqual(asked, ['https://example.org/start', 'https://example.org/two'], 'the private hop is never requested');
+    globalThis.fetch = async u => (String(u).endsWith('/a')
+      ? new Response('', { status: 302, headers: { location: '/b' } })
+      : new Response('<html><head><title>Arrived</title></head><body><p>the real text</p></body></html>',
+        { status: 200, headers: { 'content-type': 'text/html' } }));
+    const ok = await lasso.fetchWeb('https://example.org/a');
+    assert.equal(ok.title, 'Arrived');
+    assert.equal(ok.url, 'https://example.org/b', 'the final address is the one reported');
+  } finally { globalThis.fetch = realFetch; }
+});
 
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ lasso.test.mjs — ${passed} passed, ${failures.length} failed`);

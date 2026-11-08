@@ -12,17 +12,20 @@
 //      editor, the backstop's own put-back) is recorded before it happens, by
 //      the hash of the text it produces. A version with that hash is the
 //      reader's, exactly.
-//   2. the reader's editor being in front — on macOS the companion asks the
+//   2. Obsidian in front WITH THIS POST OPEN — on macOS the companion asks the
 //      system which app is frontmost (`lsappinfo`, no permission needed) once a
-//      second while a watch is running. A version that landed while a text
-//      editor (Obsidian, VS Code, …) was frontmost within the last few seconds
-//      is taken as the reader's. For Obsidian, if its vault's workspace says the
-//      reader is looking at a DIFFERENT note, the version is the bots'.
-//   3. otherwise, the bots'.
+//      second while a watch is running. A version that landed while Obsidian
+//      was frontmost within the last few seconds AND its vault's workspace says
+//      the active note is this very file is taken as the reader's.
+//   3. otherwise, the bots' — including any OTHER editor in front (VS Code,
+//      Cursor, Zed, …), Obsidian on a different note, or an Obsidian whose
+//      workspace cannot be read. Those used to count as the reader, which
+//      meant a bot write that landed while the reader happened to be in VS
+//      Code on something else was kept as theirs and escaped the put-back.
 //
-// The rule errs towards the reader: a bot write that lands while the reader is
-// typing in the same post is kept as theirs (and is still visible as a change),
-// never the other way round. Where no probe is available (not macOS, or
+// The safe default is the bots': a version wrongly called theirs is put back
+// and offered as a card (one Accept away), while a version wrongly called the
+// reader's is kept with no card at all. Where no probe is available (not macOS, or
 // PLUGIN_EDITOR_PROBE=none) every unjournalled version is the bots'; the
 // put-back still turns it into a card, so nothing is lost — it is one Accept
 // away.
@@ -109,14 +112,20 @@ export function classify(file, at = Date.now()) {
   const mode = probeMode();
   if (mode === 'user') return 'user';
   if (mode !== 'lsappinfo') return 'bot';
-  const recent = samples.filter(s => s.at <= at + SAMPLE_MS && at - s.at <= RECENT_MS && EDITOR_APPS.includes(s.app));
-  if (!recent.length) return 'bot';
-  if (recent.every(s => s.app === 'Obsidian')) {
-    const active = obsidianActive(file);
-    if (active && path.resolve(active) !== path.resolve(file)) return 'bot';
-  }
-  return 'user';
+  return classifyFrom(samples, file, at, obsidianActive);
 }
+/**
+ * The rule itself, pure: `samples` [{at, app}], and `activeOf(file)` the note
+ * Obsidian has open ('' when unknown). 'user' only when Obsidian was in front
+ * recently and that note is `file`; 'bot' for everything else.
+ */
+export function classifyFrom(list, file, at = Date.now(), activeOf = obsidianActive) {
+  const obsidian = (list || []).some(s => s.at <= at + SAMPLE_MS && at - s.at <= RECENT_MS && s.app === 'Obsidian');
+  if (!obsidian) return 'bot';
+  const active = activeOf(file);
+  return active && path.resolve(active) === path.resolve(file) ? 'user' : 'bot';
+}
+export { obsidianActive };
 
 // ---- the watch itself ---------------------------------------------------------
 const watches = new Set();

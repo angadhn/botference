@@ -5,8 +5,9 @@
 // background service worker over WS (SSE as fallback).
 //
 // Loopback only by default, no auth, no CORS headers: every request comes from
-// the extension's background worker, which bypasses CORS and is the only thing
-// that can reach 127.0.0.1:4189 in the first place.
+// the extension's background worker, which bypasses CORS. Any web page open in
+// the browser can also aim a request at 127.0.0.1:4189, so a request whose
+// Origin header names another website is refused (hosted.mjs originVerdict).
 //
 // --hosted opens the same server to other people over a tunnel (see
 // hosted.mjs): password gate + HMAC cookie for browsers, bearer token for the
@@ -22,7 +23,10 @@
 //         PLUGIN_OWNER_PASSWORD (hosted, optional: signs the owner in remotely),
 //         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge),
 //         SSE_HEARTBEAT_MS (default 15000: idle event-stream keep-alive),
-//         PLUGIN_DECISION_DEBOUNCE_MS (default 100: decision-log write settle)
+//         PLUGIN_DECISION_DEBOUNCE_MS (default 100: decision-log write settle),
+//         PLUGIN_EXTENSION_IDS (optional, comma list: pin which chrome-extension
+//           ids may call; unset = any extension), PLUGIN_PUBLIC_HOSTNAMES
+//           (optional, comma list: extra public names whose pages may call)
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -33,7 +37,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
-import { createHosted, CORS_HEADERS, isLocalDirect, sanitizeHandle } from './hosted.mjs';
+import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
@@ -777,6 +781,19 @@ function noteBlogTurnStart(url) {
     noCollateral: !!bg.suggest_mode,
     at: new Date().toISOString(),
   };
+  // SUGGEST MODE MEANS THE FILE DOES NOT MOVE. The bots propose and the reader
+  // accepts, so any change to the source during a turn that the companion did
+  // not make itself (turnwatch's journal: an accepted card, a ✎ edit) is a
+  // bot that wrote instead of proposing — or the reader typing in Obsidian,
+  // which the watch tells apart. The turn-start text and the watch are what
+  // turn-end needs to put such a write back (reportBlogChanges).
+  if (bg.suggest_mode) {
+    const raw = rawSource(bg.source_path);
+    if (raw != null) {
+      seen.raw = raw;
+      seen.watch = turnwatch.watchFile(bg.source_path);
+    }
+  }
   noteOverlap(url, seen);
   turnScans.set(url, seen);
 }
@@ -850,7 +867,7 @@ const CARD_SIDE_MAX = 7900;
 // a file that moved again since it was read is re-planned with that version
 // as one more step) and posts the cards to the conversation that asked. A
 // callout the bots changed is simply left as they wrote it: no marker.
-function settleOwnership(url, seen, steps, ev) {
+function settleOwnership(url, seen, steps, ev, { proposeOnly = false } = {}) {
   const file = seen.source;
   let disk = rawSource(file);
   if (disk == null || seen.raw == null) return null;
@@ -880,7 +897,9 @@ function settleOwnership(url, seen, steps, ev) {
   const cards = p.cards.map(c => {
     const base = { id: suggest.newId(), current: c.current, proposed: c.proposed,
       ...(c.deletes ? { deletes: true } : {}),
-      why: `${who} wrote this into your text directly; it was put back for you to decide` };
+      why: proposeOnly
+        ? `${who} wrote this into the file instead of proposing it; it was put back for you to decide`
+        : `${who} wrote this into your text directly; it was put back for you to decide` };
     if (c.current.length <= CARD_SIDE_MAX && c.proposed.length <= CARD_SIDE_MAX) return { ...base, state: 'open' };
     if (!saved) {
       try {
@@ -897,14 +916,43 @@ function settleOwnership(url, seen, steps, ev) {
   const target = (ev && typeof ev.target === 'string' && store.msgsOf(page, ev.target)) ? ev.target : store.PAGE_CHAT;
   const n = cards.length;
   const msg = store.appendMsg(page, target, { author: 'botference',
-    text: `${who} edited your words in the post directly. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
-      + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves your text as it is. '
-      + '(Callouts, figures and new files are the bots’ to edit; everything else in the post is yours.)',
+    text: proposeOnly
+      ? `${who} edited the source directly instead of proposing. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
+        + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves the text as it is.'
+      : `${who} edited your words in the post directly. ${n === 1 ? 'That change was' : `Those ${n} changes were`} `
+        + 'put back in the file, and ' + (n === 1 ? 'is' : 'are') + ' below as suggestions: Accept makes the change, Reject leaves your text as it is. '
+        + '(Callouts, figures and new files are the bots’ to edit; everything else in the post is yours.)',
     suggestions: cards });
   if (msg) broadcast({ type: 'chat', kind: 'reply', url: page.url, target, msg });
   store.savePage(page);
   broadcast({ type: 'page', url: page.url });
   return p;
+}
+
+// Turn-end for a SUGGEST-MODE source that moved during the turn. Markdown
+// gets exactly the put-back the ownership rule gives a direct-edit post
+// (settleOwnership: the bots' hunks back out, each one a card to Accept or
+// Reject, the reader's own typing kept). Anything else (a notebook's JSON, an
+// .html source) has no card machinery that would make sense of its diff, so
+// it is reported and left: the thread says the file changed and where.
+function settleSuggestSource(url, seen, steps, ev) {
+  const disk = rawSource(seen.source);
+  if (disk == null || disk === seen.raw) return;
+  // every version the watch saw was the reader's (the journal, or Obsidian
+  // with this file open): nothing of the bots' to put back
+  const last = [...steps, { text: disk, by: steps.length && steps[steps.length - 1].text === disk
+    ? steps[steps.length - 1].by : turnwatch.classify(seen.source) }];
+  if (last.every(st => st.by === 'user')) return;
+  if (/\.(md|markdown)$/i.test(seen.source)) {
+    settleOwnership(url, seen, steps, ev, { proposeOnly: true });
+    return;
+  }
+  const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
+  const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
+  const rel = path.relative(seen.dir, seen.source).split(path.sep).join('/');
+  draftReceipt(url, (ev && typeof ev.target === 'string') ? ev.target : store.PAGE_CHAT,
+    `${who} changed \`${rel}\` directly instead of proposing the change. It was left as they wrote it — `
+    + 'this kind of file cannot be offered back as suggestions, so check it before you rebuild or publish.');
 }
 
 // ---- the edits nobody commented on ---------------------------------------
@@ -1076,6 +1124,28 @@ async function reportAuthoringChanges(url, seen, ev) {
     try { settleOwnership(url, seen, steps, ev); }
     catch (e) { console.error('[ownership]', e.message); }
   }
+  // …and the OTHER posts. The put-back above is one file's machinery (the
+  // turn-start text it diffs against is only ever this post's), so a bot that
+  // wrote into a different existing post's prose is not put back — but it is
+  // never silent either: the conversation that asked is told which posts
+  // moved, and that they were left as the bots wrote them. Only on a page
+  // that has its own post: from a reading conversation, editing existing
+  // drafts is the job it was given.
+  if (ownRel) {
+    const others = changed.filter(rel => rel !== ownRel && /\.(md|markdown)$/i.test(rel)
+      && seen.before.has(rel) && !rel.startsWith('.botference/'));
+    if (others.length) {
+      const agents = (ev && Array.isArray(ev.agents) && ev.agents.length) ? ev.agents : [];
+      const who = agents.length === 1 ? `@${agents[0]}` : 'the bots';
+      const list = others.slice(0, 12).map(r => `\`${r}\``).join(', ') + (others.length > 12 ? `, and ${others.length - 12} more` : '');
+      try {
+        draftReceipt(url, (ev && typeof ev.target === 'string') ? ev.target : store.PAGE_CHAT,
+          `${who} also changed ${others.length === 1 ? 'another existing post' : `${others.length} other existing posts`}: ${list}. `
+          + `Only this post's own words are put back automatically, so ${others.length === 1 ? 'that change was' : 'those changes were'} `
+          + 'left as the bots wrote them — look them over before you publish.');
+      } catch (e) { console.error('[ownership] other posts:', e.message); }
+    }
+  }
   try {
     const posts = authoring.changedPosts(site, changed, seen.before, url, store.readConfig(),
       { keepFront: seen.raw != null && seen.source ? [seen.source] : [] });
@@ -1091,8 +1161,13 @@ async function reportAuthoringChanges(url, seen, ev) {
     // Source articles must not reload merely because the local site changed.
     publishChanges(url, payload);
     for (const post of posts) {
-      const page = store.upsertPage({ url: post.url, title: post.title,
-        ...(store.normUrl(post.url) !== store.normUrl(url) ? { source_url: url } : {}) });
+      let page;
+      // a post's record that is on disk but unreadable is left alone (upsertPage
+      // refuses); the rest of the turn's posts still go through
+      try {
+        page = store.upsertPage({ url: post.url, title: post.title,
+          ...(store.normUrl(post.url) !== store.normUrl(url) ? { source_url: url } : {}) });
+      } catch (e) { console.error(`plugin: ${e.message}`); continue; }
       if (page.url !== store.normUrl(url)) {
         const original = store.readPage(url);
         page.draft_context ||= `Source: ${original?.title || url} · ${url}\n`
@@ -1135,6 +1210,8 @@ async function reportAuthoringChanges(url, seen, ev) {
 // livereload where it is on. The alternative — hold the reader's page back
 // while we watch a directory — is worse and less honest.
 function reportBlogChanges(url, seen, ev) {
+  // the watch ends with the turn, whatever else happens
+  const steps = seen.watch ? seen.watch.stop() : null;
   const bg = blogOf(url);
   if (!bg || !bg.confirmed || bg.root !== seen.dir) return;   // un-confirmed mid-turn
   // THE SAFETY NET, before the census, so what it places is counted like any
@@ -1147,6 +1224,11 @@ function reportBlogChanges(url, seen, ev) {
   const changed = claimOnce(url, seen, workspace.diffScans(seen.before, blog.scanSite(seen.dir, seen.kind || bg.kind)));
   if (!changed.length) return;
   const own = path.relative(seen.dir, seen.source).split(path.sep).join('/');
+  // a suggest-mode source the bots wrote into directly (noteBlogTurnStart)
+  if (steps && seen.raw != null && changed.includes(own)) {
+    try { settleSuggestSource(url, seen, steps, ev); }
+    catch (e) { console.error('[suggest-mode]', e.message); }
+  }
   const payload = {
     type: 'blog-files',
     url,
@@ -1853,7 +1935,9 @@ function onChatEvent(ev) {
       ? questions.failCard(vault, ev.card_id, ev.error)
       : questions.settle(vault, ev.card_id, ev.msg && ev.msg.text, ev.msg && ev.msg.author);
     if (card) {
-      questions.saveVault(vault);
+      // a vault that went unreadable is never written over (questions.saveVault
+      // refuses); the answer is lost for this card and the log says why
+      try { questions.saveVault(vault); } catch (e) { console.error(`plugin: ${e.message}`); return; }
       broadcast({ type: 'question', url: ev.url, card_id: card.id, state: card.state,
         ...(card.error ? { error: card.error } : {}) });
     }
@@ -2014,6 +2098,16 @@ const MEMORY_HOSTS = new Set(String(process.env.PLUGIN_MEMORY_HOSTNAME ?? 'memor
   .split(',').map(h => h.trim().toLowerCase()).filter(Boolean));
 const hostOf = req => String((req && req.headers && req.headers.host) || '').split(':')[0].toLowerCase();
 export const isMemoryHost = req => MEMORY_HOSTS.has(hostOf(req));
+// Every public name this companion answers on, for the Origin check
+// (hosted.mjs originVerdict): the memorizer's, the reading room it links to,
+// and whatever PLUGIN_READING_HOSTNAME / PLUGIN_PUBLIC_HOSTNAMES add.
+const PUBLIC_HOSTS = [...new Set([
+  ...MEMORY_HOSTS,
+  ...[...MEMORY_HOSTS].map(h => h.replace(/^[^.]+\./, 'discuss.')),
+  ...[...MEMORY_HOSTS].map(h => h.replace(/^[^.]+\./, 'plugin.')),
+  ...String(process.env.PLUGIN_READING_HOSTNAME || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
+])];
+const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS });
 // What is served on the vault's hostname, and nothing else is. Everything here
 // is either the quiz, the session (so the sign-in the reading room uses works
 // unchanged on this host too) or an answer a script asks for.
@@ -2537,19 +2631,37 @@ const pick = (data, fallbackAuthor = null) => ({
 // calls with JSON. One write path, two encodings: `_form` marks which, so the
 // answer can be a redirect back to the page instead of a wall of JSON.
 const isForm = req => /^application\/x-www-form-urlencoded/i.test(req.headers['content-type'] || '');
+// The routes the reading room's plain HTML forms post to (views.mjs, plus
+// /auth in hosted.mjs, which reads its own body) — the only ones a form
+// encoding is accepted on. Everywhere else the body is JSON or nothing: a page
+// on another website can send a form or text/plain without asking first, but
+// it cannot send application/json to another origin without a preflight.
+const FORM_ROUTES = new Set(['/reply', '/edit', '/rename-page', '/tag-page', '/resolve', '/addressed',
+  '/quiz-keep', '/quiz-answer', '/quiz-flag', '/quiz-delete']);
+const isJsonType = ct => !ct || /^application\/(?:[\w.+-]*\+)?json\b/i.test(ct);
 function readBody(req, res, fn) {
-  let body = '';
+  const chunks = [];
+  let size = 0;
   let over = false;
   const form = isForm(req);
+  const route = String(req.url || '').split('?')[0];
+  if (form ? !FORM_ROUTES.has(route) : !isJsonType(String(req.headers['content-type'] || ''))) {
+    req.resume();
+    return fail(res, 415, 'send the body as JSON (content-type: application/json)');
+  }
   req.on('data', c => {
     if (over) return;
-    body += c;
+    // Buffers, decoded once at the end: decoding each chunk on its own split
+    // any character that straddled two chunks into replacement marks
+    chunks.push(c);
+    size += c.length;
     // answer before hanging up: a dropped socket reads as "the companion is
     // down" in the extension, which is the wrong thing to tell the user
-    if (body.length > BODY_MAX) { over = true; fail(res, 413, 'request too large'); req.destroy(); }
+    if (size > BODY_MAX) { over = true; fail(res, 413, 'request too large'); req.destroy(); }
   });
   req.on('end', () => {
     if (over) return;
+    const body = Buffer.concat(chunks).toString('utf8');
     let data;
     if (form) {
       data = Object.fromEntries(new URLSearchParams(body));
@@ -2557,7 +2669,18 @@ function readBody(req, res, fn) {
     } else {
       try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
     }
-    fn(data);
+    // A write path that refuses (fsjson.UnreadableJsonError: a record on disk
+    // that is not readable JSON, which nothing may overwrite) throws; the
+    // reader is told which file and why, and the companion stays up. Anything
+    // else thrown is answered the same way rather than taking the process down.
+    const answer = e => {
+      if (e && e.code !== 'EUNREADABLEJSON') console.error('plugin: request failed:', e);
+      if (!res.headersSent) fail(res, e && e.code === 'EUNREADABLEJSON' ? 409 : 500, String((e && e.message) || e));
+    };
+    try {
+      const r = fn(data);
+      if (r && typeof r.catch === 'function') r.catch(answer);
+    } catch (e) { answer(e); }
   });
 }
 // a form post lands back on the page it came from, with any refusal to show
@@ -2852,12 +2975,23 @@ export function handler(req, res) {
   let url = req.url.split('?')[0];
   const draftCommandOnly = req.method === 'POST' && (url === '/draft-blog' || url === '/draft-blog/thread');
   if (draftCommandOnly) url = url === '/draft-blog/thread' ? '/thread' : '/reply';
+  // WHICH PAGE IS ASKING (hosted.mjs originVerdict). A request on the bare
+  // loopback from a website's page — any tab the owner has open can aim at
+  // 127.0.0.1 — is refused before it can act as the owner, and gets no CORS
+  // header, so the page cannot even read the refusal.
+  const asker = originOf(req);
+  if (asker === 'foreign' && isLocalDirect(req)) {
+    req.resume();
+    return fail(res, 403, 'refused: requests from other websites cannot use the companion');
+  }
   // CORS, hosted only: the remote extension is cross-origin against a public
-  // hostname. Wildcard origin is safe precisely because API auth is a bearer
+  // hostname. An origin that passed is echoed; a foreign one gets nothing; no
+  // Origin keeps the wildcard, which is safe because API auth is a bearer
   // header — a wildcard can never carry the cookie the browsers use.
-  if (HOSTED) for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
+  if (HOSTED) for (const [k, v] of Object.entries(corsFor(req, asker))) res.setHeader(k, v);
   if (req.method === 'OPTIONS') {
     if (!HOSTED) return fail(res, 404, 'not found');
+    if (asker === 'foreign') return fail(res, 403, 'refused: this website may not call the companion');
     return res.writeHead(204, { 'content-length': '0' }).end();
   }
   if (HOSTED && req.method === 'POST' && url === '/auth') return hosted.authEndpoint(req, res);
@@ -4107,10 +4241,15 @@ export function handler(req, res) {
       // something is a bot talking to itself.
       let wrapped = false;
       if (fan.wrapUp && threads.length) {
-        store.appendMsg(page, store.PAGE_CHAT, { author: me.handle, text: fan.wrapUp });
-        store.savePage(page);
-        broadcast({ type: 'page', url: page.url });
-        wrapped = !!(await summon(page, store.PAGE_CHAT, fan.wrapUp, { forceAll: true }, me)).queued;
+        // RE-READ before writing, as /run does: every `await summon` above
+        // gave the turns room to run, and a bot's answer that landed in the
+        // meantime is in the file, not in this copy — saving this copy would
+        // have erased it
+        const fresh = store.readPage(page.url) || page;
+        store.appendMsg(fresh, store.PAGE_CHAT, { author: me.handle, text: fan.wrapUp });
+        store.savePage(fresh);
+        broadcast({ type: 'page', url: fresh.url });
+        wrapped = !!(await summon(fresh, store.PAGE_CHAT, fan.wrapUp, { forceAll: true }, me)).queued;
       }
       // …and the round itself, as a thing with a length and a position in it.
       // Started here rather than on the first turn boundary because THIS is
@@ -4118,7 +4257,7 @@ export function handler(req, res) {
       // preamble is still going out. The wrap-up is counted (it is a step the
       // reader is waiting on); a wrap-up that was never queued is not, or the
       // strip would spin for a turn that is never coming.
-      if (threads.length) startRound(page.url, page, threads, { wrap: wrapped });
+      if (threads.length) startRound(page.url, store.readPage(page.url) || page, threads, { wrap: wrapped });
       // `queued` is the number of TURNS this round put in the queue — the
       // preamble, one per thread, and the wrap-up where there is one — and
       // `threads` names the threads they are addressed to, which is what lets
@@ -4378,6 +4517,9 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       if (!data.url) return fail(res, 400, 'url required');
       const page = store.upsertPage(data);
+      // the served title is what blog.blogPageFor checks a local site's page
+      // against, so a visit that brought a new one answers afresh
+      blogCache.delete(String(data.url)); blogCache.delete(page.url);
       broadcast({ type: 'page', url: page.url });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify(page));
     });
@@ -4464,14 +4606,15 @@ export function handler(req, res) {
       if (!data.url) return fail(res, 400, 'url required');
       const list = Array.isArray(data.comments) ? data.comments : [];
       if (!list.length) return fail(res, 400, 'comments required');
-      const page = store.readPage(data.url)
+      let page = store.readPage(data.url)
         || store.upsertPage({ url: data.url, title: data.title, site: data.site });
       const threads = {};
       const refusals = [];
       let created = 0;
       let appended = 0;
       let skipped = 0;
-      let changed = false;
+      let changed = false; // something to broadcast
+      let dirty = false;   // this copy holds writes the file does not have yet
       for (const c of list) {
         const origin = store.cleanOrigin({ system: 'review', id: c && c.id });
         const author = sanitizeHandle(c && c.author);
@@ -4492,7 +4635,7 @@ export function handler(req, res) {
           });
           if (!seen) {
             const msg = store.appendMsg(page, target, { author, text, ts: c.ts, origin });
-            if (msg) { created++; fresh = true; changed = true; }
+            if (msg) { created++; fresh = true; changed = dirty = true; }
           }
         } else {
           let thread = store.findOrigin(page, 'review', origin.id);
@@ -4503,7 +4646,7 @@ export function handler(req, res) {
             });
             created++;
             fresh = true;
-            changed = true;
+            changed = dirty = true;
           }
           target = thread.id;
           // the visitor's own replies over there, in order, each one landing
@@ -4517,7 +4660,7 @@ export function handler(req, res) {
             if ((thread.msgs || []).some(m => m.ts === rTs && sanitizeHandle(m.author) === rAuthor)) continue;
             store.appendMsg(page, target, { author: rAuthor, text: rText, ts: rTs, origin });
             appended++;
-            changed = true;
+            changed = dirty = true;
           }
           // RESOLVING TRAVELS ONE WAY, AND ONCE. Filed over there is filed
           // here — the person who wrote the comment has said they are done
@@ -4532,11 +4675,11 @@ export function handler(req, res) {
             if (!thread.origin_filed) {
               thread.origin_filed = true;
               if (!store.isResolved(thread)) store.setResolved(thread, true, author);
-              changed = true;
+              changed = dirty = true;
             }
           } else if (thread.origin_filed) {
             delete thread.origin_filed;
-            changed = true;
+            changed = dirty = true;
           }
         }
         if (target) threads[origin.id] = target;
@@ -4554,14 +4697,18 @@ export function handler(req, res) {
           const routeHint = target === store.PAGE_CHAT
             ? (hasMention(text) ? '' : (artifactRoom(page) ? '@all ' : ''))
             : addressOf(target, text, '', []);
+          // the summon awaits, and a turn already queued on this page may
+          // land its answer meanwhile: write ours first, and RE-READ after
+          // (as /run does), so the next comment is filed into the record as
+          // it now stands rather than over the top of that answer
+          if (dirty) { store.savePage(page); dirty = false; }
           const r = await summon(page, target, text, { routeHint, addressed: true }, me);
+          page = store.readPage(page.url) || page;
           if (r && r.reason) refusals.push({ id: origin.id, reason: r.reason });
         }
       }
-      if (changed) {
-        store.savePage(page);
-        broadcast({ type: 'page', url: page.url });
-      }
+      if (dirty) store.savePage(page);
+      if (changed) broadcast({ type: 'page', url: page.url });
       ok(res, { url: page.url, threads, created, appended, skipped, refusals });
     });
   }
@@ -5774,7 +5921,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     path: '/ws',
     // a browser cannot set headers on an upgrade, so the shared password may
     // ride the query string (?auth=…&handle=…); cookies work too
-    authorize: req => hosted.authorized(req),
+    // a website's page can open a socket to the loopback too, and would hear
+    // every event: the same Origin rule as every HTTP request
+    authorize: req => !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req),
     onOpen(ws) {
       ws.send(JSON.stringify({ type: 'hello' }));
       wsClients.add(ws);

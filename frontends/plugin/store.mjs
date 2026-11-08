@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 import { sanitizeHandle } from './hosted.mjs';
 // tmp + rename, once, for the whole tree — the atomic-write rule this file's
 // header states was being held in three separate copies of six lines
-import { readJson, writeJson } from './fsjson.mjs';
+import { readJson, writeJson, readJsonState, readJsonOrWarn, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 
 const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(PLUGIN, '..', '..');
@@ -213,12 +213,17 @@ export const newThreadId = () =>
   `t-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
 
 export function readConfig() {
-  const cfg = readJson(CONFIG_FILE, null);
   // First run writes the defaults out — and then reads them back through the
   // SAME normalization as any other config. Returning the raw defaults here
   // (as this used to) meant an environment override was honoured on every run
   // but the first, which is the run a test's throwaway root always is.
-  if (!cfg) writeJson(CONFIG_FILE, DEFAULT_CONFIG);
+  // ONLY a missing file is a first run: a hand-edited one with a stray comma
+  // is the owner's settings, read as defaults for now and never overwritten
+  // (fsjson.readJsonState; saveConfig refuses until it is fixed).
+  const got = readJsonState(CONFIG_FILE);
+  if (got.state === 'unreadable') warnUnreadable(CONFIG_FILE, got.error);
+  const cfg = got.state === 'ok' ? got.value : null;
+  if (got.state === 'missing') writeJson(CONFIG_FILE, DEFAULT_CONFIG);
   const merged = { ...DEFAULT_CONFIG, ...(cfg || {}) };
   // a hand-edited config must never make the envelope say something strange
   if (!VERBOSITY_LEVELS.includes(merged.verbosity)) merged.verbosity = DEFAULT_CONFIG.verbosity;
@@ -237,6 +242,7 @@ export function readConfig() {
 // settings the drawer can change (verbosity, today): merged over what is on
 // disk and written atomically like everything else
 export function saveConfig(patch) {
+  refuseIfUnreadable(CONFIG_FILE);
   const cfg = { ...readConfig(), ...patch };
   writeJson(CONFIG_FILE, cfg);
   return readConfig();
@@ -324,7 +330,7 @@ export const tagsOf = page => (Array.isArray(page && page.tags) ? page.tags : []
 // so the filter is right immediately and nothing is rewritten just because
 // somebody opened a list. The next save persists it.
 export function readIndex() {
-  const idx = readJson(INDEX_FILE, {});
+  const idx = readJsonOrWarn(INDEX_FILE, {}) || {};
   for (const key of Object.keys(idx)) {
     const row = idx[key];
     if (row && typeof row === 'object' && !cleanKind(row.kind)) row.kind = inferKind(row.url);
@@ -415,7 +421,7 @@ function migratePage(fromUrl, toUrl) {
   try { fs.unlinkSync(pageFile(fromUrl)); } catch { /* already gone */ }
   const idx = readIndex();
   delete idx[oldKey];
-  writeJson(INDEX_FILE, idx);
+  writeIndex(idx);
   return readPage(page.url);
 }
 
@@ -427,7 +433,7 @@ function migratePage(fromUrl, toUrl) {
 // for it — one-time, automatic, and inside readPage so every caller (the
 // endpoints, planSteps, the views, upsertPage) gets it without knowing.
 export function readPage(url) {
-  let page = readJson(pageFile(url), null);
+  let page = readJsonOrWarn(pageFile(url), null);
   if (!page && isPdfTextUrl(url)) page = adoptPdfTextRecord(url);
   if (!page) return null;
   // a record written before kinds existed answers for itself, in memory: the
@@ -478,8 +484,18 @@ export function savePage(page) {
       ? { projects: projectsOf(page).map(p => p.id) } : {}),
     updated_at: page.updated_at,
   };
-  writeJson(INDEX_FILE, idx);
+  writeIndex(idx);
   return page;
+}
+// The index is derived from the page records, so a broken one costs the
+// lists, never a conversation: the page itself is always written, and the
+// index is left exactly as it is (one loud line, fsjson.warnUnreadable) rather
+// than replaced by the one row this save knows about. Throwing here instead
+// would take down every bot turn that ends in a save.
+function writeIndex(idx) {
+  if (readJsonState(INDEX_FILE).state === 'unreadable') return false;
+  writeJson(INDEX_FILE, idx);
+  return true;
 }
 
 // --- code-block runs -----------------------------------------------------
@@ -542,7 +558,7 @@ export function deletePage(url) {
   try { fs.rmSync(runsDir(pageKey(url)), { recursive: true, force: true }); } catch { }
   const idx = readIndex();
   delete idx[pageKey(url)];
-  writeJson(INDEX_FILE, idx);
+  writeIndex(idx);
 }
 
 // --- article snapshots ---------------------------------------------------
@@ -688,6 +704,10 @@ export function blankPage({ url, title, site, kind, file_name }) {
 // touches threads, page_chat, session_id, the reader's own title or their tags
 // — a re-visit must not disturb the conversation, or undo a rename.
 export function upsertPage({ url, title, site, kind, file_name, source_url, source_title }) {
+  // a record that is there but unreadable is somebody's conversation, not a
+  // page to start afresh: refuse (the route says why) rather than save a
+  // blank one over it
+  if (!readPage(url)) refuseIfUnreadable(pageFile(url));
   const page = readPage(url) || blankPage({ url, title, site, kind, file_name });
   if (title) page.title = String(title).trim();
   if (site) page.site = String(site);

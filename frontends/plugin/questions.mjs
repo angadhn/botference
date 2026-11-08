@@ -26,15 +26,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DIR, unwrapLine, fencedBlocks } from './store.mjs';
+import { readJsonOrWarn, refuseIfUnreadable } from './fsjson.mjs';
 
 export const VAULT_FILE = path.join(DIR, 'questions.json');
 
 const nowIso = () => new Date().toISOString();
 export const newCardId = () => `q-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
 
-function readJson(file, fallback) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
-}
 function writeJson(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
@@ -76,11 +74,17 @@ export const WHY_MAX = 600;
 export const QUOTE_MAX = 1200;
 
 export function readVault() {
-  const v = readJson(VAULT_FILE, null);
+  // a broken vault reads as empty (loudly, once) and saveVault refuses to
+  // write over it: an empty quiz for a moment, never a lost deck
+  const v = readJsonOrWarn(VAULT_FILE, null);
   if (!v || !Array.isArray(v.cards)) return { version: 1, cards: [] };
   return { version: 1, cards: v.cards.filter(c => c && c.id) };
 }
-export const saveVault = v => { writeJson(VAULT_FILE, { version: 1, cards: v.cards || [] }); return v; };
+export const saveVault = v => {
+  refuseIfUnreadable(VAULT_FILE);
+  writeJson(VAULT_FILE, { version: 1, cards: v.cards || [] });
+  return v;
+};
 export const findCard = (v, id) => (v.cards || []).find(c => c.id === String(id || '')) || null;
 
 const clip = (s, n) => String(s == null ? '' : s).replace(/\s+/g, ' ').trim().slice(0, n);
