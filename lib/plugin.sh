@@ -1101,6 +1101,12 @@ run_plugin_mode() {
     echo "💡 Then highlight text on any article page to annotate it."
   fi
 
+  # The companion's bridges and its /run code cells take the Python named in
+  # BOTFERENCE_PYTHON_BIN. Resolve it the way the TUI does (a python3 with
+  # the project's packages), or under launchd the bare Homebrew python3 on
+  # PATH wins and every plot fails with "No module named matplotlib".
+  ensure_bridge_python
+
   if ! $share; then
     echo ""
     exec node "$engine/server.mjs" ${server_args[@]+"${server_args[@]}"}
