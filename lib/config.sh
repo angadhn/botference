@@ -610,6 +610,7 @@ Options:
   --help, -h        Show this help and exit
 
 Supported models:
+  claude-fable-5-2      Anthropic Fable 5.2 (1M context; $8/$40 per MTok, 20% below 5.1)
   claude-fable-5-1      Anthropic Fable 5.1 (1M context; default Claude participant)
   claude-fable-5        Anthropic Fable 5   (1M context)
   claude-opus-5-5       Anthropic Opus 5.5  (1M context; Fable-5.1-class at ~40% lower cost; default effort medium)

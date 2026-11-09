@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-09
+
+- **Claude Fable 5.2 on offer.** `claude-fable-5-2` (announced today; 1M context, $8/$40 per million tokens, 20% below Fable 5.1) is in the model pickers of the council, the Discuss plugin and the review hub, and in `/model @claude`. The default Claude participant stays Fable 5.1 until you switch.
+
 ## 2026-11-07
 
 - **Checks the app used to take on trust.** The Discuss companion now checks things it used to assume. Another website open in your browser can no longer send requests to the companion on your machine: it is refused (the extension, the companion's own pages, the review mirror, the council and the Python side are unaffected), and request bodies must be JSON except on the reading room's own forms. A link the bots are given is never fetched from this computer or your home network, redirects included. A settings, page, quiz or project file with a typo (a trailing comma, say) is no longer replaced by defaults: the companion says so once in its log, reads defaults meanwhile, and refuses to save over it until you fix it. Two blog files claiming the same address, or a different site running on your preview's port (the page's title does not match the post), now mean "no source file for this page" instead of a guess. Only Obsidian with the post open counts as you typing during a bot turn. A bot that edits another existing post is named in the thread; a bot that writes into a post where it should only propose has the change put back and offered as a suggestion. Accented letters and emoji that fall across two pieces of a request now arrive whole instead of garbled. The companion needs a restart; the extension is unchanged.

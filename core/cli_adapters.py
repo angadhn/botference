@@ -764,6 +764,7 @@ class AdapterResponse:
 # ── Context windows (fallback when not reported by CLI) ──────
 
 _CONTEXT_WINDOWS = {
+    "claude-fable-5-2": 1_000_000,  # Fable 5.2 (2026-11-09): same tier, 20% cheaper
     "claude-fable-5-1": 1_000_000,
     "claude-fable-5": 1_000_000,
     "claude-opus-5-5": 1_000_000,  # Opus 5.5 (2026-09-22): Fable-5.1-class, cheaper; default effort medium
