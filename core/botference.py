@@ -91,6 +91,7 @@ from room_prompts import (
     lasso_note,
     web_access_note,
     google_doc_review_note,
+    google_mail_note,
 )
 from datetime import datetime as _dt, timezone as _tz
 from handoff import build_frontmatter, validate_handoff
@@ -7329,6 +7330,9 @@ class Botference:
         gdoc_note = google_doc_review_note(model)
         if gdoc_note:
             parts.append(gdoc_note)
+        mail_note = google_mail_note(model)
+        if mail_note:
+            parts.append(mail_note)
         parts.append(lasso_note())
         parts.append(quote_check_note())
         tasks_note = self._project_tasks_note()

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""botference's own Google Docs client: sign-in, read a Doc, write to a Doc.
+"""botference's own Google client: sign-in, read a Doc, write to a Doc.
 
-Stdlib only. Used by the Google Docs poster (core/gdoc_mcp.py), which is
-the only thing that calls `read()` and `write()`; the poster runs every
-write through the lock in core/gdoc_guard.py first.
+Stdlib only. Used by the Google poster (core/gdoc_mcp.py), which is the
+only thing that calls `read()` and `write()`; the poster runs every write
+through the lock in core/gdoc_guard.py first. The mail reader
+(core/gmail_client.py) uses the same sign-in through `GoogleSession`.
 
 One-time sign-in, by the owner, for the agent Google account:
 
@@ -50,8 +51,12 @@ HOME_ENV = "BOTFERENCE_GOOGLE_HOME"
 DEFAULT_HOME = Path.home() / ".botference" / "google"
 
 DOCS_SCOPE = "https://www.googleapis.com/auth/documents"
+#: Read-only mail: Google's own permission lets the holder read mail and
+#: nothing else (no sending, deleting, labelling or marking as read).
+#: Optional at sign-in: a sign-in without it still works for Docs.
+GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 #: `openid email` makes Google say which account signed in.
-LOGIN_SCOPES = ("openid", "email", DOCS_SCOPE)
+LOGIN_SCOPES = ("openid", "email", DOCS_SCOPE, GMAIL_SCOPE)
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://docs.googleapis.com/v1/documents/"
@@ -129,6 +134,31 @@ class Problem(Enum):
     INCOMPLETE_SIGN_IN = (
         "Google sign-in: Google did not grant {detail}. Nothing was saved. "
         "Run the login again and allow access to Google Docs.")
+    # -- mail (core/gmail_client.py) --
+    MAIL_NOT_GRANTED = (
+        "Gmail: botference's Google sign-in does not include reading mail. "
+        "The owner must run the login again and tick the box that lets "
+        "botference read Gmail: " + LOGIN_HOW)
+    MAIL_SERVICE_OFF = (
+        "Gmail: the Gmail API is switched off in the Google Cloud project "
+        "that botference's sign-in key belongs to. The owner must switch on "
+        "the Gmail API for that project in Google Cloud (APIs & Services, "
+        "Library, Gmail API, Enable), wait a few minutes and try again.")
+    MAIL_NOT_FOUND = (
+        "Gmail: there is no {detail} with that id in the agent account's "
+        "mail. Search again and use an id from the results.")
+    MAIL_HIDDEN = (
+        "Gmail: that {detail} is from a sender botference keeps hidden "
+        "(sign-in and account-recovery mail for the agent account itself). "
+        "It is not shown.")
+    MAIL_BAD_REQUEST = "Gmail: {detail}"
+    MAIL_REFUSED = "Gmail: Google refused the request ({detail}).{hint}"
+    ATTACHMENT_TOO_LARGE = (
+        "Gmail: that attachment is {detail} bytes, over botference's limit "
+        "of {limit} bytes (25 MB). It was not fetched.")
+    ATTACHMENT_NOT_SAVED = (
+        "Gmail: could not save the attachment in {where} ({detail}). "
+        "Nothing was saved.")
 
 
 class GdocError(Exception):
@@ -415,8 +445,14 @@ def document_id(link: str) -> str:
     raise GdocError(Problem.BAD_DOCUMENT)
 
 
-class DocsClient:
-    """Reads and writes Google Docs as the signed-in agent account."""
+class GoogleSession:
+    """Calls a Google API as the signed-in agent account.
+
+    Holds what the Docs client and the mail client share: the saved
+    sign-in, its refresh (a fresh short-lived access token from the
+    long-lived sign-in) and one JSON call. Subclasses say how a refusal
+    reads, through `_refusal`.
+    """
 
     def __init__(self, home: Path | None = None,
                  transport: Transport = urllib_transport,
@@ -424,6 +460,12 @@ class DocsClient:
         self.home = home or google_home()
         self.transport = transport
         self.clock = clock
+
+    def granted_scopes(self) -> set[str]:
+        """The permissions the saved sign-in carries, as Google granted
+        them. A missing sign-in key or sign-in is reported first."""
+        load_key(self.home)
+        return set(str(_load_token(self.home).get("scope", "")).split())
 
     def _access_token(self) -> str:
         key = load_key(self.home)  # a missing key is reported first
@@ -455,6 +497,10 @@ class DocsClient:
             _save_token(self.home, tok)
             return tok["access_token"]
 
+    def _refusal(self, status: int, raw: bytes) -> GdocError:
+        """The one line for a refused call (not 200, not 401)."""
+        return _refused(status, raw)
+
     def _call(self, method: str, url: str, body: dict | None = None) -> dict:
         headers = {"Authorization": "Bearer " + self._access_token()}
         data = None
@@ -468,12 +514,16 @@ class DocsClient:
         if status == 401:
             raise GdocError(Problem.SIGN_IN_EXPIRED)
         if status != 200:
-            raise _refused(status, raw)
+            raise self._refusal(status, raw)
         try:
             return json.loads(raw)
         except ValueError:
             raise GdocError(Problem.GOOGLE_REFUSED,
                             detail="the reply was not JSON", hint=" Try again.") from None
+
+
+class DocsClient(GoogleSession):
+    """Reads and writes Google Docs as the signed-in agent account."""
 
     def get(self, link: str) -> dict:
         """The whole document: every tab, suggestions inline, comments."""
@@ -685,7 +735,8 @@ def main(argv: list[str]) -> int:
         print(e.line, file=sys.stderr)
         return 1
     print("Signed in and saved for the account you named. The council's bots "
-          "can now read and comment on Docs shared with it.")
+          "can now read and comment on Docs shared with it, and read its "
+          "mail if you ticked the Gmail box.")
     return 0
 
 

@@ -1869,6 +1869,12 @@ agent Google account as `~/.botference/google/client.json`, then run
 Details, and what is enforced versus only instructed:
 `docs/google-docs-review.md`.
 
+Both bots can also read the agent account's mail and its attachments, read
+only (Google's own read-only permission): ask in plain words. Mail is
+treated as material, never instructions. Setup: switch on the Gmail API in
+the Google Cloud project and run the login again, ticking both boxes.
+Details and limits: `docs/google-mail.md`.
+
 ### Lasso
 
 The thing that would settle the question is often something you have already

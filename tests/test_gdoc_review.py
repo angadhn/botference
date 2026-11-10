@@ -290,14 +290,15 @@ class TestPoster:
 # -- MCP over stdio ---------------------------------------------------------------
 
 class TestProtocol:
-    def test_lists_exactly_two_tools(self, tmp_path):
+    def test_lists_exactly_the_five_tools(self, tmp_path):
         poster = Poster("claude", DocsClient(home=tmp_path))
         init = handle(poster, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                "params": {"protocolVersion": "2025-06-18"}})
         assert init["result"]["protocolVersion"] == "2025-06-18"
         assert handle(poster, {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
         tools = handle(poster, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        assert [t["name"] for t in tools["result"]["tools"]] == [READ_TOOL, WRITE_TOOL]
+        assert [t["name"] for t in tools["result"]["tools"]] == [
+            READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment"]
 
     def test_unknown_tool_and_method(self, tmp_path):
         poster = Poster("claude", DocsClient(home=tmp_path))
@@ -484,7 +485,8 @@ class TestSignIn:
         assert gdoc_client.login(ACCOUNT, home=home, transport=google,
                                  open_browser=browser, timeout=10) == ACCOUNT
         assert seen["login_hint"] == ACCOUNT and seen["code_challenge_method"] == "S256"
-        assert set(seen["scope"].split()) == {"openid", "email", gdoc_client.DOCS_SCOPE}
+        assert set(seen["scope"].split()) == {
+            "openid", "email", gdoc_client.DOCS_SCOPE, gdoc_client.GMAIL_SCOPE}
         form = dict(urllib.parse.parse_qsl(google.calls[0][3].decode()))
         assert form["code"] == "the-code" and form["code_verifier"]
         saved = json.loads((home / "token.json").read_text())
@@ -601,10 +603,12 @@ class TestClaudeLaunch:
     def _settings(self):
         return claude_plan_settings_for_work_dir("/repo", "/repo/botference")
 
-    def test_allows_exactly_the_posters_two_tools(self):
+    def test_allows_exactly_the_posters_tools(self):
         allow = self._settings()["permissions"]["allow"]
         assert [r for r in allow if r.startswith("mcp__")] == [
-            f"mcp__{SERVER_NAME}__{READ_TOOL}", f"mcp__{SERVER_NAME}__{WRITE_TOOL}"]
+            f"mcp__{SERVER_NAME}__{tool}" for tool in (
+                READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment")]
+        assert SERVER_NAME == "botference_google"
         assert list(CLAUDE_TOOL_RULES) == [r for r in allow if r.startswith("mcp__")]
 
     def test_every_claude_ai_google_connector_denied(self):

@@ -33,6 +33,9 @@ write over a change someone made in the meantime.
 If the Google sign-in is missing or has expired, the bot says so in the
 chat, in one line that also says what to do.
 
+The same poster also lets both bots read the agent account's mail, read
+only: see `docs/google-mail.md`.
+
 ## How it works
 
 Neither bot talks to Google itself. botference has its **own** Google
@@ -42,10 +45,11 @@ sign-in, for the agent account, and one small program, the **poster**
 The poster is an MCP server (MCP: the standard way a bot's command-line
 tool is given extra tools). Each bot's command-line tool starts its own
 copy when the bot starts: `claude -p` through `--mcp-config`, `codex exec`
-through `-c mcp_servers.botference_gdoc...` settings on its command line.
+through `-c mcp_servers.botference_google...` settings on its command line.
 The poster runs outside the sandbox the bot's shell commands run in, so it
-can reach Google even when the bot cannot read the sign-in. It offers the
-bot exactly two tools:
+can reach Google even when the bot cannot read the sign-in. For Docs it
+offers the bot exactly two tools (the other three read mail, see
+`docs/google-mail.md`):
 
 - `read_doc`: the Doc's title, revision id, its text with positions (the
   numbers Google uses to say where in the text something is), tabs, pending
@@ -89,8 +93,8 @@ them):
   Which name is set when the poster starts (`--bot claude` or
   `--bot codex`), not by anything the bot sends, so a bot cannot post under
   the other's name.
-- **One way in.** The council's Claude may use the poster's two tools and
-  no other Google tool: all six claude.ai Google connectors (Docs, Drive,
+- **One way in.** The council's Claude may use the poster's tools and no
+  other Google tool: all six claude.ai Google connectors (Docs, Drive,
   Gmail, Calendar, Sheets, Slides) are denied by server name, which removes
   them from the session. The council's Codex runs with Codex's app
   connectors switched off (`-c features.apps=false`), which removes
@@ -189,4 +193,4 @@ If the bots later say the sign-in expired or was refused, run step 2 again.
 - Shared rule text for both bots: `google_doc_review_note()` in
   `core/room_prompts.py`, given to the bots in their first-turn text. Which
   bots get it: `GDOC_REVIEW_BOTS`, now `("claude", "codex")`.
-- Tests: `tests/test_gdoc_review.py`.
+- Tests: `tests/test_gdoc_review.py` (mail: `tests/test_gmail_reader.py`).
