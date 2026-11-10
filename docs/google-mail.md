@@ -43,8 +43,9 @@ Hard locks (enforced by software, whatever a bot or an email says):
 - **The sign-in stays hidden from the bots**, exactly as for Docs: neither
   bot's shell or file tools can open `~/.botference/google/`.
 - **Hidden senders.** Mail from the senders in `MAIL_HIDDEN_SENDERS`
-  (`core/gmail_client.py`; now `no-reply@accounts.google.com`, which sends
-  the agent account's own sign-in codes and recovery links) is never listed
+  (`core/gmail_client.py`; now `no-reply@accounts.google.com` and
+  `noreply@google.com`, which send the agent account's own security alerts,
+  sign-in codes and recovery links) is never listed
   or shown. Every search excludes them, and a message whose sender address
   matches is refused even when asked for by id. In a thread, such messages
   are left out and the result says how many.

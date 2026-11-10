@@ -1158,7 +1158,7 @@ class ClaudeAdapter:
             cmd += ["--settings", json.dumps(settings, separators=(",", ":"))]
             # The Google Docs poster goes with botference's settings, so the
             # council's Claude and every agent it summons get it (and the
-            # settings' allow list names its two tools).
+            # settings' allow list names its tools).
             cmd += ["--mcp-config", claude_mcp_config()]
         return cmd
 

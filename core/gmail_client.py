@@ -50,7 +50,8 @@ API = "https://gmail.googleapis.com/gmail/v1/users/me/"
 
 #: Senders whose mail is never listed or shown (compared case-insensitively
 #: with the parsed From address).
-MAIL_HIDDEN_SENDERS = ("no-reply@accounts.google.com",)
+MAIL_HIDDEN_SENDERS = ("no-reply@accounts.google.com",  # security alerts
+                       "noreply@google.com")  # verification codes
 
 #: Where saved attachments go: <root>/<message id>/<safe file name>.
 #: Not inside the sign-in folder, which is hidden from the bots.

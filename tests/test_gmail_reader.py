@@ -55,6 +55,7 @@ ACCESS = "tok-ACCESS-7f3a"
 REFRESH = "tok-REFRESH-9c1b"
 SECRET = "SECRET-MAIL-TEXT-42"
 HIDDEN = MAIL_HIDDEN_SENDERS[0]
+NOT_HIDDEN = " ".join(f"-from:{s}" for s in MAIL_HIDDEN_SENDERS)
 BOTH = f"openid email {gdoc_client.DOCS_SCOPE} {gdoc_client.GMAIL_SCOPE}"
 DOCS_ONLY = f"openid email {gdoc_client.DOCS_SCOPE}"
 
@@ -276,7 +277,7 @@ class TestSearch:
         google = self._google()
         _poster(tmp_path, google).call(SEARCH_MAIL_TOOL, {})
         first = urllib.parse.parse_qs(urllib.parse.urlparse(google.calls[0][1]).query)
-        assert first["q"] == [f"(in:inbox) -from:{HIDDEN}"]
+        assert first["q"] == [f"(in:inbox) {NOT_HIDDEN}"]
         assert first["maxResults"] == ["20"]
         assert google.calls[0][2]["Authorization"] == "Bearer " + ACCESS
 
@@ -288,7 +289,7 @@ class TestSearch:
                                                           "max_results": given})
         q = urllib.parse.parse_qs(urllib.parse.urlparse(google.calls[0][1]).query)
         assert q["maxResults"] == [sent]
-        assert q["q"] == [f"(from:pat@example.com) -from:{HIDDEN}"]
+        assert q["q"] == [f"(from:pat@example.com) {NOT_HIDDEN}"]
 
     def test_nothing_found(self, tmp_path):
         text, is_error = _poster(tmp_path, FakeGmail()).call(SEARCH_MAIL_TOOL, {"query": "x"})
@@ -378,7 +379,8 @@ class TestThread:
 
 class TestHiddenSenders:
     def test_the_list(self):
-        assert MAIL_HIDDEN_SENDERS == ("no-reply@accounts.google.com",)
+        assert MAIL_HIDDEN_SENDERS == ("no-reply@accounts.google.com",
+                                       "noreply@google.com")
 
     @pytest.mark.parametrize("header, hidden", [
         (f"Google <{HIDDEN}>", True),
