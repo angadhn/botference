@@ -6915,6 +6915,11 @@ async function selftest() {
   const shown = () => longCard().querySelectorAll('.reply').length;
 
   check('a long thread folds behind one line', !!more());
+  check('…drawn at the FOOT of its messages, under the newest one',
+    !!more() && longCard().querySelector('.thread').lastElementChild === more());
+  check('…with a quiet, unclickable count where the messages were',
+    !!longCard().querySelector('.thread .foldgap')
+    && !longCard().querySelector('.thread .foldgap').closest('button'));
   check('…which is a quiet control, not a card',
     !!more() && !more().closest('.reply') && more().tagName === 'BUTTON');
   const claim = Number((more().textContent.match(/\d+/) || [0])[0]);
@@ -6934,6 +6939,13 @@ async function selftest() {
 
   more().click();
   check('clicking it opens the thread in place', !more());
+  check('…and the foot of the thread is at the bottom of the pane, newest message in view', (() => {
+    const pane = longCard().closest('.pane');
+    const cr = longCard().getBoundingClientRect(), pr = pane.getBoundingClientRect();
+    return cr.bottom <= pr.bottom + 2 && cr.bottom >= pr.bottom - 40;
+  })());
+  check('…with "Hide" in the same place the "Show" was',
+    !!foldBtn() && longCard().querySelector('.thread').lastElementChild === foldBtn());
   check('…showing every message', bodyOf().includes('Answer 2') && bodyOf().includes('Follow-up 3'));
   // one merged row per bot turn that used tools — the same count the pure
   // grouping function predicts from the record
@@ -9140,6 +9152,12 @@ async function selftestBubbles() {
   hit(fan(LONG), 'the squashed stack');
   await sleep(240);
   check('clicking the stack fans every message open', cards(LONG).length === 5);
+  check('…the lip stays in its slot under the cards, not among them',
+    !!bub(LONG).querySelector(':scope > .bfoot > .bfan.open') && !bub(LONG).querySelector('.bstack .bfan'));
+  check('…and the reader is at the newest card, the foot of the stack', (() => {
+    const b = body(LONG);
+    return b.scrollHeight - b.scrollTop - b.clientHeight < 24;
+  })());
   check('…in the order they were written',
     /structural failure of oversight|actual report/i.test(cards(LONG)[0].textContent)
     && /quotation marks have to go/.test(cards(LONG)[4].textContent));
@@ -10377,7 +10395,7 @@ async function selftestFigEdit() {
 
   // ---- where the bridge says no ----------------------------------------
   const blog = window.__BFP_BLOG;
-  blog.confirmed = false;
+  blog.confirmed = false; blog.state = 'unasked';
   E.bridge.hello(true);
   await until(() => E.bridge.state !== 'ready', 2000);
   check('an UNCONFIRMED site: the editor is told why and cannot send',
@@ -10394,7 +10412,7 @@ async function selftestFigEdit() {
   await until(() => E.bridge.state === 'ready', 3000);
   check('…and confirming the site in the drawer reconnects it without a reload',
     fteFrom('ready').length > readies && E.bridge.state === 'ready');
-  blog.confirmed = true;
+  blog.confirmed = true; blog.state = 'yes';
   blog.kind = 'jupyterbook';
   E.bridge.hello(true);
   await sleep(400);

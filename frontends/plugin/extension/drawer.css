@@ -404,41 +404,50 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 
 /* ── the lip: what a squashed stack shows ────────────────────────────────
  * Past three cards the earlier ones stop being drawn at all and become this —
- * a few card edges peeking out from behind the newest one, with the exact
- * number on them. It is a button: pressing it fans them open, pressing it
- * again stacks them back up. */
+ * a few card edges peeking out from under the newest one, with the exact
+ * number beside them. It is a button: pressing it fans them open, pressing it
+ * again stacks them back up. It lives in .bfoot, its own slot between the
+ * scroller and the reply box, so it is in the same place open or shut and
+ * stays put while the reader scrolls up through a fanned stack. */
+.bfoot { flex: none; padding: 0 10px }
+.bfoot:empty { display: none }
+/* shut, the slivers hang straight off the newest card: the scroller gives up
+   its bottom padding so nothing separates the card from the deck under it */
+.bubble:has(> .bfoot > .bfan:not(.open)) .bbody { padding-bottom: 0 }
 .bfan {
-  display: flex; align-items: flex-end; gap: 8px; width: 100%;
-  margin: 0 0 -2px; padding: 6px 6px 0;
-  background: transparent; border: 0; border-radius: 8px 8px 0 0;
+  display: flex; align-items: flex-start; gap: 8px; width: 100%;
+  margin: 0; padding: 0 6px 6px;
+  background: transparent; border: 0; border-radius: 0 0 8px 8px;
   font: 11.5px/1 var(--sans); color: var(--muted); cursor: pointer;
   box-shadow: none;
 }
 .bfan:hover { color: var(--fg) }
 .bfan:hover .bedge { border-color: var(--line) }
-/* the edges are the TOPS OF CARDS, seen from below: each one a little wider
-   and a little more solid than the one behind it, stepped in from the left the
-   same 4px the real cards step out — so the lip reads as the deck the newest
-   card is sitting on rather than as three grey bars */
+/* the edges are the BOTTOMS OF CARDS, seen from above: the first one, right
+   under the newest card, is the widest and most solid, and each one after it
+   is a little narrower and fainter, stepped in from the left the same 4px the
+   real cards step out — so the lip reads as the deck the newest card is
+   sitting on rather than as three grey bars */
 .bfan .bedges { flex: none; display: flex; flex-direction: column; gap: 3px; align-items: flex-start }
 .bfan .bedge {
-  height: 5px; border-radius: 6px 6px 0 0;
+  height: 5px; border-radius: 0 0 6px 6px;
   background: color-mix(in srgb, var(--author, var(--muted)) 20%, var(--card));
-  border: 1px solid var(--card-line); border-bottom: 0;
+  border: 1px solid var(--card-line); border-top: 0;
   transition: border-color .15s ease;
 }
 .bfan .bedge.e0 { width: 96px; margin-left: 12px; opacity: .5 }
 .bfan .bedge.e1 { width: 108px; margin-left: 6px; opacity: .72 }
 .bfan .bedge.e2 { width: 120px; margin-left: 0 }
-.bfan .bfanc { padding-bottom: 1px; font-variant-numeric: tabular-nums; font-weight: 600 }
-.bfan.open { align-items: center; padding: 4px 8px; margin-bottom: 6px }
+.bfan .bfanc { padding-top: 2px; font-variant-numeric: tabular-nums; font-weight: 600 }
+.bfan.open { align-items: center; padding: 4px 8px; margin: 2px 0 4px; border-radius: 8px }
 .bfan.open:hover { background: var(--rail) }
+/* "new reply ↓" rides above the lip rather than over it */
+.bubble:has(> .bfoot > .bfan) .bpip { bottom: 108px }
 /* fanning is a change of size, and a reader who has asked for less motion has
    already answered whether they want it animated */
 .bstack { transition: none }
 @media (prefers-reduced-motion: no-preference) {
   .bcard { animation: bfan-in .16s cubic-bezier(.32, .72, 0, 1) both }
-  .bfan.open + .bcard { animation: none }
 }
 @keyframes bfan-in { from { opacity: .4; transform: translateY(-3px) } to { opacity: 1; transform: none } }
 
@@ -2103,8 +2112,9 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
 .lightbox img { max-width: 100%; max-height: 100%; background: #fff; border-radius: 8px;
   box-shadow: var(--shadow) }
 
-/* the folded middle of a long thread: one quiet line, deliberately not a card
-   and not a button-looking button — it is a way back into the scrollback */
+/* the fold control of a long thread: one quiet line at the FOOT of its
+   messages, under the newest one, deliberately not a card and not a
+   button-looking button — it is a way back into the scrollback */
 .showmore {
   display: block; width: 100%; margin: 2px 0 6px; padding: 4px 0;
   background: none; border: 0; border-radius: 0;
@@ -2117,6 +2127,15 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
    a thread is housekeeping, not a way back into anything */
 .showmore.fold { opacity: .65; border-bottom-style: dotted }
 .showmore.fold:hover, .showmore.fold:focus-visible { opacity: 1 }
+/* where the folded messages were: a hairline with the count on it, so the
+   first message is not read as answered by the last two. Not clickable —
+   the control is the line at the foot. */
+.foldgap {
+  display: flex; align-items: center; gap: 8px; margin: 2px 0 8px;
+  font: 11px/1.4 var(--sans); color: var(--muted); opacity: .8;
+  user-select: none; cursor: default;
+}
+.foldgap::before, .foldgap::after { content: ''; flex: 1 1 auto; border-top: 1px dotted var(--line) }
 
 /* TeX math (KaTeX). katex.min.css is linked into this same shadow root ahead
    of this file; its @font-face rules are inert there, so content.js plants a

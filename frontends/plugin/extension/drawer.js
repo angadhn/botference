@@ -1654,8 +1654,10 @@
   // message has to read "Show 1 earlier reply" — folds start at four units, so
   // the singular is the common case, not a curiosity — and the manual control
   // is the same sentence with the other verb, because it is the same idea.
+  // …and with no verb at all ('count') it is the quiet marker left in the gap
+  // where the folded messages were: "9 earlier replies", not a control.
   function moreLabel(hidden, action) {
-    return (action === 'hide' ? 'Hide ' : 'Show ') + hidden +
+    return (action === 'hide' ? 'Hide ' : action === 'count' ? '' : 'Show ') + hidden +
       ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
   }
 
@@ -1869,6 +1871,9 @@
       // Never set by anything arriving — only by the reader's own Send — and
       // cleared by the reader's next deliberate act.
       hold: null,
+      // the conversation owed one landing at its foot (landPending), or null.
+      // Only ever PAGE_TARGET today: a chat that has just arrived.
+      land: null,
       // 'type' | 'instant' — how a live answer arrives on screen (TYPE_TIP).
       // NOT named `typing`: the public surface is Object.assign'd onto this
       // very object and carries a `typing()` reader, which would eat the field.
@@ -2896,22 +2901,35 @@ ${bubbleShellHtml()}`;
     // The same line, with the other verb, is how a thread is folded BY HAND:
     // one control in one place that means "less of this" / "more of this",
     // rather than a second widget somewhere else in the card.
+    //
+    // That one place is the FOOT of the thread's messages, under the newest
+    // one: the reader is nearly always at the bottom of a conversation, and
+    // reads back in time by scrolling up from there. Pressing it never takes
+    // them away from the newest message (see 'expand' and 'fold').
     function moreHtml(target, hidden) {
       return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(moreLabel(hidden))}</button>`;
     }
     function foldHtml(target, hidden) {
       return `<button class="showmore fold" data-act="fold" data-target="${esc(target)}" type="button" aria-expanded="true">${esc(moreLabel(hidden, 'hide'))}</button>`;
     }
+    // …and where the folded messages WERE, right after the first one: a
+    // hairline saying how many are missing, so the first message is not read
+    // as if the last two answered it directly. Not a button — the control is
+    // at the foot, and there is only ever one of it.
+    function foldGapHtml(hidden) {
+      return `<div class="foldgap">${esc(moreLabel(hidden, 'count'))}</div>`;
+    }
 
     // The thread root and the live tail stay on screen; everything between them
-    // folds behind moreHtml() until the reader asks for it. The outbox, the
-    // streaming block and the status chip are rendered by cardHtml AFTER this,
-    // so a message being sent, a bot mid-answer and "agents are working…" are
-    // never inside the fold.
+    // folds away until the reader asks for it, with a quiet count (foldGapHtml)
+    // in the gap. The control — moreHtml() — is the last thing this returns,
+    // under the newest message. The outbox, the streaming block and the status
+    // chip are rendered by the callers AFTER this, so a message being sent, a
+    // bot mid-answer and "agents are working…" are never inside the fold.
     //
-    // Open, and long enough to be worth folding, the same slot offers the way
-    // back: "Hide N earlier replies", which is what a reader who has finished
-    // with a thread wants and had no way to say.
+    // Open, and long enough to be worth folding, the same slot at the foot
+    // offers the way back: "Hide N earlier replies", which is what a reader
+    // who has finished with a thread wants and had no way to say.
     function msgsHtml(target, list) {
       const units = msgUnits(list);
       const { kids } = nestMsgs(list);
@@ -2930,8 +2948,7 @@ ${bubbleShellHtml()}`;
         aside = []; asideCount = 0;
       };
       for (let i = 0; i < units.length; i++) {
-        if (plan.collapsed && i === plan.from) out.push(moreHtml(target, plan.hidden));
-        else if (byHand && byHand.collapsed && i === byHand.from) out.push(foldHtml(target, byHand.hidden));
+        if (plan.collapsed && i === plan.from) { flushAside(); out.push(foldGapHtml(plan.hidden)); }
         if (plan.collapsed && i >= plan.from && i < plan.to) continue;
         const html = unitHtml(target, units[i], kids);
         if (units[i].every(m => m.superseded)) {
@@ -2943,6 +2960,8 @@ ${bubbleShellHtml()}`;
         out.push(html);
       }
       flushAside();
+      if (plan.collapsed) out.push(moreHtml(target, plan.hidden));
+      else if (byHand && byHand.collapsed) out.push(foldHtml(target, byHand.hidden));
       return out.join('');
     }
 
@@ -5407,6 +5426,7 @@ ${bubbleShellHtml()}`;
         if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
       }
       D.expanded[PAGE_TARGET] = null;   // a chat just opened starts folded
+      D.land = PAGE_TARGET;             // …and is read from its newest message
       D.tab = 'chat';
     }
 
@@ -7077,12 +7097,27 @@ ${bubbleShellHtml()}`;
       },
       'run': (btn) => doRun(btn),
       'run-stop': (btn) => doRunStop(btn),
-      // one way only: a thread the reader has opened stays open for the
-      // session. Re-folding it under them while they read is not a feature.
       // both directions are the reader's own decision about this thread, and
-      // both stick for the session — a new reply never undoes either
-      'expand': (btn, target) => { D.expanded[target] = FOLD_OPEN; render(); },
-      'fold': (btn, target) => { D.expanded[target] = FOLD_SHUT; render(); },
+      // both stick for the session — a new reply never undoes either.
+      // WHERE THE READER ENDS UP. Unfolding lands them at the newest message
+      // of that thread, at the bottom of the pane, and they scroll UP to go
+      // back in time; it is a deliberate act about this thread, so a hold on
+      // another one ends. Folding keeps the control under their finger.
+      'expand': (btn, target) => {
+        D.expanded[target] = FOLD_OPEN;
+        if (D.hold && D.hold !== target) holdOff();
+        render();
+        landAtFoot(target);
+      },
+      'fold': (btn, target) => {
+        const pane = btn.closest('.pane');
+        const was = btn.getBoundingClientRect().top;
+        D.expanded[target] = FOLD_SHUT;
+        render();
+        const now = pane && D.shadow.querySelector('.card[data-thread="' + cssq(target)
+          + '"] .showmore[data-act="expand"]');
+        if (now) pane.scrollTop += now.getBoundingClientRect().top - was;
+      },
       // the tasks card: its fold is a reading position (session only, like
       // every other one here), and ↑ source is the way back to the message
       'tasks-fold': () => { D.tasksOpen = !D.tasksOpen; render(); },
@@ -7346,6 +7381,7 @@ ${bubbleShellHtml()}`;
         holdOff();          // another tab is the reader doing something else
         D.tab = t.dataset.tab;
         paintTabs();
+        landPending();      // a chat that arrived while this tab was hidden
         rememberTab();
         // the vault is global and written from other tabs and the quiz: what
         // is due here is asked for when the tab is opened, never cached from
@@ -7609,6 +7645,35 @@ ${bubbleShellHtml()}`;
         ? top - 8
         : top + cr.height - box.clientHeight + 8;
       box.scrollTop = Math.max(0, want);
+    }
+
+    // ---- landing at the foot of a conversation ----------------------------
+    // The newest message of a thread is the one a reader is reading; going
+    // back in time is scrolling UP from it. So unfolding a thread, and opening
+    // a chat, put the FOOT of that thread's card at the bottom of its pane.
+    // Returns whether it could (the card is drawn, on a pane that is showing).
+    // Called only for the reader's own acts and for a chat that has just
+    // arrived — never for a reply, a poll or a re-render, which leave the
+    // pane exactly where the reader put it.
+    function landAtFoot(target) {
+      if (!D.mounted || !target) return false;
+      const card = D.shadow.querySelector('.card[data-thread="' + cssq(target) + '"]');
+      const pane = card && card.closest('.pane');
+      if (!pane || pane.hidden) return false;
+      const cr = card.getBoundingClientRect(), pr = pane.getBoundingClientRect();
+      const foot = cr.bottom - pr.top + pane.scrollTop;
+      pane.scrollTop = Math.max(0, foot - pane.clientHeight + 8);
+      return true;
+    }
+    // A CHAT THAT HAS JUST ARRIVED owes the reader one landing at its foot —
+    // but it can arrive while its pane is hidden (the reader is on Comments),
+    // or before its messages have (a past chat being opened: the record
+    // follows the switch). `D.land` is that one debt: a target, or null. Set
+    // by a change of page and by leaving one chat for another (leaveChat);
+    // paid, once, when the record lands (setPage), the drawer opens, or the
+    // reader goes to the tab it is on.
+    function landPending() {
+      if (D.land && landAtFoot(D.land)) D.land = null;
     }
 
     // Arriving at a thread means its TOP is at the top of the pane: the
@@ -10415,6 +10480,7 @@ ${bubbleShellHtml()}`;
       // being asked for a specific tab (a highlight click, a new comment) is
       // always about THIS page — leave the pages library if it is up
       if (tab) { D.tab = tab; D.view = 'threads'; paintTabs(); rememberTab(); }
+      landPending();
       D.opened = true;
       // one frame so the CSS transition actually runs on first open
       requestAnimationFrame(() => { D.el.panel.classList.add('open'); pushPage(true); });
@@ -10527,6 +10593,8 @@ ${bubbleShellHtml()}`;
                     busy: '', searching: '', declined: [], done: '' };
       }
       clearAnsweredWaits();
+      // a different page is a different chat: it opens at its newest message
+      if (was !== (page && page.url ? String(page.url) : '')) D.land = PAGE_TARGET;
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
         D.el.title.textContent = title;
@@ -10537,6 +10605,7 @@ ${bubbleShellHtml()}`;
         paintFiled();
       }
       render();
+      landPending();
       return D;
     }
 
@@ -10761,7 +10830,11 @@ ${bubbleShellHtml()}`;
     // THE STACK. Past three cards the earlier ones stop being drawn and become
     // a lip of stacked edges with a count on it — a thread of nine messages
     // has no business being twelve inches tall over somebody's article. The
-    // lip is a button: it fans them open, and closes them again.
+    // lip is a button: it fans them open, and closes them again. It sits at
+    // the FOOT, under the newest card and over the reply box, in the same
+    // place open or shut, and it does not scroll with the cards: the reader
+    // is at the bottom of a thread far more often than at its top, and reads
+    // a fanned stack backwards, upwards from the newest card.
     //
     // WHERE IT SITS. Under the mark if there is room, over it if there is not,
     // never off the glass, and re-measured on every scroll and resize — the
@@ -10907,12 +10980,14 @@ ${bubbleShellHtml()}`;
     // The lip: what a squashed stack shows instead of the messages behind the
     // newest one. Three slivers at most — the picture is "there are more of
     // these", and a fourth sliver does not say it any better — and the count,
-    // which is the exact number.
+    // which is the exact number. It hangs UNDER the newest card, so the
+    // slivers are the bottom edges of the cards behind it.
     function bubbleFanHtml(target, open, hidden) {
-      // deepest first, so the widest and most solid edge is the one nearest
-      // the card that is sitting on top of them
+      // nearest first, so the widest and most solid edge is the one right
+      // under the card that is sitting on top of them, and each one further
+      // down is narrower and fainter, as a deck seen from above recedes
       const edges = open ? '' : `<span class="bedges" aria-hidden="true">`
-        + [0, 1, 2].slice(0, Math.max(1, Math.min(3, hidden)))
+        + [2, 1, 0].slice(0, Math.max(1, Math.min(3, hidden)))
           .map(i => `<span class="bedge e${i}"></span>`).join('')
         + `</span>`;
       return `<button class="bfan${open ? ' open' : ''}" type="button" data-act="bubble-fan"
@@ -11027,16 +11102,20 @@ ${bubbleShellHtml()}`;
       return out;
     }
 
-    // What the stack should hold, squash and all. The lip is an entry like any
-    // other so that fanning is a patch rather than a rebuild.
+    // What the stack should hold, squash and all: `cards` for the keyed
+    // reconciler, and `lip` for the foot under the scroller (null when the
+    // thread is short enough to show whole). The lip is NOT an entry in the
+    // stack: it lives in its own slot between the cards and the reply box, so
+    // it stays in one place, open or shut, while the reader scrolls up
+    // through a fanned stack — and fanning is still a patch, never a rebuild.
     function bubbleWant(t) {
       const all = bubbleEntries(t);
-      if (all.length <= BUB_SQUASH_AT) return all;
+      if (all.length <= BUB_SQUASH_AT) return { cards: all, lip: null };
       const fanned = !!B.fan[t.id];
       const hidden = all.length - 1;
-      const lip = { key: 'fan', sig: (fanned ? 'open' : 'shut') + '|' + hidden,
+      const lip = { sig: (fanned ? 'open' : 'shut') + '|' + hidden,
                     make: () => bubbleFanHtml(t.id, fanned, hidden) };
-      return fanned ? [lip].concat(all) : [lip, all[all.length - 1]];
+      return { cards: fanned ? all : [all[all.length - 1]], lip };
     }
 
     // The reconciler. Returns how many entries are NEW — which is the only
@@ -11095,6 +11174,7 @@ ${bubbleShellHtml()}`;
             title="${fresh ? 'cancel this comment (Esc)' : 'close this bubble (Esc)'}" aria-label="close">✕</button>
         </div>
         <div class="bbody"><div class="bstack"></div></div>
+        <div class="bfoot"></div>
         <button class="bpip" type="button" data-act="bubble-pip" data-target="${esc(t.id)}" hidden
           title="jump to the newest message">new reply ↓</button>
         <div class="bstatus"></div>
@@ -11181,7 +11261,18 @@ ${bubbleShellHtml()}`;
       // announced rather than scrolled to.
       const wasAtFoot = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
       const top = body.scrollTop;
-      const fresh = patchStack(stack, bubbleWant(t));
+      const want = bubbleWant(t);
+      const fresh = patchStack(stack, want.cards);
+      // the lip's slot is outside the scroller, so redrawing it moves nobody;
+      // it is redrawn only when what it says changes
+      const foot = box.querySelector('.bfoot');
+      if (foot) {
+        const sig = want.lip ? want.lip.sig : '';
+        if (foot.getAttribute('data-bsig') !== sig) {
+          foot.innerHTML = want.lip ? want.lip.make() : '';
+          foot.setAttribute('data-bsig', sig);
+        }
+      }
       if (wasAtFoot) body.scrollTop = body.scrollHeight;
       else {
         body.scrollTop = top;
@@ -11738,10 +11829,12 @@ ${bubbleShellHtml()}`;
         B.off[who] = chooseOffset(who, el.offsetWidth || 320, el.offsetHeight || 160);
         placeBubble(who);
       }
-      // …and the reader asked to see what was BEHIND the newest card, so that
-      // is where they are put: the top of the stack, not the foot of it
+      // …and the reader is put at the NEWEST card, the foot of the stack: they
+      // were reading it when they pressed the lip (which sits right under it),
+      // and they go back in time by scrolling up from there. Set after the
+      // placement is re-picked, because that can change the scroller's height.
       const body = el && el.querySelector('.bbody');
-      if (body && opening) body.scrollTop = 0;
+      if (body && opening) body.scrollTop = body.scrollHeight;
       return D;
     }
     // WHAT A CLICK ON A HIGHLIGHT MEANS, when bubbles are on. Answers true

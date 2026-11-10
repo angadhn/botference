@@ -501,7 +501,9 @@ Contract deltas agreed during live testing — authoritative over the sections a
 - Folding is the reader's, once they say so: any thread (or page chat) with 3+
   drawn units carries a manual control in the same slot the expander uses —
   "Hide N earlier replies" when it is open, "Show N earlier replies" when it is
-  not. A hand fold is tighter than the automatic one (KEEP_TAIL_SHUT = 1: the
+  not. That slot is the FOOT of the thread's messages (after the last message,
+  above the outbox, streaming block, status chip and composer); see the
+  2026-11-10 amendment. A hand fold is tighter than the automatic one (KEEP_TAIL_SHUT = 1: the
   root and the newest unit), and the choice outranks the rule for that target
   for the rest of the session — in memory, per target, cleared with everything
   else on a page delete. Neither direction is undone by a new reply: a folded
@@ -510,7 +512,9 @@ Contract deltas agreed during live testing — authoritative over the sections a
   takes undefined (the rule decides) / FOLD_OPEN / FOLD_SHUT and is the whole
   state machine (test/collapse.test.mjs).
 - Long threads fold: past 3 drawn units a thread (and the page chat) keeps its
-  root and the last 2 units and hides the rest behind one `.showmore` line,
+  root and the last 2 units and hides the rest behind one `.showmore` line at
+  the foot (with a non-clickable `.foldgap` count, "N earlier replies", left in
+  the gap after the root),
   "Show N earlier replies" — singular "Show 1 earlier reply" when the fold hides
   exactly one, which a four-unit thread does — N counting messages and not tool
   rows. A middle that holds no message at all (only tool rows) is not folded, so
@@ -9885,8 +9889,10 @@ only.
 ### 3. The stack
 
 Past three cards the earlier ones stop being drawn and become a **lip**: three
-card edges peeking out from under the newest card, with the exact count on them
-(`+4`). The lip is a button — it fans them open, and stacks them back up. A
+card edges peeking out from under the newest card, with the exact count beside
+them (`+4`). The lip is a button — it fans them open, and stacks them back up.
+It sits in its own slot (`.bfoot`) under the scroller and over the reply box,
+in the same place open or shut (2026-11-10 amendment). A
 thread of nine messages has no business being twelve inches tall over somebody's
 article, and the newest card is the one the reader came for.
 
@@ -10085,7 +10091,9 @@ and a page-anchored bubble that no longer fits will not be clamped back; it
 would simply hang off the bottom with its composer out of reach. So a fan runs
 `chooseOffset` again *unless the reader has dragged this one* (`B.moved`), in
 which case where it sits is their decision. Fanning open also scrolls the stack
-to the **top**: the reader asked to see what was behind the newest card.
+to the **foot** — the newest card — after the placement is re-picked: the
+reader reads back in time by scrolling up (2026-11-10 amendment; it used to
+scroll to the top).
 
 ### 4. Never rebuilt under a reader mid-read
 
@@ -12034,3 +12042,43 @@ Tests: `ownership.test.mjs` (paragraphInsert, `/fte-route` with a new paragraph)
 `TestFirstToReply` and the bridge pass-through, harness `?figedit=write&selftest=1`
 (26), `?colledit=insert`/`?colledit=1` (attribution), main `?selftest=1` (the
 gear row), blog repo `test_routing.mjs` (the paragraph wire item).
+
+## Amendment (2026-11-10): the fold control is at the foot, and lands at the newest message
+
+> "When I click on the hover pop ups it always shows as stacked. I think the
+> stack and unstack should just be in the same location, but on the bottom
+> because I'm more likely to be at the bottom of a message. […] ideally, I'm
+> just starting at the bottom, even if I unstack. And then I work my way to
+> the top."
+
+One rule, in two places: one fold control, at the foot of the messages, in
+the same spot folded or open, and using it never takes the reader away from
+the newest message.
+
+- **Bubble.** The lip ("+N" with the card-edge slivers / "− stack up") is no
+  longer an entry in the keyed stack: `bubbleWant(t)` returns
+  `{cards, lip}`, the cards go through `patchStack`, and the lip is drawn into
+  `.bfoot`, a slot of the bubble's shell between `.bbody` (the scroller) and
+  the reply box, redrawn only when its `open|shut + count` signature changes.
+  It does not scroll with the cards. The slivers hang under the newest card,
+  widest and most solid first. `fanBubble` re-picks the placement as before and
+  then sets the scroller to its foot when opening. The composer is never
+  touched and scroll position is carried across updates exactly as before.
+- **Panel** (comment cards, resolved cards opened, page chat, library chat).
+  `msgsHtml` puts "Show N earlier replies" / "Hide N earlier replies" after the
+  last message unit (still above the outbox, streaming block, status chip and
+  composer, which the callers draw after it). While folded, a `.foldgap`
+  hairline in the gap after the root says "N earlier replies"; it is not a
+  control. `collapsePlan` is unchanged.
+- **Where the reader lands.** `'expand'` renders and then `landAtFoot(target)`
+  puts the foot of that thread's card at the bottom of its pane (and ends a
+  hold on a different thread). `'fold'` keeps the control at the same height
+  on screen. A chat that has just arrived — a different page (`setPage`), or
+  `leaveChat` (opening a past chat, a new chat) — owes one landing: `D.land`
+  holds that target (or null) and `landPending()` pays it, once, when the
+  record lands, the drawer opens, or the reader goes to the tab, whichever
+  first finds the chat on a visible pane. Replies, polls and re-renders never
+  move the pane.
+- Tests: `test/foldfoot.test.mjs` (happy-dom, geometry stubbed: it checks the
+  scroll offset asked for, not a real screen); harness checks beside the
+  existing fold and stack sections.
