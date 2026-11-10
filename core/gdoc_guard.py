@@ -1,56 +1,47 @@
 #!/usr/bin/env python3
-"""The lock on the council Claude's Google Docs write tool.
+"""The lock on every Google Docs write the council's bots make.
 
-Claude Code runs this script before every call to the Docs write tool (a
-"PreToolUse hook": a check Claude Code runs before a tool call, which can
-stop it). The script reads the call from stdin as JSON and lets it through
-only when it can do no more than comment or suggest:
+The Google Docs poster (core/gdoc_mcp.py) runs every write through
+`seal()` before anything goes to Google. A write is the body of one
+`documents.batchUpdate` call: a `requests` list (a batch: the changes, in
+order) and a `writeControl` (how Google applies them). It gets through in
+only two shapes:
 
-- the whole batch is sent in suggest mode (`writeControl.writeMode` is
-  "SUGGEST", so text changes land as suggestions the owner accepts or
-  rejects) and every request in it is one of five kinds: `insertText`,
-  `deleteContentRange` and `replaceAllText` (the three text changes), or
-  `insertComment` and `addCommentReply` (a comment, or a reply to one); or
-- the batch is not in suggest mode and every request in it is
-  `insertComment` or `addCommentReply`.
+- suggest mode: `writeControl.writeMode` is "SUGGEST" (so text changes land
+  as suggestions the owner accepts or rejects) and every request is one of
+  `insertText`, `deleteContentRange`, `replaceAllText` (the three text
+  changes), `insertComment` or `addCommentReply` (a comment, or a reply to
+  one); or
+- comment only: not in suggest mode, and every request is `insertComment`
+  or `addCommentReply`.
+
+And always:
+
+- `writeControl.requiredRevisionId` is set (the revision id from the bot's
+  last read; Google refuses the write if the Doc changed since), and
+- a comment carries only its text and the stretch of text it is on, and a
+  reply only the thread it answers and its text. That keeps out a reply
+  that resolves or reopens a thread (`post.commentAction`) and a comment
+  that assigns someone (which emails them).
 
 Any other request kind is refused, even in suggest mode, because we do not
-know whether Google turns it into a suggestion or just applies it. That
-covers deleting or editing a comment, deleting a tab, changing the page
-style, named ranges, and any kind this script has never heard of. Input
-this script cannot read is refused too (fail closed). A refusal exits with code 2 and one plain line on stderr;
-Claude Code shows that line to the bot as the reason. An allowed call exits
-0 with no output, which leaves it to the normal permission rules.
+know whether Google turns it into a suggestion or just applies it: deleting
+or editing a comment, accepting or rejecting a suggestion, deleting a tab,
+page style, named ranges, and any kind this module has never heard of.
+Input it cannot read is refused too (fail closed).
 
-The launch settings also set `onFailure: "block"`, so if this script cannot
-start, crashes or times out, the call is refused too.
+`seal()` then puts the bot's name in front of every comment and reply
+("Claude: " / "Codex: "), unless the text already starts with it.
 
-Stdlib only: it runs under whatever Python launched the council.
+Stdlib only.
 """
 
 from __future__ import annotations
 
-import json
-import sys
 from enum import Enum
 
-#: The two Google Docs tools the council's Claude may use. Nothing else from
-#: Google: the other Google connectors are signed in as the user's personal
-#: account.
-GDOC_READ_TOOL = "mcp__claude_ai_Google_Docs__read_doc"
-GDOC_WRITE_TOOL = "mcp__claude_ai_Google_Docs__update_doc"
-GDOC_TOOLS = (GDOC_READ_TOOL, GDOC_WRITE_TOOL)
-
-#: The other Google connectors, denied by server name (a rule naming a
-#: server covers all its tools). They are signed in as the user's personal
-#: account and load in the bot's session even though nothing allows them.
-GDOC_DENIED_SERVERS = (
-    "mcp__claude_ai_Google_Drive",
-    "mcp__claude_ai_Gmail",
-    "mcp__claude_ai_Google_Calendar",
-    "mcp__claude_ai_Google_Sheets",
-    "mcp__claude_ai_Google_Slides",
-)
+#: The bots that may post, and the name each one's comments start with.
+BOT_NAMES = {"claude": "Claude", "codex": "Codex"}
 
 #: Requests that only add a comment or a reply. Resolving or deleting a
 #: comment is deliberately not here.
@@ -61,42 +52,58 @@ COMMENT_REQUESTS = frozenset({"insertComment", "addCommentReply"})
 TEXT_CHANGE_REQUESTS = frozenset(
     {"insertText", "deleteContentRange", "replaceAllText"})
 
-#: Every request kind the guard lets through in suggest mode. Anything else
-#: is refused there, since we do not know if Google makes it a suggestion.
+#: Every request kind the lock lets through in suggest mode.
 SUGGEST_MODE_REQUESTS = TEXT_CHANGE_REQUESTS | COMMENT_REQUESTS
+
+#: The only fields a write body, its writeControl, a comment, a reply and a
+#: reply's post may carry. Anything else is refused: an unknown field may do
+#: something we have not checked.
+_BODY_FIELDS = frozenset({"requests", "writeControl"})
+_WRITE_CONTROL_FIELDS = frozenset({"writeMode", "requiredRevisionId"})
+_COMMENT_FIELDS = frozenset({"content", "range"})
+_REPLY_THREAD_FIELDS = frozenset({"commentId", "suggestionId"})
+_REPLY_FIELDS = _REPLY_THREAD_FIELDS | {"post"}
+_POST_FIELDS = frozenset({"content"})
+
+_REFUSED = "Refused by the botference Google Docs lock: "
 
 
 class Verdict(Enum):
     """Every outcome of a check: two ways through, the rest refusals.
 
-    The value is the one line the bot sees when its call is refused.
+    The value is the one line the bot sees when its write is refused.
     """
 
     ALLOW_SUGGESTIONS = "allowed: the batch is sent as suggestions"
     ALLOW_COMMENTS = "allowed: the batch only adds comments or replies"
     REFUSE_UNREADABLE = (
-        "Refused by the botference Google Docs lock: the call could not be "
-        "read, so it is blocked. Send a documents.batchUpdate call with a "
-        "'requests' list."
-    )
-    REFUSE_WRONG_TOOL = (
-        "Refused by the botference Google Docs lock: this check only "
-        "covers the Google Docs write tool."
+        _REFUSED + "the write could not be read, so it is blocked. Send a "
+        "'requests' list and a 'writeControl' with nothing else in them."
     )
     REFUSE_NO_REQUESTS = (
-        "Refused by the botference Google Docs lock: the call has no "
-        "requests. Send at least one comment or suggestion."
+        _REFUSED + "the write has no requests. Send at least one comment or "
+        "suggestion."
+    )
+    REFUSE_NO_REVISION = (
+        _REFUSED + "the write has no writeControl.requiredRevisionId. Read "
+        "the Doc again and send the revision id from that read, so Google "
+        "refuses the write if the Doc changed since."
+    )
+    REFUSE_COMMENT_SHAPE = (
+        _REFUSED + "a comment may carry only 'content' and 'range'; a reply "
+        "only 'commentId' or 'suggestionId' and 'post': {'content': ...}, "
+        "with non-empty text. Resolving, reopening and assigning are not "
+        "allowed."
     )
     REFUSE_DIRECT_EDIT = (
-        "Refused by the botference Google Docs lock: you may not change the "
-        "text directly. Send wording changes with writeControl.writeMode "
-        "\"SUGGEST\" (they become suggestions), or send only insertComment / "
-        "addCommentReply requests."
+        _REFUSED + "you may not change the text directly. Send wording "
+        "changes with writeControl.writeMode \"SUGGEST\" (they become "
+        "suggestions), or send only insertComment / addCommentReply requests."
     )
     REFUSE_REQUEST_KIND = (
-        "Refused by the botference Google Docs lock: in suggest mode you may "
-        "send only insertText, deleteContentRange, replaceAllText, "
-        "insertComment and addCommentReply requests."
+        _REFUSED + "in suggest mode you may send only insertText, "
+        "deleteContentRange, replaceAllText, insertComment and "
+        "addCommentReply requests."
     )
 
     @property
@@ -109,19 +116,32 @@ def _request_kind(request: object) -> str | None:
     if not isinstance(request, dict) or len(request) != 1:
         return None
     (kind,) = request.keys()
-    return kind if isinstance(kind, str) else None
+    if not isinstance(kind, str) or not isinstance(request[kind], dict):
+        return None
+    return kind
 
 
-def judge(payload: object) -> Verdict:
-    """Return exactly one verdict for a PreToolUse hook payload."""
-    if not isinstance(payload, dict):
+def _text(value: object) -> bool:
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _comment_shape_ok(kind: str, body: dict) -> bool:
+    """A comment or reply carries only its text and where it goes."""
+    if kind == "insertComment":
+        return set(body) <= _COMMENT_FIELDS and _text(body.get("content"))
+    threads = [f for f in body if f in _REPLY_THREAD_FIELDS]
+    post = body.get("post")
+    return (set(body) <= _REPLY_FIELDS
+            and len(threads) == 1 and _text(body[threads[0]])
+            and isinstance(post, dict) and set(post) <= _POST_FIELDS
+            and _text(post.get("content")))
+
+
+def judge(body: object) -> Verdict:
+    """Return exactly one verdict for a documents.batchUpdate body."""
+    if not isinstance(body, dict) or not set(body) <= _BODY_FIELDS:
         return Verdict.REFUSE_UNREADABLE
-    if payload.get("tool_name") != GDOC_WRITE_TOOL:
-        return Verdict.REFUSE_WRONG_TOOL
-    tool_input = payload.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return Verdict.REFUSE_UNREADABLE
-    requests = tool_input.get("requests")
+    requests = body.get("requests")
     if requests is None or requests == []:
         return Verdict.REFUSE_NO_REQUESTS
     if not isinstance(requests, list):
@@ -129,10 +149,18 @@ def judge(payload: object) -> Verdict:
     kinds = [_request_kind(r) for r in requests]
     if any(k is None for k in kinds):
         return Verdict.REFUSE_UNREADABLE
-    write_control = tool_input.get("writeControl")
-    if write_control is not None and not isinstance(write_control, dict):
+    write_control = body.get("writeControl")
+    if write_control is None:
+        write_control = {}
+    if (not isinstance(write_control, dict)
+            or not set(write_control) <= _WRITE_CONTROL_FIELDS):
         return Verdict.REFUSE_UNREADABLE
-    if (write_control or {}).get("writeMode") == "SUGGEST":
+    for kind, request in zip(kinds, requests):
+        if kind in COMMENT_REQUESTS and not _comment_shape_ok(kind, request[kind]):
+            return Verdict.REFUSE_COMMENT_SHAPE
+    if not _text(write_control.get("requiredRevisionId")):
+        return Verdict.REFUSE_NO_REVISION
+    if write_control.get("writeMode") == "SUGGEST":
         if all(k in SUGGEST_MODE_REQUESTS for k in kinds):
             return Verdict.ALLOW_SUGGESTIONS
         return Verdict.REFUSE_REQUEST_KIND
@@ -141,25 +169,35 @@ def judge(payload: object) -> Verdict:
     return Verdict.REFUSE_DIRECT_EDIT
 
 
-def judge_text(raw: str) -> Verdict:
-    """Judge the raw stdin text; anything that is not JSON is refused."""
-    try:
-        payload = json.loads(raw)
-    except (ValueError, TypeError):
-        return Verdict.REFUSE_UNREADABLE
-    return judge(payload)
+def _named(text: str, name: str) -> str:
+    prefix = f"{name}:"
+    return text if text.startswith(prefix) else f"{prefix} {text}"
 
 
-def main() -> int:
-    try:
-        verdict = judge_text(sys.stdin.read())
-    except Exception:  # fail closed on anything unexpected
-        verdict = Verdict.REFUSE_UNREADABLE
-    if verdict.allowed:
-        return 0
-    print(verdict.value, file=sys.stderr)
-    return 2
+def stamp(body: dict, bot: str) -> dict:
+    """A copy of an allowed body with the bot's name on every comment/reply."""
+    name = BOT_NAMES[bot]
+    requests = []
+    for request in body["requests"]:
+        ((kind, fields),) = request.items()
+        if kind == "insertComment":
+            fields = {**fields, "content": _named(fields["content"], name)}
+        elif kind == "addCommentReply":
+            post = {**fields["post"],
+                    "content": _named(fields["post"]["content"], name)}
+            fields = {**fields, "post": post}
+        requests.append({kind: fields})
+    return {"requests": requests, "writeControl": dict(body["writeControl"])}
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+def seal(body: object, bot: str) -> tuple[Verdict, dict | None]:
+    """Judge a write; if allowed, return it with the bot's name stamped on.
+
+    The poster sends only the returned body, never the one the bot gave.
+    """
+    if bot not in BOT_NAMES:
+        raise ValueError(f"unknown bot {bot!r}")
+    verdict = judge(body)
+    if not verdict.allowed:
+        return verdict, None
+    return verdict, stamp(body, bot)  # type: ignore[arg-type]

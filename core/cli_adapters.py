@@ -17,7 +17,6 @@ import os
 import re
 import shlex
 import shutil
-import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -25,7 +24,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import model_catalog
-from gdoc_guard import GDOC_DENIED_SERVERS, GDOC_TOOLS, GDOC_WRITE_TOOL
+from gdoc_mcp import (
+    CLAUDE_DENIED_GOOGLE_SERVERS,
+    CLAUDE_TOOL_RULES,
+    claude_mcp_config,
+    claude_sign_in_deny_rules,
+    codex_config_overrides,
+)
 from providers import percent_of_limit
 from render_blocks import build_tool_use_blocks, parse_render_blocks
 
@@ -645,10 +650,10 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
         "Bash",
         "WebSearch",
         "WebFetch",
-        # Google Docs review (docs/google-docs-review.md): read a Doc and
-        # comment or suggest on it. The write tool is held to comments and
-        # suggestions by the hook below. No other Google tool is allowed.
-        *GDOC_TOOLS,
+        # Google Docs review (docs/google-docs-review.md): botference's own
+        # poster (core/gdoc_mcp.py), started by ClaudeAdapter._build_cmd. Its
+        # write tool is held to comments and suggestions inside the poster.
+        *CLAUDE_TOOL_RULES,
     ]
     sandbox = {
         "enabled": True,
@@ -682,11 +687,14 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
             for tool in ("Edit", "Write", "MultiEdit"):
                 deny_rules.append(f"{tool}(//{root_abs}/.git/**)")
 
-    # The other Google connectors are signed in as the user's personal
-    # account. They load in the bot's session anyway (every claude.ai
+    # The claude.ai Google connectors (Docs, Drive, Gmail, Calendar, Sheets,
+    # Slides). They load in the bot's session anyway (every claude.ai
     # connector does), so deny them outright rather than rely on their
-    # absence from the allow list.
-    deny_rules.extend(GDOC_DENIED_SERVERS)
+    # absence from the allow list. The poster is the one path to a Doc.
+    deny_rules.extend(CLAUDE_DENIED_GOOGLE_SERVERS)
+    # And the bot may not read the poster's saved Google sign-in: with it, a
+    # shell command could call Google directly, round the poster's lock.
+    deny_rules.extend(claude_sign_in_deny_rules())
 
     permissions: dict = {
         "defaultMode": "dontAsk",
@@ -697,32 +705,6 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
     return {
         "permissions": permissions,
         "sandbox": sandbox,
-        "hooks": _gdoc_guard_hooks(),
-    }
-
-
-_GDOC_GUARD_SCRIPT = Path(__file__).resolve().parent / "gdoc_guard.py"
-
-
-def _gdoc_guard_hooks() -> dict:
-    """The hard lock on the Google Docs write tool: comment or suggest only.
-
-    Claude Code runs core/gdoc_guard.py before each call to the write tool;
-    the script refuses anything that is not a suggestion or a comment.
-    `onFailure: "block"` makes a guard that cannot start, crashes or times
-    out refuse the call too, rather than let it through.
-    """
-    return {
-        "PreToolUse": [{
-            "matcher": GDOC_WRITE_TOOL,
-            "hooks": [{
-                "type": "command",
-                "command": sys.executable or "python3",
-                "args": ["-I", str(_GDOC_GUARD_SCRIPT)],
-                "timeout": 30,
-                "onFailure": "block",
-            }],
-        }],
     }
 
 
@@ -1174,6 +1156,10 @@ class ClaudeAdapter:
                     _plan_allowed_hosts()
                 )
             cmd += ["--settings", json.dumps(settings, separators=(",", ":"))]
+            # The Google Docs poster goes with botference's settings, so the
+            # council's Claude and every agent it summons get it (and the
+            # settings' allow list names its two tools).
+            cmd += ["--mcp-config", claude_mcp_config()]
         return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
@@ -2000,8 +1986,10 @@ class CodexAdapter:
         self._model_resolution_attempted = False
 
     def _build_send_cmd(self, prompt: str) -> list:
+        # No --sandbox flag: the mode goes in codex_config_overrides, as a
+        # permission profile that also hides the Google sign-in (with the
+        # flag, Codex ignores the profile).
         cmd = ["codex", "exec",
-               "--sandbox", self.sandbox,
                "--skip-git-repo-check",
                "--json"]
         if self.image_generation:
@@ -2016,6 +2004,9 @@ class CodexAdapter:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         if self.network_access:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
+        # The sandbox, the Google Docs poster in, OpenAI's app connectors
+        # (Google Drive) out.
+        cmd += codex_config_overrides(self.sandbox, self.network_access)
         cmd += ["--", scrub_surrogates(prompt)]
         return cmd
 
@@ -2034,7 +2025,7 @@ class CodexAdapter:
         return cmd
 
     def _build_resume_cmd(self, message: str) -> list:
-        cmd = ["codex", "exec", "--sandbox", self.sandbox]
+        cmd = ["codex", "exec"]  # sandbox: see _build_send_cmd
         if self.image_generation:
             cmd += ["-c", "features.image_generation=true"]
         if self.cwd:
@@ -2045,6 +2036,9 @@ class CodexAdapter:
             cmd += ["-c", f'model_reasoning_effort="{self.reasoning_effort}"']
         if self.network_access:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
+        # The sandbox, the Google Docs poster in, OpenAI's app connectors
+        # (Google Drive) out.
+        cmd += codex_config_overrides(self.sandbox, self.network_access)
         cmd += [
             "resume", self.thread_id,
             "--json",

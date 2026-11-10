@@ -1322,7 +1322,10 @@ class TestCommandConstruction:
         x = CodexAdapter(model="gpt-5.4")
         cmd = x._build_send_cmd("hello")
         assert cmd[:2] == ["codex", "exec"]
-        assert "--sandbox" in cmd
+        # the mode goes in as a -c override (with the flag, Codex would
+        # ignore the permission profile that hides the Google sign-in)
+        assert "--sandbox" not in cmd
+        assert 'sandbox_mode="read-only"' in cmd
         assert "--json" in cmd
         assert "--skip-git-repo-check" in cmd
         assert cmd[-1] == "hello"
@@ -1493,9 +1496,12 @@ class TestCommandConstruction:
     def test_no_deny_rules_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_DENY_BASH", raising=False)
         settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
-        # only the standing Google connector denials; no command denials
+        # only the standing Google denials (the claude.ai connectors and the
+        # poster's saved sign-in); no command denials
+        from gdoc_mcp import claude_sign_in_deny_rules
         deny = settings["permissions"]["deny"]
-        assert not [r for r in deny if not r.startswith("mcp__claude_ai_")]
+        assert not [r for r in deny if not r.startswith("mcp__claude_ai_")
+                    and r not in claude_sign_in_deny_rules()]
 
     def test_denied_commands_become_deny_rules(self, monkeypatch):
         # The Discuss companion sets this for a BLOG SOURCE PAGE: the reader's

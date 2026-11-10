@@ -1856,11 +1856,18 @@ swallowed. Google's free tier allows about eight hours of YouTube a day.
 ### Google Docs
 
 Paste a Google Doc link in the chat and ask for a review, comments or
-edits. Claude reads the Doc and posts comments (each starting "Claude:")
-and suggestions (Google's tracked changes, which you accept or reject). It
-cannot change the text directly: a check before every write lets through
-only comments and suggestions. Codex's side is not wired yet. Details and
-what is enforced versus only instructed: `docs/google-docs-review.md`.
+edits. Both bots read the Doc and post comments and suggestions (Google's
+tracked changes, which you accept or reject); Claude takes argument,
+structure and wording, Codex facts, numbers, sources and technical claims,
+unless you say otherwise. They cannot change the text directly: they reach
+Google only through botference's own poster, which lets through only
+suggestions and comments, needs the revision id from a fresh read, refuses
+resolving or assigning, and puts "Claude: " or "Codex: " in front of every
+comment and reply. One-time setup: save a Desktop-app OAuth key for the
+agent Google account as `~/.botference/google/client.json`, then run
+`python3 core/gdoc_client.py login --account <agent account email>`.
+Details, and what is enforced versus only instructed:
+`docs/google-docs-review.md`.
 
 ### Lasso
 
