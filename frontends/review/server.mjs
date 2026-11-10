@@ -9,7 +9,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { execFile, execFileSync } from 'node:child_process';
-import { ApplyEngine } from './apply.mjs';
+import { ApplyEngine, readJsonState, writeJsonAtomic, writeFileAtomic, unreadableMessage,
+  execFailure, GIT_TIMEOUT_MS } from './apply.mjs';
 import { projectNotebook } from './notebook.mjs';
 import { attachWs } from './ws.mjs';
 import { createDiscuss, baseOf, mergeThreads } from './discuss.mjs';
@@ -33,7 +34,7 @@ const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript
 
 // --- identity: git-based handle, computed once at boot ---
 function gitConfig(key) {
-  try { return execFileSync('git', ['config', key], { cwd: ROOT, encoding: 'utf8' }).trim(); }
+  try { return execFileSync('git', ['config', key], { cwd: ROOT, encoding: 'utf8', timeout: GIT_TIMEOUT_MS }).trim(); }
   catch { return ''; }
 }
 const HANDLE = gitConfig('github.user') ||
@@ -56,20 +57,31 @@ if (HOSTED && !PASSWORD) {
 // the owner token gates bot summons and apply/commit/revert on a shared URL;
 // runtime file (gitignored), stable across restarts so the owner's browser stays owner
 const tokenFile = path.join(STATE, '.owner-token');
-let OWNER_TOKEN = '';
-if (HOSTED) {
-  try { OWNER_TOKEN = fs.readFileSync(tokenFile, 'utf8').trim(); } catch { }
-  if (!OWNER_TOKEN) { OWNER_TOKEN = crypto.randomBytes(12).toString('hex'); fs.writeFileSync(tokenFile, OWNER_TOKEN); }
+// a secret file that exists but cannot be read is NEVER replaced: a new one
+// would silently sign everybody out (or lock the owner out). Missing or empty
+// is created; unreadable stops the server with the file named.
+function persistedSecretFile(file, bytes, what) {
+  let s = '';
+  try { s = fs.readFileSync(file, 'utf8').trim(); } catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      console.error(`The ${what} file (${path.relative(ROOT, file)}) exists but could not be read (${e && e.code || e}). `
+        + 'It was left untouched and the server did not start. Fix its permissions or move it, then start again.');
+      process.exit(1);
+    }
+  }
+  if (s) return s;
+  s = crypto.randomBytes(bytes).toString('hex');
+  writeFileAtomic(file, s, { mode: 0o600 });
+  return s;
 }
+let OWNER_TOKEN = '';
+if (HOSTED) OWNER_TOKEN = persistedSecretFile(tokenFile, 12, 'owner link');
 // hosted auth cookie: HMAC-signed expiry, keyed by a per-deployment secret
 // (runtime file, gitignored) — stateless to validate, survives server restarts
 const AUTH_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days
 const secretFile = path.join(STATE, '.auth-secret');
 let AUTH_SECRET = '';
-if (HOSTED) {
-  try { AUTH_SECRET = fs.readFileSync(secretFile, 'utf8').trim(); } catch { }
-  if (!AUTH_SECRET) { AUTH_SECRET = crypto.randomBytes(24).toString('hex'); fs.writeFileSync(secretFile, AUTH_SECRET); }
-}
+if (HOSTED) AUTH_SECRET = persistedSecretFile(secretFile, 24, 'sign-in key');
 const safeEqual = (a, b) => {
   const ha = crypto.createHash('sha256').update(String(a)).digest();
   const hb = crypto.createHash('sha256').update(String(b)).digest();
@@ -299,8 +311,21 @@ if (fs.existsSync(legacy) && !fs.existsSync(userFile(HANDLE))) {
   } catch { }
 }
 
+// For READING ONLY: a broken file reads as the fallback. Anything that writes
+// a file back goes through readForWrite() instead, which refuses to treat an
+// unreadable file as empty (see readJsonState in apply.mjs).
 function readJSON(f, fallback) {
   try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return fallback; }
+}
+// {ok, value} — value is the fallback when the file is missing; {ok:false,
+// error} with a plain sentence when it exists but cannot be read.
+function readForWrite(f, fallback, what) {
+  const r = readJsonState(f);
+  if (r.state === 'ok') return { ok: true, value: r.value ?? fallback };
+  if (r.state === 'missing') return { ok: true, value: fallback };
+  const error = unreadableMessage(path.relative(ROOT, f), what);
+  console.error(`review: ${error} (${(r.error && r.error.message) || r.error})`);
+  return { ok: false, error };
 }
 // the document's configured source files (paper-agnostic: whatever the config lists)
 function sourceFiles() {
@@ -311,7 +336,7 @@ function sourceFiles() {
 // sidebar "Changes" widget (additive /data field; older clients ignore it)
 function dirtySources() {
   try {
-    return execFileSync('git', ['status', '--porcelain', '--', ...sourceFiles()], { cwd: ROOT, encoding: 'utf8' })
+    return execFileSync('git', ['status', '--porcelain', '--', ...sourceFiles()], { cwd: ROOT, encoding: 'utf8', timeout: GIT_TIMEOUT_MS })
       .split('\n').filter(Boolean).map(l => l.slice(3).trim()).filter(Boolean);
   } catch { return []; }
 }
@@ -334,6 +359,9 @@ function mergedData(req) {
   // their own budget, because the cap is a budget they must be able to read —
   // "4 of 5 agent calls left today", never a silent throttle
   const myGrant = me && grantFor(me);
+  // files can change under us (a collaborator's file pulled from git, a bot
+  // writing): the card modes are brought in line before they are shown
+  syncCardModes();
   return {
     me,
     grants: owner ? readJSON(GRANTS, {}) : undefined,
@@ -356,7 +384,7 @@ function mergedData(req) {
     threads: mergeThreads(readJSON(path.join(STATE, 'threads.json'), {}), discuss.replies()),
     suggestions: readJSON(path.join(REVIEW, 'suggestions.json'), []),
     apply: applyEngine.publicLedger(),
-    pending_mentions: owner ? readJSON(PENDING, []) : undefined,
+    pending_mentions: owner ? waitingRequests() : undefined,
     // additive fields (2026-07): chat-mode advertisement + out-of-band source dirt;
     // clients guard for their absence, so a pre-field server keeps working
     chat: !!(chat && chat.available),
@@ -433,9 +461,13 @@ function backfill(why) {
 
 // --- P4: apply / commit / revert (owner-only) ---
 const applyEngine = new ApplyEngine({ reviewDir: REVIEW, cfg: CFG });
+// the LaTeX/pandoc build gets a long leash; a hung one is stopped and said so
+const BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 function rebuild() {
-  try { execFileSync(process.execPath, [path.join(REVIEW, 'build.mjs')], { cwd: REVIEW, stdio: 'pipe' }); return null; }
-  catch (e) { return String(e.stderr || e.message).slice(0, 500); }
+  try {
+    execFileSync(process.execPath, [path.join(REVIEW, 'build.mjs')], { cwd: REVIEW, stdio: 'pipe', timeout: BUILD_TIMEOUT_MS });
+    return null;
+  } catch (e) { return execFailure(e, 'the page rebuild', BUILD_TIMEOUT_MS).slice(0, 500); }
 }
 // every apply/commit/revert is recorded in the chat transcript (skill P4);
 // best-effort — the action itself never depends on the bridge being up
@@ -452,24 +484,43 @@ function transcriptNote(text) {
 // files are the audit ledger of who decided what.
 // `status` carries the decision on bot cards; a HUMAN suggestion occupies
 // `status` with its own entry type, so its accept/reject lands in `decision`.
-function acceptedIds() {
+function effectiveDecisions() {
   const decOf = e => (e.status === 'accepted' || e.decision === 'accepted') ? 'accepted'
     : (e.status === 'rejected' || e.decision === 'rejected') ? 'rejected' : null;
-  const ids = new Set();
+  const out = {};
   const ownerSaid = {};
   const own = readJSON(userFile(HANDLE), {}).decisions || {};
   for (const [id, e] of Object.entries(own)) {
-    const d = decOf(e);
-    if (d) { ownerSaid[id] = d; if (d === 'accepted') ids.add(id); }
+    const d = e && decOf(e);
+    if (d) { ownerSaid[id] = d; out[id] = d; }
   }
   for (const f of fs.existsSync(USERS) ? fs.readdirSync(USERS) : []) {
     const dec = readJSON(path.join(USERS, f), {}).decisions || {};
     for (const [id, e] of Object.entries(dec)) {
-      if (ownerSaid[id]) continue; // the owner's explicit call always wins
-      if (decOf(e) === 'accepted') ids.add(id);
+      if (ownerSaid[id] || !e) continue; // the owner's explicit call always wins
+      const d = decOf(e);
+      if (d === 'accepted') out[id] = 'accepted';
+      else if (d === 'rejected' && !out[id]) out[id] = 'rejected';
     }
   }
-  return [...ids];
+  return out;
+}
+// Each suggestion card has ONE mode, kept in state/apply.json (see
+// assets/card-modes.js). People's accept/reject live in their own files —
+// the record of who decided what — and this folds them into the card modes.
+// A move the table refuses (rejecting an edit already in the source) is left
+// alone and logged once; Commit re-checks the decisions anyway.
+const refusedOnce = new Set();
+function syncCardModes() {
+  let r;
+  try { r = applyEngine.syncDecisions(effectiveDecisions()); }
+  catch (e) { console.error(`review: could not update the card record: ${(e && e.stack) || e}`); return { ok: false, reason: 'the card record could not be saved' }; }
+  for (const x of (r && r.refused) || []) {
+    if (refusedOnce.has(x.id)) continue;
+    refusedOnce.add(x.id);
+    console.error(`review: ${x.reason}`);
+  }
+  return r;
 }
 
 // collaborator mentions in hosted mode queue here until the owner releases them
@@ -489,12 +540,60 @@ function grantUsed(handle) {
   const u = readJSON(GRANT_USE, {});
   return u.date === today() ? (u.counts || {})[handle] || 0 : 0;
 }
+// null when the usage record cannot be read: nothing is spent and the
+// request goes to the owner's queue instead of being let through uncounted
 function grantSpend(handle) {
-  let u = readJSON(GRANT_USE, {});
+  const r = readForWrite(GRANT_USE, {}, 'The daily agent-use record');
+  if (!r.ok) return null;
+  let u = r.value && typeof r.value === 'object' ? r.value : {};
   if (u.date !== today()) u = { date: today(), counts: {} };
+  u.counts = u.counts || {};
   u.counts[handle] = (u.counts[handle] || 0) + 1;
-  fs.writeFileSync(GRANT_USE, JSON.stringify(u, null, 1));
+  writeJsonAtomic(GRANT_USE, u);
   return u.counts[handle];
+}
+// --- requests waiting for the owner -----------------------------------------
+// A collaborator's @-mention that needs the owner's say-so waits in
+// state/pending-mentions.json. Each request is in one of:
+const REQUEST_STATES = Object.freeze(['waiting', 'released', 'refused']);
+//   waiting   — in the file, shown to the owner with a Release button
+//   released  — the agents accepted it; it leaves the file
+//   refused   — the agents already had it (a duplicate); it leaves the file
+// A request leaves `waiting` only on the agents' answer, so a release while
+// the agents are not running keeps every request where it was.
+const requestState = m => (REQUEST_STATES.includes(m && m.state) ? m.state : 'waiting');
+function waitingRequests() {
+  const r = readJsonState(PENDING);
+  return r.state === 'ok' && Array.isArray(r.value) ? r.value.filter(m => requestState(m) === 'waiting') : [];
+}
+// add one request to the queue; {ok:false, error} when the file is unreadable
+function queueRequest(m) {
+  const r = readForWrite(PENDING, [], 'The list of requests waiting for the owner');
+  if (!r.ok) return r;
+  const list = Array.isArray(r.value) ? r.value : [];
+  if (list.find(x => x.mention_id === m.mention_id)) return { ok: true, added: false };
+  list.push({ ...m, state: 'waiting' });
+  writeJsonAtomic(PENDING, list);
+  return { ok: true, added: true };
+}
+// the owner's Release: each waiting request is offered to the agents; only
+// the ones they take leave the file
+function releaseRequests() {
+  const r = readForWrite(PENDING, [], 'The list of requests waiting for the owner');
+  if (!r.ok) return { ok: false, error: r.error };
+  const list = Array.isArray(r.value) ? r.value : [];
+  const results = [];
+  const keep = [];
+  for (const m of list) {
+    if (requestState(m) !== 'waiting') continue;
+    const sub = chat ? chat.submit(m) : { queued: false, reason: 'the agents are not running — restart the review with --chat' };
+    const state = sub && sub.queued ? 'released' : (sub && sub.reason === 'duplicate' ? 'refused' : 'waiting');
+    results.push({ mention_id: m.mention_id, author: m.author, state, reason: (sub && sub.reason) || '' });
+    if (state === 'waiting') keep.push({ ...m, state, last_error: (sub && sub.reason) || '' });
+  }
+  writeJsonAtomic(PENDING, keep);
+  const count = st => results.filter(x => x.state === st).length;
+  return { ok: true, released: count('released'), refused: count('refused'), waiting: count('waiting'), results };
 }
 
 // --- presence (item 5) --------------------------------------------------
@@ -784,28 +883,26 @@ function chatEndpoint(req, res, url) {
           const grant = m.author && grantFor(m.author);
           if (grant) {
             const used = grantUsed(m.author);
-            if (used < grant.daily_cap) {
-              const left = grant.daily_cap - grantSpend(m.author);
+            const spent = used < grant.daily_cap ? grantSpend(m.author) : null;
+            if (spent != null) {
+              const left = grant.daily_cap - spent;
               const r = chat.submit(m);
               res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...r, granted: true, calls_left: left, daily_cap: grant.daily_cap }));
               return;
             }
-            // over cap: honest message, and the turn still reaches the owner
-            const pendingCap = readJSON(PENDING, []);
-            if (!pendingCap.find(x => x.mention_id === m.mention_id)) {
-              pendingCap.push(m); fs.writeFileSync(PENDING, JSON.stringify(pendingCap, null, 1));
-              notifyOwner(`review: ${m.author} hit their daily agent cap on ${cardSection(m.target_id)}`);
-            }
+            // over cap (or the usage record is unreadable): honest message,
+            // and the turn still reaches the owner
+            const q = queueRequest(m);
+            if (!q.ok) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ queued: false, reason: q.error })); return; }
+            if (q.added) notifyOwner(`review: ${m.author} hit their daily agent cap on ${cardSection(m.target_id)}`);
             res.writeHead(200, JSON_HEAD).end(JSON.stringify({ queued: false, pending: true, capped: true,
               calls_left: 0, daily_cap: grant.daily_cap,
               reason: `daily cap reached (${grant.daily_cap}/${grant.daily_cap}) — queued for the owner to release` }));
             return;
           }
-          const pending = readJSON(PENDING, []);
-          if (!pending.find(x => x.mention_id === m.mention_id)) {
-            pending.push(m); fs.writeFileSync(PENDING, JSON.stringify(pending, null, 1));
-            notifyOwner(`review: ${m.author} requested agents on ${cardSection(m.target_id)}`);
-          }
+          const q = queueRequest(m);
+          if (!q.ok) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ queued: false, reason: q.error })); return; }
+          if (q.added) notifyOwner(`review: ${m.author} requested agents on ${cardSection(m.target_id)}`);
           res.writeHead(200, JSON_HEAD).end('{"queued":false,"pending":true,"reason":"queued for the owner to release"}');
           return;
         }
@@ -896,9 +993,12 @@ export function handler(req, res) {
         const data = JSON.parse(body);
         // the browser only ever writes the server-identified caller's own file
         const file = userFile(handle);
-        const prev = readJSON(file, {}).decisions || {};
-        fs.writeFileSync(file, JSON.stringify(
-          { handle, updated: new Date().toISOString(), decisions: stampEdits(prev, data.decisions || {}), build: data.build || null }, null, 1));
+        const cur = readForWrite(file, {}, 'Your saved comments file');
+        if (!cur.ok) { res.writeHead(409, JSON_HEAD).end(JSON.stringify({ ok: false, error: cur.error })); return; }
+        const prev = (cur.value && cur.value.decisions) || {};
+        writeJsonAtomic(file,
+          { handle, updated: new Date().toISOString(), decisions: stampEdits(prev, data.decisions || {}), build: data.build || null });
+        syncCardModes();
         res.writeHead(200, JSON_HEAD).end('{"ok":true}');
         // …and, when the comments are unified, on into the companion's store.
         // AFTER the response, deliberately: the visitor's comment is saved the
@@ -935,12 +1035,14 @@ export function handler(req, res) {
         const d = JSON.parse(body || '{}');
         const h = sanitizeHandle(d.handle);
         if (!h || h === HANDLE) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad handle"}'); return; }
-        const g = readJSON(GRANTS, {});
+        const gr = readForWrite(GRANTS, {}, 'The list of agent permissions');
+        if (!gr.ok) { res.writeHead(409, JSON_HEAD).end(JSON.stringify({ ok: false, error: gr.error })); return; }
+        const g = gr.value && typeof gr.value === 'object' ? gr.value : {};
         if (d.agents) {
           const cap = Math.max(0, Math.min(500, Math.floor(Number(d.daily_cap)) || 0)) || DEFAULT_CAP;
           g[h] = { agents: true, daily_cap: cap };
         } else delete g[h];
-        fs.writeFileSync(GRANTS, JSON.stringify(g, null, 1));
+        writeJsonAtomic(GRANTS, g);
         res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, grants: g }));
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
     });
@@ -998,7 +1100,7 @@ export function handler(req, res) {
         u.decisions[data.id].resolved_by = actor;
         u.decisions[data.id].resolved_ts = new Date().toISOString();
         u.updated = new Date().toISOString();
-        fs.writeFileSync(f, JSON.stringify(u, null, 1));
+        writeJsonAtomic(f, u);
         broadcast('state');
         res.writeHead(200, JSON_HEAD).end('{"ok":true}');
       } catch { res.writeHead(400, JSON_HEAD).end('{"ok":false}'); }
@@ -1014,10 +1116,19 @@ export function handler(req, res) {
       try {
         const data = body ? JSON.parse(body) : {};
         if (url === '/apply') {
-          const accepted = new Set(acceptedIds());
-          const wanted = data.all_accepted ? [...accepted] : [].concat(data.ids || []).filter(id => accepted.has(id));
-          if (!wanted.length) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"no accepted cards to apply"}'); return; }
+          const synced = syncCardModes();
+          if (synced && synced.ok === false) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: false, error: synced.reason, apply: applyEngine.publicLedger() })); return; }
+          // applyable = accepted, or accepted-but-flagged (a retry), by the card's one mode
+          const cards = applyEngine.publicLedger().cards;
+          const ready = new Set(Object.keys(cards).filter(id => cards[id].mode === 'accepted' || cards[id].mode === 'flagged'));
+          const asked = data.all_accepted ? [...ready] : [].concat(data.ids || []);
+          const wanted = asked.filter(id => ready.has(id));
+          // anything asked for that is not ready is reported back, never silently dropped
+          const notReady = asked.filter(id => !ready.has(id)).map(id => ({ id,
+            reason: cards[id] ? `it is ${cards[id].mode}, not accepted` : 'it has not been accepted' }));
+          if (!wanted.length) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: false, error: 'no accepted cards to apply', skipped: notReady, apply: applyEngine.publicLedger() })); return; }
           const r = applyEngine.apply(wanted);
+          r.skipped = [...r.skipped, ...notReady];
           const buildErr = r.applied.length ? rebuild() : null;
           transcriptNote(`[apply] applied=${r.applied.join(',') || 'none'} flagged=${r.flagged.map(f => f.id).join(',') || 'none'}${buildErr ? ' BUILD-ERROR' : ''}`);
           res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...r, build_error: buildErr, apply: applyEngine.publicLedger() }));
@@ -1029,15 +1140,17 @@ export function handler(req, res) {
           const allowed = new Set(sourceFiles());
           const files = data.files.filter(f => allowed.has(f));
           if (!files.length) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"reason":"no committable source files"}'); return; }
-          try { execFileSync('git', ['commit', '-m', 'Out-of-band source edits (committed from review site)', '--', ...files], { cwd: ROOT, encoding: 'utf8' }); }
-          catch (e) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: false, reason: `git commit failed: ${String(e.stderr || e.message).slice(0, 300)}` })); return; }
-          const sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
+          try { execFileSync('git', ['commit', '-m', 'Out-of-band source edits (committed from review site)', '--', ...files], { cwd: ROOT, encoding: 'utf8', timeout: GIT_TIMEOUT_MS }); }
+          catch (e) { res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: false, reason: execFailure(e, 'git commit', GIT_TIMEOUT_MS) })); return; }
+          let sha = '';
+          try { sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: GIT_TIMEOUT_MS }).trim(); } catch { }
           transcriptNote(`[commit] out-of-band ${sha}: ${files.join(', ')}`);
           res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, sha, files, apply: applyEngine.publicLedger() }));
           return;
         }
         if (url === '/commit') {
-          const r = applyEngine.commit();
+          syncCardModes();
+          const r = applyEngine.commit({ decisions: effectiveDecisions() });
           if (r.ok) transcriptNote(`[commit] ${r.sha}: ${r.ids.join(', ')}`);
           res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...r, apply: applyEngine.publicLedger() }));
           return;
@@ -1051,22 +1164,21 @@ export function handler(req, res) {
           if (!u || !u.decisions || !u.decisions[data.id]) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"reason":"unknown comment"}'); return; }
           u.decisions[data.id].resolved = false;
           u.updated = new Date().toISOString();
-          fs.writeFileSync(f, JSON.stringify(u, null, 1));
+          writeJsonAtomic(f, u);
           res.writeHead(200, JSON_HEAD).end('{"ok":true}');
           return;
         }
         if (url === '/revert') {
           const r = applyEngine.revert();
+          if (r.ok) syncCardModes();   // a card rejected while applied can now be rejected
           const buildErr = r.ok ? rebuild() : null;
           if (r.ok) transcriptNote(`[revert] round dropped: ${r.ids.join(', ')}`);
           res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...r, build_error: buildErr, apply: applyEngine.publicLedger() }));
           return;
         }
-        // /release: owner drains queued collaborator mentions into the bridge
-        const pending = readJSON(PENDING, []);
-        const results = pending.map(m => chat ? chat.submit(m) : { queued: false, reason: 'chat not running' });
-        fs.writeFileSync(PENDING, '[]');
-        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, released: pending.length, results }));
+        // /release: owner offers the waiting collaborator requests to the agents
+        const rel = releaseRequests();
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify(rel.ok ? rel : { ok: false, error: rel.error }));
       } catch (e) { res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: String(e.message).slice(0, 200) })); }
     });
     return;
@@ -1088,6 +1200,15 @@ export function handler(req, res) {
 }
 
 if (process.env.REVIEW_NO_LISTEN !== '1') {
+  // one bad request or a broken pipe to the bot process must not take the
+  // whole review down with no word: log the full stack, keep serving
+  process.on('uncaughtException', e => {
+    console.error(`review server: unexpected error, still serving:\n${(e && e.stack) || e}`);
+  });
+  process.on('unhandledRejection', e => {
+    console.error(`review server: unexpected error in the background, still serving:\n${(e && e.stack) || e}`);
+  });
+  syncCardModes();
   startWatchers();
   const server = http.createServer(handler);
   // WS is the browser's primary live-event transport (SSE is the fallback):

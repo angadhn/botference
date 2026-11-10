@@ -216,6 +216,9 @@ mark.user-hl.focused { background: color-mix(in srgb, var(--author, var(--hl-act
 .card .acts button, .rebtn { font: .7rem var(--sans); padding: .18rem .55rem; cursor: pointer;
   border: 1px solid var(--card-line); background: var(--card); color: var(--fg); border-radius: 6px }
 .card .acts button:hover, .rebtn:hover { border-color: var(--accent); color: var(--accent) }
+/* a move the card's mode refuses (e.g. rejecting an edit already in the source) */
+.card .acts button:disabled, #tc-pop button:disabled, #apply-bar button:disabled { opacity: .45; cursor: not-allowed;
+  border-color: var(--card-line); color: var(--fg) }
 .card textarea, .reply textarea { width: 100%; font: .8rem/1.5 var(--sans); margin-top: .3rem; min-height: 3em;
   background: var(--bg); color: var(--fg); border: 1px solid var(--card-line); border-radius: 6px; padding: .35rem }
 .card .state { font: 700 .68rem var(--sans) }

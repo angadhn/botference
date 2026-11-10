@@ -67,7 +67,7 @@
       history.replaceState(null, '', location.pathname + ([...q].length ? '?' + q : ''));
     }
   }
-  let HOSTED_MODE = false, IS_OWNER = true, OWNER_HANDLE = null, APPLY = { applied: {}, flagged: {}, round: null }, PENDING_M = [];
+  let HOSTED_MODE = false, IS_OWNER = true, OWNER_HANDLE = null, APPLY = { cards: {}, round: null }, PENDING_M = [];
   let SRC_DIRTY = null, lastCommit = null; // null = server predates the source_dirty field
   const idHeaders = () => {
     const h = {};
@@ -137,7 +137,7 @@
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
       api('/state', { method: 'POST', body: JSON.stringify({ build: META, decisions: store() }) })
-        .then(r => { syncState = r.ok ? 'ok' : 'err'; if (r.ok) serverDead = false; renderPresence(); })
+        .then(r => { syncState = r.ok ? 'ok' : 'err'; if (r.ok) serverAnswered(); renderPresence(); })
         .catch(() => { syncState = 'err'; renderPresence(); });
     }, 400);
   }
@@ -186,11 +186,37 @@
     const list = MODELS.scoped[`/model @${agent} `];
     return (Array.isArray(list) && list.length) ? list : FALLBACK_MODELS[agent];
   };
-  let sseDown = false, serverDead = false, probeTimer = null;
+  // ---- the live connection: ONE mode, changed only through setLink() ----
+  //   connecting — the page just opened, nothing heard yet (drawn as live)
+  //   live       — the main feed (WebSocket) is open
+  //   fallback   — the main feed would not open, and events are arriving on
+  //                the backup feed (EventSource). The main feed keeps being
+  //                retried and takes over again the moment it opens.
+  //   retrying   — a feed dropped but the server still answers; reconnecting
+  //   down       — the server itself does not answer
+  const LINK_MODES = ['connecting', 'live', 'fallback', 'retrying', 'down'];
+  const LINK_MOVES = {
+    connecting: ['live', 'fallback', 'retrying', 'down'],
+    live: ['retrying', 'down'],
+    fallback: ['live', 'retrying', 'down'],
+    retrying: ['live', 'fallback', 'down'],
+    down: ['live', 'fallback', 'retrying'],
+  };
+  const LINK = { mode: 'connecting' };
+  function setLink(next) {
+    if (next === LINK.mode) return true;
+    if (!LINK_MODES.includes(next) || !LINK_MOVES[LINK.mode].includes(next)) return false;
+    LINK.mode = next;
+    renderPresence();
+    return true;
+  }
+  // a request just succeeded: the server is up, whatever the feeds are doing
+  const serverAnswered = () => { if (LINK.mode === 'down') setLink('retrying'); };
+  let probeTimer = null;
   function connState() {
-    if (serverDead) return ['down', '✕ server down — node review/server.mjs'];
+    if (LINK.mode === 'down') return ['down', '✕ server down — node review/server.mjs'];
     if (syncState === 'err') return ['err', '○ sync failed — is the server running?'];
-    if (sseDown) return ['err', '○ live updates lost — reconnecting…'];
+    if (LINK.mode === 'retrying') return ['err', '○ live updates lost — reconnecting…'];
     return ['ok', `● live — you are ${ME || '…'}`];
   }
   // official logomarks for the avatar cluster — path data from the Simple Icons
@@ -214,7 +240,7 @@
     const guest = HOSTED_MODE ? !IS_OWNER
       : (!!localStorage.getItem(HKEY) && !localStorage.getItem(OKEY));
     let b = document.getElementById('server-gone');
-    if (!(serverDead && guest)) { if (b) b.remove(); return; }
+    if (!(LINK.mode === 'down' && guest)) { if (b) b.remove(); return; }
     if (b) return;
     b = document.createElement('div');
     b.id = 'server-gone';
@@ -481,8 +507,8 @@
   function probeServer() { // SSE dropped: is the server gone, or just the stream?
     clearTimeout(probeTimer);
     probeTimer = setTimeout(() => {
-      api('/whoami').then(r => { serverDead = !r.ok; renderPresence(); })
-        .catch(() => { serverDead = true; renderPresence(); });
+      api('/whoami').then(r => { if (r.ok) serverAnswered(); else setLink('down'); })
+        .catch(() => setLink('down'));
     }, 800);
   }
   // clicking an active agent jumps to the live thread card if it's on this page,
@@ -613,6 +639,37 @@
     else d[id].status = val || undefined;
     save(d);
   }
+  // ---- suggestion cards: ONE mode each (assets/card-modes.js) -------------
+  // The server keeps it (state/apply.json) and sends it in /data; the page
+  // draws every card from it and nothing else. A page opened from disk, with
+  // no server, seeds it once from this browser's own decisions.
+  const CM = window.CardModes || null;
+  const cardMode = id => (APPLY.cards && APPLY.cards[id] && APPLY.cards[id].mode) || 'pending';
+  const cardDecision = id => (CM ? CM.DECISION_OF_MODE[cardMode(id)] : cardMode(id)) || 'pending';
+  const decisionAllowed = (id, decision) => !CM || CM.decisionAllowed(cardMode(id), decision);
+  const isApplyReady = id => cardMode(id) === 'accepted' || cardMode(id) === 'flagged';
+  const refusedText = id => cardMode(id) === 'committed'
+    ? 'This change is already committed.'
+    : 'This change is already written into the source. Revert the round first, then reject or reset it.';
+  // accept / reject / reset: the decision goes into this person's own file
+  // (the record of who decided what) and the card's mode moves with it at
+  // once; the server folds everyone's decisions into the same mode and sends
+  // it back. A move the card's mode does not allow is refused, out loud.
+  function setCardMode(id, decision) {
+    if (!decisionAllowed(id, decision)) { toast(refusedText(id), true); return false; }
+    if (cardDecision(id) === decision) return true;
+    setDecision(id, decision === 'pending' ? undefined : decision);
+    APPLY.cards = APPLY.cards || {};
+    if (decision === 'pending') delete APPLY.cards[id];
+    else APPLY.cards[id] = { mode: decision };
+    return true;
+  }
+  if (!LIVE) {
+    for (const id of Object.keys(store())) {
+      const d = decisionOf(id);
+      if (d === 'accepted' || d === 'rejected') APPLY.cards[id] = { mode: d };
+    }
+  }
 
   function allCards(resolved) {
     const sugg = SUGG.filter(c => c.section === slug && !c.reply_to);
@@ -667,7 +724,7 @@
   }
 
   function cardHtml(c, dec) {
-    const st = (c.type === 'user-suggestion' ? decisionOf(c.id) : dec.status) || 'pending';
+    const st = cardDecision(c.id);
     let body;
     if (c.type === 'user-suggestion') {
       // the human counterpart of a bot suggestion card: same diff, same
@@ -704,17 +761,22 @@
     }
     const t = esc(c.id);
     // P4 (owner-only): apply state + button for accepted span cards
-    const ap = APPLY.applied[c.id], fl = APPLY.flagged[c.id];
-    const applyBadge = ap ? `<span class="badge apply-badge">${ap.committed ? 'committed ' + esc(ap.committed) : 'applied, uncommitted'}</span>` : '';
-    const applyBtn = IS_OWNER && !ap && st === 'accepted' && (c.current_text || c.source_json)
+    const mode = cardMode(c.id), entry = (APPLY.cards || {})[c.id] || {};
+    const applyBadge = mode === 'applied' ? '<span class="badge apply-badge">applied, uncommitted</span>'
+      : mode === 'committed' ? `<span class="badge apply-badge">committed ${esc(entry.sha || '')}</span>` : '';
+    const applyBtn = IS_OWNER && isApplyReady(c.id) && (c.current_text || c.source_json)
       ? `<button data-act="apply" data-target="${t}">⚡ apply</button>` : '';
-    const flagged = fl ? `<div class="status-chip err">apply flagged: ${esc(fl.reason)}</div>` : '';
+    const flagged = mode === 'flagged' ? `<div class="status-chip err">apply flagged: ${esc(entry.reason || '')}</div>` : '';
+    // a button whose move the card's mode refuses is drawn greyed out, saying why
+    const btn = (act, label) => decisionAllowed(c.id, act)
+      ? `<button data-act="${act}" data-target="${t}">${label}</button>`
+      : `<button data-act="${act}" data-target="${t}" disabled title="${esc(refusedText(c.id))}">${label}</button>`;
     return `${body}<div class="state">${st !== 'pending' ? st.toUpperCase() : ''}${applyBadge}</div>${otherDecisionBadges(c.id)}${flagged}
       <div class="acts">
-        <button data-act="accepted" data-target="${t}">✓ accept</button>
-        <button data-act="rejected" data-target="${t}">✗ reject</button>
+        ${btn('accepted', '✓ accept')}
+        ${btn('rejected', '✗ reject')}
         ${applyBtn}
-        ${st !== 'pending' ? `<button data-act="pending" data-target="${t}">↺ reset</button>` : ''}
+        ${st !== 'pending' ? btn('pending', '↺ reset') : ''}
       </div>${threadHtml(c.id)}`;
   }
 
@@ -1128,7 +1190,7 @@
     const last = th[th.length - 1];
     const excerpt = String(c.quote || c.excerpt || c.anchor_text || c.current_text || '').slice(0, 60);
     const lastLine = String((last && last.text) || c.comment || c.text || c.proposed_text || '').split('\n')[0].slice(0, 70);
-    const st = c.type === 'user-comment' ? (c.resolved ? 'resolved' : 'open') : (dec.status || 'pending');
+    const st = c.type === 'user-comment' ? (c.resolved ? 'resolved' : 'open') : cardDecision(c.id);
     return `<div class="mini">
       <span class="dot"></span><span class="mini-author">${esc(cardAuthors(c)[0])}</span>
       <span class="badge st-${esc(st)}">${esc(st)}</span>${(ACTIVITY[c.id] || {}).working ? '<span class="spin">◐</span>' : ''}
@@ -1151,7 +1213,7 @@
       const kind = c.type === 'user-comment' ? 'comment' : 'suggestion';
       const focused = c.id === FOCUSED;
       const sc = c.type === 'user-comment' ? (c.mine ? 'mine' : 'theirs')
-        : (c.type === 'user-suggestion' ? (decisionOf(c.id) || 'pending') : (dec.status || 'pending'));
+        : cardDecision(c.id);
       div.className = `card t-${kind} s-${sc} ${focused ? 'focused' : 'collapsed'}`;
       div.style.setProperty('--author', authorColor(cardAuthors(c)[0]));
       if ((ACTIVITY[c.id] || {}).working) div.classList.add('working');
@@ -1188,8 +1250,7 @@
         }
         if (act === 'reopen-other') { reopenOther(target, e.target.dataset.handle); return; }
         if (act === 'state-other') { threadStateOther(target, e.target.dataset.handle, e.target.dataset.to === '1'); return; }
-        setDecision(target, act === 'pending' ? undefined : act);
-        rerender();
+        if (act === 'accepted' || act === 'rejected' || act === 'pending') { setCardMode(target, act); rerender(); }
       });
     });
     unwrapTracked();   // restore pristine text before quote-wrapping scans it
@@ -1225,8 +1286,8 @@
     if (!inlineChanges || !window.SpanMatch) return;
     const blocks = leafBlocks();
     for (const c of allSuggestions()) {
-      if (c.section !== slug || !c.current_text || APPLY.applied[c.id]) continue;
-      const st = decisionOf(c.id);
+      if (c.section !== slug || !c.current_text || cardMode(c.id) === 'applied' || cardMode(c.id) === 'committed') continue;
+      const st = cardDecision(c.id);
       if (st === 'rejected') continue; // margin card only
       let host = null, span = null, count = 0;
       for (const blk of blocks) {
@@ -1302,6 +1363,8 @@
         if (j.error) (ids || []).forEach(id => chip(id, j.error, true));
         (j.flagged || []).forEach(f => chip(f.id, 'apply flagged: ' + f.reason, true));
         (j.applied || []).forEach(id => chip(id, 'applied — rebuilding page…'));
+        // cards the server passed over say why, instead of "applying…" forever
+        (j.skipped || []).forEach(sk => chip(sk.id, 'not applied: ' + sk.reason, true));
         if (j.build_error) toast('Rebuild failed: ' + j.build_error, true);
         rerender(); // the rebuild's SSE 'site' event reloads the page with the new render
       }).catch(() => (ids || []).forEach(id => chip(id, 'apply failed — server unreachable', true)));
@@ -1313,20 +1376,16 @@
   function renderApplyBar() {
     const bar = document.getElementById('apply-bar');
     if (!bar || !IS_OWNER) return;
-    const d = store();
     // a suggestion is applyable whoever wrote it — bot card or human suggestion
-    const byId = new Map(allSuggestions().map(c => [c.id, c]));
-    const applyable = Object.keys(d).filter(id => {
-      const c = byId.get(id);
-      return c && !APPLY.applied[id] && decisionOf(id) === 'accepted' && (c.current_text || c.source_json);
-    });
+    const applyable = allSuggestions()
+      .filter(c => isApplyReady(c.id) && (c.current_text || c.source_json)).map(c => c.id);
     const round = APPLY.round;
     const roundFiles = new Set((round || {}).files || []);
     // source files dirty in git but not part of the open round: surfaced so
     // invisible working-tree state can't exist (needs the server-side field)
     const outOfBand = (SRC_DIRTY || []).filter(f => !roundFiles.has(f));
     bar.classList.toggle('attention', !!(applyable.length || round));
-    let html = '';
+    let html = APPLY.error ? `<div class="status-chip err">${esc(APPLY.error)}</div>` : '';
     if (!round && !applyable.length) {
       html += lastCommit && Date.now() - lastCommit.t < 8000
         ? `<div class="chg-state ok fade">✓ committed ${esc(lastCommit.sha)}</div>`
@@ -1343,14 +1402,26 @@
     html += HOSTED_MODE && PENDING_M.length ? `<button id="release-pending">▶ Release ${PENDING_M.length} queued mention${PENDING_M.length === 1 ? '' : 's'}</button>` : '';
     bar.innerHTML = html;
     bar.querySelector('#apply-all')?.addEventListener('click', () => doApply(applyable, true));
-    bar.querySelector('#commit-round')?.addEventListener('click', () =>
+    // every button here: greyed while its request is out; if the request
+    // fails, a plain message and the button comes back
+    const busy = (sel, run) => {
+      const b = bar.querySelector(sel);
+      if (!b) return;
+      b.addEventListener('click', () => {
+        b.disabled = true;
+        Promise.resolve().then(run)
+          .catch(() => toast('The review server did not answer, so that may not have gone through. Reload the page to check, then try again.', true))
+          .finally(() => { b.disabled = false; });
+      });
+    };
+    busy('#commit-round', () =>
       api('/commit', { method: 'POST', body: '{}' }).then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
         if (j.ok) { lastCommit = { sha: j.sha, t: Date.now() }; setTimeout(rerender, 8500); }
         toast(j.ok ? `Committed ${j.sha}: ${j.ids.join(', ')}` : j.reason, !j.ok);
         rerender();
       }));
-    bar.querySelector('#revert-round')?.addEventListener('click', () =>
+    busy('#revert-round', () =>
       api('/revert', { method: 'POST', body: '{}' }).then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
         toast(j.ok ? `Reverted: ${j.ids.join(', ')}` : j.reason, !j.ok);
@@ -1358,7 +1429,7 @@
       }));
     // out-of-band commit: only reachable when the server sent source_dirty,
     // i.e. a server new enough to understand /commit {files} (never a round commit)
-    bar.querySelector('#commit-oob')?.addEventListener('click', () =>
+    busy('#commit-oob', () =>
       api('/commit', { method: 'POST', body: JSON.stringify({ files: outOfBand }) }).then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
         if (j.ok) {
@@ -1367,11 +1438,22 @@
         }
         toast(j.ok ? `Committed ${j.sha} (out-of-band): ${(j.files || outOfBand).join(', ')}` : (j.reason || 'commit failed'), !j.ok);
         rerender();
-      }).catch(() => toast('Commit failed — server unreachable', true)));
-    bar.querySelector('#release-pending')?.addEventListener('click', () =>
+      }));
+    // release: each waiting request is offered to the agents; only the ones
+    // they take leave the queue, and the message counts both
+    busy('#release-pending', () =>
       api('/release', { method: 'POST', body: '{}' }).then(r => r.json()).then(j => {
-        toast(`Released ${j.released} queued mention(s) to the agents.`);
-        PENDING_M = []; rerender();
+        if (!j.ok) { toast(j.error || 'Release did not go through.', true); return; }
+        const results = j.results || [];
+        const waitingIds = new Set(results.filter(x => x.state === 'waiting').map(x => x.mention_id));
+        const why = (results.find(x => x.state === 'waiting') || {}).reason;
+        const parts = [];
+        if (j.released) parts.push(`Sent ${j.released} request${j.released === 1 ? '' : 's'} to the agents.`);
+        if (j.refused) parts.push(`${j.refused} had already been sent before.`);
+        if (j.waiting) parts.push(`${j.waiting} could not be sent and ${j.waiting === 1 ? 'is' : 'are'} still waiting${why ? ` (${why})` : ''}.`);
+        toast(parts.join(' ') || 'Nothing was waiting.', !!j.waiting);
+        PENDING_M = PENDING_M.filter(m => waitingIds.has(m.mention_id));
+        rerender();
       }));
   }
   // hosted first visit: pick the handle this browser writes as (users/<handle>.json)
@@ -1591,11 +1673,12 @@
   function showTcPop(id, x, y) {
     const c = allSuggestions().find(s => s.id === id);
     if (!c) return;
-    const st = decisionOf(id);
+    const st = cardDecision(id);
     const rat = String(c.rationale || '').split('\n')[0].slice(0, 140);
-    tcPop.innerHTML = `<div class="who" style="--author:${authorColor(cardAuthors(c)[0])}"><span class="author">${esc(c.author || 'bot')}</span>${st ? `<span class="badge">${esc(st)}</span>` : ''}</div>
+    const tcBtn = (act, label) => `<button data-tcact="${act}"${decisionAllowed(id, act) ? '' : ` disabled title="${esc(refusedText(id))}"`}>${label}</button>`;
+    tcPop.innerHTML = `<div class="who" style="--author:${authorColor(cardAuthors(c)[0])}"><span class="author">${esc(c.author || 'bot')}</span>${st !== 'pending' ? `<span class="badge">${esc(st)}</span>` : ''}</div>
       ${rat ? `<div class="why">${esc(rat)}</div>` : ''}
-      <div class="acts"><button data-tcact="accepted">✓ accept</button><button data-tcact="rejected">✗ reject</button><button data-tcact="card">open card</button></div>`;
+      <div class="acts">${tcBtn('accepted', '✓ accept')}${tcBtn('rejected', '✗ reject')}<button data-tcact="card">open card</button></div>`;
     tcPop.dataset.id = id;
     tcPop.style.left = Math.max(Math.min(x, window.innerWidth - 280), 8) + 'px';
     tcPop.style.top = Math.min(y + 8, window.innerHeight - 120) + 'px';
@@ -1611,7 +1694,7 @@
         const card = document.querySelector(`.card[data-id="${CSS.escape(id)}"]`);
         if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
       } else {
-        setDecision(id, btn.dataset.tcact);
+        setCardMode(id, btn.dataset.tcact);
         rerender();
       }
       return;
@@ -2052,9 +2135,7 @@
       ta.addEventListener('input', () => updateComposerWarn(console_.querySelector('.tc-ask'), ta));
     }
     // collapsed summary: the one line that says whether anything needs you
-    const d = store();
-    const byId = new Map(allSuggestions().map(c => [c.id, c]));
-    const n = Object.keys(d).filter(id => byId.has(id) && !APPLY.applied[id] && decisionOf(id) === 'accepted').length;
+    const n = allSuggestions().filter(c => isApplyReady(c.id)).length;
     const sum = console_.querySelector('#tc-summary');
     if (sum) sum.textContent = APPLY.round ? 'applied, uncommitted' : n ? `${n} accepted, ready to apply` : '';
     syncTaskActivity();
@@ -2090,10 +2171,10 @@
       const mine = (j.users || {})[j.me] || {};
       for (const [id, v] of Object.entries(mine)) if (!(id in d)) { d[id] = v; added++; }
       if (added) setStore(d);
-      syncState = 'ok'; serverDead = false; renderPresence();
+      syncState = 'ok'; serverAnswered(); renderPresence();
       rerender(); pushState();
     }).catch(() => {
-      syncState = 'err'; serverDead = true; renderPresence();
+      syncState = 'err'; setLink('down'); renderPresence();
     });
 
     // live transport: WebSocket first, SSE fallback. WS is primary because
@@ -2101,9 +2182,7 @@
     // streamed HTTP bodies — SSE headers arrive but no events ever do —
     // while WebSocket upgrades are proxied unbuffered.
     let refetching = false;
-    const liveUp = () => { if (sseDown || serverDead) { sseDown = false; serverDead = false; renderPresence(); } };
     const liveMsg = data => {
-      liveUp();
       let msg; try { msg = JSON.parse(data); } catch { return; }
       const type = msg.type;
       if (type === 'ping') return;
@@ -2113,30 +2192,35 @@
       if (type !== 'state' || refetching) return;
       refetching = true;
       api('/data').then(r => r.json()).then(j => { adoptData(j); rerender(); })
+        .catch(() => { })
         .finally(() => { refetching = false; });
     };
-    const liveDown = () => { sseDown = true; renderPresence(); probeServer(); };
-    let wsRetryMs = 2000;
-    function connectSSE() {
-      const es = new EventSource('/events'); // reconnects on its own
-      es.onopen = liveUp;
-      es.onerror = liveDown;
-      es.onmessage = ev => liveMsg(ev.data);
+    let wsRetryMs = 2000, backup = null;
+    // the backup feed counts as live only once an event really arrives:
+    // through a buffering tunnel it can "open" and then deliver nothing
+    function startBackupFeed() {
+      if (backup) return;
+      backup = new EventSource('/events'); // reconnects on its own
+      backup.onmessage = ev => { if (LINK.mode !== 'live') setLink('fallback'); liveMsg(ev.data); };
+      backup.onerror = () => { if (LINK.mode === 'fallback') { setLink('retrying'); probeServer(); } };
     }
+    function stopBackupFeed() { if (backup) { backup.close(); backup = null; } }
     function connectLive() {
       let sock;
       try {
         sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-      } catch { connectSSE(); return; }
+      } catch { startBackupFeed(); return; }   // no WebSocket at all: backup feed for good
       let opened = false;
-      sock.onopen = () => { opened = true; wsRetryMs = 2000; liveUp(); };
+      sock.onopen = () => { opened = true; wsRetryMs = 2000; stopBackupFeed(); setLink('live'); };
       sock.onmessage = ev => liveMsg(ev.data);
       sock.onerror = () => { };
       sock.onclose = () => {
-        // never got open: something between us and the server blocks WS
-        // (or an old server without /ws) — fall back to SSE for good
-        if (!opened) { connectSSE(); return; }
-        liveDown();
+        if (opened) { setLink('retrying'); probeServer(); }
+        // never opened: a proxy that blocks it, an old server without /ws, or
+        // the server mid-restart. The backup feed carries events meanwhile, and
+        // the main feed is tried again either way — it wins whenever it opens.
+        // Until either feed actually delivers, the page does not claim "live".
+        else { if (LINK.mode === 'connecting') setLink('retrying'); startBackupFeed(); }
         setTimeout(connectLive, wsRetryMs);
         wsRetryMs = Math.min(wsRetryMs * 2, 15000);
       };
@@ -2262,9 +2346,19 @@
     const cb = e.target.closest('[data-choice]');
     if (!pb && !cb) return;
     e.stopPropagation();
-    if (pb) api('/permission', { method: 'POST', body: JSON.stringify({ type: 'permission_response', allow: pb.dataset.perm === 'allow' }) });
-    if (cb) { const i = Number(cb.dataset.choice); api('/choice', { method: 'POST', body: JSON.stringify({ type: 'choice_response', index: i >= 0 ? i : null }) }); }
-    clearInterrupts(pb ? 'perm' : 'choice');
+    // the card goes away only once the answer has reached the server; a
+    // failed send says so and leaves the buttons there to try again
+    const btn = pb || cb;
+    btn.disabled = true;
+    const i = cb ? Number(cb.dataset.choice) : 0;
+    const sent = pb
+      ? api('/permission', { method: 'POST', body: JSON.stringify({ type: 'permission_response', allow: pb.dataset.perm === 'allow' }) })
+      : api('/choice', { method: 'POST', body: JSON.stringify({ type: 'choice_response', index: i >= 0 ? i : null }) });
+    sent.then(r => { if (!r.ok) throw new Error(String(r.status)); clearInterrupts(pb ? 'perm' : 'choice'); })
+      .catch(() => {
+        btn.disabled = false;
+        toast('Your answer did not reach the agents — the review server did not answer. Try again.', true);
+      });
   }, true);
   function clearInterrupts(kind) {
     const box = document.getElementById('toasts');
@@ -2380,5 +2474,7 @@
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
     openComposer, setChatMode, PRESENCE, MODELS,
+    setCardMode, cardMode, doApply, activityOf,
+    get link() { return LINK.mode; },
   };
 })();

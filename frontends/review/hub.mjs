@@ -67,26 +67,73 @@ import { fileURLToPath } from 'node:url';
 const CONFIG_FILE = process.env.REVIEW_HUB_CONFIG
   || path.join(os.homedir(), '.botference', 'review-hub.json');
 
-function config() {
+// ── files the hub keeps: missing, ok, or unreadable — never "empty" ──
+// A file that exists but cannot be read (bad JSON, no permission) is NOT the
+// same as no file. It is read as empty for display only, and every write that
+// would replace it is refused with the file named — the owner's bytes stay
+// until the owner fixes them. (The 2026-09-02 lost-password incident was a
+// broken read taken as "no passwords yet" and written over.)
+const JSON_FILE_STATES = Object.freeze(['missing', 'ok', 'unreadable']);
+function readJsonState(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e && e.code === 'ENOENT') return { state: 'missing', value: undefined, error: null };
+    return { state: 'unreadable', value: undefined, error: e };
+  }
   try {
-    const c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-    c.papers = Array.isArray(c.papers) ? c.papers : [];
-    return c;
+    const value = JSON.parse(text);
+    if (value && typeof value === 'object' && !Array.isArray(value)) return { state: 'ok', value, error: null };
+    return { state: 'unreadable', value: undefined, error: new Error('not a JSON object') };
   } catch (e) {
-    return { papers: [], _error: String(e && e.message || e) };
+    return { state: 'unreadable', value: undefined, error: e };
+  }
+}
+function writeJsonAtomic(file, value, mode) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.tmp.${process.pid}.${crypto.randomBytes(3).toString('hex')}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', mode ? { mode } : undefined);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { }
+    throw e;
+  }
+}
+const homeRel = f => (String(f).startsWith(os.homedir()) ? `~${String(f).slice(os.homedir().length)}` : String(f));
+class UnreadableFileError extends Error {
+  constructor(file, what, cause) {
+    super(`${what} (${homeRel(file)}) could not be read, so nothing was written over it. Fix or move that file, then try again.`);
+    this.code = 'EUNREADABLE';
+    this.detail = String((cause && cause.message) || cause || '');
   }
 }
 
+function config() {
+  const r = readJsonState(CONFIG_FILE);
+  if (r.state === 'ok') {
+    const c = r.value;
+    c.papers = Array.isArray(c.papers) ? c.papers : [];
+    return c;
+  }
+  if (r.state === 'missing') return { papers: [], _error: `no settings file at ${homeRel(CONFIG_FILE)}` };
+  return { papers: [], _error: `the settings file ${homeRel(CONFIG_FILE)} could not be read (${(r.error && r.error.message) || r.error}) — nothing will be saved until it is fixed` };
+}
+
 // config edits are read-modify-write against the file (it is the single
-// source of truth and re-read per request), atomically replaced
+// source of truth and re-read per request), atomically replaced. An
+// unreadable file is never replaced: this throws instead. `mutate` may
+// return false to change nothing.
 function writeConfig(mutate) {
-  const cfg = config();
-  delete cfg._error;
-  mutate(cfg);
-  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-  const tmp = `${CONFIG_FILE}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
-  fs.renameSync(tmp, CONFIG_FILE);
+  const r = readJsonState(CONFIG_FILE);
+  if (r.state === 'unreadable') {
+    const e = new UnreadableFileError(CONFIG_FILE, 'The hub settings file', r.error);
+    console.error(`review hub: ${e.message} (${e.detail})`);
+    throw e;
+  }
+  const cfg = r.state === 'ok' ? r.value : {};
+  cfg.papers = Array.isArray(cfg.papers) ? cfg.papers : [];
+  if (mutate(cfg) === false) return cfg;
+  writeJsonAtomic(CONFIG_FILE, cfg);
   return cfg;
 }
 
@@ -99,7 +146,15 @@ function persistedSecret(file) {
   try {
     const s = fs.readFileSync(file, 'utf8').trim();
     if (s) return s;
-  } catch { }
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') {
+      // there, but not readable: never replace it. A key for this run only —
+      // sign-ins will not survive a restart until the file is fixed.
+      console.error(`review hub: ${homeRel(file)} exists but could not be read (${(e && e.code) || e}). `
+        + 'It was left untouched; using a temporary key until it is fixed.');
+      return crypto.randomBytes(24).toString('hex');
+    }
+  }
   const s = crypto.randomBytes(24).toString('hex');
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -122,20 +177,26 @@ const DEVICE_SECRET = persistedSecret(sibling('.review-hub-device-secret'));
 // per-paper guest passwords + the one owner password handed to every paper
 // as REVIEW_OWNER_PASSWORD, so the owner signs into any paper from any device
 const PAPER_SECRETS_FILE = sibling('review-paper-secrets.json');
+// {ok:true, value} (missing reads as no passwords yet) or throws
+// UnreadableFileError — a password file we cannot read is NEVER "no passwords"
+function paperSecretsForWrite() {
+  const r = readJsonState(PAPER_SECRETS_FILE);
+  if (r.state === 'ok') return r.value;
+  if (r.state === 'missing') return {};
+  const e = new UnreadableFileError(PAPER_SECRETS_FILE, 'The paper passwords file', r.error);
+  console.error(`review hub: ${e.message} (${e.detail})`);
+  throw e;
+}
+// for display only: unreadable shows as nothing, plus a note on the portal
 function paperSecrets() {
-  try {
-    const s = JSON.parse(fs.readFileSync(PAPER_SECRETS_FILE, 'utf8'));
-    return (s && typeof s === 'object') ? s : {};
-  } catch { return {}; }
+  const r = readJsonState(PAPER_SECRETS_FILE);
+  return r.state === 'ok' ? r.value : {};
 }
 function writePaperSecrets(mutate) {
-  const s = paperSecrets();
+  const s = paperSecretsForWrite();   // throws when unreadable: nothing generated, nothing written
   mutate(s);
   try {
-    fs.mkdirSync(path.dirname(PAPER_SECRETS_FILE), { recursive: true });
-    const tmp = `${PAPER_SECRETS_FILE}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, JSON.stringify(s, null, 2) + '\n', { mode: 0o600 });
-    fs.renameSync(tmp, PAPER_SECRETS_FILE);
+    writeJsonAtomic(PAPER_SECRETS_FILE, s, 0o600);
   } catch (e) {
     console.error(`review hub: could not persist ${PAPER_SECRETS_FILE} (${e && e.message})`);
   }
@@ -145,7 +206,7 @@ function writePaperSecrets(mutate) {
 // kept forever after, so restarts don't invalidate what collaborators hold
 const MEMO = new Map();
 function guestPassword(slug) {
-  const s = paperSecrets();
+  const s = paperSecretsForWrite();
   if (s.papers && s.papers[slug]) return s.papers[slug];
   if (MEMO.has(slug)) return MEMO.get(slug);
   const pw = crypto.randomBytes(8).toString('hex');
@@ -163,7 +224,7 @@ function guestPassword(slug) {
 const OWNER_PW = process.env.REVIEW_HUB_PASSWORD || '';
 function ownerPassword() {
   if (OWNER_PW) return OWNER_PW;
-  const s = paperSecrets();
+  const s = paperSecretsForWrite();
   if (s.owner) return s.owner;
   if (MEMO.has('*owner')) return MEMO.get('*owner');
   const pw = crypto.randomBytes(12).toString('hex');
@@ -515,7 +576,7 @@ function run(bin, args, opts = {}) {
 // list as lib/review.sh's REVIEW_ENGINE_FILES, plus assets/*). Mtimes lie
 // after a copy; hashing a few hundred kilobytes on a start does not.
 const ENGINE_FILES = ['build.mjs', 'server.mjs', 'chat.mjs', 'apply.mjs', 'discuss.mjs',
-  'submit.mjs', 'init-config.mjs', 'ws.mjs', 'bridge-system-prompt.md', 'SCHEMA.md'];
+  'submit.mjs', 'init-config.mjs', 'ws.mjs', 'notebook.mjs', 'bridge-system-prompt.md', 'SCHEMA.md'];
 const sha = f => { try { return crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex'); } catch { return ''; } };
 // the engine files this paper is missing or carrying an older copy of
 export function staleEngineFiles(dir, engineDir = HERE) {
@@ -628,19 +689,83 @@ async function discussEnv(cfg, host) {
   return {};
 }
 
-// in-flight enable/disable jobs, surfaced on the portal and in status.json
+// ── one paper's server: ONE mode, changed only through setPaperMode() ──
+// Stored as `mode` on the paper's entry in the hub config, so it survives a
+// hub restart and is the same answer for the portal, status.json and the
+// proxy. A workspace project with no config entry yet is `not-set-up`.
+//   not-set-up — never published by the hub
+//   off        — the owner turned it off; nothing starts it but "turn on"
+//   starting   — being set up / started; becomes running once it answers
+//   running    — meant to be on. If it stops answering, opening it wakes it
+//   stopping   — being stopped
+//   failed     — a start or stop did not work; the reason is on the portal
+const PAPER_MODES = Object.freeze(['not-set-up', 'off', 'starting', 'running', 'stopping', 'failed']);
+const PAPER_MOVES = Object.freeze({
+  'not-set-up': ['starting'],
+  off: ['starting'],
+  starting: ['running', 'failed'],
+  running: ['starting', 'stopping'],
+  stopping: ['off', 'failed'],
+  failed: ['starting', 'stopping'],
+});
+// how long a started paper gets to answer before the start counts as failed
+const START_WAIT_MS = Number(process.env.REVIEW_HUB_START_WAIT_MS) || 60000;
+function paperMode(p) {
+  if (p && PAPER_MODES.includes(p.mode)) return p.mode;
+  // an entry from before modes were stored: published means meant to be on
+  return p && Number(p.port) && p.host ? 'running' : 'not-set-up';
+}
+const modeOfSlug = (cfg, slug) => paperMode(cfg.papers.find(p => p.slug === slug));
+// THE one place a paper's mode changes. {ok, from, to} or {ok:false, reason}.
+// `patch` lands on the same entry in the same write (host, port, …).
+function setPaperMode(entry, next, patch = {}) {
+  let out = null;
+  try {
+    writeConfig(c => {
+      let p = c.papers.find(x => x.slug === entry.slug);
+      const from = paperMode(p);
+      if (!PAPER_MODES.includes(next) || !PAPER_MOVES[from].includes(next)) {
+        out = { ok: false, from, to: next, reason: `'${entry.slug}' is ${from}; it cannot go to ${next}` };
+        return false;
+      }
+      if (!p) {   // first time the hub acts on this project: it gets an entry
+        p = { slug: entry.slug, dir: entry.dir, title: entry.title || entry.slug,
+          collaborators: [] };   // default privacy: owner only until declared
+        c.papers.push(p);
+      }
+      Object.assign(p, patch);
+      p.mode = next;
+      out = { ok: true, from, to: next };
+    });
+  } catch (e) {
+    out = { ok: false, reason: String((e && e.message) || e) };
+  }
+  return out;
+}
+
+// the last start/stop attempt per paper: what it did and what went wrong.
+// A log for the portal, not a mode — whether one is under way is the mode.
 const JOBS = new Map();
 function job(slug) { return JOBS.get(slug) || null; }
 
 async function enablePaper(cfg, entry) {
-  const running = JOBS.get(entry.slug);
-  if (running && !running.done) return running;
-  const j = { slug: entry.slug, action: 'on', at: Date.now(), done: false, error: '', notes: [], steps: [] };
+  const m = setPaperMode(entry, 'starting');
+  if (!m.ok) {
+    if (m.from === undefined) {   // the config could not be written at all
+      JOBS.set(entry.slug, { slug: entry.slug, action: 'on', at: Date.now(), finished: Date.now(),
+        error: m.reason, notes: [], steps: [] });
+    }
+    return job(entry.slug);
+  }
+  const j = { slug: entry.slug, action: 'on', at: Date.now(), error: '', notes: [], steps: [] };
   JOBS.set(entry.slug, j);
-  try { await enableSteps(cfg, entry, j); }
+  let up = false;
+  try { up = await enableSteps(cfg, entry, j); }
   catch (e) { j.error = String((e && e.message) || e); }
-  j.done = true;
   j.finished = Date.now();
+  if (!up && !j.error) j.error = 'the review did not start';
+  const done = setPaperMode(entry, up ? 'running' : 'failed');
+  if (!done.ok) j.error = j.error || done.reason;
   return j;
 }
 
@@ -648,7 +773,7 @@ async function enableSteps(cfg, entry, j) {
   const dir = entry.dir;
   if (!dir || !fs.existsSync(dir)) {
     j.error = `no directory on record for '${entry.slug}' — add "dir" to its config entry`;
-    return;
+    return false;
   }
   // 1. scaffold when this project has never been set up for review
   if (!readReviewConfig(dir)) {
@@ -657,13 +782,13 @@ async function enableSteps(cfg, entry, j) {
     if (!r.ok || !readReviewConfig(dir)) {
       j.error = `scaffold failed: ${(r.stderr || r.stdout || r.error).trim().split('\n').pop()}`;
       j.notes.push(cmdLine(BOTFERENCE_BIN, ['review', dir, '--setup']));
-      return;
+      return false;
     }
   }
   // 2. port + hostname, reused when this paper already had them
   const existing = cfg.papers.find(p => p.slug === entry.slug) || null;
   const port = Number(existing && existing.port) || Number(entry.port) || await assignPort(cfg);
-  if (!port) { j.error = 'no free port in the configured range'; return; }
+  if (!port) { j.error = 'no free port in the configured range'; return false; }
   const host = (existing && existing.host) || entry.host || hostFor(cfg, entry.slug);
   const isNew = !existing || !existing.host;
   j.port = port; j.host = host;
@@ -721,30 +846,39 @@ async function enableSteps(cfg, entry, j) {
   if (!r.ok && !already) {
     j.error = `could not start the review service: ${(r.stderr || r.stdout || r.error).trim().split('\n').pop()}`;
     j.notes.push(cmdLine(BOTFERENCE_BIN, args));
-    return;
+    return false;
   }
-  // 5. record it only once it is actually up: slug, host, port and dir
+  // 5. record where it lives (so its hostname routes here), then give it a
+  // bounded time to answer: that answer, not a clock, is what makes it running
   writeConfig(c => {
     const p = c.papers.find(x => x.slug === entry.slug);
-    if (p) {
-      p.host = p.host || host;
-      p.port = port;
-      p.dir = p.dir || dir;
-      if (!Array.isArray(p.collaborators)) p.collaborators = [];
-    } else {
-      c.papers.push({
-        slug: entry.slug, host, port, dir,
-        title: entry.title || entry.slug,
-        collaborators: [],   // default privacy: owner only until declared
-      });
-    }
+    if (!p) return false;   // setPaperMode created it; gone means someone edited it out
+    p.host = p.host || host;
+    p.port = port;
+    p.dir = p.dir || dir;
+    if (!Array.isArray(p.collaborators)) p.collaborators = [];
   });
+  j.steps.push('answer');
+  const deadline = Date.now() + START_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (await probe(port)) return true;
+    await new Promise(r => setTimeout(r, 300));
+  }
+  j.error = `the review was started but did not answer within ${Math.round(START_WAIT_MS / 1000)} seconds`;
+  j.notes.push(`its log is in ${prettyDir(dir)}/.botference/ — or start it by hand: ${cmdLine(BOTFERENCE_BIN, args)}`);
+  return false;
 }
 
 async function disablePaper(cfg, entry) {
-  const running = JOBS.get(entry.slug);
-  if (running && !running.done) return running;
-  const j = { slug: entry.slug, action: 'off', at: Date.now(), done: false, error: '', notes: [], steps: ['stop'] };
+  const m = setPaperMode(entry, 'stopping');
+  if (!m.ok) {
+    if (m.from === undefined) {
+      JOBS.set(entry.slug, { slug: entry.slug, action: 'off', at: Date.now(), finished: Date.now(),
+        error: m.reason, notes: [], steps: [] });
+    }
+    return job(entry.slug);
+  }
+  const j = { slug: entry.slug, action: 'off', at: Date.now(), error: '', notes: [], steps: ['stop'] };
   JOBS.set(entry.slug, j);
   const dir = entry.dir;
   if (!dir) {
@@ -769,8 +903,9 @@ async function disablePaper(cfg, entry) {
       j.notes.push(`run this in ${dir}: ${cmdLine(BOTFERENCE_BIN, args)}`);
     }
   }
-  j.done = true;
   j.finished = Date.now();
+  const done = setPaperMode(entry, j.error ? 'failed' : 'off');
+  if (!done.ok) j.error = j.error || done.reason;
   return j;
 }
 
@@ -908,6 +1043,22 @@ ${note}${notes}
 </main>`, refresh(5));
 }
 
+// the owner opened a paper that is turned off, or whose last start failed:
+// say so, and point at the one button that changes it. Nothing is started.
+function notOnPage(cfg, paper, mode, j) {
+  const title = paper.title || paper.slug;
+  const portal = cfg.host ? `https://${cfg.host}/` : '/';
+  const why = mode === 'off' ? 'This review is turned off.'
+    : mode === 'stopping' ? 'This review is being turned off.'
+      : 'This review could not be started.';
+  const note = mode === 'failed' && j && j.error ? `<div class="note">${escHtml(j.error)}</div>` : '';
+  return page(title, `<main>
+<h1>${escHtml(clip(title))}</h1>
+<p>${why} Turn it on from the <a href="${escHtml(portal)}">portal</a> when you want it back.</p>
+${note}
+</main>`);
+}
+
 function waitingPage(p) {
   if (!p) {
     return page('Approval expired', `<main><h1>Approval expired</h1>
@@ -947,14 +1098,22 @@ ${remote ? '<div class="signout"><a href="/signout">sign out</a></div>' : ''}
 async function ownerPage(cfg, req, res, remote) {
   const entries = discover(cfg);
   const status = await Promise.all(entries.map(e => probe(e.port)));
-  const secrets = paperSecrets().papers || {};
+  const secretsRead = readJsonState(PAPER_SECRETS_FILE);
+  const secrets = (secretsRead.state === 'ok' && secretsRead.value.papers) || {};
   const localLinks = !remote;  // dead weight on a phone
   const items = entries.map((e, i) => {
     const live = status[i];
     const j = job(e.slug);
-    const busy = j && !j.done;
-    const state = !e.scaffolded ? 'not set up yet'
-      : live ? 'running' : e.enabled ? 'stopped' : 'scaffolded — not published';
+    const mode = modeOfSlug(cfg, e.slug);
+    const busy = mode === 'starting' || mode === 'stopping';
+    const state = {
+      'not-set-up': e.scaffolded ? 'scaffolded — not published' : 'not set up yet',
+      off: 'stopped',
+      starting: 'starting…',
+      running: live ? 'running' : 'not answering — opening it starts it again',
+      stopping: 'stopping…',
+      failed: live ? 'running, but the last stop did not work' : 'could not start',
+    }[mode];
     const dot = live ? 'live' : e.scaffolded ? 'down' : 'blank';
     const name = escHtml(clip(e.title || e.slug));
     const title = e.enabled ? `<a href="${escHtml(`https://${e.host}/`)}">${name}</a>` : `<b>${name}</b>`;
@@ -966,10 +1125,10 @@ async function ownerPage(cfg, req, res, remote) {
     const pw = secrets[e.slug]
       ? `<div class="meta">guest password <span class="pw">${escHtml(secrets[e.slug])}</span> · collaborators: ${(e.collaborators || []).length
         ? escHtml((e.collaborators || []).join(', ')) : 'none — private to you'}</div>` : '';
-    const notes = j && j.done && (j.error || j.notes.length)
+    const notes = j && !busy && (j.error || j.notes.length)
       ? [j.error, ...j.notes].filter(Boolean).map(n => `<div class="note">${escHtml(n)}</div>`).join('') : '';
-    const action = live ? 'off' : 'on';
-    const label = busy ? (j.action === 'on' ? 'starting…' : 'stopping…') : (live ? 'turn off' : 'turn on');
+    const action = (mode === 'running' || (mode === 'failed' && live)) ? 'off' : 'on';
+    const label = busy ? (mode === 'starting' ? 'starting…' : 'stopping…') : (action === 'off' ? 'turn off' : 'turn on');
     const toggle = busy ? `<span class="meta">${label}</span>`
       : `<form class="toggle" method="POST" action="/toggle"><input type="hidden" name="slug" value="${escHtml(e.slug)}"><input type="hidden" name="action" value="${action}"><button>${label}</button></form>`;
     return `<li><div class="row"><div class="grow">
@@ -977,7 +1136,9 @@ async function ownerPage(cfg, req, res, remote) {
 <div class="meta">${bits.join(' · ')}</div>${pw}${notes}
 </div>${toggle}</div></li>`;
   }).join('');
-  const head = cfg._error ? `<div class="note">config error: ${escHtml(cfg._error)}</div>` : '';
+  const head = (cfg._error ? `<div class="note">config error: ${escHtml(cfg._error)}</div>` : '')
+    + (secretsRead.state === 'unreadable'
+      ? `<div class="note">The paper passwords file (${escHtml(homeRel(PAPER_SECRETS_FILE))}) could not be read. No paper can be turned on until it is fixed or moved — it will not be written over.</div>` : '');
   const pend = [...PENDING.values()].filter(p => p.state === 'pending');
   const approvals = (!remote && pend.length) ? `<ul class="papers">${pend.map(p => `<li><div class="row"><div class="grow">
 <b>A device wants owner access</b><div class="meta">${escHtml(p.ip)} · ${escHtml(clip(p.ua, 50))}</div></div>
@@ -990,7 +1151,7 @@ async function ownerPage(cfg, req, res, remote) {
 ${head}${approvals}
 ${entries.length ? `<ul class="papers">${items}</ul>` : '<p>No papers configured and nothing discovered.</p>'}
 ${remote ? '<div class="signout"><a href="/signout">sign out</a></div>' : ''}
-</main>`, JOBS.size && [...JOBS.values()].some(j => !j.done) ? refresh(4) : ''));
+</main>`, entries.some(e => ['starting', 'stopping'].includes(modeOfSlug(cfg, e.slug))) ? refresh(4) : ''));
 }
 
 // ── transparent reverse proxy for a paper hostname ──────────────────
@@ -1013,14 +1174,17 @@ function proxy(cfg, paper, req, res) {
     // friendly offline page (starting a paper is never a guest's decision)
     const v = viewer(cfg, req);
     if (v && v.owner) {
-      const entry = findEntry(cfg, paper.slug);
-      const j = job(paper.slug);
-      // don't stampede: one job at a time, and give a just-finished start a
-      // few seconds to bind before the refreshing page asks again
-      const busy = j && (!j.done
-        || (j.action === 'on' && Date.now() - j.finished < 8000));
-      if (entry && !busy) enablePaper(cfg, entry);
-      return res.writeHead(503, HTML_HEAD).end(startingPage(paper, job(paper.slug)));
+      // wake-on-request only for a paper that is meant to be on: never from
+      // off (the owner said so), never on top of a start already under way
+      if (modeOfSlug(cfg, paper.slug) === 'running') {
+        const entry = findEntry(cfg, paper.slug);
+        if (entry) enablePaper(cfg, entry);   // moves it to starting before it awaits anything
+      }
+      const mode = modeOfSlug(config(), paper.slug);
+      if (mode === 'starting' || mode === 'running') {
+        return res.writeHead(503, HTML_HEAD).end(startingPage(paper, job(paper.slug)));
+      }
+      return res.writeHead(503, HTML_HEAD).end(notOnPage(cfg, paper, mode, job(paper.slug)));
     }
     res.writeHead(503, HTML_HEAD).end(offlinePage(paper));
   });
@@ -1079,6 +1243,7 @@ async function portal(cfg, req, res) {
         slug: e.slug, title: e.title || e.slug, host: e.host || '', port: Number(e.port) || 0,
         dir: e.dir || '', scaffolded: !!e.scaffolded, enabled: !!e.enabled, running: status[i],
         explicit: !!e.explicit, discovered: !!e.discovered, collaborators: e.collaborators || [],
+        mode: modeOfSlug(cfg, e.slug),
         job: job(e.slug) || null,
       })),
     }, null, 2));
@@ -1139,7 +1304,9 @@ async function portal(cfg, req, res) {
     }
     // the hub owner password (env or generated) outranks the per-paper
     // checks: full list, from any device
-    if (safeEqual(password, ownerPassword())) {
+    let ownerPw = '';
+    try { ownerPw = ownerPassword(); } catch { /* unreadable passwords file: logged; no owner login by password */ }
+    if (ownerPw && safeEqual(password, ownerPw)) {
       res.writeHead(303, { 'set-cookie': sessionCookie(handle, ['*'], req, cfg), location: '/' }).end();
       return;
     }
@@ -1189,11 +1356,28 @@ const server = http.createServer((req, res) => {
 // SSE streams ride through the proxy: never time a request out hub-side
 server.requestTimeout = 0;
 server.headersTimeout = 60000;
+// a start or stop the hub was in the middle of when it last went down: ask
+// the paper whether it is answering and finish the move from that answer
+async function settleInterrupted() {
+  const cfg = config();
+  for (const p of cfg.papers) {
+    const mode = paperMode(p);
+    if (mode !== 'starting' && mode !== 'stopping') continue;
+    const live = await probe(p.port);
+    const next = mode === 'starting' ? (live ? 'running' : 'failed') : (live ? 'failed' : 'off');
+    setPaperMode(p, next);
+    if (next === 'failed') {
+      JOBS.set(p.slug, { slug: p.slug, action: mode === 'starting' ? 'on' : 'off', at: Date.now(), finished: Date.now(),
+        error: `the hub restarted while this paper was ${mode}`, notes: [], steps: [] });
+    }
+  }
+}
 // REVIEW_HUB_NO_LISTEN=1 imports this module without opening the port, the
 // same convention server.mjs uses — it is how the pure parts (which paper is
 // on a stale engine, where the companion is) get tested without a hub running.
 if (process.env.REVIEW_HUB_NO_LISTEN !== '1') {
-  server.listen(PORT, '127.0.0.1', () => {
+  server.listen(PORT, '127.0.0.1', async () => {
+    await settleInterrupted();
     const cfg = config();
     const found = discover(cfg).length - cfg.papers.length;
     console.log(`review hub on http://localhost:${PORT}/ — ${cfg.papers.length} paper(s)` +
@@ -1201,4 +1385,5 @@ if (process.env.REVIEW_HUB_NO_LISTEN !== '1') {
       (cfg._error ? `  [config error: ${cfg._error}]` : ''));
   });
 }
-export { companionCandidates, companionLive, discussEnv };
+export { companionCandidates, companionLive, discussEnv, writeConfig, setPaperMode, paperMode,
+  guestPassword, PAPER_MODES, PAPER_MOVES, JSON_FILE_STATES };

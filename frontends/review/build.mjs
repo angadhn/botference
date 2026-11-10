@@ -118,7 +118,7 @@ const _tools = new Map();
 function hasTool(cmd) {
   if (!_tools.has(cmd)) {
     // pdftocairo only understands -v; the others accept --version
-    try { execFileSync(cmd, [cmd === 'pdftocairo' ? '-v' : '--version'], { stdio: 'ignore' }); _tools.set(cmd, true); }
+    try { execFileSync(cmd, [cmd === 'pdftocairo' ? '-v' : '--version'], { stdio: 'ignore', timeout: 15000 }); _tools.set(cmd, true); }
     catch { _tools.set(cmd, false); }
   }
   return _tools.get(cmd);
@@ -392,11 +392,14 @@ function page(title, slug, body, prev, next) {
 <aside id="margin"></aside>
 <script src="suggestions.js"></script>
 <script src="assets/span-match.js"></script>
+<script src="assets/card-modes.js"></script>
 <script src="assets/review.js"></script>
 </body></html>`;
 }
 
 // --- build (two-pass: render all, then resolve cross-page refs) ---
+// one section through pandoc; a big chapter is seconds, so minutes means hung
+const PANDOC_TIMEOUT_MS = 5 * 60 * 1000;
 fs.mkdirSync(path.join(OUT, 'assets'), { recursive: true });
 // site/ is a disposable build product; canonical UI assets live in review/assets/
 for (const f of fs.readdirSync(path.join(REVIEW, 'assets'))) {
@@ -406,7 +409,16 @@ const built = SECTIONS.map(s => {
   const raw = s.source ?? (renderer.read ? renderer.read(s) : fs.readFileSync(path.join(ROOT, s.file), 'utf8'));
   const tmp = path.join(OUT, `.${s.slug}.tmp`);
   fs.writeFileSync(tmp, renderer.preprocess(raw, s.slug, s));
-  const html = execFileSync('pandoc', [...renderer.pandocArgs, tmp], { cwd: ROOT, encoding: 'utf8' });
+  let html;
+  try {
+    html = execFileSync('pandoc', [...renderer.pandocArgs, tmp], { cwd: ROOT, encoding: 'utf8', timeout: PANDOC_TIMEOUT_MS });
+  } catch (e) {
+    // a hung pandoc is stopped and named, not left to freeze the build
+    if (e && (e.code === 'ETIMEDOUT' || (e.signal === 'SIGTERM' && e.status == null))) {
+      throw new Error(`pandoc took longer than ${PANDOC_TIMEOUT_MS / 1000} seconds on ${s.file || s.slug} and was stopped`);
+    }
+    throw e;
+  }
   fs.unlinkSync(tmp);
   return { s, html: postprocess(html) };
 });
@@ -449,10 +461,10 @@ if (fs.existsSync(suggFile)) {
 fs.writeFileSync(suggFile, JSON.stringify(cards, null, 1));
 let git = 'unknown';
 try {
-  const rev = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
+  const rev = execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: ROOT, encoding: 'utf8', timeout: 30000 }).trim();
   const srcPaths = [...new Set([CFG.main, CFG.abbreviations, ...FIG_DIRS, ...(CFG.bib || []),
     ...CFG.sections.map(s => s.file)].filter(Boolean))];
-  const dirty = execFileSync('git', ['status', '--porcelain', '--', ...srcPaths], { cwd: ROOT, encoding: 'utf8' }).trim() ? '-dirty' : '';
+  const dirty = execFileSync('git', ['status', '--porcelain', '--', ...srcPaths], { cwd: ROOT, encoding: 'utf8', timeout: 30000 }).trim() ? '-dirty' : '';
   git = rev + dirty;
 } catch { }
 // `sections` + `title_source` are additive: they let the browser resolve a

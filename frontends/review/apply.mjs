@@ -14,6 +14,95 @@ import SpanMatch from './assets/span-match.js';
 const { findSpans } = SpanMatch;
 // notebooks: spans are matched against the text projection, edits land in one cell
 import { notebookText, editNotebook } from './notebook.mjs';
+// the one list of card modes and the moves between them, shared with the page
+import CardModes from './assets/card-modes.js';
+const { CARD_MODES, DECISION_OF_MODE, canMove } = CardModes;
+
+// a hung git must never freeze the review server: plumbing gets a short leash
+export const GIT_TIMEOUT_MS = 30000;
+
+// ---- state files: a missing file is not a broken one ------------------------
+// Every JSON record this engine keeps is read into exactly one of three
+// results, and only `missing` may be quietly treated as empty. `unreadable`
+// (bad JSON, no permission) is never read as empty and then written over —
+// the write is refused and the person is told which file to fix. Mirrors
+// frontends/plugin/fsjson.mjs; kept here because each paper carries its own
+// copy of this folder and nothing in it may import from outside it.
+export const JSON_FILE_STATES = Object.freeze(['missing', 'ok', 'unreadable']);
+export function readJsonState(file) {
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e && e.code === 'ENOENT') return { state: 'missing', value: undefined, error: null };
+    return { state: 'unreadable', value: undefined, error: e };
+  }
+  try { return { state: 'ok', value: JSON.parse(text), error: null }; } catch (e) {
+    return { state: 'unreadable', value: undefined, error: e };
+  }
+}
+// temp file beside the target, then rename: a reader sees the old file or the
+// new one, never half of one. An existing file keeps its permission bits.
+export function writeFileAtomic(file, data, opts = {}) {
+  const tmp = `${file}.tmp.${process.pid}.${Math.random().toString(36).slice(2, 8)}`;
+  let mode = opts.mode;
+  if (mode == null) { try { mode = fs.statSync(file).mode & 0o7777; } catch { } }
+  try {
+    fs.writeFileSync(tmp, data, mode == null ? undefined : { mode });
+    if (mode != null) fs.chmodSync(tmp, mode);
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { }
+    throw e;
+  }
+}
+export const writeJsonAtomic = (file, value, opts) =>
+  writeFileAtomic(file, JSON.stringify(value, null, 1), opts);
+// the plain sentence a person sees when a record cannot be read
+export const unreadableMessage = (rel, what) =>
+  `${what} (${rel}) could not be read, so nothing was changed. Fix or move that file, then try again.`;
+// a child process that ran out of time, said in words
+export function execFailure(e, what, ms) {
+  if (e && (e.code === 'ETIMEDOUT' || (e.signal === 'SIGTERM' && e.status == null))) {
+    return `${what} took longer than ${Math.round(ms / 1000)} seconds and was stopped`;
+  }
+  return `${what} failed: ${String((e && (e.stderr || e.message)) || e).trim().slice(0, 300)}`;
+}
+
+// the ledger before suggestion cards had one mode each: {applied, flagged}
+// maps. Read it as the modes it meant, so an old round still commits.
+function normalizeLedger(raw) {
+  const l = { round: (raw && raw.round) || null, cards: {} };
+  if (raw && raw.cards && typeof raw.cards === 'object') {
+    for (const [id, c] of Object.entries(raw.cards)) {
+      if (c && CARD_MODES.includes(c.mode)) l.cards[id] = { ...c };
+    }
+    return l;
+  }
+  for (const [id, f] of Object.entries((raw && raw.flagged) || {})) {
+    l.cards[id] = { mode: 'flagged', reason: f && f.reason, ts: f && f.ts };
+  }
+  for (const [id, a] of Object.entries((raw && raw.applied) || {})) {
+    l.cards[id] = a && a.committed
+      ? { mode: 'committed', sha: a.committed, ts: a.ts, source_file: a.source_file || null }
+      : { mode: 'applied', ts: a && a.ts, source_file: (a && a.source_file) || null };
+  }
+  return l;
+}
+export const modeOf = (l, id) => (l.cards[id] && l.cards[id].mode) || 'pending';
+// THE one place a card's mode changes. Refuses any move the table in
+// assets/card-modes.js does not list; asking for the mode a card is already
+// in is a no-op that may refresh its details (a new flag reason, say).
+export function moveCard(l, id, next, extra = {}) {
+  const from = modeOf(l, id);
+  if (!CARD_MODES.includes(next)) return { ok: false, from, to: next, reason: `"${next}" is not a card mode` };
+  if (!canMove(from, next)) {
+    return { ok: false, from, to: next, reason: from === 'applied' && next === 'rejected'
+      ? `${id} is already written into the source — revert the round before rejecting it`
+      : `${id} cannot go from ${from} to ${next}` };
+  }
+  if (next === 'pending') delete l.cards[id];
+  else l.cards[id] = { mode: next, ts: new Date().toISOString(), ...extra };
+  return { ok: true, from, to: next };
+}
 
 export class ApplyEngine {
   constructor({ reviewDir, cfg }) {
@@ -21,20 +110,63 @@ export class ApplyEngine {
     this.root = path.resolve(reviewDir, '..');
     this.cfg = cfg;
     this.ledgerFile = path.join(reviewDir, 'state', 'apply.json');
+    this.ledgerRel = path.join(path.basename(reviewDir), 'state', 'apply.json');
   }
 
-  ledger() {
-    try { return JSON.parse(fs.readFileSync(this.ledgerFile, 'utf8')); }
-    catch { return { round: null, applied: {}, flagged: {} }; }
+  // {ok, ledger} or {ok:false, reason} — an unreadable ledger is never empty
+  loadLedger() {
+    const r = readJsonState(this.ledgerFile);
+    if (r.state === 'missing') return { ok: true, ledger: normalizeLedger(null) };
+    if (r.state === 'ok' && r.value && typeof r.value === 'object' && !Array.isArray(r.value)) {
+      return { ok: true, ledger: normalizeLedger(r.value) };
+    }
+    const reason = unreadableMessage(this.ledgerRel, 'The record of applied changes');
+    console.error(`review: ${reason} (${(r.error && r.error.message) || 'not a JSON object'})`);
+    return { ok: false, reason };
   }
-  saveLedger(l) { fs.writeFileSync(this.ledgerFile, JSON.stringify(l, null, 1)); }
-  // what the UI needs: per-card status + whether an uncommitted round exists
+  saveLedger(l) {
+    fs.mkdirSync(path.dirname(this.ledgerFile), { recursive: true });
+    writeJsonAtomic(this.ledgerFile, { round: l.round, cards: l.cards });
+  }
+  // the public way to change one card's mode: load, move, save
+  setCardMode(id, next, extra) {
+    const lr = this.loadLedger();
+    if (!lr.ok) return { ok: false, reason: lr.reason };
+    const m = moveCard(lr.ledger, id, next, extra);
+    if (m.ok && m.from !== m.to) this.saveLedger(lr.ledger);
+    return m;
+  }
+  // bring every decided card in line with what people decided. `decisions`
+  // is {id: 'accepted'|'rejected'|'pending'}; a card absent from it is
+  // pending. Moves the table refuses (rejecting an applied edit) are left
+  // as they are and reported, never forced.
+  syncDecisions(decisions) {
+    const lr = this.loadLedger();
+    if (!lr.ok) return { ok: false, reason: lr.reason, refused: [] };
+    const l = lr.ledger;
+    const refused = [];
+    let changed = false;
+    for (const id of new Set([...Object.keys(decisions), ...Object.keys(l.cards)])) {
+      const want = decisions[id] || 'pending';
+      const cur = modeOf(l, id);
+      if (DECISION_OF_MODE[cur] === want) continue;
+      const m = moveCard(l, id, want);
+      if (m.ok) changed = true; else refused.push({ id, reason: m.reason });
+    }
+    if (changed) this.saveLedger(l);
+    return { ok: true, refused };
+  }
+  // what the UI needs: one mode per card + whether an uncommitted round exists
   publicLedger() {
-    const l = this.ledger();
-    return { applied: l.applied, flagged: l.flagged, round: l.round ? { ids: l.round.ids, files: l.round.files } : null };
+    const lr = this.loadLedger();
+    if (!lr.ok) return { cards: {}, round: null, error: lr.reason };
+    const l = lr.ledger;
+    return { cards: l.cards, round: l.round ? { ids: l.round.ids, files: l.round.files } : null };
   }
 
-  git(...args) { return execFileSync('git', args, { cwd: this.root, encoding: 'utf8' }).trim(); }
+  git(...args) {
+    return execFileSync('git', args, { cwd: this.root, encoding: 'utf8', timeout: GIT_TIMEOUT_MS }).trim();
+  }
   // every suggestion the applier can act on: bot cards (suggestions.json) plus
   // HUMAN suggestions, which live in their author's own state/users/<handle>.json
   // (file ownership: humans never write suggestions.json). Apply itself is
@@ -126,57 +258,91 @@ export class ApplyEngine {
     return this.git('stash', 'create', 'review-apply pre-round snapshot') || this.git('rev-parse', 'HEAD');
   }
 
+  // Each edit is recorded as it lands, not after the whole batch: the round
+  // (with its revert snapshot and the files it is about to touch) is saved
+  // BEFORE a source file is written, and the card is marked applied right
+  // after. A crash half-way leaves a ledger that still knows every file the
+  // round touched, so Revert can put them back.
   apply(ids, { dryRun = false } = {}) {
-    const l = this.ledger();
-    const byId = new Map(this.cards().map(c => [c.id, c]));
     const res = { applied: [], flagged: [], skipped: [] };
+    const lr = this.loadLedger();
+    if (!lr.ok) {
+      for (const id of ids) res.skipped.push({ id, reason: lr.reason });
+      return { ...res, error: lr.reason };
+    }
+    // a dry run works on a throwaway copy and never saves
+    const l = dryRun ? structuredClone(lr.ledger) : lr.ledger;
+    const save = () => { if (!dryRun) this.saveLedger(l); };
+    const byId = new Map(this.cards().map(c => [c.id, c]));
     for (const id of ids) {
       const card = byId.get(id);
       if (!card) { res.skipped.push({ id, reason: 'unknown card id' }); continue; }
-      if (l.applied[id]) { res.skipped.push({ id, reason: 'already applied' }); continue; }
+      const mode = modeOf(l, id);
+      if (mode === 'applied') { res.skipped.push({ id, reason: 'already applied' }); continue; }
+      if (mode === 'committed') { res.skipped.push({ id, reason: 'already committed' }); continue; }
+      if (mode === 'rejected') { res.skipped.push({ id, reason: 'rejected — accept it first' }); continue; }
+      // the caller vouches for acceptance (the server only asks for accepted
+      // cards; the CLI trusts its caller), so an undecided card is accepted here
+      if (mode === 'pending') moveCard(l, id, 'accepted');
+      const flag = reason => {
+        res.flagged.push({ id, reason });
+        moveCard(l, id, 'flagged', { reason });
+        save();
+      };
       const r = this.resolve(card);
-      if (!r.ok) {
-        res.flagged.push({ id, reason: r.reason });
-        if (!dryRun) { l.flagged[id] = { reason: r.reason, ts: new Date().toISOString() }; }
-        continue;
-      }
+      if (!r.ok) { flag(r.reason); continue; }
       const bib = this.bibFile();
       const bibText = bib && fs.existsSync(bib) ? fs.readFileSync(bib, 'utf8') : '';
       const bibAdd = this.newBibEntries(card, bibText);
-      if (bibAdd && !bib) {
-        res.flagged.push({ id, reason: 'card has bib_entries but no bib file is configured' });
-        if (!dryRun) l.flagged[id] = { reason: 'bib_entries without configured bib file', ts: new Date().toISOString() };
-        continue;
-      }
+      if (bibAdd && !bib) { flag('card has bib_entries but no bib file is configured'); continue; }
       res.applied.push(id);
       if (dryRun) continue;
-      // span + bib land together, under a round snapshot taken before the first write
+      // 1. the round, this card and every file it is about to touch, on disk
+      //    first. If the process dies between the write below and the save
+      //    after it, the card is in the round but not marked applied, so
+      //    Commit refuses and asks for a revert instead of committing an
+      //    edit nothing recorded.
       if (!l.round) l.round = { base: this.roundBase(), ids: [], files: [] };
-      fs.writeFileSync(r.file, r.after);
+      if (!l.round.ids.includes(id)) l.round.ids.push(id);
       const rel = path.relative(this.root, r.file);
       if (!l.round.files.includes(rel)) l.round.files.push(rel);
-      if (bibAdd) {
-        fs.writeFileSync(bib, bibText + (bibText.endsWith('\n') ? '' : '\n') + '\n' + bibAdd.join('\n\n') + '\n');
-        const relBib = path.relative(this.root, bib);
-        if (!l.round.files.includes(relBib)) l.round.files.push(relBib);
-      }
-      l.round.ids.push(id);
-      l.applied[id] = { ts: new Date().toISOString(),
-        source_file: card.source_file || (card.source_json && card.source_json.file) || null };
-      delete l.flagged[id];
+      const relBib = bibAdd ? path.relative(this.root, bib) : null;
+      if (relBib && !l.round.files.includes(relBib)) l.round.files.push(relBib);
+      save();
+      // 2. span + bib land together, each file replaced whole
+      writeFileAtomic(r.file, r.after);
+      if (bibAdd) writeFileAtomic(bib, bibText + (bibText.endsWith('\n') ? '' : '\n') + '\n' + bibAdd.join('\n\n') + '\n');
+      // 3. and the card says so at once
+      moveCard(l, id, 'applied', { source_file: card.source_file || (card.source_json && card.source_json.file) || null });
+      save();
     }
-    if (!dryRun) this.saveLedger(l);
     return res;
   }
 
-  commit() {
-    const l = this.ledger();
+  // `decisions` (optional, {id: 'accepted'|'rejected'|'pending'}) is what
+  // people decided as of now; the server passes it so a card rejected after
+  // its edit was applied can never ride into the commit.
+  commit({ decisions = null } = {}) {
+    const lr = this.loadLedger();
+    if (!lr.ok) return { ok: false, reason: lr.reason };
+    const l = lr.ledger;
     if (!l.round) return { ok: false, reason: 'nothing to commit — apply cards first' };
+    const notApplied = l.round.ids.filter(id => modeOf(l, id) !== 'applied');
+    if (notApplied.length) {
+      return { ok: false, reason: `Not committed: ${notApplied.join(', ')} ${notApplied.length === 1 ? 'is' : 'are'} no longer marked as applied. Revert the round and apply again.` };
+    }
+    if (decisions) {
+      const undecided = l.round.ids.filter(id => (decisions[id] || 'pending') !== 'accepted');
+      if (undecided.length) {
+        return { ok: false, reason: `Not committed: ${undecided.join(', ')} ${undecided.length === 1 ? 'was' : 'were'} rejected or reset after being applied. Revert the round, then apply again without ${undecided.length === 1 ? 'it' : 'them'}.` };
+      }
+    }
     const msg = `Apply review suggestions: ${l.round.ids.join(', ')}`;
     try { this.git('commit', '-m', msg, '--', ...l.round.files); }
-    catch (e) { return { ok: false, reason: `git commit failed: ${String(e.stderr || e.message).slice(0, 300)}` }; }
-    const sha = this.git('rev-parse', '--short', 'HEAD');
-    for (const id of l.round.ids) if (l.applied[id]) l.applied[id].committed = sha;
+    catch (e) { return { ok: false, reason: execFailure(e, 'git commit', GIT_TIMEOUT_MS) }; }
+    let sha = '';
+    try { sha = this.git('rev-parse', '--short', 'HEAD'); } catch { }
+    for (const id of l.round.ids) moveCard(l, id, 'committed', { source_file: l.cards[id].source_file || null, sha });
     const out = { ok: true, sha, ids: l.round.ids, message: msg };
     l.round = null;
     this.saveLedger(l);
@@ -184,12 +350,15 @@ export class ApplyEngine {
   }
 
   revert() {
-    const l = this.ledger();
+    const lr = this.loadLedger();
+    if (!lr.ok) return { ok: false, reason: lr.reason };
+    const l = lr.ledger;
     if (!l.round) return { ok: false, reason: 'nothing to revert — no uncommitted round' };
     try { this.git('checkout', l.round.base, '--', ...l.round.files); }
-    catch (e) { return { ok: false, reason: `git checkout failed: ${String(e.stderr || e.message).slice(0, 300)}` }; }
+    catch (e) { return { ok: false, reason: execFailure(e, 'git checkout', GIT_TIMEOUT_MS) }; }
     const out = { ok: true, ids: l.round.ids, files: l.round.files };
-    for (const id of l.round.ids) delete l.applied[id];
+    // back to accepted: the edit is out of the source, the decision stands
+    for (const id of l.round.ids) if (modeOf(l, id) === 'applied') moveCard(l, id, 'accepted');
     l.round = null;
     this.saveLedger(l);
     return out;

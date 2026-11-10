@@ -261,6 +261,8 @@ if [ "$mode" = "review" ]; then
   printf 'ENV %s REVIEW_PASSWORD=%s REVIEW_OWNER_PASSWORD=%s CWD=%s DISCUSS=%s BASE=%s\\n' \\
     "$svc" "$REVIEW_PASSWORD" "$REVIEW_OWNER_PASSWORD" "$(pwd)" \\
     "$REVIEW_DISCUSS_COMPANION" "$REVIEW_DISCUSS_BASE" >> "$FAKE_LOG"
+  # a "dud" paper is started but never answers: the start must end as failed
+  case "$svc" in *dud*) sleep 1; exit 0 ;; esac
   node -e "require('http').createServer((q,s)=>{s.writeHead(200,{'content-type':'text/html'});s.end('STUB-$svc')}).listen($port,'127.0.0.1')" >/dev/null 2>&1 &
   printf '%s %s\\n' "$svc" "$!" >> "$FAKE_PIDS"
   sleep 1
@@ -301,13 +303,13 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     JSON.parse((await req(port2, { url: '/status.json', host: 'localhost' })).text);
   const paperOf = (s, slug) => s.papers.find(p => p.slug === slug);
   // the toggles are fire-and-forget (scaffold + build outlast any browser),
-  // so tests wait on the job the portal itself polls
+  // so tests wait on the paper's mode leaving starting/stopping
   async function settle(slug, want, ms = 25000) {
     const deadline = Date.now() + ms;
     let p;
     while (Date.now() < deadline) {
       p = paperOf(await status(), slug);
-      if (p && (!p.job || p.job.done) && (want === undefined || p.running === want)) return p;
+      if (p && !['starting', 'stopping'].includes(p.mode) && (want === undefined || p.running === want)) return p;
       await new Promise(r => setTimeout(r, 150));
     }
     throw new Error(`'${slug}' never settled to running=${want}: ${JSON.stringify(p)}`);
@@ -349,6 +351,7 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     project('alpha-set', { slug: 'alpha-set', title: 'Alpha Set' });
     project('legacy-paper', { slug: 'legacy-paper', title: 'Legacy Paper' });
     project('bare-project', null);
+    project('dud-paper', { slug: 'dud-paper', title: 'Dud Paper' });
     project('dupe-slug', { slug: 'explicit-one', title: 'Impostor' });
 
     [port2, portC] = [await freePort(), await freePort()];
@@ -382,6 +385,7 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
         REVIEW_HUB_PASSWORD: 'v2-owner-pw', REVIEW_HUB_TUNNEL: 'review',
         REVIEW_HUB_BOTFERENCE: fakeBot, REVIEW_HUB_CLOUDFLARED: fakeCf,
         REVIEW_HUB_OSASCRIPT: fakeOsa,
+        REVIEW_HUB_START_WAIT_MS: '3000',
         REVIEW_HUB_DISCUSS_COMPANION: companionOrigin,
         FAKE_LOG: log, FAKE_PIDS: pidFile, FAKE_ANSWER: answerFile,
         FAKE_ENGINE: path.join(HOME, 'frontends', 'review'),
@@ -641,34 +645,116 @@ describe('hub v2 — discovery, toggles, wake-on-request, device approval', () =
     assert.equal(paperOf(await status(), 'alpha-set').running, true);
   });
 
-  test('wake-on-request: a guest gets the offline page, the owner gets a start', async () => {
-    // stop it the sanctioned way, then knock on its hostname
+  // "turn off" has to stick: an open tab of that paper keeps reconnecting,
+  // and each knock used to look like "owner + paper down" and start it again.
+  test('wake-on-request never starts a paper the owner turned off', async () => {
     await req(port2, {
       method: 'POST', url: '/toggle', host: 'localhost',
       body: new URLSearchParams({ slug: 'bare-project', action: 'off' }).toString(),
     });
-    await settle('bare-project', false);
+    const off = await settle('bare-project', false);
+    assert.equal(off.mode, 'off');
+    assert.equal(cfgJson().papers.find(x => x.slug === 'bare-project').mode, 'off',
+      'turned off is stored, so it survives a hub restart');
 
     const guest = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.30' });
     assert.equal(guest.status, 503);
     assert.match(guest.text, /offline/);
     assert.doesNotMatch(guest.text, /Starting this review/, 'guests never start a paper');
-    assert.equal(paperOf(await status(), 'bare-project').running, false);
 
     const login = await req(port2, {
       method: 'POST', url: '/auth', host: 'review.example.com', ip: '198.51.100.31',
       body: new URLSearchParams({ handle: 'boss', password: 'v2-owner-pw' }).toString(),
     });
     const owner = (login.headers['set-cookie'] || [])[0].split(';')[0];
-    const woken = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.31', cookie: owner });
+    const before = logLines().length;
+    for (let i = 0; i < 3; i++) {   // the reconnecting tab, knocking again and again
+      const knock = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.31', cookie: owner });
+      assert.equal(knock.status, 503);
+      assert.match(knock.text, /turned off/);
+      assert.doesNotMatch(knock.text, /Starting this review/);
+    }
+    await new Promise(r => setTimeout(r, 400));
+    assert.ok(!logLines().slice(before).some(l => l.includes('--hosted')), 'nothing was started');
+    const still = paperOf(await status(), 'bare-project');
+    assert.equal(still.mode, 'off');
+    assert.equal(still.running, false);
+  });
+
+  test('wake-on-request: a paper meant to be on that stopped answering is started again for the owner', async () => {
+    await req(port2, {
+      method: 'POST', url: '/toggle', host: 'localhost',
+      body: new URLSearchParams({ slug: 'bare-project', action: 'on' }).toString(),
+    });
+    await settle('bare-project', true);
+    // it dies under us — not turned off, just gone
+    const line = fs.readFileSync(pidFile, 'utf8').split('\n').filter(l => l.startsWith('review-bare-project ')).pop();
+    process.kill(Number(line.split(' ')[1]));
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(paperOf(await status(), 'bare-project').mode, 'running', 'still meant to be on');
+
+    const login = await req(port2, {
+      method: 'POST', url: '/auth', host: 'review.example.com', ip: '198.51.100.32',
+      body: new URLSearchParams({ handle: 'boss', password: 'v2-owner-pw' }).toString(),
+    });
+    const owner = (login.headers['set-cookie'] || [])[0].split(';')[0];
+    const woken = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.32', cookie: owner });
     assert.equal(woken.status, 503);
     assert.match(woken.text, /Starting this review/);
     assert.match(woken.text, /http-equiv="refresh"/);   // the page brings itself back
-    await settle('bare-project', true);
+    const p = await settle('bare-project', true);
+    assert.equal(p.mode, 'running');
 
-    const back = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.31', cookie: owner });
+    const back = await req(port2, { host: 'bare-project.example.com', ip: '198.51.100.32', cookie: owner });
     assert.equal(back.status, 200);
     assert.match(back.text, /STUB-review-bare-project/);
+  });
+
+  test('a start that never answers ends as failed, with the reason — no clock standing in for "starting"', async () => {
+    await req(port2, {
+      method: 'POST', url: '/toggle', host: 'localhost',
+      body: new URLSearchParams({ slug: 'dud-paper', action: 'on' }).toString(),
+    });
+    const p = await settle('dud-paper', false, 15000);
+    assert.equal(p.mode, 'failed');
+    assert.match(p.job.error, /did not answer within 3 seconds/);
+    // and the owner opening it is told so, not dropped into a start loop
+    const before = logLines().length;
+    const r = await req(port2, { host: 'localhost' });
+    assert.match(r.text, /could not start/);
+    const login = await req(port2, {
+      method: 'POST', url: '/auth', host: 'review.example.com', ip: '198.51.100.33',
+      body: new URLSearchParams({ handle: 'boss', password: 'v2-owner-pw' }).toString(),
+    });
+    const owner = (login.headers['set-cookie'] || [])[0].split(';')[0];
+    const knock = await req(port2, { host: 'dud-paper.example.com', ip: '198.51.100.33', cookie: owner });
+    assert.match(knock.text, /could not be started/);
+    assert.ok(!logLines().slice(before).some(l => l.includes('--hosted')), 'a failed paper is not restarted by a page load');
+  });
+
+  // the 2026-09-02 shape: a passwords file that cannot be read was taken as
+  // "no passwords yet", and a fresh one was written over the real one
+  test('an unreadable passwords file is never written over, and the paper does not start', async () => {
+    const secretsFile = path.join(root, 'review-paper-secrets.json');
+    const original = fs.readFileSync(secretsFile);
+    const broken = '{"papers": {"alpha-set": "kept"';   // truncated JSON
+    fs.writeFileSync(secretsFile, broken);
+    try {
+      const before = logLines().length;
+      await req(port2, {
+        method: 'POST', url: '/toggle', host: 'localhost',
+        body: new URLSearchParams({ slug: 'legacy-paper', action: 'on' }).toString(),
+      });
+      const p = await settle('legacy-paper', undefined, 15000);
+      assert.equal(p.mode, 'failed');
+      assert.match(p.job.error, /passwords file .* could not be read, so nothing was written over it/);
+      assert.equal(fs.readFileSync(secretsFile, 'utf8'), broken, 'the file is byte-for-byte as it was');
+      assert.ok(!logLines().slice(before).some(l => l.includes('--hosted')), 'nothing was started without its password');
+      const portal = await req(port2, { host: 'localhost' });
+      assert.match(portal.text, /passwords file .* could not be read/);
+    } finally {
+      fs.writeFileSync(secretsFile, original);
+    }
   });
 
   test('device approval: a new device waits, the owner approves, it is the owner for a year', async () => {
@@ -866,6 +952,55 @@ describe('hub: engine freshness and companion discovery', () => {
     delete process.env.REVIEW_HUB_DISCUSS;
     delete process.env.REVIEW_HUB_DISCUSS_COMPANION;
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('paper modes: one named list, and setPaperMode refuses a move the table does not list', () => {
+    assert.deepEqual([...mod.PAPER_MODES], ['not-set-up', 'off', 'starting', 'running', 'stopping', 'failed']);
+    const e = { slug: 'unit-paper', dir: tmp, title: 'Unit' };
+    assert.equal(mod.setPaperMode(e, 'running').ok, false, 'not-set-up cannot jump to running');
+    assert.equal(mod.setPaperMode(e, 'starting').ok, true);
+    assert.equal(mod.setPaperMode(e, 'starting').ok, false, 'no second start on top of the first');
+    assert.equal(mod.setPaperMode(e, 'running').ok, true);
+    assert.equal(mod.setPaperMode(e, 'stopping').ok, true);
+    assert.equal(mod.setPaperMode(e, 'off').ok, true);
+    assert.equal(mod.setPaperMode(e, 'stopping').ok, false, 'off is left only by starting');
+    const saved = JSON.parse(fs.readFileSync(process.env.REVIEW_HUB_CONFIG, 'utf8'));
+    assert.equal(saved.papers.find(p => p.slug === 'unit-paper').mode, 'off');
+    // an entry from before modes were stored: published = meant to be on
+    assert.equal(mod.paperMode({ slug: 'x', port: 4181, host: 'x.example.com' }), 'running');
+    assert.equal(mod.paperMode({ slug: 'x' }), 'not-set-up');
+  });
+
+  test('an unreadable hub settings file is never written over', () => {
+    const file = process.env.REVIEW_HUB_CONFIG;
+    const original = fs.readFileSync(file);
+    const broken = '{"papers": [ {"slug": "keep-me"},';
+    fs.writeFileSync(file, broken);
+    try {
+      assert.throws(() => mod.writeConfig(c => { c.papers.push({ slug: 'new' }); }), /could not be read, so nothing was written over it/);
+      const r = mod.setPaperMode({ slug: 'unit-paper' }, 'starting');
+      assert.equal(r.ok, false);
+      assert.match(r.reason, /settings file .* could not be read/);
+      assert.equal(fs.readFileSync(file, 'utf8'), broken, 'byte-for-byte as it was');
+    } finally {
+      fs.writeFileSync(file, original);
+    }
+    // missing is different: it is created
+    fs.rmSync(file);
+    mod.writeConfig(c => { c.papers.push({ slug: 'fresh' }); });
+    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).papers[0].slug, 'fresh');
+    fs.writeFileSync(file, original);
+  });
+
+  test('a guest password is created when the passwords file is missing, and refused when it is unreadable', () => {
+    const secrets = path.join(path.dirname(process.env.REVIEW_HUB_CONFIG), 'review-paper-secrets.json');
+    try { fs.rmSync(secrets); } catch { }
+    const pw = mod.guestPassword('unit-paper');
+    assert.match(pw, /^[0-9a-f]{16}$/);
+    assert.equal(mod.guestPassword('unit-paper'), pw, 'kept, not regenerated');
+    fs.writeFileSync(secrets, 'not json at all');
+    assert.throws(() => mod.guestPassword('another-paper'), /passwords file .* could not be read/);
+    assert.equal(fs.readFileSync(secrets, 'utf8'), 'not json at all');
   });
 
   test('a paper with no engine copy at all is not "stale" — that is scaffolding, a different job', () => {

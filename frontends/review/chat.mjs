@@ -187,6 +187,12 @@ export class BridgeChat {
     });
     this.available = true;
     this.proc.stderr.on('data', d => this.onEvent({ kind: 'bridge-log', text: String(d).slice(0, 500) }));
+    // writing to a bot process that has already gone (EPIPE) is an error event
+    // on its stdin; with no listener it would take the whole review server down
+    this.proc.stdin.on('error', err => {
+      console.error(`review chat: could not send to the agents (${err && err.code || err}): ${(err && err.stack) || err}`);
+      this.onEvent({ kind: 'bridge-log', text: `could not send to the agents: ${String(err && err.message || err).slice(0, 200)}` });
+    });
     this.proc.on('error', err => {
       this.available = false; this.ready = false;
       this.onEvent({ kind: 'bridge-exit', code: -1, error: err.message });
