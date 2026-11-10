@@ -4817,6 +4817,71 @@ async function selftest() {
   evc({ kind: 'turn-end' });
   check('chip clears on turn-end', !chatChip());
 
+  // ---- typing survives a redraw (real layout, real focus) ----
+  // A bot event redraws both panes; the box being typed in is a new node
+  // afterwards and must have the focus, the selection and its own scroll back,
+  // without the pane moving — even with the box scrolled out of view.
+  {
+    const pick = (p, t) => S.querySelector('.pane[data-pane="' + p + '"] .composer[data-target="' + t + '"] textarea');
+    const tid = RECORD.threads[0].id;
+    const LINES = 'line one\nline two\nline three\nline four\nline five\nline six\nline seven';
+    d.open('comments');
+    const cpane = S.querySelector('.pane[data-pane="comments"]');
+    // a Send earlier in this run holds its thread in view, and holdInView
+    // rightly moves the pane on every render; the reader's own wheel ends it
+    cpane.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 }));
+    check('typing: (setup) no thread is held in view', !d.held());
+    const box = pick('comments', tid);
+    box.focus({ preventScroll: true });
+    box.value = LINES;
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+    box.setSelectionRange(5, 12, 'backward');
+    const inner = Math.max(0, Math.min(10, box.scrollHeight - box.clientHeight));
+    box.scrollTop = inner;
+    // scroll the box out of view (above the pane's top), short of the foot so
+    // nothing clamps the offset
+    const below = box.getBoundingClientRect().bottom - cpane.getBoundingClientRect().top + cpane.scrollTop;
+    cpane.scrollTop = Math.min(below + 40, cpane.scrollHeight - cpane.clientHeight - 40);
+    const ptop = cpane.scrollTop;
+    const outOfView = box.getBoundingClientRect().bottom < cpane.getBoundingClientRect().top;
+    evc({ kind: 'turn-start' });                   // a full render of both panes
+    const now = pick('comments', tid);
+    check('typing: a redraw rebuilds the thread\'s reply box', !!now && now !== box);
+    check('…and gives the new box the focus back', !!now && S.activeElement === now);
+    check('…with the same text and selection, direction included', !!now && now.value === LINES
+      && now.selectionStart === 5 && now.selectionEnd === 12 && now.selectionDirection === 'backward');
+    check('…and its own scroll', !!now && now.scrollTop === inner);
+    check('…without moving the pane, though the box is out of view', outOfView && cpane.scrollTop === ptop);
+    await sleep(150);   // a caret reveal, if the browser did one, lands on a later frame
+    check('…nor a moment later', cpane.scrollTop === ptop && S.activeElement === now);
+    evc({ kind: 'turn-end' });
+    const after = pick('comments', tid);
+    check('…and again on the turn ending', !!after && S.activeElement === after && after.selectionStart === 5);
+    after.value = '';
+    after.dispatchEvent(new Event('input', { bubbles: true }));
+    after.blur();
+    evc({ kind: 'turn-start' });
+    check('a redraw with nothing focused focuses nothing', !S.activeElement);
+    evc({ kind: 'turn-end' });
+    // the page chat's box, on its own tab
+    d.open('chat');
+    const cbox = pick('chat', '__page__');
+    cbox.focus({ preventScroll: true });
+    cbox.value = 'half a sentence';
+    cbox.dispatchEvent(new Event('input', { bubbles: true }));
+    cbox.setSelectionRange(4, 4);
+    evc({ kind: 'turn-start' });
+    const cnow = pick('chat', '__page__');
+    check('typing: the page chat box keeps the focus and caret through a redraw',
+      !!cnow && cnow !== cbox && S.activeElement === cnow && cnow.selectionStart === 4 && cnow.selectionEnd === 4);
+    evc({ kind: 'turn-end' });
+    const cafter = pick('chat', '__page__');
+    cafter.value = '';
+    cafter.dispatchEvent(new Event('input', { bubbles: true }));
+    cafter.blur();
+    d.open('comments');
+  }
+
   // ---- markdown in a real codex reply ----
   d.open('chat');
   const chatBox = S.querySelector('.pane[data-pane="chat"] .composer textarea');

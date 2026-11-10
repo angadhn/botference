@@ -3501,8 +3501,9 @@ ${bubbleShellHtml()}`;
         return;
       }
       // the same box as at the tap: its live caret. A box render() rebuilt in
-      // the meantime has lost the caret, so the words go at the end.
-      const same = box === MIC.box;
+      // the meantime carries the caret over only while it has the focus
+      // (keepTyping); one that does not has lost it, so the words go at the end.
+      const same = box === MIC.box || box === D.shadow.activeElement;
       const [a, b] = same ? [box.selectionStart, box.selectionEnd] : [null, null];
       const out = spliceDictation(box.value, a, b, text);
       box.value = out.value;
@@ -3733,17 +3734,16 @@ ${bubbleShellHtml()}`;
       ta.setSelectionRange(caret, caret);
     }
 
-    // render() rebuilds the composer, so an open menu has to be put back —
-    // together with the caret, which is the only thing that makes it mean
-    // anything. Only ever while the menu was already open.
+    // render() rebuilds the composer, so an open menu has to be put back.
+    // Only ever while the menu was already open. The box's focus and caret
+    // are NOT put back here: keepTyping does that for every box, menu or no
+    // menu, from the live selection — one path, not two.
     function restoreMention() {
       const m = D.mention;
       if (!m) return;
       const ta = composerBox(m.target);
       if (!ta) { D.mention = null; return; }
       paintMention();
-      ta.focus();
-      ta.setSelectionRange(m.caret, m.caret);
     }
 
     // ---- the outbox: messages sent but not yet confirmed -------------------
@@ -5802,6 +5802,9 @@ ${bubbleShellHtml()}`;
 
     function renderPages() {
       if (!D.mounted || !D.el.pages) return;
+      keepTyping(() => paintPages());
+    }
+    function paintPages() {
       const list = D.pages.list;
       const shown = list ? shownPages() : [];
       const filtered = !!(D.pages.kind || D.pages.tag);
@@ -5829,16 +5832,15 @@ ${bubbleShellHtml()}`;
           list && list.length ? ' · ' + (filtered ? `${shown.length} of ${list.length}` : list.length) : ''
         }</div>${filters}${body}</div>`;
       renderLibrary();
-      // an editor that was open before the repaint gets its caret back, or
-      // typing a tag would be interrupted by every live refresh of the list
-      focusRowEditor();
     }
 
-    // The inline rename/tag box, after a repaint: focus restored, caret at the
-    // end, and the completion menu redrawn from what is in the box.
+    // The inline rename/tag box, just opened: focus in it, caret at the end,
+    // and the completion menu drawn from what is in the box. Only on opening —
+    // a live refresh of the list keeps the box's focus and caret by itself
+    // (keepTyping), and must not pull the focus here from wherever it is.
     function focusRowEditor() {
       const el = D.el.pages && D.el.pages.querySelector('.pedit .pinput');
-      if (!el || (D.shadow.activeElement && D.shadow.activeElement === el)) return;
+      if (!el || D.shadow.activeElement === el) return;
       el.focus();
       try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignore */ }
       if (el.dataset.act === 'tag-input') paintTagMenu(el);
@@ -5857,34 +5859,38 @@ ${bubbleShellHtml()}`;
     function renderLibrary() {
       const el = D.el.pages && D.el.pages.querySelector('.libpane');
       if (!el) return;
-      const T = LIBRARY_TARGET;
-      const msgs = (D.library.page && D.library.page.page_chat) || [];
-      const body = msgsHtml(T, msgs) + outboxHtml(T) + streamsHtml(T);
-      const has = !!(D.library.page && (msgs.length || (D.outbox[T] || []).length));
-      const note = D.library.note
-        ? `<div class="lib-note${D.library.err ? ' err' : ''}">${esc(D.library.note)}</div>` : '';
-      const acts = has
-        ? `<button class="libact" data-act="lib-export" type="button" title="Write this conversation to Obsidian">Export</button>`
-          + (D.library.confirm
-            ? `<span class="libconfirm">clear it?<button class="libact danger" data-act="lib-clear-yes" type="button">yes</button>`
-              + `<button class="libact" data-act="lib-clear-no" type="button">no</button></span>`
-            : `<button class="libact" data-act="lib-clear" type="button" title="Forget this conversation and start again">Clear</button>`)
-        : '';
-      el.innerHTML = `<div class="lib-head">
-          <span class="lib-sub">one conversation about everything below</span>${acts}</div>
-        <div class="card libchat" data-thread="${T}" style="--author:${MY_COLOR}">
-          ${body ? `<div class="thread">${body}</div>`
-            : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
-          ${note}
-          ${statusHtml(T)}
-          ${composerHtml(T, 'Ask about everything you’ve read…', '', CHAT_HINT, true)}
-        </div>`;
-      // The whole shadow root, not just this pane: fillMarkdown empties the
-      // slot map as it goes, so filling a subtree would strand every slot the
-      // other panes had just minted. Filling everything is idempotent — a slot
-      // already filled is simply no longer in the map.
-      fillMarkdown(D.shadow);
-      decorateRuns(D.shadow);
+      // a reply landing in the library repaints only this, so it keeps the
+      // box being typed in (and its draft) the way render() does
+      keepTyping(() => {
+        const T = LIBRARY_TARGET;
+        const msgs = (D.library.page && D.library.page.page_chat) || [];
+        const body = msgsHtml(T, msgs) + outboxHtml(T) + streamsHtml(T);
+        const has = !!(D.library.page && (msgs.length || (D.outbox[T] || []).length));
+        const note = D.library.note
+          ? `<div class="lib-note${D.library.err ? ' err' : ''}">${esc(D.library.note)}</div>` : '';
+        const acts = has
+          ? `<button class="libact" data-act="lib-export" type="button" title="Write this conversation to Obsidian">Export</button>`
+            + (D.library.confirm
+              ? `<span class="libconfirm">clear it?<button class="libact danger" data-act="lib-clear-yes" type="button">yes</button>`
+                + `<button class="libact" data-act="lib-clear-no" type="button">no</button></span>`
+              : `<button class="libact" data-act="lib-clear" type="button" title="Forget this conversation and start again">Clear</button>`)
+          : '';
+        el.innerHTML = `<div class="lib-head">
+            <span class="lib-sub">one conversation about everything below</span>${acts}</div>
+          <div class="card libchat" data-thread="${T}" style="--author:${MY_COLOR}">
+            ${body ? `<div class="thread">${body}</div>`
+              : `<div class="empty"><b>Ask about everything you've read</b>The bots read your saved pages, quotes and comments to answer — mention one to begin.</div>`}
+            ${note}
+            ${statusHtml(T)}
+            ${composerHtml(T, 'Ask about everything you’ve read…', '', CHAT_HINT, true)}
+          </div>`;
+        // The whole shadow root, not just this pane: fillMarkdown empties the
+        // slot map as it goes, so filling a subtree would strand every slot the
+        // other panes had just minted. Filling everything is idempotent — a slot
+        // already filled is simply no longer in the map.
+        fillMarkdown(D.shadow);
+        decorateRuns(D.shadow);
+      });
     }
 
     // /index is a map keyed by pageKey; the list is ours to order — newest
@@ -5911,38 +5917,40 @@ ${bubbleShellHtml()}`;
     }
 
     // Full re-render, but never at the cost of what the user is typing or
-    // where they are scrolled: drafts are read back into D.drafts first and
-    // scroll offsets restored after.
+    // where they are scrolled: drafts are read back into D.drafts first, the
+    // box being typed in gets its focus and caret back (keepTyping), and
+    // scroll offsets are restored after.
     function render() {
       if (!D.mounted) return;
-      harvestDrafts();
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
       const pTop = D.el.pages ? D.el.pages.scrollTop : 0;
-      // the newest checklist on the page, recomputed from the record: derived
-      // state, so a revision replaces the card and a vanished list removes it
-      D.tasks = taskSource();
-      // …and only if the address still resolves to a message with a list in it:
-      // two messages can share a timestamp, and the card must show whatever
-      // findMsg shows the transcript rather than a second copy of it
-      if (D.tasks && !hasTasks((taskMsg() || {}).text)) D.tasks = null;
-      renderComments();
-      renderChat();
-      // the library is a conversation like the others and moves with the same
-      // events; the list it sits above is not touched
-      if (D.view === 'pages') renderLibrary();
-      // …and the bubble, if one is up, BEFORE the markdown is filled: its
-      // cards park their text in the same slot map every other message does,
-      // and fillMarkdown clears the map when it is done
-      renderBubbles();
-      fillMarkdown(D.shadow);
-      // …and then the code blocks get their Run buttons and their results,
-      // which need the markdown to exist first and the record to say what the
-      // last run of each block printed
-      decorateRuns(D.shadow);
-      // …and the tasks card gets the newest checklist, moved out of a rendering
-      // of the message it lives in (same ordinals, same /tick)
-      fillTasks();
-      lockRestored(D.shadow);
+      keepTyping(() => {
+        // the newest checklist on the page, recomputed from the record: derived
+        // state, so a revision replaces the card and a vanished list removes it
+        D.tasks = taskSource();
+        // …and only if the address still resolves to a message with a list in it:
+        // two messages can share a timestamp, and the card must show whatever
+        // findMsg shows the transcript rather than a second copy of it
+        if (D.tasks && !hasTasks((taskMsg() || {}).text)) D.tasks = null;
+        renderComments();
+        renderChat();
+        // the library is a conversation like the others and moves with the same
+        // events; the list it sits above is not touched
+        if (D.view === 'pages') renderLibrary();
+        // …and the bubble, if one is up, BEFORE the markdown is filled: its
+        // cards park their text in the same slot map every other message does,
+        // and fillMarkdown clears the map when it is done
+        renderBubbles();
+        fillMarkdown(D.shadow);
+        // …and then the code blocks get their Run buttons and their results,
+        // which need the markdown to exist first and the record to say what the
+        // last run of each block printed
+        decorateRuns(D.shadow);
+        // …and the tasks card gets the newest checklist, moved out of a rendering
+        // of the message it lives in (same ordinals, same /tick)
+        fillTasks();
+        lockRestored(D.shadow);
+      });
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
       if (D.el.pages) D.el.pages.scrollTop = pTop;
@@ -5968,6 +5976,74 @@ ${bubbleShellHtml()}`;
         // companion confirms it, so there is nothing here to read back.
         if (ta.value) D.drafts[target] = ta.value; else delete D.drafts[target];
       });
+    }
+
+    // ---- the box being typed in survives a rebuild -------------------------
+    // THE REPORT: while the bots work and the reader keeps typing, every now
+    // and then the cursor leaves the box and the next keystrokes go nowhere.
+    // A rebuild (innerHTML) throws the focused box away and draws a new one;
+    // its text came back (D.drafts) and the pane's scroll came back, but not
+    // the focus, the caret, or the box's own scroll. Streaming only patches
+    // the live text, which is why it bit only when a full redraw landed.
+    //
+    // So every rebuild of a pane runs inside keepTyping: it notes the text box
+    // that has the focus (by what it is FOR — the composer's target, the
+    // input's role or row — never by node), harvests the drafts, paints, and
+    // puts the focus back on the box drawn for the same thing. The note is a
+    // value that lives for one rebuild; nothing is remembered between them.
+    //
+    // It never GIVES focus: no text box in the drawer focused before (nothing,
+    // a button, the web page itself) → nothing done after. A box that survived
+    // (a bubble is patched, not rebuilt) is left alone, and so is one that is
+    // gone or hidden now (thread resolved, tab changed) — nothing else is
+    // focused in its place. And it never scrolls: preventScroll, and the pane
+    // is put back where it was if the browser moved it to show the caret, so
+    // render()'s scroll restore, holdInView and landAtFoot decide as before.
+    function typingKey(el) {
+      const comp = el.tagName === 'TEXTAREA' && el.closest('.composer[data-target]');
+      if (comp) return `.composer[data-target="${cssq(comp.getAttribute('data-target'))}"] textarea`;
+      const role = el.getAttribute('data-role');
+      if (role) return `[data-role="${cssq(role)}"]`;
+      const act = el.getAttribute('data-act'), url = el.getAttribute('data-url');
+      if (act && url != null) return `[data-act="${cssq(act)}"][data-url="${cssq(url)}"]`;
+      return null;
+    }
+    function noteTyping() {
+      const el = D.mounted ? D.shadow.activeElement : null;
+      if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT')) return null;
+      const key = typingKey(el);
+      if (!key) return null;
+      let start = null, end = null, dir = 'none';
+      try { start = el.selectionStart; end = el.selectionEnd; dir = el.selectionDirection || 'none'; } catch (_) { /* no selection on this input type */ }
+      // A composer's text is D.drafts, which the caller may have changed on
+      // purpose (a send empties it); a one-line box (a row's name, an
+      // artifact's brief) has no other copy than the box itself.
+      const own = !el.closest('.composer');
+      return { el, key, start, end, dir, top: el.scrollTop, value: own ? el.value : null };
+    }
+    function putTypingBack(n) {
+      if (!n || n.el.isConnected || !D.mounted) return;
+      if (D.shadow.activeElement) return;          // something else has it now
+      const box = [...D.shadow.querySelectorAll(n.key)].find(b => !b.closest('.bubble'));
+      if (!box || box.disabled) return;
+      const pane = box.closest('.pane');
+      if (!pane || pane.hidden) return;            // the reader is not looking at it
+      if (n.value != null && box.value !== n.value) box.value = n.value;
+      const keep = pane.scrollTop;
+      try { box.focus({ preventScroll: true }); } catch (_) { box.focus(); }
+      if (D.shadow.activeElement !== box) return;  // the browser would not
+      if (n.start != null) {
+        const len = box.value.length;
+        try { box.setSelectionRange(Math.min(n.start, len), Math.min(n.end, len), n.dir); } catch (_) { /* no selection on this input type */ }
+      }
+      box.scrollTop = n.top;
+      if (pane.scrollTop !== keep) pane.scrollTop = keep;
+    }
+    function keepTyping(paint) {
+      const typing = noteTyping();
+      harvestDrafts();
+      paint();
+      putTypingBack(typing);
     }
 
     function paintTabs() {
@@ -7418,12 +7494,18 @@ ${bubbleShellHtml()}`;
         }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
+        // the artifact's brief lives in D.artifact as it is typed, the way a
+        // composer's draft lives in D.drafts: a redraw while the box is not
+        // focused (keepTyping only carries a FOCUSED box) must not empty it
+        if (ta && ta.dataset && ta.dataset.role === 'artifact-brief') D.artifact.brief = ta.value;
       });
       // Clicking back into the tag box reopens the menu without a keystroke:
       // with the token under the caret empty it offers EVERY tag in use, as
       // colored chips — pick-from-existing, so reusing a tag never depends on
-      // remembering it. (The render path already does this via focusRowEditor;
-      // this covers a focus the reader gives back by hand, e.g. after Esc.)
+      // remembering it. (Opening the editor does this via focusRowEditor; this
+      // covers a focus the reader gives back by hand, e.g. after Esc — and the
+      // focus keepTyping gives back after a live refresh of the list, whose
+      // rebuilt menu starts out hidden.)
       D.shadow.addEventListener('focusin', e => {
         const el = e.target;
         if (el && el.dataset && el.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(el); }
@@ -10285,6 +10367,7 @@ ${bubbleShellHtml()}`;
       D.pages.pick = 0;
       D.pages.rowErr = null;
       renderPages();
+      focusRowEditor();
     }
     function closeRowEditors(quiet) {
       const had = D.pages.renaming || D.pages.tagging;

@@ -12082,3 +12082,51 @@ the newest message.
 - Tests: `test/foldfoot.test.mjs` (happy-dom, geometry stubbed: it checks the
   scroll offset asked for, not a real screen); harness checks beside the
   existing fold and stack sections.
+
+## Amendment (2026-11-10): the box being typed in keeps its focus through a redraw
+
+> While the bots are working and I keep typing, every now and then the cursor
+> just leaves the box and what I type goes nowhere.
+
+`render()` rebuilds both panes with `innerHTML`, so the box being typed in is a
+new node afterwards. Its text was carried (`D.drafts`) and the panes' scroll
+was carried, but not its focus, caret, selection or its own scroll. Streaming
+only patches the live text, so the fault showed only when a full redraw
+landed (a turn starting or ending, a reply settling, a status, a poll).
+
+- **`keepTyping(paint)`** is the one wrapper every pane rebuild runs in:
+  `render()`, `renderLibrary()` (a library reply lands through `setLibrary`
+  without a `render()`) and `renderPages()` (the live list refresh). It notes
+  the focused text box by what it is FOR — a composer's `data-target`, an
+  input's `data-role`, a page row's `data-act` + `data-url` — never by node;
+  harvests drafts; paints; and then focuses the box drawn for the same thing
+  with `preventScroll`, the same selection start/end/direction and inner
+  `scrollTop`. A one-line input (artifact brief, rename/tag box) has no other
+  copy of its text, so its value travels in the note too; a composer's comes
+  from `D.drafts` (a send empties it on purpose). The note is a local value;
+  nothing is stored between redraws.
+- **It never gives focus.** Nothing focused, a button focused, or the focus on
+  the web page → nothing is done. A box that survived (bubbles are patched,
+  not rebuilt), is gone (thread gone, editor closed), disabled, or on a hidden
+  pane (tab changed) is left alone, and nothing else is focused instead.
+- **It never scrolls.** The pane is put back if the browser moved it to show
+  the caret, so the scroll restore, `holdInView` and `landAtFoot` decide
+  exactly as before.
+- `restoreMention()` now only repaints the @-menu; the caret comes from
+  `keepTyping`, which reads the live selection — one path. `focusRowEditor()`
+  runs only when a row editor is opened, no longer after every list refresh
+  (where it could pull the focus out of the library composer). The artifact
+  brief is kept in `D.artifact.brief` as it is typed. A dictation that lands
+  in a box rebuilt since the tap uses the box's live caret when the box has
+  the focus.
+- Not covered: the in-pane message editor (`__edit__`, drawn by `startEdit`
+  straight into the DOM) is not drawn by `render()` at all, so a redraw
+  removes it with its text; in a bubble it survives because the card is not
+  rebuilt. An input-method composition (or OS dictation) in progress when a
+  redraw lands is cut short: its text is kept as typed, the composing
+  session is not.
+- Tests: `test/typingfocus.test.mjs` (happy-dom: page chat, thread reply,
+  new comment, @-menu, artifact brief, library composer via `setLibrary` /
+  list refresh / `render`, rename box, no-steal, gone/hidden box, no scroll);
+  harness `?selftest=1` checks with real layout and real focus, including a
+  box scrolled out of view and the pane not moving a frame later.
