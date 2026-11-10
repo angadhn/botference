@@ -1725,6 +1725,50 @@ _MECHANICAL_TAIL_ENTRIES = 20
 # the current round/thread completes so a relay never lands mid-turn.
 AUTO_RELAY_THRESHOLD_PCT = 50
 
+# Auto-relay, per bot, as a named lifecycle (kept in _auto_relay_modes, moved
+# only by _move_auto_relay):
+#   armed    — will queue a relay the next time the bot reports >= threshold;
+#   queued   — crossed the threshold; relays at the next safe round boundary;
+#   relaying — the relay is running now;
+#   spent    — relayed (or the crossing was used up) and still waiting for the
+#              bot to report below the threshold before it can fire again.
+# A relay that does not complete (it failed, or the user pressed Esc during
+# the handoff) goes back to armed, so the next crossing fires again.
+AUTO_RELAY_MODES = ("armed", "queued", "relaying", "spent")
+_AUTO_RELAY_MOVES = {
+    ("armed", "queued"),      # crossed the threshold
+    ("queued", "relaying"),   # the drain (or a build-thread reset) runs it
+    ("queued", "armed"),      # nothing to relay any more (session gone)
+    ("relaying", "spent"),    # the relay completed
+    ("relaying", "armed"),    # the relay did not complete
+    ("spent", "armed"),       # reported below the threshold again
+}
+
+
+def _restored_auto_relay_modes(payload: dict) -> dict[str, str]:
+    """The per-bot auto-relay modes saved with a chat.
+
+    A relay that was running when the chat was saved did not complete, so it
+    comes back armed. Chats saved before the modes were named carry a queue
+    (``pending_auto_relay``) and an armed flag per bot instead.
+    """
+    saved = payload.get("auto_relay_modes")
+    if isinstance(saved, dict):
+        modes = {}
+        for model, mode in saved.items():
+            mode = str(mode)
+            if mode == "relaying" or mode not in AUTO_RELAY_MODES:
+                mode = "armed"
+            modes[str(model)] = mode
+        return modes
+    modes = {
+        str(model): ("armed" if bool(armed) else "spent")
+        for model, armed in (payload.get("auto_relay_armed", {}) or {}).items()
+    }
+    for model in payload.get("pending_auto_relay", []) or []:
+        modes[str(model)] = "queued"
+    return modes
+
 
 class Botference:
     """Main controller: command dispatch, routing, free-form threads, finalize."""
@@ -1857,8 +1901,9 @@ class Botference:
         self._relay_boundary: dict[str, int] = {}      # model → transcript turn_index at relay point
         self._last_relay: dict[str, dict[str, str]] = {}  # model → {"at": iso, "tier": tier} provenance
         self._pending_relay_handoffs: dict[str, str] = {}  # model → in-process one-shot relay bootstrap
-        self._pending_auto_relay: set[str] = set()      # models due an auto-relay before their next turn
-        self._auto_relay_armed: dict[str, bool] = {}    # model → armed; absent means armed (re-arms below threshold)
+        # model → one of AUTO_RELAY_MODES; absent means "armed". Changed only
+        # by _move_auto_relay.
+        self._auto_relay_modes: dict[str, str] = {}
         self._quit_requested: bool = False
         self._stream_seq: int = 0
         self._active_steer_model: str = ""  # model whose room turn is in flight
@@ -2643,8 +2688,7 @@ class Botference:
             "relay_boundary": dict(self._relay_boundary),
             "last_relay": {m: dict(v) for m, v in self._last_relay.items()},
             "pending_relay_handoffs": dict(self._pending_relay_handoffs),
-            "pending_auto_relay": sorted(self._pending_auto_relay),
-            "auto_relay_armed": dict(self._auto_relay_armed),
+            "auto_relay_modes": dict(self._auto_relay_modes),
         }
 
     def _persist_session(self) -> None:
@@ -2788,6 +2832,8 @@ class Botference:
     def _restore_from_payload(self, payload: dict) -> str:
         self._restoring_session = True
         try:
+            # nothing of the chat on screen may carry into the one opened
+            self._reset_chat_state()
             self.session_id = str(payload.get("session_id", self.session_id))
             self.created_at = str(payload.get("created_at", self.created_at))
             self.updated_at = str(payload.get("updated_at", self.updated_at))
@@ -2972,14 +3018,7 @@ class Botference:
             }
             # auto_relay itself is a global user preference (set in __init__),
             # so it is NOT restored here — only the per-session queue/armed state.
-            self._pending_auto_relay = {
-                str(model)
-                for model in (payload.get("pending_auto_relay", []) or [])
-            }
-            self._auto_relay_armed = {
-                str(model): bool(value)
-                for model, value in (payload.get("auto_relay_armed", {}) or {}).items()
-            }
+            self._auto_relay_modes = _restored_auto_relay_modes(payload)
             # Restored content is not new activity: the persist that follows a
             # resume must keep the chat's updated_at (and panel recency) put.
             self._persisted_activity = (
@@ -5506,24 +5545,28 @@ class Botference:
 
     async def _relay_model(
         self, model: str, ui: UIPort, *, new_model: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Relay a model's session: create handoff with the live (old) model,
         tear down, optionally swap the adapter's model, restart fresh.
 
         When ``new_model`` is provided, the handoff is generated by the
         currently-live model, then the adapter is mutated just before restart
         so the fresh session starts on the new model.
+
+        Returns True once the handoff is written and the old session torn
+        down (even if the fresh session then fails to start: the next
+        message starts it from the handoff); False when nothing was relayed.
         """
         if model not in ("claude", "codex"):
             self._add_room_entry(ui, "system", _RELAY_USAGE)
-            return
+            return False
         if model not in self._models_initialized:
             self._add_room_entry(
                 ui,
                 "system",
                 f"Cannot relay {model} — no active session.",
             )
-            return
+            return False
 
         # Read relay prompt
         relay_prompt = self._read_relay_prompt()
@@ -5533,7 +5576,7 @@ class Botference:
                 "system",
                 f"Relay failed — prompt file not found: {self.paths.relay_prompt}",
             )
-            return
+            return False
 
         # Determine tier sequence from yield pressure
         pct = self.yield_pressure(model)
@@ -5573,7 +5616,7 @@ class Botference:
                 "system",
                 f"Relay failed for {model} — could not generate valid handoff.",
             )
-            return
+            return False
 
         # Write timestamped history copy
         ts_filename = now.strftime("%Y-%m-%dT%H-%M-%SZ")
@@ -5627,6 +5670,7 @@ class Botference:
             )
         ui.set_status(self.status_snapshot())
         self._persist_session()
+        return True
 
     def _fresh_model(self, model: str, ui: UIPort) -> None:
         """Restart a bot with no memory of this chat: no handoff, no backfill.
@@ -5645,7 +5689,8 @@ class Botference:
             self._teardown_model_session(model, ui)
         self._clear_live_handoff(model)
         self._pending_relay_handoffs.pop(model, None)
-        self._pending_auto_relay.discard(model)
+        if self._auto_relay_mode(model) == "queued":
+            self._move_auto_relay(model, "armed")
         # the note goes in first and the "seen" mark moves past it: the other
         # bot (whose mark is older) reads it, the fresh one never does —
         # everything up to the mark is history the fresh session never sees
@@ -6298,6 +6343,17 @@ class Botference:
         )
 
     async def _send_message(
+        self, parsed: ParsedInput, ui: UIPort, **kwargs,
+    ) -> None:
+        # a build thread lives inside one user turn, and ends with it however
+        # the turn ends — Esc and errors included — or a later /relay would
+        # tell a fresh bot it is still in one
+        try:
+            await self._send_message_turn(parsed, ui, **kwargs)
+        finally:
+            self._build = None
+
+    async def _send_message_turn(
         self, parsed: ParsedInput, ui: UIPort,
         *, attachments: list | None = None, watch_links: bool = True,
         watch_text: Optional[str] = None, first: Optional[str] = None,
@@ -6456,6 +6512,15 @@ class Botference:
             ui.set_status(self.status_snapshot())
 
     async def _run_free_form_thread(
+        self, speaker: str, resp: AdapterResponse, ui: UIPort,
+    ) -> None:
+        # a build thread entered here ends with the thread on every exit path
+        try:
+            await self._run_free_form_thread_inner(speaker, resp, ui)
+        finally:
+            self._build = None
+
+    async def _run_free_form_thread_inner(
         self, speaker: str, resp: AdapterResponse, ui: UIPort,
     ) -> None:
         """Bot-to-bot floor control after a user-initiated turn.
@@ -6670,13 +6735,15 @@ class Botference:
         due = (
             build.bot_turns.get(model, 0) >= _BUILD_RELAY_EVERY_TURNS
             or (pct is not None and pct > _BUILD_RELAY_PCT)
-            or model in self._pending_auto_relay
+            or self._auto_relay_mode(model) == "queued"
         )
         if not due:
             return
-        self._pending_auto_relay.discard(model)
         build.bot_turns[model] = 0
-        await self._relay_model(model, ui)
+        if self._auto_relay_mode(model) == "queued":
+            await self._run_queued_auto_relay(model, ui)
+        else:
+            await self._relay_model(model, ui)
 
     async def _run_build_thread(
         self, speaker: str, resp: AdapterResponse, ui: UIPort,
@@ -7431,6 +7498,16 @@ class Botference:
 
         self._maybe_arm_auto_relay(model, raw_pct, ui)
 
+    def _auto_relay_mode(self, model: str) -> str:
+        return self._auto_relay_modes.get(model, "armed")
+
+    def _move_auto_relay(self, model: str, to: str) -> None:
+        """The one place a bot's auto-relay mode changes (AUTO_RELAY_MODES)."""
+        frm = self._auto_relay_mode(model)
+        if (frm, to) not in _AUTO_RELAY_MOVES:
+            raise ValueError(f"auto-relay for {model} cannot go {frm} -> {to}")
+        self._auto_relay_modes[model] = to
+
     def _maybe_arm_auto_relay(
         self, model: str, raw_pct: float, ui: Optional[UIPort],
     ) -> None:
@@ -7440,18 +7517,19 @@ class Botference:
         crossing queues exactly one relay — no loop while the model sits high or
         while its relay is pending. The relay itself is deferred (never fired
         here) so it can't land mid-turn; the drain runs at round boundaries.
+        A report that arrives while the relay is running (the fresh session's
+        own first turn) is left to the relay's outcome.
         """
+        mode = self._auto_relay_mode(model)
         if raw_pct < AUTO_RELAY_THRESHOLD_PCT:
-            self._auto_relay_armed[model] = True
+            if mode == "spent":
+                self._move_auto_relay(model, "armed")
             return
         if not self.auto_relay or model not in self._models_initialized:
             return
-        if model in self._pending_auto_relay:
+        if mode != "armed":
             return
-        if not self._auto_relay_armed.get(model, True):
-            return
-        self._auto_relay_armed[model] = False
-        self._pending_auto_relay.add(model)
+        self._move_auto_relay(model, "queued")
         if ui is not None:
             self._add_room_entry(
                 ui,
@@ -7460,20 +7538,28 @@ class Botference:
                 "context — relaying with handoff.",
             )
 
+    async def _run_queued_auto_relay(self, model: str, ui: UIPort) -> None:
+        """Run the relay queued for *model*. Completed → spent (re-arms once
+        the bot reports below the threshold); anything else — a failed relay,
+        or Esc during the handoff — → armed, so the next crossing fires."""
+        if model not in self._models_initialized:
+            self._move_auto_relay(model, "armed")
+            return
+        self._move_auto_relay(model, "relaying")
+        completed = False
+        try:
+            completed = bool(await self._relay_model(model, ui))
+        finally:
+            self._move_auto_relay(model, "spent" if completed else "armed")
+
     async def _drain_pending_auto_relays(self, ui: UIPort) -> None:
         """Relay any models queued for auto-relay at a safe round boundary.
 
-        Reuses the manual /relay machinery. The relay's fresh session reports
-        low occupancy, which re-arms the model via _update_pct.
+        Reuses the manual /relay machinery.
         """
-        if not self._pending_auto_relay:
-            return
         for model in ("claude", "codex"):
-            if model not in self._pending_auto_relay:
-                continue
-            self._pending_auto_relay.discard(model)
-            if model in self._models_initialized:
-                await self._relay_model(model, ui)
+            if self._auto_relay_mode(model) == "queued":
+                await self._run_queued_auto_relay(model, ui)
 
     # ── session bootstrap ────────────────────────────────
 
@@ -7654,6 +7740,74 @@ class Botference:
             return (parts[1].strip() if len(parts) > 1 else ""), project.id, ""
         return raw, None, ""
 
+    # Every field that belongs to ONE chat, with its fresh value, in one
+    # place: _reset_chat_state applies the whole list on /new and before a
+    # resume. A field that deliberately outlives a chat (a user preference,
+    # the process's own bookkeeping, or the chat's identity and filing, which
+    # _start_new_chat and _restore_from_payload set by hand) is named in
+    # _NOT_PER_CHAT_FIELDS instead; a test fails if a field is in neither.
+    def _fresh_chat_state(self) -> dict:
+        return {
+            "transcript": Transcript(),
+            # (entry count, title) at last persist (see _persist_session)
+            "_persisted_activity": (0, ""),
+            "router": AutoRouter(),
+            "mode": RoomMode.PUBLIC,
+            "lead": "auto",
+            "verify_enabled": True,
+            "_room_history": [],
+            "_ff_writer_votes": {},
+            "_ff_last_output_tokens": {},
+            "_video_no_key_told": False,
+            "_last_watched_url": "",
+            "_gemini_asks": {},
+            "_summons": {},
+            "_summon_seq": 0,
+            "_safeguard_tried": set(),
+            "_build": None,
+            "_attachments": [],
+            "_lasso_offer": [],
+            "_lasso_query": "",
+            "_claude_pct": None,
+            "_codex_pct": None,
+            "_claude_tokens": None,
+            "_claude_window": None,
+            "_codex_tokens": None,
+            "_codex_window": None,
+            "_models_initialized": set(),
+            "_warned_overlimit_models": set(),
+            "_yield_pressure": {},
+            "_relay_boundary": {},
+            "_last_relay": {},  # relay provenance is per chat, like the rest
+            "_pending_relay_handoffs": {},
+            "_auto_relay_modes": {},
+            "_granted_plan_write_roots": [],
+            "_pending_write_reminders": set(),
+        }
+
+    _NOT_PER_CHAT_FIELDS = frozenset({
+        # the chat's identity and filing, set by hand on /new and on resume
+        "session_id", "created_at", "updated_at", "custom_title", "auto_title",
+        "active_project_id", "session_project_id", "_inbox_by_choice",
+        "system_prompt", "task",
+        # user preferences that survive a new chat
+        "notify", "auto_relay", "observe",
+        # the process and its wiring
+        "claude", "codex", "paths", "session_store", "project_store",
+        "pending_input_check", "_base_plan_write_roots",
+        "_model_notice_mode", "_model_notice_text", "_quit_requested",
+        "_restoring_session", "_stream_seq", "_active_steer_model",
+        "_last_start_error", "_auto_title_inflight",
+        # keyed by chat id already, so it cannot leak into another chat
+        "_video_auto_failed",
+    })
+
+    def _reset_chat_state(self) -> None:
+        """Put every per-chat field back to its fresh value (see
+        _fresh_chat_state). Does not touch the bots' sessions or the UI."""
+        for name, value in self._fresh_chat_state().items():
+            setattr(self, name, value)
+
     def _start_new_chat(
         self, title: str, ui: UIPort, *, filing: str | None = None,
         persist_old: bool = True, lead_note: str = "",
@@ -7697,27 +7851,8 @@ class Botference:
             self.active_project_id = filing
             # --inbox is an answer, not a shrug (see _inbox_by_choice)
             self._inbox_by_choice = filing == ""
-        self.transcript = Transcript()
-        # (entry count, title) at last persist — persists that change neither
-        # leave updated_at alone (see _persist_session)
-        self._persisted_activity: tuple[int, str] = (0, "")
-        self.router = AutoRouter()
-        self.mode = RoomMode.PUBLIC
-        self.lead = "auto"
-        self._room_history = []
-        self._ff_writer_votes = {}
-        self._ff_last_output_tokens = {}
-        self._last_relay = {}  # relay provenance is per chat, like the rest
-        self._models_initialized = set()
-        self._warned_overlimit_models = set()
-        self._yield_pressure = {}
-        self._relay_boundary = {}
-        self._pending_relay_handoffs = {}
-        self._pending_auto_relay = set()
-        self._auto_relay_armed = {}
-        self._claude_pct = self._codex_pct = None
-        self._claude_tokens = self._claude_window = None
-        self._codex_tokens = self._codex_window = None
+        self._reset_chat_state()
+        self._apply_planner_write_config()  # the old chat's write grants are gone
         self.claude.session_id = ""
         self.codex.thread_id = ""
         self._set_claude_subagents(False)  # grants are per-chat

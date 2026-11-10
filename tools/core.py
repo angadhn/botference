@@ -64,7 +64,39 @@ def _handle_bash(inp):
     return output if output.strip() else "(no output)"
 
 
+# Seconds a git call may take before it is given up on. Commits get longer:
+# a repository's own pre-commit checks run inside them.
+_GIT_TIMEOUT = 30
+_GIT_COMMIT_TIMEOUT = 120
+_GIT_PUSH_TIMEOUT = 120
+
+
+class _GitTimedOut(Exception):
+    pass
+
+
+def _git(args, timeout=_GIT_TIMEOUT):
+    """Run git; a call that hangs (a lock, a credential prompt) is stopped
+    after *timeout* seconds and raised as _GitTimedOut."""
+    try:
+        return subprocess.run(
+            ["git"] + args, capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise _GitTimedOut(
+            f"Error: `git {args[0]}` did not finish within {timeout} seconds "
+            "and was stopped."
+        )
+
+
 def _handle_git_commit(inp):
+    try:
+        return _git_commit(inp)
+    except _GitTimedOut as e:
+        return str(e)
+
+
+def _git_commit(inp):
     message = inp.get("message")
     if not message:
         return "Error: git_commit requires 'message' parameter"
@@ -72,24 +104,20 @@ def _handle_git_commit(inp):
 
     # Stage files
     if files:
-        stage_cmd = ["git", "add", "--"] + files
+        stage_cmd = ["add", "--"] + files
     else:
-        stage_cmd = ["git", "add", "-A"]
-    result = subprocess.run(stage_cmd, capture_output=True, text=True)
+        stage_cmd = ["add", "-A"]
+    result = _git(stage_cmd)
     if result.returncode != 0:
         return f"Error staging files: {result.stderr}"
 
     # Check if there's anything to commit
-    status = subprocess.run(
-        ["git", "status", "--porcelain"], capture_output=True, text=True,
-    )
+    status = _git(["status", "--porcelain"])
     if not status.stdout.strip():
         return "Nothing to commit"
 
     # Commit
-    result = subprocess.run(
-        ["git", "commit", "-m", message], capture_output=True, text=True,
-    )
+    result = _git(["commit", "-m", message], timeout=_GIT_COMMIT_TIMEOUT)
     output = result.stdout + result.stderr
     if result.returncode != 0:
         return f"(exit code {result.returncode})\n{output}"
@@ -97,31 +125,29 @@ def _handle_git_commit(inp):
 
 
 def _handle_git_push(inp):
+    try:
+        return _git_push(inp)
+    except _GitTimedOut as e:
+        return str(e)
+
+
+def _git_push(inp):
     remote = inp.get("remote", "origin")
     branch = inp.get("branch", "")
 
     if not branch:
-        r = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True,
-        )
+        r = _git(["rev-parse", "--abbrev-ref", "HEAD"])
         if r.returncode != 0:
             return "Error: not in a git repository or HEAD is detached"
         branch = r.stdout.strip()
         if not branch or branch == "HEAD":
             return "Error: HEAD is detached — specify a branch name"
 
-    r = subprocess.run(
-        ["git", "remote", "get-url", remote],
-        capture_output=True, text=True,
-    )
+    r = _git(["remote", "get-url", remote])
     if r.returncode != 0:
         return f"No remote '{remote}' configured. Add one with: git remote add {remote} <url>"
 
-    r = subprocess.run(
-        ["git", "push", remote, branch],
-        capture_output=True, text=True, timeout=120,
-    )
+    r = _git(["push", remote, branch], timeout=_GIT_PUSH_TIMEOUT)
     output = r.stdout + r.stderr
     if r.returncode != 0:
         return f"Push failed: {output.strip()}"

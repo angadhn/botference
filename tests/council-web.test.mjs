@@ -3414,3 +3414,163 @@ test('dictation: the mic stays hidden when the server cannot transcribe (happy-d
   const { doc } = await mkMicHarness(t, { status: { ok: false, reason: 'no whisper model' } });
   assert.equal(doc.getElementById('mic').hidden, true);
 });
+
+// ------------------------------------------------- failures the page must survive
+
+test('a message the server never got comes back to the box; nothing is marked busy (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  w.fetch = async () => { throw new Error('network down'); };
+  const input = doc.getElementById('input');
+  input.value = 'my carefully typed thought';
+  C.submit();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(input.value, 'my carefully typed thought', 'the words are put back');
+  assert.equal(C.state.busy, false);
+  assert.equal(doc.getElementById('stop').hasAttribute('hidden'), true, 'no stuck stop button');
+  const sys = [...doc.querySelectorAll('.msg.system')].pop();
+  assert.match(sys.textContent, /not sent/);
+});
+
+test('"N messages queued" belongs to the chat it was counted in (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'queue', pending: 2 });
+  const note = doc.getElementById('queue-note');
+  assert.match(note.textContent, /2 messages queued/);
+  C.switchTo('sidB');
+  assert.equal(note.hasAttribute('hidden'), true);
+  assert.equal(note.textContent, '');
+});
+
+test('a typed /new asks the filing question afresh; /new --inbox is itself the answer (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const input = doc.getElementById('input');
+  C.state.filingAsked = true;
+  input.value = '/new';
+  C.submit();
+  assert.equal(C.state.filingAsked, false);
+  input.value = '/new --inbox scratch';
+  C.submit();
+  assert.equal(C.state.filingAsked, true);
+});
+
+test('connection: a retry left over from a drop is cancelled by a chat switch — one live socket, never two (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, C } = await mkHarness(t);
+  const first = C.conn.sock;
+  first.onopen();
+  assert.equal(C.conn.mode, 'live');
+  assert.equal(w.document.getElementById('st-conn').textContent, '● live');
+  // the connection drops: a retry is scheduled…
+  first.onclose();
+  assert.equal(C.conn.mode, 'retrying');
+  assert.equal(w.document.getElementById('st-conn').textContent, '○ reconnecting…');
+  // …then the reader opens another chat before it fires
+  const socks = [];
+  w.WebSocket = class { constructor(url) { this.url = url; this.closed = false; socks.push(this); } close() { this.closed = true; } send() { } };
+  C.switchTo('sidB');
+  assert.equal(C.conn.mode, 'connecting');
+  assert.equal(C.conn.retryTimer, null, 'the old retry is cancelled');
+  await new Promise(r => setTimeout(r, 1200)); // past the 1s retry
+  assert.equal(socks.length, 1, 'one socket, not two');
+  assert.match(socks[0].url, /chat=sidB/);
+  // the dropped socket, were it to speak again, is not heard twice over
+  const before = w.document.querySelectorAll('.msg').length;
+  if (first.onmessage) first.onmessage({ data: JSON.stringify({ type: 'room', speaker: 'claude', text: 'stale' }) });
+  assert.equal(w.document.querySelectorAll('.msg').length, before);
+  assert.equal(C.setConnMode('retrying'), true);
+  assert.equal(C.setConnMode('live'), false, 'retrying → live is refused');
+  assert.equal(C.setConnMode('connecting'), true); // and its timer is gone with it
+  assert.equal(C.conn.retryTimer, null);
+});
+
+test('permission card: shows the decision only once the server took it; a failed answer stays answerable (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  w.fetch = async () => { throw new Error('network down'); };
+  C.handle({ type: 'permission_request', model: 'codex', path: '/x/file.md', reason: 'r' });
+  const card = doc.querySelector('.msg.card.perm');
+  card.querySelector('button.allow').click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(card.classList.contains('answered'), false, 'not shown as allowed');
+  assert.doesNotMatch(card.textContent, /\ballowed\b/);
+  assert.match(card.textContent, /not sent/);
+  assert.equal(card.querySelector('button.allow').disabled, false, 'still answerable');
+  // the server's default-deny lands on the card instead of being dropped
+  C.handle({ type: 'permission_timeout' });
+  assert.ok(card.classList.contains('answered'));
+  assert.match(card.textContent, /timed out — denied by default/);
+  assert.doesNotMatch(card.textContent, /not sent/);
+  // and with the server answering, the click settles it as before
+  w.fetch = async () => ({ status: 200, json: async () => ({ ok: true }) });
+  C.handle({ type: 'permission_request', model: 'claude', path: '/x/b.md', reason: 'r' });
+  const card2 = [...doc.querySelectorAll('.msg.card.perm')].pop();
+  card2.querySelector('button.allow').click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.ok(card2.classList.contains('answered'));
+  assert.match(card2.textContent, /allowed/);
+});
+
+test('dictation: a second tap while the browser asks for the mic starts nothing; Esc then lets the mic go (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, rec } = await mkMicHarness(t);
+  let grant;
+  let asked = 0;
+  const stopped = [];
+  Object.defineProperty(w.navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia: () => { asked++; return new Promise(r => { grant = r; }); } },
+  });
+  const stream = { getTracks: () => [{ stop() { stopped.push(1); } }] };
+  const mic = doc.getElementById('mic');
+  mic.click();
+  mic.click(); // impatient second tap while the permission prompt is up
+  mic.click();
+  assert.equal(asked, 1, 'asked for the microphone once');
+  assert.equal(C.dict.mode, 'asking');
+  grant(stream);
+  await until(() => C.dict.mode === 'recording');
+  assert.equal(rec.mimes.length, 1, 'one recorder');
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(C.dict.mode, 'idle');
+  // Esc while the browser is asking: the stream that arrives afterwards is
+  // stopped at once
+  stopped.length = 0;
+  mic.click();
+  assert.equal(C.dict.mode, 'asking');
+  doc.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(C.dict.mode, 'idle');
+  grant(stream);
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(stopped.length, 1, 'the late stream is released');
+  assert.equal(C.dict.mode, 'idle');
+  assert.equal(rec.mimes.length, 1, 'no recorder for it');
+  assert.equal(C.setDictMode('transcribing'), false, 'idle → transcribing is refused');
+});
+
+test('server survives a bot process that stops reading, and an uncaught error is logged, not fatal', async t => {
+  // a bridge that closes its input at once and then just stays alive: every
+  // write to it fails with EPIPE
+  const script = 'echo "{}" > "$BOTFERENCE_PROJECT_ROOT/rx.txt.env"; exec 0<&-; exec sleep 30';
+  const s = await startServer({ env: { COUNCIL_BRIDGE_CMD: JSON.stringify(['/bin/sh', '-c', script]) } });
+  t.after(s.stop);
+  await new Promise(r => setTimeout(r, 200));
+  for (let i = 0; i < 5; i++) {
+    await post(s.base, '/input', { text: 'hello ' + i }).catch(() => null);
+    await new Promise(r => setTimeout(r, 50));
+  }
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(s.proc.exitCode, null, 'the server is still running');
+  const r = await fetch(s.base + '/');
+  assert.equal(r.status, 200);
+});

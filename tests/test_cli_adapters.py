@@ -2410,3 +2410,42 @@ def test_codex_prompt_argv_never_carries_a_lone_surrogate():
     for cmd in (a._build_send_cmd(broken), a._build_resume_cmd(broken) if a.thread_id else a._build_send_cmd(broken)):
         for part in cmd:
             part.encode("utf-8")  # raises if a surrogate survived
+
+
+class TestErrorOutputReadDuringTheTurn:
+    """A bot process that writes a lot to its error stream must not hang the
+    turn: the error stream is read while the turn runs, not after it."""
+
+    BIG = 1024 * 1024  # far more than a pipe holds
+
+    def test_claude_turn_finishes_despite_heavy_error_output(self):
+        script = (
+            "import sys, json\n"
+            f"sys.stderr.write('e' * {self.BIG}); sys.stderr.flush()\n"
+            "print(json.dumps({'type': 'result', 'result': 'Hello'}), flush=True)\n"
+            "sys.stdin.read()\n"
+        )
+        adapter = ClaudeAdapter(timeout=15)
+        adapter._build_cmd = lambda resume: [sys.executable, "-c", script]
+        resp = asyncio.run(adapter._run("hi", resume=False))
+        assert resp.exit_code == 0
+        assert resp.text == "Hello"
+        assert "timed out" not in resp.text
+
+    def test_codex_turn_finishes_despite_heavy_error_output(self):
+        script = (
+            "import sys, json\n"
+            f"sys.stderr.write('e' * {self.BIG}); sys.stderr.flush()\n"
+            "print(json.dumps({'type': 'item.completed', 'item': "
+            "{'id': 'i1', 'type': 'agent_message', 'text': 'Done'}}), flush=True)\n"
+        )
+        adapter = CodexAdapter(timeout=15)
+        resp = asyncio.run(adapter._run_once([sys.executable, "-c", script]))
+        assert resp.exit_code == 0
+        assert resp.text == "Done"
+
+    def test_error_output_kept_is_bounded_to_its_end(self):
+        from cli_adapters import _collect_stderr
+        reader = _MockReader(b"a" * 1000 + b"END")
+        out = asyncio.run(_collect_stderr(reader, keep=10))
+        assert out == "aaaaaaaEND"

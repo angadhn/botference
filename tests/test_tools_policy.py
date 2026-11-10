@@ -126,3 +126,22 @@ class TestToolWritePolicy:
 
         assert "blocked by project policy" in result
         assert "outside allowed write roots for plan mode" in result
+
+
+class TestGitCallsHaveATimeout:
+    def test_a_hung_git_call_is_a_plain_reported_failure(self, monkeypatch):
+        import subprocess
+        import tools.core as core_tools
+
+        seen = []
+
+        def hang(cmd, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        monkeypatch.setattr(core_tools.subprocess, "run", hang)
+        out = core_tools._handle_git_commit({"message": "m"})
+        assert out.startswith("Error:") and "did not finish" in out
+        out = core_tools._handle_git_push({"remote": "origin"})
+        assert out.startswith("Error:") and "did not finish" in out
+        assert seen and all(t for t in seen)  # every git call had a limit

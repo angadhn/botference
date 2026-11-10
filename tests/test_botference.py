@@ -1292,7 +1292,7 @@ class TestAutoRelay:
         c._relay_model = relay
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
         c._update_pct("claude", self._resp(), ui)
-        assert "claude" in c._pending_auto_relay
+        assert c._auto_relay_mode("claude") == "queued"
         relay.assert_not_called()  # deferred — never fired inline from _update_pct
         assert any(
             "Auto-relay" in t and "claude" in t
@@ -1305,7 +1305,7 @@ class TestAutoRelay:
         c._models_initialized.add("claude")
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT)  # >= threshold
         c._update_pct("claude", self._resp(), ui)
-        assert "claude" in c._pending_auto_relay
+        assert c._auto_relay_mode("claude") == "queued"
 
     async def test_below_threshold_no_trigger(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch)
@@ -1313,7 +1313,7 @@ class TestAutoRelay:
         c._models_initialized.add("claude")
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT - 5)
         c._update_pct("claude", self._resp(), ui)
-        assert c._pending_auto_relay == set()
+        assert c._auto_relay_mode("claude") == "armed"
 
     async def test_disabled_no_trigger(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch)
@@ -1322,7 +1322,7 @@ class TestAutoRelay:
         c._models_initialized.add("claude")
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 25)
         c._update_pct("claude", self._resp(), ui)
-        assert c._pending_auto_relay == set()
+        assert c._auto_relay_mode("claude") == "armed"
 
     async def test_no_trigger_before_model_initialized(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch)
@@ -1330,7 +1330,7 @@ class TestAutoRelay:
         # claude NOT in _models_initialized — nothing to relay yet
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 30)
         c._update_pct("claude", self._resp(), ui)
-        assert c._pending_auto_relay == set()
+        assert c._auto_relay_mode("claude") == "armed"
 
     async def test_no_retrigger_while_pending(self, tmp_path, monkeypatch):
         self._settings(tmp_path, monkeypatch)
@@ -1339,7 +1339,7 @@ class TestAutoRelay:
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
         c._update_pct("claude", self._resp(), ui)
         c._update_pct("claude", self._resp(), ui)  # still above → still pending
-        assert c._pending_auto_relay == {"claude"}
+        assert c._auto_relay_mode("claude") == "queued"
         announces = [
             t for s, t in ui.room_entries
             if s == "system" and "Auto-relay" in t
@@ -1354,18 +1354,20 @@ class TestAutoRelay:
         c._models_initialized.add("claude")
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
         c._update_pct("claude", self._resp(), ui)
-        # Simulate the drain consuming the queued relay (relay executed).
-        c._pending_auto_relay.discard("claude")
-        # Still above threshold but disarmed → must NOT re-queue (loop guard).
+        # The drain runs the queued relay, and it completes.
+        c._relay_model = AsyncMock(return_value=True)
+        await c._drain_pending_auto_relays(ui)
+        assert c._auto_relay_mode("claude") == "spent"
+        # Still above threshold but spent → must NOT re-queue (loop guard).
         c._update_pct("claude", self._resp(), ui)
-        assert c._pending_auto_relay == set()
+        assert c._auto_relay_mode("claude") == "spent"
         # Occupancy drops below threshold → re-arm.
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT - 30)
         c._update_pct("claude", self._resp(), ui)
         # Crossing again re-queues.
         self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
         c._update_pct("claude", self._resp(), ui)
-        assert c._pending_auto_relay == {"claude"}
+        assert c._auto_relay_mode("claude") == "queued"
 
     # ── deferral during a free-form thread ──
 
@@ -1414,12 +1416,52 @@ class TestAutoRelay:
         self._settings(tmp_path, monkeypatch)
         c, _, _, ui = _make_botference(tmp_path=tmp_path)
         c._models_initialized.update({"claude", "codex"})
-        c._pending_auto_relay = {"claude", "codex"}
-        relay = AsyncMock()
+        c._auto_relay_modes = {"claude": "queued", "codex": "queued"}
+        relay = AsyncMock(return_value=True)
         c._relay_model = relay
         await c._drain_pending_auto_relays(ui)
-        assert c._pending_auto_relay == set()
+        assert c._auto_relay_modes == {"claude": "spent", "codex": "spent"}
         assert {call.args[0] for call in relay.await_args_list} == {"claude", "codex"}
+
+    async def test_relay_cancelled_mid_handoff_rearms(self, tmp_path, monkeypatch):
+        # crossed, queued, then the user pressed Esc during the handoff: the
+        # bot must go back to armed, so a later crossing fires again
+        self._settings(tmp_path, monkeypatch)
+        c, claude, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        self._cross(claude, AUTO_RELAY_THRESHOLD_PCT + 10)
+        c._update_pct("claude", self._resp(), ui)
+        assert c._auto_relay_mode("claude") == "queued"
+
+        async def esc(model, ui):
+            assert c._auto_relay_mode("claude") == "relaying"
+            raise asyncio.CancelledError
+
+        c._relay_model = esc
+        with pytest.raises(asyncio.CancelledError):
+            await c._drain_pending_auto_relays(ui)
+        assert c._auto_relay_mode("claude") == "armed"
+        relay = AsyncMock(return_value=True)
+        c._relay_model = relay
+        c._update_pct("claude", self._resp(), ui)  # still above 50%
+        assert c._auto_relay_mode("claude") == "queued"
+        await c._drain_pending_auto_relays(ui)
+        relay.assert_awaited_once_with("claude", ui)
+
+    async def test_failed_relay_rearms(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        c._models_initialized.add("claude")
+        c._auto_relay_modes = {"claude": "queued"}
+        c._relay_model = AsyncMock(return_value=False)
+        await c._drain_pending_auto_relays(ui)
+        assert c._auto_relay_mode("claude") == "armed"
+
+    async def test_illegal_auto_relay_move_refused(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        with pytest.raises(ValueError):
+            c._move_auto_relay("claude", "relaying")  # armed -> relaying
 
     # ── persistence ──
 
@@ -1428,14 +1470,34 @@ class TestAutoRelay:
     ):
         self._settings(tmp_path, monkeypatch)
         c, _, _, _ = _make_botference(tmp_path=tmp_path)
-        c._pending_auto_relay = {"codex"}
-        c._auto_relay_armed = {"claude": False, "codex": False}
+        c._auto_relay_modes = {"claude": "spent", "codex": "queued"}
         payload = c._session_payload()
 
         c2, _, _, _ = _make_botference(tmp_path=tmp_path)
         c2._restore_from_payload(payload)
-        assert c2._pending_auto_relay == {"codex"}
-        assert c2._auto_relay_armed == {"claude": False, "codex": False}
+        assert c2._auto_relay_modes == {"claude": "spent", "codex": "queued"}
+
+    async def test_restore_running_relay_comes_back_armed(
+        self, tmp_path, monkeypatch,
+    ):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c._auto_relay_modes = {"claude": "relaying"}
+        payload = c._session_payload()
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c2._restore_from_payload(payload)
+        assert c2._auto_relay_mode("claude") == "armed"
+
+    async def test_restore_reads_older_saved_chats(self, tmp_path, monkeypatch):
+        self._settings(tmp_path, monkeypatch)
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        payload = c._session_payload()
+        payload.pop("auto_relay_modes")
+        payload["pending_auto_relay"] = ["codex"]
+        payload["auto_relay_armed"] = {"claude": False, "codex": False}
+        c2, _, _, _ = _make_botference(tmp_path=tmp_path)
+        c2._restore_from_payload(payload)
+        assert c2._auto_relay_modes == {"claude": "spent", "codex": "queued"}
 
     # ── command surface ──
 
@@ -8684,3 +8746,73 @@ class TestNewChatForgetsRelayProvenance:
         c._start_new_chat("", ui)
         assert c._last_relay == {}
         assert c.status_snapshot().claude_last_relay_at is None
+
+
+class TestNewChatStartsClean:
+    """Per-chat state lives in one list (_fresh_chat_state); /new and a
+    resume apply all of it, so nothing of chat A reaches chat B."""
+
+    def test_every_field_is_per_chat_or_named_as_surviving(self, tmp_path):
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        per_chat = set(c._fresh_chat_state())
+        unclassified = set(vars(c)) - per_chat - Botference._NOT_PER_CHAT_FIELDS
+        assert not unclassified, (
+            "new controller fields must be added to _fresh_chat_state (reset "
+            "on a new chat) or _NOT_PER_CHAT_FIELDS (deliberately kept): "
+            f"{sorted(unclassified)}")
+        assert not per_chat & Botference._NOT_PER_CHAT_FIELDS
+
+    def test_attachment_grants_build_and_verify_do_not_carry_over(self, tmp_path):
+        from botference import BuildThread
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        extra = tmp_path / "granted"
+        extra.mkdir()
+        c._attachments = [{"kind": "paper", "id": "p1", "title": "A paper",
+                           "path": str(tmp_path / "a.pdf")}]
+        c._lasso_offer = [{"title": "offer"}]
+        c.verify_enabled = False
+        c._granted_plan_write_roots = [extra.resolve()]
+        c._apply_planner_write_config()
+        c._pending_write_reminders = {"claude"}
+        c._build = BuildThread(hours=1.0, stage="building")
+        c._auto_relay_modes = {"claude": "spent"}
+
+        c._start_new_chat("", ui)
+
+        assert c._attachments == []
+        assert c._lasso_offer == []
+        assert c.verify_enabled is True
+        assert c._granted_plan_write_roots == []
+        assert str(extra.resolve()) not in [str(d) for d in c.claude.add_dirs]
+        assert c._pending_write_reminders == set()
+        assert c._build is None
+        assert c._auto_relay_modes == {}
+        assert "attachments" not in c._session_payload()
+
+    def test_resume_does_not_inherit_the_open_chats_build(self, tmp_path):
+        from botference import BuildThread
+        c, _, _, _ = _make_botference(tmp_path=tmp_path)
+        payload = c._session_payload()
+        c._build = BuildThread(hours=1.0, stage="building")
+        c._pending_write_reminders = {"codex"}
+        c._restore_from_payload(payload)
+        assert c._build is None
+        assert c._pending_write_reminders == set()
+
+
+@pytest.mark.asyncio
+class TestBuildEndsOnEveryExit:
+    async def test_esc_during_a_build_clears_the_build(self, tmp_path):
+        claude = [_bf("Starting.", nxt="@codex", build="building")]
+        c, ui = _build_room(tmp_path, claude, [_ok("x")], test_cmd="true")
+        seen = {}
+
+        async def esc(*a, **k):
+            seen["build"] = c._build
+            raise asyncio.CancelledError
+
+        c._run_build_thread = esc  # type: ignore[method-assign]
+        with pytest.raises(asyncio.CancelledError):
+            await c.handle_input("@claude build the thing", ui)
+        assert seen["build"] is not None  # it really was in a build
+        assert c._build is None  # a later /relay must not say "build thread"

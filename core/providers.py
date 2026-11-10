@@ -144,13 +144,9 @@ def _create_anthropic_client():
 
     # 3. Check macOS keychain — if only OAuth token is available, explain the limitation
     try:
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            creds = json.loads(result.stdout.strip())
-            token = creds.get("claudeAiOauth", {}).get("accessToken")
+        creds = _keychain_json("Claude Code", ["-s", "Claude Code-credentials"])
+        if creds is not None:
+            token = (creds.get("claudeAiOauth") or {}).get("accessToken")
             if token:
                 raise RuntimeError(
                     "Found Claude Code OAuth token in keychain, but OAuth tokens cannot "
@@ -163,8 +159,9 @@ def _create_anthropic_client():
                 )
     except RuntimeError:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Auth: reading the Claude Code keychain entry failed "
+              f"({type(e).__name__}); skipped.", file=sys.stderr)
 
     raise RuntimeError(
         "No Anthropic auth found. Set ANTHROPIC_API_KEY (sk-ant-api* from "
@@ -172,6 +169,44 @@ def _create_anthropic_client():
         "  Note: botference -p automatically falls back to claude -p when no API key "
         "is set, so this error only appears when invoking botference_agent.py directly."
     )
+
+
+# Seconds the macOS keychain lookup may take (it can stall behind an unlock
+# prompt) before it is given up on.
+_KEYCHAIN_TIMEOUT = 10
+
+
+def _keychain_json(what: str, args: list) -> "dict | None":
+    """Read a JSON secret from the macOS keychain, or None.
+
+    Nothing stored is the ordinary answer and says nothing. A lookup that
+    hangs, fails or holds something unreadable says so in one line on the
+    error stream; the secret itself is never printed.
+    """
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", *args, "-w"],
+            capture_output=True, text=True, timeout=_KEYCHAIN_TIMEOUT,
+        )
+    except FileNotFoundError:
+        return None  # no keychain on this system
+    except subprocess.TimeoutExpired:
+        print(f"Auth: the keychain lookup for {what} did not answer within "
+              f"{_KEYCHAIN_TIMEOUT} seconds; skipped.", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Auth: the keychain lookup for {what} failed "
+              f"({type(e).__name__}); skipped.", file=sys.stderr)
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        creds = json.loads(result.stdout.strip())
+    except ValueError:
+        print(f"Auth: the keychain entry for {what} is not in the expected "
+              "form; skipped.", file=sys.stderr)
+        return None
+    return creds if isinstance(creds, dict) else None
 
 
 def _create_openai_client():
@@ -212,12 +247,8 @@ def _create_openai_client():
         codex_canonical = str(codex_home.resolve())
         account_hash = hashlib.sha256(codex_canonical.encode()).hexdigest()[:16]
         account_key = f"cli|{account_hash}"
-        result = subprocess.run(
-            ["security", "find-generic-password", "-s", "Codex Auth", "-a", account_key, "-w"],
-            capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            creds = json.loads(result.stdout.strip())
+        creds = _keychain_json("Codex", ["-s", "Codex Auth", "-a", account_key])
+        if creds is not None:
             if creds.get("openai_api_key"):
                 print("Auth: using Codex CLI API key from keychain", file=sys.stderr)
                 return openai.OpenAI(api_key=creds["openai_api_key"])
@@ -225,8 +256,9 @@ def _create_openai_client():
             if token:
                 print("Auth: using Codex CLI OAuth token from keychain", file=sys.stderr)
                 return openai.OpenAI(api_key=token)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Auth: reading the Codex keychain entry failed "
+              f"({type(e).__name__}); skipped.", file=sys.stderr)
 
     raise RuntimeError(
         "No OpenAI auth found. Either:\n"

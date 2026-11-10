@@ -809,6 +809,12 @@
     });
   }
 
+  // "N messages queued" counts the messages waiting in ONE chat's bot process
+  function showQueued(n) {
+    state.queued = n;
+    els.queueNote.hidden = !n;
+    els.queueNote.textContent = n ? `${n} message${n > 1 ? 's' : ''} queued` : '';
+  }
   function setBusy(b) {
     state.busy = b;
     els.stop.hidden = !b;
@@ -2176,18 +2182,57 @@
   }
 
   // ── interrupt cards ──
+  // An interrupt card is in one of CARD_MODES, kept in card.dataset.mode and
+  // moved only by setCardMode:
+  //   open      — waiting for the reader's answer;
+  //   sending   — an answer is on its way to the server;
+  //   answered  — the server took an answer, or the question went away.
+  // The card shows the reader's decision only once the server has taken it;
+  // an answer that did not get through goes back to open and says so.
+  const CARD_MODES = ['open', 'sending', 'answered'];
+  const CARD_MOVES = new Set(['open>sending', 'sending>open', 'sending>answered', 'open>answered']);
   let liveCard = null;
+  function setCardMode(card, to) {
+    const from = card.dataset.mode || 'open';
+    if (!CARD_MODES.includes(to) || !CARD_MOVES.has(from + '>' + to)) return false;
+    card.dataset.mode = to;
+    card.classList.toggle('answered', to === 'answered');
+    for (const b of card.querySelectorAll('button')) b.disabled = to !== 'open';
+    return true;
+  }
+  function cardNote(card, text, cls = '') {
+    const n = document.createElement('div');
+    n.className = 'card-note' + (cls ? ' ' + cls : '');
+    n.textContent = text;
+    card.appendChild(n);
+    return n;
+  }
   function settleCard(note) {
     if (!liveCard) return;
-    liveCard.classList.add('answered');
-    for (const b of liveCard.querySelectorAll('button')) b.disabled = true;
-    if (note) {
-      const n = document.createElement('div');
-      n.className = 'card-note';
-      n.textContent = note;
-      liveCard.appendChild(n);
-    }
+    const card = liveCard;
     liveCard = null;
+    setCardMode(card, 'answered');
+    const failed = card.querySelector('.card-note.not-sent');
+    if (failed) failed.remove();
+    if (note) cardNote(card, note);
+  }
+  // the reader answered: post it, and settle the card only once it is taken
+  async function answerCard(card, url, body, note) {
+    if (!setCardMode(card, 'sending')) return;
+    const old = card.querySelector('.card-note.not-sent');
+    if (old) old.remove();
+    const r = await post(url, body);
+    if (r && r.ok) {
+      if (setCardMode(card, 'answered')) {
+        if (liveCard === card) liveCard = null;
+      }
+      cardNote(card, note);
+      return;
+    }
+    // still unanswered as far as the bots know: keep it answerable
+    if (setCardMode(card, 'open')) {
+      cardNote(card, 'not sent: your answer did not reach the server. Try again.', 'not-sent');
+    }
   }
   function choiceCard(ev) {
     settleCard();
@@ -2204,9 +2249,8 @@
       const b = e.target.closest('button[data-i]');
       if (!b || div.classList.contains('answered')) return;
       const i = Number(b.dataset.i);
-      post('/choice', { index: i >= 0 ? i : null });
-      liveCard = div;
-      settleCard(i >= 0 ? `you picked: ${ev.options[i]}` : 'dismissed');
+      answerCard(div, '/choice', { index: i >= 0 ? i : null },
+        i >= 0 ? `you picked: ${ev.options[i]}` : 'dismissed');
     });
     container().appendChild(div);
     liveCard = div;
@@ -2284,10 +2328,10 @@
       <div class="acts"><button class="allow">Allow</button><button class="deny">Deny</button></div>
       <div class="card-note">auto-denied after 2 minutes if unanswered</div>`;
     div.querySelector('.allow').addEventListener('click', () => {
-      post('/permission', { allow: true }); liveCard = div; settleCard('allowed');
+      answerCard(div, '/permission', { allow: true }, 'allowed');
     });
     div.querySelector('.deny').addEventListener('click', () => {
-      post('/permission', { allow: false }); liveCard = div; settleCard('denied');
+      answerCard(div, '/permission', { allow: false }, 'denied');
     });
     container().appendChild(div);
     liveCard = div;
@@ -2690,6 +2734,7 @@
     if (sid === state.currentSid && !state.pendingSwitch) return; // already live: nothing to do
     snapshotCurrent();
     state.filingAsked = false;   // a different chat, a different question
+    showQueued(0);               // the old chat's waiting messages stay with it
     state.pendingSwitch = sid;
     // …and a different conversation: the pill belongs to the chat it was
     // clicked in and the memory is rebuilt from the incoming replay, so
@@ -3307,8 +3352,23 @@
     // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
     // the original filename rides along so the echoed message can name the
     // file the way the reader knows it, not by the stored id
-    sendInput(outText, ready.map(a => ({ id: a.id, path: a.path, type: a.kind === 'doc' ? 'file' : 'image', name: a.name || '' })));
-    clearAtts();
+    // a typed /new starts a chat nobody has said where to file — unless the
+    // command itself says (--inbox / --project), which is an answer
+    if (/^\/new\b/.test(text)) state.filingAsked = /\s--(inbox|project)\b/.test(text);
+    // the files leave the strip now, but are only let go once the server has
+    // the message: a send that fails puts the words AND the files back
+    const sent = state.atts.filter(a => a.status === 'ok');
+    for (const a of state.atts) if (a.status !== 'ok') URL.revokeObjectURL(a.thumb);
+    state.atts = [];
+    renderAtts();
+    sendInput(outText, ready.map(a => ({ id: a.id, path: a.path, type: a.kind === 'doc' ? 'file' : 'image', name: a.name || '' })))
+      .then(ok => {
+        if (ok) { for (const a of sent) URL.revokeObjectURL(a.thumb); return; }
+        const now = els.input.value;
+        els.input.value = now.trim() ? text + '\n' + now : text;
+        state.atts = sent.concat(state.atts);
+        renderAtts(); autosize(); refreshCompletions(); syncSend();
+      });
     syncSend();
     renderRoutes();
   }
@@ -3327,13 +3387,23 @@
       return await r.json();
     } catch { return null; }
   }
+  // resolves true when the server took the message, false when it did not
+  // (then a "not sent" line says why, and the room is not marked busy)
   async function sendInput(text, attachments = []) {
     const r = await post('/input', { text, attachments });
-    if (r && r.ok === false && r.error) addMsg('system', `not sent: ${r.error}`);
+    if (!r) {
+      addMsg('system', 'not sent: the server could not be reached. Check the connection and try again.');
+      return false;
+    }
+    if (r.ok === false) {
+      addMsg('system', `not sent: ${r.error || 'the server did not take it'}`);
+      return false;
+    }
     // a typed /resume of a chat already open elsewhere: the server refuses to
     // fork the session and asks this tab to re-attach to the live bridge
-    else if (r && r.switch) switchTo(r.switch);
+    if (r.switch) switchTo(r.switch);
     else setBusy(true);
+    return true;
   }
 
   // ── dictation: tap the mic to record, tap again to stop. The clip goes to
@@ -3341,7 +3411,22 @@
   // words land at the caret for editing — never sent on their own. Tap/tap,
   // not hold-to-talk: holding is unreliable in iOS Safari. ──
   const DICT_MAX_MS = 15 * 60 * 1000;
-  const dict = { rec: null, stream: null, chunks: [], timer: null, cancelled: false, busy: false, hint: '' };
+  // Dictation is in one of DICT_MODES, kept in dict.mode and moved only by
+  // setDictMode, which refuses a move not in DICT_MOVES:
+  //   idle         — nothing happening; a tap starts;
+  //   asking       — waiting for the browser's microphone permission;
+  //   recording    — a tap stops and transcribes, Esc throws it away;
+  //   stopping     — the recorder is handing over the clip;
+  //   transcribing — the clip is with the server.
+  // A tap acts only in idle and recording. dict.timer is the 15-minute cap of
+  // a recording, cleared whenever the mode leaves recording.
+  const DICT_MODES = ['idle', 'asking', 'recording', 'stopping', 'transcribing'];
+  const DICT_MOVES = new Set([
+    'idle>asking', 'asking>recording', 'asking>idle',
+    'recording>stopping', 'recording>idle',
+    'stopping>transcribing', 'stopping>idle', 'transcribing>idle',
+  ]);
+  const dict = { mode: 'idle', rec: null, stream: null, chunks: [], timer: null, hint: '' };
   function dictMime() {
     const MR = window.MediaRecorder;
     if (!MR || typeof MR.isTypeSupported !== 'function') return '';
@@ -3386,47 +3471,69 @@
       : mode === 'transcribing' ? 'transcribing…' : 'tap to dictate — tap again to stop';
     dictHint(mode === 'recording' ? 'recording… tap to stop' : mode === 'transcribing' ? 'transcribing…' : '');
   }
+  function setDictMode(to) {
+    if (!DICT_MODES.includes(to) || !DICT_MOVES.has(dict.mode + '>' + to)) return false;
+    dict.mode = to;
+    if (to !== 'recording') { clearTimeout(dict.timer); dict.timer = null; }
+    dictUi(to === 'recording' ? 'recording' : to === 'stopping' || to === 'transcribing' ? 'transcribing' : '');
+    return true;
+  }
+  function stopTracks(stream) {
+    if (stream) for (const tr of stream.getTracks()) { try { tr.stop(); } catch { } }
+  }
   function dictRelease() {
-    clearTimeout(dict.timer); dict.timer = null;
-    if (dict.stream) { for (const tr of dict.stream.getTracks()) { try { tr.stop(); } catch { } } }
-    dict.stream = null; dict.rec = null;
+    stopTracks(dict.stream);
+    dict.stream = null; dict.rec = null; dict.chunks = [];
   }
   async function dictStart() {
+    if (!setDictMode('asking')) return;
     let stream;
     try {
       // must run inside the tap itself: iOS only grants the mic to a gesture
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      if (!setDictMode('idle')) return; // already given up on (Esc)
       const n = e && e.name;
       toast(n === 'NotAllowedError' || n === 'SecurityError' ? 'microphone permission was refused'
         : n === 'NotFoundError' ? 'no microphone found' : 'could not start the microphone');
       return;
     }
+    // given up on while the browser was asking: let the microphone go at once
+    if (dict.mode !== 'asking') { stopTracks(stream); return; }
     const mime = dictMime();
     let rec;
     try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
-    catch { for (const tr of stream.getTracks()) tr.stop(); toast('this browser cannot record audio'); return; }
-    Object.assign(dict, { rec, stream, chunks: [], cancelled: false });
-    rec.addEventListener('dataavailable', e => { if (e.data && e.data.size) dict.chunks.push(e.data); });
+    catch { stopTracks(stream); setDictMode('idle'); toast('this browser cannot record audio'); return; }
+    Object.assign(dict, { rec, stream, chunks: [] });
+    rec.addEventListener('dataavailable', e => { if (dict.rec === rec && e.data && e.data.size) dict.chunks.push(e.data); });
     rec.addEventListener('stop', () => dictFinish(rec, mime));
     rec.start();
+    setDictMode('recording');
     dict.timer = setTimeout(() => dictStop(), DICT_MAX_MS);
-    dictUi('recording');
   }
-  function dictStop(cancel = false) {
-    if (!dict.rec) return;
-    dict.cancelled = cancel;
-    try { dict.rec.stop(); } catch { dictRelease(); dictUi(''); }
+  // tap while recording: keep the clip and transcribe it
+  function dictStop() {
+    if (!setDictMode('stopping')) return;
+    try { dict.rec.stop(); } catch { dictRelease(); setDictMode('idle'); }
+  }
+  // Esc: throw the recording away (or stop waiting for permission)
+  function dictCancel() {
+    if (dict.mode === 'asking') return setDictMode('idle');
+    if (dict.mode !== 'recording') return false;
+    const rec = dict.rec;
+    dictRelease();
+    setDictMode('idle');
+    try { rec.stop(); } catch { }
+    return true;
   }
   async function dictFinish(rec, mime) {
-    const chunks = dict.chunks; dict.chunks = [];
-    const cancelled = dict.cancelled;
+    if (dict.mode !== 'stopping' || dict.rec !== rec) return; // thrown away
+    const chunks = dict.chunks;
     dictRelease();
-    if (cancelled) { dictUi(''); return; }
     const type = (chunks[0] && chunks[0].type) || rec.mimeType || mime || 'audio/webm';
     const blob = new Blob(chunks, { type });
-    if (!blob.size) { dictUi(''); toast('nothing was recorded'); return; }
-    dict.busy = true; dictUi('transcribing');
+    if (!blob.size) { setDictMode('idle'); toast('nothing was recorded'); return; }
+    setDictMode('transcribing');
     try {
       const r = await post('/transcribe', { audio_b64: await blobToB64(blob), mime: blob.type || type, lang: 'en' });
       if (!r) toast('transcription failed: no reply from the server');
@@ -3438,7 +3545,7 @@
         els.input.focus();
       }
     } catch (e) { toast((e && e.message) || 'transcription failed'); }
-    finally { dict.busy = false; dictUi(''); }
+    finally { setDictMode('idle'); }
   }
   async function dictInit() {
     if (!els.mic) return;
@@ -3454,8 +3561,11 @@
   }
   if (els.mic) {
     els.mic.addEventListener('click', () => {
-      if (dict.busy) return;
-      if (dict.rec) dictStop(); else dictStart();
+      // a tap means something only in idle and recording: a second tap while
+      // the browser is still asking for permission must not start a second
+      // recorder
+      if (dict.mode === 'idle') dictStart();
+      else if (dict.mode === 'recording') dictStop();
     });
     dictInit();
   }
@@ -3647,9 +3757,7 @@
         for (const el of els.transcript.querySelectorAll('.msg.streaming')) el.classList.remove('streaming');
         break;
       case 'queue':
-        state.queued = ev.pending || 0;
-        els.queueNote.hidden = !state.queued;
-        els.queueNote.textContent = state.queued ? `${state.queued} message${state.queued > 1 ? 's' : ''} queued` : '';
+        showQueued(ev.pending || 0);
         break;
       case 'clear_panes':
         state.streams = {};
@@ -3713,11 +3821,35 @@
   // WS is primary because proxies/CDN edges (the --share cloudflared tunnel
   // included) buffer streamed HTTP bodies — SSE headers arrive but no events
   // ever do — while WebSocket upgrades are proxied unbuffered.
-  let retryMs = 1000;
-  let liveSock = null;   // current WebSocket (null when on SSE / disconnected)
-  let liveEs = null;     // current EventSource
-  let sseMode = false;   // WS proved unusable: stay on SSE for reattaches too
+  // The connection is in one of CONN_MODES, kept in conn.mode and moved
+  // only by setConnMode, which refuses a move not in CONN_MOVES:
+  //   connecting — a stream is being opened (the status line is left as is);
+  //   live       — a stream is open and delivering events;
+  //   retrying   — the stream dropped; conn.retryTimer will open a new one.
+  // conn.transport says which kind of stream: 'ws', or 'sse' once WebSocket
+  // has proved unusable here (it stays on SSE for reattaches too). Opening a
+  // stream always closes the old one first and cancels a pending retry, so
+  // there is never more than one live stream (two meant every message twice).
+  const CONN_MODES = ['connecting', 'live', 'retrying'];
+  const CONN_MOVES = new Set([
+    'connecting>connecting', 'connecting>live', 'connecting>retrying',
+    'live>connecting', 'live>retrying', 'retrying>connecting',
+  ]);
+  const conn = { mode: 'connecting', transport: 'ws', sock: null, es: null, retryTimer: null, retryMs: 1000 };
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
+  function setConnMode(to) {
+    if (!CONN_MODES.includes(to) || !CONN_MOVES.has(conn.mode + '>' + to)) return false;
+    clearTimeout(conn.retryTimer);
+    conn.retryTimer = null;
+    conn.mode = to;
+    if (to === 'live') { conn.retryMs = 1000; setConn('ok', '● live'); }
+    if (to === 'retrying') {
+      setConn('err', '○ reconnecting…');
+      conn.retryTimer = setTimeout(openStream, conn.retryMs);
+      conn.retryMs = Math.min(conn.retryMs * 2, 15000);
+    }
+    return true;
+  }
   // which chat this tab wants its stream attached to: an in-flight switch
   // wins, then the open chat (reconnects stay on it), then a deep link
   function chatParam() {
@@ -3754,60 +3886,65 @@
     }
   }
   function dropTransport() {
-    if (liveSock) { const s = liveSock; liveSock = null; s.onclose = null; s.onerror = null; try { s.close(); } catch { } }
-    if (liveEs) { try { liveEs.close(); } catch { } liveEs = null; }
+    if (conn.sock) {
+      const s = conn.sock; conn.sock = null;
+      s.onopen = null; s.onmessage = null; s.onclose = null; s.onerror = null;
+      try { s.close(); } catch { }
+    }
+    if (conn.es) {
+      const es = conn.es; conn.es = null;
+      es.onopen = null; es.onmessage = null; es.onerror = null;
+      try { es.close(); } catch { }
+    }
   }
-  // deliberate re-attach (chat switch): close the current stream without
-  // triggering the reconnect path, and connect to the target chat's bridge
-  function reattach() {
+  // the one way a stream is opened: first, initial connect, retry, and the
+  // deliberate re-attach of a chat switch alike
+  function openStream() {
     dropTransport();
-    if (sseMode) connectSSE(); else connect();
+    setConnMode('connecting');
+    if (conn.transport === 'sse') connectSSE(); else connectWS();
   }
+  function reattach() { openStream(); }
   function onLine(data) {
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type !== 'ping') handle(ev);
   }
-  function scheduleReconnect() {
-    setConn('err', '○ reconnecting…');
-    setTimeout(() => { if (sseMode) connectSSE(); else connect(); }, retryMs);
-    retryMs = Math.min(retryMs * 2, 15000);
-  }
-  function connect() {
+  function connectWS() {
     prepView();
     let sock;
     try {
       sock = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' + chatParam());
-    } catch { sseMode = true; connectSSE(); return; }
-    liveSock = sock;
+    } catch { conn.transport = 'sse'; connectSSE(); return; }
+    conn.sock = sock;
     let opened = false;
-    sock.onopen = () => { opened = true; retryMs = 1000; setConn('ok', '● live'); };
-    sock.onmessage = e => onLine(e.data);
+    sock.onopen = () => { if (conn.sock !== sock) return; opened = true; setConnMode('live'); };
+    sock.onmessage = e => { if (conn.sock === sock) onLine(e.data); };
     sock.onerror = () => { };
     sock.onclose = () => {
-      if (liveSock !== sock) return; // superseded by a deliberate reattach
-      liveSock = null;
+      if (conn.sock !== sock) return; // superseded by a newer stream
+      conn.sock = null;
       // never got open: something between us and the server blocks WS — use SSE
-      if (!opened) { sseMode = true; connectSSE(); return; }
-      scheduleReconnect();
+      if (!opened) { conn.transport = 'sse'; connectSSE(); return; }
+      setConnMode('retrying');
     };
   }
   function connectSSE() {
-    prepView(); // idempotent right after connect()'s prep — no events between
+    prepView(); // idempotent right after connectWS()'s prep — no events between
     const es = new EventSource('/events' + chatParam());
-    liveEs = es;
-    es.onopen = () => { retryMs = 1000; setConn('ok', '● live'); };
-    es.onmessage = e => onLine(e.data);
+    conn.es = es;
+    es.onopen = () => { if (conn.es === es) setConnMode('live'); };
+    es.onmessage = e => { if (conn.es === es) onLine(e.data); };
     es.onerror = () => {
-      if (liveEs !== es) { try { es.close(); } catch { } return; }
-      liveEs = null;
+      if (conn.es !== es) { try { es.close(); } catch { } return; }
+      conn.es = null;
       es.close();
-      scheduleReconnect();
+      setConnMode('retrying');
     };
   }
 
   document.addEventListener('keydown', e => {
     // Esc while dictating throws the recording away (no request is made)
-    if (e.key === 'Escape' && dict.rec) { e.preventDefault(); dictStop(true); toast('dictation cancelled'); return; }
+    if (e.key === 'Escape' && (dict.mode === 'recording' || dict.mode === 'asking')) { e.preventDefault(); dictCancel(); toast('dictation cancelled'); return; }
     if (e.key === 'Escape' && helpOpen()) { closeHelp(); return; }
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) closeSide();
     if (e.key === 'Escape') closeAgents();
@@ -3818,7 +3955,7 @@
   updateEmpty();
   syncSend();
   renderProjects();
-  connect();
+  openStream();
 
   // exposed for the DOM test harness
   window.__council = {
@@ -3838,6 +3975,8 @@
     // the /help popup and the hints the autocomplete shows
     openHelp, closeHelp, helpOpen, helpRows, hintFor,
     // dictation
-    dict, dictMime, insertAtCaret, dictInit,
+    dict, dictMime, insertAtCaret, dictInit, setDictMode,
+    // the live connection
+    conn, setConnMode,
   };
 })();

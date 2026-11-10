@@ -392,6 +392,12 @@ export class Bridge {
       }, COUNCIL_MODES),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // a write to a bot process that has just died fails with EPIPE, emitted
+    // here; unheard, it would crash the whole server. The 'exit' handler
+    // below reports the lost bridge.
+    this.proc.stdin.on('error', err => {
+      console.error(`[council] bridge ${this.id}: could not write to the bot process (${err.code || err.message})`);
+    });
     let buf = '';
     this.proc.stdout.on('data', d => {
       buf += d;
@@ -981,8 +987,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/permission') {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);
-      clearTimeout(bridge && bridge.permTimer);
       const ok = bridge && bridge.send({ type: 'permission_response', allow: !!data.allow });
+      // the default-deny stays armed until an answer actually reached the bot
+      if (ok) clearTimeout(bridge.permTimer);
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });
     return;
@@ -990,9 +997,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/choice') {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);
-      clearTimeout(bridge && bridge.choiceTimer);
       const index = Number.isInteger(data.index) && data.index >= 0 ? data.index : null;
       const ok = bridge && bridge.send({ type: 'choice_response', index });
+      if (ok) clearTimeout(bridge.choiceTimer);
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });
     return;
@@ -1064,7 +1071,15 @@ export function handler(req, res) {
   res.writeHead(404, JSON_HEAD).end('{"ok":false,"error":"not found"}');
 }
 
+// One bad request or a bot process that vanished mid-write must not take
+// every open chat down with it: log the error in full and keep serving.
+function logUncaught(kind, err) {
+  console.error(`[council] ${kind} (still serving):`, (err && err.stack) || err);
+}
+
 if (process.env.COUNCIL_NO_LISTEN !== '1') {
+  process.on('uncaughtException', err => logUncaught('uncaught error', err));
+  process.on('unhandledRejection', err => logUncaught('unhandled promise rejection', err));
   acquireLock();
   ensurePrimary();
   const server = http.createServer(handler);

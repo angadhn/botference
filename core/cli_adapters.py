@@ -981,6 +981,29 @@ def _tool_result_failed(text: str) -> bool:
 # ── Shared JSONL reader ─────────────────────────────────────
 
 
+# How much of a bot process's error output a turn keeps (the end of it, which
+# is where the reason for a failure usually is).
+_STDERR_KEEP_BYTES = 256 * 1024
+
+
+async def _collect_stderr(stream, keep: int = _STDERR_KEEP_BYTES) -> str:
+    """Read a child's error stream to the end, WHILE the turn runs.
+
+    Reading it only after normal output ends can hang the turn: a child that
+    writes more error output than the pipe holds blocks on the write, so its
+    normal output never ends either. Only the last *keep* bytes are kept.
+    """
+    kept = bytearray()
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        kept += chunk
+        if len(kept) > keep:
+            del kept[:len(kept) - keep]
+    return kept.decode("utf-8", errors="replace")
+
+
 async def _read_jsonl_lines(stream: asyncio.StreamReader, raw_lines: list,
                            debug_file=None):
     """Yield parsed JSON objects from an async stream.
@@ -1174,6 +1197,7 @@ class ClaudeAdapter:
                 exit_code=127,
             )
 
+        stderr_task = asyncio.create_task(_collect_stderr(proc.stderr))
         proc.stdin.write(_stream_json_user_message(prompt))
         await proc.stdin.drain()
         # stdin stays open for mid-turn steering; closed when the result
@@ -1344,7 +1368,7 @@ class ClaudeAdapter:
                     session_id=self.session_id,
                 )
 
-            stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
+            stderr = await stderr_task
             await proc.wait()
 
             if stderr.strip():
@@ -1380,6 +1404,8 @@ class ClaudeAdapter:
             raise
         finally:
             self._close_steer_stdin()
+            if not stderr_task.done():
+                stderr_task.cancel()
 
     def steer(self, text: str) -> bool:
         """Inject a user message into the in-flight turn.
@@ -2072,6 +2098,7 @@ class CodexAdapter:
                      "Install with: npm install -g @openai/codex",
                 exit_code=127,
             )
+        stderr_task = asyncio.create_task(_collect_stderr(proc.stderr))
 
         text_parts = []
         agent_texts = []   # agent_message items only, in order
@@ -2224,7 +2251,7 @@ class CodexAdapter:
                     session_id=response.session_id,
                 )
 
-            stderr = (await proc.stderr.read()).decode("utf-8", errors="replace")
+            stderr = await stderr_task
             await proc.wait()
 
             if stderr.strip():
@@ -2279,6 +2306,9 @@ class CodexAdapter:
             if debug_file:
                 debug_file.close()
             raise
+        finally:
+            if not stderr_task.done():
+                stderr_task.cancel()
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Estimated context occupancy as % of yield limit. 100 = yield now."""
