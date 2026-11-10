@@ -62,7 +62,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { readConfig, saveConfig, pageFile } from './store.mjs';
+import { readConfig, saveConfig, pageFile, ROOT_ANSWERS } from './store.mjs';
 import { readJson } from './fsjson.mjs';
 // the projects `botference init` / `botference site` registered, by marker
 // (markers.mjs) — read here as if they were `blog_sites` rows
@@ -429,14 +429,14 @@ const rootsMap = () => {
 };
 
 /**
- * 'yes' | 'no' | '' (never asked). A root registered by `botference site` and
+ * One of store.ROOT_ANSWERS: 'unasked' | 'yes' | 'no'. A root registered by `botference site` and
  * never answered for in the drawer is 'yes': running the command in that
  * folder IS the answer (markers.mjs says why). A stored answer always wins.
  */
 export function rootState(root) {
   const key = realish(root);
   const m = rootsMap();
-  if (!Object.prototype.hasOwnProperty.call(m, key)) return isMarkerRoot(key) ? 'yes' : '';
+  if (!Object.prototype.hasOwnProperty.call(m, key)) return isMarkerRoot(key) ? 'yes' : ROOT_ANSWERS[0];
   return m[key] ? 'yes' : 'no';
 }
 
@@ -1233,8 +1233,10 @@ function siteBase(site, urlPath) {
     kind: site.kind,
     kind_label: rule.label,
     url_path: normPath(urlPath),
+    // the reader's answer, as the one value the page draws from; `confirmed`
+    // is that answer read as a yes, for the companion's own checks
+    state,
     confirmed: state === 'yes',
-    declined: state === 'no',
     // said on the wire as well as in the code, so the drawer can promise it in
     // the same words the confirmation card asks in
     git_allowed: gitAllowed(site.kind),

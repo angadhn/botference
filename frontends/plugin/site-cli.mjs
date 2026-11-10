@@ -160,7 +160,15 @@ async function site(o) {
 
   writeMarker(root, { kind, serve_origin: serve, rebuild, enabled: true });
   const ignored = ensureGitignore(root);
-  registerRoot(root);
+  // a registry that is there but unreadable is never written over
+  // (markers.mjs): say so in plain words rather than with a stack trace
+  try { registerRoot(root); } catch (e) {
+    if (e && e.code === 'EUNREADABLEJSON') {
+      fail(`could not add this folder to the list of your projects: ${registryFile()} is damaged `
+        + '(it is not valid JSON). Fix or move that file and run this again; nothing in it was changed.');
+    }
+    throw e;
+  }
 
   const name = path.basename(root);
   say(`${o.fromInit ? '\n' : ''}Discuss: ${name} is in scope (${kindLabel(kind)})`);
@@ -198,7 +206,14 @@ async function site(o) {
 async function sites(o) {
   if (o.remove) {
     const root = real(o.remove);
-    const was = unregisterRoot(root);
+    let was = false;
+    try { was = unregisterRoot(root); } catch (e) {
+      if (e && e.code === 'EUNREADABLEJSON') {
+        fail(`could not take this folder off the list of your projects: ${registryFile()} is damaged `
+          + '(it is not valid JSON). Fix or move that file and run this again; nothing in it was changed.');
+      }
+      throw e;
+    }
     const m = readMarker(root);
     if (m) writeMarker(root, { ...m, enabled: false });
     if (!was && !m) fail(`${root} is not a registered project`);

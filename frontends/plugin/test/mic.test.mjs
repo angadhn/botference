@@ -112,6 +112,52 @@ w.navigator.mediaDevices.getUserMedia = async () => { const e = new Error('denie
 mic().click();
 ok('refusal is said', await until(() => /microphone permission was refused/.test(root.textContent)));
 
+// A SECOND TAP WHILE THE PERMISSION PROMPT IS UP. The browser's "allow the
+// microphone?" prompt can sit there for as long as the reader likes. A tap in
+// that time used to start a second recorder: the first stream was overwritten
+// and never stopped, and the microphone stayed live until the tab closed.
+{
+  const streams = [];
+  const pending = [];
+  w.navigator.mediaDevices.getUserMedia = () => new Promise(resolve => {
+    pending.push(() => {
+      const st = { stopped: 0, getTracks: () => [{ stop() { st.stopped++; } }] };
+      streams.push(st);
+      resolve(st);
+    });
+  });
+  const startedBefore = rec.started;
+  mic().click();
+  ok('asking: the prompt is up', await until(() => pending.length === 1));
+  mic().click();
+  mic().click();
+  ok('a tap while asking does not ask again', pending.length === 1, String(pending.length));
+  pending.shift()();
+  ok('the one answer starts one recording', await until(() => mic().classList.contains('recording')));
+  ok('one recorder, not two', rec.started === startedBefore + 1, String(rec.started - startedBefore));
+  mic().click();
+  ok('the clip goes off as usual', await until(() => !mic().classList.contains('recording') && !mic().classList.contains('transcribing')));
+  ok('and every stream that was opened is closed', streams.length === 1 && streams.every(st => st.stopped > 0),
+    JSON.stringify(streams.map(st => st.stopped)));
+
+  // Esc while the prompt is up: the stream that arrives afterwards is nobody's
+  // and goes off at once
+  mic().click();
+  ok('asking again', await until(() => pending.length === 1));
+  box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+  await tick(10);
+  pending.shift()();
+  await tick(20);
+  ok('a stream that arrives after the reader gave up is stopped at once', streams.length === 2 && streams[1].stopped > 0);
+  ok('and nothing records', !mic().classList.contains('recording'));
+  mic().click();
+  ok('and the next tap asks afresh', await until(() => pending.length === 1));
+  pending.shift()();
+  await until(() => mic().classList.contains('recording'));
+  box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true }));
+  await tick(20);
+}
+
 // a companion that cannot transcribe: no mic at the next opening
 statusOk = false;
 drawer.close();

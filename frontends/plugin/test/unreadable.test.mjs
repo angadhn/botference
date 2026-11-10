@@ -126,6 +126,31 @@ await test('a broken portfolio refuses a new project and makes no folder', async
   assert.equal(fs.readFileSync(pf, 'utf8'), '{"version":1,"projects":[{"id":"orbits"}],}');
 });
 
+// THE GUEST GRANTS (hosted.mjs). grants.json is hand-edited by the owner and
+// grant-usage.json is the daily counter the companion writes. Damaged, the
+// first used to read as "nobody granted" and the second as "nothing used" —
+// and was then written over, which also handed every guest a fresh budget.
+await test('a damaged grants or usage file is "cannot tell": it refuses, and nothing is written over', async () => {
+  const { createHosted } = await import('../hosted.mjs');
+  const dir = tmp('grants');
+  const h = createHosted({ hosted: false, dir, ownerHandle: () => 'owner', ownerPassword: 'x' });
+  const GRANTS = '{"ann": {"agents": true, "daily_cap": 3},}\n';
+  fs.writeFileSync(h.grantsFile, GRANTS);
+  said.length = 0;
+  assert.throws(() => h.grantFor('ann'), e => e.code === 'EUNREADABLEJSON');
+  assert.equal(fs.readFileSync(h.grantsFile, 'utf8'), GRANTS);
+  assert.ok(said.some(l => l.includes('grants.json')), 'said in the log');
+  fs.writeFileSync(h.grantsFile, '{"ann": {"agents": true, "daily_cap": 3}}\n');
+  assert.deepEqual(h.grantFor('ann'), { agents: true, daily_cap: 3 }, 'mended, it is read again');
+  const USAGE = `{"date": "${new Date().toISOString().slice(0, 10)}", "counts": {"ann": 3}`;
+  fs.writeFileSync(h.usageFile, USAGE);
+  assert.throws(() => h.grantUsed('ann'), e => e.code === 'EUNREADABLEJSON');
+  assert.throws(() => h.grantSpend('ann'), e => e.code === 'EUNREADABLEJSON');
+  assert.equal(fs.readFileSync(h.usageFile, 'utf8'), USAGE, 'the counter is not rewritten from empty');
+  fs.rmSync(h.usageFile);
+  assert.equal(h.grantSpend('ann'), 1, 'a MISSING counter is still started');
+});
+
 await test('the companion starts on a broken config, keeps it, and a settings change says why it cannot', async () => {
   const root = tmp('server');
   const dir = path.join(root, '.botference', 'plugin');

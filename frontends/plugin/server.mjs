@@ -102,6 +102,9 @@ const hosted = createHosted({
   ownerPassword: process.env.PLUGIN_OWNER_PASSWORD || '',
 });
 const NO_GRANT_REASON = "the owner hasn't granted you bot access";
+// …and when the owner's grants (or the daily count) file is damaged: the bots
+// are off for guests until the owner fixes it, and nobody's file is rewritten
+const GRANTS_UNREADABLE_REASON = "bot access for guests is paused: the owner's access settings can't be read right now";
 const AGENTS_OFF_REASON = 'agents are off on this companion';
 const AGENTS_OFF_ERROR = "agents are off — restart 'botference plugin' with claude/codex CLIs available";
 const UNCONFIRMED_REASON = 'this page is in a council folder you have not confirmed yet';
@@ -511,7 +514,7 @@ function chatFor(url) {
   // "leave this page alone" is about the files, so the page goes back to being
   // the ordinary web page it looks like — discussable, with nothing writable —
   // rather than refusing every turn forever over a question already answered.
-  if (bg && bg.source_path && !bg.declined) {
+  if (bg && bg.source_path && bg.state !== 'no') {
     if (!bg.confirmed) return null;
     return blogChatFor(bg.root, bg.kind);
   }
@@ -596,7 +599,45 @@ function applyKeyChange() {
 //
 // A reload cannot loop: reloading a tab starts no turn, and the event is only
 // ever emitted from a turn-end.
-const turnScans = new Map();     // page url → {dir, before}
+//
+// THE WATCH ON A PAGE, named. A page is in one of two modes:
+//   idle      no census open for it
+//   watching  a census (and, on an owned post, a file watch) is open, and it
+//             belongs to ONE turn — the one whose turn-start opened it
+// The mode lives in one record per page and moves only through setCensus,
+// which refuses `watching → idle` unless the turn ending is the turn that
+// started the watch. It used to be "is there a Map entry for this page", with
+// no turn attached: a queued message dropped by "+ new chat" reported a
+// turn-end of its own, consumed the running turn's entry and stopped its file
+// watch, so whatever the bots wrote for the rest of that turn was never put
+// back and never reported.
+const CENSUS_MODES = Object.freeze(['idle', 'watching']);
+const census = new Map();        // page url → {mode: 'watching', turnId, seen}
+const IDLE_CENSUS = Object.freeze({ mode: 'idle', turnId: null, seen: null });
+const censusOf = url => (url && census.get(url)) || IDLE_CENSUS;
+// The open censuses, for noteOverlap: every page currently watching.
+const watchingCensuses = () => [...census].filter(([, c]) => c.mode === 'watching');
+// The one setter. `watching` opens (or replaces a stale) census for `turnId`;
+// `idle` closes it and hands back what was being watched — or refuses, and
+// hands back null, when the turn ending is not the one that started it.
+function setCensus(url, next, turnId, seen = null) {
+  if (!CENSUS_MODES.includes(next)) throw new Error(`census: unknown mode ${next}`);
+  if (!url) return null;
+  const id = turnId == null ? null : String(turnId);
+  const cur = censusOf(url);
+  if (next === 'watching') {
+    census.set(url, { mode: 'watching', turnId: id, seen });
+    return seen;
+  }
+  if (cur.mode !== 'watching') return null;
+  if (cur.turnId !== id) {
+    console.error(`[census] ${url}: turn ${id || '(none)'} ended, but the watch belongs to turn `
+      + `${cur.turnId || '(none)'} — kept`);
+    return null;
+  }
+  census.delete(url);
+  return cur.seen;
+}
 // The last change set per page, for a tab that reconnected across it
 // (GET /project-changes). Bounded, and the newest wins.
 const lastChanges = new Map();   // page url → the event payload
@@ -666,7 +707,7 @@ function artifactSnapshot(art) {
 function noteOverlap(url, seen) {
   seen.t0 = Date.now();
   seen.others = new Set();
-  for (const [u, other] of turnScans) {
+  for (const [u, { seen: other }] of watchingCensuses()) {
     if (u === url || !other || other.dir !== seen.dir) continue;
     if (other.source) seen.others.add(other.source);
     if (seen.source) (other.others ||= new Set()).add(seen.source);
@@ -691,9 +732,11 @@ function claimOnce(url, seen, changed) {
   return mine;
 }
 
-function noteTurnStart(url) {
+function noteTurnStart(url, turnId) {
   // a turn-start with no turn-end for the last one: that watch is finished
-  const stale = url ? turnScans.get(url) : null;
+  // (a page is one lane, so its turns never overlap — a census still open
+  // here belongs to a turn whose end was lost)
+  const stale = censusOf(url).seen;
   if (stale && stale.watch) { try { stale.watch.stop(); } catch { /* gone */ } }
   const writing = authoringFor(url);
   if (writing) {
@@ -718,13 +761,13 @@ function noteTurnStart(url) {
       }
     }
     noteOverlap(url, seen);
-    turnScans.set(url, seen);
+    setCensus(url, 'watching', turnId, seen);
     return;
   }
   const art = url ? artifactOf(url) : null;
-  if (!art) return noteBlogTurnStart(url);
+  if (!art) return noteBlogTurnStart(url, turnId);
   if (!art.confirmed || !art.project_dir) return;
-  turnScans.set(url, {
+  setCensus(url, 'watching', turnId, {
     dir: art.project_dir,
     before: workspace.scanProject(art.project_dir),
     // …and the document itself, which is the half the census cannot give:
@@ -747,7 +790,7 @@ function noteTurnStart(url) {
 //     MARKDOWN SOURCE, not the page the reader is looking at. The rendered
 //     page is a photocopy; diffing it would attribute jekyll's own layout
 //     churn to the bots.
-function noteBlogTurnStart(url) {
+function noteBlogTurnStart(url, turnId) {
   const bg = url ? blogOf(url) : null;
   if (!bg || !bg.confirmed || !bg.source_path) return;
   const seen = {
@@ -795,7 +838,7 @@ function noteBlogTurnStart(url) {
     }
   }
   noteOverlap(url, seen);
-  turnScans.set(url, seen);
+  setCensus(url, 'watching', turnId, seen);
 }
 
 // One source file's bytes, capped — the same read artifactSnapshot makes, and
@@ -1077,9 +1120,9 @@ function registerNewSites(ev) {
 
 function reportProjectChanges(ev) {
   const url = ev && ev.url;
-  const seen = url ? turnScans.get(url) : null;
+  // only the turn that opened the watch may close it (setCensus)
+  const seen = setCensus(url, 'idle', ev && ev.turn_id);
   if (!seen) return;
-  turnScans.delete(url);
   if (seen.authoring) { void reportAuthoringChanges(url, seen, ev); return; }
   if (seen.blog) return reportBlogChanges(url, seen, ev);
   const art = artifactOf(url);
@@ -1527,7 +1570,8 @@ function roundTurn(ev, phase) {
   if (isWrap) r.wrap_left = 0;
   else r.pending.delete(id);
   r.answered++;
-  r.current = null;
+  // a dropped turn never had the floor, so whoever has it keeps it
+  if (phase !== 'dropped') r.current = null;
   // The round is over when nothing is left to answer. Note this counts a turn
   // the bridge STRANDED (chat.mjs emits turn-end for every job it drops), which
   // is right: the strip must not spin forever because a bridge died.
@@ -1634,7 +1678,7 @@ function onChatEvent(ev) {
     if (ev.kind === 'reply' && ev.msg?.author === draft.agent && ev.msg.kind !== 'tools'
         && /blog-draft/.test(ev.msg.text)) draft.reply = ev.msg.text;
     if (ev.kind === 'error') draft.error = ev.error || 'The drafting turn failed.';
-    if (ev.kind === 'turn-end') void finishDraft(ev, draft);
+    if (ev.kind === 'turn-end' || ev.kind === 'turn-dropped') void finishDraft(ev, draft);
   }
   // chat.mjs knows nothing about config.json; the verbosity a tab renders
   // rides the same event as everything else in that panel
@@ -1644,7 +1688,16 @@ function onChatEvent(ev) {
   }
   // the turn boundary is where the census is taken; a summary job (silent by
   // construction) emits neither of these, so filing a thread never counts
-  if (ev.type === 'chat' && ev.kind === 'turn-start') { noteTurnStart(ev.url); roundTurn(ev, 'start'); }
+  if (ev.type === 'chat' && ev.kind === 'turn-start') { noteTurnStart(ev.url, ev.turn_id); roundTurn(ev, 'start'); }
+  // A turn that was waiting and never started — dropped by "+ new chat"
+  // (chat.mjs dropQueued). Its own kind, never a turn-end: it opened no census
+  // and must not close the running turn's. The round strip still counts it as
+  // answered, or it would spin for a message that is never coming.
+  if (ev.type === 'chat' && ev.kind === 'turn-dropped') {
+    roundTurn(ev, 'dropped');
+    broadcast(ev);
+    return;
+  }
   if (ev.type === 'chat' && ev.kind === 'turn-end') {
     broadcast(ev);
     roundTurn(ev, 'end');
@@ -1879,7 +1932,7 @@ function onChatEvent(ev) {
             // …and remembered on the turn, for the safety net at turn-end
             // (reportBlogChanges → scratch.placeFromScratch): a picture a card
             // proposes that the book has not got, but the scratch folder has
-            const seen = turnScans.get(ev.url);
+            const seen = censusOf(ev.url).seen;
             if (seen && seen.blog) seen.cards = [...(seen.cards || []), ...lifted.cards];
           }
         }
@@ -2185,12 +2238,20 @@ const questionable = thread => !!thread && !thread.resolved;
 // The message itself is always kept — a refusal loses the comment nowhere.
 function guestRefusal(me) {
   if (!HOSTED || me.owner) return null;
-  const grant = hosted.grantFor(me.handle);
-  if (!grant) return NO_GRANT_REASON;
-  const used = hosted.grantUsed(me.handle);
-  if (used >= grant.daily_cap) return `you have used today's agent budget (${used} of ${grant.daily_cap})`;
-  hosted.grantSpend(me.handle);
-  return null;
+  // a grants or usage file that is there but damaged is "cannot tell", never
+  // "no grants" or "nothing used" (hosted.mjs): the guest is told plainly and
+  // nothing is written over the owner's file
+  try {
+    const grant = hosted.grantFor(me.handle);
+    if (!grant) return NO_GRANT_REASON;
+    const used = hosted.grantUsed(me.handle);
+    if (used >= grant.daily_cap) return `you have used today's agent budget (${used} of ${grant.daily_cap})`;
+    hosted.grantSpend(me.handle);
+    return null;
+  } catch (e) {
+    if (!e || e.code !== 'EUNREADABLEJSON') throw e;
+    return GRANTS_UNREADABLE_REASON;
+  }
 }
 
 // Page chat on a CONFIRMED project artifact page is not "a chat about a web
@@ -3205,8 +3266,11 @@ export function handler(req, res) {
         // chat" link. Owner-machine address by default; config can point it
         // at a hosted council instead.
         council_web: String(store.readConfig().council_web || 'http://localhost:4187'),
+        // the reader's answer about this root, as ONE value ('unasked' |
+        // 'yes' | 'no'); the drawer draws the question, the working page or
+        // "left alone" from it. `confirmed` is the same answer read as a yes.
+        state: art.state,
         confirmed: art.confirmed,
-        declined: art.declined,
         // projects/<id>/TASKS.md: the project's own standing list, parsed
         // here so the drawer never parses markdown for it. Omitted when the
         // project keeps none — a missing key, not an empty section. Only on
@@ -5121,9 +5185,20 @@ export function handler(req, res) {
       const at = threadOf(res, data);
       if (!at) return;
       const { page, thread } = at;
-      thread.orphaned = !!data.orphaned;
-      store.savePage(page);
-      broadcast({ type: 'page', url: page.url });
+      // Stored, and NOT broadcast. "Can this passage be found?" is a verdict
+      // each TAB reaches for itself — one tab may still be loading, another
+      // may have the section folded — and every tab already badges from its
+      // own verdict, never from this field. Telling every tab to refetch on
+      // it made two tabs that disagreed flip it back and forth for ever: each
+      // refetch brought the other tab's answer, which each tab then
+      // "corrected". The record keeps the latest verdict for the places that
+      // read it later (the Markdown export, the page view), and the next
+      // refetch any real change causes carries it.
+      const now = !!data.orphaned;
+      if (!!thread.orphaned !== now) {
+        thread.orphaned = now;
+        store.savePage(page);
+      }
       ok(res, { thread });
     });
   }

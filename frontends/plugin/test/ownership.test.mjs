@@ -372,6 +372,28 @@ try {
     await new Promise(r => setTimeout(r, 600));
   });
 
+  // THE WATCH BELONGS TO A TURN (server.mjs setCensus). Turn 1 is running, a
+  // second message waits behind it, and the reader presses "+ new chat": the
+  // waiting message is dropped. It used to be dropped with a turn-end of its
+  // own, which closed turn 1's watch — so what the bot then wrote into the
+  // owner's words stayed in the file, with no put-back and no card.
+  await test('"+ new chat" with a message waiting does not end the running turn\'s watch', async () => {
+    const edited = write(work, 'edit-newchat.md', ORIGINAL.replace('energy. EpochAI', 'energy. Slipped in after a fresh chat. EpochAI'));
+    await POST(base, '/reply', { url, text: `@codex slow tidy [mock:sleep:1500] [mock:copy:${edited}|${source}]` });
+    await waitFor(() => inputs(log).some(s => s.includes('slow tidy')), 'turn 1 under way');
+    const queued = await POST(base, '/reply', { url, text: '@claude a second thought' });
+    assert.equal(queued.json.queued, true);
+    const fresh = await POST(base, '/page-chat-new', { url });
+    assert.equal(fresh.status, 200, JSON.stringify(fresh.json));
+    // turn 1 now writes, replies and ends
+    await waitFor(async () => (await page()).page_chat.some(m => m.author === 'botference' && (m.suggestions || []).length
+      && /Slipped in/.test(JSON.stringify(m.suggestions))), 'the put-back card', 8000);
+    assert.equal(fs.readFileSync(source, 'utf8'), ORIGINAL, 'the owner\'s words were put back');
+    assert.ok(!inputs(log).some(s => s.includes('a second thought')), 'the waiting message was dropped, not sent');
+    await new Promise(r => setTimeout(r, 600));
+    fs.writeFileSync(source, ORIGINAL);
+  });
+
   const batchOf = (id, edits) => ({ schema: 'botference.figure-edits/2', batch_id: id,
     page: { url, path: '/my-post/', title: 'My post', source: '_notes/my-post.md' }, edits });
   const prose = (id, original, replacement, block) => ({ edit_id: id, kind: 'text',

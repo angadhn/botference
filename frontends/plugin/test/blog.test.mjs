@@ -312,12 +312,12 @@ await test('a page whose served title is another site\'s gets no source to write
 
 await test('confirming the repo is a separate, kept answer', async () => {
   const root = blog.listSites().find(s => s.serve_origin === 'http://localhost:4000').root;
-  assert.equal(blog.rootState(root), '');
+  assert.equal(blog.rootState(root), 'unasked');
   blog.setRootState(root, true);
   assert.equal(blog.rootState(root), 'yes');
   assert.equal(blog.blogPageFor('http://localhost:4000/about/').confirmed, true);
   blog.setRootState(root, false);
-  assert.equal(blog.blogPageFor('http://localhost:4000/about/').declined, true);
+  assert.equal(blog.blogPageFor('http://localhost:4000/about/').state, 'no');
   blog.setRootState(root, true);
 });
 
@@ -382,7 +382,7 @@ await test('a file of a DECLARED but unconfirmed root is still a page, and says 
   const f = path.join(root, 'assets', 'imgs', 'ai-2040', 'plan-a-scrolly.html');
   blog.setRootState(root, false);
   const no = blog.blogPageFor('file://' + f);
-  assert.equal(no.declined, true, 'a NO is kept as firmly as a YES');
+  assert.equal(no.state, 'no', 'a NO is kept as firmly as a YES');
   blog.setRootState(root, true);
   assert.equal(blog.blogPageFor('file://' + f).confirmed, true);
 });
@@ -545,7 +545,7 @@ console.log('\ncompanion — blog source pages');
     const r = await POST(base, '/blog-site', { serve_origin: ORIGIN, root });
     assert.equal(r.status, 200);
     assert.equal(r.json.site.root, root);
-    assert.equal(r.json.state, '', 'declared, not yet confirmed');
+    assert.equal(r.json.state, 'unasked', 'declared, not yet confirmed');
   });
 
   await test('GET /blog-page maps the url to its markdown source', async () => {
@@ -1229,6 +1229,31 @@ await test('the rebuild scheduler runs one build for a burst of changes, one at 
   assert.equal(bad[0].code, 3);
   assert.deepEqual(bad[0].tail, ['broken'], 'the output rides the result for the drawer');
   assert.ok(lines.some(l => l.includes('FAILED')), 'and the companion log says so');
+});
+
+// A BUILD KILLED AT ITS TIME LIMIT whose command started something that keeps
+// the output open (a backgrounded step that ignores the stop signal) never
+// reports closed. The root used to stay "running" for ever, and every later
+// rebuild waited behind it. The time limit now ends the build by itself.
+await test('a build that outlives its time limit is ended by the limit, and the next build runs', async () => {
+  const { createRebuilder, REBUILD_MODES } = await import(path.join(PLUGIN, 'rebuild.mjs'));
+  assert.deepEqual([...REBUILD_MODES], ['idle', 'waiting', 'building', 'building-run-again']);
+  const root = book('stuck-book');
+  const rb = createRebuilder({ log: () => {}, delayMs: 10, timeoutMs: 300 });
+  const stuck = [];
+  rb.schedule({ root, rebuild: "(trap '' TERM; sleep 4) & wait" }, r => stuck.push(r));
+  await waitFor(() => rb.mode(root) === 'building', 'the stuck build to start');
+  const after = [];
+  rb.schedule({ root, rebuild: 'echo again >> built.flag' }, r => after.push(r));
+  assert.equal(rb.mode(root), 'building-run-again');
+  await waitFor(() => stuck.length, 'the time limit to end the stuck build', 1500);
+  assert.equal(stuck[0].ok, false);
+  assert.match(stuck[0].error, /time limit/);
+  await waitFor(() => after.length, 'the build queued behind it to run', 1500);
+  assert.equal(after[0].ok, true);
+  assert.equal(fs.readFileSync(path.join(root, 'built.flag'), 'utf8'), 'again\n');
+  await waitFor(() => !rb.busy(root), 'the root to go idle');
+  assert.equal(rb.mode(root), 'idle');
 });
 
 // The companion end, for a book: registration without a kind, the mapping on

@@ -878,6 +878,22 @@ const activeSessionOf = ev => {
 //   summonNote  The placement rule in short (blog.mjs summonPlacement), as
 //             BOTFERENCE_SUMMON_PLACEMENT, for the build agent a `summon:`
 //             line starts — it sees no envelope, only its brief.
+// Every turn gets an id when it is submitted, and every chat event about it
+// carries that id as `turn_id`. The companion's watch on a page (server.mjs
+// setCensus) is held BY a turn, and only the turn that started it may end it —
+// which needs a name for the turn that is the same in every child of the pool.
+let turnSeq = 0;
+const nextTurnId = () => `t${process.pid.toString(36)}-${Date.now().toString(36)}-${++turnSeq}`;
+
+// What the reader is told in the chat when the companion could not deal with
+// something the bots sent it. Plain words; the log has the details.
+const HANDLER_FAILED = {
+  reply: "A bot's reply arrived but could not be saved, so it is missing here. "
+    + "The companion's log has the details.",
+};
+const HANDLER_FAILED_OTHER = 'Something went wrong while the companion was handling this chat. '
+  + "The bots are still running; the companion's log has the details.";
+
 export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot = '',
   sitesRoot = '', denyBash = [], artifactsDir = '', artifactsLink = '', summonNote = '' }) {
   let proc = null;
@@ -917,7 +933,25 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   let lastModels = null;
   const effort = { ...EFFORT_DEFAULTS };
 
-  const emit = ev => { try { onEvent(ev); } catch { } };
+  // A handler that throws must not take the bot process down with it, and
+  // must not lose its event in silence either: it is logged with the chat and
+  // the event kind, and a chat event is answered with a plain error in that
+  // same chat, through the error path the drawer already draws.
+  const emit = ev => {
+    try { onEvent(ev); return; } catch (e) {
+      const kind = ev ? `${ev.type || '?'}${ev.kind ? `/${ev.kind}` : ''}` : '?';
+      const where = ev && ev.url ? ` for ${ev.url}${ev.target ? ` (${ev.target})` : ''}` : '';
+      console.error(`[chat] handling a ${kind} event${where} failed: ${(e && e.stack) || e}`);
+      if (!ev || ev.type !== 'chat' || !ev.url || ev.kind === 'error') return;
+      try {
+        onEvent({ type: 'chat', url: ev.url, target: ev.target,
+          ...(ev.turn_id ? { turn_id: ev.turn_id } : {}),
+          kind: 'error', error: HANDLER_FAILED[ev.kind] || HANDLER_FAILED_OTHER });
+      } catch (e2) {
+        console.error(`[chat] …and telling the chat${where} failed too: ${(e2 && e2.message) || e2}`);
+      }
+    }
+  };
   // control turns carry no page: they never emit chat events
   //
   // …and a SUMMARY turn is silent by construction. It is the reader's filing
@@ -952,13 +986,14 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         job.cardSettled = true;
         emit({ type: 'card', url: job.url, card_id: job.card_id, error: fields.error || 'the turn failed' });
       }
-      if (fields.kind === 'turn-end' && !job.cardSettled) {
+      if ((fields.kind === 'turn-end' || fields.kind === 'turn-dropped') && !job.cardSettled) {
         job.cardSettled = true;
         emit({ type: 'card', url: job.url, card_id: job.card_id, error: 'the turn ended without a reply' });
       }
       return;
     }
     emit({ type: 'chat', url: job.url, target: job.target,
+      ...(job.turnId ? { turn_id: job.turnId } : {}),
       ...(job.draftId ? { draft_id: job.draftId } : {}), ...fields });
   };
   // Nothing goes to the bridge with half a character in it. A maths symbol
@@ -971,7 +1006,17 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   // on a book page died at start. So the halves are mended here, once, at
   // the one door everything leaves through (scrubSurrogates), as well as at
   // the cuts themselves (cutText).
-  const send = obj => { if (proc && available) proc.stdin.write(JSON.stringify(scrubSurrogates(obj)) + '\n'); };
+  // A write to a child that has just died fails with EPIPE — as an `error`
+  // event on stdin (listened for in start(), or it would throw out of the
+  // event loop) or, on a stream already torn down, synchronously here. Either
+  // way the child's own `exit` is what moves the lifecycle (died → reset), so
+  // all this does is log.
+  const send = obj => {
+    if (!proc || !available) return;
+    try { proc.stdin.write(JSON.stringify(scrubSurrogates(obj)) + '\n'); } catch (e) {
+      console.error(`[bridge] could not write to the bot process: ${(e && e.message) || e}`);
+    }
+  };
 
   function command() {
     if (process.env.PLUGIN_BRIDGE_CMD) return JSON.parse(process.env.PLUGIN_BRIDGE_CMD);
@@ -1060,6 +1105,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       }
     });
     child.stderr.on('data', d => console.error(`[bridge] ${String(d).trim().slice(0, 500)}`));
+    child.stdin.on('error', err => console.error(`[bridge] the bot process stopped reading: ${(err && err.message) || err}`));
     child.on('error', err => { if (child === proc) died(err.message); });
     child.on('exit', code => { if (child === proc) died(code ? `bridge exited (code ${code})` : ''); });
   }
@@ -1158,7 +1204,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     status: statusSnapshot(), effort: effortSnapshot(), commands: commandTable() });
 
   function handle(ev) {
-    if (ev.type === 'ready') { onBridgeReady(); return; }
+    if (ev.type === 'ready') { onBridgeReady().catch(readyFailed); return; }
     if (ev.type === 'completion_context') {
       lastCtx = ev;
       // …and remember what it will accept, so the pickers still offer it after
@@ -1362,6 +1408,23 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     if (jobs.length) queue.unshift(...jobs.map(text => ({ control: text, url: null, target: null })));
   }
 
+  // A step's `after` (or anything else in onBridgeReady) threw. The child is
+  // between steps — it said `ready` — so ending the turn in flight here leaves
+  // it in step with us, exactly as a refused /resume does; the reader is told
+  // in that turn's chat, and the lane moves on. Nothing else is reset: the
+  // child is alive and booted.
+  function readyFailed(e) {
+    console.error(`[chat] after a ready from the bot process: ${(e && e.stack) || e}`);
+    if (current) {
+      const { job, agents } = current;
+      current = null;
+      chat(job, { kind: 'error', error: 'This turn stopped because of a problem in the companion. '
+        + "Please send your message again; the companion's log has the details." });
+      chat(job, { kind: 'turn-end', agents: agents || [] });
+    }
+    try { pump(); } catch (e2) { console.error(`[chat] ${(e2 && e2.stack) || e2}`); }
+  }
+
   async function onBridgeReady() {
     ready = true;
     if (!running) { running = true; emit({ type: 'bridge', state: 'running' }); queuePrefTurns(); }
@@ -1458,11 +1521,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         steps.push({ text: `/project open ${proj.id}`, before: () => { openedProject = proj.id; } });
       }
     } else if (!bootstrapped) {
-      // tolerate "already exists" — the create is idempotent from our side
-      steps.push({ text: `/project create ${PROJECT_TITLE}` });
-      steps.push({ text: `/project open ${PROJECT_ID}` });
-      bootstrapped = true;
-      openedProject = PROJECT_ID;
+      // tolerate "already exists" — the create is idempotent from our side.
+      // Recorded as the steps GO OUT (`before`), never while planning: a plan
+      // that throws further down is a turn that never started, and must not
+      // leave this child believing it was set up.
+      steps.push({ text: `/project create ${PROJECT_TITLE}`, before: () => { bootstrapped = true; } });
+      steps.push({ text: `/project open ${PROJECT_ID}`, before: () => { openedProject = PROJECT_ID; } });
     }
     const sid = page.session_id || null;
     let sidBefore = null; // whatever the bridge was on when /new went out
@@ -1687,13 +1751,31 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
   }
 
   function pump() {
-    if (!ready || current || !queue.length || !available) return;
-    const job = queue.shift();
-    // the drawer spins only the agents this turn actually engages
-    const agents = job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint);
-    current = { job, agents, steps: planSteps(job), i: 0, capturing: false };
-    chat(job, { kind: 'turn-start', agents });
-    sendStep();
+    // the front of the queue is PLANNED before it is taken off: a plan that
+    // throws (a page record that cannot be read, say) used to have already
+    // shifted the message out of the queue, and it vanished without a word
+    while (ready && !current && queue.length && available) {
+      const job = queue[0];
+      // the drawer spins only the agents this turn actually engages
+      const agents = job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint);
+      let steps;
+      try { steps = planSteps(job); } catch (e) {
+        // it cannot be sent, and leaving it at the front would block the lane
+        // for ever: it leaves the queue AND the reader is told, in its chat,
+        // as a turn that never started
+        queue.shift();
+        console.error(`[chat] could not prepare a turn for ${job.url || job.control}: ${(e && e.stack) || e}`);
+        chat(job, { kind: 'error', error: 'This message could not be sent to the bots because of a problem '
+          + "in the companion. Please send it again; the companion's log has the details." });
+        chat(job, { kind: 'turn-dropped', agents });
+        continue;
+      }
+      queue.shift();
+      current = { job, agents, steps, i: 0, capturing: false };
+      chat(job, { kind: 'turn-start', agents });
+      sendStep();
+      return;
+    }
   }
 
   // The nearest turn of the same page ahead of `job` — queued, or the one in
@@ -1716,7 +1798,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // a comment carrying an @-mention: queue a turn for its page/thread
     submit(job) {
       if (job.articleText) articleByUrl.set(job.url, cutText(job.articleText, ARTICLE_MAX));
-      const mine = { ...job, target: job.target || PAGE_CHAT };
+      const mine = { ...job, target: job.target || PAGE_CHAT, turnId: nextTurnId() };
       queue.push(mine);
       // WHY this turn is not answering yet, sampled before the bridge is
       // asked to start: a cold bridge takes ten or twenty seconds to come up,
@@ -1817,9 +1899,12 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       const dropped = queue.filter(j => j && j.url === u);
       if (!dropped.length) return 0;
       for (const j of dropped) queue.splice(queue.indexOf(j), 1);
+      // …and each is ended as `turn-dropped`, not `turn-end`: it never
+      // started, and a turn-end is what closes the RUNNING turn's watch on
+      // this page (server.mjs setCensus) — the turn still in flight here.
       for (const job of dropped) {
         chat(job, { kind: 'error', error: 'this page started a fresh chat — the turn waiting behind it was dropped' });
-        chat(job, { kind: 'turn-end', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint) });
+        chat(job, { kind: 'turn-dropped', agents: job.control ? [] : routedAgents(job.text, job.untaggedAll, job.routeHint) });
       }
       return dropped.length;
     },

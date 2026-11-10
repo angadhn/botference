@@ -1088,6 +1088,11 @@ export const LIBRARY_URL = 'bfp://library';
 export const LIBRARY_TITLE = 'Library';
 export const isLibrary = u => String(u || '') === LIBRARY_URL || normUrl(u) === LIBRARY_URL;
 
+// The reader's answer to "is this folder yours?" — a council root
+// (workspace.mjs) or a site's repo (blog.mjs). One value, three names, and it
+// is shipped to the page as that one value (`state`), never as a pair of
+// booleans the page could set out of step with each other.
+export const ROOT_ANSWERS = Object.freeze(['unasked', 'yes', 'no']);
 export const PAGE_CHAT = '__page__';
 export const findThread = (page, id) => (page.threads || []).find(t => t.id === id) || null;
 

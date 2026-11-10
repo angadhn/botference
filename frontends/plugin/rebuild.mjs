@@ -38,6 +38,27 @@ export const REBUILD_DEBOUNCE_MS = 1500;
 export const REBUILD_TIMEOUT_MS = 30 * 60 * 1000;
 const TAIL_LINES = 12;
 
+// THE MODES OF ONE ROOT, named, in one field, moved only by setMode:
+//   idle                nothing asked for (the root has no record at all)
+//   waiting             asked for; the debounce is running
+//   building            the command is running
+//   building-run-again  running, and a change landed meanwhile: one more
+//                       build starts when this one ends
+// The time limit ends `building` itself. It used to rely on the child's
+// `close`, which never comes while anything the command started still holds
+// its output open — so a build killed at the limit stayed "running" for ever
+// and every later rebuild of that root waited behind it.
+export const REBUILD_MODES = Object.freeze(['idle', 'waiting', 'building', 'building-run-again']);
+const MOVES = Object.freeze({
+  idle: ['waiting'],
+  waiting: ['waiting', 'building'],
+  building: ['building-run-again', 'idle'],
+  'building-run-again': ['building-run-again', 'building'],
+});
+// how long a build killed at its time limit gets to go quietly before the
+// whole process group is killed outright
+const KILL_GRACE_MS = 5000;
+
 /**
  * A scheduler. `schedule(site, waiter)` asks for a build of `site.root` with
  * `site.rebuild`; `waiter` (optional) is called with the result of the build
@@ -52,13 +73,35 @@ export function createRebuilder({
   // builder by its absolute path for exactly that reason.
   shell = '/bin/sh',
 } = {}) {
-  const roots = new Map();   // root → {timer, running, again, cmd, waiters, next}
+  const roots = new Map();   // root → {mode, timer, cmd, waiters}; absent = idle
+  const modeOf = root => (roots.get(root) || { mode: 'idle' }).mode;
+
+  // The one way a root's mode changes. An illegal move is a bug here, never
+  // a reader's doing, so it throws rather than carrying on in a mode nobody
+  // can name.
+  function setMode(root, next) {
+    if (!REBUILD_MODES.includes(next)) throw new Error(`rebuild: unknown mode ${next}`);
+    const from = modeOf(root);
+    if (!MOVES[from].includes(next)) throw new Error(`rebuild: ${root}: ${from} → ${next} is not a move`);
+    if (next === 'idle') { roots.delete(root); return; }
+    let st = roots.get(root);
+    if (!st) { st = { mode: next, timer: null, cmd: '', waiters: [] }; roots.set(root, st); }
+    st.mode = next;
+  }
+
+  // A process group, so the time limit reaches whatever the command started
+  // (a shell's children are what hold the pipes open), with the child itself
+  // as the fallback where there is no group to signal.
+  const killTree = (child, sig) => {
+    try { process.kill(-child.pid, sig); return; } catch { /* no group */ }
+    try { child.kill(sig); } catch { /* gone */ }
+  };
 
   function start(root) {
     const st = roots.get(root);
     if (!st) return;
     st.timer = null;
-    st.running = true;
+    setMode(root, 'building');
     const waiters = st.waiters;
     st.waiters = [];
     const cmd = st.cmd;
@@ -75,49 +118,65 @@ export function createRebuilder({
         if (tail.length > TAIL_LINES) tail.shift();
       }
     };
+    // Once per build: whichever of close, error or the time limit comes first
+    // ends it, and the others find it ended.
+    let ended = false;
+    let limit = null;
     const finish = res => {
+      if (ended) return;
+      ended = true;
+      clearTimeout(limit);
       const out = { ...res, ms: Date.now() - t0, tail: tail.slice(), cmd, root };
-      log(`${tag} ${out.ok ? 'done' : 'FAILED'} in ${(out.ms / 1000).toFixed(1)}s${out.ok ? '' : ` (${out.signal || `exit ${out.code}`})`}`);
-      st.running = false;
+      log(`${tag} ${out.ok ? 'done' : 'FAILED'} in ${(out.ms / 1000).toFixed(1)}s${out.ok ? '' : ` (${out.error || out.signal || `exit ${out.code}`})`}`);
       for (const w of waiters) { try { w(out); } catch { /* a waiter's fault is its own */ } }
-      if (st.again) { st.again = false; start(root); return; }
-      if (!st.waiters.length && !st.timer) roots.delete(root);
+      if (modeOf(root) === 'building-run-again') { start(root); return; }
+      setMode(root, 'idle');
     };
     try {
-      child = spawn(shell, ['-c', cmd], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+      child = spawn(shell, ['-c', cmd], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
+        detached: process.platform !== 'win32' });
     } catch (e) {
       finish({ ok: false, code: null, signal: null, error: String(e.message || e) });
       return;
     }
-    const kill = setTimeout(() => { try { child.kill('SIGTERM'); } catch { } }, timeoutMs);
+    limit = setTimeout(() => {
+      killTree(child, 'SIGTERM');
+      const hard = setTimeout(() => killTree(child, 'SIGKILL'), KILL_GRACE_MS);
+      hard.unref?.();
+      // nothing more from this build is waited for: its output stops here
+      try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* gone */ }
+      finish({ ok: false, code: null, signal: 'SIGTERM',
+        error: `stopped after ${Math.round(timeoutMs / 1000)}s, the time limit` });
+    }, timeoutMs);
     child.stdout.on('data', feed);
     child.stderr.on('data', feed);
-    let done = false;
     child.on('error', e => {
-      if (done) return; done = true; clearTimeout(kill);
       feed(String(e.message || e));
       finish({ ok: false, code: null, signal: null, error: String(e.message || e) });
     });
-    child.on('close', (code, signal) => {
-      if (done) return; done = true; clearTimeout(kill);
-      finish({ ok: code === 0, code, signal });
-    });
+    child.on('close', (code, signal) => finish({ ok: code === 0, code, signal }));
   }
 
   function schedule(site, waiter) {
     const root = site && site.root;
     const cmd = site && site.rebuild;
     if (!root || !cmd) return false;
-    let st = roots.get(root);
-    if (!st) { st = { timer: null, running: false, again: false, cmd, waiters: [] }; roots.set(root, st); }
+    const mode = modeOf(root);
+    if (mode === 'building' || mode === 'building-run-again') {
+      setMode(root, 'building-run-again');
+    } else {
+      setMode(root, 'waiting');
+    }
+    const st = roots.get(root);
     st.cmd = cmd;
     if (typeof waiter === 'function') st.waiters.push(waiter);
-    if (st.running) { st.again = true; return true; }
-    if (st.timer) clearTimeout(st.timer);
-    st.timer = setTimeout(() => start(root), delayMs);
+    if (st.mode === 'waiting') {
+      if (st.timer) clearTimeout(st.timer);
+      st.timer = setTimeout(() => start(root), delayMs);
+    }
     return true;
   }
 
-  const busy = root => { const st = roots.get(root); return !!(st && (st.running || st.timer)); };
-  return { schedule, busy };
+  const busy = root => modeOf(root) !== 'idle';
+  return { schedule, busy, mode: modeOf };
 }

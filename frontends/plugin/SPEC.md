@@ -1748,7 +1748,7 @@ companion; only botference itself writes there, saving the session.
 
 | Method | Path | Request | Response |
 |---|---|---|---|
-| GET | `/project-page?url=<enc>` | — | `{ok, artifact:{root, project_id, project_title, rel, path, confirmed, declined, via, ident_href?} \| null}` |
+| GET | `/project-page?url=<enc>` | — | `{ok, artifact:{root, project_id, project_title, rel, path, state, confirmed, via, ident_href?} \| null}` |
 | POST | `/council-root` | `{root, confirm:bool}` | `{ok, root, state:"yes"\|"no"}` (400 if not a council root); broadcasts `{"type":"council-root", root, state}` |
 | GET | `/project-sessions?url=<enc>` | — | `{ok, project_id, project_title, root, current, sessions:[{session_id,title,updated_at,created_at,entry_count}]}` (409 unconfirmed) |
 | GET | `/project-session?url=<enc>&sid=` | — | `{ok, session:{session_id,title,updated_at,project_id,msgs,truncated}}` |

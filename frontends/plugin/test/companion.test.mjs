@@ -668,6 +668,37 @@ async function main() {
     await POST(base, '/orphan', { url: PAGE1, thread_id: t1.id, orphaned: false });
   });
 
+  // TWO TABS THAT DISAGREE about whether a passage can be found (one still
+  // loading, one with the section folded) used to flip the flag for ever: each
+  // save told every tab to refetch, each refetch brought the other tab's
+  // verdict, and each tab "corrected" it. Two fake tabs, doing exactly what
+  // content.js does: on a `page` event, refetch, and post their own verdict
+  // when the record disagrees.
+  await test('two tabs that disagree about a lost passage do not flip it back and forth', async () => {
+    const from = stream.events.length;
+    let posts = 0;
+    const tab = verdict => ({
+      verdict, seen: from,
+      async step() {
+        const evs = stream.events.slice(this.seen);
+        this.seen = stream.events.length;
+        if (!evs.some(e => e.type === 'page' && e.url === PAGE1)) return;
+        const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+        const t = page.threads.find(x => x.id === t1.id);
+        if (!!t.orphaned !== this.verdict) { posts++; await POST(base, '/orphan', { url: PAGE1, thread_id: t1.id, orphaned: this.verdict }); }
+      },
+    });
+    const a = tab(true), b = tab(false);
+    posts++;
+    await POST(base, '/orphan', { url: PAGE1, thread_id: t1.id, orphaned: true });
+    const end = Date.now() + 800;
+    while (Date.now() < end) { await a.step(); await b.step(); await new Promise(r => setTimeout(r, 20)); }
+    assert.ok(posts <= 2, `the flag kept flipping: ${posts} saves in 0.8s`);
+    const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
+    assert.equal(page.threads.find(x => x.id === t1.id).orphaned, true, 'the verdict that was posted is stored');
+    await POST(base, '/orphan', { url: PAGE1, thread_id: t1.id, orphaned: false });
+  });
+
   // --- resolving a thread ------------------------------------------------
   // The reader's page has more comments on it than they can hold in their
   // head, so a thread can be marked handled: it leaves the drawer's main list

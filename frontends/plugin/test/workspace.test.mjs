@@ -207,7 +207,7 @@ console.log('\nworkspace — root confirmation');
 await test('a root is unanswered, then yes, then remembered', async () => {
   const store = await import(path.join(PLUGIN, 'store.mjs'));
   const root = council('confirm');
-  assert.equal(ws.rootState(root), '', 'never asked');
+  assert.equal(ws.rootState(root), 'unasked', 'never asked');
   assert.equal(ws.artifactState(artifact(root, 'spaceship-engineering').url).confirmed, false);
   ws.setRootState(root, true);
   assert.equal(ws.rootState(root), 'yes');
@@ -224,7 +224,8 @@ await test('a NO is kept as firmly as a yes', async () => {
   assert.equal(ws.rootState(root), 'no');
   const st = ws.artifactState(artifact(root, 'spaceship-engineering').url);
   assert.equal(st.confirmed, false);
-  assert.equal(st.declined, true, 'the extension must not attach at all');
+  assert.equal(st.state, 'no', 'the extension must not attach at all');
+  assert.equal(st.declined, undefined, 'one answer on the wire, not a pair of flags');
 });
 
 // ---------------------------------------------------------------------------
@@ -358,7 +359,7 @@ console.log('\nworkspace — the council web view');
     // honest source of candidates
     const unknown = council('cweb-unknown');
     artifact(unknown, 'spaceship-engineering', 'artifacts/lot3.2 rpod draft.review.html');
-    assert.equal(ws.rootState(unknown), '', 'sanity: never answered for');
+    assert.equal(ws.rootState(unknown), 'unasked', 'sanity: never answered for');
     const found = ws.artifactFor(localUrl);
     assert.equal(found.root, cwRoot, 'the known root answered, not the stranger');
     // …and a DECLINED root still resolves, so the answer stays "declined"
@@ -369,7 +370,7 @@ console.log('\nworkspace — the council web view');
     const st = ws.artifactState(`${LOCAL}/files/projects/ai-futures/index.html`);
     assert.ok(st, 'resolved');
     assert.equal(st.path, nb.path);
-    assert.equal(st.declined, true);
+    assert.equal(st.state, 'no');
   });
 }
 
@@ -613,7 +614,7 @@ console.log('\ncompanion — the project-page endpoints');
     assert.equal(r.json.artifact.project_title, 'Spaceship Engineering');
     assert.equal(r.json.artifact.root, root);
     assert.equal(r.json.artifact.confirmed, false);
-    assert.equal(r.json.artifact.declined, false);
+    assert.equal(r.json.artifact.state, 'unasked');
   });
 
   await test('the archive and the tail are refused until the root is confirmed', async () => {
@@ -862,10 +863,10 @@ console.log('\ncompanion — the project-page endpoints');
   await test('a declined root turns the page back into an ordinary file', async () => {
     const dr = council('declined-api');
     const da = artifact(dr, 'spaceship-engineering');
-    assert.equal((await GET(base, '/project-page?url=' + enc(da.url))).json.artifact.declined, false);
+    assert.equal((await GET(base, '/project-page?url=' + enc(da.url))).json.artifact.state, 'unasked');
     await POST(base, '/council-root', { root: dr, confirm: false });
     const r = await GET(base, '/project-page?url=' + enc(da.url));
-    assert.equal(r.json.artifact.declined, true);
+    assert.equal(r.json.artifact.state, 'no');
     assert.equal(r.json.artifact.confirmed, false);
   });
 

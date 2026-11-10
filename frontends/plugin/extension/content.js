@@ -197,7 +197,7 @@
     // local file, and nothing attaches to those. A repo the reader has already
     // said NO about counts as neither — the question was asked once and once
     // is the whole promise, exactly as it is for a council root.
-    if (!PROJECT && !(BLOG_AT_BOOT && !BLOG_AT_BOOT.declined)) return;
+    if (!PROJECT && !(BLOG_AT_BOOT && Drawer.rootAnswer(BLOG_AT_BOOT) !== 'no')) return;
   } else if (FILES_DOC && !PROJECT) {
     // A `no` here is not the end of the page, unlike above: an http document
     // that is not an artifact is still an ordinary web page and gets the
@@ -231,7 +231,7 @@
             answer({
               // a root the reader has already refused stays refused: the drawer
               // asked once, and once is the whole promise
-              artifact: art && !art.declined ? art : null,
+              artifact: art && Drawer.rootAnswer(art) !== 'no' ? art : null,
               blog: (d && d.blog) || null,
             });
           },
@@ -1716,7 +1716,7 @@
   const RP_RETRY_MS = 3000;
   const RP = { byCard: Object.create(null), hidden: Object.create(null), none: false, busy: false, queue: [] };
   let propCards = Object.create(null);
-  const rpOn = () => !!(BLOG_REC && BLOG_REC.rendered_preview && BLOG_REC.confirmed && !RP.none
+  const rpOn = () => !!(BLOG_REC && BLOG_REC.rendered_preview && Drawer.rootAnswer(BLOG_REC) === 'yes' && !RP.none
     && trackChanges && CAPS.highlights && window.BFPBlockDiff && document.querySelector('article.bd-article'));
   const rpSel = id => '[data-bfp-rp="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
   const rpOldSel = id => '[data-bfp-rp-old="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
@@ -3245,8 +3245,9 @@
         const r = await api('POST', '/council-root',
           { root: PROJECT && PROJECT.root, confirm: !!confirm });
         if (!r.ok) return failure(r);
-        if (PROJECT) PROJECT.confirmed = !!confirm;
-        return { ok: true, state: (r.data && r.data.state) || '' };
+        const state = (r.data && r.data.state) || '';
+        if (PROJECT && !Drawer.setRootAnswer(PROJECT, state)) Drawer.setRootAnswer(PROJECT, confirm ? 'yes' : 'no');
+        return { ok: true, state };
       },
       // ---- the draft behind a locally-served page of the reader's site ----
       // The one-time answer about a blog repo — the same contract, the same
@@ -4001,7 +4002,7 @@
           // the reader answered the confirmation in ANOTHER tab; every page
           // under that root stops asking (or starts working) at once
           if (PROJECT && PROJECT.root === ev.root) {
-            PROJECT.confirmed = ev.state === 'yes';
+            Drawer.setRootAnswer(PROJECT, ev.state);
             if (drawer) drawer.setProject(PROJECT);
           }
         } else if (ev.type === 'project-files') {
@@ -4230,8 +4231,8 @@
     }
     if (!blog) return { ok: false, message: 'This page is not part of a site registered with Discuss.' };
     if (blog.kind !== 'jekyll') return { ok: false, message: 'Figure edits are only taken on a Jekyll site.' };
-    if (blog.declined) return { ok: false, message: 'You told Discuss this repository is not your site.' };
-    if (!blog.confirmed) {
+    if (Drawer.rootAnswer(blog) === 'no') return { ok: false, message: 'You told Discuss this repository is not your site.' };
+    if (Drawer.rootAnswer(blog) !== 'yes') {
       return { ok: false, message: 'Open the Discuss drawer and confirm this is your site first.' };
     }
     if (blog.via === 'file') return { ok: false, message: 'Open this page through the local server, not as a file.' };

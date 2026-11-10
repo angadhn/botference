@@ -29,7 +29,7 @@ import { deviceSession, ownerPassword as sharedOwnerPassword } from './identity.
 // so every call site here (and in server.mjs) reads exactly as it did.
 import { isLocalDirect, PROXY_HEADERS } from '../shared/local.mjs';
 // the atomic write and the constant-time compare, one copy each for the tree
-import { readJson, writeJson, safeEqual } from './fsjson.mjs';
+import { writeJson, safeEqual, readJsonState, warnUnreadable, UnreadableJsonError } from './fsjson.mjs';
 export { isLocalDirect, PROXY_HEADERS };
 
 export const AUTH_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days, renewed as you go
@@ -367,15 +367,37 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   // Hand-edited JSON for v1, re-read whenever its mtime moves — the owner
   // grants access with a text editor and it takes effect on the next mention,
   // with no restart and nothing to click.
-  let grantsCache = { mtime: -1, size: -1, data: {} };
+  //
+  // Both files have three read results (fsjson.mjs): missing, ok, unreadable.
+  // A grants file the owner broke with a stray comma is NOT "no grants" — it
+  // is "cannot tell", and the answer to a guest is a plain "bot access is
+  // paused" rather than a misleading "you were never granted it". The usage
+  // counter is the one that is WRITTEN, so an unreadable one is never written
+  // over: rewriting it from empty would also hand every guest a fresh budget.
+  // Each throws UnreadableJsonError; server.mjs guestRefusal turns that into
+  // the guest's answer.
+  let grantsCache = { mtime: -1, size: -1, got: { state: 'missing', value: undefined, error: null } };
   function readGrants() {
     let st = null;
-    try { st = fs.statSync(grantsFile); } catch { grantsCache = { mtime: -1, size: -1, data: {} }; return {}; }
+    try { st = fs.statSync(grantsFile); } catch { grantsCache = { mtime: -1, size: -1, got: { state: 'missing' } }; return {}; }
     const mtime = st.mtimeMs;
     if (mtime !== grantsCache.mtime || st.size !== grantsCache.size) {
-      grantsCache = { mtime, size: st.size, data: readJson(grantsFile, {}) || {} };
+      grantsCache = { mtime, size: st.size, got: readJsonState(grantsFile) };
     }
-    return grantsCache.data;
+    const { got } = grantsCache;
+    if (got.state === 'unreadable') {
+      warnUnreadable(grantsFile, got.error);
+      throw new UnreadableJsonError(grantsFile, got.error);
+    }
+    return (got.state === 'ok' && got.value && typeof got.value === 'object') ? got.value : {};
+  }
+  function readUsage() {
+    const got = readJsonState(usageFile);
+    if (got.state === 'unreadable') {
+      warnUnreadable(usageFile, got.error);
+      throw new UnreadableJsonError(usageFile, got.error);
+    }
+    return (got.state === 'ok' && got.value && typeof got.value === 'object') ? got.value : {};
   }
   const today = () => new Date().toISOString().slice(0, 10);
   function grantFor(handle) {
@@ -383,11 +405,11 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
     return g && g.agents ? { agents: true, daily_cap: Number(g.daily_cap) || DEFAULT_CAP } : null;
   }
   function grantUsed(handle) {
-    const u = readJson(usageFile, {}) || {};
+    const u = readUsage();
     return u.date === today() ? Number((u.counts || {})[handle]) || 0 : 0;
   }
   function grantSpend(handle) {
-    let u = readJson(usageFile, {}) || {};
+    let u = readUsage();
     if (u.date !== today()) u = { date: today(), counts: {} };
     u.counts = u.counts || {};
     u.counts[handle] = (u.counts[handle] || 0) + 1;

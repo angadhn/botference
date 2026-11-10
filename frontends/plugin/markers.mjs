@@ -38,6 +38,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { readJsonState, warnUnreadable, UnreadableJsonError } from './fsjson.mjs';
 
 export const MARKER_REL = path.join('.botference', 'site.json');
 export const MARKER_KINDS = ['jupyterbook', 'jekyll', 'plain'];
@@ -62,10 +63,14 @@ function writeJson(file, value) {
   fs.renameSync(tmp, file);
 }
 
-/** Every registered root, absolute, de-duplicated, in registration order. */
-export function readRegistry() {
-  const j = readJson(registryFile());
-  const rows = Array.isArray(j) ? j : (j && Array.isArray(j.roots) ? j.roots : []);
+// The registry's rows as written. A registry that is there but not readable
+// JSON reads as empty (loudly, once) — and is never written over: adding or
+// removing a root on top of "empty" would replace every other registered
+// project with one row (fsjson.mjs, the three read results).
+function rowsOf(j) {
+  return Array.isArray(j) ? j : (j && Array.isArray(j.roots) ? j.roots : []);
+}
+function roots(rows) {
   const out = [];
   for (const r of rows) {
     const s = typeof r === 'string' ? r : (r && r.root);
@@ -73,18 +78,34 @@ export function readRegistry() {
   }
   return out;
 }
+/** Every registered root, absolute, de-duplicated, in registration order. */
+export function readRegistry() {
+  const got = readJsonState(registryFile());
+  if (got.state === 'unreadable') warnUnreadable(registryFile(), got.error);
+  return roots(got.state === 'ok' ? rowsOf(got.value) : []);
+}
+// …and the read a WRITE starts from: an unreadable registry refuses.
+function readRegistryForWrite() {
+  const file = registryFile();
+  const got = readJsonState(file);
+  if (got.state === 'unreadable') {
+    warnUnreadable(file, got.error);
+    throw new UnreadableJsonError(file, got.error);
+  }
+  return roots(got.state === 'ok' ? rowsOf(got.value) : []);
+}
 function writeRegistry(roots) { writeJson(registryFile(), { roots }); }
 
 /** Add a root (moved to the END: the newest registration wins an origin). */
 export function registerRoot(root) {
   const r = real(root);
-  writeRegistry([...readRegistry().filter(x => x !== r), r]);
+  writeRegistry([...readRegistryForWrite().filter(x => x !== r), r]);
   return r;
 }
 /** Take a root out. Returns whether it was there. */
 export function unregisterRoot(root) {
   const r = real(root);
-  const was = readRegistry();
+  const was = readRegistryForWrite();
   const kept = was.filter(x => x !== r && x !== path.resolve(String(root || '')));
   if (kept.length !== was.length) writeRegistry(kept);
   return kept.length !== was.length;

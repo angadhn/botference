@@ -244,8 +244,10 @@
 //   · Page chat becomes that PROJECT's chat archive rather than one
 //     conversation about one document: a bar naming the chat this page is
 //     standing in, the project's other chats behind it, and "+ new"
-//   · until `project.confirmed`, the tab holds the confirmation question and
-//     nothing else — no bridge is spawned against a folder nobody vouched for
+//   · until the root's answer (`project.state`) is 'yes', the tab holds the
+//     confirmation question — or, after a no, a line saying the page is left
+//     alone — and nothing else: no bridge is spawned against a folder nobody
+//     vouched for
 // Opening a past chat is a companion-side move of the page's `session_id`,
 // so what renders under the bar is an ordinary page record with an ordinary
 // `page_chat` — the fold, the composer and the streaming are untouched.
@@ -267,6 +269,25 @@
   //
   // Resolved: closed by the reader. Nothing else closes a thread.
   const isResolvedThread = t => !!(t && t.resolved);
+  // THE READER'S ANSWER to "is this folder yours?" — about a council root
+  // (project pages) or a site's repo (blog pages). One value with three
+  // names, kept in `state` on the record the companion sends (server.mjs
+  // /project-page, blog.mjs siteBase) and changed only through setRootAnswer.
+  // It used to travel as two booleans (`confirmed`, `declined`), and the
+  // project path set only one of them: a "No, leave this page alone" left the
+  // question up, with both buttons live, until a reload.
+  const ROOT_ANSWERS = Object.freeze(['unasked', 'yes', 'no']);
+  const rootAnswer = x => (x && ROOT_ANSWERS.indexOf(x.state) >= 0 ? x.state : 'unasked');
+  // The one setter. Refuses a value that is not one of the three, and refuses
+  // going back to 'unasked' once the reader has answered (nothing un-asks a
+  // question; a changed mind is a new yes or no).
+  function setRootAnswer(x, next) {
+    if (!x || ROOT_ANSWERS.indexOf(next) < 0) return false;
+    if (next === 'unasked' && rootAnswer(x) !== 'unasked') return false;
+    x.state = next;
+    return true;
+  }
+  const isYes = x => rootAnswer(x) === 'yes';
   // A thread on words that ARRIVED where there were none — the turn-end diff's
   // insertion (`inserted`), or an older auto-thread that replaced nothing, has
   // no summary and is not a deletion. It has no "was" half to draw: the card
@@ -3297,13 +3318,37 @@ ${bubbleShellHtml()}`;
     // heard land in THAT composer's box for editing — never sent on their own.
     // Tap/tap rather than hold-to-talk, which is unreliable on iPhone. The
     // state is one object because only one recording can be running.
-    const MIC = { ok: false, target: null, mode: '', rec: null, stream: null,
+    //
+    // THE MODES, named, in one field (MIC.mode), moved only by micSet:
+    //   idle          nothing happening; a tap starts asking
+    //   asking        the browser's microphone prompt is up (getUserMedia)
+    //   recording     the recorder is running; a tap stops it
+    //   stopping      the recorder was told to stop; its last data is coming
+    //   transcribing  the clip is with the companion
+    // A tap acts only in idle and recording. It used to act whenever there was
+    // no recorder yet — so a second tap while the permission prompt was up
+    // started a second recording, overwrote the first stream, and left the
+    // microphone on until the tab closed.
+    const MIC_MODES = Object.freeze(['idle', 'asking', 'recording', 'stopping', 'transcribing']);
+    const MIC_MOVES = Object.freeze({
+      idle: ['asking'],
+      asking: ['recording', 'idle'],
+      recording: ['stopping', 'idle'],
+      stopping: ['transcribing', 'idle'],
+      transcribing: ['idle'],
+    });
+    const MIC = { ok: false, target: null, mode: 'idle', rec: null, stream: null,
       chunks: [], timer: null, cancelled: false, box: null, caret: null, asked: 0 };
-    const micHint = mode => mode === 'recording' ? 'recording… tap to stop' : 'transcribing…';
+    const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… tap to stop',
+      stopping: 'finishing the recording…', transcribing: 'transcribing…' };
+    const micHint = mode => MIC_HINT[mode] || '';
+    // the mode as the composer of `target` sees it: '' everywhere but the one
+    // composer the microphone is working for
+    const micModeOf = target => (MIC.mode !== 'idle' && MIC.target === target ? MIC.mode : '');
     function micHtml(target) {
-      const mode = MIC.target === target ? MIC.mode : '';
+      const mode = micModeOf(target);
       const title = mode === 'recording' ? 'tap to stop and transcribe'
-        : mode === 'transcribing' ? 'transcribing…' : 'tap to dictate — tap again to stop';
+        : mode ? micHint(mode) : 'tap to dictate — tap again to stop';
       return `<button class="mic${mode ? ' ' + mode : ''}" data-act="mic" data-target="${esc(target)}" type="button" aria-label="dictate" aria-pressed="${mode === 'recording'}" title="${title}"${MIC.ok ? '' : ' hidden'}>${MIC_SVG}</button>`;
     }
     // repaint just the mic buttons (and the hint beside the live one), so a
@@ -3317,7 +3362,7 @@ ${bubbleShellHtml()}`;
         tmp.innerHTML = micHtml(b.getAttribute('data-target'));
         const fresh = tmp.firstChild;
         b.replaceWith(fresh);
-        const mode = MIC.target === fresh.getAttribute('data-target') ? MIC.mode : '';
+        const mode = micModeOf(fresh.getAttribute('data-target'));
         c.classList.toggle('dictating', !!mode);
         const h = c.querySelector('.crow > .hint');
         if (h) {
@@ -3343,13 +3388,27 @@ ${bubbleShellHtml()}`;
       if (ok !== MIC.ok) { MIC.ok = ok; paintMic(); }
       return ok;
     }
+    const stopTracks = stream => {
+      if (stream) for (const tr of stream.getTracks()) { try { tr.stop(); } catch (_) { /* gone */ } }
+    };
     function micRelease() {
       clearTimeout(MIC.timer); MIC.timer = null;
-      if (MIC.stream) { for (const tr of MIC.stream.getTracks()) { try { tr.stop(); } catch (_) { /* gone */ } } }
+      stopTracks(MIC.stream);
       MIC.stream = null; MIC.rec = null;
     }
-    function micSet(target, mode) { MIC.target = mode ? target : null; MIC.mode = mode; paintMic(); }
+    // The one way MIC.mode changes. Refuses a mode that is not named and a move
+    // the table above does not allow, and says which (false) so a caller that
+    // lost a race backs off instead of acting on a mode that is not there.
+    function micSet(next, target) {
+      if (MIC_MODES.indexOf(next) < 0) return false;
+      if (MIC_MOVES[MIC.mode].indexOf(next) < 0) return false;
+      MIC.mode = next;
+      MIC.target = next === 'idle' ? null : (target === undefined ? MIC.target : target);
+      paintMic();
+      return true;
+    }
     async function micStart(target) {
+      if (!micSet('asking', target)) return;
       // where the words will go: the caret as it is at the tap (the mousedown
       // guard below keeps the box focused, so it is still meaningful)
       const box = composerBox(target);
@@ -3358,12 +3417,16 @@ ${bubbleShellHtml()}`;
       let stream;
       // inside the tap itself: iPhone grants the microphone only to a gesture
       try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-      catch (e) { note(target, micErrorText(e), true); return; }
+      catch (e) { if (micSet('idle')) note(target, micErrorText(e), true); return; }
+      // the reader gave up while the prompt was up (Esc): this stream is
+      // nobody's, so the microphone goes off at once
+      if (MIC.mode !== 'asking') { stopTracks(stream); return; }
       const mime = pickAudioMime(MediaRecorder);
       let rec;
       try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
       catch (_) {
-        for (const tr of stream.getTracks()) { try { tr.stop(); } catch (__) { /* gone */ } }
+        stopTracks(stream);
+        micSet('idle');
         note(target, 'this browser cannot record audio', true); return;
       }
       Object.assign(MIC, { rec, stream, chunks: [], cancelled: false });
@@ -3371,27 +3434,41 @@ ${bubbleShellHtml()}`;
       rec.addEventListener('stop', () => micFinish(target, rec, mime));
       rec.start();
       MIC.timer = setTimeout(() => micStop(), MIC_MAX_MS);
-      micSet(target, 'recording');
+      micSet('recording', target);
     }
+    // Stop the recording: keep the clip (a tap, the time limit) or throw it
+    // away (`cancel`: Esc). Only from recording.
     function micStop(cancel) {
-      if (!MIC.rec) return false;
+      if (MIC.mode !== 'recording' || !MIC.rec) return false;
       MIC.cancelled = !!cancel;
-      try { MIC.rec.stop(); } catch (_) { micRelease(); micSet(null, ''); }
+      micSet('stopping');
+      try { MIC.rec.stop(); } catch (_) { micRelease(); micSet('idle'); }
       return true;
     }
+    // Esc: throw away whatever the microphone is doing, if it is doing
+    // anything that can be thrown away. True when it acted.
+    function micCancel() {
+      if (MIC.mode === 'asking') return micSet('idle');
+      if (MIC.mode === 'recording') return micStop(true);
+      return false;
+    }
     async function micFinish(target, rec, mime) {
+      if (rec !== MIC.rec) return;
+      // a recorder can also stop by itself (the microphone was unplugged):
+      // that is a stop the reader did not ask for, and the clip is kept
+      if (MIC.mode === 'recording') micSet('stopping');
       const chunks = MIC.chunks; MIC.chunks = [];
       const cancelled = MIC.cancelled;
       micRelease();
-      if (cancelled) { micSet(null, ''); return; }
+      if (cancelled) { micSet('idle'); return; }
       const type = (chunks[0] && chunks[0].type) || rec.mimeType || mime || 'audio/webm';
       const blob = new Blob(chunks, { type });
-      if (!blob.size) { micSet(null, ''); note(target, 'nothing was recorded', true); return; }
-      micSet(target, 'transcribing');
+      if (!blob.size) { micSet('idle'); note(target, 'nothing was recorded', true); return; }
+      micSet('transcribing');
       let r;
       try { r = await cb('onTranscribe')({ audio_b64: await blobToBase64(blob), mime: blob.type || type }); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      micSet(null, '');
+      micSet('idle');
       if (!r || r.ok === false) { note(target, (r && r.error) || 'transcription failed', true); return; }
       const text = String(r.text || '').trim();
       if (!text) { note(target, 'no speech was heard', true); return; }
@@ -3417,16 +3494,17 @@ ${bubbleShellHtml()}`;
       box.dispatchEvent(new Event('input', { bubbles: true }));
       MIC.box = null; MIC.caret = null;
     }
+    // A tap acts in two modes only: idle starts, recording stops. Asking,
+    // stopping and transcribing are already on their way somewhere.
     function micTap(target) {
-      if (MIC.mode === 'transcribing') return;
-      if (MIC.rec) { micStop(); return; }
-      micStart(target);
+      if (MIC.mode === 'idle') { micStart(target); return; }
+      if (MIC.mode === 'recording') micStop();
     }
 
     function composerHtml(target, label, extra, hint, pills) {
       const draft = D.drafts[target] || '';
       const busy = target === '__new__' && inFlight(target) ? ' disabled' : '';
-      const dict = MIC.target === target && MIC.mode;
+      const dict = micModeOf(target);
       return `${lassoHtml(target)}<div class="composer${draft.trim() ? ' has-draft' : ''}${dict ? ' dictating' : ''}" data-target="${esc(target)}">
         ${pills ? routesHtml(target) : ''}
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
@@ -4402,7 +4480,7 @@ ${bubbleShellHtml()}`;
     // this list has no message behind it, it has a file behind it.
     const projectTasks = () => {
       const p = D.project;
-      if (!p || !p.confirmed || !Array.isArray(p.tasks)) return [];
+      if (!p || !isYes(p) || !Array.isArray(p.tasks)) return [];
       return p.tasks
         .filter(t => t && typeof t === 'object' && String(t.text || '').trim())
         .map(t => ({ text: String(t.text).trim(), done: !!t.done }));
@@ -4737,6 +4815,14 @@ ${bubbleShellHtml()}`;
     // sentence the reader is agreeing to. An already-confirmed root is not
     // asked again (SPEC.md Phase 2): the answer stands, and the new wording is
     // for the next council the reader opens.
+    function leftAloneHtml() {
+      const p = D.project;
+      if (!p) return '';
+      return `<div class="card confirmroot">
+        <p class="confirmp">You said <code class="rootpath">${esc(p.root)}</code> is not your council, so Discuss is leaving this page alone. Nothing here will be changed.</p>
+      </div>`;
+    }
+
     function confirmRootHtml() {
       const p = D.project;
       if (!p) return '';
@@ -4776,8 +4862,8 @@ ${bubbleShellHtml()}`;
       const b = D.blog;
       if (!b) return '';
       const repo = String(b.root || '');
-      if (b.declined) return '';        // asked once, answered no, never again
-      if (!b.confirmed) {
+      if (rootAnswer(b) === 'no') return '';        // asked once, answered no, never again
+      if (rootAnswer(b) === 'unasked') {
         return `<div class="card confirmroot blogroot">
           <div class="confirmq">Is this your site?</div>
           <p class="confirmp">This page ${b.same_file ? 'is a file in' : 'is being served from'} <code class="rootpath">${esc(repo)}</code>${
@@ -4877,7 +4963,7 @@ ${bubbleShellHtml()}`;
     // artifact under a council root nobody has vouched for yet: the
     // confirmation card is the only thing that should be asking anything there.
     function reviewHtml() {
-      if (D.project && !D.project.confirmed) return '';
+      if (D.project && !isYes(D.project)) return '';
       // A page that cannot carry comments has no review to send — but it still
       // has a chat, and still every reason to be able to start a fresh one.
       if (!CAPS.highlights) {
@@ -4890,7 +4976,7 @@ ${bubbleShellHtml()}`;
       const n = openThreadCount();
       // what the button may honestly promise: edits only where there is a
       // draft to edit, which is a confirmed project artifact and nowhere else
-      const editable = !!(D.project && D.project.confirmed);
+      const editable = !!(D.project && isYes(D.project));
       const inner = r.busy
         ? `<span class="rvnote busy">handing ${n} comment${n === 1 ? '' : 's'} to the bots…</span>`
         : r.confirm
@@ -4931,7 +5017,7 @@ ${bubbleShellHtml()}`;
     //
     // Owner-only (it writes into the reader's council), and not on a project
     // artifact page, whose chat already IS a council chat.
-    const canContinue = () => !!D.owner && !(D.project && D.project.confirmed)
+    const canContinue = () => !!D.owner && !(D.project && isYes(D.project))
       && !!D.page && (((D.page.page_chat || []).some(m => m && m.text && m.kind !== 'tools'))
         || (D.page.threads || []).length > 0);
     // the council copy this page already has, if any — newest last
@@ -4994,7 +5080,7 @@ ${bubbleShellHtml()}`;
     // a second one would offer a different archive for the same question.
     const pageArchive = () =>
       ((D.page && Array.isArray(D.page.chat_archive)) ? D.page.chat_archive : []);
-    const canNewChat = () => !!D.owner && !(D.project && D.project.confirmed);
+    const canNewChat = () => !!D.owner && !(D.project && isYes(D.project));
 
     function newChatBtnHtml() {
       if (!canNewChat()) return '';
@@ -5066,7 +5152,7 @@ ${bubbleShellHtml()}`;
     const publishTarget = () => (D.project && D.project.publish) || null;
 
     function publishBtnHtml() {
-      if (!D.owner || !D.project || !D.project.confirmed) return '';
+      if (!D.owner || !D.project || !isYes(D.project)) return '';
       const P = D.publish;
       if (P.confirm) return '';
       const t = publishTarget();
@@ -5188,7 +5274,7 @@ ${bubbleShellHtml()}`;
 
     function archiveHtml() {
       const p = D.project;
-      if (!p || !p.confirmed) return '';
+      if (!p || !isYes(p)) return '';
       const a = D.archive;
       const now = (D.page && D.page.session_title)
         || (D.page && D.page.session_id ? 'this chat' : '');
@@ -5219,13 +5305,15 @@ ${bubbleShellHtml()}`;
     function renderChat() {
       // an unvouched-for council root has one thing on this tab and it is the
       // question — nothing else here is true until it is answered
-      if (D.project && !D.project.confirmed) {
-        D.el.chat.innerHTML = offlineHtml() + confirmRootHtml();
+      // …and a folder the reader said NO about has one line instead: the
+      // page is left alone, which is what the next load of it does as well
+      if (D.project && !isYes(D.project)) {
+        D.el.chat.innerHTML = offlineHtml() + (rootAnswer(D.project) === 'no' ? leftAloneHtml() : confirmRootHtml());
         return;
       }
       // page chat on a confirmed artifact is the project's council chat, where
       // an untagged message is the room's, not a note
-      const councilChat = !!(D.project && D.project.confirmed);
+      const councilChat = !!(D.project && isYes(D.project));
       const msgs = (D.page && D.page.page_chat) || [];
       // A restored council chat opens on its tail, not its whole history.
       // Say so, in numbers, and hand over a link to the complete chat in the
@@ -5407,7 +5495,7 @@ ${bubbleShellHtml()}`;
         // off a draft the round has one more step, and the receipt says so —
         // otherwise the wrap-up arriving in page chat looks like a bot going
         // off on its own
-        const tail = (D.project && D.project.confirmed) ? '' : ', then a wrap-up in the chat';
+        const tail = (D.project && isYes(D.project)) ? '' : ', then a wrap-up in the chat';
         r.note = a.omitted
           ? `sent ${a.sent} of ${a.total} comments — one turn each; send review again for the other ${a.omitted}`
           : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`;
@@ -5505,7 +5593,8 @@ ${bubbleShellHtml()}`;
     async function answerRoot(yes) {
       const r = await cb('onConfirmRoot')(!!yes);
       if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
-      if (D.project) D.project.confirmed = !!yes;
+      // the companion's own word for what it stored, through the one setter
+      if (D.project && !setRootAnswer(D.project, r.state)) setRootAnswer(D.project, yes ? 'yes' : 'no');
       paintProject();
       render();
     }
@@ -5518,10 +5607,7 @@ ${bubbleShellHtml()}`;
     async function answerBlogRoot(yes) {
       const r = await cb('onConfirmBlogRoot')(!!yes);
       if (!r || !r.ok) { D.archive.err = (r && r.error) || 'the companion did not answer'; render(); return; }
-      if (D.blog) {
-        D.blog.confirmed = !!yes;
-        D.blog.declined = !yes;
-      }
+      if (D.blog && !setRootAnswer(D.blog, r.state)) setRootAnswer(D.blog, yes ? 'yes' : 'no');
       paintProject();
       render();
     }
@@ -5869,7 +5955,7 @@ ${bubbleShellHtml()}`;
       if (!CAPS.highlights && D.tab !== 'chat') D.tab = 'chat';
       // a council folder nobody has vouched for yet has exactly one thing to
       // say, and it is on this tab
-      if (D.project && !D.project.confirmed) D.tab = 'chat';
+      if (D.project && !isYes(D.project)) D.tab = 'chat';
       // Memory is the owner's own vault: a guest is not shown a tab that would
       // 403 behind them, and a tab that goes away takes the view with it.
       if (D.el.memtab) {
@@ -7388,7 +7474,7 @@ ${bubbleShellHtml()}`;
           // already spent by content.js's handler (drawer.escape closed a layer)
           if (escUsed.has(e)) return;
           // a recording in progress is the innermost layer: Esc throws it away
-          if (MIC.rec) { e.preventDefault(); micStop(true); return; }
+          if (MIC.mode === 'asking' || MIC.mode === 'recording') { e.preventDefault(); micCancel(); return; }
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
           if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
@@ -10469,12 +10555,12 @@ ${bubbleShellHtml()}`;
       if (!D.mounted || !D.el.proj) return;
       const p = D.project;
       const b = D.blog;
-      if (!p && b && b.root && b.source_path && !b.declined) {
+      if (!p && b && b.root && b.source_path && rootAnswer(b) !== 'no') {
         const folder = String(b.root).replace(/[\\/]+$/, '').split(/[\\/]/).pop();
         D.el.proj.hidden = false;
         D.el.proj.textContent = folder;
-        D.el.proj.title = b.root + (b.confirmed ? '' : ' — not yet confirmed as yours');
-        D.el.proj.classList.toggle('unconfirmed', !b.confirmed);
+        D.el.proj.title = b.root + (isYes(b) ? '' : ' — not yet confirmed as yours');
+        D.el.proj.classList.toggle('unconfirmed', !isYes(b));
         return;
       }
       D.el.proj.hidden = !p;
@@ -10482,7 +10568,7 @@ ${bubbleShellHtml()}`;
       const name = p.project_title || p.project_id || '';
       D.el.proj.textContent = 'part of project ' + name;
       D.el.proj.title = p.path || p.rel || '';
-      D.el.proj.classList.toggle('unconfirmed', !p.confirmed);
+      D.el.proj.classList.toggle('unconfirmed', !isYes(p));
     }
 
     // …and the line for the pages that came the OTHER way. A project artifact
@@ -12128,7 +12214,7 @@ ${bubbleShellHtml()}`;
         // innermost layer first: the overlap chooser sits over the page, above
         // even a lightbox in the reader's attention, and closing it must not
         // take the drawer with it
-        if (MIC.rec) { micStop(true); if (ev) escUsed.add(ev); return true; }
+        if (micCancel()) { if (ev) escUsed.add(ev); return true; }
         if (picksOpen()) { hidePicks(); return true; }
         // …then a bubble, which is over the page in the same way and is only
         // ever up while the panel is shut
@@ -12208,6 +12294,7 @@ ${bubbleShellHtml()}`;
     whereParts, nthWord, whereText,                        // test/where.test.mjs
     routeWordOf, KINDS, KIND_NAME,                          // test/mentions.test.mjs
     pickAudioMime, dataUrlPayload, blobToBase64, spliceDictation, micErrorText, MIC_TYPES, // test/mic.test.mjs
+    ROOT_ANSWERS, rootAnswer, setRootAnswer,               // content.js + test/workspace.test.mjs
   };
   root.BFPDrawer = api;
   // classic script everywhere it matters; the require() is only so the math

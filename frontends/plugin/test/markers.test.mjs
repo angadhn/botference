@@ -87,6 +87,32 @@ await test('an explicit answer in blog_roots still wins — a NO above all', asy
   blog.setRootState(root, true);
 });
 
+// THE REGISTRY HAS THREE READ RESULTS (fsjson.mjs): missing, ok, unreadable.
+// An unreadable one used to read as empty and be rewritten with one row, which
+// dropped every other project the reader had registered.
+await test('a damaged registry is read as empty, and never written over', async () => {
+  reset();
+  const root = book('damaged');
+  const BROKEN = '{"roots": ["/somewhere/else", "/and/another",]}\n';
+  fs.mkdirSync(path.dirname(REGISTRY), { recursive: true });
+  fs.writeFileSync(REGISTRY, BROKEN);
+  const realError = console.error;
+  const said = [];
+  console.error = (...a) => { said.push(a.join(' ')); };
+  try {
+    assert.deepEqual(markers.readRegistry(), [], 'reading: nothing registered');
+    assert.throws(() => markers.registerRoot(root), e => e.code === 'EUNREADABLEJSON');
+    assert.throws(() => markers.unregisterRoot('/somewhere/else'), e => e.code === 'EUNREADABLEJSON');
+    assert.equal(fs.readFileSync(REGISTRY, 'utf8'), BROKEN, 'the bytes are untouched');
+    assert.ok(said.some(l => l.includes(REGISTRY)), 'and the log says which file');
+  } finally { console.error = realError; }
+  const r = cli(['site', '--kind', 'plain'], {}, root);
+  assert.equal(r.status, 2, r.stdout + r.stderr);
+  assert.match(r.stderr, /is damaged \(it is not valid JSON\)/);
+  assert.equal(fs.readFileSync(REGISTRY, 'utf8'), BROKEN, 'the command did not write over it either');
+  reset();
+});
+
 await test('a hand-written blog_sites row wins its origin over a marker', async () => {
   reset();
   const a = book('hand-a');

@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
-import { readConfig, saveConfig, unwrapLine, clipTo, ROOT } from './store.mjs';
+import { readConfig, saveConfig, unwrapLine, clipTo, ROOT, ROOT_ANSWERS } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
@@ -496,11 +496,11 @@ const rootsMap = () => {
   return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
 };
 
-// 'yes' | 'no' | '' (never asked)
+// one of store.ROOT_ANSWERS: 'unasked' | 'yes' | 'no'
 export function rootState(root) {
   const key = realish(root);
   const m = rootsMap();
-  if (!Object.prototype.hasOwnProperty.call(m, key)) return '';
+  if (!Object.prototype.hasOwnProperty.call(m, key)) return ROOT_ANSWERS[0];
   return m[key] ? 'yes' : 'no';
 }
 
@@ -513,11 +513,14 @@ export function setRootState(root, confirmed) {
 
 // The artifact plus the reader's standing answer about its root, which is what
 // every caller actually wants: the extension attaches on the artifact and the
-// drawer asks on the state.
+// drawer asks on the state. `state` is the answer (store.ROOT_ANSWERS) and is
+// what the page draws from; `confirmed` is that same answer read as a yes, for
+// the companion's own checks, computed here and nowhere set.
 export function artifactState(url) {
   const art = artifactFor(url);
   if (!art) return null;
-  return { ...art, confirmed: rootState(art.root) === 'yes', declined: rootState(art.root) === 'no' };
+  const state = rootState(art.root);
+  return { ...art, state, confirmed: state === 'yes' };
 }
 
 // ---- the project's chats -------------------------------------------------

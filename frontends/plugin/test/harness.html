@@ -598,6 +598,8 @@ const WS_ROOT = '/Users/reader/MySiteFromObsidianVault/botference';
 const WS_PROJECT = { root: WS_ROOT, project_id: 'spaceship-engineering',
   project_title: 'Spaceship Engineering', rel: 'projects/spaceship-engineering/index.html',
   path: WS_ROOT + '/projects/spaceship-engineering/index.html',
+  // the reader's answer about the root, as the companion ships it: ONE value
+  state: Q.get('unconfirmed') === '1' ? 'unasked' : 'yes',
   confirmed: Q.get('unconfirmed') !== '1',
   // projects/<id>/TASKS.md, already parsed by the companion (the drawer never
   // parses markdown for it). `?ptasks=0` is the project that keeps no list.
@@ -647,8 +649,8 @@ const BLOG_PAGE = BLOG ? (BLOG === 'file' ? {
   root: BLOG_ROOT,
   kind: 'jekyll',
   url_path: '/' + BLOG_FILE_REL,
+  state: 'yes',
   confirmed: true,
-  declined: false,
   git_allowed: false,
   suggest_mode: true,
   source_path: BLOG_FILE_PATH,
@@ -664,8 +666,8 @@ const BLOG_PAGE = BLOG ? (BLOG === 'file' ? {
   root: BLOG_ROOT,
   kind: 'jekyll',
   url_path: '/large-space-stations/space-balloons/',
+  state: BLOG !== 'unconfirmed' ? 'yes' : 'unasked',
   confirmed: BLOG !== 'unconfirmed',
-  declined: false,
   git_allowed: false,
   ...(BLOG === 'unmapped'
     ? { source_path: '', rel: '', why: 'no markdown source in this repo renders at /large-space-stations/space-balloons/' }
@@ -3123,7 +3125,8 @@ function companion(method, path, body) {
   if (route === '/council-root') {
     wsRootAnswers.push(!!(body && body.confirm));
     WS_PROJECT.confirmed = !!(body && body.confirm);
-    return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, state: WS_PROJECT.confirmed ? 'yes' : 'no' } };
+    WS_PROJECT.state = WS_PROJECT.confirmed ? 'yes' : 'no';
+    return { ok: true, status: 200, data: { ok: true, root: WS_ROOT, state: WS_PROJECT.state } };
   }
   // ---- blog source pages (blog.mjs) ------------------------------------
   // There is no /blog-publish here because there is none in the companion:
@@ -3180,7 +3183,7 @@ function companion(method, path, body) {
     blogRootAnswers.push(!!(body && body.confirm));
     if (BLOG_PAGE) {
       BLOG_PAGE.confirmed = !!(body && body.confirm);
-      BLOG_PAGE.declined = !(body && body.confirm);
+      BLOG_PAGE.state = BLOG_PAGE.confirmed ? 'yes' : 'no';
     }
     return { ok: true, status: 200, data: { ok: true, root: BLOG_ROOT,
       state: (body && body.confirm) ? 'yes' : 'no' } };

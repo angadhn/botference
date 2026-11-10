@@ -93,7 +93,11 @@ export function createPool({ onEvent, root, max = DEFAULT_POOL, idleMs = DEFAULT
   const lanes = new Map();          // lane key → member
   let timer = null;
 
-  const emit = ev => { try { onEvent(ev); } catch { } };
+  // Not caught here. Every event the pool passes on comes from a child's
+  // chat.mjs, whose own emit is the one place a throwing handler is logged and
+  // turned into a plain error in that chat; swallowing it here first is what
+  // used to lose a bot's reply without a word.
+  const emit = ev => onEvent(ev);
 
   // Every lane this child holds goes back on the market. Called when the child
   // is gone and only then — see the invariant above.
