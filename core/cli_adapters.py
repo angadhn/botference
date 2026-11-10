@@ -17,6 +17,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 import model_catalog
+from gdoc_guard import GDOC_DENIED_SERVERS, GDOC_TOOLS, GDOC_WRITE_TOOL
 from providers import percent_of_limit
 from render_blocks import build_tool_use_blocks, parse_render_blocks
 
@@ -643,6 +645,10 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
         "Bash",
         "WebSearch",
         "WebFetch",
+        # Google Docs review (docs/google-docs-review.md): read a Doc and
+        # comment or suggest on it. The write tool is held to comments and
+        # suggestions by the hook below. No other Google tool is allowed.
+        *GDOC_TOOLS,
     ]
     sandbox = {
         "enabled": True,
@@ -676,16 +682,47 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
             for tool in ("Edit", "Write", "MultiEdit"):
                 deny_rules.append(f"{tool}(//{root_abs}/.git/**)")
 
+    # The other Google connectors are signed in as the user's personal
+    # account. They load in the bot's session anyway (every claude.ai
+    # connector does), so deny them outright rather than rely on their
+    # absence from the allow list.
+    deny_rules.extend(GDOC_DENIED_SERVERS)
+
     permissions: dict = {
         "defaultMode": "dontAsk",
         "allow": allow_rules,
+        "deny": deny_rules,
     }
-    if deny_rules:
-        permissions["deny"] = deny_rules
 
     return {
         "permissions": permissions,
         "sandbox": sandbox,
+        "hooks": _gdoc_guard_hooks(),
+    }
+
+
+_GDOC_GUARD_SCRIPT = Path(__file__).resolve().parent / "gdoc_guard.py"
+
+
+def _gdoc_guard_hooks() -> dict:
+    """The hard lock on the Google Docs write tool: comment or suggest only.
+
+    Claude Code runs core/gdoc_guard.py before each call to the write tool;
+    the script refuses anything that is not a suggestion or a comment.
+    `onFailure: "block"` makes a guard that cannot start, crashes or times
+    out refuse the call too, rather than let it through.
+    """
+    return {
+        "PreToolUse": [{
+            "matcher": GDOC_WRITE_TOOL,
+            "hooks": [{
+                "type": "command",
+                "command": sys.executable or "python3",
+                "args": ["-I", str(_GDOC_GUARD_SCRIPT)],
+                "timeout": 30,
+                "onFailure": "block",
+            }],
+        }],
     }
 
 

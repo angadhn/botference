@@ -1853,6 +1853,15 @@ Only public videos work — private, unlisted and age-restricted ones are
 refused by the API, and that refusal is reported in the room rather than
 swallowed. Google's free tier allows about eight hours of YouTube a day.
 
+### Google Docs
+
+Paste a Google Doc link in the chat and ask for a review, comments or
+edits. Claude reads the Doc and posts comments (each starting "Claude:")
+and suggestions (Google's tracked changes, which you accept or reject). It
+cannot change the text directly: a check before every write lets through
+only comments and suggestions. Codex's side is not wired yet. Details and
+what is enforced versus only instructed: `docs/google-docs-review.md`.
+
 ### Lasso
 
 The thing that would settle the question is often something you have already

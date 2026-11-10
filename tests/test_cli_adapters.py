@@ -1493,7 +1493,9 @@ class TestCommandConstruction:
     def test_no_deny_rules_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_DENY_BASH", raising=False)
         settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
-        assert "deny" not in settings["permissions"]
+        # only the standing Google connector denials; no command denials
+        deny = settings["permissions"]["deny"]
+        assert not [r for r in deny if not r.startswith("mcp__claude_ai_")]
 
     def test_denied_commands_become_deny_rules(self, monkeypatch):
         # The Discuss companion sets this for a BLOG SOURCE PAGE: the reader's
