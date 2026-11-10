@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## 2026-11-10
+
+- **New models appear in the menus by themselves.** The model menus and `/model` now offer, besides botference's own list, every model the installed `claude` and `codex` tools list in their own model files (`~/.claude/cache/model-catalog/`, `~/.codex/models_cache.json`). On this computer that adds Claude Sonnet 5.5, Haiku 5.5 and Sonnet 5, and GPT-6.1-Sol and GPT-6.1 Terra. Models Codex hides are left out, and a dated Claude id (`claude-haiku-4-5-20251001`) is shown as the plain one. If a file is missing or cannot be read, the menus show botference's own list as before and the log says which file. `BOTFERENCE_MODEL_DISCOVERY=0` turns this off. The default models do not change.
+- **"New model on offer: …", once.** When the room opens and a model is on offer that was never announced, one line says so, in the terminal and the web council. It is said once per model (record in `~/.botference/models-seen.json`; the first run fills it in silently). The browser plugin and the review hub stay quiet and leave the announcement for a room that shows it.
+- **A model with no price is no longer priced as Sonnet.** Ten models on offer had no price, and the API agent runner billed them at Sonnet 4.6 rates. Their cost is now reported as not known: `total_cost_usd` is `null` with a `cost_note`, the post-run summary says "Cost: not known", thread summaries in the usage log gain `unpriced_iterations`, and the review hub's local rollup shows "+ N runs with price not known" beside the dollar figure.
+- **One model list inside the app.** Context windows and prices now live in one table (`core/model_catalog.py`) instead of three copies. The fallback model lists in the council and review pages and `botference --help` now list every built-in model (Opus 4.6, GPT-4o mini and others were missing from some).
+
 ## 2026-11-09
 
 - **Claude Fable 5.2 on offer.** `claude-fable-5-2` (announced today; 1M context, $8/$40 per million tokens, 20% below Fable 5.1) is in the model pickers of the council, the Discuss plugin and the review hub, and in `/model @claude`. The default Claude participant stays Fable 5.1 until you switch.

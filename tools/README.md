@@ -25,7 +25,7 @@ Based on [ghuntley's agent architecture](https://ghuntley.com/agent) ([repo](htt
 | `pdf.py` | pdf_metadata, extract_figure | Inlined from scripts; fitz lazy-imported |
 | `download.py` | citation_download | Unpaywall + SciHub fallback; uses `_citation.manifest_add` |
 | `_citation.py` | *(internal)* | Shared citation functions (17 funcs from former `scripts/citation_tools.py`) |
-| `_pricing.py` | *(internal)* | Shared pricing table for Anthropic + OpenAI models |
+| `_pricing.py` | *(internal)* | Price table (read from `core/model_catalog.py`); `cost_usd()` returns `None` when a model's price is not known |
 | `_helpers.py` | *(internal)* | Shared helper utilities |
 | `_paths.py` | *(internal)* | `_scripts_dir()` path resolution |
 | `redact.py` | *(utility)* | Secret redaction + preview truncation for logs |

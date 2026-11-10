@@ -1009,6 +1009,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // sessions this child reads and writes
       env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: root,
         BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic',
+        // the start-up "new model on offer" line (core/model_catalog.py) is
+        // dropped here (no turn is capturing yet), so this child must not
+        // use the announcement up; the terminal and council rooms show it
+        BOTFERENCE_MODEL_NOTICE: '0',
         // Phase 2: the one writable directory, or none at all. Set — never
         // set empty — because an empty value reads as "unset" to the
         // controller and would fall back to the project's own write_roots.

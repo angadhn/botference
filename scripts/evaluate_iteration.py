@@ -262,6 +262,7 @@ def main():
         "iteration": args.iteration,
         "agent": usage.get("agent", agent),
         "thread": usage.get("thread", thread),
+        # None when the run's price is not known (see tools/_pricing.py)
         "cost_usd": usage.get("cost_usd", 0.0),
         "input_tokens": usage.get("input_tokens", 0),
         "output_tokens": usage.get("output_tokens", 0),
@@ -290,8 +291,10 @@ def main():
     with open(args.eval_log, "a") as f:
         f.write(json_line + "\n")
 
+    cost = entry["cost_usd"]
+    cost_text = f"${cost:.4f}" if isinstance(cost, (int, float)) else "not known"
     print(f"Eval logged: iter={args.iteration} agent={entry['agent']} "
-          f"cost=${entry['cost_usd']:.4f} files={entry['files_changed']} "
+          f"cost={cost_text} files={entry['files_changed']} "
           f"task_done={entry['task_completed']} ctx={entry['peak_context_pct']}%")
 
 

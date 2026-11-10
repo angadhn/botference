@@ -617,6 +617,7 @@ Supported models:
   claude-opus-5         Anthropic Opus 5    (1M context)
   claude-opus-4-8       Anthropic Opus 4.8  (1M context)
   claude-opus-4-7       Anthropic Opus 4.7  (1M context)
+  claude-opus-4-6       Anthropic Opus 4.6  (1M context)
   claude-sonnet-4-6     Anthropic Sonnet 4.6 (1M context)
   claude-haiku-4-5      Anthropic Haiku 4.5  (200k context)
   gpt-6-astra           OpenAI GPT-6 Astra   (1.05M context; default Codex participant)
@@ -629,8 +630,13 @@ Supported models:
   gpt-5-latest          OpenAI GPT-5 latest  (probes gpt-5.6-sol, falls back to gpt-5.5)
   gpt-5.4               OpenAI GPT-5.4       (272k context)
   gpt-4o                OpenAI GPT-4o        (128k context)
+  gpt-4o-mini           OpenAI GPT-4o mini   (128k context)
   o3                    OpenAI o3            (200k context)
   o4-mini               OpenAI o4-mini       (200k context)
+
+  The model menus also offer models the installed claude and codex tools
+  list themselves (newly released ones appear without an update here).
+  BOTFERENCE_MODEL_DISCOVERY=0 turns that off.
 
 Model resolution order:
   1. --anthropic-model flag

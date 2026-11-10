@@ -2507,6 +2507,30 @@ If you want to refresh it locally, run:
 python3 scripts/update_loc_badge.py
 ```
 
+## Which models are on offer
+
+The model menus (and `/model @claude|@codex <id>`) offer botference's own
+list of models plus any model the installed `claude` and `codex` tools list
+themselves. Both tools keep a copy of their current model list on this
+computer (Claude Code under `~/.claude/cache/model-catalog/`, Codex in
+`~/.codex/models_cache.json`), so a model Anthropic or OpenAI releases shows
+up in the menus without an update to botference. Those files belong to the
+other tools; if one is missing or cannot be read, botference offers its own
+list only and writes one line saying so to its log. Codex models the Codex
+tool hides are not offered. Nothing switches a bot to a new model by itself:
+the default models stay as they are until you pick another.
+
+When the room opens and a model is on offer that botference has not told you
+about before, it says so once, in one line ("New model on offer: …"), in the
+terminal room and the web council. The record of what was already announced
+is `~/.botference/models-seen.json`; on the very first run it is filled in
+silently. The browser plugin and the review hub do not show the line.
+
+A model botference has no price for (any model found this way, and some
+built-in ones) has its cost reported as not known, never as another model's
+price: `total_cost_usd` is `null` with a `cost_note`, and the review hub's
+local rollup counts such runs separately.
+
 ## Environment Variables
 
 | Variable | Purpose |
@@ -2515,6 +2539,11 @@ python3 scripts/update_loc_badge.py
 | `ANTHROPIC_MODEL` | Global model override (default: `claude-fable-5-1`) |
 | `OPENAI_MODEL` | Codex participant model (default: `gpt-6-astra`; `gpt-6-sol`/`gpt-6-luna` added 2026-09-23; `gpt-5.6-sol` the previous default; `gpt-5.6-terra`/`gpt-5.6-luna` for cheaper/faster, `gpt-5.5` still supported) |
 | `OPENAI_REASONING_EFFORT` | Codex participant reasoning effort for planner sessions (default: `medium`; `low`/`medium`/`high`/`xhigh`/`max`, plus `ultra` on Sol and Astra) |
+| `BOTFERENCE_MODEL_DISCOVERY` | `0` turns off reading the `claude`/`codex` tools' own model lists (see "Which models are on offer") |
+| `BOTFERENCE_CLAUDE_MODEL_CACHE` | Where Claude Code's model list is (a file, or a folder whose newest `.json` is used; default `$CLAUDE_CONFIG_DIR` or `~/.claude`, then `cache/model-catalog/`) |
+| `BOTFERENCE_CODEX_MODEL_CACHE` | Where Codex's model list is (default `$CODEX_HOME` or `~/.codex`, then `models_cache.json`) |
+| `BOTFERENCE_MODELS_SEEN_FILE` | The record of models already announced (default `~/.botference/models-seen.json`) |
+| `BOTFERENCE_MODEL_NOTICE` | `0` stops this process announcing new models (the plugin and review hub set it) |
 | `ANTHROPIC_API_KEY` | API key for Claude models (only if not using subscription) |
 | `OPENAI_API_KEY` | API key for OpenAI models. If set in `.env` or your shell, Botference prefers API-key auth for Codex and will override local subscription login on startup. |
 | `BOTFERENCE_CLAUDE_TRANSPORT` | Claude plan-mode transport: `programmatic` (default) or experimental `tmux` interactive mirror |

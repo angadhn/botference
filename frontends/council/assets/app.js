@@ -194,9 +194,12 @@
       ? t.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
   }
   // fallback model lists if completion_context never arrived (offline-ish boot)
+  // every built-in model in core/model_catalog.py must appear here
+  // (tests/test_model_catalog.py checks); the live list from the bridge
+  // replaces this, and also carries models the CLIs list
   const FALLBACK_MODELS = {
-    claude: ['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+    claude: ['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5-latest', 'gpt-5.4', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
   };
   // The command table the /help popup and the autocomplete hints read: a
   // mirror of core/botference.py COMMAND_HELP (the council rows), used until
@@ -237,7 +240,7 @@
     {"cmd": "/verify", "args": "[on|off]", "hint": "When they agree, the other bot checks the sources", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/agents", "args": "[on|off]", "hint": "Let Claude use helper agents (off by default)", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/notify", "args": "[on|off]", "hint": "Desktop notice when the bots finish", "group": "Settings", "scope": ["tui", "council"]},
-    {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "hint": "Let the bots fetch from a website (remove: take one away)", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "hint": "Only for allowlist mode: let the bots reach a site", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/permissions", "args": "", "hint": "Where the bots may write files", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];

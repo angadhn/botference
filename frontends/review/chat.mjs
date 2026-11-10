@@ -169,7 +169,10 @@ export class BridgeChat {
       '--system-prompt-file', sys, '--task-file', task], {
       cwd: home,
       env: { ...env, BOTFERENCE_HOME: home, BOTFERENCE_PROJECT_ROOT: this.projectRoot(),
-        BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: extraRoots, BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic' },
+        BOTFERENCE_PLAN_EXTRA_WRITE_ROOTS: extraRoots, BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic',
+        // start-up system lines never reach the review page: leave the
+        // "new model on offer" announcement for a room that shows it
+        BOTFERENCE_MODEL_NOTICE: '0' },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let buf = '';

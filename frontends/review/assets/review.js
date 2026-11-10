@@ -172,9 +172,12 @@
     return (EXHAUST_PATTERNS[agent] || []).some(re => re.test(t))
       ? t.replace(/\s+/g, ' ').trim().slice(0, 200) : null;
   }
+  // every built-in model in core/model_catalog.py must appear here
+  // (tests/test_model_catalog.py checks); the live list from the bridge
+  // replaces this, and also carries models the CLIs list
   const FALLBACK_MODELS = {
-    claude: ['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4'],
+    claude: ['claude-fable-5-2', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    codex: ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5-latest', 'gpt-5.4', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
   };
   // scoped model lists + current per-agent model, seeded from /data and kept
   // live by forwarded status/completion_context chat events
@@ -1939,6 +1942,8 @@
   function renderSettings() {
     const fmt = n => n == null ? '—' : Number(n).toLocaleString();
     const money = n => '$' + (Math.round((Number(n) || 0) * 1e4) / 1e4).toFixed(4);
+    // runs with no known price are counted but not priced: say so beside the sum
+    const rollCost = r => money(r.cost) + (r.unpriced ? ` + ${fmt(r.unpriced)} run${r.unpriced === 1 ? '' : 's'} with price not known` : '');
     const u = USAGE || {};
     const s = u.session;
     const occ = AGENTS.map(a => {
@@ -1968,8 +1973,8 @@
         : '<div class="so-empty">no agent turns yet in this session</div>'}
       <div class="so-sec">local rollup — billed</div>
       ${roll ? `<table class="set-tbl"><tr><th></th><th>runs</th><th>cost</th></tr>
-          <tr><td>today</td><td>${fmt(roll.today.runs)}</td><td>${money(roll.today.cost)}</td></tr>
-          <tr><td>this week</td><td>${fmt(roll.week.runs)}</td><td>${money(roll.week.cost)}</td></tr></table>
+          <tr><td>today</td><td>${fmt(roll.today.runs)}</td><td>${rollCost(roll.today)}</td></tr>
+          <tr><td>this week</td><td>${fmt(roll.week.runs)}</td><td>${rollCost(roll.week)}</td></tr></table>
           <div class="so-note">real billed cost, from botference's ${esc(roll.source)} — covers recorded runs on this machine, not this browser session.</div>`
         : '<div class="so-empty">no local run records on this machine (botference logs/usage.jsonl)</div>'}
       <div class="so-sec">subscription quota</div>

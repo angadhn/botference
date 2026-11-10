@@ -161,6 +161,7 @@ if [ -f "$USAGE_LOG" ]; then
        total_input_tokens: (map(.input_tokens // 0) | add),
        total_output_tokens: (map(.output_tokens // 0) | add),
        total_cost_usd: (map(.cost_usd // 0) | add | . * 100 | round / 100),
+       unpriced_iterations: (map(select(.cost_usd == null)) | length),
        total_duration_ms: (map(.duration_ms // 0) | add),
        agents_used: (map(.agent) | unique)}
     else empty end

@@ -15,6 +15,7 @@ Python modules that power the botference framework. These are the runtime compon
 | `cli_adapters.py` | Subprocess wrappers for Claude CLI and Codex CLI — session management, output parsing |
 | `botference_agent.py` | Agent runner for build mode — loads agent prompts, registers tools, runs the tool-calling loop |
 | `fallback_agent_mcp.py` | MCP fallback agent runner — exposes per-agent tools to `claude -p` when no API key is available (Python ≥ 3.10) |
+| `model_catalog.py` | The one model list: built-in ids, context windows and prices, plus models read from the claude/codex CLIs' own lists, and the "new model on offer" record |
 | `providers.py` | LLM provider abstraction — Anthropic and OpenAI API clients, model detection, context windows |
 | `room_prompts.py` | Prompt templates for botference mode — room preamble, free-form protocol, writer/reviewer/write phases |
 | `handoff.py` | Handoff schema, validation, serialization, and relay generation. Manages tier selection (self-authored, cross-authored, mechanical) and session teardown |
@@ -77,7 +78,8 @@ components from the `result` event:
 - `fallback = input_tokens + cache_creation_tokens + cache_read_tokens`
 
 The `context_window` is read from `modelUsage.contextWindow` in the `result`
-event when available, with a fallback to the `_CONTEXT_WINDOWS` table.
+event when available, with a fallback to `model_catalog.context_window()` (the
+built-in table, then the CLIs' own model lists).
 
 ### Codex
 

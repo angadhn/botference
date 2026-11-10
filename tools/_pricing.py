@@ -1,25 +1,34 @@
-"""Shared pricing table for Anthropic and OpenAI models.
+"""Price table for Anthropic and OpenAI models, per million tokens.
 
-Single source of truth — imported by botference_agent.py and scripts/usage_report.py.
+The numbers live in core/model_catalog.py (the one model list). This module
+keeps the old name ``PRICING`` for importers: id -> {input, output,
+cache_read, cache_create}, holding ONLY the models whose price is known.
+
+A model missing from PRICING has price "not known". Callers must say so
+(``cost_usd`` below returns None) and never substitute another model's price.
 """
 
-# Per-million-token pricing
-# Anthropic: https://docs.anthropic.com/en/docs/about-claude/models
-# OpenAI:    https://platform.openai.com/docs/pricing
-PRICING = {
-    # Anthropic
-    "claude-fable-5-2":  {"input": 8.0,  "output": 40.0, "cache_read": 0.2,  "cache_create": 10.0},  # cache rates assumed at 5.1 ratios
-    "claude-fable-5-1":  {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_create": 12.5},
-    "claude-fable-5":    {"input": 10.0, "output": 50.0, "cache_read": 1.0,  "cache_create": 12.5},
-    "claude-opus-4-8":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
-    "claude-opus-4-7":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
-    "claude-opus-4-6":   {"input": 15.0, "output": 75.0, "cache_read": 1.5,  "cache_create": 18.75},
-    "claude-sonnet-4-6": {"input": 3.0,  "output": 15.0, "cache_read": 0.3,  "cache_create": 3.75},
-    "claude-haiku-4-5":  {"input": 0.8,  "output": 4.0,  "cache_read": 0.08, "cache_create": 1.0},
-    # OpenAI — GPT-5.4 (high thinking) is the recommended model
-    "gpt-5.4":           {"input": 2.5,  "output": 15.0, "cache_read": 0.25, "cache_create": 0},
-    "gpt-4o":            {"input": 2.5,  "output": 10.0, "cache_read": 0, "cache_create": 0},
-    "gpt-4o-mini":       {"input": 0.15, "output": 0.6,  "cache_read": 0, "cache_create": 0},
-    "o3":                {"input": 10.0, "output": 40.0, "cache_read": 0, "cache_create": 0},
-    "o4-mini":           {"input": 1.1,  "output": 4.4,  "cache_read": 0, "cache_create": 0},
-}
+import sys
+from pathlib import Path
+
+_CORE_DIR = str(Path(__file__).resolve().parent.parent / "core")
+if _CORE_DIR not in sys.path:
+    sys.path.insert(0, _CORE_DIR)
+
+import model_catalog  # noqa: E402
+
+PRICING = model_catalog.builtin_prices()
+
+
+def cost_usd(model, input_tokens, output_tokens, cache_read_tokens=0, cache_create_tokens=0):
+    """Dollar cost rounded to 6 places, or None when the model's price is not known."""
+    prices = PRICING.get(model)
+    if prices is None:
+        return None
+    return round(
+        (input_tokens * prices["input"]
+         + output_tokens * prices["output"]
+         + cache_read_tokens * prices["cache_read"]
+         + cache_create_tokens * prices["cache_create"]) / 1_000_000,
+        6,
+    )

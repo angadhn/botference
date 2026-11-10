@@ -98,8 +98,9 @@ def main():
             with open(output_path, "w") as f:
                 json.dump(event, f)
             turns = event.get("num_turns", "?")
-            cost = event.get("total_cost_usd", 0)
-            _log(f"Done — {turns} turns, ${cost:.2f}, {_tool_count} tool calls")
+            cost = event.get("total_cost_usd")
+            cost_text = f"${cost:.2f}" if isinstance(cost, (int, float)) else "cost not known"
+            _log(f"Done — {turns} turns, {cost_text}, {_tool_count} tool calls")
 
 
 if __name__ == "__main__":

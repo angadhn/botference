@@ -28,3 +28,11 @@ def _isolate_botference_state(tmp_path, monkeypatch):
     # ~/.botference/sites.json, and never by poking their running companion
     monkeypatch.setenv("BOTFERENCE_SITES_REGISTRY", str(tmp_path / "bf-sites.json"))
     monkeypatch.setenv("BOTFERENCE_PLUGIN_URL", "http://127.0.0.1:9")
+    # Model discovery (core/model_catalog.py) never reads the developer's
+    # real ~/.claude / ~/.codex lists, and the "new model" record never
+    # lands in their ~/.botference: tests that want discovery turn it on
+    # and point these at fixture files.
+    monkeypatch.setenv("BOTFERENCE_MODEL_DISCOVERY", "0")
+    monkeypatch.setenv("BOTFERENCE_CLAUDE_MODEL_CACHE", str(tmp_path / "bf-no-claude-models"))
+    monkeypatch.setenv("BOTFERENCE_CODEX_MODEL_CACHE", str(tmp_path / "bf-no-codex-models.json"))
+    monkeypatch.setenv("BOTFERENCE_MODELS_SEEN_FILE", str(tmp_path / "bf-models-seen.json"))

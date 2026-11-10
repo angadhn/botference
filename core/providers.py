@@ -19,6 +19,12 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# model_catalog sits beside this file; make it importable however we were loaded
+_CORE_DIR = str(Path(__file__).resolve().parent)
+if _CORE_DIR not in sys.path:
+    sys.path.insert(0, _CORE_DIR)
+import model_catalog  # noqa: E402
+
 
 # ── Response normalization ────────────────────────────────────
 
@@ -43,31 +49,8 @@ class LLMResponse:
 
 # ── Context windows ───────────────────────────────────────────
 
-_CONTEXT_WINDOWS = {
-    "claude-fable-5-2": 1_000_000,  # Fable 5.2 (2026-11-09): same tier, 20% cheaper
-    "claude-fable-5-1": 1_000_000,
-    "claude-fable-5": 1_000_000,
-    "claude-opus-5-5": 1_000_000,  # Opus 5.5 (2026-09-22): Fable-5.1-class, cheaper; default effort medium
-    "claude-opus-5": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
-    "claude-haiku-4-5": 200_000,
-    "gpt-5-latest": 272_000,
-    "gpt-6-astra": 1_050_000,    # default Codex participant since 2026-09-04
-    "gpt-6-sol": 1_050_000,      # GPT-6 Sol (2026-09-22): large; efforts low..max + ultra
-    "gpt-6-luna": 1_050_000,     # GPT-6 Luna (2026-09-22): small; efforts low..max
-    "gpt-5.6-sol": 1_050_000,
-    "gpt-5.6-terra": 1_050_000,
-    "gpt-5.6-luna": 1_050_000,
-    "gpt-5.5": 258_000,
-    "gpt-5.4": 272_000,          # 272k standard; 1.05M experimental (not enabled)
-    "gpt-4o": 128_000,
-    "gpt-4o-mini": 128_000,
-    "o3": 200_000,
-    "o4-mini": 200_000,
-}
+# Built-in table lives in model_catalog.py; this name stays for importers.
+_CONTEXT_WINDOWS = model_catalog.builtin_context_windows()
 
 
 def get_context_window(model: str) -> int:
@@ -82,7 +65,7 @@ def get_context_window(model: str) -> int:
             return int(override)
         except ValueError:
             pass
-    return _CONTEXT_WINDOWS.get(model, 200_000)
+    return model_catalog.context_window(model)
 
 
 

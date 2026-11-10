@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import model_catalog
 from providers import percent_of_limit
 from render_blocks import build_tool_use_blocks, parse_render_blocks
 
@@ -763,31 +764,10 @@ class AdapterResponse:
 
 # ── Context windows (fallback when not reported by CLI) ──────
 
-_CONTEXT_WINDOWS = {
-    "claude-fable-5-2": 1_000_000,  # Fable 5.2 (2026-11-09): same tier, 20% cheaper
-    "claude-fable-5-1": 1_000_000,
-    "claude-fable-5": 1_000_000,
-    "claude-opus-5-5": 1_000_000,  # Opus 5.5 (2026-09-22): Fable-5.1-class, cheaper; default effort medium
-    "claude-opus-5": 1_000_000,
-    "claude-opus-4-8": 1_000_000,
-    "claude-opus-4-6": 1_000_000,
-    "claude-opus-4-7": 1_000_000,
-    "claude-sonnet-4-6": 1_000_000,
-    "claude-haiku-4-5": 200_000,
-    "gpt-5-latest": 272_000,
-    "gpt-6-astra": 1_050_000,    # default Codex participant since 2026-09-04
-    "gpt-6-sol": 1_050_000,      # GPT-6 Sol (2026-09-22): large; efforts low..max + ultra
-    "gpt-6-luna": 1_050_000,     # GPT-6 Luna (2026-09-22): small; efforts low..max
-    "gpt-5.6-sol": 1_050_000,
-    "gpt-5.6-terra": 1_050_000,
-    "gpt-5.6-luna": 1_050_000,
-    "gpt-5.5": 258_000,
-    "gpt-5.4": 272_000,
-    "gpt-4o": 128_000,
-    "gpt-4o-mini": 128_000,
-    "o3": 200_000,
-    "o4-mini": 200_000,
-}
+# Built-in table lives in model_catalog.py; this name stays for importers.
+# Lookups go through model_catalog.context_window(), which also knows
+# models found in the CLIs' own lists.
+_CONTEXT_WINDOWS = model_catalog.builtin_context_windows()
 
 _CODEX_MODEL_ALIASES = {
     # Probe the current Codex/OpenAI path for the newest GPT-5 release we want
@@ -1341,9 +1321,7 @@ class ClaudeAdapter:
                             response.context_window = cw
                             break
                     if not response.context_window:
-                        response.context_window = _CONTEXT_WINDOWS.get(
-                            self.model, 200_000
-                        )
+                        response.context_window = model_catalog.context_window(self.model)
                     # The turn is over — no more steering; closing stdin
                     # lets the CLI exit (ending this drain loop on EOF).
                     self._close_steer_stdin()
@@ -1427,7 +1405,7 @@ class ClaudeAdapter:
 
     def context_percent(self, resp: AdapterResponse) -> float:
         """Projected next-turn occupancy as % of yield limit. 100 = yield now."""
-        window = resp.context_window or _CONTEXT_WINDOWS.get(self.model, 200_000)
+        window = resp.context_window or model_catalog.context_window(self.model)
         base = (resp.occupancy_tokens if resp.occupancy_tokens
                 else (resp.input_tokens + resp.cache_creation_tokens
                       + resp.cache_read_tokens))
@@ -1584,7 +1562,7 @@ class ClaudeInteractiveTmuxAdapter:
             text=message,
             exit_code=1,
             session_id=self.session_id,
-            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_window=model_catalog.context_window(self.model),
             context_tokens_reliable=False,
         )
 
@@ -1777,7 +1755,7 @@ class ClaudeInteractiveTmuxAdapter:
                     raw_output=normalize_tmux_capture(capture),
                     exit_code=0,
                     session_id=self.session_id,
-                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_window=model_catalog.context_window(self.model),
                     context_tokens_reliable=False,
                 )
 
@@ -1792,7 +1770,7 @@ class ClaudeInteractiveTmuxAdapter:
             raw_output=normalize_tmux_capture(last_capture),
             exit_code=-1,
             session_id=self.session_id,
-            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_window=model_catalog.context_window(self.model),
             context_tokens_reliable=False,
         )
 
@@ -1848,7 +1826,7 @@ class ClaudeInteractiveTmuxAdapter:
                         raw_output=normalize_tmux_capture(capture),
                         exit_code=0,
                         session_id=self.session_id,
-                        context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                        context_window=model_catalog.context_window(self.model),
                         context_tokens_reliable=False,
                     )
                 continue
@@ -1862,7 +1840,7 @@ class ClaudeInteractiveTmuxAdapter:
                     raw_output=normalize_tmux_capture(capture),
                     exit_code=0,
                     session_id=self.session_id,
-                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_window=model_catalog.context_window(self.model),
                     context_tokens_reliable=False,
                 )
 
@@ -1878,7 +1856,7 @@ class ClaudeInteractiveTmuxAdapter:
                     raw_output=normalize_tmux_capture(capture),
                     exit_code=0,
                     session_id=self.session_id,
-                    context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+                    context_window=model_catalog.context_window(self.model),
                     context_tokens_reliable=False,
                 )
 
@@ -1893,7 +1871,7 @@ class ClaudeInteractiveTmuxAdapter:
             raw_output=normalize_tmux_capture(last_capture),
             exit_code=-1,
             session_id=self.session_id,
-            context_window=_CONTEXT_WINDOWS.get(self.model, 200_000),
+            context_window=model_catalog.context_window(self.model),
             context_tokens_reliable=False,
         )
 
@@ -2217,9 +2195,7 @@ class CodexAdapter:
                     response.context_tokens_reliable = (
                         bool(response.occupancy_tokens) or baseline_available
                     )
-                    response.context_window = _CONTEXT_WINDOWS.get(
-                        self.model, 200_000
-                    )
+                    response.context_window = model_catalog.context_window(self.model)
                     if not isolated:
                         self._last_cumulative_input_tokens = cumulative_input
                         self._last_cumulative_output_tokens = cumulative_output
@@ -2308,7 +2284,7 @@ class CodexAdapter:
         """Estimated context occupancy as % of yield limit. 100 = yield now."""
         if not resp.context_tokens_reliable:
             return 0.0
-        window = resp.context_window or _CONTEXT_WINDOWS.get(self.model, 200_000)
+        window = resp.context_window or model_catalog.context_window(self.model)
         occupancy = (resp.occupancy_tokens
                      or resp.turn_input_tokens
                      or resp.input_tokens)

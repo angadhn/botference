@@ -566,6 +566,11 @@ async def _send_initial_state_and_schedule_hydration(
             "A previous run appears to have crashed. Evidence:\n"
             + "\n".join(f"  {p}" for p in fresh_crashes),
         )
+    # once, if a model is on offer that was never announced (model_catalog)
+    try:
+        botference.announce_new_models(bridge)
+    except Exception as exc:  # a notice must never stop the room opening
+        log.warning("new-model notice skipped: %s", exc)
     emit({"type": "ready"})
     return asyncio.create_task(
         _hydrate_project_panel(bridge, botference, paths)
@@ -600,6 +605,8 @@ async def _wait_for_turn(
         bridge.set_status(botference.status_snapshot())
         bridge.set_projects(botference.project_panel_snapshot())
     finally:
+        # the first input is over: a start-up notice is not re-shown after this
+        botference.settle_model_notice()
         if botference.quit_requested:
             emit({"type": "exit"})
             should_exit = True

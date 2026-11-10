@@ -547,7 +547,9 @@ function usageRollup() {
   if (!log || !fs.existsSync(log)) return null;
   const dayMs = 86400000;
   const now = Date.now();
-  const acc = { today: { cost: 0, runs: 0 }, week: { cost: 0, runs: 0 }, source: path.basename(log) };
+  // `unpriced`: runs whose cost_usd is null (price not known) — counted as
+  // runs but not added to the dollar total, and shown as such
+  const acc = { today: { cost: 0, runs: 0, unpriced: 0 }, week: { cost: 0, runs: 0, unpriced: 0 }, source: path.basename(log) };
   let text = '';
   try { text = fs.readFileSync(log, 'utf8'); } catch { return null; }
   for (const line of text.split('\n')) {
@@ -555,9 +557,10 @@ function usageRollup() {
     let e; try { e = JSON.parse(line); } catch { continue; }
     const t = Date.parse(e.timestamp || '');
     if (!t || e.error) continue;
-    const c = Number(e.cost_usd) || 0;
-    if (now - t < dayMs) { acc.today.cost += c; acc.today.runs++; }
-    if (now - t < 7 * dayMs) { acc.week.cost += c; acc.week.runs++; }
+    const priced = typeof e.cost_usd === 'number' && Number.isFinite(e.cost_usd);
+    const c = priced ? e.cost_usd : 0;
+    if (now - t < dayMs) { acc.today.cost += c; acc.today.runs++; if (!priced) acc.today.unpriced++; }
+    if (now - t < 7 * dayMs) { acc.week.cost += c; acc.week.runs++; if (!priced) acc.week.unpriced++; }
   }
   acc.today.cost = Math.round(acc.today.cost * 1e4) / 1e4;
   acc.week.cost = Math.round(acc.week.cost * 1e4) / 1e4;

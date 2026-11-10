@@ -374,7 +374,9 @@ COMMAND_HELP: list[dict] = [
 
     # Models
     {"cmd": "/model", "args": "[@claude|@codex <id>]", "group": "Models",
-     "hint": "Show or change a bot's model", "scope": _ALL},
+     "hint": "Show or change a bot's model", "scope": _ALL,
+     "detail": ["Also offers models the installed claude and codex tools list;",
+                "a newly found one is announced once when the room opens"]},
     {"cmd": "/effort", "args": "[@claude|@codex <level>]", "group": "Models",
      "hint": "Show or change how hard a bot thinks", "scope": _ALL,
      "detail": ["claude: low|medium|high|xhigh|max;"
@@ -527,16 +529,28 @@ _CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 _CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max", "ultra")
 
 
+# The start-up "new model on offer" sentence, as a named lifecycle:
+#   none    — nothing to announce this run (or not asked yet);
+#   showing — announced at start-up; a chat replay during the FIRST input
+#             (the web room's spawn-time /resume wipes the screen) shows it
+#             again, so it is not lost;
+#   done    — the first input has finished; never shown again this run.
+MODEL_NOTICE_MODES = ("none", "showing", "done")
+_MODEL_NOTICE_MOVES = {("none", "showing"), ("showing", "done")}
+
+
 def _known_claude_models() -> list[str]:
-    """Claude model IDs from the CLI adapter context-window table."""
-    from cli_adapters import _CONTEXT_WINDOWS
-    return [m for m in _CONTEXT_WINDOWS if m.startswith("claude-")]
+    """Claude model IDs on offer: the built-in table plus any the Claude
+    CLI's own model list adds (model_catalog.py)."""
+    import model_catalog
+    return model_catalog.offered_ids("claude")
 
 
 def _known_codex_models() -> list[str]:
-    """Non-Claude (OpenAI) model IDs from the CLI adapter context-window table."""
-    from cli_adapters import _CONTEXT_WINDOWS
-    return [m for m in _CONTEXT_WINDOWS if not m.startswith("claude-")]
+    """Codex (OpenAI) model IDs on offer: the built-in table plus any the
+    Codex CLI's own model list adds (model_catalog.py)."""
+    import model_catalog
+    return model_catalog.offered_ids("codex")
 
 
 def get_completion_context() -> dict:
@@ -1775,6 +1789,11 @@ class Botference:
         self._persisted_activity: tuple[int, str] = (0, "")
         self.router = AutoRouter()
         self.mode = RoomMode.PUBLIC
+        # The start-up "new model on offer" sentence (model_catalog). Its
+        # mode is one of MODEL_NOTICE_MODES, changed only by
+        # _move_model_notice.
+        self._model_notice_mode = "none"
+        self._model_notice_text = ""
         self.lead: str = "auto"
         self.observe: bool = True
         # Desktop notification on turn completion — a user preference, not
@@ -2970,7 +2989,45 @@ class Botference:
             self._restoring_session = False
         return saved_mode
 
+    # ── "new model on offer" notice ──────────────────────
+
+    def _move_model_notice(self, to: str) -> None:
+        if (self._model_notice_mode, to) not in _MODEL_NOTICE_MOVES:
+            raise ValueError(
+                f"model notice cannot go {self._model_notice_mode} -> {to}")
+        self._model_notice_mode = to
+
+    def announce_new_models(self, ui: UIPort) -> None:
+        """At start-up: say once if a model is on offer that was never
+        announced before (model_catalog.new_model_notice). A notice, not a
+        chat entry: it is not saved into whichever chat happens to be open.
+
+        BOTFERENCE_MODEL_NOTICE=0 skips it (front ends that cannot show a
+        start-up line set this, so they do not use up the announcement).
+        """
+        if self._model_notice_mode != "none":
+            return
+        if os.environ.get("BOTFERENCE_MODEL_NOTICE", "").strip() == "0":
+            return
+        import model_catalog
+        text = model_catalog.new_model_notice()
+        if not text:
+            return
+        self._model_notice_text = text
+        self._move_model_notice("showing")
+        self._show_room_notice(ui, "system", text)
+
+    def settle_model_notice(self) -> None:
+        """After an input has finished: the notice has had its chance."""
+        if self._model_notice_mode == "showing":
+            self._move_model_notice("done")
+
     def _replay_restored_session(self, ui: UIPort) -> None:
+        self._replay_restored_entries(ui)
+        if self._model_notice_mode == "showing":
+            self._show_room_notice(ui, "system", self._model_notice_text)
+
+    def _replay_restored_entries(self, ui: UIPort) -> None:
         display = [
             e for e in self._room_history
             if not self._is_routine_restored_system_entry(e)

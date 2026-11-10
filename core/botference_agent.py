@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from tools.redact import preview_text, redact_text
 from tools.fmt import fmt_banner, fmt_tool_call, fmt_tool_result, fmt_separator
 from tools import execute_tool, get_tools_for_agent, resolve_agent_file
-from tools._pricing import PRICING
+from tools._pricing import cost_usd
 from providers import (
     detect_provider, create_client, call_model,
     format_assistant_message, format_tool_results,
@@ -313,15 +313,11 @@ def run_agent(agent_name: str, system_prompt: str, task: str, model: str,
 
     duration_ms = int(_time.time() * 1000) - start_ms
 
-    # Compute cost from token usage
-    prices = PRICING.get(model, PRICING["claude-sonnet-4-6"])
-    total_cost_usd = round(
-        (total_input * prices["input"]
-         + total_output * prices["output"]
-         + total_cache_read * prices["cache_read"]
-         + total_cache_create * prices["cache_create"]) / 1_000_000,
-        6,
-    )
+    # Compute cost from token usage. A model with no known price gets
+    # total_cost_usd = null (JSON) plus a cost_note saying why — never another
+    # model's price. Consumers that add costs treat null as "not counted".
+    total_cost_usd = cost_usd(model, total_input, total_output,
+                              total_cache_read, total_cache_create)
 
     # Write usage JSON compatible with botference's jq parsing
     usage = {
@@ -329,6 +325,8 @@ def run_agent(agent_name: str, system_prompt: str, task: str, model: str,
         "num_turns": num_turns,
         "duration_ms": duration_ms,
         "total_cost_usd": total_cost_usd,
+        **({} if total_cost_usd is not None
+           else {"cost_note": f"price not known for {model}"}),
         "tools_called": tools_called,
         "result": preview_text(response.text_blocks[0] if response.text_blocks else ""),
         "usage": {

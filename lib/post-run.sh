@@ -567,7 +567,8 @@ print_output_json_summary() {
       (.modelUsage // {} | to_entries[] |
         "\n  Model: \(.key)" +
         "\n    input: \(.value.inputTokens // 0) | cache_create: \(.value.cacheCreationInputTokens // 0) | cache_read: \(.value.cacheReadInputTokens // 0) | output: \(.value.outputTokens // 0)") +
-      (if .total_cost_usd then "\n  Cost: $\(.total_cost_usd)" else "" end)
+      (if .total_cost_usd != null then "\n  Cost: $\(.total_cost_usd)"
+       elif .cost_note then "\n  Cost: not known (\(.cost_note))" else "" end)
     end
   ' "$output_file" 2>/dev/null || echo "  (could not parse output JSON)"
 }
