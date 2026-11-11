@@ -39,7 +39,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
-import { readConfig, saveConfig, unwrapLine, clipTo, ROOT, ROOT_ANSWERS } from './store.mjs';
+import { readConfig, saveConfig, unwrapLine, clipTo, ROOT, ROOT_ANSWERS, threadStage } from './store.mjs';
 // the routing rules, borrowed rather than copied: a per-thread review turn is
 // addressed by exactly the tags every other turn is addressed by (chat.routeOf),
 // and two copies of that rule could disagree about who a thread belongs to
@@ -1160,7 +1160,7 @@ export function threadDigest(page, budget = ARTIFACT_DIGEST_CHARS) {
   for (const t of threads) {
     const lines = [`— “${clip(t.quote, ARTIFACT_QUOTE_MAX)}”`
       + (Number(t.page) > 0 ? ` (page ${Number(t.page)})` : '')
-      + (t.resolved ? ' [filed]' : '')];
+      + (threadStage(t) === 'resolved' ? ' [filed]' : '')];
     for (const m of (t.msgs || []).filter(m => m && m.kind !== 'tools')) {
       lines.push(`   ${m.author || 'someone'}: ${clip(m.text, ARTIFACT_MSG_MAX)}`);
     }
@@ -1344,7 +1344,7 @@ const clip = clipTo;
 // an addressed thread back would ask the bots to redo work they have already
 // reported — and re-sending after a round is exactly what this state is for.
 export const openThreads = page => ((page && page.threads) || [])
-  .filter(t => t && !t.resolved && !t.addressed && (t.msgs || []).length)
+  .filter(t => t && threadStage(t) === 'open' && (t.msgs || []).length)
   // a stable sort by page number: Array#sort is stable in every JS engine
   // this runs on, so equal pages keep record order without an index dance
   .slice()

@@ -863,6 +863,15 @@ async function main() {
     const filed = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: true });
     assert.equal(filed.json.thread.resolved, true);
     assert.equal(filed.json.thread.addressed, undefined, 'the reader looked; the claim has done its job');
+    assert.equal(filed.json.thread.status, 'resolved', 'the one stored status says the same');
+    // a filed thread cannot be handed back as "ready" without reopening it
+    // first — that jump is what used to store both flags at once
+    const jump = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: true });
+    assert.equal(jump.status, 409);
+    assert.match(jump.json.error, /reopen it first/);
+    // …and "not done" on a filed thread is no move at all: it stays filed
+    const notDone = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: false });
+    assert.equal(notDone.json.thread.status, 'resolved');
     const back = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: false });
     assert.equal(back.json.thread.resolved, undefined);
     assert.equal(back.json.thread.addressed, undefined,

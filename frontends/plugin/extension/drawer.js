@@ -270,18 +270,73 @@
   // A thread's STATUS is what every label about it says — the card's class
   // and its section, the badges on its quote, the bubble's ✓/↺, the overlap
   // chooser's row, and the paint on the page. It is ONE function over the
-  // record's flags, threadStatus, and every label reads it; nothing reads the
-  // flags directly to decide what to call a thread. (The flags themselves are
-  // still what the companion stores and changes — store.mjs setResolved /
-  // setAddressed, POST /orphan, POST /mark — see SPEC "comment status".)
+  // record, threadStatus, and every label reads it; nothing reads a field
+  // directly to decide what to call a thread.
   //
-  // The STAGE, its three names (THREAD_STAGES), resolved outranking ready:
+  // The STAGE is ONE stored field, `status`, one of THREAD_STAGES:
   //   'open'     — waiting on the bots, or on nobody
   //   'ready'    — a bot has answered since the reader last wrote: "ready for
-  //                review", waiting on the reader (`addressed`)
+  //                review", waiting on the reader
   //   'resolved' — closed by the reader. Nothing else closes a thread.
-  const THREAD_STAGES = ['open', 'ready', 'resolved'];
-  const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // The companion owns it (store.mjs setThreadStatus, THREAD_MOVES — see SPEC
+  // "comment status, one field"). THIS is its twin for the optimistic redraw:
+  // the same three names, the same move table, the same refusal, held to the
+  // companion's by test/status.test.mjs. A record from before `status` (only
+  // the old `resolved` / `addressed` flags) reads by the old rule: resolved
+  // outranks ready outranks open. The companion still writes those flags as a
+  // shadow of the status, for older readers; nothing here reads or writes them
+  // except to keep that shadow true on our local copy.
+  const THREAD_STAGES = Object.freeze(['open', 'ready', 'resolved']);
+  const THREAD_MOVES = Object.freeze({
+    open: Object.freeze(['open', 'ready', 'resolved']),
+    ready: Object.freeze(['open', 'ready', 'resolved']),
+    resolved: Object.freeze(['open', 'resolved']),   // a filed thread is left only by reopening
+  });
+  const threadMove = (from, to) =>
+    THREAD_STAGES.indexOf(from) >= 0 && THREAD_STAGES.indexOf(to) >= 0 && THREAD_MOVES[from].indexOf(to) >= 0;
+  const threadStage = t => (!t ? 'open'
+    : THREAD_STAGES.indexOf(t.status) >= 0 ? t.status
+    : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // the stage's own fields: what an optimistic move changes, and what a
+  // refused one puts back (threadStatusFields / restoreThreadStatus)
+  const STATUS_FIELDS = ['status', 'resolved', 'resolved_at', 'resolved_by', 'addressed', 'addressed_at', 'addressed_by'];
+  // THE ONE SETTER on this side — the local copy only; the companion's answer
+  // replaces it. Same answers as store.setThreadStatus: { changed } or
+  // { changed: false, refused }.
+  function setThreadStage(t, next, by) {
+    if (!t) return null;
+    const from = threadStage(t);
+    if (!threadMove(from, next)) return { changed: false, refused: 'this thread is filed — reopen it first' };
+    if (from === next && next !== 'ready') return { changed: false };
+    if (next !== 'ready') { delete t.addressed_at; delete t.addressed_by; }
+    if (next !== 'resolved') { delete t.resolved_at; delete t.resolved_by; }
+    if (next === 'ready' && by) t.addressed_by = String(by);
+    if (next === 'resolved' && by) t.resolved_by = String(by);
+    t.status = next;
+    if (next === 'resolved') t.resolved = true; else delete t.resolved;
+    if (next === 'ready') t.addressed = true; else delete t.addressed;
+    return { changed: from !== next };
+  }
+  // An optimistic move the companion then refused is UNDONE, not moved back:
+  // the snapshot is a state the record already held, so putting it back is
+  // not a move through the table (ready → resolved, refused, must return to
+  // ready, which the table rightly forbids as a move).
+  function threadStatusFields(t) {
+    const o = {};
+    for (const k of STATUS_FIELDS) if (t && t[k] !== undefined) o[k] = t[k];
+    return o;
+  }
+  function restoreThreadStatus(t, snap) {
+    if (!t) return;
+    for (const k of STATUS_FIELDS) { if (snap && snap[k] !== undefined) t[k] = snap[k]; else delete t[k]; }
+  }
+  // `orphaned` is not a stage: any stage can be found or lost on the page. Our
+  // local copy's last report has one writer too (content.js uses it).
+  function setThreadOrphaned(t, on) {
+    if (!t || !!t.orphaned === !!on) return false;
+    t.orphaned = !!on;
+    return true;
+  }
   // …the MARK, its two names (THREAD_MARKS): what was done to the passage
   const THREAD_MARKS = ['highlight', 'strike'];
   const threadMark = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
@@ -9687,16 +9742,13 @@ ${bubbleShellHtml()}`;
     async function doResolve(target, on) {
       const t = threadById(target);
       if (!t || D.resolving[target]) return;
-      const was = !!t.resolved;
+      const was = threadStatusFields(t);
       const wasSummary = t.summary;
-      // Either direction ends "ready for review" — the companion's setResolved
-      // does exactly this, so the optimistic copy does too, or a reopened
-      // thread would read "ready" here and "open" everywhere else until the
-      // record came back
-      const wasAddr = { addressed: t.addressed, addressed_by: t.addressed_by, addressed_at: t.addressed_at };
-      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
+      // Either direction ends "ready for review" — the companion's move does
+      // exactly this, and so does the twin setter, or a reopened thread would
+      // read "ready" here and "open" everywhere else until the record came back
+      setThreadStage(t, on ? 'resolved' : 'open');
       if (on) {
-        t.resolved = true;
         if (!t.summary) t.summary = localDigest(t);
         // opening the archive on the first resolve is the one time the reader
         // is shown where their thread went; after that it stays as they left it
@@ -9706,7 +9758,6 @@ ${bubbleShellHtml()}`;
         // list it came from, in its page order. `summary` is left where it is —
         // it is still a true account of what the thread said last time, and
         // keeping it is what lets a late summary job land harmlessly.
-        delete t.resolved;
       }
       D.resolving[target] = true;
       render();
@@ -9718,9 +9769,8 @@ ${bubbleShellHtml()}`;
         // put it back exactly as it was — including a summary we invented
         const now = threadById(target);
         if (now) {
-          if (was) now.resolved = true; else delete now.resolved;
+          restoreThreadStatus(now, was);
           if (wasSummary == null) delete now.summary; else now.summary = wasSummary;
-          for (const k of Object.keys(wasAddr)) if (wasAddr[k] !== undefined) now[k] = wasAddr[k];
         }
         note(target, (r && r.error) || (on ? 'could not resolve that thread' : 'could not reopen that thread'), true);
         return;   // note() renders
@@ -9770,8 +9820,9 @@ ${bubbleShellHtml()}`;
     async function doNotDone(target) {
       const t = threadById(target);
       if (!t || D.addressing[target]) return;
-      const was = t.addressed, wasBy = t.addressed_by, wasAt = t.addressed_at;
-      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
+      const was = threadStatusFields(t);
+      // "not done" moves a READY thread back to open; on any other it is a no-op
+      if (threadStage(t) === 'ready') setThreadStage(t, 'open');
       D.addressing[target] = true;
       render();
       let r;
@@ -9780,7 +9831,7 @@ ${bubbleShellHtml()}`;
       delete D.addressing[target];
       if (!r || r.ok === false) {
         const now = threadById(target);
-        if (now && was) { now.addressed = was; if (wasBy) now.addressed_by = wasBy; if (wasAt) now.addressed_at = wasAt; }
+        if (now) restoreThreadStatus(now, was);
         note(target, (r && r.error) || 'could not put that thread back', true);
         return;   // note() renders
       }
@@ -13242,7 +13293,8 @@ ${bubbleShellHtml()}`;
     create, authorColor, isBot, HINT, PAGE_TARGET,
     isResolvedThread, isInsertionThread,                    // content.js + test/collapse.test.mjs
     threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
-    THREAD_STAGES, THREAD_MARKS,
+    THREAD_STAGES, THREAD_MARKS, THREAD_MOVES, threadMove,  // test/status.test.mjs
+    setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

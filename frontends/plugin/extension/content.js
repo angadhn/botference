@@ -1356,9 +1356,8 @@
     // adapter says `reportOrphans:false` keeps its verdicts LOCAL — the drawer
     // badges what it cannot show, and the record is left alone.
     for (const t of threads) {
-      const was = !!t.orphaned, now = !!nextOrphans[t.id];
-      if (was !== now) {
-        t.orphaned = now;
+      const now = !!nextOrphans[t.id];
+      if (Drawer.setThreadOrphaned(t, now)) {
         if (CAPS.reportOrphans !== false) {
           api('POST', '/orphan', { url: URL_NOW, thread_id: t.id, orphaned: now });
         }
@@ -1490,7 +1489,7 @@
         live.quote = saved.quote;
         live.prefix = saved.prefix;
         live.suffix = saved.suffix;
-        live.orphaned = false;
+        Drawer.setThreadOrphaned(live, false);
         if (drawer) drawer.setPage(PAGE);
       }
     }).catch(() => { delete reanchoring[t.id]; });
@@ -2733,12 +2732,17 @@
       // goes back to yellow now, with the message, rather than a round
       // trip later when the `page` broadcast lands
       const t = ((PAGE && PAGE.threads) || []).find(x => x.id === threadId);
-      if (t && t.resolved) { delete t.resolved; Anchor.markResolved(threadId, false); }
       // …and it is no longer "ready for review" either: the reader has
       // just asked something new here, so whatever a bot claimed about
       // this thread a moment ago is stale (store.appendMsg says the same
-      // thing server-side; this is the optimistic half of it)
-      if (t && t.addressed) { delete t.addressed; Anchor.markAddressed(threadId, false); }
+      // thing server-side; this is the optimistic half of it). One move
+      // either way: resolved → open, or ready → open.
+      const wasStage = Drawer.threadStage(t);
+      if (t && wasStage !== 'open') {
+        Drawer.setThreadStage(t, 'open');
+        if (wasStage === 'resolved') Anchor.markResolved(threadId, false);
+        else Anchor.markAddressed(threadId, false);
+      }
       if (drawer && PAGE) drawer.setPage(PAGE);
     } else if (r.data && r.data.deduped) {
       // deduped with nothing echoed: the record is the only truth left

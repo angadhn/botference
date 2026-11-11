@@ -31,6 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { isResolved } from './store.mjs';
 
 // How many copies a page remembers. A receipt list, not an archive: the chats
 // themselves live in the council.
@@ -86,7 +87,7 @@ export function commentsBlock(page, owner = '') {
   if (!threads.length) return '';
   const out = [`The reader's margin comments on the page (${threads.length} thread${threads.length === 1 ? '' : 's'}):`];
   threads.forEach((t, i) => {
-    const state = t.resolved ? 'resolved' : t.deleted ? 'passage since deleted' : 'open';
+    const state = isResolved(t) ? 'resolved' : t.deleted ? 'passage since deleted' : 'open';
     const kind = t.mark === 'strike' ? 'strike-through' : 'comment';
     const quote = clean(t.quote).replace(/\s+/g, ' ');
     out.push('');

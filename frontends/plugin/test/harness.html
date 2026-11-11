@@ -2548,7 +2548,7 @@ if (HEAL) {
   } else {
     rewritePassage(HEAL_WAS, HEAL_NOW);
   }
-  t.addressed = true; t.addressed_at = iso(2); t.addressed_by = 'claude';
+  stageTo(t, 'ready', 'claude'); t.addressed_at = iso(2);
   t.msgs.push({ author: 'claude', ts: iso(2),
     text: deleted
       ? '✎ @claude DELETED the passage this comment is on, while working on the document — '
@@ -2903,20 +2903,38 @@ function msgIn(threadId, ts) {
 // their go and it is the reader's turn; a HUMAN writing there means the reader
 // has just asked something new, so any earlier claim is stale. A `tools` line
 // is a bot narrating, not answering, and never counts.
+// The fake companion's copy of store.mjs setThreadStatus: ONE stored
+// `status` (open / ready / resolved), the old flags kept as its shadow, and
+// the one refused move (resolved → ready). Written by this and nothing else.
+function stageTo(t, next, by) {
+  const from = ['open', 'ready', 'resolved'].indexOf(t.status) >= 0 ? t.status
+    : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open';
+  if (from === 'resolved' && next === 'ready') return false;
+  if (from === next && next !== 'ready') return true;
+  if (next !== 'ready') { delete t.addressed_at; delete t.addressed_by; }
+  if (next !== 'resolved') { delete t.resolved_at; delete t.resolved_by; }
+  if (next === 'ready') { t.addressed_at = now(); if (by) t.addressed_by = String(by); else delete t.addressed_by; }
+  if (next === 'resolved') { t.resolved_at = now(); if (by) t.resolved_by = String(by); else delete t.resolved_by; }
+  t.status = next;
+  if (next === 'resolved') t.resolved = true; else delete t.resolved;
+  if (next === 'ready') t.addressed = true; else delete t.addressed;
+  return true;
+}
+// a pose that sets a scene and then puts it back: the status fields, whole
+const STATUS_KEYS = ['status', 'resolved', 'resolved_at', 'resolved_by', 'addressed', 'addressed_at', 'addressed_by'];
+const statusSnap = t => STATUS_KEYS.reduce((o, k) => (t[k] === undefined ? o : { ...o, [k]: t[k] }), {});
+const statusPut = (t, snap) => STATUS_KEYS.forEach(k => { if (snap[k] === undefined) delete t[k]; else t[k] = snap[k]; });
 function reopenOnWrite(rec, threadId, msg) {
   if (!threadId || threadId === '__page__') return;
   const t = (rec.threads || []).find(x => x.id === threadId);
   if (!t) return;
-  delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+  if (t.resolved || t.status === 'resolved') stageTo(t, 'open');
   // a `tools` line marks nothing and UNMARKS nothing: it is a bot narrating,
   // and a summary that lands after its own answer must not take down the
   // "ready for review" that answer earned (store.appendMsg says the same)
   if (msg && msg.kind === 'tools') return;
-  delete t.addressed; delete t.addressed_at; delete t.addressed_by;
   const author = msg && msg.author;
-  if (msg && /^(claude|codex)\b/i.test(String(author || ''))) {
-    t.addressed = true; t.addressed_at = now(); t.addressed_by = String(author);
-  }
+  stageTo(t, msg && /^(claude|codex)\b/i.test(String(author || '')) ? 'ready' : 'open', author);
 }
 // store.threadDigest, as the fake companion: the instant placeholder written
 // the moment a thread is resolved, so triage never waits on an agent.
@@ -3775,16 +3793,13 @@ function companion(method, path, body) {
     // either direction ends "ready for review": resolving is the reader having
     // looked, reopening is the reader saying "not done" — which is exactly the
     // answer the amber badge was asking for
-    delete t.addressed; delete t.addressed_at; delete t.addressed_by;
     if (body.resolved) {
       const first = !t.resolved;
-      t.resolved = true;
-      t.resolved_at = now();
-      t.resolved_by = 'angadh';
+      if (first) stageTo(t, 'resolved', 'angadh');
       if (first) { t.summary = digestOf(t); delete t.summary_by; }
       log('resolved: ' + t.id);
     } else {
-      delete t.resolved; delete t.resolved_at; delete t.resolved_by;
+      stageTo(t, 'open');
       log('reopened: ' + t.id);
     }
     RECORD.updated_at = new Date().toISOString();
@@ -3800,8 +3815,9 @@ function companion(method, path, body) {
     if (addressedFail) return { ok: false, status: 500, error: 'simulated not-done failure' };
     const t = RECORD.threads.find(x => x.id === body.thread_id);
     if (!t) return { ok: false, status: 404, error: 'unknown thread' };
-    if (body.addressed) { t.addressed = true; t.addressed_at = now(); t.addressed_by = 'angadh'; }
-    else { delete t.addressed; delete t.addressed_at; delete t.addressed_by; }
+    if (body.addressed) {
+      if (!stageTo(t, 'ready', 'angadh')) return { ok: false, status: 409, error: 'this thread is filed — reopen it first' };
+    } else if (t.addressed || t.status === 'ready') stageTo(t, 'open');
     log((body.addressed ? 'addressed: ' : 'not done: ') + t.id);
     RECORD.updated_at = new Date().toISOString();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
@@ -12968,7 +12984,7 @@ async function selftestReady() {
   const now2 = w.slice(0, Math.max(1, w.length - 2)).join(' ') + ' found its footing at last.';
   rec(other).msgs.push({ author: 'claude', ts: now(),
     text: 'Done — this passage now reads: "' + now2 + '"' });
-  rec(other).addressed = true; rec(other).addressed_by = 'claude';
+  stageTo(rec(other), 'ready', 'claude');
   d.setPage(RECORD); await sleep(80);
   const wn = () => cardFor(other).querySelector('.wasnow');
   check('a bot quoting the new wording draws a before→after in the card', !!wn());
@@ -13011,7 +13027,7 @@ async function selftestReady() {
   check('the page can be rewritten under the thread', rewritePassage(WAS, NOW));
   rec(subject).msgs.push({ author: 'claude', ts: now(),
     text: 'Done — this passage now reads: "' + NOW + '"' });
-  rec(subject).addressed = true; rec(subject).addressed_by = 'claude';
+  stageTo(rec(subject), 'ready', 'claude');
   const reanchors = reanchorPosts.length;
   toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
 
@@ -13122,7 +13138,7 @@ async function selftestReady() {
   const posts2 = reanchorPosts.length;
   rec(lost).msgs.push({ author: 'claude', ts: now(),
     text: 'Done — this passage now reads: "a sentence that is nowhere on this page at all"' });
-  rec(lost).addressed = true; rec(lost).addressed_by = 'claude';
+  stageTo(rec(lost), 'ready', 'claude');
   toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
   await sleep(400);
   check('a wording the page cannot find leaves the thread orphaned, as before',
@@ -14160,30 +14176,29 @@ async function selftestWorkspace() {
 
     // with every thread filed there is nothing to hand over: the button goes
     // dead and SAYS why, rather than sending an empty review
-    const wasOpen = RECORD.threads.map(t => !!t.resolved);
-    RECORD.threads.forEach(t => { t.resolved = true; });
+    const wasStatus = RECORD.threads.map(statusSnap);
+    RECORD.threads.forEach(t => { stageTo(t, 'resolved'); });
     d.setPage(RECORD); await sleep(40);
     check('with every comment filed the button is disabled',
       !!sendBtn() && sendBtn().disabled);
     check('…and the tooltip says why, instead of the button just failing',
       /no open comments/.test(sendBtn().title || ''));
-    RECORD.threads.forEach((t, i) => { if (!wasOpen[i]) delete t.resolved; });
+    RECORD.threads.forEach((t, i) => statusPut(t, wasStatus[i]));
     d.setPage(RECORD); await sleep(40);
     check('reopening them brings it back', !!sendBtn() && !sendBtn().disabled);
 
     // …and a thread the bots have ALREADY replied into is out of the digest
     // too. That is the whole point of "ready for review": a second send after
     // a round asks for the points still outstanding, not the ones just done.
-    RECORD.threads[0].addressed = true;
-    RECORD.threads[0].addressed_by = 'claude';
+    stageTo(RECORD.threads[0], 'ready', 'claude');
     d.setPage(RECORD); await sleep(40);
     check('a thread marked ready for review is not counted for send review',
       /^send review \(2\)$/.test((sendBtn() || {}).textContent || ''));
-    RECORD.threads.forEach(t => { t.addressed = true; t.addressed_by = 'claude'; });
+    RECORD.threads.forEach(t => { stageTo(t, 'ready', 'claude'); });
     d.setPage(RECORD); await sleep(40);
     check('…and with every thread ready there is nothing left to send',
       !!sendBtn() && sendBtn().disabled);
-    RECORD.threads.forEach(t => { delete t.addressed; delete t.addressed_by; });
+    RECORD.threads.forEach(t => { if (t.status === 'ready' || t.addressed) stageTo(t, 'open'); });
     d.setPage(RECORD); await sleep(40);
     check('putting them back makes them sendable again',
       /^send review \(3\)$/.test((sendBtn() || {}).textContent || ''));
@@ -14274,7 +14289,7 @@ async function selftestWorkspace() {
     check('nothing was filed on the reader’s behalf, then or now',
       RECORD.threads.every(t => !t.resolved));
     // put the page back the way the rest of the selftest expects it
-    RECORD.threads.forEach(t => { delete t.addressed; delete t.addressed_at; delete t.addressed_by; });
+    RECORD.threads.forEach(t => { if (t.status === 'ready' || t.addressed) stageTo(t, 'open'); });
     d.setPage(RECORD); await sleep(40);
   }
 
@@ -15003,7 +15018,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
             rewritePassage(t.quote, wording);
             t.msgs.push({ author: 'claude', ts: now(),
               text: 'Done — this passage now reads: "' + wording + '"' });
-            t.addressed = true; t.addressed_by = 'claude';
+            stageTo(t, 'ready', 'claude');
             d.setPage(RECORD);
             toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
           }, 2600);
@@ -15201,7 +15216,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
       setTimeout(() => {
         const [a, , c] = RECORD.threads;
         for (const t of [a, c]) {
-          t.resolved = true; t.resolved_at = now(); t.resolved_by = 'angadh';
+          stageTo(t, 'resolved', 'angadh');
           t.summary = digestOf(t);
         }
         // one of them has had its paragraph written by the agents; the other is

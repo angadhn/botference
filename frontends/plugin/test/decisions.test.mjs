@@ -198,7 +198,7 @@ await test('an unchanged log is not rewritten, and a write leaves no temp file b
   const dir = path.dirname(file);
   assert.equal(fs.readdirSync(dir).some(n => n.includes('.tmp.')), false,
     'tmp-then-rename: a bot reading mid-write reads the old file, never half of either');
-  store.setResolved(page.threads[0], true, 'angadh');
+  store.setThreadStatus(page.threads[0], 'resolved', 'angadh');
   store.writeDecisionLog(page);
   assert.match(fs.readFileSync(file, 'utf8'), /^- resolved/m, 'a decision DOES rewrite it');
 });

@@ -26,7 +26,7 @@
 // is on the page NOW, `prior_quote` = the wording it replaced, `addressed` set.
 //
 // That triple is the ENTIRE contract the existing machinery runs on:
-// content.js's paint loop is `t.addressed && !t.resolved && t.prior_quote`, and
+// content.js's paint loop is `stage 'ready' && t.prior_quote`, and
 // it reads all three off the record without caring who wrote them or whether a
 // bot ever said a word. So an auto-created thread paints struck-old-then-green-
 // new on the page, sorts into "ready for review", clicks through to a card with
@@ -45,7 +45,7 @@
 // browser (test/collateral.test.mjs).
 
 import { createRequire } from 'node:module';
-import { newWording, isAgentAuthor, PAGE_CHAT } from './store.mjs';
+import { newWording, isAgentAuthor, isResolved, PAGE_CHAT } from './store.mjs';
 // anchor.js's `plainOf`: a bot narrating a markdown source quotes MARKDOWN
 // ("now reads: \"the [IEA](https://…) says\""), and on a blog the regions below
 // are in the words the page shows (blog.mdDoc). The two are compared in the
@@ -459,7 +459,7 @@ export function healableBy(region, threads, used) {
   // fall under the 16-character overlap floor and miss it.
   const gone = [region.old, region.whole && region.whole.old].filter(Boolean);
   for (const t of (threads || [])) {
-    if (!t || t.auto || t.resolved) continue;
+    if (!t || t.auto || isResolved(t)) continue;
     if (used && used.has(t.id)) continue;
     if (!t.quote || !gone.some(g => covers(t.quote, g))) continue;
     // already where it needs to be — nothing to heal
@@ -522,7 +522,7 @@ export function healText(region, claim, who) {
 // is left exactly as before.
 export function adoptableBy(region, t, afterFlat, used) {
   if (!region || region.kind !== 'insert' || !t) return false;
-  if (t.auto || t.resolved || !t.quote) return false;
+  if (t.auto || isResolved(t) || !t.quote) return false;
   if (used && used.has(t.id)) return false;
   // still on the page as written: the comment has a place, nothing to adopt
   if (afterFlat && afterFlat.includes(loose(t.quote))) return false;
@@ -812,7 +812,7 @@ export function guessOrigin(page, t) {
 export function renderAnchors(page) {
   let n = 0;
   for (const t of (page && page.threads) || []) {
-    if (!t || !t.auto || t.resolved || !t.orphaned || !t.quote) continue;
+    if (!t || !t.auto || isResolved(t) || !t.orphaned || !t.quote) continue;
     const q = clipQuote(fragPlain(t.quote));
     if (!q || q === fold(t.quote)) continue;
     t.quote = q;

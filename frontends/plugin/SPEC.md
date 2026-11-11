@@ -12413,4 +12413,55 @@ Not done (the stored format is unchanged): the flags are still stored and
 written as before. A full conversion would store one `status` field, change
 it only through one store.mjs setter that refuses illegal moves, migrate old
 records on read, and make content.js / drawer.js / server.mjs stop writing
-the flags themselves.
+the flags themselves. (Done — next amendment.)
+
+## Amendment (2026-11-11): comment status, one field
+
+A comment thread's stage is now ONE stored field, `status`, one of
+`THREAD_STAGES` = `open` / `ready` / `resolved`, changed only by
+**`store.setThreadStatus(thread, next, by)`**, which refuses a move the table
+does not list. The drawer has a twin (`setThreadStage`, same table) for its
+optimistic redraw only; `test/status.test.mjs` holds the two tables equal.
+
+| from \ to  | open | ready | resolved |
+|------------|------|-------|----------|
+| open       | stays (no change) | a bot replied (appendMsg); a turn-end thread born answered | the reader's ✓ (POST /resolve); a mirrored comment filed at its source |
+| ready      | the reader writes in (appendMsg); "not done" (POST /addressed); reopen | another bot reply — re-stamped | the reader's ✓ |
+| resolved   | reopen; anybody writes in (appendMsg) | **REFUSED** — reopen first | stays (no change, no re-stamp) |
+
+A bot answering a filed thread is two moves (resolved → open → ready), as it
+always effectively was. POST /addressed with `addressed:true` on a filed
+thread answers 409 "this thread is filed — reopen it first" (before, it
+stored both flags at once); `addressed:false` on a thread that is not ready
+changes nothing.
+
+**Stamps** go with the stage: `resolved_at`/`resolved_by` only while
+resolved, `addressed_at`/`addressed_by` only while ready.
+
+**The old flags are kept as a shadow.** A record written by this code still
+carries `resolved: true` when resolved and `addressed: true` when ready (and
+neither otherwise), written by the setter alone, so an older drawer still
+loaded in a tab, an older phone page, or anything else that only knows the
+flags reads it exactly as before. Nothing reads the shadow when a `status` is
+present: `status` is the truth, and a disagreeing flag is put right from it.
+
+**Old records** (flags, no `status`) are converted as `readPage` reads them
+(`normalizeThreadStatus`): resolved outranks ready outranks open — the rule
+every label already used. In memory only, like `kind`: the next ordinary save
+persists it, so reading never rewrites a file (zero extra writes). Nothing is
+lost: stamps, summary, mark, orphan flag and messages are untouched. The one
+combination that can no longer be stored, `resolved` AND `addressed`, reads
+as resolved and drops only the `addressed: true` yes/no (its stamps stay
+until the next move).
+
+**Readers** go through `store.threadStage` / `isResolved` / `isAddressed`
+(server.mjs, collateral, export, views, workspace, council-handoff),
+`threadStatus` / `threadStage` (drawer, content.js), and `isFiled` in
+reader.js (the phone script, which has no build step).
+
+**`orphaned` is not a status**: it is the page's last answer to "can this
+passage still be found?", and any stage can be found or lost — an independent
+yes/no. It still has one writer per side: `store.setOrphaned` (POST /orphan,
+re-anchoring, healing) and the drawer's `setThreadOrphaned` (content.js's
+local copy). **`mark`** (highlight / strike) was already one field with one
+setter (`store.setThreadMark`).

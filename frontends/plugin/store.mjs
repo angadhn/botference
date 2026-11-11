@@ -440,6 +440,9 @@ export function readPage(url) {
   // next save persists it, and a revisit replaces the inference with what the
   // adapter actually says
   if (!cleanKind(page.kind)) page.kind = inferKind(page.url);
+  // …and so does a thread written before `status` existed (see "a thread's
+  // status"): converted here, persisted by the next ordinary save
+  for (const t of page.threads || []) normalizeThreadStatus(t);
   const kept = (page.threads || []).filter(t => (t.msgs || []).length);
   if (kept.length !== (page.threads || []).length) {
     page.threads = kept;
@@ -1937,7 +1940,7 @@ const nearbyKindOf = t => {
   const kind = markOf(t) === 'strike'
     ? (t && t.from_thread ? 'strikeout, minted from a discussion' : 'strikeout — a suggested deletion')
     : 'highlight';
-  return `${kind}; ${t && t.resolved ? 'filed' : 'open'}`;
+  return `${kind}; ${isResolved(t) ? 'filed' : 'open'}`;
 };
 
 // [{ thread, dist }], nearest first. Pure: `text` is the page text to measure
@@ -2125,6 +2128,8 @@ export function addThread(page, { quote, prefix, suffix, text, author, index, pa
     prefix: String(prefix || '').slice(-32),
     suffix: String(suffix || '').slice(0, 32),
     orphaned: false,
+    // born open — its first status, not a move (see "a thread's status")
+    status: 'open',
     // `ts` is the projection's only concession: a mirrored comment keeps the
     // moment it was actually written, or the page's history would say every
     // visitor commented the second the companion first heard about them.
@@ -2492,58 +2497,145 @@ export function appendMsg(page, threadId, {
   // exotic.
   if (threadId !== PAGE_CHAT) {
     const thread = findThread(page, threadId);
-    // reopening ENDS a claim (setResolved says so, and is right about it), so a
-    // narration passing through here has to put back the one it did not make
+    // a narration (tools) leaves "ready" exactly as it found it
     // …and a summoned agent's card is the bot's work in progress, not the bot
     // answering: the summoner is woken with the report and ITS reply marks
     // the thread, so the card marks nothing and unmarks nothing, like tools.
     const quiet = kind === 'tools' || !!meta;
-    const keep = quiet && thread && thread.addressed
-      ? { at: thread.addressed_at, by: thread.addressed_by } : null;
-    setResolved(thread, false);
-    if (!quiet) setAddressed(thread, isAgentAuthor(author), author);
-    else if (keep) { setAddressed(thread, true, keep.by); thread.addressed_at = keep.at; }
+    if (thread && threadStage(thread) === 'resolved') setThreadStatus(thread, 'open');
+    if (thread && !quiet) setThreadStatus(thread, isAgentAuthor(author) ? 'ready' : 'open', author);
   }
   return msg;
 }
 
-// ---- ready for review ---------------------------------------------------
-// The middle state between "open" and "resolved", and the reason it exists:
-// after the bots work through a page's margin review the reader has no way to
-// see WHICH threads moved without re-reading all of them. `addressed` says a
-// bot has replied into this thread since the reader last wrote in it.
+// ---- a thread's status: open / ready / resolved ---------------------------
+// ONE stored field, `status`, holds which of three a thread is, and ONE
+// function, setThreadStatus, changes it — refusing a move the table below
+// does not list. (It used to be two yes/no flags, `resolved` and `addressed`,
+// written from five places, and nothing stopped both being set at once.)
 //
+//   'open'     — waiting on the bots, or on nobody
+//   'ready'    — "ready for review": a bot has replied into this thread since
+//                the reader last wrote in it, and it is the reader's turn
+//   'resolved' — filed by the reader. Nothing else closes a thread.
+//
+// Why "ready" exists: after the bots work through a page's margin review the
+// reader has no way to see WHICH threads moved without re-reading all of them.
 // RESOLVING IS STILL THE READER'S CLICK ALONE. A bot can say "I did this"; it
-// can never close the reader's question. Addressed is a flag on the way to
-// that click, not a substitute for it.
+// can never close the reader's question.
 //
-// Same shape as `resolved`, deliberately: state, not history. Clearing REMOVES
-// the three fields, so a thread that was never addressed is byte-identical to
-// one that was addressed and then written into again, and every record written
-// before this reads as not-addressed.
+// THE MOVES (THREAD_MOVES), and who makes each one today:
+//   open     → ready     a bot's reply lands (appendMsg); the turn-end diff
+//                        makes a thread that is born answered (server.mjs)
+//   open     → resolved  the reader's ✓ (POST /resolve); a comment filed in
+//                        the review system it was mirrored from
+//   ready    → open      the reader writes into it (appendMsg); "not done"
+//                        (POST /addressed); a reopen click
+//   ready    → ready     another bot reply: re-stamped, same stage
+//   ready    → resolved  the reader's ✓
+//   resolved → open      the reader reopens it, or anybody writes into it
+//   REFUSED: resolved → ready. A filed thread is only left by reopening: a
+//   bot answering one is two moves (resolved → open → ready, appendMsg), and
+//   a straight jump is what used to leave a record with both flags set.
+// Staying where you are (open → open, resolved → resolved) is allowed and
+// changes nothing.
 //
-// The three together are ONE named stage, read through one function by every
-// label (the drawer's twin is drawer.js threadStage; test/status.test.mjs
-// holds the two to the same table): resolved outranks ready, ready outranks
-// open. The flags are what is stored and what setAddressed / setResolved
-// change; nothing should decide what to CALL a thread from them directly.
-export const THREAD_STAGES = ['open', 'ready', 'resolved'];
-export const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+// STAMPS: `resolved_at`/`resolved_by` while resolved, `addressed_at`/
+// `addressed_by` while ready; leaving a stage removes its stamps, so a thread
+// reopened is byte-identical to one never resolved (state, not history).
+//
+// THE OLD FLAGS, KEPT AS A SHADOW. Every record this code writes still carries
+// `resolved: true` when its status is resolved and `addressed: true` when it is
+// ready (and neither otherwise), written by this setter alone. An older
+// drawer still loaded in a browser tab, an older phone page, or anything else
+// that only knows the flags reads a new record exactly as it always did. The
+// shadow is never READ here: `status` is the truth, and a record whose status
+// and flags disagree is put right from its status.
+//
+// OLD RECORDS (flags, no `status`) are converted as they are read (readPage →
+// normalizeThreadStatus): resolved outranks ready outranks open, which is the
+// rule every label already used. Converted in memory only, like `kind`; the
+// next ordinary save persists it, so reading never rewrites a file. The one
+// combination that cannot be stored any more — `resolved` AND `addressed` — is
+// read as resolved and loses only the `addressed: true` flag; its stamps stay.
+//
+// The drawer has a twin of all of this (drawer.js THREAD_MOVES /
+// setThreadStage) for its optimistic redraw; test/status.test.mjs holds the
+// two to the same table.
+export const THREAD_STAGES = Object.freeze(['open', 'ready', 'resolved']);
+export const THREAD_MOVES = Object.freeze({
+  open: Object.freeze(['open', 'ready', 'resolved']),
+  ready: Object.freeze(['open', 'ready', 'resolved']),
+  resolved: Object.freeze(['open', 'resolved']),
+});
+export const threadMove = (from, to) =>
+  THREAD_STAGES.includes(from) && THREAD_STAGES.includes(to) && THREAD_MOVES[from].includes(to);
+// an old record's stage, from the flags it was written with
+const stageOfFlags = t => (t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+export const threadStage = t => (!t ? 'open'
+  : THREAD_STAGES.includes(t.status) ? t.status : stageOfFlags(t));
 export const isAddressed = t => threadStage(t) === 'ready';
 
-export function setAddressed(thread, on, by) {
+// the shadow flags, from the status (see above) — written here and nowhere else
+function shadowFlags(t, stage) {
+  let changed = false;
+  if (stage === 'resolved') { if (t.resolved !== true) { t.resolved = true; changed = true; } }
+  else if ('resolved' in t) { delete t.resolved; changed = true; }
+  if (stage === 'ready') { if (t.addressed !== true) { t.addressed = true; changed = true; } }
+  else if ('addressed' in t) { delete t.addressed; changed = true; }
+  return changed;
+}
+
+// An old record read: give it its `status`, and make its flags agree. True
+// when anything changed. Never touches a stamp, a message or anything else.
+export function normalizeThreadStatus(t) {
+  if (!t || typeof t !== 'object') return false;
+  const stage = threadStage(t);
+  let changed = false;
+  if (t.status !== stage) { t.status = stage; changed = true; }
+  return shadowFlags(t, stage) || changed;
+}
+
+// THE ONE SETTER. `by` is who made the move (stamped on 'ready' and
+// 'resolved'). Answers { thread, changed } — or, for a move the table does not
+// list, { thread, changed: false, refused: '<why, in words>' } with the record
+// untouched.
+export function setThreadStatus(thread, next, by) {
   if (!thread) return null;
-  const was = !!thread.addressed;
-  if (on) {
-    thread.addressed = true;
-    thread.addressed_at = nowIso();
-    if (by) thread.addressed_by = sanitizeHandle(by); else delete thread.addressed_by;
-  } else {
-    delete thread.addressed;
-    delete thread.addressed_at;
-    delete thread.addressed_by;
+  const from = threadStage(thread);
+  if (!threadMove(from, next)) {
+    return { thread, changed: false,
+      refused: THREAD_STAGES.includes(next)
+        ? `this thread is ${from === 'resolved' ? 'filed' : from} — reopen it first`
+        : `"${next}" is not a thread status` };
   }
-  return { thread, changed: was !== !!on };
+  if (from === next && next !== 'ready') {
+    normalizeThreadStatus(thread);
+    return { thread, changed: false };
+  }
+  if (next !== 'ready') { delete thread.addressed_at; delete thread.addressed_by; }
+  if (next !== 'resolved') { delete thread.resolved_at; delete thread.resolved_by; }
+  const who = by ? sanitizeHandle(by) : '';
+  if (next === 'ready') {
+    thread.addressed_at = nowIso();
+    if (who) thread.addressed_by = who; else delete thread.addressed_by;
+  } else if (next === 'resolved') {
+    thread.resolved_at = nowIso();
+    if (who) thread.resolved_by = who; else delete thread.resolved_by;
+  }
+  thread.status = next;
+  shadowFlags(thread, next);
+  return { thread, changed: from !== next };
+}
+
+// `orphaned` is NOT a status: it is the page's last answer to "can this
+// passage still be found?", and any stage can be found or lost — an
+// independent yes/no with no illegal combination. It still has one writer.
+export function setOrphaned(thread, on) {
+  if (!thread) return false;
+  const changed = !!thread.orphaned !== !!on;
+  thread.orphaned = !!on;
+  return changed;
 }
 
 // ---- re-anchoring onto the wording a change put there ---------------------
@@ -2623,7 +2715,7 @@ export function reanchorThread(thread, anchor) {
   if (anchor && typeof anchor.suffix === 'string') thread.suffix = anchor.suffix.slice(0, 32);
   thread.reanchored_at = nowIso();
   // the anchor was just FOUND: whatever the record said about it is stale
-  thread.orphaned = false;
+  setOrphaned(thread, false);
   return { ok: true, thread, changed: true };
 }
 
@@ -2663,7 +2755,7 @@ export function healThread(thread, { quote, prefix, suffix, deleted, inserted } 
   if (!thread) return { ok: false, reason: 'unknown thread' };
   // a filed thread is closed: dragging it back onto the page under a green
   // highlight is not a repair, it is an unasked-for reopening
-  if (thread.resolved) return { ok: false, reason: 'thread is resolved' };
+  if (isResolved(thread)) return { ok: false, reason: 'thread is resolved' };
   const next = String(quote || '').trim();
   if (!next) return { ok: false, reason: 'no quote' };
   // idempotent, like reanchorThread: a re-run of the same turn-end is not a
@@ -2687,7 +2779,7 @@ export function healThread(thread, { quote, prefix, suffix, deleted, inserted } 
   thread.reanchored_at = thread.healed_at;
   // the anchor came out of the file that IS the page: whatever the record said
   // about this thread being lost is stale
-  thread.orphaned = false;
+  setOrphaned(thread, false);
   return { ok: true, thread, changed: true };
 }
 
@@ -2698,10 +2790,10 @@ export function healThread(thread, { quote, prefix, suffix, deleted, inserted } 
 // green. It is never hidden and never deleted — the passage stays marked,
 // because "we dealt with this" is worth seeing on a re-read months later.
 //
-// State, not history: `resolved` is a plain flag beside `orphaned`, and
-// reopening REMOVES the three fields rather than writing resolved:false, so a
-// record that has never been resolved is byte-identical to one that has been
-// resolved and reopened, and every record written before this reads as open.
+// State, not history: see "a thread's status" above — the stage and its
+// stamps live and die together through setThreadStatus. Resolving and
+// reopening both end "ready for review": resolving is the reader having
+// looked, and reopening is the reader saying "not done".
 //
 // `summary` deliberately SURVIVES a reopen. It is what the thread settled last
 // time, which is still true; keeping it means a re-resolve shows its digest
@@ -2709,27 +2801,6 @@ export function healThread(thread, { quote, prefix, suffix, deleted, inserted } 
 // harmlessly instead of needing to be chased down and cancelled.
 export const SUMMARY_MAX = 2000;
 export const isResolved = t => threadStage(t) === 'resolved';
-
-export function setResolved(thread, on, by) {
-  if (!thread) return null;
-  const was = !!thread.resolved;
-  // Either direction ends "ready for review". Resolving is the reader having
-  // looked, so the flag has done its job; reopening is the reader saying "not
-  // done", which is exactly the answer the amber badge was asking for. Leaving
-  // it set through a reopen would put a thread straight back into the section
-  // the reader had just taken it out of.
-  setAddressed(thread, false);
-  if (on) {
-    thread.resolved = true;
-    thread.resolved_at = nowIso();
-    if (by) thread.resolved_by = sanitizeHandle(by); else delete thread.resolved_by;
-  } else {
-    delete thread.resolved;
-    delete thread.resolved_at;
-    delete thread.resolved_by;
-  }
-  return { thread, changed: was !== !!on };
-}
 
 // What the resolved card says the thread settled. Written twice over: the
 // instant heuristic below the moment the reader clicks resolve, then the
@@ -2844,7 +2915,7 @@ export function decisionStatus(page, thread) {
     return thread.from_thread ? 'struck (from a discussion)' : 'struck';
   }
   if (thread && thread.deleted_passage) return 'deleted-passage';
-  if (thread && thread.resolved) return 'resolved';
+  if (isResolved(thread)) return 'resolved';
   if (pendingCard(thread) || pendingStrike(page, thread)) return 'suggestion pending';
   return 'open';
 }
@@ -2863,7 +2934,7 @@ export function decisionSaid(thread) {
   if (thread && thread.deleted_passage) {
     return 'the passage was deleted from the document';
   }
-  if (thread && thread.resolved) {
+  if (isResolved(thread)) {
     return clipTo(thread.summary || threadDigest(thread), DECISION_SAID_MAX);
   }
   const last = msgs[msgs.length - 1];
