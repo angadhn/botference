@@ -63,6 +63,9 @@ async function startServer({ hosted = false, noauth = false, env = {} } = {}) {
       BOTFERENCE_SECRETS_DIR: secrets,
       COUNCIL_BRIDGE_CMD: JSON.stringify([process.execPath, FAKE, rx]),
       COUNCIL_PASSWORD: hosted && !noauth ? 'test-pw' : '',
+      // a hosted council starts the Doc-comment watcher: never the real one
+      // in a test (tests/council-gdoc-watch.test.mjs checks it with a fake)
+      BOTFERENCE_GDOC_WATCH: '0',
       ...env,
     },
   });

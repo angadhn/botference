@@ -36,6 +36,10 @@ chat, in one line that also says what to do.
 The same poster also lets both bots read the agent account's mail, read
 only: see `docs/google-mail.md`.
 
+You can also ask a bot something in the Doc itself: name it in a comment,
+and the Doc-comment watcher wakes it to answer in that thread, with no
+message in the chat. See `docs/google-doc-watcher.md`.
+
 ## How it works
 
 Neither bot talks to Google itself. botference has its **own** Google
@@ -96,7 +100,8 @@ them):
 - **One way in.** The council's Claude may use the poster's tools and no
   other Google tool: all six claude.ai Google connectors (Docs, Drive,
   Gmail, Calendar, Sheets, Slides) are denied by server name, which removes
-  them from the session. The council's Codex runs with Codex's app
+  them from the session. The Slack connector (`slack`, which could post in
+  your Slack) is denied the same way. The council's Codex runs with Codex's app
   connectors switched off (`-c features.apps=false`), which removes
   OpenAI's Google Drive plugin, including the
   `google_drive.bulk_update_file_comments` approval in
@@ -182,7 +187,7 @@ If the bots later say the sign-in expired or was refused, run step 2 again.
   `GdocError` with one plain line; the kinds are the `Problem` list.
 - The poster and the launch details for both bots: `core/gdoc_mcp.py`
   (`claude_mcp_config`, `codex_config_overrides`,
-  `CLAUDE_DENIED_GOOGLE_SERVERS`, `claude_sign_in_deny_rules`).
+  `CLAUDE_DENIED_CONNECTOR_SERVERS`, `claude_sign_in_deny_rules`).
 - The lock: `core/gdoc_guard.py`. Its outcomes are the `Verdict` list;
   `judge()` returns exactly one; `seal()` judges and then puts the name on.
 - Wiring: `core/cli_adapters.py`. Claude's allow and deny rules are in

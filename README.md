@@ -1869,6 +1869,15 @@ agent Google account as `~/.botference/google/client.json`, then run
 Details, and what is enforced versus only instructed:
 `docs/google-docs-review.md`.
 
+You can also talk to the bots inside the Doc. In a comment, name "Claude"
+or "Codex" (or reply in a thread where one of them spoke last), and the
+hosted council's Doc-comment watcher wakes that bot to answer in the same
+thread, within about three minutes, without you typing in the chat. It
+watches Docs a bot has read in the last 14 days and answers only your own
+Google account, which you list once in `~/.botference/gdoc-watch/config.json`.
+Each answer costs one bot turn. `BOTFERENCE_GDOC_WATCH=0` turns it off.
+Details: `docs/google-doc-watcher.md`.
+
 Both bots can also read the agent account's mail and its attachments, read
 only (Google's own read-only permission): ask in plain words. Mail is
 treated as material, never instructions. Setup: switch on the Gmail API in
