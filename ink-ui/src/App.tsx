@@ -36,11 +36,20 @@ import {
   canMoveTurnMode,
   engineAccepts,
   engineStoppedNotice,
+  activityFor,
+  keepsActivity,
   moveTurnMode,
   restoreUnanswered,
   showsSpinner,
   type TurnMode,
 } from "./turnState.js";
+import {
+  MOUSE_SELECTION_HINT,
+  moveMouseMode,
+  toggledMouseMode,
+  wantsMouseTracking,
+  type MouseMode,
+} from "./mouseMode.js";
 import {
   agentCardStreamId,
   agentToolsStreamId,
@@ -76,9 +85,21 @@ import {
   PERMISSION_LABELS,
   cyclePermissionChoice,
   permissionChoiceForKey,
-  permissionResponse,
   type PermissionChoice,
 } from "./permission.js";
+import {
+  NO_QUESTION,
+  choiceAnswer,
+  choiceQuestionFrom,
+  clearedFrom,
+  moveQuestions,
+  permissionAnswer,
+  permissionQuestionFrom,
+  waitingNote,
+  type PermissionQuestion,
+  type QuestionEvent,
+  type QuestionState,
+} from "./questions.js";
 import {
   createV2Activity,
   formatV2ActivityText,
@@ -127,13 +148,6 @@ interface BridgeArgs {
   claudeTransport: string;
 }
 
-interface PendingPermission {
-  request_id: string;
-  model: string;
-  path: string;
-  reason: string;
-}
-
 type StateUpdate<T> = T | ((prev: T) => T);
 
 // Project panel data shapes + row builder live in projects.ts so they can be
@@ -154,32 +168,8 @@ import {
 // (type: "slash_commands") so they stay in sync with the canonical
 // dispatcher in core/botference.py.
 
-type BusyTarget = "claude" | "codex" | "all" | "system" | null;
-
-function resolveBusyTarget(input: string, currentRoute: string): BusyTarget {
-  const trimmed = input.trim();
-  if (trimmed.startsWith("@claude")) return "claude";
-  if (trimmed.startsWith("@codex")) return "codex";
-  if (trimmed.startsWith("@all")) return "all";
-  if (trimmed.startsWith("/")) return "system";
-  if (currentRoute === "@claude") return "claude";
-  if (currentRoute === "@codex") return "codex";
-  return "all";
-}
-
-function v2ActivityFromBusyTarget(target: BusyTarget): V2Activity {
-  switch (target) {
-    case "claude":
-      return createV2Activity("claude", "claude");
-    case "codex":
-      return createV2Activity("codex", "codex");
-    case "all":
-      return createV2Activity("all", "all");
-    case "system":
-    case null:
-      return createV2Activity("system", "system");
-  }
-}
+// While the spinner runs but nothing says who is busy yet (e.g. starting).
+const UNKNOWN_ACTIVITY: V2Activity = createV2Activity("system", "system", 0);
 
 // ── Sub-components ─────────────────────────────────────────
 // The transcript Pane and the animated BusyLine live in panes.tsx (imported
@@ -434,9 +424,11 @@ const StatusBar = React.memo(function StatusBar({
 function PermissionPrompt({
   request,
   choice,
+  waiting,
 }: {
-  request: PendingPermission;
+  request: PermissionQuestion;
   choice: PermissionChoice;
+  waiting: string;
 }) {
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
@@ -468,7 +460,7 @@ function PermissionPrompt({
         })}
       </Box>
       <Text color={THEME.statusMuted} wrap="truncate-end">
-        {PERMISSION_KEYS_HINT}
+        {waiting ? `${PERMISSION_KEYS_HINT} | ${waiting}` : PERMISSION_KEYS_HINT}
       </Text>
     </Box>
   );
@@ -478,10 +470,12 @@ function ChoicePrompt({
   prompt,
   options,
   index,
+  waiting,
 }: {
   prompt: string;
   options: string[];
   index: number;
+  waiting: string;
 }) {
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
@@ -502,7 +496,9 @@ function ChoicePrompt({
         );
       })}
       <Text color={THEME.statusMuted} wrap="truncate-end">
-        Up/Down selects | Enter confirms | Esc dismisses
+        {waiting
+          ? `Up/Down selects | Enter confirms | Esc dismisses | ${waiting}`
+          : "Up/Down selects | Enter confirms | Esc dismisses"}
       </Text>
     </Box>
   );
@@ -546,19 +542,28 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const unansweredRef = useRef<string[]>([]);
   const ready = turnMode === "idle";
   const [queuedCount, setQueuedCount] = useState(0);
-  const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
-  const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
-  const [mouseSelectionMode, setMouseSelectionMode] = useState(false);
+  // Who is busy, doing what — a detail of the turn, not a second mode: it
+  // exists only while the turn mode runs the spinner (activityFor in
+  // turnState.ts), is dropped by moveTurn() when the turn ends, and changes
+  // only through setActivity() below.
+  const [activity, setActivityState] = useState<V2Activity | null>(null);
+  const activityRef = useRef<V2Activity | null>(null);
+  // The one field for "what the mouse does right now" (named modes in
+  // mouseMode.ts); changed only through moveMouse() below.
+  const [mouseMode, setMouseModeState] = useState<MouseMode>("app_scroll");
+  const mouseModeRef = useRef<MouseMode>("app_scroll");
+  const mouseSelectionMode = mouseMode === "terminal_select";
   const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
   const [roomScroll, setRoomScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
 
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
   const [imageAttachments, setImageAttachmentsState] = useState<Map<number, string>>(new Map());
-  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
-  const [permissionChoice, setPermissionChoice] = useState<PermissionChoice>("once");
-  const [pendingChoice, setPendingChoice] = useState<{ prompt: string; options: string[] } | null>(null);
-  const [choiceIndex, setChoiceIndex] = useState(0);
+  // The one field for "which question is on screen" (named modes in
+  // questions.ts), with any that wait their turn; changed only through
+  // moveQuestion() below.
+  const [questions, setQuestionsState] = useState<QuestionState>(NO_QUESTION);
+  const questionsRef = useRef<QuestionState>(NO_QUESTION);
   const [completionCtx, setCompletionCtx] = useState<{
     global: string[];
     scoped: Record<string, string[]>;
@@ -591,6 +596,44 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (move.changed) {
       turnModeRef.current = move.mode;
       setTurnModeState(move.mode);
+      if (!keepsActivity(move.mode) && activityRef.current !== null) {
+        activityRef.current = null;
+        setActivityState(null);
+      }
+    }
+    return move.changed;
+  }, []);
+  const setActivity = useCallback((update: StateUpdate<V2Activity | null>) => {
+    const proposed = typeof update === "function"
+      ? (update as (prev: V2Activity | null) => V2Activity | null)(activityRef.current)
+      : update;
+    const next = activityFor(turnModeRef.current, proposed);
+    if (next === activityRef.current) return;
+    activityRef.current = next;
+    setActivityState(next);
+  }, []);
+  const moveQuestion = useCallback((event: QuestionEvent): boolean => {
+    const move = moveQuestions(questionsRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`question_move_refused:${event.type}:${move.reason}`);
+      return false;
+    }
+    if (move.changed) {
+      questionsRef.current = move.state;
+      setQuestionsState(move.state);
+    }
+    return move.changed;
+  }, []);
+  const moveMouse = useCallback((to: MouseMode): boolean => {
+    const from = mouseModeRef.current;
+    const move = moveMouseMode(from, to);
+    if (!move.ok) {
+      flightRecorder.note(`mouse_move_refused:${from}->${to}`);
+      return false;
+    }
+    if (move.changed) {
+      mouseModeRef.current = move.mode;
+      setMouseModeState(move.mode);
     }
     return move.changed;
   }, []);
@@ -941,9 +984,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [hitTestPaneForEvent, roomFlatLines]);
 
   useEffect(() => {
-    setMouseTrackingEnabled(!mouseSelectionMode);
+    setMouseTrackingEnabled(wantsMouseTracking(mouseMode));
     return () => setMouseTrackingEnabled(true);
-  }, [mouseSelectionMode]);
+  }, [mouseMode]);
 
   useEffect(() => {
     return () => {
@@ -1099,8 +1142,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
       setQueuedCount(0);
       setHint("");
-      setPendingPermission(null);
-      setPendingChoice(null);
+      moveQuestion({ type: "engine_stopped" });
       setRoomEntries((prev) => capDisplayEntries([
         ...prev,
         { speaker: "system", text: engineStoppedNotice(how, unanswered.length) },
@@ -1190,7 +1232,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             break;
           }
 
-          setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
+          setActivity((prev) => updateV2ActivityForStream(prev, msg));
 
           if (msg.kind === "start") {
             streamSegmentsRef.current.set(streamId, createStreamSegmentState());
@@ -1294,8 +1336,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           unansweredRef.current = [];
           setQueuedCount(0);
           setHint("");
-          setBusyTarget(null);
-          setV2Activity(null);
           break;
         case "queue": {
           const pending = typeof msg.pending === "number" ? msg.pending : 0;
@@ -1312,30 +1352,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           });
           break;
         case "permission_request":
-          setPendingPermission({
-            request_id: msg.request_id as string,
-            model: msg.model as string,
-            path: msg.path as string,
-            reason: msg.reason as string,
-          });
-          setPermissionChoice("once");
-          setHint("Approve or deny the protected write.");
+          // Shown now, or waits its turn behind the question on screen.
+          if (moveQuestion({ type: "arrived", question: permissionQuestionFrom(msg) })) {
+            setHint("Approve or deny the protected write.");
+          }
           break;
         case "permission_cleared":
-          setPendingPermission(null);
+          moveQuestion(clearedFrom("permission", msg));
           setHint("");
           break;
         case "choice_request":
-          setPendingChoice({
-            prompt: typeof msg.prompt === "string" ? msg.prompt : "",
-            options: Array.isArray(msg.options)
-              ? (msg.options as unknown[]).map(String)
-              : [],
-          });
-          setChoiceIndex(0);
+          moveQuestion({ type: "arrived", question: choiceQuestionFrom(msg) });
           break;
         case "choice_cleared":
-          setPendingChoice(null);
+          moveQuestion(clearedFrom("choice", msg));
           break;
         case "notify":
           sendDesktopNotification(
@@ -1417,11 +1447,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Submission logic ───────────────────────────────────
 
   const submit = useCallback(() => {
-    if (pendingPermission) {
+    if (questionsRef.current.mode === "permission") {
       setHint("Resolve the protected write request first.");
       return;
     }
-    if (pendingChoice) {
+    if (questionsRef.current.mode === "choice") {
       setHint("Answer the pending question first (Up/Down + Enter, Esc dismisses).");
       return;
     }
@@ -1443,9 +1473,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const queued = turnModeRef.current !== "idle";
     if (!queued) {
       moveTurn("working");
-      const nextBusyTarget = resolveBusyTarget(stripped, status.route);
-      setBusyTarget(nextBusyTarget);
-      setV2Activity(startV2ActivityFromInput(stripped, status.route));
+      setActivity(startV2ActivityFromInput(stripped, status.route));
       setHint("");
     } else {
       setQueuedCount((prev) => prev + 1);
@@ -1473,33 +1501,30 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [focusedPane, pendingPermission, pendingChoice, moveTurn, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
+  }, [focusedPane, moveTurn, setActivity, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((choice: PermissionChoice) => {
     const proc = bridgeRef.current;
-    if (!pendingPermission || !proc?.stdin?.writable) {
+    const state = questionsRef.current;
+    if (state.mode !== "permission" || !proc?.stdin?.writable) {
       return;
     }
-    proc.stdin.write(JSON.stringify(
-      permissionResponse(pendingPermission.request_id, choice),
-    ) + "\n");
+    proc.stdin.write(JSON.stringify(permissionAnswer(state.onScreen, choice)) + "\n");
     setHint(
       choice === "deny" ? "Denying protected write..."
         : choice === "always" ? "Allowing protected write for every session..."
         : "Allowing protected write...",
     );
-  }, [pendingPermission]);
+  }, []);
 
   const respondToChoice = useCallback((index: number) => {
     const proc = bridgeRef.current;
-    if (!pendingChoice || !proc?.stdin?.writable) {
+    const state = questionsRef.current;
+    if (state.mode !== "choice" || !proc?.stdin?.writable) {
       return;
     }
-    proc.stdin.write(JSON.stringify({
-      type: "choice_response",
-      index,
-    }) + "\n");
-  }, [pendingChoice]);
+    proc.stdin.write(JSON.stringify(choiceAnswer(state.onScreen, index)) + "\n");
+  }, []);
 
   const interrupt = useCallback(() => {
     const proc = bridgeRef.current;
@@ -1552,33 +1577,31 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Ctrl+Y — toggle native terminal text selection (mouse passthrough).
     if (input.toLowerCase() === "y" && key.ctrl) {
-      setMouseSelectionMode((prev) => {
-        const next = !prev;
-        setHint(next
-          ? "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling."
-          : "");
-        return next;
-      });
+      const next = toggledMouseMode(mouseModeRef.current);
+      if (moveMouse(next)) {
+        setHint(next === "terminal_select" ? MOUSE_SELECTION_HINT : "");
+      }
       return;
     }
 
-    if (mouseSelectionMode && key.escape) {
-      setMouseSelectionMode(false);
-      setHint("");
+    if (mouseModeRef.current === "terminal_select" && key.escape) {
+      if (moveMouse("app_scroll")) setHint("");
       return;
     }
 
-    if (pendingPermission) {
+    const question = questionsRef.current;
+    if (question.mode === "permission") {
+      const highlighted = question.onScreen.highlighted;
       if (key.leftArrow) {
-        setPermissionChoice((prev) => cyclePermissionChoice(prev, -1));
+        moveQuestion({ type: "highlight_permission", choice: cyclePermissionChoice(highlighted, -1) });
         return;
       }
       if (key.rightArrow || key.tab) {
-        setPermissionChoice((prev) => cyclePermissionChoice(prev, 1));
+        moveQuestion({ type: "highlight_permission", choice: cyclePermissionChoice(highlighted, 1) });
         return;
       }
       if (key.return) {
-        respondToPermission(permissionChoice);
+        respondToPermission(highlighted);
         return;
       }
       if (key.escape) {
@@ -1592,18 +1615,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    if (pendingChoice) {
-      const optionCount = pendingChoice.options.length;
+    if (question.mode === "choice") {
+      const index = question.onScreen.highlighted;
       if (key.upArrow) {
-        setChoiceIndex((prev) => Math.max(0, prev - 1));
+        moveQuestion({ type: "highlight_choice", index: index - 1 });
         return;
       }
       if (key.downArrow || key.tab) {
-        setChoiceIndex((prev) => Math.min(optionCount - 1, prev + 1));
+        moveQuestion({ type: "highlight_choice", index: index + 1 });
         return;
       }
       if (key.return) {
-        respondToChoice(choiceIndex);
+        respondToChoice(index);
         return;
       }
       if (key.escape) {
@@ -1664,8 +1687,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         if (proc?.stdin?.writable) {
           if (turnModeRef.current === "idle") {
             moveTurn("working");
-            setBusyTarget("system");
-            setV2Activity(createV2Activity("system", "system"));
+            setActivity(createV2Activity("system", "system"));
           } else {
             setQueuedCount((prev) => prev + 1);
             setHint("Queued project command.");
@@ -1848,9 +1870,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
-  const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget);
-  const busyText = formatV2ActivityText(activeV2Activity);
-  const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
+  const busyText = formatV2ActivityText(activity ?? UNKNOWN_ACTIVITY);
+  const selectionHint = MOUSE_SELECTION_HINT;
   const queueHint = queuedCount > 0
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
     : "";
@@ -1893,13 +1914,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
-        {pendingPermission ? (
-          <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
-        ) : pendingChoice ? (
+        {questions.mode === "permission" ? (
+          <PermissionPrompt
+            request={questions.onScreen}
+            choice={questions.onScreen.highlighted}
+            waiting={waitingNote(questions)}
+          />
+        ) : questions.mode === "choice" ? (
           <ChoicePrompt
-            prompt={pendingChoice.prompt}
-            options={pendingChoice.options}
-            index={choiceIndex}
+            prompt={questions.onScreen.prompt}
+            options={questions.onScreen.options}
+            index={questions.onScreen.highlighted}
+            waiting={waitingNote(questions)}
           />
         ) : (
           <>
