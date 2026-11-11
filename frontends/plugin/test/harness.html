@@ -3023,9 +3023,9 @@ const askedUrl = path => {
 
 const editPosts = [];         // every /edit the drawer sent, in order
 function companion(method, path, body) {
-  if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
+  if (OFFLINE) return { ok: false, error: 'companion offline — could not reach it (Failed to fetch)' };
   // the transient failure of a cold worker, spent one call at a time
-  if (failCalls > 0) { failCalls--; return { ok: false, error: 'companion unreachable (Failed to fetch)' }; }
+  if (failCalls > 0) { failCalls--; return { ok: false, error: 'companion offline — could not reach it (Failed to fetch)' }; }
   const route = String(path).split('?')[0];
   // A hosted companion has an owner and it has guests. Everything that changes
   // the companion itself (the export, the page library, the agent controls) is

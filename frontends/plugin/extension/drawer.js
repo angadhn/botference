@@ -2310,6 +2310,9 @@
       // until the first answer either way; 'reload' once the extension was
       // updated under this tab (see contextLost). Nothing but setConn writes it.
       conn: 'connecting',
+      // the last request to the companion that ran out of time, as the line
+      // the reader sees ('' = none); the next answer that arrives clears it
+      timeout: '',
       bridge: '',
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
@@ -4525,6 +4528,11 @@ ${bubbleShellHtml()}`;
         `<div class="alt">one-time alternative: <code>botference plugin --install-autostart</code> ` +
         `— starts at login, no terminal again (macOS)</div>` +
         `<button data-act="retry" type="button">↻ Retry connection</button></div>`
+      // a request that ran out of time (config.js timeoutLine): one plain line
+      // saying what did not go through. Under the offline card it would only
+      // repeat what that card says, so it shows only while the link is up.
+      : D.timeout
+      ? `<div class="notice timeout">${esc(D.timeout)}</div>`
       : '';
 
     // Sites where nothing can be wrapped keep the pane (and its history) but
@@ -11196,6 +11204,14 @@ ${bubbleShellHtml()}`;
       }
       return true;
     }
+    // A request ran out of time (text), or a later one was answered (null).
+    function noteTimeout(text) {
+      const t = text ? String(text) : '';
+      if (D.timeout === t) return D;
+      D.timeout = t;
+      if (D.mounted) render();
+      return D;
+    }
     // Retry, pressed: 'connecting…' while content.js tries the socket and the
     // page again, which then says reach or fail
     function reconnect() {
@@ -12551,7 +12567,7 @@ ${bubbleShellHtml()}`;
     }
 
     Object.assign(D, {
-      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
+      mount, open, close, toggle, render, setPage, setOrphans, setConn, noteTimeout, setTheme, setWarning, setAuthor,
       setExportMode, setOwner, setProject, setRound, setBlog, blogRoot,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the

@@ -637,12 +637,24 @@
     if (drawer && drawer.setFilesBase) drawer.setFilesBase(FILES_BASE);
   }
 
+  // A worker that never calls back (killed mid-request) must not leave a
+  // request waiting for ever either: past the worker's own limit plus a little,
+  // the answer is a timeout. Messages that are not requests to the companion
+  // get a generous one — they only wait on the worker itself.
+  const BG_SPARE_MS = 5000;
+  const BG_OTHER_MS = 90000;
   function bg(msg) {
     return new Promise(resolve => {
       if (GUARD.gone || !extensionAlive()) {
         GUARD.lose();
         return resolve({ ok: false, error: RELOAD_NOTE });
       }
+      let settled = false;
+      const done = r => { if (settled) return; settled = true; clearTimeout(backstop); resolve(r); };
+      const backstop = setTimeout(() => done(msg.t === 'api'
+        ? { ok: false, timeout: true, error: CFG.timeoutLine(msg.method, msg.path) }
+        : { ok: false, timeout: true, error: 'the extension did not answer in time — try again' }),
+      msg.t === 'api' ? CFG.requestLimitMs(msg.method, msg.path) + BG_SPARE_MS : BG_OTHER_MS);
       try {
         // page_url rides on everything: the worker's routing table is memory
         // only, and this is what puts this tab back in it after a respawn
@@ -652,17 +664,28 @@
           const err = alive(() => chrome.runtime.lastError, null);
           if (err) {
             GUARD.saw(err);
-            return resolve({ ok: false, error: err.message });
+            return done({ ok: false, error: err.message });
           }
-          resolve(r || { ok: false, error: 'no response from background' });
+          done(r || { ok: false, error: 'no response from background' });
         });
       } catch (e) {
         GUARD.saw(e);
-        resolve({ ok: false, error: String((e && e.message) || e) });
+        done({ ok: false, error: String((e && e.message) || e) });
       }
     });
   }
-  const api = (method, path, body) => bg({ t: 'api', method, path, body });
+  // Every request to the companion goes through here. One that ran out of time
+  // is never dropped silently: the drawer shows one plain line saying what did
+  // not go through and that it can be tried again (and a timeout counts as the
+  // companion not answering, toward the connection's verdict); the next answer
+  // that does arrive takes the line down.
+  const api = (method, path, body) => bg({ t: 'api', method, path, body }).then(r => {
+    if (r && r.timeout) {
+      if (drawer) drawer.noteTimeout(r.error);
+      if (!/^\/page\?/.test(String(path))) connHttp(false);   // loadPage reports its own
+    } else if (r && r.ok && drawer) drawer.noteTimeout(null);
+    return r;
+  });
 
   // A shared companion has an OWNER and it has guests. Owner-only endpoints
   // (export, delete-page, the model/effort/verbosity/relay controls) answer 403

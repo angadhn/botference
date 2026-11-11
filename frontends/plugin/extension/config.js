@@ -83,6 +83,47 @@
     return CONN_TO[move];
   }
 
+  // ── how long a request to the companion may take ──────────────────────────
+  // Every one-shot request has a limit; none may wait for ever. Most are a
+  // read or a small write on this machine and answer in milliseconds, so 30s
+  // is already a companion that is not answering. The few below do real work
+  // before they answer (a recording to transcribe, a commit, an export, a
+  // preview build, a search, a chat copied into the council …) and get three
+  // minutes. The live event socket is not a request: it is checked by its
+  // heartbeat instead (background.js SOCKET_SILENT_MS).
+  const REQUEST_MS = 30000;
+  const SLOW_REQUEST_MS = 180000;
+  const SLOW_ROUTES = ['/transcribe', '/publish', '/export', '/suggest-preview', '/suggest-accept',
+    '/suggest-accept-all', '/lasso', '/summarize', '/project-create', '/project-chat',
+    '/continue-in-council', '/pdf-annotations', '/page-image', '/snapshot', '/send-review',
+    '/make-artifact', '/run', '/fte-route', '/blog-page', '/blog-image', '/files', '/relay',
+    '/fresh', '/delete-page', '/page-chat-new', '/page-chat-open', '/question', '/question-revise',
+    '/model', '/effort', '/key-mode', '/draft-blog', '/draft-blog/thread'];
+  const routeOf = p => String(p || '').split('?')[0];
+  const requestLimitMs = (method, path) =>
+    (SLOW_ROUTES.indexOf(routeOf(path)) !== -1 ? SLOW_REQUEST_MS : REQUEST_MS);
+  // …and, when one runs out, what it was, in the reader's words: the line the
+  // drawer shows says WHAT did not go through, and that it can be tried again
+  const REQUEST_WHAT = {
+    'POST /reply': 'your message', 'POST /thread': 'your comment', 'POST /draft-blog': 'your message',
+    'POST /draft-blog/thread': 'your comment', 'POST /edit': 'your edit', 'POST /delete': 'the delete',
+    'POST /interrupt': 'the stop', 'POST /resolve': 'resolving the comment', 'POST /tick': 'the tick',
+    'POST /export': 'the export', 'POST /transcribe': 'the dictation', 'POST /run': 'running the code',
+    'POST /publish': 'the publish', 'POST /send-review': 'sending the review', 'POST /page': 'saving this page',
+    'POST /snapshot': 'saving the page text', 'POST /rename-page': 'the rename', 'POST /tag-page': 'the tag',
+    'POST /delete-page': 'the delete', 'POST /model': 'the model change', 'POST /effort': 'the effort change',
+    'GET /page': 'loading this page', 'GET /index': 'loading your pages', 'GET /lasso': 'the search',
+  };
+  function requestWhat(method, path) {
+    const m = String(method || 'GET').toUpperCase();
+    return REQUEST_WHAT[m + ' ' + routeOf(path)] || (m === 'GET' ? 'loading that' : 'that change');
+  }
+  // "Your message did not go through — the companion took too long. Try again."
+  function timeoutLine(method, path) {
+    const w = requestWhat(method, path);
+    return w.charAt(0).toUpperCase() + w.slice(1) + ' did not go through — the companion took too long. Try again.';
+  }
+
   // bfp:pdf is the one setting here that is not about the wire: whether a web
   // PDF is opened in Discuss's own viewer (so it can be annotated) or left to
   // the browser's. Stored the same way as the rest because it is read in the
@@ -213,6 +254,7 @@
     readConfig, writeConfig,
     commandRoute, commandError,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
+    REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPConfig = api;

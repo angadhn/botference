@@ -1302,6 +1302,23 @@ Contract deltas agreed during live testing — authoritative over the sections a
     late answer after the extension was reloaded). Retry shows "connecting…"
     while it re-opens the socket and re-reads the page. test/connmode.test.mjs,
     test/background-socket.test.mjs.
+  · **No request waits for ever** (2026-11-11). Every extension → companion
+    request has a time limit (config.js `requestLimitMs`: 30s, or 3 minutes for
+    the routes that do real work before answering — transcribe, publish,
+    export, previews, search, the council copy …). The worker's `api()` calls
+    the fetch off (AbortController) and races it, and answers
+    `{ok:false, timeout:true, error}` where `error` is one plain line naming
+    what did not go through (`timeoutLine`: "Your message did not go through —
+    the companion took too long. Try again."). content.js's `bg()` has a
+    backstop a little past that limit for a worker that never calls back.
+    content.js's `api()` hands any timeout to the drawer (`noteTimeout`), which
+    shows the line at the top of the panes — not under the offline card, which
+    already says it — until the next request is answered; a timeout also counts
+    as the companion not answering toward the connection's verdict. The live
+    socket is not a request: the companion pings every 15s and the worker drops
+    and reopens a 'connected' socket that has heard nothing for 45s
+    (`checkSocketSilence`, on every keepalive alarm and tab ping), after which
+    the tabs refetch as on any reopen.
 
 - **Local PDFs** (`file://`, and the identity that makes them possible).
   The papers people actually annotate are on their own disk. The reason they

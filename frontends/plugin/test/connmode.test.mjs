@@ -5,9 +5,12 @@
 // content script kept fail counters and relayed true/false, and the drawer
 // kept `connected`, `connKnown` and `reloadNeeded` with words of its own.
 //
-//   1. config.js: the list, the moves each mode allows, the words
-//   2. the drawer: D.conn, set only through setConn, drawn in those words
-//   (the worker's half is test/background-socket.test.mjs)
+//   1. config.js: the list, the moves each mode allows, the words — and every
+//      request's time limit, and the plain line for one that runs out
+//   2. the drawer: D.conn, set only through setConn, drawn in those words;
+//      the timed-out line (noteTimeout)
+//   (the worker's half — its socket, a request's limit, the heartbeat check —
+//   is test/background-socket.test.mjs)
 //
 //   node frontends/plugin/test/connmode.test.mjs
 import assert from 'node:assert/strict';
@@ -57,6 +60,21 @@ await test('each move starts only from the modes it names', () => {
   assert.equal(CFG.canConnMove('reload', 'reach'), false);
 });
 
+await test('every request has a time limit; the ones doing real work get longer', () => {
+  assert.equal(CFG.requestLimitMs('GET', '/page?url=x'), CFG.REQUEST_MS);
+  assert.equal(CFG.requestLimitMs('POST', '/reply'), CFG.REQUEST_MS);
+  assert.equal(CFG.requestLimitMs('POST', '/transcribe'), CFG.SLOW_REQUEST_MS);
+  assert.equal(CFG.requestLimitMs('POST', '/export'), CFG.SLOW_REQUEST_MS);
+  assert.ok(CFG.REQUEST_MS > 0 && CFG.SLOW_REQUEST_MS > CFG.REQUEST_MS);
+});
+
+await test('a request that ran out of time is named in plain words', () => {
+  assert.equal(CFG.timeoutLine('POST', '/reply'), 'Your message did not go through — the companion took too long. Try again.');
+  assert.equal(CFG.timeoutLine('POST', '/thread'), 'Your comment did not go through — the companion took too long. Try again.');
+  assert.equal(CFG.timeoutLine('GET', '/page?url=https%3A%2F%2Fx'), 'Loading this page did not go through — the companion took too long. Try again.');
+  assert.equal(CFG.timeoutLine('POST', '/something-new'), 'That change did not go through — the companion took too long. Try again.');
+});
+
 // ---- 2. the drawer -----------------------------------------------------------
 let reconnects = 0;
 const drawer = DR.create({ cssText: '.panel{}', onReconnect: () => { reconnects++; } });
@@ -97,6 +115,27 @@ await test('retry shows connecting… while it tries, and asks content.js to', a
 await test('a move the mode does not allow is refused, and nothing changes', () => {
   assert.equal(drawer.setConn('nonsense'), false);
   assert.equal(drawer.conn, 'connected');
+});
+
+await test('a request that ran out of time is one line in the drawer, until the next answer', () => {
+  const line = CFG.timeoutLine('POST', '/reply');
+  drawer.noteTimeout(line);
+  const t = S.querySelector('.pane[data-pane="chat"] .notice.timeout');
+  assert.ok(t, 'the line is drawn');
+  assert.equal(t.textContent, line);
+  assert.equal(S.querySelectorAll('.pane[data-pane="chat"] .notice.timeout').length, 1, 'one line, not a pile');
+  drawer.noteTimeout(null);
+  assert.equal(S.querySelector('.pane[data-pane="chat"] .notice.timeout'), null, 'gone once something answers');
+});
+
+await test('…and under the offline card it is not repeated', () => {
+  drawer.noteTimeout(CFG.timeoutLine('POST', '/reply'));
+  drawer.setConn('fail');
+  assert.equal(S.querySelector('.pane[data-pane="chat"] .notice.timeout'), null);
+  assert.ok(banner(), 'the offline card says it all');
+  drawer.setConn('reach');
+  assert.ok(S.querySelector('.pane[data-pane="chat"] .notice.timeout'), 'back in touch: the line is still owed');
+  drawer.noteTimeout(null);
 });
 
 await test('the extension reloaded under the tab: its own words, and final', () => {

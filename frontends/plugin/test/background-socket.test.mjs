@@ -59,7 +59,7 @@ function boot() {
   const sent = [];
   const ctx = {
     console, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams,
-    Promise, Map, Set, JSON, Math, Date, TextEncoder, TextDecoder, btoa, atob,
+    Promise, Map, Set, JSON, Math, Date, TextEncoder, TextDecoder, btoa, atob, AbortController,
     WebSocket: FakeWS,
     fetch: async () => ({ ok: true, status: 200, json: async () => ({}), text: async () => '' }),
     chrome: stubChrome(sent),
@@ -143,6 +143,65 @@ await test("the socket's state is the connection's one list, and every tab hears
   assert.ok(W.sent.some(m => m.t === 'conn' && m.socket === 'offline'));
   assert.throws(() => W.run("moveSocket('fail')"), /cannot fail while offline/, 'an illegal move is refused');
   assert.equal(W.run('wsState'), 'offline');
+  W.run('if (retryTimer) clearTimeout(retryTimer); retryTimer = null');
+});
+
+// ---- no request waits for ever (config.js requestLimitMs) --------------------
+await test('a request past its time limit is abandoned and answered with one plain line', async () => {
+  const W = boot();
+  // a companion that takes the request and never answers it
+  W.run('fetch = (url, init) => new Promise((_, reject) => { init.signal.addEventListener("abort", () => { globalThis.__aborted = true; reject(new Error("aborted")); }); })');
+  W.run('CFG.requestLimitMs = () => 40');
+  const t0 = Date.now();
+  const r = await W.run("api('POST', '/reply', { url: 'u', text: 'hi' })");
+  assert.equal(r.ok, false);
+  assert.equal(r.timeout, true);
+  assert.equal(r.error, 'Your message did not go through — the companion took too long. Try again.');
+  assert.ok(W.run('globalThis.__aborted === true'), 'the fetch itself was called off, not left running');
+  assert.ok(Date.now() - t0 < 2000, 'it did not wait for ever');
+});
+
+await test('…even where the fetch pays no attention to being called off', async () => {
+  const W = boot();
+  W.run('fetch = () => new Promise(() => {})');   // never settles, ignores its signal
+  W.run('CFG.requestLimitMs = () => 40');
+  const r = await W.run("api('GET', '/page?url=x')");
+  assert.equal(r.timeout, true);
+  assert.equal(r.error, 'Loading this page did not go through — the companion took too long. Try again.');
+});
+
+await test('a request that answers in time is not touched by its limit', async () => {
+  const W = boot();
+  W.run('fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ ok: true, hello: 1 }) })');
+  W.run('CFG.requestLimitMs = () => 40');
+  const r = await W.run("api('GET', '/index')");
+  assert.equal(r.ok, true);
+  assert.equal(r.data.hello, 1);
+  await new Promise(res => setTimeout(res, 80));   // the limit passing later changes nothing
+});
+
+await test("a companion that cannot be reached says so in the connection's own words", async () => {
+  const W = boot();
+  W.run('fetch = async () => { throw new Error("Failed to fetch"); }');
+  const r = await W.run("api('GET', '/index')");
+  assert.equal(r.ok, false);
+  assert.equal(r.timeout, undefined);
+  assert.match(r.error, /^companion offline — could not reach it/);
+});
+
+await test('a socket whose heartbeat has stopped is dropped and opened again', async () => {
+  const W = boot();
+  W.run('ensureSocket()');
+  await tick(); await tick();
+  W.sockets[0].onopen();
+  assert.equal(W.run('checkSocketSilence()'), false, 'just opened: nothing to do');
+  W.sockets[0].onmessage({ data: '{"type":"ping"}' });
+  assert.equal(W.run('checkSocketSilence(Date.now() + 20000)'), false, 'a heartbeat 20s ago is fine');
+  assert.equal(W.run('checkSocketSilence(Date.now() + SOCKET_SILENT_MS + 1)'), true, 'three missed heartbeats');
+  await tick(); await tick();
+  assert.equal(W.sockets.length, 2, 'a fresh socket was opened');
+  assert.equal(W.sockets[0].closed, true, 'the silent one was closed');
+  assert.equal(W.run('wsState'), 'connecting');
   W.run('if (retryTimer) clearTimeout(retryTimer); retryTimer = null');
 });
 

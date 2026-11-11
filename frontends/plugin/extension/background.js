@@ -35,6 +35,9 @@
 //   {t:'api', method:'GET'|'POST', path:'/page?url=…', body?:{…}}
 //        → {ok:true, status:200, data:{…}}          companion answered
 //        → {ok:false, error:'…', status?:N, data?:…} transport or 4xx/5xx
+//        → {ok:false, timeout:true, error:'…'}       past its time limit
+//                                     (config.js requestLimitMs); `error` is
+//                                     the one plain line the drawer shows
 //   {t:'gdocs-export', url, want?}    FALLBACK transport for the Google Docs
 //                                     adapter's export — the plain text, or
 //                                     (want:'bytes', format=docx) the same
@@ -213,6 +216,20 @@ let ws = null;
 // a tab's). Nothing but moveSocket writes it, and every tab hears it as is.
 let wsState = 'offline';
 function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsState; }
+// The socket is long-lived, so it has no time limit of its own; its heartbeat
+// is the check instead. The companion pings every 15s (server.mjs
+// HEARTBEAT_MS), so a 'connected' socket that has heard NOTHING for three of
+// those is one whose other end has gone quiet without closing it (a sleeping
+// laptop, a dropped network): it is dropped and opened again, and the tabs
+// refetch what they missed. Looked at on every keepalive alarm and every tab's
+// ping, so it runs while anyone is watching.
+const SOCKET_SILENT_MS = 45000;
+let socketHeardAt = 0;
+function checkSocketSilence(now = Date.now()) {
+  if (wsState !== 'connected' || !socketHeardAt || now - socketHeardAt < SOCKET_SILENT_MS) return false;
+  forceReconnect();
+  return true;
+}
 let backoff = 1000;          // ms, doubles to 30s, resets on open
 let retryTimer = null;
 let indexCache = {};         // pageKey -> {url,title,threads,updated_at}
@@ -281,14 +298,33 @@ async function api(method, path, body) {
     init.body = JSON.stringify(body);
   }
   if (Object.keys(headers).length) init.headers = headers;
+  // No request waits for ever (config.js requestLimitMs): past its limit it is
+  // abandoned and answered {timeout:true} with one plain line saying what did
+  // not go through, which content.js shows in the drawer.
+  // The fetch is called off (abort) AND raced, so the answer comes back on
+  // time even where a fetch ignores its signal.
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  if (ctl) init.signal = ctl.signal;
+  let timedOut = false;
+  let limit = null;
+  const expiry = new Promise(resolve => {
+    limit = setTimeout(() => { timedOut = true; if (ctl) ctl.abort(); resolve(null); },
+      CFG.requestLimitMs(init.method, path));
+  });
+  const late = () => ({ ok: false, timeout: true, error: CFG.timeoutLine(init.method, path) });
   let res;
   try {
-    res = await fetch(CFG.httpUrl(CONF.base, path), init);
+    res = await Promise.race([fetch(CFG.httpUrl(CONF.base, path), init), expiry]);
   } catch (e) {
-    return { ok: false, error: 'companion unreachable (' + (e && e.message ? e.message : e) + ')' };
+    clearTimeout(limit);
+    if (timedOut) return late();
+    return { ok: false, error: CFG.CONN_WORDS.offline + ' — could not reach it (' + (e && e.message ? e.message : e) + ')' };
   }
+  if (timedOut) return late();
   let data = null;
-  const text = await res.text().catch(() => '');
+  const text = await Promise.race([res.text().catch(() => ''), expiry]);
+  clearTimeout(limit);
+  if (timedOut) return late();
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!res.ok) {
     const err = res.status === 401 ? AUTH_FAIL
@@ -391,6 +427,7 @@ async function ensureSocket() {
   sock.onopen = () => {
     if (sock !== ws) return;
     moveSocket('reach');
+    socketHeardAt = Date.now();
     backoff = 1000;
     // `resumed` is a standing instruction, not news: a socket that has just
     // opened cannot say what happened while it was shut, so every drawer
@@ -400,6 +437,7 @@ async function ensureSocket() {
   };
   sock.onmessage = e => {
     if (sock !== ws) return;
+    socketHeardAt = Date.now();   // a ping counts: it is the heartbeat
     let ev = null;
     try { ev = JSON.parse(e.data); } catch { return; }
     if (!ev || ev.type === 'ping') return;
@@ -840,6 +878,7 @@ chrome.runtime.onConnect.addListener(port => {
   port.onMessage.addListener(msg => {
     if (!msg) return;
     if (msg.url) registerTab(tabId, msg.url);
+    checkSocketSilence();
     ensureSocket();
     // the answer doubles as the liveness receipt the page is asking for
     try { port.postMessage({ t: 'pong', socket: wsState }); } catch { /* gone */ }
@@ -1019,6 +1058,7 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 chrome.alarms.create(KEEPALIVE, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(a => {
   if (a.name !== KEEPALIVE) return;
+  checkSocketSilence();
   ensureSocket();
   // twice a minute, whatever else happens: no allow rule outlives its deadline
   // by more than one tick, whoever's worker wrote it
