@@ -126,6 +126,49 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
   d2.close && d2.close();
 }
 
+// ---- 3. a list read from the companion ---------------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the list modes, named', D.LOAD_MODES, ['idle', 'loading', 'loaded', 'failed']);
+  const legal = { ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] };
+  eq('…and the moves', Object.keys(D.LOAD_MOVES), Object.keys(legal));
+  for (const move of Object.keys(legal)) for (const load of D.LOAD_MODES) {
+    const want = legal[move].includes(load);
+    eq(`${move} from ${load}: ${want ? 'allowed' : 'refused'}`, D.canLoadMove({ load }, move), want);
+    ok(`${move} from ${load}: loadMove ${want ? 'moves' : 'throws'}`, want ? !throws(() => D.loadMove({ load }, move)) : throws(() => D.loadMove({ load }, move)));
+  }
+  ok('a second read while one is out is refused', throws(() => D.loadMove({ load: 'loading' }, 'ask')));
+  ok('an unknown move throws', throws(() => D.loadMove({ load: 'idle' }, 'reload')));
+  const L = { load: 'idle', list: ['kept'], err: '' };
+  D.loadMove(L, 'ask'); D.loadMove(L, 'lost', 'made-up outage');
+  eq('lost: failed, with why, and the list it had is kept', [L.load, L.err, L.list], ['failed', 'made-up outage', ['kept']]);
+  const M = { load: 'loading', error: '' };
+  D.loadMove(M, 'lost', 'why', 'error');
+  eq('…why goes where that list keeps it', M.error, 'why');
+  const N = { load: 'loading', note: 'own words' };
+  D.loadMove(N, 'lost', 'why', null);
+  eq('…or nowhere, for a list that words its own failure', [N.load, N.note, 'err' in N], ['failed', 'own words', false]);
+}
+
+// ---- 3b. …in the drawer: the project picker's first read -------------------
+{
+  let answer;
+  const d3 = D.create({
+    cssText: '.panel{}',
+    onProjects: () => new Promise((res, rej) => { answer = { res, rej }; }),
+  });
+  d3.setConn(true); d3.setAuthor('reader'); d3.open('comments');
+  d3.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
+  await tick(20);
+  const b = d3.shadow.querySelector('[data-act="filein"]');
+  b.hidden = false; b.click(); await tick(5);
+  eq('first open: reading', d3.projects.load, 'loading');
+  ok('…and it says so', /reading your council/.test(d3.el.projpick.textContent));
+  answer.rej(new Error('made-up: no council here')); await tick(10);
+  eq('a failed read: failed', d3.projects.load, 'failed');
+  ok('…and says why', /no council here/.test(d3.el.projpick.textContent));
+}
+
 console.log(`drawermodes: ${pass} passed, ${fail} failed`);
 await w.happyDOM.close();
 if (fail) { console.log('failures:\n  ' + failures.join('\n  ')); process.exit(1); }

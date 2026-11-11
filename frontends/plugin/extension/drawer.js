@@ -1875,6 +1875,29 @@
     return a;
   }
   const actIdle = extra => ({ mode: 'idle', err: '', note: '', ...(extra || {}) });
+  // A LIST READ FROM THE COMPANION — your pages, the Library conversation,
+  // the project roster, a project's past chats, the model list, the memory
+  // cards. Each keeps ONE value, `load`, one of LOAD_MODES, changed only by
+  // loadMove. (It was a `loading` yes/no beside an error text.) What the list
+  // HOLDS is separate and survives a failed re-read: a list once loaded stays
+  // on screen when the companion blinks.
+  //   ask  — idle | loaded | failed → loading   (refused while already loading)
+  //   got  — loading → loaded
+  //   lost — loading → failed, `arg` = why, kept in the list's `errKey`
+  //          ('err' by default; null when the list words its own failure)
+  const LOAD_MODES = Object.freeze(['idle', 'loading', 'loaded', 'failed']);
+  const LOAD_MOVES = Object.freeze({ ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] });
+  const LOAD_TO = { ask: 'loading', got: 'loaded', lost: 'failed' };
+  const loadMode = L => (L && LOAD_MODES.indexOf(L.load) !== -1 ? L.load : 'idle');
+  const isLoading = L => loadMode(L) === 'loading';
+  const canLoadMove = (L, move) => !!LOAD_MOVES[move] && LOAD_MOVES[move].indexOf(loadMode(L)) !== -1;
+  function loadMove(L, move, arg, errKey) {
+    if (!LOAD_MOVES[move]) throw new Error('list: no such move ' + move);
+    if (!canLoadMove(L, move)) throw new Error('list: cannot ' + move + ' while ' + loadMode(L));
+    L.load = LOAD_TO[move];
+    if (move === 'lost' && errKey !== null) L[errKey || 'err'] = String(arg || '');
+    return L;
+  }
   const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
   // …and every way it changes, in one list (newChatMove refuses the rest):
   //   ask     — idle | list → confirm      ("+ new chat")
@@ -2414,7 +2437,7 @@
       // ts of any bot suggestion the reader said no to — per tab, never
       // persisted, exactly like the commenter filter: saying no to a
       // suggestion is not a fact about the page.
-      projects: { list: null, filed: [], loading: false, err: '', busy: '',
+      projects: { list: null, filed: [], load: 'idle', err: '', busy: '',
                   declined: [], roots: [], newOpen: false, started: [] },
       // ---- lasso (SPEC "lasso — bringing what you have read and said…") ---
       // What a `/lasso …` just found, and where to draw it. Offers only:
@@ -2565,7 +2588,7 @@
       //            reload is allowed to cost the order and nothing else
       //   last     the answer just given, which is what the verdict paints
       memory: { scope: 'page', scopes: [], counts: {}, queue: [], i: 0, last: null,
-                loading: false, error: '', note: '', asked: 0, right: 0, focus: '' },
+                load: 'idle', error: '', note: '', asked: 0, right: 0, focus: '' },
       // ---- the council project behind a project artifact page -----------
       // Null on every ordinary page, and on those NOTHING below changes. On a
       // page the reader's own council wrote (workspace.mjs), Page chat stops
@@ -2576,7 +2599,7 @@
       //   archive   the list, once asked for: {list, loading, err, current}
       //   picking   true while the list is showing instead of the conversation
       project: opts.project || null,
-      archive: { list: null, loading: false, err: '', current: null, busy: '' },
+      archive: { list: null, load: 'idle', err: '', current: null, busy: '' },
       picking: false,
       // "send review": one ACT_MODES value — the one-step inline confirm (never
       // window.confirm — see del-thread), the round in flight, and whatever the
@@ -2622,7 +2645,7 @@
       // remembered per browser; `row` = the one row whose inline rename or tag
       // box is open, and what is typed in it (ROW_EDIT_MODES; owner only — a
       // guest never sees the affordance), changed only by moveRowEdit
-      pages: { list: null, loading: false, err: '', confirm: null, rowErr: null,
+      pages: { list: null, load: 'idle', err: '', confirm: null, rowErr: null,
                kind: '', tag: '', row: null, pick: 0 },
       // whether this browser is the OWNER of this companion, as the companion
       // itself says (GET /whoami, through the background). Renaming and tagging
@@ -2631,7 +2654,7 @@
       // the library conversation, which lives under the pages list: `page` is
       // the companion's record for the reserved url (null = nothing said in it
       // yet, which is a state and not an error)
-      library: { page: null, loading: false, err: '', confirm: false, note: '' },
+      library: { page: null, load: 'idle', err: '', confirm: false, note: '' },
       // is this tab in touch with the companion: ONE mode (config.js
       // CONN_MODES — connecting / connected / offline / reload). 'connecting'
       // until the first answer either way; 'reload' once the extension was
@@ -2644,7 +2667,7 @@
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
-      models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false,
+      models: { current: {}, options: null, status: null, bridge: '', note: '', load: 'idle',
                 effort: null, verbosity: '',
                 // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
                 keys: null,
@@ -5903,7 +5926,7 @@ ${bubbleShellHtml()}`;
       </div>`;
       if (!D.picking) return bar;
       let body;
-      if (a.loading) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
+      if (isLoading(a)) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
       else if (a.err) body = `<div class="archnote err">${esc(a.err)}</div>`;
       else if (!a.list || !a.list.length) body = `<div class="archnote">no chats in this project yet</div>`;
       else {
@@ -5973,16 +5996,16 @@ ${bubbleShellHtml()}`;
 
     // ---- archive actions -------------------------------------------------
     async function loadArchive() {
-      if (D.archive.loading) return;
-      D.archive.loading = true; D.archive.err = '';
+      if (!canLoadMove(D.archive, 'ask')) return;
+      loadMove(D.archive, 'ask'); D.archive.err = '';
       render();
       const r = await cb('onProjectSessions')();
-      D.archive.loading = false;
       if (r && r.ok) {
         D.archive.list = r.sessions || [];
         D.archive.current = r.current || null;
+        loadMove(D.archive, 'got');
       } else {
-        D.archive.err = (r && r.error) || 'the companion did not answer';
+        loadMove(D.archive, 'lost', (r && r.error) || 'the companion did not answer');
       }
       render();
     }
@@ -6412,7 +6435,7 @@ ${bubbleShellHtml()}`;
       const shown = list ? shownPages() : [];
       const filtered = !!(D.pages.kind || D.pages.tag);
       let body;
-      if (!list && D.pages.loading) body = `<div class="empty">loading…</div>`;
+      if (!list && isLoading(D.pages)) body = `<div class="empty">loading…</div>`;
       else if (D.pages.err && !(list && list.length)) {
         body = `<div class="empty"><b>Could not load your pages</b>${esc(D.pages.err)}</div>`;
       } else if (!list || !list.length) {
@@ -6509,13 +6532,19 @@ ${bubbleShellHtml()}`;
 
     // `quiet` = a live refresh behind an already-populated list: no loading
     // flicker, and a companion that blinks out leaves the last list on screen.
+    // Two reads can overlap (a live refresh behind a click): the second does
+    // not move the mode, and whichever answer lands while it is 'loading'
+    // settles it; every answer that succeeds still refreshes the rows.
     async function loadPages(quiet) {
-      D.pages.loading = !quiet;
-      if (!quiet) { D.pages.err = ''; renderPages(); }
+      const P = D.pages;
+      if (canLoadMove(P, 'ask')) loadMove(P, 'ask');
+      if (!quiet) { P.err = ''; renderPages(); }
       const r = await cb('onPages')();
-      D.pages.loading = false;
-      if (r && r.ok !== false) { D.pages.list = toPageList(r.index); D.pages.err = ''; }
-      else D.pages.err = (r && r.error) || 'could not reach the companion';
+      if (r && r.ok !== false) {
+        P.list = toPageList(r.index); P.err = '';
+        if (canLoadMove(P, 'got')) loadMove(P, 'got');
+      } else if (canLoadMove(P, 'lost')) loadMove(P, 'lost', (r && r.error) || 'could not reach the companion');
+      else P.err = (r && r.error) || 'could not reach the companion';
       if (D.view === 'pages') renderPages();
     }
 
@@ -7284,7 +7313,7 @@ ${bubbleShellHtml()}`;
       el.classList.toggle('err', !!m.err);
       // when the agents are asleep the sleep line has already said so; a second
       // line of small print under it would only repeat itself
-      const text = m.loading ? 'loading…'
+      const text = isLoading(m) ? 'loading…'
         : m.note ? m.note
         : popMode() === 'live' ? 'takes effect on the next turn'
         : '';
@@ -7296,14 +7325,17 @@ ${bubbleShellHtml()}`;
       if (!D.mounted) return;
       setPopover('models');
       D.el.pop.hidden = false;
-      D.models.loading = true;
+      if (canLoadMove(D.models, 'ask')) loadMove(D.models, 'ask');
       D.models.note = '';
       D.models.err = false;
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
       let r;
       try { r = await cb('onModels')(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      D.models.loading = false;
+      // the mode only; the line under the pickers (note, and err for its
+      // colour) is what every pick writes too, so it is set below as before
+      const settled = r && r.ok !== false ? 'got' : 'lost';
+      if (canLoadMove(D.models, settled)) loadMove(D.models, settled, '', null);
       if (r && r.ok !== false) {
         ingestModels(r);
         D.models.err = false;
@@ -7864,7 +7896,7 @@ ${bubbleShellHtml()}`;
       'blogroot-no': () => answerBlogRoot(false),
       'arch-list': () => {
         D.picking = !D.picking;
-        if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
+        if (D.picking && !D.archive.list && !isLoading(D.archive)) { loadArchive(); return; }
         render();
       },
       // one step, inline, like del-thread: the count is the whole of the
@@ -10022,7 +10054,8 @@ ${bubbleShellHtml()}`;
       const P = D.projects;
       const filed = new Set((P.filed || []).map(f => `${f.root}\u0000${f.id}`));
       let body;
-      if (P.loading) body = '<div class="pop-note">reading your council…</div>';
+      const reading = isLoading(P) && !P.list;
+      if (reading) body = '<div class="pop-note">reading your council…</div>';
       else if (P.err) body = `<div class="pop-note err">${esc(P.err)}</div>`;
       else if (!(P.list || []).length) {
         // Not an error, and worth saying properly: the roster is drawn from
@@ -10083,7 +10116,7 @@ ${bubbleShellHtml()}`;
         + networkPanel
         + (network ? '<div class="pop-head second">Projects</div>' : '')
         + body
-        + (P.loading || P.err ? '' : newRow)
+        + (reading || P.err ? '' : newRow)
         + '<div class="pop-note foot">Filing is a read: the bots get what these '
         + 'projects already know. Nothing here is moved or written \u2014 except a '
         + 'new project, which is a new folder in your council.</div>';
@@ -10110,7 +10143,9 @@ ${bubbleShellHtml()}`;
     async function openProjPick() {
       if (!D.mounted) return;
       setPopover('projects');
-      D.projects.loading = !D.projects.list;
+      // a re-open re-reads behind the list it already has; only a first read
+      // says "reading your council…" (projectsReading)
+      if (canLoadMove(D.projects, 'ask')) loadMove(D.projects, 'ask');
       D.projects.err = '';
       paintProjPick();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onProjDown, true);
@@ -10120,10 +10155,11 @@ ${bubbleShellHtml()}`;
         D.projects.filed = (r && r.filed) || [];
         D.projects.roots = (r && r.roots) || [];
         D.projects.network = (r && r.network) || null;
+        if (canLoadMove(D.projects, 'got')) loadMove(D.projects, 'got');
       } catch (e) {
-        D.projects.err = (e && e.message) || 'could not read your council';
+        if (canLoadMove(D.projects, 'lost')) loadMove(D.projects, 'lost', (e && e.message) || 'could not read your council');
+        else D.projects.err = (e && e.message) || 'could not read your council';
       }
-      D.projects.loading = false;
       if (popIs('projects')) paintProjPick();
     }
     function closeProjPick() { if (popIs('projects')) setPopover('none'); }
@@ -10212,12 +10248,17 @@ ${bubbleShellHtml()}`;
     async function loadMemory(keepScope) {
       if (!D.owner) return;
       const M = D.memory;
-      M.loading = true; M.error = '';
+      if (canLoadMove(M, 'ask')) loadMove(M, 'ask');
+      M.error = '';
       renderMemory();
       let r;
       try { r = await cb('onMemoryCards')({ scope: keepScope || M.scope }); } catch { r = null; }
-      M.loading = false;
-      if (!r || r.ok === false) { M.error = (r && r.error) || 'the companion did not answer'; renderMemory(); return; }
+      if (!r || r.ok === false) {
+        const why = (r && r.error) || 'the companion did not answer';
+        if (canLoadMove(M, 'lost')) loadMove(M, 'lost', why, 'error'); else M.error = why;
+        renderMemory(); return;
+      }
+      if (canLoadMove(M, 'got')) loadMove(M, 'got');
       M.scope = r.scope || 'page';
       M.scopes = r.scopes || [];
       M.counts = r.counts || {};
@@ -10331,7 +10372,7 @@ ${bubbleShellHtml()}`;
 
     function memBodyHtml() {
       const M = D.memory;
-      if (M.loading && !M.queue.length) return `<p class="memnote">reading the vault…</p>`;
+      if (isLoading(M) && !M.queue.length) return `<p class="memnote">reading the vault…</p>`;
       if (M.error) return `<p class="memnote bad">${esc(M.error)}</p>`;
       const card = M.last ? M.last.card : memCard();
       if (!card) {
@@ -11341,17 +11382,17 @@ ${bubbleShellHtml()}`;
     // error — it is a library nobody has said anything into yet, and the
     // companion creates it on the first message rather than before.
     async function loadLibrary() {
-      if (D.library.loading) return;
-      D.library.loading = true;
+      if (!canLoadMove(D.library, 'ask')) return;
+      loadMove(D.library, 'ask');
       const asked = D.turnClock;
       const r = await cb('onLibrary')();
-      D.library.loading = false;
       if (r && r.ok !== false) {
         D.library.page = (r.page && r.page.url) ? r.page : null;
         D.library.err = '';
+        loadMove(D.library, 'got');
         setTurns(r.turns, asked, 'library');
       } else {
-        D.library.err = (r && r.error) || 'could not reach the companion';
+        loadMove(D.library, 'lost', (r && r.error) || 'could not reach the companion');
         D.library.note = D.library.err;
       }
       if (D.view === 'pages') renderLibrary();
@@ -13348,6 +13389,7 @@ ${bubbleShellHtml()}`;
     THREAD_STAGES, THREAD_MARKS, THREAD_MOVES, threadMove,  // test/status.test.mjs
     setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
     POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
+    LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
