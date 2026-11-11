@@ -118,7 +118,7 @@
     PENDING_M = j.pending_mentions || [];
     // additive server fields; a server predating them simply doesn't send them —
     // chat detection falls back to SSE events / 409s, and the out-of-band line hides
-    if (typeof j.chat === 'boolean') PRESENCE.chat = j.chat;
+    if (typeof j.chat === 'boolean') setChatMode(j.chat ? 'on' : 'off');
     SRC_DIRTY = Array.isArray(j.source_dirty) ? j.source_dirty : SRC_DIRTY;
     // presence / roster / grants (additive: older servers omit them)
     if (Array.isArray(j.presence)) PEOPLE = j.presence;
@@ -151,8 +151,15 @@
   const otherAgent = a => (a === 'claude' ? 'codex' : 'claude');
   const cap = a => a[0].toUpperCase() + a.slice(1);
   const VERBS = ['crystallizing', 'architecting', 'mulling', 'drafting', 'responding', 'pondering', 'sketching', 'weighing'];
+  // ---- are the agents attached to this server? ONE mode, changed only through setChatMode() ----
+  //   unknown — not known yet (or a server predating the /data "chat" field)
+  //   on      — the server was started with --chat and its agents are there
+  //   off     — no agents: started without --chat, or the agents' process ended
+  // Nothing goes back to unknown once the answer is known.
+  const CHAT_MODES = ['unknown', 'on', 'off'];
+  const CHAT_MOVES = { unknown: ['on', 'off'], on: ['off'], off: ['on'] };
   const PRESENCE = {
-    chat: null, // null = unknown (a server predating the /data "chat" field); true/false once known
+    chat: 'unknown', // one of CHAT_MODES
     tid: null,  // target of the in-flight anchored turn, for click-to-jump
     agents: Object.fromEntries(AGENTS.map(a => [a, { active: false, verb: '', exhausted: null }])),
   };
@@ -293,7 +300,7 @@
     const el = document.getElementById('presence');
     if (el) {
       const [cls, txt] = connState();
-      const chatTxt = PRESENCE.chat === null ? 'agents: —' : `agents: ${PRESENCE.chat ? 'on' : 'off'}`;
+      const chatTxt = PRESENCE.chat === 'unknown' ? 'agents: —' : `agents: ${PRESENCE.chat}`;
       el.innerHTML = `<div class="conn ${cls}">${esc(txt)}</div>
         <div class="chatmode" title="agent chat (server started with --chat)">${chatTxt}</div>${budgetHtml()}`;
     }
@@ -340,10 +347,13 @@
     for (const a of AGENTS) PRESENCE.agents[a].active = false;
     renderPresence();
   }
-  function setChatMode(on) {
-    if (PRESENCE.chat === on) return;
-    PRESENCE.chat = on;
+  // the one setter: refuses a move the table does not allow (returns false)
+  function setChatMode(next) {
+    if (next === PRESENCE.chat) return true;
+    if (!CHAT_MODES.includes(next) || !CHAT_MOVES[PRESENCE.chat].includes(next)) return false;
+    PRESENCE.chat = next;
     renderPresence();
+    return true;
   }
 
   // ── model switcher (sidebar) + credit-exhaustion affordances ──
@@ -365,7 +375,7 @@
   function renderModelSwitcher() {
     const el = document.getElementById('settings-models');
     if (!el) return;
-    el.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+    el.innerHTML = PRESENCE.chat === 'on' ? AGENTS.map(modelRow).join('')
       : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
   }
   // optimistic switch: clear the exhausted flag now, post the control command;
@@ -2078,7 +2088,7 @@
       <div class="so-note">${esc(u.quota_note || 'Weekly subscription quota — not exposed by either provider. Run /usage in Claude Code.')}</div>
       <div class="so-sec">agent models</div><div id="settings-models"></div>`;
     const ms = settingsPanel.querySelector('#settings-models');
-    if (ms) ms.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+    if (ms) ms.innerHTML = PRESENCE.chat === 'on' ? AGENTS.map(modelRow).join('')
       : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
     if (LIVE) api('/usage').then(r => r.ok ? r.json() : null).then(j => {
       if (!j || settingsPanel.hidden) return;
@@ -2136,7 +2146,7 @@
         api('/task', { method: 'POST', body: JSON.stringify({ mention_id: `task:${Date.now()}:${djb2(text)}`, text }) })
           .then(async r => {
             const j = await r.json().catch(() => ({}));
-            if (r.status === 409) { setChatMode(false); setChip(CONSOLE_ID, 'failed', 'server not started with --chat'); return; }
+            if (r.status === 409) { setChatMode('off'); setChip(CONSOLE_ID, 'failed', 'server not started with --chat'); return; }
             if (!r.ok || j.queued === false) { setChip(CONSOLE_ID, 'failed', `task rejected${j.reason ? ': ' + j.reason : ''}`); return; }
             setChip(CONSOLE_ID, 'waiting', 'queued — waiting for agents');
           }).catch(() => setChip(CONSOLE_ID, 'failed', 'server unreachable'));
@@ -2342,7 +2352,7 @@
     api('/mention', { method: 'POST', body: JSON.stringify({ mention_id: mentionId, target_id: targetId, text }) })
       .then(async r => {
         const j = await r.json().catch(() => ({}));
-        if (r.status === 409) { setChatMode(false); setChip(targetId, 'failed', 'server not started with --chat'); toast('Restart the server as: node review/server.mjs --chat', true); return; }
+        if (r.status === 409) { setChatMode('off'); setChip(targetId, 'failed', 'server not started with --chat'); toast('Restart the server as: node review/server.mjs --chat', true); return; }
         // hosted guest: the summons sits in the owner's approval queue — say so honestly
         if (j.pending) { setChip(targetId, 'waiting', `queued — waiting for ${esc(OWNER_HANDLE || 'the owner')} to approve`); return; }
         if (!r.ok || j.queued === false) { setChip(targetId, 'failed', `mention rejected${j.reason ? ': ' + j.reason : ''}`); return; }
@@ -2426,7 +2436,7 @@
   const ENV_RE = /^\s*(?:\(→[^)\n]*\)\s*)?(?:@(?:claude|codex)\s+)?\[review chat/;
   function chatEvent(m) {
     const tid = m.target_id || null;
-    setChatMode(m.kind !== 'bridge-exit'); // any chat event proves --chat; a dead bridge means agents are off
+    setChatMode(m.kind === 'bridge-exit' ? 'off' : 'on'); // any chat event proves --chat; a dead bridge means agents are off
     if (m.kind === 'completion_context') {
       applyModelState({ scoped: (m.ev || {}).scoped });
       return;
@@ -2526,7 +2536,7 @@
   window.__review = {
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
-    openComposer, setChatMode, PRESENCE, MODELS,
+    openComposer, setChatMode, CHAT_MODES, PRESENCE, MODELS,
     setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
   };

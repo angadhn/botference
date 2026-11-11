@@ -733,7 +733,7 @@ test('model switcher + credit-exhaustion warnings (happy-dom)',
   assert.ok(R, 'review exposes the DOM test harness');
 
   // seed the model state exactly as a forwarded completion_context + status would
-  R.setChatMode(true);
+  R.setChatMode('on');
   R.applyModelState({
     scoped: { '/model @claude ': ['claude-fable-5', 'claude-opus-5', 'claude-haiku-4-5'], '/model @codex ': ['gpt-5.6-sol', 'gpt-5.5'] },
     status: { claude_model: 'claude-fable-5', codex_model: 'gpt-5.6-sol' },

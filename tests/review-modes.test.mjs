@@ -809,3 +809,21 @@ test('a question that timed out leaves the page, and a late click says why (happ
   assert.equal(allow(), null);
   assert.match(pg.toasts(), /Too late/);
 });
+
+// ============================== are the agents attached? (chat mode)
+test('chat mode: unknown → on/off, on ↔ off, never back to unknown (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, { data: { chat: undefined } });
+  const R = pg.R;
+  assert.deepEqual([...R.CHAT_MODES], ['unknown', 'on', 'off']);
+  assert.equal(R.PRESENCE.chat, 'unknown', 'a server that does not say');
+  assert.match(pg.doc.querySelector('#presence .chatmode').textContent, /agents: —/);
+  assert.equal(R.setChatMode(true), false, 'a yes/no is not a mode name');
+  assert.equal(R.setChatMode('on'), true);
+  assert.match(pg.doc.querySelector('#presence .chatmode').textContent, /agents: on/);
+  assert.equal(R.setChatMode('unknown'), false, 'once known, never unknown again');
+  R.chatEvent({ kind: 'bridge-exit', code: 1 });
+  assert.equal(R.PRESENCE.chat, 'off');
+  assert.match(pg.doc.querySelector('#presence .chatmode').textContent, /agents: off/);
+  R.chatEvent({ kind: 'meta', type: 'x' });
+  assert.equal(R.PRESENCE.chat, 'on', 'any event from the agents proves they are back');
+});
