@@ -5287,7 +5287,18 @@ drives a selftest, and every one of them is expected green:
 ?figedit=1&selftest=1
 ?figedit=deployed&selftest=1
 ?colledit=insert&selftest=1
+?longchat=1&chat=1&selftest=1
 ```
+
+`?longchat=1&chat=1&selftest=1` (2026-11-11) is the one pose that needs the
+browser to paint frames: it scrolls the real chat pane and waits for the
+browser's own scroll events, which ride on animation frames, and
+`--virtual-time-budget` runs almost none — under `--dump-dom` its first check
+("the browser is painting frames …") fails and says why. Drive it over CDP or
+Playwright in real time. It checks the long-chat window: no fold, the
+"Show earlier messages" line, each scroll-up reveal keeping the first message
+on screen within 2px, no double reveal or reveal loop, a reply arriving while
+scrolled up, and the button.
 
 **Amendment (2026-08-30): five more of the same two diseases.** All five were
 the harness's, not the product's.

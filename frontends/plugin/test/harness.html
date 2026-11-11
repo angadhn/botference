@@ -114,6 +114,14 @@
                      releases it on the reader's next deliberate act and on
                      nothing else. `&selftest=1` is the only way to run it;
                      there is no screenshot state.
+    ?longchat=1      a page chat of ~70 made-up messages of very different
+                     heights (one-liners, multi-paragraph answers, tool rows, a
+                     companion notice). It opens on its newest stretch with a
+                     "Show earlier messages" line at the top. `&selftest=1`
+                     scrolls the REAL pane up, step by step, and checks every
+                     reveal keeps the message being read where it was (within
+                     2px), then a reply arriving while scrolled up, then the
+                     button. Use with `&chat=1`.
     ?reviewpage=1    the same article, wearing the review engine's own marker
                      (a docid on the body, its "💬 Comment" pill as a direct
                      child of it, and its toolbar). With the plugin installed
@@ -891,12 +899,18 @@ const WS_TAIL = {
   'aaaa1111-0000-4000-8000-000000000001': [
     ['reader', 'How big does the radiator have to be for a 12-person hab?'],
     ['claude', 'About **400 m²** at a 350 K rejection temperature — it is the truss, not the hull, that ends up sized by it.'],
-    // …carrying a checklist, and buried in the fold: the tasks card must show
-    // it even though the message it lives in is folded away, and it must be
+    // …carrying a checklist, and buried out of view: the tasks card must show
+    // it even though the message it lives in is not drawn, and it must be
     // READ-ONLY there — a restored council message is not this companion's to
     // rewrite
     ['codex', 'Same number here. Worth saying the panel count is what drives the assembly schedule.\n\n'
       + '- [x] Size the radiator at 350 K\n- [ ] Count the panels\n- [ ] Check the truss mass'],
+    // (2026-11-11) a chat no longer folds its middle: it draws its newest
+    // ~20 messages. Twenty-two made-up exchanges put the checklist above that
+    // window, which is the case the tasks card (and ↑ source) exist for.
+    ...Array.from({ length: 22 }, (_, i) => (i % 2
+      ? ['claude', `Noted — margin case ${i} stays inside the made-up envelope.`]
+      : ['reader', `And the margin case ${i}?`])),
     ['reader', 'And if we drop to 320 K?'],
     ['claude', 'Roughly 700 m². Radiator area goes as T⁻⁴, so the last 30 K is expensive.'],
   ],
@@ -2653,6 +2667,33 @@ let BOOT_COMMENTER = '';
 const COMMENTERS = Q.get('commenters') === '1';
 // ?sendfocus=1 — a Send keeps its thread in view (see selftestSendFocus)
 const SENDFOCUS = Q.get('sendfocus') === '1';
+// ?longchat=1 — a long page chat read back from its newest message (see
+// selftestLongChat). Seventy messages whose heights differ wildly, so a
+// reveal that kept the scroll NUMBER rather than the message would show.
+const LONGCHAT = Q.get('longchat') === '1';
+const LONGCHAT_N = 70;
+if (LONGCHAT) {
+  const para = i => `Paragraph ${i}: the made-up figures move a little each season, `
+    + 'and the model is refitted on the latest five; nothing here is a real result. '.repeat(3);
+  const chat = [];
+  for (let i = 0; i < LONGCHAT_N; i++) {
+    const at = iso(LONGCHAT_N + 5 - i);
+    if (i === 33) { chat.push({ author: 'botference', ts: at, text: `Updated notes-${i}.md in your site` }); continue; }
+    if (i % 2 === 0) {
+      chat.push({ author: 'angadh', ts: at, text: i % 7 === 4
+        ? `long question ${i}\n\n` + para(1) + '\n\n' + para(2) : `short question ${i}?` });
+      continue;
+    }
+    // a bot's turn: now and then a tool row first, and answers of 1 to 5 paragraphs
+    if (i % 7 === 3 || i % 7 === 6) {
+      chat.push({ author: 'claude', ts: at, kind: 'tools', text: 'Explored\n└ Read notes.md\n└ Search drift' });
+    }
+    const n = 1 + (i * 3) % 5;
+    chat.push({ author: i % 4 === 1 ? 'claude' : 'codex', ts: at,
+      text: `answer ${i}\n\n` + Array.from({ length: n }, (_, j) => para(j + 1)).join('\n\n') });
+  }
+  RECORD.page_chat = chat;
+}
 // ?commenters=1 — the shape of a page several people have marked up: the
 // owner's three threads, plus two projected in from the review page's own
 // margin by visitors with no extension (store.mjs `origin`), plus a guest
@@ -3328,7 +3369,7 @@ function companion(method, path, body) {
     // the wrap-up is a real, visible message too — a turn the reader cannot see
     // asking for something reads as a bot going off on its own
     if (wrapUp) RECORD.page_chat.push(stampMsg(wrapUp));
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     queueDepth += 1 + turns.length + (wrapUp ? 1 : 0);
     // one at a time, in page order, exactly as the bridge drains its queue: the
     // preamble first, then each thread's own turn when the one before it is
@@ -3393,7 +3434,7 @@ function companion(method, path, body) {
     // nothing at all when it does not
     if (body.page > 0) thread.page = body.page;
     RECORD.threads.push(thread);
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     const mention = MENTION.test(body.msg.text);
     // a guest's comment is still SAVED; only the bots are withheld
     if (mention && guestRefuse) {
@@ -3427,7 +3468,7 @@ function companion(method, path, body) {
         appended++;
       }
     }
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     return { ok: true, status: 200, data: { ok: true, created, appended, skipped: 0 } };
   }
   if (method === 'POST' && route === '/reply') {
@@ -3526,7 +3567,7 @@ function companion(method, path, body) {
         RECORD.threads = RECORD.threads.filter(t => t.id !== body.thread_id);
       }
     }
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true } };
   }
@@ -3573,7 +3614,7 @@ function companion(method, path, body) {
     const result = runResultFor(b.code);
     m.runs = m.runs || {};
     m.runs[String(body.block_index)] = result;      // the result lives on the message
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     log('ran block #' + body.block_index + ' → ' + result.status);
     return { ok: true, status: 200,
              data: { ok: true, run: result, block_index: body.block_index, stored: true } };
@@ -3606,7 +3647,7 @@ function companion(method, path, body) {
       return { ok: false, status: 400, error: 'no checkbox #' + body.index + ' in that message' };
     }
     m.text = toggleNth(m.text, body.index, !!body.checked);
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     log('tick: #' + body.index + ' → ' + (body.checked ? 'done' : 'open'));
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, text: m.text } };
@@ -3742,7 +3783,7 @@ function companion(method, path, body) {
       delete t.resolved; delete t.resolved_at; delete t.resolved_by;
       log('reopened: ' + t.id);
     }
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t, summarizing: !!body.resolved } };
   }
@@ -3758,7 +3799,7 @@ function companion(method, path, body) {
     if (body.addressed) { t.addressed = true; t.addressed_at = now(); t.addressed_by = 'angadh'; }
     else { delete t.addressed; delete t.addressed_at; delete t.addressed_by; }
     log((body.addressed ? 'addressed: ' : 'not done: ') + t.id);
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t } };
   }
@@ -3787,7 +3828,7 @@ function companion(method, path, body) {
     if (typeof body.suffix === 'string') t.suffix = body.suffix.slice(0, 32);
     t.reanchored_at = now();
     t.orphaned = false;
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     log('re-anchored: ' + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t, changed: true } };
@@ -3806,7 +3847,7 @@ function companion(method, path, body) {
     }
     const changed = want !== (t.mark === 'strike' ? 'strike' : '');
     if (want) t.mark = 'strike'; else delete t.mark;
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     log((want ? 'struck: ' : 'un-struck: ') + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t, changed } };
@@ -3860,7 +3901,7 @@ function companion(method, path, body) {
         already.prior_threads = (already.prior_threads || []).concat([already.from_thread]);
       }
       already.from_thread = from.id;
-      RECORD.updated_at = now();
+      RECORD.updated_at = new Date().toISOString();
       log('the note on a strikeout was rewritten: ' + already.id);
       setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
       return { ok: true, status: 200, data: { ok: true, thread: already, updated: true } };
@@ -3882,7 +3923,7 @@ function companion(method, path, body) {
     const kin = RECORD.threads.filter(x => x.mark === 'strike' && x.from_thread === from.id);
     RECORD.threads.splice(Math.max(RECORD.threads.indexOf(from),
       ...kin.map(x => RECORD.threads.indexOf(x))) + 1, 0, t);
-    RECORD.updated_at = now();
+    RECORD.updated_at = new Date().toISOString();
     log('struck from a discussion: ' + t.id);
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
     return { ok: true, status: 200, data: { ok: true, thread: t } };
@@ -4013,7 +4054,7 @@ function companion(method, path, body) {
         + 'Claude answered that it is, on that route. The outcome was that the '
         + 'paragraph stands as written.';
       t.summary_by = 'claude';
-      RECORD.updated_at = now();
+      RECORD.updated_at = new Date().toISOString();
       toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
     }, 60);
     log('summary queued: ' + t.id);
@@ -8491,6 +8532,151 @@ async function selftestSendFocus() {
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
   console.log(out.join('\n'));
+}
+
+// ?longchat=1&chat=1&selftest=1 — A LONG CHAT, READ BACKWARDS, IN A REAL
+// BROWSER. The drawer's own tests (test/chatwindow.test.mjs) stub every box at
+// 100px; here the boxes are real, of wildly different heights, and the scroll
+// events are the browser's own. Each reveal is checked against what the
+// reader actually sees: the first message showing at the top of the pane
+// before it must be at the same offset after it (2px), the reveal must add
+// one stretch and not two, must not set off another by itself, and must not
+// drop the reader at the foot.
+async function selftestLongChat() {
+  const out = [];
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const d = window.__bfp.drawer, S = d.shadow;
+  const nums = [];   // what the browser measured, for the report
+  d.open('chat');
+  await sleep(150);
+  const pane = S.querySelector('.pane[data-pane="chat"]');
+  pane.addEventListener('scroll', () => { scrolls++; });
+  const thread = () => S.querySelector('.card.chatpane .thread');
+  // tool rows are drawn as .tools, not .reply: every .reply is a message
+  const replies = () => (thread() ? [...thread().querySelectorAll('.reply[data-ts]')] : []);
+  const btn = () => thread() && thread().querySelector('.showmore.earlier');
+  const atFoot = () => pane.scrollHeight - pane.scrollTop - pane.clientHeight < 40;
+  const total = () => RECORD.page_chat.filter(m => m.kind !== 'tools').length;
+  // the first message showing at the top of the pane — what the reader is reading
+  const firstSeen = () => {
+    const pt = pane.getBoundingClientRect().top;
+    const r = replies().find(x => { const b = x.getBoundingClientRect(); return b.height > 0 && b.bottom > pt; });
+    return r ? { ts: r.dataset.ts, author: r.dataset.author, off: r.getBoundingClientRect().top - pt } : null;
+  };
+  const offOf = a => {
+    const r = a && replies().find(x => x.dataset.ts === a.ts && x.dataset.author === a.author);
+    return r ? r.getBoundingClientRect().top - pane.getBoundingClientRect().top : null;
+  };
+  // a frame, or 60ms if the headless browser is not painting frames (a scroll
+  // event is dispatched with the next frame, so this waits for it either way)
+  const frame = () => new Promise(r => { let done = false; const go = () => { if (!done) { done = true; setTimeout(r, 0); } };
+    requestAnimationFrame(go); setTimeout(go, 60); });
+  const f1 = v => (v == null ? 'gone' : v.toFixed(1));
+  // how many real scroll events and animation frames the browser gave us
+  let scrolls = 0, frames = 0;
+  const tickF = () => { frames++; if (frames < 100000) requestAnimationFrame(tickF); };
+  requestAnimationFrame(tickF);
+
+  await until(() => replies().length > 0, 4000);
+  // This pose is about the browser's OWN scroll events, which ride on its
+  // animation frames. `--virtual-time-budget` runs almost none, so under it
+  // the scroll trigger can never fire: say that, rather than fail obscurely.
+  await sleep(300);
+  check('the browser is painting frames (run this pose in real time, not --virtual-time-budget)', frames >= 5);
+  check('the long chat is on screen', replies().length > 0);
+  check('no fold control and no gap line',
+    !!thread() && !thread().querySelector('.showmore[data-act="expand"], .showmore[data-act="fold"], .foldgap'));
+  check('a "Show earlier messages" line at the top of the window',
+    !!btn() && thread().firstElementChild === btn() && /^Show earlier messages · \d+ more$/.test(btn().textContent.trim()));
+  check('only the newest stretch is drawn', replies().length < total() && replies().length <= 30);
+  check('the pane opened at the newest message', atFoot());
+  const first0 = replies().length;
+  nums.push(`opened: ${first0} of ${total()} msgs, scrollTop ${Math.round(pane.scrollTop)} / scrollHeight ${pane.scrollHeight} / clientHeight ${pane.clientHeight}`);
+
+  // ---- scroll up in steps, as a reader does, until nothing older remains ----
+  let reveals = 0, guard = 0, jumps = 0, doubles = 0, footed = 0;
+  while (btn() && guard++ < 400) {
+    const before = replies().length;
+    pane.scrollTop = Math.max(0, pane.scrollTop - 240);
+    const a = firstSeen();                  // what the reader sees after this step
+    await frame(); await frame();           // the browser's own scroll event, and the reveal
+    const after = replies().length;
+    if (after > before) {
+      reveals++;
+      const now = offOf(a);
+      const drift = now == null ? Infinity : Math.abs(now - a.off);
+      nums.push(`reveal ${reveals}: ${before}→${after} msgs, anchor "${a.author}" offset ${f1(a.off)}→${f1(now)}, scrollTop ${Math.round(pane.scrollTop)}`);
+      if (drift > 2) jumps++;
+      if (after - before > 30) doubles++;
+      if (atFoot()) footed++;
+      // nothing more may happen until the reader moves again (no loop)
+      await frame(); await frame(); await sleep(50);
+      if (replies().length !== after) doubles++;
+    } else if (pane.scrollTop === 0 && btn()) {
+      nums.push('stuck: at the top with the line still there and no reveal');
+      break;
+    }
+  }
+  check('scrolling up revealed older messages, more than once', reveals >= 2);
+  check('every reveal kept the message being read in place (≤2px)', reveals > 0 && jumps === 0);
+  check('no reveal added two stretches at once, and none set off another', doubles === 0);
+  check('no reveal dropped the reader at the foot', footed === 0);
+  check('with nothing older left, the line is gone', !btn());
+  check('…and the oldest message is drawn', !!thread() && /short question 0\?/.test(thread().textContent));
+  check('…and every message is drawn', replies().length === total());
+
+  // ---- a reply arriving while the reader is up in the middle ---------------
+  pane.scrollTop = Math.round(pane.scrollHeight / 2);
+  await frame(); await frame();
+  const midTop = pane.scrollTop, midA = firstSeen(), n0 = replies().length;
+  RECORD.page_chat.push({ author: 'claude', ts: iso(0), text: 'a fresh reply, made up for the pose' });
+  RECORD.updated_at = new Date().toISOString();
+  toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+  await until(() => replies().length > n0, 4000);
+  await frame(); await frame();
+  const midNow = offOf(midA);
+  check('a reply arriving is drawn at the bottom', replies().length === n0 + 1
+    && /a fresh reply, made up/.test(replies()[replies().length - 1].textContent));
+  check('…the reader up in the middle is not moved', Math.abs(pane.scrollTop - midTop) <= 2
+    && midNow != null && Math.abs(midNow - midA.off) <= 2);
+  check('…and nothing above them was hidden', /short question 0\?/.test(thread().textContent));
+  nums.push(`arrival: scrollTop ${Math.round(midTop)}→${Math.round(pane.scrollTop)}, anchor offset ${f1(midA.off)}→${f1(midNow)}, msgs ${n0}→${replies().length}`);
+
+  // ---- the button, in a freshly opened panel -------------------------------
+  d.close(); await sleep(80);
+  d.open('chat'); await sleep(200);
+  check('reopened: back to the newest stretch', replies().length <= 31 && !!btn());
+  check('…at the newest message', atFoot());
+  // up, but not so far that the scroll reveal fires: the line stays well
+  // outside the trigger's 200px reach above the pane
+  {
+    const pt = pane.getBoundingClientRect().top;
+    const b = btn().getBoundingClientRect();
+    pane.scrollTop = Math.max(0, pane.scrollTop - ((pt - 400) - b.bottom));
+  }
+  await frame(); await frame();
+  const b0 = replies().length;
+  check('scrolled up short of the trigger: nothing revealed by the scroll', !!btn() && b0 <= 31);
+  const a = firstSeen();
+  nums.push(`before button: scrollTop ${Math.round(pane.scrollTop)} / scrollHeight ${pane.scrollHeight}`);
+  btn().click();
+  await frame();
+  const now = offOf(a);
+  check('the button reveals one more stretch', replies().length > b0 && replies().length - b0 <= 30);
+  check('…keeping the message being read in place (≤2px)', now != null && Math.abs(now - a.off) <= 2);
+  check('…and not at the foot', !atFoot());
+  nums.push(`button: ${b0}→${replies().length} msgs, anchor "${a.author}" offset ${f1(a.off)}→${f1(now)}, scrollTop ${Math.round(pane.scrollTop)} / scrollHeight ${pane.scrollHeight}`);
+  nums.push(`browser: ${scrolls} scroll events, ${frames} animation frames`);
+  console.log('longchat numbers:\n' + nums.join('\n'));
+
+  const bad = out.filter(l => l[0] === '✗');
+  logQuiet = true;
+  const el = document.getElementById('h-log');
+  el.style.color = bad.length ? '#b3403a' : '#2ea043';
+  el.textContent = 'SELFTEST (longchat) ' + (out.length - bad.length) + '/' + out.length +
+    (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
+  el.dataset.detail = out.join(' | ') + '  ||  NUMBERS: ' + nums.join(' ; ') +
+    (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
 }
 
 // ?pdf=scan&selftest=1 — the SCANNED PDF, which is a different document.
@@ -13820,9 +14006,9 @@ async function selftestWorkspace() {
     [...chat('.reply .when')].every(w => w.textContent === ''));
   check('the composer continues that chat', chat('.composer textarea').length === 1);
 
-  // a long tail folds like any other long thread
-  check('a long chat folds behind one line',
-    chat('.showmore').length <= 1);
+  // a long tail never folds: at most the "Show earlier messages" line (2026-11-11)
+  check('a long chat carries at most one line, and no fold',
+    chat('.showmore').length <= 1 && chat('.showmore[data-act="expand"], .foldgap').length === 0);
 
   // ---- the tasks card over a restored council chat ------------------------
   // The newest list here lives in a RESTORED message — one this companion does
@@ -13839,7 +14025,7 @@ async function selftestWorkspace() {
   const tbox = () => [...(tcard() ? tcard().querySelectorAll('.md-tick') : [])];
   check('a checklist in a restored chat still reaches the tasks card',
     !!tcard() && tbox().length === 3 && /Count the panels/.test(tcard().textContent));
-  check('…even though the message it lives in is folded away',
+  check('…even though the message it lives in is not drawn (it is above the chat\u2019s window)',
     !/Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
   check('…marked read-only, with the reason in plain words',
     tcard().classList.contains('ro') &&
@@ -13850,9 +14036,10 @@ async function selftestWorkspace() {
   await sleep(120);
   check('…so a click on one asks the companion for nothing', tickPosts.length === wsTicks);
   check('…and nothing was ticked', !tbox()[1].checked);
-  // …but finding it is still allowed: the jump unfolds the chat and marks it
+  // …but finding it is still allowed: the jump widens the chat's window up
+  // to the message and marks it
   hit(tcard() && tcard().querySelector('[data-act="tasks-jump"]'), '↑ source on the tasks card');
-  check('↑ source unfolds the chat and marks the restored message',
+  check('↑ source widens the chat to the restored message and marks it',
     !!await until(() => S.querySelector('.pane[data-pane="chat"] .reply.tasksrc')) &&
     /Count the panels/.test(S.querySelector('.pane[data-pane="chat"] .thread').textContent));
 
@@ -14565,6 +14752,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         : HEAL ? selftestOrphanHeal
         : TICKMODE === 'done' ? selftestRoundDone : TICKER ? selftestRoundTicker
         : SENDFOCUS ? selftestSendFocus
+        : LONGCHAT ? selftestLongChat
         // the more specific flag first, as always: ?question=fail is a
         // DIFFERENT fixture from ?question=1 and gets its own pose
         : QUESTION_TAB ? selftestMemorize
@@ -14998,7 +15186,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
           + 'was that the line stays as written, and the cut comes out of the '
           + 'paragraph below instead.';
         a.summary_by = 'claude';
-        RECORD.updated_at = now();
+        RECORD.updated_at = new Date().toISOString();
         toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
         setTimeout(() => {
           const S = d.shadow;
