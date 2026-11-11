@@ -12272,3 +12272,14 @@ Enter, the arrows and Esc belong to the input method.
   composition whose box has lost the focus or left the page is ended by the
   next rebuild rather than holding it.
 - Tests: `test/compose.test.mjs`.
+
+## Amendment (2026-11-11): dictated words do not pull the cursor back
+
+The microphone's words used to be inserted with `box.focus()`, so a reader who
+had moved on while the clip was being transcribed (typing in another box, or
+on the web page) had the cursor pulled back. Now `micInsert` still puts the
+words into the box the dictation was started from, but takes the focus (and
+sets the caret after the words) only when the reader has not moved on
+(`micMovedOn`: the focus is in that composer, or nowhere). Tests:
+`test/mic.test.mjs` (moved on: the words land, the focus stays on the page;
+stayed: the words at the caret, the box focused).

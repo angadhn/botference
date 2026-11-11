@@ -3798,6 +3798,17 @@ ${bubbleShellHtml()}`;
       if (!text) { note(target, 'no speech was heard', true); return; }
       micInsert(target, text);
     }
+    // Whether the focus is now somewhere other than this box's own composer
+    // (its box, its mic, its Send) — in another box of the drawer, or on the
+    // web page. Nothing focused at all is not moving on.
+    function micMovedOn(box) {
+      const here = D.shadow.activeElement;
+      const comp = box.closest && box.closest('.composer');
+      if (here) return !(comp ? comp.contains(here) : here === box);
+      const doc = box.ownerDocument || document;
+      const page = doc.activeElement;
+      return !!page && page !== doc.body && page !== doc.documentElement && page !== D.host;
+    }
     function micInsert(target, text) {
       const box = composerBox(target);
       if (!box) {
@@ -3811,10 +3822,16 @@ ${bubbleShellHtml()}`;
       const same = box === MIC.box || box === D.shadow.activeElement;
       const [a, b] = same ? [box.selectionStart, box.selectionEnd] : [null, null];
       const out = spliceDictation(box.value, a, b, text);
+      // A reader who has moved on while the words were on their way (typing
+      // in another box, clicking into the web page) keeps the focus where it
+      // is: the words still go into this box, quietly.
+      const movedOn = micMovedOn(box);
       box.value = out.value;
       D.drafts[target] = out.value;
-      box.focus();
-      try { box.setSelectionRange(out.caret, out.caret); } catch (_) { /* not a textarea */ }
+      if (!movedOn) {
+        box.focus();
+        try { box.setSelectionRange(out.caret, out.caret); } catch (_) { /* not a textarea */ }
+      }
       // the ordinary typing path: has-draft, the @-menu, the pill row
       box.dispatchEvent(new Event('input', { bubbles: true }));
       MIC.box = null; MIC.caret = null;
