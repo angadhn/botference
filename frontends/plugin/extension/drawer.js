@@ -1580,6 +1580,58 @@
     return winAt(units, at);
   }
 
+  // ── editing one of your own messages ─────────────────────────────────────
+  // ✎ on a message puts an edit box where its words were. Which message is
+  // being edited is ONE value, D.edit, never the DOM: a redraw (a bot's reply
+  // landing, a poll) rebuilds the panel, and the box has to come back with
+  // what was typed in it. Two modes, named here:
+  //   'none' — the value is null: no message is being edited.
+  //   'open' — the value is { target, ts, author, text, start, end }: the
+  //            message (its conversation, its ts, its author — a ts alone is
+  //            not an identity, see findMsg) and the draft so far, with the
+  //            caret/selection inside it.
+  // One edit at a time, in the panel or in a bubble, wherever the message is
+  // drawn: the editor is drawn by whatever draws that message.
+  const EDIT_MODES = ['none', 'open'];
+  const editMode = ed => (ed && ed.target != null ? 'open' : 'none');
+  // …and every way it changes, in one list (editMove refuses the rest):
+  //   start  — none → open, on one message, its stored text as the draft
+  //   type   — open → open, the draft (and caret) as the reader left it
+  //   save   — open → none, once the companion has taken the new text
+  //   cancel — open → none, the message left as it was
+  //   leave  — anything → none: the reader left the chat or the page, or the
+  //            message is gone; never refused, since there may be no edit
+  const EDIT_MOVES = ['start', 'type', 'save', 'cancel', 'leave'];
+  // The one way the value changes. Pure: (value, move, arg) → value. An
+  // unknown move, a second start while one edit is open, and typing, saving
+  // or cancelling with none open all throw.
+  function editMove(ed, move, arg) {
+    if (EDIT_MOVES.indexOf(move) === -1) throw new Error('edit: no such move ' + move);
+    const mode = editMode(ed);
+    if (move === 'leave') return null;
+    if (move === 'start') {
+      if (mode === 'open') throw new Error('edit: one message is already being edited');
+      const a = arg || {};
+      if (a.target == null || a.target === '' || a.ts == null || a.ts === '') throw new Error('edit: start needs a message');
+      const text = String(a.text == null ? '' : a.text);
+      return { target: String(a.target), ts: String(a.ts), author: String(a.author == null ? '' : a.author),
+               text, start: text.length, end: text.length };
+    }
+    if (mode !== 'open') throw new Error('edit: no message is being edited');
+    if (move === 'type') {
+      const a = arg || {};
+      const text = a.text == null ? ed.text : String(a.text);
+      const clamp = (v, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(text.length, n)) : d; };
+      const start = clamp(a.start, Math.min(ed.start, text.length));
+      const end = Math.max(start, clamp(a.end, Math.min(ed.end, text.length)));
+      return { ...ed, text, start, end };
+    }
+    return null;   // save, cancel
+  }
+  // whether `r`, drawn in conversation `target`, is the message being edited
+  const isEditOf = (ed, target, r) => editMode(ed) === 'open' && !!r
+    && ed.target === String(target) && ed.ts === String(r.ts) && ed.author === String(r.author == null ? '' : r.author);
+
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
   // message, so the completion follows the CARET, not the start of the box.
@@ -1953,6 +2005,9 @@
                searching: '', declined: [], done: '' },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
+      // the message being edited and its draft (editMove): null, or
+      // { target, ts, author, text, start, end }. Nothing but moveEdit writes it.
+      edit: null,
       // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
       // target -> 'none'|'claude'|'codex'|'all', set by clicking a pill and by
       // sending a message that typed a tag. UNSET is the normal state and does
@@ -2842,7 +2897,8 @@ ${bubbleShellHtml()}`;
       const cut = autoFold(splitMore(r.text));
       const mkey = target + '|' + r.ts + '|more';
       const mopen = !!D.moreOpen[mkey];
-      const body = cut.more
+      const body = isEditOf(D.edit, target, r) ? editBoxHtml(D.edit)
+        : cut.more
         ? `<div class="ctext md" data-md="${esc(mdSlot(cut.head))}"></div>` +
           `<div class="more${mopen ? ' open' : ''}" data-more="${esc(mkey)}">` +
           `<button class="more-head" data-act="more" data-key="${esc(mkey)}" type="button" aria-expanded="${mopen}">` +
@@ -5512,6 +5568,7 @@ ${bubbleShellHtml()}`;
         if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
       }
       moveMsgWindow(PAGE_TARGET, 'reset');   // a chat just opened shows its newest stretch
+      if (D.edit && D.edit.target === PAGE_TARGET) moveEdit('leave');   // …and edits nothing of the old one
       D.land = PAGE_TARGET;             // …and is read from its newest message
       D.tab = 'chat';
     }
@@ -6008,6 +6065,8 @@ ${bubbleShellHtml()}`;
     // scroll offsets are restored after.
     function render() {
       if (!D.mounted) return;
+      // an edit whose message is no longer here (deleted, another page) ends
+      if (editMode(D.edit) === 'open' && !findMsg(D.edit.target, D.edit.ts, D.edit.author)) moveEdit('leave');
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
       const pTop = D.el.pages ? D.el.pages.scrollTop : 0;
       keepTyping(() => {
@@ -6036,6 +6095,10 @@ ${bubbleShellHtml()}`;
         // of the message it lives in (same ordinals, same /tick)
         fillTasks();
         lockRestored(D.shadow);
+        // the edit box holds the draft exactly (an HTML parser drops a
+        // textarea's leading newline, so the markup alone cannot promise it)
+        const eb = editBox();
+        if (eb && editMode(D.edit) === 'open' && eb.value !== D.edit.text) eb.value = D.edit.text;
       });
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
@@ -6053,10 +6116,12 @@ ${bubbleShellHtml()}`;
 
     function harvestDrafts() {
       if (!D.mounted) return;
+      // the edit box's draft is D.edit's, not D.drafts'
+      noteEditBox();
       D.shadow.querySelectorAll('.composer').forEach(c => {
         const target = c.getAttribute('data-target');
         const ta = c.querySelector('textarea');
-        if (!target || !ta) return;
+        if (!target || !ta || target === '__edit__') return;
         // No in-flight exception is needed any more: a sent message leaves the
         // composer synchronously (queueSend) and lives in D.outbox until the
         // companion confirms it, so there is nothing here to read back.
@@ -7272,6 +7337,8 @@ ${bubbleShellHtml()}`;
       'warn-dismiss': () => setWarning(''),
       'copy': (btn) => doCopy(btn),
       'edit': (btn) => startEdit(btn),
+      'edit-save': () => { saveEdit(); },
+      'edit-cancel': () => cancelEdit(),
       'del-msg': (btn, target) => doDelete(target, btn.dataset.ts),
       'resolve': (btn, target) => doResolve(target, true),
       'reopen': (btn, target) => doResolve(target, false),
@@ -7573,6 +7640,7 @@ ${bubbleShellHtml()}`;
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
         const ta = e.target;
+        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer[data-target="__edit__"]')) noteEditBox();
         if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) {
           // a draft holds its composer open (the Send row) even after blur
           ta.closest('.composer').classList.toggle('has-draft', !!ta.value.trim());
@@ -8415,10 +8483,51 @@ ${bubbleShellHtml()}`;
       markCopied(btn, legacyCopy(f.html, f.text));
     }
 
+    // THE one function that changes D.edit (editMove refuses the illegal
+    // moves). Ending an edit also lets go of a bubble width held for it.
+    function moveEdit(move, arg) {
+      D.edit = editMove(D.edit, move, arg);
+      if (editMode(D.edit) === 'none' && D.mounted) {
+        D.shadow.querySelectorAll('.bubble[data-edit-held]').forEach(b => {
+          if (b.style.width === b.getAttribute('data-edit-held')) b.style.width = '';
+          b.removeAttribute('data-edit-held');
+        });
+      }
+      return D.edit;
+    }
+    // The editor, drawn in place of a message's words by whatever draws the
+    // message (replyHtml in the panel, bubbleCardHtml in a bubble) — so a
+    // redraw draws it again, with the draft. Its Save/Cancel are ordinary
+    // actions (ACTS 'edit-save' / 'edit-cancel').
+    function editBoxHtml(ed) {
+      return `<div class="ctext editing"><div class="composer" data-target="__edit__">
+        <textarea rows="2">${esc(ed.text)}</textarea>
+        <div class="crow"><span class="hint"></span><button class="cancel" type="button" data-act="edit-cancel">Cancel</button><button class="send" type="button" data-act="edit-save">Save</button></div></div></div>`;
+    }
+    const editBox = () => (D.mounted ? D.shadow.querySelector('.composer[data-target="__edit__"] textarea') : null);
+    // what is in the box right now, into the value — a redraw, a save and an
+    // input event all read it this way
+    function noteEditBox() {
+      const ta = editBox();
+      if (!ta || editMode(D.edit) !== 'open') return;
+      let start = null, end = null;
+      try { start = ta.selectionStart; end = ta.selectionEnd; } catch (_) { /* no selection */ }
+      moveEdit('type', { text: ta.value, start, end });
+    }
+    function focusEditBox() {
+      const ta = editBox();
+      if (!ta || editMode(D.edit) !== 'open') return;
+      try { ta.focus({ preventScroll: true }); } catch (_) { ta.focus(); }
+      try { ta.setSelectionRange(D.edit.start, D.edit.end); } catch (_) { /* no selection */ }
+    }
+
     function startEdit(btn) {
       const reply = btn.closest('.reply');
       const target = btn.dataset.target, ts = btn.dataset.ts;
-      if (!reply || reply.querySelector('textarea')) return;
+      if (!reply || !target || ts == null) return;
+      // One edit at a time: a ✎ pressed while another message is open hands
+      // the focus back to the box already open, rather than a second box.
+      if (editMode(D.edit) === 'open') { focusEditBox(); return; }
       const body = reply.querySelector('.ctext');
       // A bubble is as wide as its words (width: max-content), so swapping a
       // message for a textarea would narrow it and shift its edges under the
@@ -8426,35 +8535,36 @@ ${bubbleShellHtml()}`;
       // (A bubble the reader has sized already has a width of its own.)
       const bub = reply.closest('.bubble');
       const held = bub && !bub.style.width ? bub.getBoundingClientRect().width + 'px' : '';
-      if (held) bub.style.width = held;
+      if (held) { bub.style.width = held; bub.setAttribute('data-edit-held', held); }
       // The RAW stored text, never the rendered DOM. Messages are markdown on
       // screen now, so reading textContent back would hand the user their own
       // sentence with the syntax stripped out — and then save that as the
       // message. The record is the only source of truth for an editor.
-      const msg = findMsg(target, ts, reply.getAttribute('data-author'));
+      const author = reply.getAttribute('data-author') || '';
+      const msg = findMsg(target, ts, author);
       const old = msg && msg.text != null ? String(msg.text)
         : (body ? body.textContent : '');
-      body.innerHTML = `<div class="composer" data-target="__edit__">
-        <textarea rows="2">${esc(old)}</textarea>
-        <div class="crow"><span class="hint"></span><button class="cancel" type="button">Cancel</button><button class="send" type="button">Save</button></div></div>`;
-      const ta = body.querySelector('textarea');
-      ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-      // A BUBBLE'S CARD IS NEVER REBUILT unless what it says has changed
-      // (patchStack keys and signs every card), so render() alone would leave
-      // the editor standing after Cancel. Wiping the card's signature makes
-      // the next repaint swap it for a fresh one — the message as it is.
-      const unedit = () => {
-        if (held && bub.style.width === held) bub.style.width = '';
-        reply.removeAttribute('data-bsig'); render();
-      };
-      body.querySelector('.cancel').addEventListener('click', ev => { ev.stopPropagation(); unedit(); });
-      body.querySelector('.send').addEventListener('click', async ev => {
-        ev.stopPropagation();
-        const v = ta.value.trim();
-        if (!v) return;
-        const r = await cb('onEdit')(target, ts, v);
-        if (r && r.ok === false) note(target, r.error || 'edit failed', true); else unedit();
-      });
+      moveEdit('start', { target, ts, author, text: old });
+      render();
+      focusEditBox();
+    }
+    function cancelEdit() {
+      if (editMode(D.edit) !== 'open') return;
+      moveEdit('cancel');
+      render();
+    }
+    async function saveEdit() {
+      if (editMode(D.edit) !== 'open') return;
+      noteEditBox();
+      const ed = D.edit;
+      const v = ed.text.trim();
+      if (!v) return;
+      const r = await cb('onEdit')(ed.target, ed.ts, v);
+      if (r && r.ok === false) { note(ed.target, r.error || 'edit failed', true); return; }
+      // the box may have been cancelled, or left, while the save was on its way
+      if (!isEditOf(D.edit, ed.target, { ts: ed.ts, author: ed.author })) return;
+      moveEdit('save');
+      render();
     }
 
     // ---- checklists -------------------------------------------------------
@@ -10398,6 +10508,7 @@ ${bubbleShellHtml()}`;
         D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
         D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
         resetMsgWindows(LIBRARY_TARGET);
+        if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
         D.turnSeq = {};   // a send still in flight for the dead page can no longer claim a queue slot
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
@@ -10613,6 +10724,7 @@ ${bubbleShellHtml()}`;
       delete D.notes[LIBRARY_TARGET];
       delete D.running[LIBRARY_TARGET];
       moveMsgWindow(LIBRARY_TARGET, 'reset');
+      if (D.edit && D.edit.target === LIBRARY_TARGET) moveEdit('leave');
       renderLibrary();
     }
     function showThreads() {
@@ -10778,7 +10890,11 @@ ${bubbleShellHtml()}`;
       // …and its windows start again from the newest stretch (the library's,
       // which is not this page's, excepted); a different council chat on the
       // same page resets the page chat's
-      if (was !== (page && page.url ? String(page.url) : '')) resetMsgWindows(LIBRARY_TARGET);
+      if (was !== (page && page.url ? String(page.url) : '')) {
+        resetMsgWindows(LIBRARY_TARGET);
+        // an edit open on the page that was left goes with it
+        if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
+      }
       else if (wasSid !== ((page && page.session_id) || '')) moveMsgWindow(PAGE_TARGET, 'reset');
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
@@ -11150,7 +11266,8 @@ ${bubbleShellHtml()}`;
       const mine = !bot && sameAuthor(r.author);
       const who = agentOf(r.author);
       const text = String(r.text == null ? '' : r.text);
-      const body = text.trim()
+      const body = isEditOf(D.edit, target, r) ? editBoxHtml(D.edit)
+        : text.trim()
         ? `<div class="ctext md" data-md="${esc(mdSlot(stripMore(text)))}"></div>`
         : `<div class="ctext wordless">the passage was struck through, with no note</div>`;
       const acts = msgActsHtml(target, r, mine, mine);
@@ -11260,6 +11377,7 @@ ${bubbleShellHtml()}`;
           + '|' + D.suggest.busy + '|' + (D.suggest.note && D.suggest.note.ts === String(m.ts || '')
             ? D.suggest.note.text : '');
       const sigOf = m => String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : '') + sgSig(m)
+        + (isEditOf(D.edit, target, m) ? ' :: editing' : '')
         + (isAgentCard(m) ? ' :: ' + m.agent.status + '|' + m.agent.elapsed_s
           + (m.agent.status === 'working' ? '|' + agentStreamKey(target, m.agent.id) : '') : '');
       for (const m of top) {
@@ -12569,6 +12687,7 @@ ${bubbleShellHtml()}`;
     nestMsgs, agentStatus, isAgentCard,                     // test/collapse.test.mjs (summoned agents)
     msgWindowPlan, msgWindowMove, msgWindowMode,            // test/collapse.test.mjs (the message window)
     MSG_WINDOW, MSG_STEP, MSG_WINDOW_MODES, MSG_WINDOW_MOVES,
+    editMove, editMode, isEditOf, EDIT_MODES, EDIT_MOVES,   // test/editbox.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

@@ -5436,12 +5436,39 @@ async function selftest() {
 
   // the carve-out that matters: editing hands back the RAW markdown, never the
   // rendered sentence with its syntax stripped out
+  // (the editor is drawn by a redraw, so the reply is found afresh each time)
   const mineReply = mine.closest('.reply');
+  const mineSel = '.pane[data-pane="chat"] .reply[data-ts="' + mineReply.getAttribute('data-ts')
+    + '"][data-author="' + mineReply.getAttribute('data-author') + '"]';
   mineReply.querySelector('[data-act="edit"]').click();
-  const mta = await until(() => mineReply.querySelector('.ctext textarea'));
+  const mta = await until(() => S.querySelector(mineSel + ' .ctext textarea'));
   check('editing your own message round-trips the raw markdown, not the rendering',
     !!mta && mta.value === MINE_MD);
-  mineReply.querySelector('.ctext .cancel').click();
+  // THE EDIT BOX SURVIVES A REDRAW (2026-11-11). A bot event rebuilds the
+  // panel; the box must come back with what was typed, the caret and the
+  // focus — in this real browser, with real focus.
+  if (mta) {
+    mta.value = MINE_MD + ' and a made-up afterthought';
+    mta.setSelectionRange(5, 9);
+    mta.dispatchEvent(new Event('input', { bubbles: true }));
+    d.onEvent({ type: 'chat', url: PAGE_URL, kind: 'turn-start', agents: ['claude'] });
+    d.onEvent({ type: 'chat', url: PAGE_URL, kind: 'turn-end' });
+    await sleep(60);
+    const mta2 = S.querySelector(mineSel + ' .ctext textarea');
+    check('a redraw while editing puts the edit box back', !!mta2 && mta2 !== mta && !mta.isConnected);
+    check('…with what was typed in it', !!mta2 && mta2.value === MINE_MD + ' and a made-up afterthought');
+    check('…the caret where it was', !!mta2 && mta2.selectionStart === 5 && mta2.selectionEnd === 9);
+    check('…and the focus', !!mta2 && S.activeElement === mta2);
+    const other = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine [data-act="edit"]')]
+      .find(b => !b.closest(mineSel));
+    if (other) {
+      other.click();
+      await sleep(30);
+      check('a second ✎ opens no second box', S.querySelectorAll('.composer[data-target="__edit__"]').length === 1
+        && S.activeElement === S.querySelector(mineSel + ' .ctext textarea'));
+    }
+  }
+  S.querySelector(mineSel + ' .ctext .cancel').click();
   check('…and cancelling puts the rendering back',
     !!await until(() => {
       const el = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine .ctext.md')]
@@ -5462,11 +5489,13 @@ async function selftest() {
     [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending) .ctext.md')]
       .find(x => /Filed under/.test(x.textContent)) || null);
   const twinReply = twinned.closest('.reply');
+  const twinSel = '.pane[data-pane="chat"] .reply[data-ts="' + twinReply.getAttribute('data-ts')
+    + '"][data-author="' + twinReply.getAttribute('data-author') + '"]';
   twinReply.querySelector('[data-act="edit"]').click();
-  const twinTa = await until(() => twinReply.querySelector('.ctext textarea'));
+  const twinTa = await until(() => S.querySelector(twinSel + ' .ctext textarea'));
   check('a message sharing its timestamp with another still edits as itself',
     !!twinTa && twinTa.value === MINE_MD);
-  twinReply.querySelector('.ctext .cancel').click();
+  S.querySelector(twinSel + ' .ctext .cancel').click();
 
   // ---- a resend the companion already has ({deduped:true}) ---------------
   const DUP = 'this one gets sent twice';

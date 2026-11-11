@@ -12142,10 +12142,8 @@ landed (a turn starting or ending, a reply settling, a status, a poll).
   brief is kept in `D.artifact.brief` as it is typed. A dictation that lands
   in a box rebuilt since the tap uses the box's live caret when the box has
   the focus.
-- Not covered: the in-pane message editor (`__edit__`, drawn by `startEdit`
-  straight into the DOM) is not drawn by `render()` at all, so a redraw
-  removes it with its text; in a bubble it survives because the card is not
-  rebuilt. An input-method composition (or OS dictation) in progress when a
+- The message editor (`__edit__`) is covered since 2026-11-11 (next
+  amendment): it is drawn by `render()` from `D.edit`. An input-method composition (or OS dictation) in progress when a
   redraw lands is cut short: its text is kept as typed, the composing
   session is not.
 - Tests: `test/typingfocus.test.mjs` (happy-dom: page chat, thread reply,
@@ -12153,3 +12151,46 @@ landed (a turn starting or ending, a reply settling, a status, a poll).
   list refresh / `render`, rename box, no-steal, gone/hidden box, no scroll);
   harness `?selftest=1` checks with real layout and real focus, including a
   box scrolled out of view and the pane not moving a frame later.
+
+## Amendment (2026-11-11): editing a message survives a redraw
+
+> Editing an old message puts up an edit box; when a bot event redraws the
+> panel the box is destroyed along with what was typed.
+
+The editor used to be written into the DOM by `startEdit`, outside anything
+`render()` draws, so a redraw took it away. Now "which message is being
+edited" is ONE value, `D.edit`, with two named modes (`EDIT_MODES`): `'none'`
+(null) and `'open'` (`{target, ts, author, text, start, end}` — the
+conversation, the message's ts and author, since a ts alone is not an
+identity, and the draft with its selection). It changes only through
+`moveEdit` → the pure `editMove(value, move, arg)`, whose moves are
+`EDIT_MOVES` = start / type / save / cancel / leave. It refuses a second
+`start` while an edit is open, `type`/`save`/`cancel` with none open, and any
+unknown move; `leave` is legal from either mode.
+
+- **Drawn by whatever draws the message.** `replyHtml` (panel) and
+  `bubbleCardHtml` (bubble) draw `editBoxHtml(D.edit)` in place of the words
+  of the message `isEditOf` picks out. A bubble card's signature carries
+  "being edited" but never the draft, so typing never repaints a card.
+  `render()` sets the box's value from `D.edit.text` after painting (a
+  parser would drop a leading newline).
+- **The draft.** Every `input` in the box, and `harvestDrafts()` before every
+  rebuild, move `type` with the box's text and selection; the edit box is
+  never stored in `D.drafts`. `keepTyping` gives a focused box its focus and
+  caret back as it does every other box; an unfocused one is not given focus.
+- **One at a time.** ✎ on a message while another edit is open opens nothing
+  and hands the focus to the box already open.
+- **Ends.** Cancel (button or Esc) moves `cancel`; Save (button, ⌘↩) sends
+  through `onEdit` and moves `save` only when the companion took it — a
+  refusal keeps the box and its text and shows the error. `leave` on
+  `leaveChat` (page-chat edits), a different page or a page delete (all but a
+  library edit), a cleared library (library edits), and on any `render()`
+  where the message is no longer in the record (deleted, another page). A
+  bubble width held for the edit is let go when it ends.
+- Tests: `test/editbox.test.mjs` (the pure machine and its refusals; in
+  happy-dom: a redraw keeps text, caret and focus, an unfocused box is not
+  focused, a second ✎, Cancel, refused and accepted Save, leaving the page,
+  a deleted message, the page chat, ⌘↩); `typingfocus.test.mjs` §11; harness
+  `?selftest=1` (a redraw from bot events while editing a page-chat message
+  in a real browser: the box, its text, its caret and focus, and no second
+  box from a second ✎).

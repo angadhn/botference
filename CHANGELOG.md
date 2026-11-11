@@ -2,6 +2,7 @@
 
 ## 2026-11-11
 
+- **Discuss: editing a message no longer loses what you typed.** In the side panel, if a bot replied while you were editing one of your earlier messages, the edit box vanished and your changes with it. Now the box comes back with your text, the cursor where it was, and the cursor still in it. Only one message can be edited at a time: pressing ✎ on another one takes you back to the box already open. Leaving the chat or the page, Save and Cancel close it; a Save the companion refuses leaves it open with your text. The extension needs a reload.
 - **Discuss: comment threads no longer fold either.** A comment thread in the side panel now reads like the page chat: it shows its newest twenty or so messages, and when there are older ones, "Show earlier messages · N more" sits at the top of the thread. Pressing it shows the next twenty above, with the message you were reading kept where it was. Nothing in the middle of a thread is ever hidden, and a new reply never hides anything already on screen. "Show N earlier replies" and "Hide N earlier replies" are gone. Jumping to an older message (a checklist's ↑ source, a suggestion on the page) still opens the thread far enough to show it. The extension needs a reload.
 
 ## 2026-11-10
