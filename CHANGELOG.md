@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-11
+
+- **Council: Claude no longer has the Slack connector.** The council's Claude session used to load the `slack` connector (tools that read and post in your Slack). It is now denied by server name, like the claude.ai Google connectors, so it is gone from the session. The list of closed connectors is `CLAUDE_DENIED_CONNECTOR_SERVERS` in `core/gdoc_mcp.py`. A running chat picks this up after a council restart.
+
 ## 2026-11-10
 
 - **Discuss: a long chat reads like a messaging app.** The page chat and the library chat no longer fold their middle away behind "Show N earlier replies". They open on the newest twenty or so messages; scroll up to the top (or press "Show earlier messages" there) and the next twenty appear above, with the message you were reading kept where it was. A new reply never pushes older ones out of view, and jumping to an older message still finds it. Comment threads fold as before. The extension needs a reload.

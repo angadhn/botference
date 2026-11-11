@@ -25,7 +25,7 @@ from typing import Any, Callable, Optional
 
 import model_catalog
 from gdoc_mcp import (
-    CLAUDE_DENIED_GOOGLE_SERVERS,
+    CLAUDE_DENIED_CONNECTOR_SERVERS,
     CLAUDE_TOOL_RULES,
     claude_mcp_config,
     claude_sign_in_deny_rules,
@@ -688,10 +688,10 @@ def claude_plan_settings_for_write_roots(write_roots: list[str | Path]) -> dict:
                 deny_rules.append(f"{tool}(//{root_abs}/.git/**)")
 
     # The claude.ai Google connectors (Docs, Drive, Gmail, Calendar, Sheets,
-    # Slides). They load in the bot's session anyway (every claude.ai
-    # connector does), so deny them outright rather than rely on their
-    # absence from the allow list. The poster is the one path to a Doc.
-    deny_rules.extend(CLAUDE_DENIED_GOOGLE_SERVERS)
+    # Slides) and the Slack connector. They load in the bot's session anyway,
+    # so deny them outright rather than rely on their absence from the allow
+    # list. The poster is the one path to a Doc.
+    deny_rules.extend(CLAUDE_DENIED_CONNECTOR_SERVERS)
     # And the bot may not read the poster's saved Google sign-in: with it, a
     # shell command could call Google directly, round the poster's lock.
     deny_rules.extend(claude_sign_in_deny_rules())

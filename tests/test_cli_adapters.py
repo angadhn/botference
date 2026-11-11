@@ -1496,11 +1496,11 @@ class TestCommandConstruction:
     def test_no_deny_rules_by_default(self, monkeypatch):
         monkeypatch.delenv("BOTFERENCE_PLAN_DENY_BASH", raising=False)
         settings = claude_plan_settings_for_work_dir("/repo", "/repo/botference")
-        # only the standing Google denials (the claude.ai connectors and the
-        # poster's saved sign-in); no command denials
-        from gdoc_mcp import claude_sign_in_deny_rules
+        # only the standing denials (the closed connectors and the poster's
+        # saved sign-in); no command denials
+        from gdoc_mcp import CLAUDE_DENIED_CONNECTOR_SERVERS, claude_sign_in_deny_rules
         deny = settings["permissions"]["deny"]
-        assert not [r for r in deny if not r.startswith("mcp__claude_ai_")
+        assert not [r for r in deny if r not in CLAUDE_DENIED_CONNECTOR_SERVERS
                     and r not in claude_sign_in_deny_rules()]
 
     def test_denied_commands_become_deny_rules(self, monkeypatch):

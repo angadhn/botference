@@ -39,7 +39,7 @@ from cli_adapters import (  # noqa: E402
 from gdoc_client import DocsClient, GdocError, Problem  # noqa: E402
 from gdoc_guard import Verdict, judge, seal  # noqa: E402
 from gdoc_mcp import (  # noqa: E402
-    CLAUDE_DENIED_GOOGLE_SERVERS,
+    CLAUDE_DENIED_CONNECTOR_SERVERS,
     CLAUDE_TOOL_RULES,
     READ_TOOL,
     SERVER_NAME,
@@ -616,7 +616,12 @@ class TestClaudeLaunch:
         for server in ("Google_Docs", "Google_Drive", "Gmail", "Google_Calendar",
                        "Google_Sheets", "Google_Slides"):
             assert f"mcp__claude_ai_{server}" in deny
-        assert set(CLAUDE_DENIED_GOOGLE_SERVERS) <= set(deny)
+        assert set(CLAUDE_DENIED_CONNECTOR_SERVERS) <= set(deny)
+
+    def test_slack_connector_denied_by_server_name(self):
+        deny = self._settings()["permissions"]["deny"]
+        assert "mcp__slack" in deny
+        assert "mcp__slack" in CLAUDE_DENIED_CONNECTOR_SERVERS
 
     def test_bot_cannot_read_the_saved_sign_in(self):
         deny = self._settings()["permissions"]["deny"]
@@ -658,7 +663,7 @@ class TestClaudeLaunch:
             assert self._mcp(cmd)["args"][-2:] == ["--bot", "claude"]
             settings = json.loads(cmd[cmd.index("--settings") + 1])
             assert set(CLAUDE_TOOL_RULES) <= set(settings["permissions"]["allow"])
-            assert set(CLAUDE_DENIED_GOOGLE_SERVERS) <= set(settings["permissions"]["deny"])
+            assert set(CLAUDE_DENIED_CONNECTOR_SERVERS) <= set(settings["permissions"]["deny"])
             assert set(claude_sign_in_deny_rules()) <= set(settings["permissions"]["deny"])
 
 

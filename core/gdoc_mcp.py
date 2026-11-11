@@ -58,17 +58,20 @@ SCRIPT = os.path.abspath(__file__)
 #: Claude Code's names for the poster's tools (allow list).
 CLAUDE_TOOL_RULES = tuple(f"mcp__{SERVER_NAME}__{tool}" for tool in ALL_TOOLS)
 
-#: The claude.ai Google connectors, denied by server name (a rule naming a
-#: server covers all its tools). Every claude.ai connector loads in the bot's
-#: session whether or not anything allows it. The Docs connector is closed
-#: too: the poster is the one path to a Doc.
-CLAUDE_DENIED_GOOGLE_SERVERS = (
+#: Connectors closed to the council's Claude, denied by server name (a rule
+#: naming a server covers all its tools). They load in the bot's session
+#: whether or not anything allows them, so they are denied outright. The
+#: six claude.ai Google connectors (the Docs one too: the poster is the one
+#: path to a Doc), and the Slack connector (`slack`), which can post in the
+#: owner's Slack.
+CLAUDE_DENIED_CONNECTOR_SERVERS = (
     "mcp__claude_ai_Google_Docs",
     "mcp__claude_ai_Google_Drive",
     "mcp__claude_ai_Gmail",
     "mcp__claude_ai_Google_Calendar",
     "mcp__claude_ai_Google_Sheets",
     "mcp__claude_ai_Google_Slides",
+    "mcp__slack",
 )
 
 
