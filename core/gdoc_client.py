@@ -69,6 +69,9 @@ LOGIN_TIMEOUT = 300
 #: Read output longer than this is cut; the bot asks for the rest with
 #: from_index.
 READ_LIMIT = 60_000
+#: A read of one comment thread (read_doc with `thread`) is at most this
+#: long: the thread in full, then as much of the text around it as fits.
+THREAD_READ_LIMIT = 20_000
 
 
 class Problem(Enum):
@@ -151,6 +154,9 @@ class Problem(Enum):
         "Gmail: that {detail} is from a sender botference keeps hidden "
         "(sign-in and account-recovery mail for the agent account itself). "
         "It is not shown.")
+    NO_SUCH_THREAD = (
+        "Google Docs: this Doc has no comment thread with the id {detail}. "
+        "Read the Doc without 'thread' to see its threads and their ids.")
     MAIL_BAD_REQUEST = "Gmail: {detail}"
     MAIL_REFUSED = "Gmail: Google refused the request ({detail}).{hint}"
     ATTACHMENT_TOO_LARGE = (
@@ -573,11 +579,13 @@ def _element_text(pe: dict) -> str:
     return "" * max(0, end - start)  # Google's stand-in for an object
 
 
-def _post(post: dict) -> str:
+def _post(post: dict, limit: int = 1000, when: bool = False) -> str:
     who = (post.get("author") or {}).get("displayName") or "someone"
+    if when and post.get("createTime"):
+        who = f"{who} ({post['createTime']})"
     if post.get("deleted"):
         return f"{who}: (deleted)"
-    return f"{who}: {_one_line(post.get('content', ''), 1000)}"
+    return f"{who}: {_one_line(post.get('content', ''), limit)}"
 
 
 def _tabs(tabs: list) -> list[dict]:
@@ -586,6 +594,123 @@ def _tabs(tabs: list) -> list[dict]:
         out.append(tab)
         out.extend(_tabs(tab.get("childTabs", [])))
     return out
+
+
+def _all_tabs(doc: dict) -> list[dict]:
+    tabs = _tabs(doc.get("tabs", []))
+    if not tabs and "body" in doc:  # read without tabs
+        tabs = [{"tabProperties": {"tabId": "", "title": ""},
+                 "documentTab": {"body": doc["body"]}}]
+    return tabs
+
+
+def _paragraph_text(el: dict, tab_id: str, suggestions: dict[str, list[str]]) -> str:
+    """One paragraph as the bot sees it, suggestions marked inline; each
+    suggestion's place is noted in `suggestions`."""
+    parts = []
+    for pe in el["paragraph"].get("elements", []):
+        text = _element_text(pe).replace("\n", "")  # paragraph end
+        run = pe.get("textRun") or pe.get("person") or {}
+        ins, dels = run.get("suggestedInsertionIds"), run.get("suggestedDeletionIds")
+        where = f"{tab_id or 'tab'} {pe.get('startIndex')}-{pe.get('endIndex')}"
+        if ins:
+            for sid in ins:
+                suggestions.setdefault(sid, []).append(f"insert at {where}: {_one_line(text, 200)!r}")
+            text = "{+" + text + "+}[" + ",".join(ins) + "]"
+        elif dels:
+            for sid in dels:
+                suggestions.setdefault(sid, []).append(f"delete {where}: {_one_line(text, 200)!r}")
+            text = "{-" + text + "-}[" + ",".join(dels) + "]"
+        parts.append(text)
+    return "".join(parts)
+
+
+def _anchors(tabs: list[dict]) -> dict[str, list]:
+    anchors: dict[str, list] = {}
+    for tab in tabs:
+        tab_id = tab.get("tabProperties", {}).get("tabId", "")
+        dtab = tab.get("documentTab") or {}
+        for anchor_id, anchor in (dtab.get("commentAnchors") or {}).items():
+            anchors[anchor_id] = [(tab_id, r.get("startIndex"), r.get("endIndex"))
+                                  for r in anchor.get("ranges", [])]
+    return anchors
+
+
+def _comment_lines(c: dict, anchors: dict, limit: int = 1000,
+                   when: bool = False) -> list[str]:
+    cid = c.get("commentId", "")
+    where = "; ".join(f"{t or 'tab'} {s}-{e}" for t, s, e in anchors.get(c.get("anchorId", ""), []))
+    quote = _one_line(c.get("plainTextQuote", ""), 200)
+    lines = [f"- {cid} [{c.get('status', 'OPEN')}] on {where or 'the whole Doc'}"
+             + (f" quoting {quote!r}" if quote else ""),
+             f"    {_post(c.get('headPost') or {}, limit, when)}"]
+    for reply in c.get("replies", []):
+        lines.append(f"    reply {_post(reply, limit, when)}")
+    return lines
+
+
+_HEADER_NOTE = (
+    "positions are UTF-16 indexes (as Google counts): [start-end) per "
+    "paragraph. Suggested insertions are shown as {+text+}, suggested "
+    "deletions as {-text-}, each tagged with its suggestion id.")
+
+
+def summarise_thread(doc: dict, thread_id: str,
+                     limit: int = THREAD_READ_LIMIT) -> str:
+    """One comment thread, small: title, revision id, the thread in full
+    (who, when, text) and the paragraphs its anchor touches plus one before
+    and one after, with positions. The text around it is cut first to stay
+    within `limit`; the thread itself never is."""
+    comment = next((c for c in doc.get("comments") or []
+                    if c.get("commentId") == thread_id), None)
+    if comment is None:
+        raise GdocError(Problem.NO_SUCH_THREAD, detail=_one_line(thread_id, 80))
+    tabs = _all_tabs(doc)
+    anchors = _anchors(tabs)
+    lines = [
+        f"title: {doc.get('title', '')}",
+        f"revision id: {doc.get('revisionId', '')} (send it as "
+        "writeControl.requiredRevisionId)",
+        _HEADER_NOTE,
+        "\n== the comment thread (reply with addCommentReply and this id)",
+        *_comment_lines(comment, anchors, limit=2048, when=True),
+    ]
+    ranges = anchors.get(comment.get("anchorId", ""), [])
+    around: list[str] = []
+    for tab in tabs:
+        tab_id = tab.get("tabProperties", {}).get("tabId", "")
+        mine = [(s, e) for t, s, e in ranges
+                if t == tab_id and isinstance(s, int) and isinstance(e, int)]
+        if not mine:
+            continue
+        paras = []
+        for el in _paragraphs(((tab.get("documentTab") or {}).get("body") or {}).get("content", [])):
+            text = _paragraph_text(el, tab_id, {})
+            if text.strip():
+                paras.append((el.get("startIndex", 0), el.get("endIndex", 0), text))
+        hit = [i for i, (ps, pe, _) in enumerate(paras)
+               if any(ps < e and pe > s for s, e in mine)]
+        if not hit:
+            continue
+        around.append(f"\n== the text around it (tab {tab_id or '(only)'})")
+        for ps, pe, text in paras[max(0, hit[0] - 1):hit[-1] + 2]:
+            around.append(f"[{ps}-{pe}) {text}")
+        break
+    if not around:
+        lines.append("\n(the text this thread is on cannot be located; read the "
+                     "Doc without 'thread' to see all of it)")
+        return "\n".join(lines)
+    note = ("\n(the text around the thread was cut to keep this short; read "
+            "the Doc without 'thread' for more)")
+    size = sum(len(x) + 1 for x in lines) + len(note) + 1
+    for i, line in enumerate(around):
+        if size + len(line) + 1 > limit:
+            lines.extend(around[:i])
+            lines.append(note)
+            return "\n".join(lines)
+        size += len(line) + 1
+    lines.extend(around)
+    return "\n".join(lines)
 
 
 def summarise(doc: dict, from_tab: str = "", from_index: int = 0,
@@ -600,16 +725,11 @@ def summarise(doc: dict, from_tab: str = "", from_index: int = 0,
         f"title: {doc.get('title', '')}",
         f"revision id: {doc.get('revisionId', '')} (send it as "
         "writeControl.requiredRevisionId)",
-        "positions are UTF-16 indexes (as Google counts): [start-end) per "
-        "paragraph. Suggested insertions are shown as {+text+}, suggested "
-        "deletions as {-text-}, each tagged with its suggestion id.",
+        _HEADER_NOTE,
     ]
-    anchors: dict[str, list] = {}
     suggestions: dict[str, list[str]] = {}
-    tabs = _tabs(doc.get("tabs", []))
-    if not tabs and "body" in doc:  # read without tabs
-        tabs = [{"tabProperties": {"tabId": "", "title": ""},
-                 "documentTab": {"body": doc["body"]}}]
+    tabs = _all_tabs(doc)
+    anchors = _anchors(tabs)
     cut_at = None
     size = sum(len(x) + 1 for x in lines)
     tab_ids = [t.get("tabProperties", {}).get("tabId", "") for t in tabs]
@@ -621,27 +741,9 @@ def summarise(doc: dict, from_tab: str = "", from_index: int = 0,
         skip_to = from_index if number == first else 0
         lines.append(f"\n== tab {tab_id or '(only)'}: {props.get('title', '')}")
         size += len(lines[-1]) + 1
-        for anchor_id, anchor in (dtab.get("commentAnchors") or {}).items():
-            anchors[anchor_id] = [(tab_id, r.get("startIndex"), r.get("endIndex"))
-                                  for r in anchor.get("ranges", [])]
         for el in _paragraphs((dtab.get("body") or {}).get("content", [])):
             start, end = el.get("startIndex", 0), el.get("endIndex", 0)
-            parts = []
-            for pe in el["paragraph"].get("elements", []):
-                text = _element_text(pe).replace("\n", "")  # paragraph end
-                run = pe.get("textRun") or pe.get("person") or {}
-                ins, dels = run.get("suggestedInsertionIds"), run.get("suggestedDeletionIds")
-                where = f"{tab_id or 'tab'} {pe.get('startIndex')}-{pe.get('endIndex')}"
-                if ins:
-                    for sid in ins:
-                        suggestions.setdefault(sid, []).append(f"insert at {where}: {_one_line(text, 200)!r}")
-                    text = "{+" + text + "+}[" + ",".join(ins) + "]"
-                elif dels:
-                    for sid in dels:
-                        suggestions.setdefault(sid, []).append(f"delete {where}: {_one_line(text, 200)!r}")
-                    text = "{-" + text + "-}[" + ",".join(dels) + "]"
-                parts.append(text)
-            text = "".join(parts)
+            text = _paragraph_text(el, tab_id, suggestions)
             if number < first or end <= skip_to or not text.strip():
                 continue
             line = f"[{start}-{end}) {text}"
@@ -680,14 +782,7 @@ def summarise(doc: dict, from_tab: str = "", from_index: int = 0,
     lines.append("\n== comments (reply with addCommentReply and the comment id)")
     comments = doc.get("comments") or []
     for c in comments:
-        cid = c.get("commentId", "")
-        where = "; ".join(f"{t or 'tab'} {s}-{e}" for t, s, e in anchors.get(c.get("anchorId", ""), []))
-        quote = _one_line(c.get("plainTextQuote", ""), 200)
-        lines.append(f"- {cid} [{c.get('status', 'OPEN')}] on {where or 'the whole Doc'}"
-                     + (f" quoting {quote!r}" if quote else ""))
-        lines.append(f"    {_post(c.get('headPost') or {})}")
-        for reply in c.get("replies", []):
-            lines.append(f"    reply {_post(reply)}")
+        lines.extend(_comment_lines(c, anchors))
     if not comments:
         lines.append("(none)")
     return "\n".join(lines)

@@ -58,7 +58,9 @@ offers the bot exactly two tools (the other three read mail, see
 - `read_doc`: the Doc's title, revision id, its text with positions (the
   numbers Google uses to say where in the text something is), tabs, pending
   suggestions and comment threads. A long Doc is cut, and the cut says
-  where to read on from.
+  where to read on from. With a `thread` (a comment thread id) it returns
+  only that thread in full and the paragraphs it is on, one either side,
+  with positions: at most 20,000 characters, the nearby text cut first.
 - `write_doc`: one `documents.batchUpdate` (Google's "make these changes"
   call): a list of requests plus a `writeControl` (how Google should apply
   them).
