@@ -400,6 +400,29 @@ class TestSummonInChat:
         assert "no such model" in cards[-1][1]
         assert "has failed" in claude.resume_calls[0]
 
+    async def test_esc_mid_build_leaves_a_cancelled_card_not_working(self, tmp_path):
+        class Hang(MockAdapter):
+            async def send(self, prompt):
+                await asyncio.Event().wait()
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path, summoner_reply="summon: build it", builder=Hang(),
+        )
+        turn = asyncio.create_task(c.handle_input("@claude go", ui))
+        for _ in range(200):
+            if any(e[2]["card"] == "report" for e in ui.agent_entries):
+                break
+            await asyncio.sleep(0.01)
+        turn.cancel()  # what Esc does to the turn
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        cards = [e for e in ui.agent_entries if e[2]["card"] == "report"]
+        assert [e[2]["status"] for e in cards] == ["working", "cancelled"]
+        assert cards[0][2]["id"] == cards[1][2]["id"]
+        # a reload draws the saved card: it says cancelled too
+        saved = [r for r in c._room_history if r.meta]
+        assert len(saved) == 1 and saved[0].meta["status"] == "cancelled"
+        assert any("cancelled by the user" in e.text for e in c.transcript.entries)
+
     async def test_codex_can_summon_too(self, tmp_path):
         builder = MockAdapter([_ok("built by opus")])
         c, claude, codex, _ = _make_botference(

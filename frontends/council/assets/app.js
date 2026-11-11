@@ -1950,14 +1950,49 @@
     const t = fmtClock(meta.elapsed_s);
     if (st === 'done') return `done in ${t}`;
     if (st === 'timeout') return `timed out after ${t}`;
+    if (st === 'cancelled') return `cancelled after ${t}`;
     return `failed after ${t}`;
+  }
+  // A build agent's card is in one of AGENT_CARD_STATUSES, kept in
+  // card.dataset.status and moved only by setAgentCardStatus:
+  //   working   — the agent is building (the clock runs);
+  //   done, failed, timeout — it reported;
+  //   cancelled — it was stopped (Esc) before it reported.
+  // A card moves from working to any end, or repaints where it is; it never
+  // goes from one end to another, nor back to working (a late or replayed
+  // "working" entry cannot revive a finished card).
+  const AGENT_CARD_STATUSES = ['working', 'done', 'failed', 'timeout', 'cancelled'];
+  function setAgentCardStatus(card, to, elapsedS) {
+    const from = card.dataset.status || '';
+    if (!AGENT_CARD_STATUSES.includes(to)) return false;
+    if (from && from !== 'working' && from !== to) return false;
+    card.dataset.status = to;
+    card.classList.toggle('working', to === 'working');
+    if (to !== 'working') card.dataset.elapsed = String(Number(elapsedS) || 0);
+    const el = card.querySelector('.agent-status');
+    if (el) {
+      el.className = `agent-status ${to}`;
+      el.textContent = agentStatusText({ status: to, elapsed_s: card.dataset.elapsed },
+        Number(card.dataset.start) || 0);
+    }
+    if (to !== 'working') { const act = card.querySelector('.agent-act'); if (act) act.remove(); }
+    return true;
+  }
+  // a turn is over: a card still "working" in it can only have been stopped
+  // (its end never came — an Esc on a controller that did not report it)
+  function endWorkingAgentCards() {
+    for (const card of container().querySelectorAll('.msg.agent[data-status="working"]')) {
+      const start = Number(card.dataset.start) || Date.now();
+      setAgentCardStatus(card, 'cancelled', (Date.now() - start) / 1000);
+      card.classList.remove('streaming');
+      endAgentStreams(card);
+    }
   }
   function paintAgentHead(card, meta) {
     const st = String(meta.status || 'working');
-    card.classList.toggle('working', st === 'working');
-    card.dataset.status = st;
+    if (!setAgentCardStatus(card, st, meta.elapsed_s)) return false;
     const head = card.querySelector('.agent-head');
-    if (!head) return;
+    if (!head) return true;
     const start = Number(card.dataset.start) || 0;
     head.innerHTML =
       '<span class="agent-arrow" aria-hidden="true">↳</span>' +
@@ -1973,6 +2008,7 @@
       brief.textContent = b ? `brief: ${b}` : '';
       brief.title = b;
     }
+    return true;
   }
   // the live clock on every working card; stops itself when none is working
   function tickAgentClocks() {
@@ -2035,17 +2071,17 @@
       return;
     }
     const wasPinned = pinned();
+    // a finished card refuses to be painted back to working, or to another end
+    if (!paintAgentHead(card, meta)) return;
     if (String(meta.status || 'working') === 'working') {
       // the working card: the header says it all, the body waits for the stream
       card.classList.add('streaming');
-      paintAgentHead(card, meta);
       startAgentClocks();
     } else {
       // the report replaces whatever streamed in
       endAgentStreams(card);
       card.classList.remove('streaming');
       paint(card, ev.text);
-      paintAgentHead(card, meta);
       tickAgentClocks();
     }
     if (!replayBuffer) follow(wasPinned);
@@ -3775,6 +3811,7 @@
         setBusy(false);
         settleCard();
         freezeLanes();
+        endWorkingAgentCards();
         state.streams = {};
         for (const el of els.transcript.querySelectorAll('.msg.streaming')) el.classList.remove('streaming');
         break;

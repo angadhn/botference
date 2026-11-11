@@ -279,6 +279,7 @@ describe("summoned agent cards", () => {
     assert.equal(formatAgentStatus("done", 95), "done in 1:35");
     assert.equal(formatAgentStatus("failed", 7), "failed after 0:07");
     assert.equal(formatAgentStatus("timeout", 600), "timed out after 10:00");
+    assert.equal(formatAgentStatus("cancelled", 42), "cancelled after 0:42");
     assert.equal(agentToolsHeaderLine("Explored\n├ Read a\n└ Edit b"), "↳ tools: 2 calls");
     assert.equal(agentToolsHeaderLine("Explored\n└ Read a"), "↳ tools: 1 call");
   });

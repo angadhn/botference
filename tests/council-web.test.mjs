@@ -2068,6 +2068,37 @@ test('subagent lane: a turn still running at ready freezes its row to done (neve
 
 // -------------------------------------------------- UI: chat id in the URL
 
+test('build card: Esc ends it as "cancelled", live and after a reload; a finished card is never revived (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const meta = { id: 's1:agent:1', card: 'report', summoned_by: 'claude', label: 'Claude Opus 5.5 (high)', status: 'working', elapsed_s: 0 };
+  const status = () => doc.querySelector('.msg.agent .agent-status').textContent;
+  C.handle({ type: 'room', speaker: 'claude', text: 'summoning', stream_id: 'x:claude:1' });
+  C.handle({ type: 'room', speaker: 'agent', text: 'building…', stream_id: 's1:agent:1:card', agent: meta });
+  assert.match(status(), /^working…/);
+  // Esc: the controller reports the card as cancelled
+  C.handle({ type: 'room', speaker: 'agent', text: 'Cancelled before it finished.', stream_id: 's1:agent:1:card', agent: { ...meta, status: 'cancelled', elapsed_s: 42 } });
+  C.handle({ type: 'ready' });
+  assert.equal(status(), 'cancelled after 0:42');
+  assert.equal(doc.querySelector('.msg.agent').dataset.status, 'cancelled');
+  // a late "working" entry cannot bring it back
+  C.handle({ type: 'room', speaker: 'agent', text: 'building…', stream_id: 's1:agent:1:card', agent: meta });
+  assert.equal(status(), 'cancelled after 0:42');
+  // a saved chat from before this fix: restored "working" with no end, then
+  // the turn's ready — the card can only have been stopped
+  C.handle({ type: 'clear_panes' });
+  C.handle({ type: 'restore', entries: [
+    { speaker: 'claude', text: 'summoning' },
+    { speaker: 'agent', text: 'building…', agent: { ...meta, id: 's1:agent:2', started_at: Date.now() / 1000 - 65 } },
+  ] });
+  assert.match(status(), /^working…/);
+  C.handle({ type: 'ready' });
+  assert.match(status(), /^cancelled after 1:0[45]$/);
+  assert.ok(!doc.querySelector('.msg.agent.working'), 'no clock left running');
+});
+
 test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link restores it; unknown ids fall back',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, C, wsUrls } = await mkHarness(t);

@@ -4188,6 +4188,20 @@ class Botference:
         except asyncio.TimeoutError:
             status = "timeout"
         except asyncio.CancelledError:
+            # Esc: the card must not say "working…" for ever (live or after a
+            # reload) — it says it was cancelled, and so does the record
+            elapsed = int(time.monotonic() - started)
+            self._add_room_entry(
+                ui, "agent", "Cancelled before it finished.",
+                stream_id=f"{agent_id}:card",
+                agent={**meta, "status": "cancelled", "elapsed_s": elapsed},
+            )
+            self.transcript.add(
+                "agent",
+                f"[Build agent {label}, summoned by {summoner.capitalize()}, "
+                f"cancelled by the user after {elapsed}s.]",
+            )
+            self._persist_session()
             raise
         except Exception as e:  # the agent failing is a report, not a crash
             status = "failed"

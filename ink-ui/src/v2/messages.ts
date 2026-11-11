@@ -233,7 +233,7 @@ export interface AgentMeta {
   effort?: string;
   label?: string;
   brief?: string;
-  status?: string; // "working" | "done" | "failed" | "timeout"
+  status?: string; // "working" | "done" | "failed" | "timeout" | "cancelled"
   elapsed_s?: number;
 }
 
@@ -282,6 +282,7 @@ export function formatAgentStatus(status: string | undefined, elapsedS: number |
     case "done": return `done in ${elapsed}`;
     case "failed": return `failed after ${elapsed}`;
     case "timeout": return `timed out after ${elapsed}`;
+    case "cancelled": return `cancelled after ${elapsed}`;
     default: return "working…";
   }
 }
