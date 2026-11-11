@@ -1865,6 +1865,11 @@ class Botference:
         # (core/summon.py); reset with _gemini_asks.
         self._summons: dict[str, int] = {}
         self._summon_seq: int = 0
+        # Write-access questions waiting to be put to the reader, in the order
+        # the bots asked (two bots can ask at once in /parallel). The head is
+        # the one on screen; each of the others waits for its own ticket.
+        # Only _ask_write_permission adds to it or takes from it.
+        self._write_asks: list[asyncio.Future] = []
         # The running build thread, if any (see BuildThread). A thread
         # becomes one when a bot's footer says "build": "building".
         self._build: Optional[BuildThread] = None
@@ -4188,6 +4193,20 @@ class Botference:
         except asyncio.TimeoutError:
             status = "timeout"
         except asyncio.CancelledError:
+            # Esc: the card must not say "working…" for ever (live or after a
+            # reload) — it says it was cancelled, and so does the record
+            elapsed = int(time.monotonic() - started)
+            self._add_room_entry(
+                ui, "agent", "Cancelled before it finished.",
+                stream_id=f"{agent_id}:card",
+                agent={**meta, "status": "cancelled", "elapsed_s": elapsed},
+            )
+            self.transcript.add(
+                "agent",
+                f"[Build agent {label}, summoned by {summoner.capitalize()}, "
+                f"cancelled by the user after {elapsed}s.]",
+            )
+            self._persist_session()
             raise
         except Exception as e:  # the agent failing is a report, not a crash
             status = "failed"
@@ -7406,19 +7425,11 @@ class Botference:
             )
 
         rel_path = self._relative_project_path(resolved)
-        if self._is_write_root_allowed(resolved):
+        answer = await self._ask_write_permission(model, resolved, rel_path, reason, ui)
+        if answer is None:
             return (
                 f"Write access to {rel_path} is already available. Continue with the pending task."
             )
-
-        answer = await ui.request_write_permission(
-            WritePermissionRequest(
-                request_id=str(uuid.uuid4()),
-                model=model,
-                path=rel_path,
-                reason=reason,
-            )
-        )
         if answer == "always" or answer is True or answer == "once":
             # the base roots before this grant: what a new project.json must
             # keep (see add_project_write_root)
@@ -7455,6 +7466,39 @@ class Botference:
             f"Write access to {rel_path} was denied. Continue without editing "
             "outside the current writable roots, and explain any remaining limitation."
         )
+
+    async def _ask_write_permission(
+        self, model: str, resolved: Path, rel_path: str, reason: str, ui: UIPort,
+    ) -> "bool | str | None":
+        """Put one write-access question to the reader, in turn.
+
+        Questions wait in self._write_asks in the order they were asked, and
+        only the head is ever on screen: a second bot asking while the first
+        question is open waits behind it instead of losing its turn. When its
+        turn comes the grant is checked again — an answer to the first (say,
+        "Allow always" on the same folder) may already cover it, and then
+        nothing is asked. Returns None for "already allowed", else the answer.
+        """
+        ticket: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._write_asks.append(ticket)
+        try:
+            if self._write_asks[0] is not ticket:
+                await ticket  # set when the question ahead of this one is done
+            if self._is_write_root_allowed(resolved):
+                return None
+            return await ui.request_write_permission(
+                WritePermissionRequest(
+                    request_id=str(uuid.uuid4()),
+                    model=model,
+                    path=rel_path,
+                    reason=reason,
+                )
+            )
+        finally:
+            was_head = bool(self._write_asks) and self._write_asks[0] is ticket
+            self._write_asks.remove(ticket)
+            if was_head and self._write_asks and not self._write_asks[0].done():
+                self._write_asks[0].set_result(None)
 
     def _update_pct(self, model: str, resp: AdapterResponse,
                     ui: Optional[UIPort] = None) -> None:
@@ -7806,6 +7850,9 @@ class Botference:
         "_model_notice_mode", "_model_notice_text", "_quit_requested",
         "_restoring_session", "_stream_seq", "_active_steer_model",
         "_last_start_error", "_auto_title_inflight",
+        # questions in flight belong to running turns, which a new chat
+        # never interrupts (turns are queued); each one removes its own entry
+        "_write_asks",
         # keyed by chat id already, so it cannot leak into another chat
         "_video_auto_failed",
     })

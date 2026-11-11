@@ -295,7 +295,7 @@ function publishProjects(ev, source) {
   // a fresh bridge's empty startup placeholder (emitted before its first
   // 'ready', ahead of panel hydration) must not wipe a populated sidebar in
   // every tab; post-ready empty snapshots are real (workspace emptied out)
-  if (latestProjects && emptySnapshot(ev) && source && !source.readySeen) return;
+  if (latestProjects && emptySnapshot(ev) && source && !source.startedUp()) return;
   latestProjects = ev;
   latestProjectsFrom = source ? source.id : null;
   for (const b of bridges.values()) b.broadcast(remarkProjects(ev, b, b === source), false);
@@ -306,11 +306,24 @@ const helloEvent = b => ({
   bridge: !!(b && b.available),
   bridge_id: b ? b.id : null,
   chat: b ? (b.sid || b.claimedSid) : null,
-  resuming: !!(b && b.resuming),
+  resuming: !!(b && b.opening()),
   // how often the server speaks at the least: the page treats a stream silent
   // for well past this as dead (a sleeping phone's socket) and reopens it
   heartbeat_ms: SSE_HEARTBEAT_MS,
 });
+
+// A bridge process is in one of BRIDGE_PHASES, kept in this.phase and moved
+// only by setPhase, which refuses a move not in BRIDGE_MOVES:
+//   starting — a new process with no saved chat to open: what it says while
+//              starting up IS its chat, so it is shown;
+//   opening  — a new process told to open a saved chat (the spawn-time
+//              /resume): what it says while starting up belongs to a
+//              throwaway chat, so it is held back — never shown, never kept
+//              (it used to flash on screen before the saved chat was drawn);
+//   resuming — start-up is over and the saved chat is being drawn;
+//   live     — the chat is open and answering.
+const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'live'];
+const BRIDGE_MOVES = new Set(['starting>live', 'opening>resuming', 'resuming>live']);
 
 export class Bridge {
   constructor(claimedSid = null) {
@@ -325,9 +338,8 @@ export class Bridge {
     // bridge's own 'projects' events (the session flagged active)
     this.sid = null;
     this.claimedSid = claimedSid;
-    this.resuming = !!claimedSid;
+    this.phase = claimedSid ? 'opening' : 'starting';
     this.busy = false;             // between an input send and the next ready
-    this.readySeen = false;        // the startup ready has arrived
     this.networkProject = '';
     this.lastUsed = Date.now();
     // completion_context is pinned outside history: the bridge emits it once
@@ -338,8 +350,56 @@ export class Bridge {
     this.history = [];
     this.clients = new Set();     // SSE responses attached to this chat
     this.wsClients = new Set();   // WebSocket connections (primary transport)
+    // messages the reader sent while a saved chat is still being opened: a
+    // message echoed before the /resume clears the screen would vanish, so
+    // they wait (in order) and go through the moment the chat is live
+    this.held = [];
+    // one line said in this chat once it is live (see retireIdleBridges)
+    this.notice = '';
+  }
+  // a tab's stream belongs to exactly one bridge at a time; its close handler
+  // asks the stream which, so a stream moved to another bridge is let go there
+  attach(sock, kind) {
+    (kind === 'ws' ? this.wsClients : this.clients).add(sock);
+    sock.councilBridge = this;
+  }
+  detach(sock) {
+    this.clients.delete(sock);
+    this.wsClients.delete(sock);
+    this.lastUsed = Date.now();
+  }
+  // every stream attached to `old` (a retired bridge) now follows this one
+  adopt(old, ev) {
+    const json = JSON.stringify(ev);
+    for (const res of old.clients) { this.attach(res, 'sse'); res.write(`data: ${json}\n\n`); }
+    for (const ws of old.wsClients) { this.attach(ws, 'ws'); ws.send(json); }
+    old.clients.clear();
+    old.wsClients.clear();
+  }
+  // a message from the reader: shown at once, then handed to the bots
+  deliver(text, attachments) {
+    if (this.opening()) { this.held.push({ text, attachments }); return; }
+    // echo before send: the transcript shows the user's words immediately
+    // (and after a reload — the bridge does not echo input back); echoed
+    // attachments carry the display URL for inline thumbnails
+    this.broadcast({
+      type: 'user_echo', text, ts: new Date().toISOString(),
+      attachments: attachments.map(a => ({ ...a, url: uploadUrl(a.path) })),
+    });
+    // the bridge gets exactly the Ink schema — {id, path, type} — no name
+    this.send({ type: 'input', text, attachments: attachments.map(({ id, path: p, type }) => ({ id, path: p, type })) });
   }
   subscriberCount() { return this.clients.size + this.wsClients.size; }
+  setPhase(to) {
+    if (!BRIDGE_PHASES.includes(to) || !BRIDGE_MOVES.has(this.phase + '>' + to)) return false;
+    this.phase = to;
+    if (to === 'live') this.claimedSid = null;
+    return true;
+  }
+  // still bringing a saved chat up: a tab attaching now builds it offscreen
+  opening() { return this.phase === 'opening' || this.phase === 'resuming'; }
+  // the process's own start-up is over (its first 'ready' has come)
+  startedUp() { return this.phase === 'resuming' || this.phase === 'live'; }
   pushHistory(ev) {
     const history = this.history;
     if (ev.type === 'stream' && ev.kind === 'text_delta') {
@@ -426,8 +486,20 @@ export class Bridge {
       if (this.available) this.disconnect({ reason: 'bridge_stream_closed' });
     });
   }
+  // the process is gone while messages still wait for the chat to open:
+  // say so, and hand the words back so the reader can send them again
+  dropHeld() {
+    const texts = this.held.splice(0).map(m => m.text).filter(t => t.trim());
+    if (!texts.length) return;
+    this.broadcast({
+      type: 'not_sent', texts,
+      text: `Not sent: this chat could not be opened, so ${texts.length === 1 ? 'your message' : 'your messages'} `
+        + 'did not reach the bots. The words are back in the message box.',
+    });
+  }
   disconnect(detail = {}) {
     this.available = false;
+    this.dropHeld();
     this.broadcast({ type: 'bridge_exit', ...detail });
     despawnBridge(this);
   }
@@ -448,7 +520,7 @@ export class Bridge {
       for (const s of ev.inbox_sessions || []) if (s.active) { active = s.session_id; this.networkProject = ''; }
       if (active) {
         this.sid = active;
-        if (active === this.claimedSid) { this.claimedSid = null; this.resuming = false; }
+        if (active === this.claimedSid) this.claimedSid = null;
       }
       // workspace state: pinned globally + fanned out to every tab, never
       // recorded in this bridge's history (see publishProjects)
@@ -459,17 +531,30 @@ export class Bridge {
       presence.closeBridge(this.id, 'interrupted', 'ready_without_terminal');
       this.busy = false;
       // a spawn-time /resume is done at the ready that ENDS its turn — the
-      // bridge's startup ready arrives first and must not clear the claim
-      if (this.resuming && this.readySeen) { this.resuming = false; this.claimedSid = null; }
-      this.readySeen = true;
+      // bridge's startup ready arrives first, and is itself held back
+      if (this.phase === 'opening') { this.setPhase('resuming'); return; }
+      if (this.phase === 'resuming') {
+        this.setPhase('live');
+        // said before the ready, so a page building the chat offscreen has
+        // it in place when the chat is swapped in (and a reload keeps it)
+        if (this.notice) { this.broadcast({ type: 'room', speaker: 'system', text: this.notice }); this.notice = ''; }
+        this.broadcast(ev);
+        for (const m of this.held.splice(0)) this.deliver(m.text, m.attachments);
+        return;
+      }
+      this.setPhase('live');
     }
+    // start-up lines of a process that is about to open a saved chat
+    if (this.phase === 'opening' && ev.type !== 'exit') return;
     // default-deny/dismiss timers: an unanswered permission is denied and an
     // unanswered choice dismissed after 120s, so a walked-away browser can
     // never jam the turn queue (mirrors the review frontend's behavior)
     if (ev.type === 'permission_request') {
       clearTimeout(this.permTimer);
+      const asked = ev.request_id;
       this.permTimer = setTimeout(() => {
-        this.send({ type: 'permission_response', allow: false });
+        // names the question it answers, so it can never deny a later one
+        this.send({ type: 'permission_response', allow: false, request_id: asked });
         this.broadcast({ type: 'permission_timeout' });
       }, 120000);
     }
@@ -490,6 +575,7 @@ export class Bridge {
     }
     if (ev.type === 'exit') {
       this.available = false;
+      this.dropHeld();
       this.broadcast(ev);
       despawnBridge(this);
       // /quit closes THIS chat's bridge; the server stops with the last one
@@ -774,28 +860,42 @@ function replayTo(send, b, routeError) {
   // here instead of trusting per-event scroll heuristics during replay
   send({ type: 'replay_done', count: b.history.length });
 }
+const agentName = a => (String(a) === 'codex' ? 'Codex' : 'Claude');
 const anyBridgeAvailable = () => {
   for (const b of bridges.values()) if (b.available) return true;
   return false;
 };
-// When a billing change actually bites. A process's environment is fixed at
-// exec: a bridge that is already running keeps the auth it was spawned with,
-// and there is no honest way around that short of killing a live turn — which
-// this server will not do to answer a settings click. So the answer is either
-// "now" (nothing is running, the next spawn reads the new mode) or
-// "next-bridge", and the UI says so in those words.
-const appliesWhen = () => (anyBridgeAvailable() ? 'next-bridge' : 'now');
-
 // A billing change only reaches a NEWLY spawned bridge — so retire every idle
 // one the moment the user flips a switch or changes a key. Their chats lose
 // nothing: the next turn respawns with /resume from the session file, now
 // under the new billing. Only a bridge that is mid-turn keeps its old env,
-// and only until that turn ends; appliesWhen() then answers 'now' in the
-// common case instead of leaving the reader to guess they needed a restart.
-function retireIdleBridges() {
+// and only until that turn ends — there is no honest way around that short
+// of killing a live turn, which this server will not do to answer a settings
+// click. So the answer is 'now' unless such a bridge is left running
+// ('next-bridge'), and the UI says so in those words.
+//
+// Never silently: a retired chat someone is looking at is opened again at
+// once under the new billing, its tabs follow it, and the chat says in one
+// line which bots were stopped, why, and that they start on the next message.
+function retireIdleBridges(why) {
+  let kept = false;
   for (const b of [...bridges.values()]) {
-    if (!b.busy && !presence.hasBridge(b.id)) despawnBridge(b);
+    if (b.busy || presence.hasBridge(b.id)) { kept = true; continue; }
+    const watched = b.subscriberCount() > 0;
+    const sid = b.sid || b.claimedSid;
+    despawnBridge(b);
+    if (!watched) continue;
+    // a chat never saved (nothing said in it yet) has nothing to reopen
+    const nb = spawnBridge(sid && !sessionKnownMissing(sid) ? sid : null);
+    const text = `${why}, so Claude and Codex were stopped in this chat for the change to take effect. `
+      + 'They start again with your next message.';
+    if (nb.opening()) nb.notice = text;
+    nb.adopt(b, { type: 'bots_stopped', text, bridge_id: nb.id, resuming: nb.opening() });
+    if (!nb.opening()) nb.broadcast({ type: 'room', speaker: 'system', text });
+    // messages waiting for the retired process to open the chat wait for this one
+    for (const m of b.held.splice(0)) nb.deliver(m.text, m.attachments);
   }
+  return kept ? 'next-bridge' : 'now';
 }
 
 export function handler(req, res) {
@@ -871,8 +971,8 @@ export function handler(req, res) {
     const { bridge: b, error } = attachTarget(chatParamOf(req.url));
     sseOpen(res);
     replayTo(ev => res.write(`data: ${JSON.stringify(ev)}\n\n`), b, error);
-    b.clients.add(res);
-    req.on('close', () => { b.clients.delete(res); b.lastUsed = Date.now(); });
+    b.attach(res, 'sse');
+    req.on('close', () => res.councilBridge.detach(res));
     return;
   }
   if (req.method === 'POST' && url === '/upload') {
@@ -943,15 +1043,7 @@ export function handler(req, res) {
           return;
         }
       }
-      // echo before send: the transcript shows the user's words immediately
-      // (and after a reload — the bridge does not echo input back); echoed
-      // attachments carry the display URL for inline thumbnails
-      bridge.broadcast({
-        type: 'user_echo', text, ts: new Date().toISOString(),
-        attachments: attachments.map(a => ({ ...a, url: uploadUrl(a.path) })),
-      });
-      // the bridge gets exactly the Ink schema — {id, path, type} — no name
-      bridge.send({ type: 'input', text, attachments: attachments.map(({ id, path: p, type }) => ({ id, path: p, type })) });
+      bridge.deliver(text, attachments);
       res.writeHead(200, JSON_HEAD).end('{"ok":true}');
     });
     return;
@@ -990,7 +1082,11 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/permission') {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);
-      const ok = bridge && bridge.send({ type: 'permission_response', allow: !!data.allow });
+      // the answer names the question it answers (one bot's question at a
+      // time is on screen; the next waits behind it in the controller)
+      const answer = { type: 'permission_response', allow: !!data.allow };
+      if (typeof data.request_id === 'string' && data.request_id) answer.request_id = data.request_id.slice(0, 200);
+      const ok = bridge && bridge.send(answer);
       // the default-deny stays armed until an answer actually reached the bot
       if (ok) clearTimeout(bridge.permTimer);
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
@@ -1039,8 +1135,8 @@ export function handler(req, res) {
         }
         const r = COUNCIL_MODES.setMode(data.agent, data.mode);
         if (!r.ok) { res.writeHead(400, JSON_HEAD).end(JSON.stringify(r)); return; }
-        retireIdleBridges();
-        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...snapshot(), applies: appliesWhen() }));
+        const applies = retireIdleBridges(`${agentName(data.agent)}'s billing changed`);
+        res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ...snapshot(), applies }));
       });
       return;
     }
@@ -1060,10 +1156,10 @@ export function handler(req, res) {
         if (url === '/keys/remove' && COUNCIL_MODES.modeOf(data.agent) === 'key') {
           COUNCIL_MODES.setMode(data.agent, 'auto');
         }
-        retireIdleBridges();
+        const applies = retireIdleBridges(`${agentName(data.agent)}'s API key changed`);
         res.writeHead(200, JSON_HEAD).end(JSON.stringify({
           ...snapshot(), ...(r.removed === undefined ? {} : { removed: r.removed }),
-          applies: appliesWhen(),
+          applies,
         }));
       });
       return;
@@ -1102,8 +1198,8 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
       }
       const { bridge: b, error } = attachTarget(chatParamOf(req && req.url));
       replayTo(ev => ws.send(JSON.stringify(ev)), b, error);
-      b.wsClients.add(ws);
-      ws.onclose = () => { b.wsClients.delete(ws); b.lastUsed = Date.now(); };
+      b.attach(ws, 'ws');
+      ws.onclose = () => ws.councilBridge.detach(ws);
     },
   });
   server.listen(PORT, '127.0.0.1', () => {

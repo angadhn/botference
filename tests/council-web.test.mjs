@@ -516,6 +516,39 @@ test('bridge pool: an unknown chat id falls back to the primary bridge with a ro
   assert.ok(!d.events.some(e => e.type === 'route_error'));
 });
 
+test('opening a saved chat: the new bot process\'s start-up lines never reach the page — only the saved chat does', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=idle0001' });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  assert.equal(hello.resuming, true);
+  // the resume's own turn arrives, then its ready
+  await c.next(e => e.type === 'room' && e.text === 'echo: /resume idle0001', 8000);
+  await c.next(e => e.type === 'ready');
+  const after = c.events.slice(c.events.indexOf(hello));
+  assert.ok(!after.some(e => e.type === 'room' && /Council room ready/.test(e.text)),
+    'the throwaway start-up line is held back');
+  assert.equal(after.filter(e => e.type === 'ready').length, 1,
+    'only the ready that ends the resume reaches the page — the start-up ready would end the switch early');
+  assert.ok(after.some(e => e.type === 'completion_context'), 'the command list still arrives');
+  // a reload of the same chat replays nothing from the start-up either
+  const d = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=idle0001' });
+  t.after(() => d.close());
+  const helloD = await d.next(e => e.type === 'hello');
+  assert.equal(helloD.bridge_id, hello.bridge_id, 'same live bridge');
+  assert.equal(helloD.resuming, false, 'the chat is open now');
+  await d.next(e => e.type === 'replay_done');
+  assert.ok(!d.events.some(e => e.type === 'room' && /Council room ready/.test(e.text)));
+  assert.ok(d.events.some(e => e.type === 'room' && e.text === 'echo: /resume idle0001'));
+  // the first chat (no saved chat to open) still shows its start-up line
+  const p = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => p.close());
+  await p.next(e => e.type === 'replay_done');
+  assert.ok(p.events.some(e => e.type === 'room' && /Council room ready/.test(e.text)));
+});
+
 // ---------------------------------------------------------------- tunnel
 
 test('tunnel helper: named tunnel uses `cloudflared tunnel run` with the configured name', async t => {
@@ -2035,6 +2068,45 @@ test('subagent lane: a turn still running at ready freezes its row to done (neve
 
 // -------------------------------------------------- UI: chat id in the URL
 
+test('build card: Esc ends it as "cancelled", live and after a reload; a finished card is never revived (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const meta = { id: 's1:agent:1', card: 'report', summoned_by: 'claude', label: 'Claude Opus 5.5 (high)', status: 'working', elapsed_s: 0 };
+  const status = () => doc.querySelector('.msg.agent .agent-status').textContent;
+  C.handle({ type: 'room', speaker: 'claude', text: 'summoning', stream_id: 'x:claude:1' });
+  C.handle({ type: 'room', speaker: 'agent', text: 'building…', stream_id: 's1:agent:1:card', agent: meta });
+  assert.match(status(), /^working…/);
+  // a live card is not guessed at: a ready leaves it working, and its real
+  // end still lands afterwards
+  C.handle({ type: 'room', speaker: 'agent', text: 'building…', stream_id: 's1:agent:3:card', agent: { ...meta, id: 's1:agent:3' } });
+  C.handle({ type: 'ready' });
+  const live = doc.querySelector('.msg.agent[data-agent-id="s1:agent:3"]');
+  assert.equal(live.dataset.status, 'working');
+  C.handle({ type: 'room', speaker: 'agent', text: 'Built it.', stream_id: 's1:agent:3:card', agent: { ...meta, id: 's1:agent:3', status: 'done', elapsed_s: 70 } });
+  assert.equal(live.querySelector('.agent-status').textContent, 'done in 1:10');
+  // Esc: the controller reports the card as cancelled
+  C.handle({ type: 'room', speaker: 'agent', text: 'Cancelled before it finished.', stream_id: 's1:agent:1:card', agent: { ...meta, status: 'cancelled', elapsed_s: 42 } });
+  C.handle({ type: 'ready' });
+  assert.equal(status(), 'cancelled after 0:42');
+  assert.equal(doc.querySelector('.msg.agent').dataset.status, 'cancelled');
+  // a late "working" entry cannot bring it back
+  C.handle({ type: 'room', speaker: 'agent', text: 'building…', stream_id: 's1:agent:1:card', agent: meta });
+  assert.equal(status(), 'cancelled after 0:42');
+  // a saved chat from before this fix: restored "working" with no end, then
+  // the turn's ready — the card can only have been stopped
+  C.handle({ type: 'clear_panes' });
+  C.handle({ type: 'restore', entries: [
+    { speaker: 'claude', text: 'summoning' },
+    { speaker: 'agent', text: 'building…', agent: { ...meta, id: 's1:agent:2', started_at: Date.now() / 1000 - 65 } },
+  ] });
+  assert.match(status(), /^working…/);
+  C.handle({ type: 'ready' });
+  assert.match(status(), /^cancelled after 1:0[45]$/);
+  assert.ok(!doc.querySelector('.msg.agent.working'), 'no clock left running');
+});
+
 test('hash routing: opening/switching a chat writes #/chat/<id>; a hashed link restores it; unknown ids fall back',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, C, wsUrls } = await mkHarness(t);
@@ -2506,6 +2578,69 @@ test('billing: flipping a switch retires idle bridges — the next turn already 
     assert.equal(env2.ANTHROPIC_API_KEY, undefined,
       'the respawned bridge bills the subscription — the dead key is gone');
   } finally { s.stop(); }
+});
+
+test('billing: a chat on screen whose bots a switch stopped is told so in one line, follows its reopened chat, and loses no message', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=watch001' });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  await c.next(e => e.type === 'room' && e.text === 'echo: /resume watch001', 8000);
+  await c.next(e => e.type === 'ready');
+  const spawned = s.spawnEnvs().length;
+  const r = await (await post(s.base, '/key-mode', { agent: 'codex', mode: 'subscription' })).json();
+  assert.equal(r.applies, 'now', 'nothing is left running on the old billing');
+  const stop = await c.next(e => e.type === 'bots_stopped');
+  assert.equal(stop.text,
+    "Codex's billing changed, so Claude and Codex were stopped in this chat for the change to take effect. "
+    + 'They start again with your next message.');
+  assert.notEqual(stop.bridge_id, hello.bridge_id, 'the tab is moved to the reopened chat');
+  assert.equal(stop.resuming, true);
+  // a message sent while the chat is still being reopened waits for it
+  const sent = await (await post(s.base, '/input', { text: 'after-switch', bridge: stop.bridge_id })).json();
+  assert.equal(sent.ok, true);
+  await c.next(e => e.type === 'room' && e.text === 'echo: after-switch', 8000);
+  const tail = c.events.slice(c.events.indexOf(stop));
+  const at = pred => tail.findIndex(pred);
+  const note = at(e => e.type === 'room' && e.speaker === 'system' && e.text === stop.text);
+  const ready = at((e, i) => e.type === 'ready' && i > note);
+  const echo = at(e => e.type === 'user_echo' && e.text === 'after-switch');
+  assert.ok(note > 0, 'the reopened chat says it too, so a reload keeps the line');
+  assert.ok(note < ready && ready < echo, 'the line lands with the redrawn chat; the message after it, not wiped by it');
+  assert.equal(s.spawnEnvs().length, spawned + 1, 'one new bot process, under the new billing');
+  assert.match(fs.readFileSync(s.rx, 'utf8'), /^\/resume watch001$(?:[\s\S]*^\/resume watch001$)/m, 'the same chat was reopened');
+  // a reload of the chat replays the line
+  const d = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=watch001' });
+  t.after(() => d.close());
+  await d.next(e => e.type === 'replay_done');
+  assert.equal(d.events.filter(e => e.type === 'room' && e.text === stop.text).length, 1);
+});
+
+test('billing: a stopped chat on the page — one line, the new bridge named in later posts, redrawn without a blank (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { C, transcript, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'user_echo', text: 'plan the trip' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'Here is a plan' });
+  C.handle({ type: 'ready' });
+  const text = "Claude's billing changed, so Claude and Codex were stopped in this chat for the change to take effect. They start again with your next message.";
+  C.handle({ type: 'bots_stopped', text, bridge_id: 'b2', resuming: true });
+  assert.match(transcript.textContent, /Claude and Codex were stopped in this chat/, 'said at once');
+  assert.equal(C.state.bridgeId, 'b2');
+  // the reopened chat is drawn offscreen: never a blank moment
+  C.handle({ type: 'clear_panes' });
+  assert.match(transcript.textContent, /Here is a plan/, 'the chat stays on screen while it is reopened');
+  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'plan the trip' }, { speaker: 'claude', text: 'Here is a plan' }] });
+  C.handle({ type: 'room', speaker: 'system', text });
+  C.handle({ type: 'ready' });
+  assert.match(transcript.textContent, /Here is a plan/);
+  assert.equal(transcript.textContent.split('were stopped in this chat').length - 1, 1, 'the line shows once');
+  posts.length = 0;
+  await C.sendInput('carry on');
+  assert.equal(posts[0].body.bridge, 'b2', 'the next message goes to the reopened chat');
 });
 
 test('billing: keys never cross the tunnel — a proxied write is refused, the switch and the status are not', async () => {
@@ -3604,6 +3739,69 @@ test('permission card: shows the decision only once the server took it; a failed
   await new Promise(r => setTimeout(r, 20));
   assert.ok(card2.classList.contains('answered'));
   assert.match(card2.textContent, /allowed/);
+});
+
+test('permission cards: the second bot\'s question comes after the first is answered, and each answer names its own question (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'permission_request', request_id: 'q1', model: 'claude', path: '/x/a', reason: 'r' });
+  posts.length = 0;
+  doc.querySelector('.msg.card.perm button.allow').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[0], { url: '/permission', body: { bridge: 'b1', allow: true, request_id: 'q1' } });
+  // the controller clears the first, then puts the waiting one
+  C.handle({ type: 'permission_cleared' });
+  C.handle({ type: 'permission_request', request_id: 'q2', model: 'codex', path: '/x/b', reason: 'r' });
+  const cards = doc.querySelectorAll('.msg.card.perm');
+  assert.equal(cards.length, 2);
+  assert.match(cards[0].textContent, /allowed/);
+  assert.match(cards[1].textContent, /@codex wants to write/);
+  cards[1].querySelector('button.deny').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[1].body, { bridge: 'b1', allow: false, request_id: 'q2' });
+});
+
+test('a message waiting for a chat that never opens is not lost silently: one line, and the words go back to the box', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=die00001' });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  assert.equal(hello.resuming, true);
+  const r = await (await post(s.base, '/input', { text: 'my long careful message', bridge: hello.bridge_id })).json();
+  assert.equal(r.ok, true, 'taken: it waits for the chat to open');
+  const ns = await c.next(e => e.type === 'not_sent', 8000);
+  assert.deepEqual(ns.texts, ['my long careful message']);
+  assert.equal(ns.text, 'Not sent: this chat could not be opened, so your message did not reach the bots. The words are back in the message box.');
+  const i = c.events.indexOf(ns);
+  assert.ok(c.events.slice(i).some(e => e.type === 'bridge_exit'), 'the exit is reported after it');
+  assert.ok(!fs.readFileSync(s.rx, 'utf8').includes('my long careful message'), 'it never reached a bot');
+});
+
+test('not sent (page): the line shows and the words come back to the box, ahead of anything typed since (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, transcript } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1', resuming: true });
+  C.handle({ type: 'replay_done' });
+  const input = doc.getElementById('input');
+  input.value = 'typed since';
+  C.handle({ type: 'not_sent', texts: ['first try'], text: 'Not sent: this chat could not be opened, so your message did not reach the bots. The words are back in the message box.' });
+  assert.match(transcript.textContent, /Not sent: this chat could not be opened/);
+  assert.equal(input.value, 'first try\ntyped since');
+});
+
+test('permission: the answer reaches the bot process naming the question it answers', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  await post(s.base, '/input', { text: '/trigger-permission' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'permission_request'));
+  await post(s.base, '/permission', { allow: true, request_id: 'r1' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && /permission: true/.test(e.text)));
+  const sent = fs.readFileSync(`${s.rx}.perm`, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(sent, [{ type: 'permission_response', allow: true, request_id: 'r1' }]);
 });
 
 test('dictation: a second tap while the browser asks for the mic starts nothing; Esc then lets the mic go (happy-dom)',

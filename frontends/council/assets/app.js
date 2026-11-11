@@ -1950,14 +1950,53 @@
     const t = fmtClock(meta.elapsed_s);
     if (st === 'done') return `done in ${t}`;
     if (st === 'timeout') return `timed out after ${t}`;
+    if (st === 'cancelled') return `cancelled after ${t}`;
     return `failed after ${t}`;
+  }
+  // A build agent's card is in one of AGENT_CARD_STATUSES, kept in
+  // card.dataset.status and moved only by setAgentCardStatus:
+  //   working   — the agent is building (the clock runs);
+  //   done, failed, timeout — it reported;
+  //   cancelled — it was stopped (Esc) before it reported.
+  // A card moves from working to any end, or repaints where it is; it never
+  // goes from one end to another, nor back to working (a late or replayed
+  // "working" entry cannot revive a finished card).
+  const AGENT_CARD_STATUSES = ['working', 'done', 'failed', 'timeout', 'cancelled'];
+  function setAgentCardStatus(card, to, elapsedS) {
+    const from = card.dataset.status || '';
+    if (!AGENT_CARD_STATUSES.includes(to)) return false;
+    if (from && from !== 'working' && from !== to) return false;
+    card.dataset.status = to;
+    card.classList.toggle('working', to === 'working');
+    if (to !== 'working') card.dataset.elapsed = String(Number(elapsedS) || 0);
+    const el = card.querySelector('.agent-status');
+    if (el) {
+      el.className = `agent-status ${to}`;
+      el.textContent = agentStatusText({ status: to, elapsed_s: card.dataset.elapsed },
+        Number(card.dataset.start) || 0);
+    }
+    if (to !== 'working') { const act = card.querySelector('.agent-act'); if (act) act.remove(); }
+    return true;
+  }
+  // A card RESTORED from a saved chat (a /resume) still saying "working" can
+  // only have been stopped: the process that ran it is gone, and a build
+  // agent never outlives the turn it runs in. Saved chats from before the
+  // controller wrote "cancelled" have such cards; at the ready after the
+  // restore they end as cancelled. A card drawn live is left alone — its end
+  // comes from the controller (done, failed, timeout or cancelled).
+  function endWorkingAgentCards() {
+    for (const card of container().querySelectorAll('.msg.agent[data-status="working"][data-restored]')) {
+      const start = Number(card.dataset.start) || Date.now();
+      setAgentCardStatus(card, 'cancelled', (Date.now() - start) / 1000);
+      card.classList.remove('streaming');
+      endAgentStreams(card);
+    }
   }
   function paintAgentHead(card, meta) {
     const st = String(meta.status || 'working');
-    card.classList.toggle('working', st === 'working');
-    card.dataset.status = st;
+    if (!setAgentCardStatus(card, st, meta.elapsed_s)) return false;
     const head = card.querySelector('.agent-head');
-    if (!head) return;
+    if (!head) return true;
     const start = Number(card.dataset.start) || 0;
     head.innerHTML =
       '<span class="agent-arrow" aria-hidden="true">↳</span>' +
@@ -1973,6 +2012,7 @@
       brief.textContent = b ? `brief: ${b}` : '';
       brief.title = b;
     }
+    return true;
   }
   // the live clock on every working card; stops itself when none is working
   function tickAgentClocks() {
@@ -2035,17 +2075,17 @@
       return;
     }
     const wasPinned = pinned();
+    // a finished card refuses to be painted back to working, or to another end
+    if (!paintAgentHead(card, meta)) return;
     if (String(meta.status || 'working') === 'working') {
       // the working card: the header says it all, the body waits for the stream
       card.classList.add('streaming');
-      paintAgentHead(card, meta);
       startAgentClocks();
     } else {
       // the report replaces whatever streamed in
       endAgentStreams(card);
       card.classList.remove('streaming');
       paint(card, ev.text);
-      paintAgentHead(card, meta);
       tickAgentClocks();
     }
     if (!replayBuffer) follow(wasPinned);
@@ -2344,10 +2384,10 @@
       <div class="acts"><button class="allow">Allow</button><button class="deny">Deny</button></div>
       <div class="card-note">auto-denied after 2 minutes if unanswered</div>`;
     div.querySelector('.allow').addEventListener('click', () => {
-      answerCard(div, '/permission', { allow: true }, 'allowed');
+      answerCard(div, '/permission', { allow: true, request_id: ev.request_id }, 'allowed');
     });
     div.querySelector('.deny').addEventListener('click', () => {
-      answerCard(div, '/permission', { allow: false }, 'denied');
+      answerCard(div, '/permission', { allow: false, request_id: ev.request_id }, 'denied');
     });
     container().appendChild(div);
     liveCard = div;
@@ -3643,8 +3683,11 @@
       }
       case 'restore':
         for (const e of ev.entries || []) {
-          if (String(e.speaker).toLowerCase() === 'agent' && e.agent) handleAgentRoom(e);
-          else addMsg(e.speaker, e.text);
+          if (String(e.speaker).toLowerCase() === 'agent' && e.agent) {
+            handleAgentRoom(e);
+            const card = summonCard(e.agent.id);
+            if (card) card.dataset.restored = '1';
+          } else addMsg(e.speaker, e.text);
         }
         break;
       case 'video_watch':
@@ -3775,6 +3818,7 @@
         setBusy(false);
         settleCard();
         freezeLanes();
+        endWorkingAgentCards();
         state.streams = {};
         for (const el of els.transcript.querySelectorAll('.msg.streaming')) el.classList.remove('streaming');
         break;
@@ -3786,7 +3830,7 @@
         liveCard = null;
         resetLanes();
         state.replaying = true; // a restore replay follows: pin, no heuristics
-        if (state.pendingSwitch) {
+        if (state.pendingSwitch || state.resuming) {
           // in-flight switch: keep the optimistic (or outgoing) transcript on
           // screen and build the authoritative one offscreen — never blank.
           // A fresh buffer also drops a resuming bridge's interstitial
@@ -3824,6 +3868,29 @@
       case 'choice_cleared': settleCard(); break;
       case 'permission_timeout': settleCard('timed out — denied by default'); break;
       case 'choice_timeout': settleCard('timed out — dismissed'); break;
+      case 'bots_stopped':
+        // a billing change stopped this chat's bots; the server is opening
+        // the chat again under the new billing and this tab now follows that
+        // bridge. The chat is redrawn offscreen (clear_panes, above) and
+        // swapped in at its ready, so the reader sees no blank moment.
+        state.bridgeId = ev.bridge_id || null;
+        state.resuming = !!ev.resuming;
+        addMsg('system', ev.text || 'The bots were stopped. They start again with your next message.');
+        setBusy(false);
+        break;
+      case 'not_sent': {
+        // messages that waited for a chat that never opened: one line, and
+        // the words back in the box (ahead of anything typed since)
+        if (replayBuffer || state.pendingSwitch) endSwitch();
+        addMsg('system', ev.text || 'Not sent: this chat could not be opened.');
+        const back = (ev.texts || []).join('\n');
+        if (back) {
+          const now = els.input.value;
+          els.input.value = now.trim() ? back + '\n' + now : back;
+          autosize(); refreshCompletions(); syncSend();
+        }
+        break;
+      }
       case 'bridge_exit':
         if (replayBuffer || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);

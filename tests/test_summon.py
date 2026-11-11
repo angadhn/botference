@@ -400,6 +400,29 @@ class TestSummonInChat:
         assert "no such model" in cards[-1][1]
         assert "has failed" in claude.resume_calls[0]
 
+    async def test_esc_mid_build_leaves_a_cancelled_card_not_working(self, tmp_path):
+        class Hang(MockAdapter):
+            async def send(self, prompt):
+                await asyncio.Event().wait()
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path, summoner_reply="summon: build it", builder=Hang(),
+        )
+        turn = asyncio.create_task(c.handle_input("@claude go", ui))
+        for _ in range(200):
+            if any(e[2]["card"] == "report" for e in ui.agent_entries):
+                break
+            await asyncio.sleep(0.01)
+        turn.cancel()  # what Esc does to the turn
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        cards = [e for e in ui.agent_entries if e[2]["card"] == "report"]
+        assert [e[2]["status"] for e in cards] == ["working", "cancelled"]
+        assert cards[0][2]["id"] == cards[1][2]["id"]
+        # a reload draws the saved card: it says cancelled too
+        saved = [r for r in c._room_history if r.meta]
+        assert len(saved) == 1 and saved[0].meta["status"] == "cancelled"
+        assert any("cancelled by the user" in e.text for e in c.transcript.entries)
+
     async def test_codex_can_summon_too(self, tmp_path):
         builder = MockAdapter([_ok("built by opus")])
         c, claude, codex, _ = _make_botference(
@@ -512,6 +535,38 @@ class GateAdapter(MockAdapter):
         return await self.send(message)
 
 
+class OneQuestionUI(MockUI):
+    """Shows one write question at a time, as the terminal and web pages do:
+    a second question arriving while one is open is an error, recorded."""
+
+    def __init__(self):
+        super().__init__()
+        self.asked: list = []
+        self.errors: list[str] = []
+        self._open: asyncio.Future | None = None
+
+    async def request_write_permission(self, request):
+        if self._open is not None and not self._open.done():
+            self.errors.append(f"{request.model} asked while a question was open")
+            raise RuntimeError("Permission request already pending")
+        self.asked.append(request)
+        self._open = asyncio.get_running_loop().create_future()
+        try:
+            return await self._open
+        finally:
+            self._open = None
+
+    def answer(self, value):
+        self._open.set_result(value)
+
+    async def wait_for_question(self, n):
+        for _ in range(300):
+            if len(self.asked) >= n and self._open is not None:
+                return self.asked[n - 1]
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"question {n} never came; errors: {self.errors}")
+
+
 @pytest.mark.asyncio
 class TestParallelTurn:
     async def test_both_bots_run_at_once_and_neither_sees_the_other(self, tmp_path):
@@ -543,6 +598,56 @@ class TestParallelTurn:
         # (GateAdapter routes resume through send, so the second send is the resume)
         assert "Codex's take" in claude.send_calls[1]
         assert "Claude's take" in codex.send_calls[1]
+
+    async def test_two_write_requests_at_once_wait_in_turn_and_each_answer_reaches_its_bot(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        shared_a = (tmp_path / "shared-a").resolve()
+        shared_b = (tmp_path / "shared-b").resolve()
+        c, claude, codex, _ = _make_botference(
+            claude_responses=[_ok(f'<write-access-request path="{shared_a}" reason="assets" />'),
+                              _ok("Claude carried on")],
+            codex_responses=[_ok(f'<write-access-request path="{shared_b}" reason="logs" />'),
+                             _ok("Codex carried on")],
+            tmp_path=project,
+        )
+        ui = OneQuestionUI()
+        turn = asyncio.create_task(c.handle_input("/parallel tidy up", ui))
+        first = await ui.wait_for_question(1)
+        await asyncio.sleep(0.05)
+        assert len(ui.asked) == 1, "the second question waits; it is not shown on top"
+        ui.answer(True)
+        second = await ui.wait_for_question(2)
+        assert {first.model, second.model} == {"claude", "codex"}
+        ui.answer(False)
+        await asyncio.wait_for(turn, 5)
+        approved = claude if first.model == "claude" else codex
+        denied = codex if approved is claude else claude
+        assert approved.resume_calls[-1].startswith("Write access to")
+        assert "is now approved" in approved.resume_calls[-1]
+        assert "was denied" in denied.resume_calls[-1]
+        assert not ui.errors
+
+    async def test_a_second_request_already_covered_by_the_first_answer_is_not_asked(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        shared = (tmp_path / "shared").resolve()
+        c, claude, codex, _ = _make_botference(
+            claude_responses=[_ok(f'<write-access-request path="{shared}" reason="assets" />'),
+                              _ok("Claude carried on")],
+            codex_responses=[_ok(f'<write-access-request path="{shared}" reason="assets" />'),
+                             _ok("Codex carried on")],
+            tmp_path=project,
+        )
+        ui = OneQuestionUI()
+        turn = asyncio.create_task(c.handle_input("/parallel tidy up", ui))
+        await ui.wait_for_question(1)
+        ui.answer(True)
+        await asyncio.wait_for(turn, 5)
+        assert len(ui.asked) == 1
+        resumes = [claude.resume_calls[-1], codex.resume_calls[-1]]
+        assert sum("is now approved" in r for r in resumes) == 1
+        assert sum("is already available" in r for r in resumes) == 1
 
     async def test_a_bare_parallel_sends_nothing(self, tmp_path):
         c, claude, codex, ui = _make_botference(tmp_path=tmp_path)

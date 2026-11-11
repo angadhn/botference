@@ -53,6 +53,8 @@ rl.on('line', line => {
     // the resumed chat active (what the real bridge does after a resume),
     // then falls through to the generic echo turn below
     const rs = /^\/resume ([\w-]+)$/.exec(String(msg.text).trim());
+    // a chat that cannot be opened: the process dies mid-resume
+    if (rs && rs[1].startsWith('die')) { setTimeout(() => process.exit(1), 1500); return; }
     if (rs) {
       emit({
         type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
@@ -102,6 +104,9 @@ rl.on('line', line => {
     emit({ type: 'ready' });
   }
   if (msg.type === 'permission_response') {
+    // recorded verbatim (one JSON line each) so tests can see what the bot
+    // process was told, request_id included
+    if (rxFile) fs.appendFileSync(`${rxFile}.perm`, JSON.stringify(msg) + '\n');
     emit({ type: 'permission_cleared' });
     emit({ type: 'room', speaker: 'system', text: `permission: ${msg.allow}` });
     emit({ type: 'ready' });
