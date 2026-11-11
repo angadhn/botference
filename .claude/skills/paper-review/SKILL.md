@@ -152,6 +152,22 @@ the launcher isn't available:
 | `site/`, `suggestions.js` | build.mjs only |
 | presence | **nobody — server memory only, never a file** |
 
+### The record of applied changes (`state/apply.json`)
+
+Shape: `{format: 2, round: {base, ids, files} | null, cards: {<id>: {mode, reason?, source_file?, sha?}}}`.
+Each suggestion card has one mode: pending, accepted, rejected, flagged,
+applied or committed. A card with no entry is pending. `format` is the
+record's format number. Records saved before it existed have no `format`
+and still read normally; so does the even older `{applied, flagged, round}`
+shape.
+
+Each paper carries its own copy of the review software. If that copy
+meets a record with a higher format number than it knows, or a shape it
+cannot read, it changes nothing, never writes over the record, and shows
+one line on the page saying the paper's software is older than its
+record. The cure: in the hub, turn the paper off and then on again,
+which updates its copy. Never edit this file by hand.
+
 ## Round protocol (when summoned — by an @tag or "read my comments")
 
 1. Read all `users/*.json`, diff against your `ack.json` entry
