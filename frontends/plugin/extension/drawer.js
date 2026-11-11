@@ -270,18 +270,73 @@
   // A thread's STATUS is what every label about it says — the card's class
   // and its section, the badges on its quote, the bubble's ✓/↺, the overlap
   // chooser's row, and the paint on the page. It is ONE function over the
-  // record's flags, threadStatus, and every label reads it; nothing reads the
-  // flags directly to decide what to call a thread. (The flags themselves are
-  // still what the companion stores and changes — store.mjs setResolved /
-  // setAddressed, POST /orphan, POST /mark — see SPEC "comment status".)
+  // record, threadStatus, and every label reads it; nothing reads a field
+  // directly to decide what to call a thread.
   //
-  // The STAGE, its three names (THREAD_STAGES), resolved outranking ready:
+  // The STAGE is ONE stored field, `status`, one of THREAD_STAGES:
   //   'open'     — waiting on the bots, or on nobody
   //   'ready'    — a bot has answered since the reader last wrote: "ready for
-  //                review", waiting on the reader (`addressed`)
+  //                review", waiting on the reader
   //   'resolved' — closed by the reader. Nothing else closes a thread.
-  const THREAD_STAGES = ['open', 'ready', 'resolved'];
-  const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // The companion owns it (store.mjs setThreadStatus, THREAD_MOVES — see SPEC
+  // "comment status, one field"). THIS is its twin for the optimistic redraw:
+  // the same three names, the same move table, the same refusal, held to the
+  // companion's by test/status.test.mjs. A record from before `status` (only
+  // the old `resolved` / `addressed` flags) reads by the old rule: resolved
+  // outranks ready outranks open. The companion still writes those flags as a
+  // shadow of the status, for older readers; nothing here reads or writes them
+  // except to keep that shadow true on our local copy.
+  const THREAD_STAGES = Object.freeze(['open', 'ready', 'resolved']);
+  const THREAD_MOVES = Object.freeze({
+    open: Object.freeze(['open', 'ready', 'resolved']),
+    ready: Object.freeze(['open', 'ready', 'resolved']),
+    resolved: Object.freeze(['open', 'resolved']),   // a filed thread is left only by reopening
+  });
+  const threadMove = (from, to) =>
+    THREAD_STAGES.indexOf(from) >= 0 && THREAD_STAGES.indexOf(to) >= 0 && THREAD_MOVES[from].indexOf(to) >= 0;
+  const threadStage = t => (!t ? 'open'
+    : THREAD_STAGES.indexOf(t.status) >= 0 ? t.status
+    : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // the stage's own fields: what an optimistic move changes, and what a
+  // refused one puts back (threadStatusFields / restoreThreadStatus)
+  const STATUS_FIELDS = ['status', 'resolved', 'resolved_at', 'resolved_by', 'addressed', 'addressed_at', 'addressed_by'];
+  // THE ONE SETTER on this side — the local copy only; the companion's answer
+  // replaces it. Same answers as store.setThreadStatus: { changed } or
+  // { changed: false, refused }.
+  function setThreadStage(t, next, by) {
+    if (!t) return null;
+    const from = threadStage(t);
+    if (!threadMove(from, next)) return { changed: false, refused: 'this thread is filed — reopen it first' };
+    if (from === next && next !== 'ready') return { changed: false };
+    if (next !== 'ready') { delete t.addressed_at; delete t.addressed_by; }
+    if (next !== 'resolved') { delete t.resolved_at; delete t.resolved_by; }
+    if (next === 'ready' && by) t.addressed_by = String(by);
+    if (next === 'resolved' && by) t.resolved_by = String(by);
+    t.status = next;
+    if (next === 'resolved') t.resolved = true; else delete t.resolved;
+    if (next === 'ready') t.addressed = true; else delete t.addressed;
+    return { changed: from !== next };
+  }
+  // An optimistic move the companion then refused is UNDONE, not moved back:
+  // the snapshot is a state the record already held, so putting it back is
+  // not a move through the table (ready → resolved, refused, must return to
+  // ready, which the table rightly forbids as a move).
+  function threadStatusFields(t) {
+    const o = {};
+    for (const k of STATUS_FIELDS) if (t && t[k] !== undefined) o[k] = t[k];
+    return o;
+  }
+  function restoreThreadStatus(t, snap) {
+    if (!t) return;
+    for (const k of STATUS_FIELDS) { if (snap && snap[k] !== undefined) t[k] = snap[k]; else delete t[k]; }
+  }
+  // `orphaned` is not a stage: any stage can be found or lost on the page. Our
+  // local copy's last report has one writer too (content.js uses it).
+  function setThreadOrphaned(t, on) {
+    if (!t || !!t.orphaned === !!on) return false;
+    t.orphaned = !!on;
+    return true;
+  }
   // …the MARK, its two names (THREAD_MARKS): what was done to the passage
   const THREAD_MARKS = ['highlight', 'strike'];
   const threadMark = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
@@ -1781,6 +1836,85 @@
   //   'opening'  — a set-aside chat is being opened (`index` says which)
   // The rest of the value is data, not a mode: `list` (the rows once read, or
   // null), `err` (the last thing that went wrong, or '').
+  // THE POP-OVERS over the drawer: the /help list, the model picker, the
+  // export chooser and the project picker. At most ONE is open — opening one
+  // closes whichever was — so which one is a single named value (POPOVERS),
+  // kept in D.popover and changed only by setPopover. (It was four yes/no
+  // flags, and two of them could be up at once.)
+  const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects']);
+  // A BUTTON THAT DOES ONE THING AND SAYS HOW IT WENT — send review, make
+  // artifact, publish (which ask first) and continue in council (which does
+  // not). Each keeps ONE value, `mode`, one of ACT_MODES, changed only by
+  // actMove; `err` is what a failure said and `note` what a success said, and
+  // each is written only by the move into its own mode. (They were a
+  // `confirm` and a `busy` flag beside err/note, and nothing stopped a button
+  // being "asking" and "working" at once.)
+  //   ask     — idle | done | failed → confirm   (the button pressed)
+  //   decline — confirm → idle                   ("no")
+  //   start   — confirm → busy                   ("yes")
+  //   go      — idle | done | failed → busy      (a button that does not ask)
+  //   done    — busy → done, `arg` = what to say (may be '')
+  //   failed  — busy → failed, `arg` = why
+  const ACT_MODES = Object.freeze(['idle', 'confirm', 'busy', 'done', 'failed']);
+  const ACT_MOVES = Object.freeze({
+    ask: ['idle', 'done', 'failed'], decline: ['confirm'], start: ['confirm'],
+    go: ['idle', 'done', 'failed'], done: ['busy'], failed: ['busy'],
+  });
+  const ACT_TO = { ask: 'confirm', decline: 'idle', start: 'busy', go: 'busy', done: 'done', failed: 'failed' };
+  const actMode = a => (a && ACT_MODES.indexOf(a.mode) !== -1 ? a.mode : 'idle');
+  const canActMove = (a, move) => !!ACT_MOVES[move] && ACT_MOVES[move].indexOf(actMode(a)) !== -1;
+  // The one way it changes. Changes the button's value in place (it also
+  // carries what the confirm row was typed into), and throws on an unknown
+  // move or one from the wrong mode — callers that might race ask canActMove.
+  function actMove(a, move, arg) {
+    if (!ACT_MOVES[move]) throw new Error('button: no such move ' + move);
+    if (!canActMove(a, move)) throw new Error('button: cannot ' + move + ' while ' + actMode(a));
+    a.mode = ACT_TO[move];
+    a.err = move === 'failed' ? String(arg || '') : '';
+    a.note = move === 'done' ? String(arg || '') : '';
+    return a;
+  }
+  const actIdle = extra => ({ mode: 'idle', err: '', note: '', ...(extra || {}) });
+  // A LIST READ FROM THE COMPANION — your pages, the Library conversation,
+  // the project roster, a project's past chats, the model list, the memory
+  // cards. Each keeps ONE value, `load`, one of LOAD_MODES, changed only by
+  // loadMove. (It was a `loading` yes/no beside an error text.) What the list
+  // HOLDS is separate and survives a failed re-read: a list once loaded stays
+  // on screen when the companion blinks.
+  //   ask  — idle | loaded | failed → loading   (refused while already loading)
+  //   got  — loading → loaded
+  //   lost — loading → failed, `arg` = why, kept in the list's `errKey`
+  //          ('err' by default; null when the list words its own failure)
+  // A MESSAGE ON ITS WAY OUT (D.outbox): shown under the composer until the
+  // companion has it. Its `state` is one of OUTBOX_STATES, changed only by
+  // moveOutbox; a delivered message leaves the outbox altogether, so there is
+  // no 'sent'.
+  //   sending → failed   the companion refused it, or did not answer (`error`)
+  //   failed  → sending  the reader pressed retry
+  // Anything else is refused: a message already going is not sent twice.
+  const OUTBOX_STATES = Object.freeze(['sending', 'failed']);
+  const OUTBOX_MOVES = Object.freeze({ sending: ['failed'], failed: ['sending'] });
+  const canOutboxMove = (e, next) => !!e && !!OUTBOX_MOVES[e.state] && OUTBOX_MOVES[e.state].indexOf(next) !== -1;
+  function moveOutbox(e, next, error) {
+    if (OUTBOX_STATES.indexOf(next) === -1) throw new Error('outbox: no such state ' + next);
+    if (!canOutboxMove(e, next)) throw new Error('outbox: cannot go ' + (e && e.state) + ' → ' + next);
+    e.state = next;
+    e.error = next === 'failed' ? String(error || '') : '';
+    return e;
+  }
+  const LOAD_MODES = Object.freeze(['idle', 'loading', 'loaded', 'failed']);
+  const LOAD_MOVES = Object.freeze({ ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] });
+  const LOAD_TO = { ask: 'loading', got: 'loaded', lost: 'failed' };
+  const loadMode = L => (L && LOAD_MODES.indexOf(L.load) !== -1 ? L.load : 'idle');
+  const isLoading = L => loadMode(L) === 'loading';
+  const canLoadMove = (L, move) => !!LOAD_MOVES[move] && LOAD_MOVES[move].indexOf(loadMode(L)) !== -1;
+  function loadMove(L, move, arg, errKey) {
+    if (!LOAD_MOVES[move]) throw new Error('list: no such move ' + move);
+    if (!canLoadMove(L, move)) throw new Error('list: cannot ' + move + ' while ' + loadMode(L));
+    L.load = LOAD_TO[move];
+    if (move === 'lost' && errKey !== null) L[errKey || 'err'] = String(arg || '');
+    return L;
+  }
   const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
   // …and every way it changes, in one list (newChatMove refuses the rest):
   //   ask     — idle | list → confirm      ("+ new chat")
@@ -2312,16 +2446,16 @@
       // 'all' | 'comments' — which export the crystal will run, remembered
       // across sessions by content.js (setExportMode) and changed by choosing
       exportMode: 'all',
-      exportOpen: false,
+      // which pop-over is open (POPOVERS): one value, changed by setPopover
+      popover: 'none',
       // The council projects this page is filed under, and the roster the
       // picker lists. `filed` is the authority (it comes back from every
       // POST); `list` is fetched once per open and kept. `declined` holds the
       // ts of any bot suggestion the reader said no to — per tab, never
       // persisted, exactly like the commenter filter: saying no to a
       // suggestion is not a fact about the page.
-      projects: { list: null, filed: [], loading: false, err: '', busy: '',
+      projects: { list: null, filed: [], load: 'idle', err: '', busy: '',
                   declined: [], roots: [], newOpen: false, started: [] },
-      projOpen: false,
       // ---- lasso (SPEC "lasso — bringing what you have read and said…") ---
       // What a `/lasso …` just found, and where to draw it. Offers only:
       // `results` is thrown away by "dismiss", by the next search and by
@@ -2351,7 +2485,7 @@
       // instant Send is pressed, and the composer empties. On success it is
       // dropped and the server's own copy takes its place; on failure it stays
       // put with a retry, so the text is never in limbo and never lost.
-      outbox: {},          // target -> [{id, text, state:'sending'|'failed', error, seen}]
+      outbox: {},          // target -> [{id, text, state (OUTBOX_STATES, via moveOutbox), error, seen}]
       sendLock: {},        // target -> true for the synchronous span of a send
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
@@ -2471,7 +2605,7 @@
       //            reload is allowed to cost the order and nothing else
       //   last     the answer just given, which is what the verdict paints
       memory: { scope: 'page', scopes: [], counts: {}, queue: [], i: 0, last: null,
-                loading: false, error: '', note: '', asked: 0, right: 0, focus: '' },
+                load: 'idle', error: '', note: '', asked: 0, right: 0, focus: '' },
       // ---- the council project behind a project artifact page -----------
       // Null on every ordinary page, and on those NOTHING below changes. On a
       // page the reader's own council wrote (workspace.mjs), Page chat stops
@@ -2482,36 +2616,37 @@
       //   archive   the list, once asked for: {list, loading, err, current}
       //   picking   true while the list is showing instead of the conversation
       project: opts.project || null,
-      archive: { list: null, loading: false, err: '', current: null, busy: '' },
+      archive: { list: null, load: 'idle', err: '', current: null, busy: '' },
       picking: false,
-      // "send review": the one-step inline confirm (never window.confirm — see
-      // del-thread), the in-flight flag, and whatever the companion said last
-      review: { confirm: false, busy: false, err: '', note: '' },
+      // "send review": one ACT_MODES value — the one-step inline confirm (never
+      // window.confirm — see del-thread), the round in flight, and whatever the
+      // companion said last
+      review: actIdle(),
       // "make artifact": the same one-step inline confirm, plus the two things
       // this one has to ask — what it should be, and (filed in more than one
       // project) which project it goes in. `root`/`id` are the answer to the
       // second, set by the select; empty means "the one project there is".
-      artifact: { confirm: false, busy: false, err: '', note: '', brief: '', root: '', id: '' },
+      artifact: actIdle({ brief: '', root: '', id: '' }),
       // "publish": the same one-step confirm again, for the one act in this
       // drawer that puts something on the public internet. The sentence says
       // where and says that plainly; the button is the whole of the act.
-      publish: { confirm: false, busy: false, err: '', note: '', link: '' },
+      publish: actIdle(),
       // "+ new chat", which every page with a page chat has and which a project
       // artifact page does NOT (its archive bar already is this control, and two
       // of them would be two answers to one question). One named mode
       // (NEWCHAT_MODES), changed only by moveNewChat.
       newchat: newChatIdle(),
       // "continue in council": no confirm (it is a copy — nothing on this page
-      // changes and no bot is summoned), so just the in-flight flag, the error,
-      // and the link to the chat it made, kept on screen in case the new tab
-      // was blocked
-      council: { busy: false, err: '', url: '', reused: false, where: '' },
+      // changes and no bot is summoned), so an ACT_MODES value that goes
+      // straight to busy, plus the link to the chat it made, kept on screen in
+      // case the new tab was blocked
+      council: actIdle({ url: '', reused: false, where: '' }),
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       // the command table the /help popup and the slash menu read (null =
-      // the fallback copy); helpOpen/helpFrom = the popup, and the composer
-      // it was asked for from, which gets the focus back when it closes
-      commands: null, helpOpen: false, helpFrom: '',
+      // the fallback copy); helpFrom = the composer the /help popup was asked
+      // for from, which gets the focus back when it closes
+      commands: null, helpFrom: '',
       focused: null,
       // a character being chosen with an input method (IME_MODES), changed
       // only by moveIme
@@ -2527,7 +2662,7 @@
       // remembered per browser; `row` = the one row whose inline rename or tag
       // box is open, and what is typed in it (ROW_EDIT_MODES; owner only — a
       // guest never sees the affordance), changed only by moveRowEdit
-      pages: { list: null, loading: false, err: '', confirm: null, rowErr: null,
+      pages: { list: null, load: 'idle', err: '', confirm: null, rowErr: null,
                kind: '', tag: '', row: null, pick: 0 },
       // whether this browser is the OWNER of this companion, as the companion
       // itself says (GET /whoami, through the background). Renaming and tagging
@@ -2536,7 +2671,7 @@
       // the library conversation, which lives under the pages list: `page` is
       // the companion's record for the reserved url (null = nothing said in it
       // yet, which is a state and not an error)
-      library: { page: null, loading: false, err: '', confirm: false, note: '' },
+      library: { page: null, load: 'idle', err: '', confirm: false, note: '' },
       // is this tab in touch with the companion: ONE mode (config.js
       // CONN_MODES — connecting / connected / offline / reload). 'connecting'
       // until the first answer either way; 'reload' once the extension was
@@ -2549,7 +2684,7 @@
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
-      models: { current: {}, options: null, status: null, bridge: '', note: '', loading: false,
+      models: { current: {}, options: null, status: null, bridge: '', note: '', load: 'idle',
                 effort: null, verbosity: '',
                 // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
                 keys: null,
@@ -2558,7 +2693,6 @@
                 // whether one turned up. Never a mode — the drawer does not get
                 // to invent one.
                 keyPending: null },
-      modelsOpen: false,
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
       pushed: null,        // saved inline style of <html> while the page is pushed
@@ -5497,9 +5631,9 @@ ${bubbleShellHtml()}`;
       // what the button may honestly promise: edits only where there is a
       // draft to edit, which is a confirmed project artifact and nowhere else
       const editable = !!(D.project && isYes(D.project));
-      const inner = r.busy
+      const inner = actMode(r) === 'busy'
         ? `<span class="rvnote busy">handing ${n} comment${n === 1 ? '' : 's'} to the bots…</span>`
-        : r.confirm
+        : actMode(r) === 'confirm'
           ? `<span class="rvq">send ${n} open comment${n === 1 ? '' : 's'} to the bots?</span>
              <button class="rebtn yes" data-act="review-yes" type="button">yes</button>
              <button class="rebtn" data-act="review-no" type="button">no</button>`
@@ -5513,9 +5647,9 @@ ${bubbleShellHtml()}`;
             + publishBtnHtml()
             + newChatBtnHtml()
             + councilBtnHtml()
-            + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
-              : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
-      return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
+            + (actMode(r) === 'failed' ? `<span class="rvnote err">${esc(r.err)}</span>`
+              : actMode(r) === 'done' && r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
+      return `<div class="reviewrow${actMode(r) === 'confirm' ? ' confirm' : ''}">${inner}</div>`
         + makeArtifactConfirmHtml() + publishConfirmHtml() + newChatConfirmHtml()
         + newChatListHtml() + artifactsHtml()
         + publishedHtml();
@@ -5553,9 +5687,9 @@ ${bubbleShellHtml()}`;
       const link = C.url || (prior && prior.url) || '';
       return `<button class="archsend tocouncil" data-act="continue-council" type="button"
           title="copy this chat and your margin comments into the council as a chat of your own, and open it there — this page keeps its chat"${
-        C.busy ? ' disabled' : ''}>continue in council ↗</button>`
-        + (C.busy ? '<span class="rvnote busy">copying to the council…</span>'
-          : C.err ? `<span class="rvnote err">${esc(C.err)}</span>`
+        actMode(C) === 'busy' ? ' disabled' : ''}>continue in council ↗</button>`
+        + (actMode(C) === 'busy' ? '<span class="rvnote busy">copying to the council…</span>'
+          : actMode(C) === 'failed' ? `<span class="rvnote err">${esc(C.err)}</span>`
           : link ? `<span class="rvnote note">${C.url
               ? (C.reused ? 'already in the council' : `copied${C.where ? ` to ${esc(C.where)}` : ''}`) + ' — '
               : 'in the council: '}<a href="${esc(link)}" target="_blank" rel="noopener">open ↗</a></span>`
@@ -5564,14 +5698,14 @@ ${bubbleShellHtml()}`;
 
     async function continueInCouncil() {
       const C = D.council;
-      if (C.busy) return;
-      C.busy = true; C.err = '';
+      if (!canActMove(C, 'go')) return;
+      actMove(C, 'go');
       render();
       const a = await cb('onContinueInCouncil')();
-      C.busy = false;
       if (!a || !a.ok) {
-        C.err = (a && a.error) || 'the companion did not answer';
+        actMove(C, 'failed', (a && a.error) || 'the companion did not answer');
       } else {
+        actMove(C, 'done');
         C.url = a.url || '';
         C.reused = !!a.reused;
         C.where = a.project_title || (a.project_id ? a.project_id : 'the Inbox');
@@ -5676,21 +5810,21 @@ ${bubbleShellHtml()}`;
     function publishBtnHtml() {
       if (!D.owner || !D.project || !isYes(D.project)) return '';
       const P = D.publish;
-      if (P.confirm) return '';
+      if (actMode(P) === 'confirm') return '';
       const t = publishTarget();
-      const busy = P.busy ? '<span class="rvnote busy">publishing…</span>' : '';
+      const busy = actMode(P) === 'busy' ? '<span class="rvnote busy">publishing…</span>' : '';
       return `<button class="archsend pubbtn" data-act="publish" type="button"
           title="${esc(t
             ? `copy this page into your website (${t.url}), commit it${t.push === false ? '' : ' and push'}`
             : 'publish target not set up — add it to config.json')}"${
-        t && !P.busy ? '' : ' disabled'}>publish</button>${busy}${
-        P.err ? `<span class="rvnote err">${esc(P.err)}</span>` : ''}`;
+        t && actMode(P) !== 'busy' ? '' : ' disabled'}>publish</button>${busy}${
+        actMode(P) === 'failed' ? `<span class="rvnote err">${esc(P.err)}</span>` : ''}`;
     }
 
     function publishConfirmHtml() {
       const P = D.publish;
       const t = publishTarget();
-      if (!P.confirm || !t || !D.owner) return '';
+      if (actMode(P) !== 'confirm' || !t || !D.owner) return '';
       return `<div class="reviewrow confirm pubrow">
         <span class="rvq">publish to <b>${esc(t.url)}</b>? This makes the page public.</span>
         <button class="rebtn yes" data-act="publish-yes" type="button">Publish</button>
@@ -5731,17 +5865,17 @@ ${bubbleShellHtml()}`;
     function makeArtifactBtnHtml() {
       if (!D.owner) return '';
       const A = D.artifact;
-      if (A.confirm) return '';
+      if (actMode(A) === 'confirm') return '';
       const filed = filedProjects();
-      const busy = A.busy
+      const busy = actMode(A) === 'busy'
         ? '<span class="rvnote busy">asking for the page…</span>' : '';
       return `<button class="archsend mkart" data-act="make-artifact" type="button"
           title="${esc(filed.length
             ? 'have the bots make a page out of this one — your comments, the chat and whatever you ask for — and put it in the project'
             : 'file this page in a project first — the folder button in the header')}"${
-        filed.length && !A.busy ? '' : ' disabled'}>make artifact</button>${busy}${
-        A.err ? `<span class="rvnote err">${esc(A.err)}</span>`
-          : A.note ? `<span class="rvnote note">${esc(A.note)}</span>` : ''}`;
+        filed.length && actMode(A) !== 'busy' ? '' : ' disabled'}>make artifact</button>${busy}${
+        actMode(A) === 'failed' ? `<span class="rvnote err">${esc(A.err)}</span>`
+          : actMode(A) === 'done' && A.note ? `<span class="rvnote note">${esc(A.note)}</span>` : ''}`;
     }
 
     // The confirm: one line of what it should be, and — where the page is filed
@@ -5749,7 +5883,7 @@ ${bubbleShellHtml()}`;
     // like every other confirm in this drawer.
     function makeArtifactConfirmHtml() {
       const A = D.artifact;
-      if (!A.confirm || !D.owner) return '';
+      if (actMode(A) !== 'confirm' || !D.owner) return '';
       const filed = filedProjects();
       const names = filed.map(f => {
         const known = (D.projects.list || []).find(p => p.root === f.root && p.id === f.id);
@@ -5809,7 +5943,7 @@ ${bubbleShellHtml()}`;
       </div>`;
       if (!D.picking) return bar;
       let body;
-      if (a.loading) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
+      if (isLoading(a)) body = `<div class="archnote">reading this project&rsquo;s chats…</div>`;
       else if (a.err) body = `<div class="archnote err">${esc(a.err)}</div>`;
       else if (!a.list || !a.list.length) body = `<div class="archnote">no chats in this project yet</div>`;
       else {
@@ -5879,16 +6013,16 @@ ${bubbleShellHtml()}`;
 
     // ---- archive actions -------------------------------------------------
     async function loadArchive() {
-      if (D.archive.loading) return;
-      D.archive.loading = true; D.archive.err = '';
+      if (!canLoadMove(D.archive, 'ask')) return;
+      loadMove(D.archive, 'ask'); D.archive.err = '';
       render();
       const r = await cb('onProjectSessions')();
-      D.archive.loading = false;
       if (r && r.ok) {
         D.archive.list = r.sessions || [];
         D.archive.current = r.current || null;
+        loadMove(D.archive, 'got');
       } else {
-        D.archive.err = (r && r.error) || 'the companion did not answer';
+        loadMove(D.archive, 'lost', (r && r.error) || 'the companion did not answer');
       }
       render();
     }
@@ -6001,17 +6135,16 @@ ${bubbleShellHtml()}`;
     // its turn is running or gone (setTurns).
     async function sendReview() {
       const r = D.review;
-      if (r.busy) return;
-      r.busy = true; r.err = ''; r.note = ''; r.confirm = false;
+      if (!canActMove(r, 'start')) return;
+      actMove(r, 'start');
       render();
       const a = await cb('onSendReview')();
-      r.busy = false;
       if (!a || !a.ok) {
-        r.err = (a && a.error) || 'the companion did not answer';
+        actMove(r, 'failed', (a && a.error) || 'the companion did not answer');
       } else if (!a.queued && a.reason) {
         // agents off, or a guest's budget: the review IS posted, only the bots
         // are withheld — say which of the two happened
-        r.note = `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`;
+        actMove(r, 'done', `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`);
       } else {
         for (const id of a.threads || []) {
           if (!canTurnMove(D.turns[id], 'wait')) continue;   // this one is already under way
@@ -6022,9 +6155,9 @@ ${bubbleShellHtml()}`;
         // otherwise the wrap-up arriving in page chat looks like a bot going
         // off on its own
         const tail = (D.project && isYes(D.project)) ? '' : ', then a wrap-up in the chat';
-        r.note = a.omitted
+        actMove(r, 'done', a.omitted
           ? `sent ${a.sent} of ${a.total} comments — one turn each; send review again for the other ${a.omitted}`
-          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`;
+          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`);
       }
       // The round OPENS in page chat (the preamble is the last thing in the
       // pane) and the answers land on Comments. Landing here, where the button
@@ -6042,7 +6175,7 @@ ${bubbleShellHtml()}`;
     // but the outcome line, exactly as with a review.
     async function makeArtifact() {
       const A = D.artifact;
-      if (A.busy) return;
+      if (!canActMove(A, 'start')) return;
       const box = D.shadow.querySelector('.mkbrief');
       const sel = D.shadow.querySelector('[data-role="artifact-project"]');
       if (box) A.brief = box.value || '';
@@ -6050,17 +6183,16 @@ ${bubbleShellHtml()}`;
         const [root, ...rest] = String(sel.value).split(' ');
         A.root = root; A.id = rest.join(' ');
       }
-      A.busy = true; A.err = ''; A.note = ''; A.confirm = false;
+      actMove(A, 'start');
       render();
       const a = await cb('onMakeArtifact')(A.root, A.id, A.brief);
-      A.busy = false;
       if (!a || !a.ok) {
-        A.err = (a && a.error) || 'the companion did not answer';
+        actMove(A, 'failed', (a && a.error) || 'the companion did not answer');
       } else if (!a.queued && a.reason) {
-        A.note = a.reason;
+        actMove(A, 'done', a.reason);
       } else {
         A.brief = '';
-        A.note = `asked ${a.route === '@codex' ? 'codex' : 'claude'} — the page appears in this project when it is written`;
+        actMove(A, 'done', `asked ${a.route === '@codex' ? 'codex' : 'claude'} — the page appears in this project when it is written`);
       }
       D.tab = 'chat';
       paintTabs();
@@ -6075,17 +6207,19 @@ ${bubbleShellHtml()}`;
     // about them.
     async function doPublish() {
       const P = D.publish;
-      if (P.busy) return;
-      P.busy = true; P.err = ''; P.note = ''; P.confirm = false;
+      if (!canActMove(P, 'start')) return;
+      actMove(P, 'start');
       render();
       const r = await cb('onPublish')((publishTarget() || {}).name || '');
-      P.busy = false;
       if (!r || !r.ok) {
-        P.err = (r && r.error) || 'the companion did not answer';
+        actMove(P, 'failed', (r && r.error) || 'the companion did not answer');
       } else if (r.error) {
         // the commit stands; the push is what failed, and git's own words are
         // the only useful account of why
-        P.err = `committed, but not pushed \u2014 ${r.error}`;
+        actMove(P, 'failed', `committed, but not pushed \u2014 ${r.error}`);
+      } else {
+        // the address itself is drawn from the page record (publishedHtml)
+        actMove(P, 'done');
       }
       render();
     }
@@ -6099,7 +6233,7 @@ ${bubbleShellHtml()}`;
       if (!want) { D.projects.err = 'give the project a name'; paintProjPick(); return; }
       D.projects.busy = 'new';
       D.projects.err = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       render();
       let r = null;
       try { r = await cb('onCreateProject')(want, root || '', why || ''); }
@@ -6110,8 +6244,8 @@ ${bubbleShellHtml()}`;
         D.projects.list = null;        // there is one more of them now
         D.projects.newOpen = false;
         D.projects.started = (D.projects.started || []).concat([want]);
-        if (D.projOpen) closeProjPick();
-      } else if (D.projOpen) paintProjPick();
+        if (popIs('projects')) closeProjPick();
+      } else if (popIs('projects')) paintProjPick();
       paintFiled();
       render();
     }
@@ -6318,7 +6452,7 @@ ${bubbleShellHtml()}`;
       const shown = list ? shownPages() : [];
       const filtered = !!(D.pages.kind || D.pages.tag);
       let body;
-      if (!list && D.pages.loading) body = `<div class="empty">loading…</div>`;
+      if (!list && isLoading(D.pages)) body = `<div class="empty">loading…</div>`;
       else if (D.pages.err && !(list && list.length)) {
         body = `<div class="empty"><b>Could not load your pages</b>${esc(D.pages.err)}</div>`;
       } else if (!list || !list.length) {
@@ -6415,13 +6549,19 @@ ${bubbleShellHtml()}`;
 
     // `quiet` = a live refresh behind an already-populated list: no loading
     // flicker, and a companion that blinks out leaves the last list on screen.
+    // Two reads can overlap (a live refresh behind a click): the second does
+    // not move the mode, and whichever answer lands while it is 'loading'
+    // settles it; every answer that succeeds still refreshes the rows.
     async function loadPages(quiet) {
-      D.pages.loading = !quiet;
-      if (!quiet) { D.pages.err = ''; renderPages(); }
+      const P = D.pages;
+      if (canLoadMove(P, 'ask')) loadMove(P, 'ask');
+      if (!quiet) { P.err = ''; renderPages(); }
       const r = await cb('onPages')();
-      D.pages.loading = false;
-      if (r && r.ok !== false) { D.pages.list = toPageList(r.index); D.pages.err = ''; }
-      else D.pages.err = (r && r.error) || 'could not reach the companion';
+      if (r && r.ok !== false) {
+        P.list = toPageList(r.index); P.err = '';
+        if (canLoadMove(P, 'got')) loadMove(P, 'got');
+      } else if (canLoadMove(P, 'lost')) loadMove(P, 'lost', (r && r.error) || 'could not reach the companion');
+      else P.err = (r && r.error) || 'could not reach the companion';
       if (D.view === 'pages') renderPages();
     }
 
@@ -7190,7 +7330,7 @@ ${bubbleShellHtml()}`;
       el.classList.toggle('err', !!m.err);
       // when the agents are asleep the sleep line has already said so; a second
       // line of small print under it would only repeat itself
-      const text = m.loading ? 'loading…'
+      const text = isLoading(m) ? 'loading…'
         : m.note ? m.note
         : popMode() === 'live' ? 'takes effect on the next turn'
         : '';
@@ -7200,16 +7340,19 @@ ${bubbleShellHtml()}`;
 
     async function openModels() {
       if (!D.mounted) return;
-      D.modelsOpen = true;
+      setPopover('models');
       D.el.pop.hidden = false;
-      D.models.loading = true;
+      if (canLoadMove(D.models, 'ask')) loadMove(D.models, 'ask');
       D.models.note = '';
       D.models.err = false;
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
       let r;
       try { r = await cb('onModels')(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      D.models.loading = false;
+      // the mode only; the line under the pickers (note, and err for its
+      // colour) is what every pick writes too, so it is set below as before
+      const settled = r && r.ok !== false ? 'got' : 'lost';
+      if (canLoadMove(D.models, settled)) loadMove(D.models, settled, '', null);
       if (r && r.ok !== false) {
         ingestModels(r);
         D.models.err = false;
@@ -7220,7 +7363,7 @@ ${bubbleShellHtml()}`;
         D.models.note = (r && r.error) || 'could not reach the companion';
         D.models.err = true;
       }
-      if (D.modelsOpen) paintModels();
+      if (popIs('models')) paintModels();
     }
 
     // The companion's whole answer about the agents (GET /models), into the
@@ -7238,7 +7381,7 @@ ${bubbleShellHtml()}`;
       D.models.bridge = r.bridge || '';
       if (Array.isArray(r.commands) && r.commands.length) {
         D.commands = r.commands;
-        if (D.helpOpen) paintHelp();
+        if (popIs('help')) paintHelp();
       }
       // …and one too old to have keys at all leaves the billing row out
       ingestKeys(r.keys);
@@ -7255,7 +7398,7 @@ ${bubbleShellHtml()}`;
       catch { return; }
       if (!r || r.ok === false) return;
       ingestModels(r);
-      if (D.modelsOpen) syncModels();
+      if (popIs('models')) syncModels();
     }
 
     // ---- the /help popup ---------------------------------------------------
@@ -7276,8 +7419,7 @@ ${bubbleShellHtml()}`;
     }
     function openHelp(target) {
       if (!D.mounted || !D.el.helppop) return;
-      if (D.modelsOpen) closeModels();
-      D.helpOpen = true;
+      setPopover('help');
       D.helpFrom = target || '';
       closeMention();
       paintHelp();
@@ -7287,20 +7429,44 @@ ${bubbleShellHtml()}`;
     }
     // Esc events a layer has already answered (see api.escape)
     const escUsed = new WeakSet();
-    function closeHelp() {
-      if (!D.helpOpen) return;
-      D.helpOpen = false;
-      if (D.el.helppop) D.el.helppop.hidden = true;
-      const box = D.helpFrom && composerBox(D.helpFrom);
-      D.helpFrom = '';
-      if (box) box.focus();
+    // ---- which pop-over is open (POPOVERS) ----------------------------------
+    // THE ONE SETTER. Any pop-over may replace any other, so the only move it
+    // refuses is to a name that is not on the list. Leaving one takes its
+    // panel down (POP_HIDE), which is how opening the next closes the last.
+    const popIs = name => D.popover === name;
+    function setPopover(next) {
+      if (POPOVERS.indexOf(next) === -1) throw new Error('pop-over: no such one ' + next);
+      const prev = POPOVERS.indexOf(D.popover) === -1 ? 'none' : D.popover;
+      if (prev === next) return false;
+      D.popover = next;
+      if (POP_HIDE[prev]) POP_HIDE[prev](next);
+      return true;
     }
-
-    function closeModels() {
-      D.modelsOpen = false;
-      if (D.el.pop) D.el.pop.hidden = true;
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onDocDown, true);
-    }
+    const POP_HIDE = {
+      // the composer /help was asked from gets the focus back — when /help
+      // closes, not when another pop-over takes its place
+      help: next => {
+        if (D.el.helppop) D.el.helppop.hidden = true;
+        const box = next === 'none' && D.helpFrom && composerBox(D.helpFrom);
+        D.helpFrom = '';
+        if (box) box.focus();
+      },
+      models: () => {
+        if (D.el.pop) D.el.pop.hidden = true;
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onDocDown, true);
+      },
+      export: () => {
+        if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
+      },
+      projects: () => {
+        if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
+      },
+    };
+    // closing is "none", and only for the one that is open
+    function closeHelp() { if (popIs('help')) setPopover('none'); }
+    function closeModels() { if (popIs('models')) setPopover('none'); }
     // page-side clicks: everything inside the shadow root retargets to the host,
     // so this only ever fires for clicks on the page itself
     const onDocDown = e => { if (!D.host || !D.host.contains(e.target)) closeModels(); };
@@ -7528,7 +7694,7 @@ ${bubbleShellHtml()}`;
     // says what it reads.
     const ACTS = {
       'close': () => close(),
-      'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
+      'models': () => { if (popIs('models')) closeModels(); else openModels(); },
       'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
       'mic': (btn, target) => micTap(target),
@@ -7566,8 +7732,8 @@ ${bubbleShellHtml()}`;
       'pdf-import': () => doPdfImport(),
       'pdf-import-no': () => { PDF.dismissed = true; PDF.err = ''; render(); },
       'pdf-saved-ok': () => { PDF.out = null; render(); },
-      'export': () => { if (D.exportOpen) closeExportPick(); else openExportPick(); },
-      'filein': () => { if (D.projOpen) closeProjPick(); else openProjPick(); },
+      'export': () => { if (popIs('export')) closeExportPick(); else openExportPick(); },
+      'filein': () => { if (popIs('projects')) closeProjPick(); else openProjPick(); },
       'proj-file': (btn) => fileInProject(btn.dataset.root, btn.dataset.pid, !btn.dataset.on),
       // the bot's suggestion, answered. Yes files it; no puts the chip away
       // for this tab and is not remembered anywhere else — the reader may
@@ -7747,14 +7913,14 @@ ${bubbleShellHtml()}`;
       'blogroot-no': () => answerBlogRoot(false),
       'arch-list': () => {
         D.picking = !D.picking;
-        if (D.picking && !D.archive.list && !D.archive.loading) { loadArchive(); return; }
+        if (D.picking && !D.archive.list && !isLoading(D.archive)) { loadArchive(); return; }
         render();
       },
       // one step, inline, like del-thread: the count is the whole of the
       // warning, because "send" here spends real agent time on a message
       // nobody typed
-      'send-review': () => { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); },
-      'review-no': () => { D.review.confirm = false; render(); },
+      'send-review': () => { if (canActMove(D.review, 'ask')) actMove(D.review, 'ask'); render(); },
+      'review-no': () => { if (canActMove(D.review, 'decline')) actMove(D.review, 'decline'); render(); },
       'review-yes': () => sendReview(),
       // …and its twin, which asks two more things before it spends the turn:
       // what the page should BE, and (filed in more than one project) which
@@ -7762,23 +7928,23 @@ ${bubbleShellHtml()}`;
       'make-artifact': () => {
         const filed = filedProjects();
         if (!filed.length) return;
-        D.artifact.confirm = true;
-        D.artifact.err = ''; D.artifact.note = '';
+        if (!canActMove(D.artifact, 'ask')) return;
+        actMove(D.artifact, 'ask');
         if (!D.artifact.id) { D.artifact.root = filed[0].root; D.artifact.id = filed[0].id; }
         render();
         const box = D.shadow.querySelector('.mkbrief');
         if (box) box.focus();
       },
-      'make-artifact-no': () => { D.artifact.confirm = false; render(); },
+      'make-artifact-no': () => { if (canActMove(D.artifact, 'decline')) actMove(D.artifact, 'decline'); render(); },
       'make-artifact-yes': () => makeArtifact(),
       // the one act here that makes something public, and it asks first —
       // naming the address, because that is the fact the reader is agreeing to
       'publish': () => {
         if (!publishTarget()) return;
-        D.publish.confirm = true; D.publish.err = ''; D.publish.note = '';
+        if (canActMove(D.publish, 'ask')) actMove(D.publish, 'ask');
         render();
       },
-      'publish-no': () => { D.publish.confirm = false; render(); },
+      'publish-no': () => { if (canActMove(D.publish, 'decline')) actMove(D.publish, 'decline'); render(); },
       'publish-yes': () => doPublish(),
       // the bot's NEW-project offer, answered. Yes creates the project and
       // files the page in it; no is the same non-event "No" is on every other
@@ -7871,12 +8037,12 @@ ${bubbleShellHtml()}`;
         if (e.target && e.target.closest && e.target.closest('button.mic')) e.preventDefault();
       }, true);
       D.shadow.addEventListener('mousedown', e => {
-        if (!D.helpOpen || !e.target.closest) return;
+        if (!popIs('help') || !e.target.closest) return;
         if (e.target.closest('.popover.helppop')) return;
         closeHelp();
       }, true);
       D.shadow.addEventListener('mousedown', e => {
-        if (!D.modelsOpen || !e.target.closest) return;
+        if (!popIs('models') || !e.target.closest) return;
         if (e.target.closest('.popover') || e.target.closest('[data-act="models"]')) return;
         closeModels();
       }, true);
@@ -7897,7 +8063,7 @@ ${bubbleShellHtml()}`;
       // focused — the answer that settles it is always the companion's.
       if (typeof window !== 'undefined') {
         window.addEventListener('focus', () => {
-          if (D.modelsOpen && D.models.keyPending) refreshModels();
+          if (popIs('models') && D.models.keyPending) refreshModels();
         });
       }
 
@@ -7932,8 +8098,8 @@ ${bubbleShellHtml()}`;
           if (inBox) syncMention(inBox); else closeMention();
         }
         // …and so does anything that is not the export chooser or its button
-        if (D.exportOpen && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
-        if (D.projOpen && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
+        if (popIs('export') && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
+        if (popIs('projects') && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
@@ -8205,10 +8371,10 @@ ${bubbleShellHtml()}`;
             return;
           }
           if (D.light) closeLight();
-          else if (D.helpOpen) closeHelp();
-          else if (D.projOpen) closeProjPick();
-          else if (D.exportOpen) closeExportPick();
-          else if (D.modelsOpen) closeModels();
+          else if (popIs('help')) closeHelp();
+          else if (popIs('projects')) closeProjPick();
+          else if (popIs('export')) closeExportPick();
+          else if (popIs('models')) closeModels();
           else close();
           return;
         }
@@ -8798,8 +8964,7 @@ ${bubbleShellHtml()}`;
     // The asynchronous half. Retry re-enters here with the same entry, so this
     // is also the whole retry path.
     async function deliver(target, entry) {
-      entry.state = 'sending';
-      entry.error = '';
+      // born 'sending' (enqueue), or moved back to it by retrySend — never here
       // Where this chat's turn stood, sampled BEFORE the await: anything that
       // moves it while the POST is out means the bots started (or finished)
       // first and "queued…" is already false. A brand-new thread has no id and
@@ -8821,8 +8986,7 @@ ${bubbleShellHtml()}`;
       if (!res || res.ok === false) {
         // the text stays exactly where the user can see it, with a way to send
         // it again — never silently back in a box they have stopped looking at
-        entry.state = 'failed';
-        entry.error = (res && res.error) || SEND_FAIL;
+        moveOutbox(entry, 'failed', (res && res.error) || SEND_FAIL);
         render();
         return;
       }
@@ -8871,12 +9035,11 @@ ${bubbleShellHtml()}`;
 
     function retrySend(target, id) {
       const e = findOut(target, id);
-      if (!e || e.state === 'sending') return;
+      if (!canOutboxMove(e, 'sending')) return;
       // its baseline may have moved while it sat there failed
       e.seen = countSame(target, e.text) +
         outboxFor(target).filter(x => x !== e && x.text === e.text && x.state === 'sending').length;
-      e.state = 'sending';
-      e.error = '';
+      moveOutbox(e, 'sending');
       render();
       deliver(target, e);
     }
@@ -9687,16 +9850,13 @@ ${bubbleShellHtml()}`;
     async function doResolve(target, on) {
       const t = threadById(target);
       if (!t || D.resolving[target]) return;
-      const was = !!t.resolved;
+      const was = threadStatusFields(t);
       const wasSummary = t.summary;
-      // Either direction ends "ready for review" — the companion's setResolved
-      // does exactly this, so the optimistic copy does too, or a reopened
-      // thread would read "ready" here and "open" everywhere else until the
-      // record came back
-      const wasAddr = { addressed: t.addressed, addressed_by: t.addressed_by, addressed_at: t.addressed_at };
-      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
+      // Either direction ends "ready for review" — the companion's move does
+      // exactly this, and so does the twin setter, or a reopened thread would
+      // read "ready" here and "open" everywhere else until the record came back
+      setThreadStage(t, on ? 'resolved' : 'open');
       if (on) {
-        t.resolved = true;
         if (!t.summary) t.summary = localDigest(t);
         // opening the archive on the first resolve is the one time the reader
         // is shown where their thread went; after that it stays as they left it
@@ -9706,7 +9866,6 @@ ${bubbleShellHtml()}`;
         // list it came from, in its page order. `summary` is left where it is —
         // it is still a true account of what the thread said last time, and
         // keeping it is what lets a late summary job land harmlessly.
-        delete t.resolved;
       }
       D.resolving[target] = true;
       render();
@@ -9718,9 +9877,8 @@ ${bubbleShellHtml()}`;
         // put it back exactly as it was — including a summary we invented
         const now = threadById(target);
         if (now) {
-          if (was) now.resolved = true; else delete now.resolved;
+          restoreThreadStatus(now, was);
           if (wasSummary == null) delete now.summary; else now.summary = wasSummary;
-          for (const k of Object.keys(wasAddr)) if (wasAddr[k] !== undefined) now[k] = wasAddr[k];
         }
         note(target, (r && r.error) || (on ? 'could not resolve that thread' : 'could not reopen that thread'), true);
         return;   // note() renders
@@ -9770,8 +9928,9 @@ ${bubbleShellHtml()}`;
     async function doNotDone(target) {
       const t = threadById(target);
       if (!t || D.addressing[target]) return;
-      const was = t.addressed, wasBy = t.addressed_by, wasAt = t.addressed_at;
-      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
+      const was = threadStatusFields(t);
+      // "not done" moves a READY thread back to open; on any other it is a no-op
+      if (threadStage(t) === 'ready') setThreadStage(t, 'open');
       D.addressing[target] = true;
       render();
       let r;
@@ -9780,7 +9939,7 @@ ${bubbleShellHtml()}`;
       delete D.addressing[target];
       if (!r || r.ok === false) {
         const now = threadById(target);
-        if (now && was) { now.addressed = was; if (wasBy) now.addressed_by = wasBy; if (wasAt) now.addressed_at = wasAt; }
+        if (now) restoreThreadStatus(now, was);
         note(target, (r && r.error) || 'could not put that thread back', true);
         return;   // note() renders
       }
@@ -9873,16 +10032,11 @@ ${bubbleShellHtml()}`;
     }
     function openExportPick() {
       if (!D.mounted) return;
-      closeModels();
-      D.exportOpen = true;
+      setPopover('export');
       paintExportPick();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onExportDown, true);
     }
-    function closeExportPick() {
-      D.exportOpen = false;
-      if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
-    }
+    function closeExportPick() { if (popIs('export')) setPopover('none'); }
     const onExportDown = e => { if (!D.host || !D.host.contains(e.target)) closeExportPick(); };
     // Choosing is also remembering: the next export, here or from a row in the
     // pages list, uses this until it is changed again.
@@ -9914,7 +10068,8 @@ ${bubbleShellHtml()}`;
       const P = D.projects;
       const filed = new Set((P.filed || []).map(f => `${f.root}\u0000${f.id}`));
       let body;
-      if (P.loading) body = '<div class="pop-note">reading your council…</div>';
+      const reading = isLoading(P) && !P.list;
+      if (reading) body = '<div class="pop-note">reading your council…</div>';
       else if (P.err) body = `<div class="pop-note err">${esc(P.err)}</div>`;
       else if (!(P.list || []).length) {
         // Not an error, and worth saying properly: the roster is drawn from
@@ -9975,7 +10130,7 @@ ${bubbleShellHtml()}`;
         + networkPanel
         + (network ? '<div class="pop-head second">Projects</div>' : '')
         + body
-        + (P.loading || P.err ? '' : newRow)
+        + (reading || P.err ? '' : newRow)
         + '<div class="pop-note foot">Filing is a read: the bots get what these '
         + 'projects already know. Nothing here is moved or written \u2014 except a '
         + 'new project, which is a new folder in your council.</div>';
@@ -10001,9 +10156,10 @@ ${bubbleShellHtml()}`;
     }
     async function openProjPick() {
       if (!D.mounted) return;
-      closeModels(); closeExportPick();
-      D.projOpen = true;
-      D.projects.loading = !D.projects.list;
+      setPopover('projects');
+      // a re-open re-reads behind the list it already has; only a first read
+      // says "reading your council…" (projectsReading)
+      if (canLoadMove(D.projects, 'ask')) loadMove(D.projects, 'ask');
       D.projects.err = '';
       paintProjPick();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onProjDown, true);
@@ -10013,17 +10169,14 @@ ${bubbleShellHtml()}`;
         D.projects.filed = (r && r.filed) || [];
         D.projects.roots = (r && r.roots) || [];
         D.projects.network = (r && r.network) || null;
+        if (canLoadMove(D.projects, 'got')) loadMove(D.projects, 'got');
       } catch (e) {
-        D.projects.err = (e && e.message) || 'could not read your council';
+        if (canLoadMove(D.projects, 'lost')) loadMove(D.projects, 'lost', (e && e.message) || 'could not read your council');
+        else D.projects.err = (e && e.message) || 'could not read your council';
       }
-      D.projects.loading = false;
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
     }
-    function closeProjPick() {
-      D.projOpen = false;
-      if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
-    }
+    function closeProjPick() { if (popIs('projects')) setPopover('none'); }
     const onProjDown = e => { if (!D.host || !D.host.contains(e.target)) closeProjPick(); };
 
     // The one mutation, shared by the picker and the bot's chip. Attaching is
@@ -10033,7 +10186,7 @@ ${bubbleShellHtml()}`;
       const key = `${root}\u0000${id}`;
       D.projects.busy = key;
       D.projects.err = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       try {
         const r = await cb('onFileProject')(root, id, attach);
         D.projects.filed = (r && r.filed) || [];
@@ -10041,7 +10194,7 @@ ${bubbleShellHtml()}`;
         D.projects.err = (e && e.message) || 'could not file this page';
       }
       D.projects.busy = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       paintFiled();
       render();
     }
@@ -10109,12 +10262,17 @@ ${bubbleShellHtml()}`;
     async function loadMemory(keepScope) {
       if (!D.owner) return;
       const M = D.memory;
-      M.loading = true; M.error = '';
+      if (canLoadMove(M, 'ask')) loadMove(M, 'ask');
+      M.error = '';
       renderMemory();
       let r;
       try { r = await cb('onMemoryCards')({ scope: keepScope || M.scope }); } catch { r = null; }
-      M.loading = false;
-      if (!r || r.ok === false) { M.error = (r && r.error) || 'the companion did not answer'; renderMemory(); return; }
+      if (!r || r.ok === false) {
+        const why = (r && r.error) || 'the companion did not answer';
+        if (canLoadMove(M, 'lost')) loadMove(M, 'lost', why, 'error'); else M.error = why;
+        renderMemory(); return;
+      }
+      if (canLoadMove(M, 'got')) loadMove(M, 'got');
       M.scope = r.scope || 'page';
       M.scopes = r.scopes || [];
       M.counts = r.counts || {};
@@ -10228,7 +10386,7 @@ ${bubbleShellHtml()}`;
 
     function memBodyHtml() {
       const M = D.memory;
-      if (M.loading && !M.queue.length) return `<p class="memnote">reading the vault…</p>`;
+      if (isLoading(M) && !M.queue.length) return `<p class="memnote">reading the vault…</p>`;
       if (M.error) return `<p class="memnote bad">${esc(M.error)}</p>`;
       const card = M.last ? M.last.card : memCard();
       if (!card) {
@@ -11238,17 +11396,17 @@ ${bubbleShellHtml()}`;
     // error — it is a library nobody has said anything into yet, and the
     // companion creates it on the first message rather than before.
     async function loadLibrary() {
-      if (D.library.loading) return;
-      D.library.loading = true;
+      if (!canLoadMove(D.library, 'ask')) return;
+      loadMove(D.library, 'ask');
       const asked = D.turnClock;
       const r = await cb('onLibrary')();
-      D.library.loading = false;
       if (r && r.ok !== false) {
         D.library.page = (r.page && r.page.url) ? r.page : null;
         D.library.err = '';
+        loadMove(D.library, 'got');
         setTurns(r.turns, asked, 'library');
       } else {
-        D.library.err = (r && r.error) || 'could not reach the companion';
+        loadMove(D.library, 'lost', (r && r.error) || 'could not reach the companion');
         D.library.note = D.library.err;
       }
       if (D.view === 'pages') renderLibrary();
@@ -11540,7 +11698,7 @@ ${bubbleShellHtml()}`;
       const m = mode === 'comments' ? 'comments' : 'all';
       if (m === D.exportMode) return D;
       D.exportMode = m;
-      if (D.exportOpen) paintExportPick();
+      if (popIs('export')) paintExportPick();
       if (D.view === 'pages') renderPages();
       return D;
     }
@@ -12843,13 +13001,13 @@ ${bubbleShellHtml()}`;
         // the command table rides the same broadcast (chat.mjs modelsEvent)
         if (Array.isArray(ev.commands) && ev.commands.length) {
           D.commands = ev.commands;
-          if (D.helpOpen) paintHelp();
+          if (popIs('help')) paintHelp();
         }
         // which auth each agent bills, and whether there is a key to bill —
         // the companion's own setting, and the only thing that can settle a
         // billing switch waiting on a key
         ingestKeys(ev.keys);
-        if (D.modelsOpen) syncModels();
+        if (popIs('models')) syncModels();
         return;
       }
       // the round the reader started, as the companion sees it (server.mjs
@@ -13182,7 +13340,7 @@ ${bubbleShellHtml()}`;
         // …then the /help popup, which is a layer over the drawer. The same
         // key then reaches the drawer's own listener with nothing left open,
         // which would close the drawer — so the event is marked as used up.
-        if (D.helpOpen) { closeHelp(); if (ev) escUsed.add(ev); return true; }
+        if (popIs('help')) { closeHelp(); if (ev) escUsed.add(ev); return true; }
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's
@@ -13242,7 +13400,11 @@ ${bubbleShellHtml()}`;
     create, authorColor, isBot, HINT, PAGE_TARGET,
     isResolvedThread, isInsertionThread,                    // content.js + test/collapse.test.mjs
     threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
-    THREAD_STAGES, THREAD_MARKS,
+    THREAD_STAGES, THREAD_MARKS, THREAD_MOVES, threadMove,  // test/status.test.mjs
+    setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
+    POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
+    LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
+    OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

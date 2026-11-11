@@ -6,7 +6,7 @@ import path from 'node:path';
 // and who counts as a bot are decided in exactly one place
 import { hasMention, isBotAuthor } from './chat.mjs';
 import { isLibrary, pageKey, runDir, displayTitle, tagsOf, whereParts,
-  kindOf, readSnapshot, snapshotPdfText } from './store.mjs';
+  kindOf, readSnapshot, snapshotPdfText, isResolved } from './store.mjs';
 // the same block parser the runner and the drawer use: a result is written
 // under the fence it came out of, found by line number rather than re-guessed
 import { codeBlocks } from './run.mjs';
@@ -204,7 +204,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     // here is how" is most of what a resolved thread is worth by then. Plain
     // italic prose so a note without any resolved threads is byte-identical
     // to the one this always wrote.
-    if (t.resolved) {
+    if (isResolved(t)) {
       parts.push(`*Resolved${t.resolved_by ? ` by ${t.resolved_by}` : ''}.*`
         + (t.summary ? ` ${t.summary}` : ''));
     }

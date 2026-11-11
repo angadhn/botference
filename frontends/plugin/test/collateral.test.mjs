@@ -305,7 +305,7 @@ console.log('\nthe thread the companion writes');
 }
 
 // ---- 7. and the record the extension reads -------------------------------
-// The server writes these through store.addThread + store.setAddressed and
+// The server writes these through store.addThread + store.setThreadStatus and
 // nothing else — no new persistence, no new endpoint. This composes that here,
 // exactly as server.reportCollateral does, and checks the result is the triple
 // content.js paints from: `t.addressed && !t.resolved && t.prior_quote`.
@@ -319,7 +319,7 @@ console.log('\nthe record content.js paints from');
     });
     thread.auto = true;
     if (t.prior_quote) thread.prior_quote = t.prior_quote;
-    store.setAddressed(thread, true, 'claude');
+    store.setThreadStatus(thread, 'ready', 'claude');
   }
   const t = page.threads[0];
   eq('the thread is on the page', page.threads.length, 1);
@@ -334,7 +334,7 @@ console.log('\nthe record content.js paints from');
   const ws = await import('../workspace.mjs');
   eq('an auto-thread is out of the next send review, because it is addressed',
     ws.openThreads(page).length, 0);
-  store.setAddressed(t, false);
+  store.setThreadStatus(t, 'open');
   eq('…and "not done" puts it back in, like any other ready thread',
     ws.openThreads(page).length, 1);
 }
@@ -470,7 +470,7 @@ const reader = (over = {}) => ({
   const again = store.healThread(t, { quote: 'Something else entirely, later on.' });
   check('healing to the wording already there changes nothing', again.ok && !again.changed);
   // and a filed thread refuses at the store as well as in the plan
-  store.setResolved(t, true, 'angadh');
+  store.setThreadStatus(t, 'resolved', 'angadh');
   check('a resolved thread refuses to be healed', store.healThread(t, { quote: 'x y z' }).ok === false);
 }
 

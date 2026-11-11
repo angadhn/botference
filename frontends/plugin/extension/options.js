@@ -15,31 +15,39 @@
     : root.BFPConfig;
 
   // What a /health attempt MEANS, in the words the page shows. Split out from
-  // the fetch so every branch is testable without a network:
-  //   {ok:false}              → unreachable / wrong address
-  //   401                     → the password is the problem, and only that
-  //   403                     → reached it, signed in, not the owner (fine)
-  //   200 + bridge/queue      → the whole truth in one line
+  // the fetch so every branch is testable without a network. The connection
+  // itself is named the way every other layer names it — config.js
+  // CONN_MODES and CONN_WORDS, one list and one set of words — so this page
+  // and the drawer's header dot never describe the same companion two ways.
+  // `mode` is which of those modes the attempt found; what follows the word
+  // is only this page's detail:
+  //   {ok:false}              → offline: unreachable / wrong address
+  //   401                     → connected, but the password is the problem
+  //   403                     → connected, signed in, not the owner (fine)
+  //   another status          → connected, but it said no
+  //   200 + bridge/queue      → connected, and the whole truth in one line
+  const W = CFG.CONN_WORDS;
   function healthVerdict(r) {
     if (!r || r.ok === false) {
       if (r && r.status === 401) {
-        return { cls: 'err', text: 'reached the companion, but the password was rejected' };
+        return { mode: 'connected', cls: 'err', text: W.connected + ' — but the password was rejected' };
       }
       if (r && r.status === 403) {
-        return { cls: 'ok', text: 'connected — this companion knows you, but you are not its owner' };
+        return { mode: 'connected', cls: 'ok', text: W.connected + ' — this companion knows you, but you are not its owner' };
       }
       if (r && r.status) {
-        return { cls: 'err', text: 'the companion answered HTTP ' + r.status +
+        return { mode: 'connected', cls: 'err', text: W.connected + ' — but it answered HTTP ' + r.status +
           ((r.error && r.error !== 'HTTP ' + r.status) ? ' — ' + r.error : '') };
       }
-      return { cls: 'err', text: (r && r.error) || 'no answer — is the companion running at that address?' };
+      return { mode: 'offline', cls: 'err',
+        text: W.offline + ' — ' + ((r && r.error) || 'nothing answered at that address. Is it running?') };
     }
     const d = r.data || {};
     const bridge = d.bridge ? 'agents ' + d.bridge : '';
     const queue = d.queue ? 'queue ' + d.queue : '';
     const who = d.handle || d.author || d.you || '';
-    const bits = ['connected', bridge, queue, who ? 'you are “' + who + '”' : ''].filter(Boolean);
-    return { cls: 'ok', text: bits.join(' · ') };
+    const bits = [W.connected, bridge, queue, who ? 'you are “' + who + '”' : ''].filter(Boolean);
+    return { mode: 'connected', cls: 'ok', text: bits.join(' · ') };
   }
 
   // ---- local PDFs: the one toggle that is not ours -----------------------
@@ -181,7 +189,7 @@
 
   el('test').addEventListener('click', async () => {
     el('test').disabled = true;
-    say({ cls: '', text: 'testing…' });
+    say({ cls: '', text: CFG.CONN_WORDS.connecting });
     say(healthVerdict(await health(fields())));
     el('test').disabled = false;
   });

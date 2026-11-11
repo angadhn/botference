@@ -1106,7 +1106,7 @@ function reportCollateral(page, seen, afterIn, ev) {
       if (t.origin) thread.origin = t.origin;
       // the amber middle state, straight away: a bot has been here and it is the
       // reader's turn to look, which is what this thread IS
-      store.setAddressed(thread, true, author);
+      store.setThreadStatus(thread, 'ready', author);
       made++;
     }
   } catch { return 0; }   // a diff that throws must never cost the turn its reload
@@ -2248,7 +2248,7 @@ function quizBack(data, reveal, gone) {
 // about an IDEA, and ideas are not a PDF feature — but not a thread the reader
 // has already filed, and not page chat (which sits on no passage, so a card
 // made from it would have no source to link back to).
-const questionable = thread => !!thread && !thread.resolved;
+const questionable = thread => !!thread && !store.isResolved(thread);
 
 // A guest's mention spends the OWNER's agents on the owner's machine, so it is
 // off by default and metered when on: grants.json is hand-edited, re-read on
@@ -2367,7 +2367,7 @@ function addressOf(target, text, pill, msgs, page = null) {
 const strikeable = (page, thread) => !!thread
   && store.kindOf(page) === 'pdf'
   && store.markOf(thread) !== 'strike'
-  && !thread.resolved;
+  && !store.isResolved(thread);
 
 // A MINTED STRIKE IS INERT, and this is where that is enforced: `markOf(thread)
 // === 'strike'` above means the offer never rides a turn in the card the
@@ -4759,7 +4759,7 @@ export function handler(req, res) {
           if (c.resolved) {
             if (!thread.origin_filed) {
               thread.origin_filed = true;
-              if (!store.isResolved(thread)) store.setResolved(thread, true, author);
+              store.setThreadStatus(thread, 'resolved', author);
               changed = dirty = true;
             }
           } else if (thread.origin_filed) {
@@ -5215,11 +5215,7 @@ export function handler(req, res) {
       // "corrected". The record keeps the latest verdict for the places that
       // read it later (the Markdown export, the page view), and the next
       // refetch any real change causes carries it.
-      const now = !!data.orphaned;
-      if (!!thread.orphaned !== now) {
-        thread.orphaned = now;
-        store.savePage(page);
-      }
+      if (store.setOrphaned(thread, !!data.orphaned)) store.savePage(page);
       ok(res, { thread });
     });
   }
@@ -5247,7 +5243,7 @@ export function handler(req, res) {
       // room's reopen button posts an empty field, and only an explicit
       // truthy value resolves
       const on = formBool(data.resolved, true);
-      const { changed } = store.setResolved(thread, on, me.handle);
+      const { changed } = store.setThreadStatus(thread, on ? 'resolved' : 'open', me.handle);
       // the placeholder goes in the same write as the flag, so the card is
       // never blank for even one frame; the agents' paragraph replaces it
       // whenever the job behind it drains
@@ -5285,7 +5281,15 @@ export function handler(req, res) {
       const { page, thread } = at;
       // a form has no booleans: absent/""/"0"/"false" all mean "not done"
       const on = formBool(data.addressed, false);
-      store.setAddressed(thread, on, on ? me.handle : '');
+      // "not done" moves only a READY thread back to open — an open one is
+      // already there and a filed one is not this button's to reopen; the
+      // other direction is refused for a filed thread (store THREAD_MOVES)
+      if (on) {
+        const r = store.setThreadStatus(thread, 'ready', me.handle);
+        if (r.refused) return fail(res, 409, r.refused);
+      } else if (store.isAddressed(thread)) {
+        store.setThreadStatus(thread, 'open');
+      }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       if (data._form) return seeOther(res, backTo(data, page, thread.id));
@@ -5367,7 +5371,7 @@ export function handler(req, res) {
         if (store.kindOf(page) !== 'pdf') {
           return fail(res, 409, 'a strikethrough is a PDF markup — this page cannot carry one');
         }
-        if (thread.resolved) {
+        if (store.isResolved(thread)) {
           return fail(res, 409, 'this thread is filed — reopen it to change its markup');
         }
       }

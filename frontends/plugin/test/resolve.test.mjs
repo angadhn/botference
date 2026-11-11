@@ -54,7 +54,7 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   const t = thread([{ author: 'angadh', ts: '1', text: 'is this right?' }]);
   ok('an untouched thread is open', !store.isResolved(t));
 
-  const { changed } = store.setResolved(t, true, 'angadh');
+  const { changed } = store.setThreadStatus(t, 'resolved', 'angadh');
   ok('resolving says it changed something', changed);
   ok('…and sets the flag', t.resolved === true);
   ok('…stamps it', typeof t.resolved_at === 'string' && t.resolved_at.length > 10);
@@ -63,17 +63,17 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   ok('isResolved agrees', store.isResolved(t));
 
   ok('resolving what is already resolved changes nothing',
-    store.setResolved(t, true, 'angadh').changed === false);
+    store.setThreadStatus(t, 'resolved', 'angadh').changed === false);
 
-  store.setResolved(t, false);
+  store.setThreadStatus(t, 'open');
   eq('reopening leaves NO resolved fields behind — an open thread is an open thread',
     Object.keys(t).filter(k => k.startsWith('resolved')), []);
   ok('…so a reopened thread and a never-resolved one are the same record',
-    JSON.stringify(t) === JSON.stringify(thread([{ author: 'angadh', ts: '1', text: 'is this right?' }])));
+    JSON.stringify(t) === JSON.stringify(thread([{ author: 'angadh', ts: '1', text: 'is this right?' }], { status: 'open' })));
 
   ok('a handle is sanitized on the way in, like every other author on the wire',
-    store.setResolved(thread([]), true, 'Ada L <x>').thread.resolved_by !== 'Ada L <x>');
-  ok('setResolved survives being handed nothing', store.setResolved(null, true) === null);
+    store.setThreadStatus(thread([]), 'resolved', 'Ada L <x>').thread.resolved_by !== 'Ada L <x>');
+  ok('the setter survives being handed nothing', store.setThreadStatus(null, 'resolved') === null);
 }
 
 // ---- 1b. READY FOR REVIEW — the middle state ------------------------------
@@ -88,7 +88,7 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   const t = thread([{ author: 'angadh', ts: '1', text: 'is this right?' }]);
   ok('an untouched thread is not addressed', !store.isAddressed(t));
 
-  const { changed } = store.setAddressed(t, true, 'claude');
+  const { changed } = store.setThreadStatus(t, 'ready', 'claude');
   ok('marking it says it changed something', changed);
   ok('…and sets the flag', t.addressed === true);
   ok('…stamps it', typeof t.addressed_at === 'string' && t.addressed_at.length > 10);
@@ -96,14 +96,14 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   ok('isAddressed agrees', store.isAddressed(t));
   ok('…but nothing was resolved on the way', !t.resolved && !store.isResolved(t));
 
-  store.setAddressed(t, false);
+  store.setThreadStatus(t, 'open');
   eq('clearing it leaves NO addressed fields behind — state, not history',
     Object.keys(t).filter(k => k.startsWith('addressed')), []);
   ok('…so a record that was never addressed and one that was are identical',
-    JSON.stringify(t) === JSON.stringify(thread([{ author: 'angadh', ts: '1', text: 'is this right?' }])));
+    JSON.stringify(t) === JSON.stringify(thread([{ author: 'angadh', ts: '1', text: 'is this right?' }], { status: 'open' })));
   ok('a handle is sanitized on the way in, like every other author on the wire',
-    store.setAddressed(thread([]), true, 'Ada L <x>').thread.addressed_by !== 'Ada L <x>');
-  ok('setAddressed survives being handed nothing', store.setAddressed(null, true) === null);
+    store.setThreadStatus(thread([]), 'ready', 'Ada L <x>').thread.addressed_by !== 'Ada L <x>');
+
 
   // a filed thread is filed, whatever was claimed about it on the way there
   const r = thread([], { addressed: true, addressed_by: 'claude', resolved: true });
@@ -114,10 +114,10 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   // and reopening is the reader saying "not done" — which is exactly the
   // answer the amber badge was asking for.
   const u = thread([], { addressed: true, addressed_at: '1', addressed_by: 'claude' });
-  store.setResolved(u, true, 'angadh');
+  store.setThreadStatus(u, 'resolved', 'angadh');
   ok('filing a thread spends the claim rather than remembering it', !u.addressed);
   const v = thread([], { resolved: true, addressed: true, addressed_at: '1', addressed_by: 'codex' });
-  store.setResolved(v, false);
+  store.setThreadStatus(v, 'open');
   ok('…and reopening puts it back OPEN, not back into "ready for review"',
     !v.addressed && !v.resolved);
 }
@@ -268,7 +268,7 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   // lets a summary job that drains AFTER a reopen land harmlessly instead of
   // having to be chased down and cancelled.
   const u = thread([], { resolved: true, summary: 'settled thus.', summary_by: 'claude' });
-  store.setResolved(u, false);
+  store.setThreadStatus(u, 'open');
   eq('a summary survives a reopen', u.summary, 'settled thus.');
 }
 

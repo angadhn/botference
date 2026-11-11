@@ -12,7 +12,7 @@
 import { escHtml } from './hosted.mjs';
 // the library's reserved identity and the page-chat target, from the one place
 // that defines them rather than as literals repeated down here
-import { LIBRARY_URL, PAGE_CHAT, PAGE_KINDS, inferKind, tagsOf, displayTitle } from './store.mjs';
+import { LIBRARY_URL, PAGE_CHAT, PAGE_KINDS, inferKind, tagsOf, displayTitle, isResolved } from './store.mjs';
 // the capped-answer marker, from the one place that defines it
 import { splitMore } from './more.mjs';
 
@@ -307,13 +307,13 @@ const resolveForm = (page, key, t) => `<form class="resolve" method="POST" actio
 <input type="hidden" name="url" value="${escHtml(page.url)}">
 <input type="hidden" name="thread_id" value="${escHtml(t.id)}">
 <input type="hidden" name="redirect" value="/p/${escHtml(key)}">
-<input type="hidden" name="resolved" value="${t.resolved ? '' : '1'}">
-<button>${t.resolved ? '↺ reopen' : '✓ resolve'}</button>
+<input type="hidden" name="resolved" value="${isResolved(t) ? '' : '1'}">
+<button>${isResolved(t) ? '↺ reopen' : '✓ resolve'}</button>
 </form>`;
 
-const threadCard = (page, key, ctx, t, i) => `<section class="card${t.resolved ? ' resolved' : ''}" id="${escHtml(t.id)}">
+const threadCard = (page, key, ctx, t, i) => `<section class="card${isResolved(t) ? ' resolved' : ''}" id="${escHtml(t.id)}">
 <blockquote${t.mark === 'strike' ? ' class="struck"' : ''}>${escHtml(t.quote)}${Number(t.page) > 0 ? `<cite> — p. ${Number(t.page)}</cite>` : ''}</blockquote>${t.mark === 'strike' ? '<span class="struck-note">a suggested deletion — this passage is struck through in the document</span>' : ''}${t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : ''}
-${t.resolved && t.summary ? `<p class="digest">${escHtml(t.summary)}</p>` : ''}
+${isResolved(t) && t.summary ? `<p class="digest">${escHtml(t.summary)}</p>` : ''}
 ${(t.msgs || []).map(m => msgHtml(m, ctx)).join('\n')}
 ${resolveForm(page, key, t)}
 ${composer(page.url, key, t.id, `reply to comment ${i + 1}…`)}
@@ -358,9 +358,9 @@ export function pageView({ page, key, me, notice, snapshot, by = '' }) {
   // the same shape as the drawer: what still wants you, then everything you
   // have dealt with, folded away under one line. <details> is the whole of the
   // interaction — this view has no script and is not getting one.
-  const threads = all.map((t, i) => (t.resolved ? '' : threadCard(page, key, ctx, t, i))).join('\n');
-  const doneList = all.map((t, i) => (t.resolved ? threadCard(page, key, ctx, t, i) : '')).join('\n');
-  const doneCount = all.filter(t => t.resolved).length;
+  const threads = all.map((t, i) => (isResolved(t) ? '' : threadCard(page, key, ctx, t, i))).join('\n');
+  const doneList = all.map((t, i) => (isResolved(t) ? threadCard(page, key, ctx, t, i) : '')).join('\n');
+  const doneCount = all.filter(t => isResolved(t)).length;
   const resolved = doneCount
     ? `<details class="resolved-sec"><summary>Resolved (${doneCount})</summary>\n${doneList}\n</details>`
     : '';

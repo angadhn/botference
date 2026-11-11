@@ -17,8 +17,13 @@
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// store.mjs resolves its workspace at import time — a throwaway keeps the
+// old-record conversion below (a real readPage) out of the live .botference
+process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-status-'));
 const { GlobalWindow } = await import(path.join(here, '..', '..', '..', 'tests', 'node_modules', 'happy-dom', 'lib', 'index.js'));
 const w = new GlobalWindow({ url: 'https://example.com/article' });
 for (const k of ['window', 'document', 'HTMLElement', 'Node', 'Element', 'DocumentFragment', 'navigator', 'localStorage', 'getComputedStyle', 'requestAnimationFrame', 'MutationObserver', 'Event', 'KeyboardEvent', 'MouseEvent', 'Blob', 'FileReader', 'EventTarget', 'getSelection', 'ResizeObserver']) {
@@ -67,6 +72,140 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
     [false, 'ready', true]);
 }
 
+// ---- 1b. ONE stored field, ONE setter, ONE move table ------------------------
+{
+  const S = store.THREAD_STAGES;
+  eq('the move table names every stage, both sides', [Object.keys(store.THREAD_MOVES), Object.keys(D.THREAD_MOVES)], [S, S]);
+  eq('…and the two tables are the same table', JSON.stringify(D.THREAD_MOVES), JSON.stringify(store.THREAD_MOVES));
+  const legal = { open: ['open', 'ready', 'resolved'], ready: ['open', 'ready', 'resolved'], resolved: ['open', 'resolved'] };
+  for (const from of S) for (const to of S.concat(['done', '', undefined])) {
+    const want = !!(legal[from] && legal[from].includes(to));
+    eq(`move ${from} → ${to}: ${want ? 'allowed' : 'refused'} (companion, drawer)`,
+      [store.threadMove(from, to), D.threadMove(from, to)], [want, want]);
+  }
+  eq('no move from a status that is not one', [store.threadMove('filed', 'open'), D.threadMove('filed', 'open')], [false, false]);
+
+  // the setter, every legal move, and what it leaves on the record
+  const fresh = () => ({ id: 't', quote: 'q', msgs: [{ author: 'reader', ts: '1', text: 'hm' }], status: 'open' });
+  const t = fresh();
+  let r = store.setThreadStatus(t, 'ready', 'claude');
+  ok('open → ready changes it', r.changed && !r.refused);
+  eq('…status, shadow flag and stamps', [t.status, t.addressed, t.addressed_by, typeof t.addressed_at, 'resolved' in t],
+    ['ready', true, 'claude', 'string', false]);
+  const firstAt = t.addressed_at;
+  r = store.setThreadStatus(t, 'ready', 'codex');
+  ok('ready → ready is allowed, not a change of stage', !r.refused && r.changed === false);
+  eq('…but it is a new claim: re-stamped with who made it', t.addressed_by, 'codex');
+  ok('…at a stamp of its own', typeof t.addressed_at === 'string' && t.addressed_at >= firstAt);
+  r = store.setThreadStatus(t, 'resolved', 'reader');
+  eq('ready → resolved: the claim is spent, the filing stamped',
+    [r.changed, t.status, t.resolved, t.resolved_by, 'addressed' in t, 'addressed_at' in t, 'addressed_by' in t],
+    [true, 'resolved', true, 'reader', false, false, false]);
+  const before = JSON.stringify(t);
+  r = store.setThreadStatus(t, 'ready', 'claude');
+  ok('resolved → ready is REFUSED', !!r.refused && r.changed === false);
+  ok('…in words a person can read', /reopen it first/.test(r.refused), r.refused);
+  eq('…and the record is untouched by the attempt', JSON.stringify(t), before);
+  r = store.setThreadStatus(t, 'filed', 'reader');
+  ok('an unknown status is refused too', !!r.refused && JSON.stringify(t) === before);
+  r = store.setThreadStatus(t, 'resolved', 'someone-else');
+  ok('resolved → resolved changes nothing, not even who filed it', r.changed === false && t.resolved_by === 'reader');
+  r = store.setThreadStatus(t, 'open');
+  eq('resolved → open: reopened, every resolved field gone', [r.changed, t.status, Object.keys(t).filter(k => /^(resolved|addressed)/.test(k))],
+    [true, 'open', []]);
+  eq('…so it is byte-identical to a thread never touched', JSON.stringify(t), JSON.stringify(fresh()));
+  ok('the setter survives being handed nothing', store.setThreadStatus(null, 'open') === null);
+
+  // the drawer's twin answers the same on the same moves
+  const d = fresh();
+  ok('drawer: open → ready', D.setThreadStage(d, 'ready', 'claude').changed && d.status === 'ready' && d.addressed === true);
+  ok('drawer: ready → resolved', D.setThreadStage(d, 'resolved').changed && d.status === 'resolved' && d.resolved === true && !('addressed' in d));
+  const snap = D.threadStatusFields(d);
+  ok('drawer: resolved → ready refused', !!D.setThreadStage(d, 'ready').refused && d.status === 'resolved');
+  ok('drawer: resolved → open', D.setThreadStage(d, 'open').changed && d.status === 'open' && !('resolved' in d));
+  D.restoreThreadStatus(d, snap);
+  eq('drawer: an undone optimistic move puts back exactly what was there', D.threadStatusFields(d), snap);
+
+  // the orphan flag is not a status, and has its own one writer
+  const o = fresh();
+  ok('orphaned: set', store.setOrphaned(o, true) && o.orphaned === true);
+  ok('orphaned: setting it again is no change', store.setOrphaned(o, true) === false);
+  ok('orphaned: cleared', store.setOrphaned(o, false) && o.orphaned === false);
+  ok('orphaned: …on any stage', store.setThreadStatus(o, 'resolved').changed && store.setOrphaned(o, true) && o.status === 'resolved');
+  ok('drawer: the local copy’s orphan flag has one writer too', D.setThreadOrphaned(o, false) && o.orphaned === false);
+
+  // appendMsg goes through the setter, including the two-step a bot makes
+  // into a filed thread (resolved → open → ready)
+  const page = { url: 'https://example.com/x', threads: [{ ...fresh(), id: 'a' }], page_chat: [] };
+  const a = page.threads[0];
+  store.setThreadStatus(a, 'resolved', 'reader');
+  store.appendMsg(page, 'a', { author: 'claude', text: 'one more thing' });
+  eq('a bot answering a filed thread: reopened, then ready', [a.status, a.addressed, 'resolved' in a, a.addressed_by], ['ready', true, false, 'claude']);
+  store.appendMsg(page, 'a', { author: 'claude', kind: 'tools', text: 'Read file' });
+  eq('a tools line leaves ready alone', a.status, 'ready');
+  store.appendMsg(page, 'a', { author: 'reader', text: 'not quite' });
+  eq('the reader writing in: open', [a.status, 'addressed' in a], ['open', false]);
+}
+
+// ---- 1c. OLD RECORDS: converted on read, nothing lost, nothing rewritten ----
+{
+  const URL_OLD = 'https://example.com/old-record';
+  const at = '2026-01-02T03:04:05.000Z';
+  const old = {
+    url: URL_OLD, title: 'Old', kind: 'article', page_chat: [],
+    threads: [
+      { id: 'o1', quote: 'never touched', msgs: [{ author: 'reader', ts: '1', text: 'made up one' }] },
+      { id: 'o2', quote: 'answered', addressed: true, addressed_at: at, addressed_by: 'claude',
+        msgs: [{ author: 'reader', ts: '1', text: 'made up two' }, { author: 'claude', ts: '2', text: 'made up reply' }] },
+      { id: 'o3', quote: 'filed', resolved: true, resolved_at: at, resolved_by: 'reader', summary: 'settled',
+        orphaned: true, mark: 'strike', msgs: [{ author: 'reader', ts: '1', text: 'made up three' }] },
+      { id: 'o4', quote: 'both, as an older companion could leave it', resolved: true, resolved_at: at, resolved_by: 'reader',
+        addressed: true, addressed_at: at, addressed_by: 'codex', msgs: [{ author: 'reader', ts: '1', text: 'made up four' }] },
+      { id: 'o5', quote: 'explicit false', resolved: false, addressed: false, msgs: [{ author: 'reader', ts: '1', text: 'made up five' }] },
+    ],
+  };
+  const file = store.pageFile(URL_OLD);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(old));
+  const mtime = fs.statSync(file).mtimeMs;
+  const bytes = fs.readFileSync(file, 'utf8');
+  const page = store.readPage(URL_OLD);
+  const by = id => page.threads.find(t => t.id === id);
+  eq('old records get a status, by the old rule', ['o1', 'o2', 'o3', 'o4', 'o5'].map(id => by(id).status),
+    ['open', 'ready', 'resolved', 'resolved', 'open']);
+  eq('…stamps, summary, mark and orphan flag all kept',
+    [by('o2').addressed_at, by('o2').addressed_by, by('o3').resolved_at, by('o3').resolved_by, by('o3').summary, by('o3').orphaned, by('o3').mark],
+    [at, 'claude', at, 'reader', 'settled', true, 'strike']);
+  eq('…messages untouched', page.threads.map(t => t.msgs.length), [1, 2, 1, 1, 1]);
+  eq('the impossible pair reads resolved, losing only the contradicting yes/no',
+    [by('o4').resolved, 'addressed' in by('o4'), by('o4').addressed_at, by('o4').addressed_by], [true, false, at, 'codex']);
+  eq('…and `false` flags simply go (absent means no)', ['resolved' in by('o5'), 'addressed' in by('o5')], [false, false]);
+  eq('reading converts in memory: the file on disk is not rewritten',
+    [fs.readFileSync(file, 'utf8') === bytes, fs.statSync(file).mtimeMs === mtime], [true, true]);
+  // a second read converts the same way, and still writes nothing
+  const again = store.readPage(URL_OLD);
+  eq('a second read: same answer, still no write', [again.threads.map(t => t.status).join(), fs.readFileSync(file, 'utf8') === bytes],
+    ['open,ready,resolved,resolved,open', true]);
+  // the next ordinary save persists the conversion, once
+  store.savePage(again);
+  const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  eq('the next save writes the status down', disk.threads.map(t => t.status), ['open', 'ready', 'resolved', 'resolved', 'open']);
+  // and what an OLDER reader, which knows only the flags, would make of it
+  const oldRule = t => (t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  eq('…with the old flags kept true, so an older reader sees the same stages',
+    disk.threads.map(oldRule), disk.threads.map(t => t.status));
+  const third = store.readPage(URL_OLD);
+  ok('a converted record reads back unchanged', JSON.stringify(third.threads) === JSON.stringify(disk.threads));
+  // a record whose status and flags disagree (an older writer touched only the
+  // flags): the status is the truth, and the shadow is put right from it
+  const odd = { status: 'open', resolved: true };
+  eq('status outranks a stale shadow flag', [store.threadStage(odd), D.threadStage(odd)], ['open', 'open']);
+  store.normalizeThreadStatus(odd);
+  ok('…and normalising puts the flag right', !('resolved' in odd));
+  ok('a record with a status that is not one falls back to its flags',
+    store.threadStage({ status: 'nonsense', addressed: true }) === 'ready' && D.threadStage({ status: 'nonsense', addressed: true }) === 'ready');
+}
+
 // ---- 2. in the drawer: reopening reads "open" at once -----------------------
 const URL_ = 'https://example.com/article';
 const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({
@@ -102,7 +241,7 @@ const card = () => root.querySelector('.pane[data-pane="comments"] .card[data-th
     await tick(10);
     ok('a refused reopen puts it back under Resolved', !!card() && card().classList.contains('resolved'));
     const t = drawer.page.threads[0];
-    eq('…with every flag as it was', [t.resolved, t.addressed, t.addressed_by], [true, true, 'claude']);
+    eq('…with every field as it was', [t.resolved, t.addressed, t.addressed_by, t.status], [true, true, 'claude', undefined]);
   }
 }
 

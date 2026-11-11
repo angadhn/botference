@@ -860,9 +860,16 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
 {
   const v = r => O.healthVerdict(r);
   eq('verdict: nothing answered', v({ ok: false, error: 'could not reach https://x' }),
-    { cls: 'err', text: 'could not reach https://x' });
+    { mode: 'offline', cls: 'err', text: 'companion offline — could not reach https://x' });
   eq('verdict: no answer and nothing to say',
-    v({ ok: false }).text, 'no answer — is the companion running at that address?');
+    v({ ok: false }).text, 'companion offline — nothing answered at that address. Is it running?');
+  // one set of words for the connection, everywhere (config.js CONN_WORDS)
+  ok('verdict: every mode it names is one of the connection’s modes',
+    [v({ ok: false }), v({ ok: false, status: 401 }), v({ ok: false, status: 403 }), v({ ok: false, status: 502 }),
+      v({ ok: true, data: {} })].every(x => C.CONN_MODES.includes(x.mode)));
+  ok('verdict: …and every text leads with that mode’s own word',
+    [v({ ok: false }), v({ ok: false, status: 401 }), v({ ok: false, status: 403 }), v({ ok: false, status: 502 }),
+      v({ ok: true, data: {} })].every(x => x.text.indexOf(C.CONN_WORDS[x.mode]) === 0));
   ok('verdict: a 401 blames the password and only the password',
     v({ ok: false, status: 401, error: 'auth required' }).cls === 'err' &&
     /password was rejected/.test(v({ ok: false, status: 401 }).text));

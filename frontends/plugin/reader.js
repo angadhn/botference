@@ -44,6 +44,12 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
     });
   }
+  // Is this comment thread filed? Read off its one `status` field (store.mjs
+  // "a thread's status"); a record from before that field answers by its old
+  // `resolved` flag. This script has no build step to import the rule with.
+  function isFiled(t) {
+    return !!t && (t.status ? t.status === 'resolved' : !!t.resolved);
+  }
   // The "▸ more" marker, byte for byte as the drawer and the companion carry
   // it (extension/drawer.js, ../more.mjs): a bot leads with the capped answer
   // and puts the rest after one `<!--more-->` line. Pinned by test/more.test.mjs.
@@ -131,7 +137,7 @@
       // green for a thread the reader has filed, yellow for one still open —
       // the same two tints anchor.js paints in the drawer, because this view
       // paints with the very same code
-      A.paintOffsets(index, hit.start, hit.end, t.id, !!t.resolved);
+      A.paintOffsets(index, hit.start, hit.end, t.id, isFiled(t));
     });
     // the index is stale the moment we split text nodes to paint into them
     index = A.buildTextIndex(art);
@@ -290,7 +296,7 @@
     } else {
       var t = threadById(open.id);
       if (!t) { open = null; sheet.classList.remove('open'); return; }
-      label = t.resolved ? 'resolved comment' : 'comment';
+      label = isFiled(t) ? 'resolved comment' : 'comment';
       // a quote off a PDF carries its page: the same attribution the export
       // writes, in the same words
       // …and whether it was struck through: a suggested deletion and a passage
@@ -301,7 +307,7 @@
         + (t.orphaned ? '<span class="orphaned">the quoted text is no longer on the page</span>' : '')
         // a filed thread leads with what it settled, exactly as its card does
         // in the drawer and in the comments view
-        + (t.resolved && t.summary ? '<p class="digest">' + esc(t.summary) + '</p>' : '')
+        + (isFiled(t) && t.summary ? '<p class="digest">' + esc(t.summary) + '</p>' : '')
         + (t.msgs || []).map(msgHtml).join('') + composerHtml('reply…', t.id, t.msgs || []);
     }
     if (busy[target]) html += '<div class="chip">' + esc(busy[target]) + '</div>';
