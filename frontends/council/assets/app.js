@@ -309,7 +309,8 @@
 
   // ── state ──
   const state = {
-    busy: false, queued: 0, agents: { claude: false, codex: false },
+    busy: false, queued: 0,
+    agentMode: { claude: 'idle', codex: 'idle' }, // one of AGENT_MODES per bot; moved only by setAgentMode
     streams: {},           // key "model:stream_id" -> {el, text}
     summonTimer: null,     // the live clock on summoned agents' working cards
     ctx: FALLBACK_CTX,
@@ -388,7 +389,7 @@
   function renderAvatars() {
     els.avatars.innerHTML = AGENTS.map(a => {
       const name = cap(a);
-      const on = state.agents[a];
+      const on = state.agentMode[a] === 'working';
       const ex = state.exhausted[a];
       const tip = ex ? `${name} is out of credits — ${ex}` : `${name}${on ? ' is working…' : ' — idle'}`;
       return `<span class="avatar-ring${on ? ' working' : ''}${ex ? ' exhausted' : ''}" style="--author:var(--${a})" title="${esc(tip)}">${avatarHtml(a)}${ex ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</span>`;
@@ -460,7 +461,7 @@
     const ex = state.exhausted[a];
     const st = state.ctxStat[a];
     const pct = st && st.pct != null ? Math.max(0, Math.min(100, st.pct)) : null;
-    const working = state.agents[a];
+    const working = state.agentMode[a] === 'working';
     const activity = ex ? '⚠ out of credits'
       : working ? (state.activity[a] || 'working…') : 'idle';
     const opts = modelsFor(a).map(m =>
@@ -733,7 +734,7 @@
   // output → the agent is answering again, so clear.
   function noteAgentTurn(agent, text) {
     if (!AGENTS.includes(agent)) return;
-    state.activity[agent] = null;  // its turn ended
+    setAgentMode(agent, 'idle');  // its turn ended
     const reason = exhaustReason(agent, text);
     if (reason) flagExhausted(agent, reason);
     else if (String(text || '').trim()) clearExhausted(agent);
@@ -815,13 +816,28 @@
     els.queueNote.hidden = !n;
     els.queueNote.textContent = n ? `${n} message${n > 1 ? 's' : ''} queued` : '';
   }
+  // Whose turn it is, per bot. Each bot is in one of AGENT_MODES, kept in
+  // state.agentMode[bot] and moved only here:
+  //   idle    — not answering (its ring is still, its card says "idle");
+  //   working — its turn is under way (ring spins, card says "working…").
+  // A bot goes to work when its stream starts and back to idle the moment ITS
+  // turn ends (the stream's 'done', or its finished message) — not when the
+  // whole room goes quiet, which left the first bot "working" all through the
+  // second bot's turn and the panel never showed the turn passing over.
+  const AGENT_MODES = ['idle', 'working'];
+  function setAgentMode(a, to) {
+    if (!AGENTS.includes(a) || !AGENT_MODES.includes(to) || state.agentMode[a] === to) return false;
+    state.agentMode[a] = to;
+    if (to === 'idle') state.activity[a] = null;
+    renderAvatars();
+    renderAgentsPanel();
+    return true;
+  }
   function setBusy(b) {
     state.busy = b;
     els.stop.hidden = !b;
     if (!b) {
-      for (const a of AGENTS) { state.agents[a] = false; state.activity[a] = null; }
-      renderAvatars();
-      renderAgentsPanel();
+      for (const a of AGENTS) setAgentMode(a, 'idle');
     }
   }
 
@@ -1848,7 +1864,7 @@
   function streamKey(ev) { return `${ev.model || ev.speaker || 'agent'}:${ev.stream_id || 0}`; }
   function streamDelta(ev) {
     const model = String(ev.model || 'claude').toLowerCase();
-    if (AGENTS.includes(model) && !state.agents[model]) { state.agents[model] = true; renderAvatars(); }
+    setAgentMode(model, 'working');
     const key = streamKey(ev);
     let s = state.streams[key];
     if (!s) {
@@ -3581,6 +3597,7 @@
     switch (ev.type) {
       case 'hello':
         state.bridgeId = ev.bridge_id || null;
+        if (Number(ev.heartbeat_ms) > 0) conn.heartbeatMs = Number(ev.heartbeat_ms);
         // a freshly spawned bridge is still executing its /resume: its replay
         // shows the interstitial startup chat, so the offscreen buffer must
         // stay up past replay_done until the live 'ready' lands
@@ -3649,9 +3666,14 @@
         if (ev.kind === 'text_delta') { streamDelta(ev); break; }
         if (ev.model && AGENTS.includes(String(ev.model).toLowerCase())) {
           const m = String(ev.model).toLowerCase();
-          if (!state.agents[m]) { state.agents[m] = true; renderAvatars(); }
-          // live activity for the agents panel: latest tool + target
-          if (ev.kind === 'tool_start') { state.activity[m] = laneActivity(ev); renderAgentsPanel(); }
+          // 'done' closes this bot's turn (whatever its outcome); anything
+          // else on its stream means it is answering
+          if (ev.kind === 'done') setAgentMode(m, 'idle');
+          else {
+            setAgentMode(m, 'working');
+            // live activity for the agents panel: latest tool + target
+            if (ev.kind === 'tool_start') { state.activity[m] = laneActivity(ev); renderAgentsPanel(); }
+          }
         }
         if (ev.kind === 'tool_start' || ev.kind === 'tool_done') laneEvent(ev);
         break;
@@ -3835,7 +3857,20 @@
     'connecting>connecting', 'connecting>live', 'connecting>retrying',
     'live>connecting', 'live>retrying', 'retrying>connecting',
   ]);
-  const conn = { mode: 'connecting', transport: 'ws', sock: null, es: null, retryTimer: null, retryMs: 1000 };
+  //
+  // A phone that sleeps, backgrounds the tab, or hops from wifi to mobile
+  // data can leave the stream open at this end and dead at the other: no
+  // close, no error, only silence — the page went on saying "live" over the
+  // first bot's half-written answer and never showed the second bot's turn.
+  // The server says something at least once a heartbeat (conn.heartbeatMs,
+  // from its hello), so conn.heardAt — the last time the stream delivered
+  // anything, a ping included — tells a quiet room from a dead stream. A
+  // stream silent for too long is reopened, and the reopen replays the chat
+  // from the server, so whatever was missed is caught up (reviveIfSilent).
+  const conn = {
+    mode: 'connecting', transport: 'ws', sock: null, es: null, retryTimer: null, retryMs: 1000,
+    heardAt: Date.now(), heartbeatMs: 15000,
+  };
   function setConn(cls, txt) { els.conn.className = `conn ${cls}`; els.conn.textContent = txt; }
   function setConnMode(to) {
     if (!CONN_MODES.includes(to) || !CONN_MOVES.has(conn.mode + '>' + to)) return false;
@@ -3901,11 +3936,32 @@
   // deliberate re-attach of a chat switch alike
   function openStream() {
     dropTransport();
+    conn.heardAt = Date.now(); // the new stream gets a full allowance to speak
     setConnMode('connecting');
     if (conn.transport === 'sse') connectSSE(); else connectWS();
   }
   function reattach() { openStream(); }
+  // the stream (live, or still opening) has been silent for longer than
+  // limitMs: it is dead whatever the browser says — open a fresh one
+  function reviveIfSilent(limitMs) {
+    if (conn.mode === 'retrying' || Date.now() - conn.heardAt <= limitMs) return false;
+    openStream();
+    return true;
+  }
+  // the reader is back (tab shown again, phone woken, network back): a
+  // stream that missed even one heartbeat is presumed dead, and a pending
+  // retry runs now rather than at the end of its back-off
+  function onWake() {
+    if (conn.mode === 'retrying') { openStream(); return; }
+    reviveIfSilent(conn.heartbeatMs + 3000);
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) onWake(); });
+  window.addEventListener('pageshow', onWake);
+  window.addEventListener('online', onWake);
+  // and while the page stays open: two missed heartbeats and the stream is dead
+  setInterval(() => reviveIfSilent(conn.heartbeatMs * 2 + 5000), 5000);
   function onLine(data) {
+    conn.heardAt = Date.now();
     let ev; try { ev = JSON.parse(data); } catch { return; }
     if (ev.type !== 'ping') handle(ev);
   }
@@ -3977,6 +4033,6 @@
     // dictation
     dict, dictMime, insertAtCaret, dictInit, setDictMode,
     // the live connection
-    conn, setConnMode,
+    conn, setConnMode, reviveIfSilent, onWake, setAgentMode,
   };
 })();

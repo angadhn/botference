@@ -3,6 +3,8 @@
 ## 2026-11-11
 
 - **Council: the login page no longer opens the phone keyboard by itself.** The password box used to take the focus as the page loaded, so on a phone the keyboard came up over the page at once. Tap the box to type.
+- **Council: on a phone, the second bot's turn shows up after the phone sleeps or the tab is put away.** A phone that sleeps, switches apps or moves between wifi and mobile data can leave the page's live connection open at its end and dead at the other: the page kept saying "live" over the first bot's half-written answer and never showed the second bot's. The server now sends a small "still here" signal the page can hear (every 15 seconds, also over the fallback connection), and says how often in its first message. When the page comes back into view, comes back online, or has heard nothing for two of those intervals, it opens a fresh connection, which replays the chat and catches up on whatever it missed. A waiting reconnect also runs at once when you come back, instead of after its back-off.
+- **Council: the working light follows the turn.** The spinning ring on a bot's picture in the header, and "working…" on its card in the agents panel, now pass from Claude to Codex the moment Claude's turn ends. Before, Claude's ring kept spinning (and its card said "working…") all through Codex's turn, and Codex's card said "idle" until it used a tool. Each bot is now either idle or working, one named state each.
 
 ## 2026-11-10
 

@@ -307,6 +307,9 @@ const helloEvent = b => ({
   bridge_id: b ? b.id : null,
   chat: b ? (b.sid || b.claimedSid) : null,
   resuming: !!(b && b.resuming),
+  // how often the server speaks at the least: the page treats a stream silent
+  // for well past this as dead (a sleeping phone's socket) and reopens it
+  heartbeat_ms: SSE_HEARTBEAT_MS,
 });
 
 export class Bridge {
@@ -1113,7 +1116,9 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
     // and recover without an event cursor or transcript replay.
     publishPresence(presence.snapshot());
     for (const b of bridges.values()) {
-      for (const res of b.clients) res.write(': ping\n\n');
+      // the comment keeps proxies warm; the ping EVENT is what the page can
+      // hear (EventSource hides comments) and counts as the stream alive
+      for (const res of b.clients) res.write(': ping\n\ndata: {"type":"ping"}\n\n');
       for (const ws of b.wsClients) ws.send('{"type":"ping"}');
     }
   }, SSE_HEARTBEAT_MS).unref();

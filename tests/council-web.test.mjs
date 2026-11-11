@@ -347,6 +347,10 @@ test('SSE transport hygiene: padded flushed first chunk, proxy headers, comment 
   // >= 2 heartbeats in 600ms at a 120ms interval
   const beats = (body.match(/: ping\n\n/g) || []).length;
   assert.ok(beats >= 2, `comment heartbeats flow (got ${beats})`);
+  // …and a ping EVENT the page can hear (EventSource hides comments), with
+  // the interval announced in the hello so the page can tell a dead stream
+  assert.ok((body.match(/data: \{"type":"ping"\}\n\n/g) || []).length >= 2, 'ping events flow');
+  assert.match(body, /data: \{"type":"hello"[^\n]*"heartbeat_ms":120/);
 });
 
 test('WebSocket transport: hello + history replay + live events; gate enforced when hosted', async t => {
@@ -3490,6 +3494,84 @@ test('connection: a retry left over from a drop is cancelled by a chat switch �
   assert.equal(C.setConnMode('live'), false, 'retrying → live is refused');
   assert.equal(C.setConnMode('connecting'), true); // and its timer is gone with it
   assert.equal(C.conn.retryTimer, null);
+});
+
+test('connection: a stream gone silent (a phone woken from sleep) is reopened and the chat caught up; a quiet live one is left alone (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { w, doc, C, wsUrls } = await mkHarness(t);
+  const first = C.conn.sock;
+  first.onopen();
+  // the server's hello says how often it speaks at the least
+  first.onmessage({ data: JSON.stringify({ type: 'hello', bridge_id: 'b1', heartbeat_ms: 15000 }) });
+  first.onmessage({ data: JSON.stringify({ type: 'replay_done' }) });
+  assert.equal(C.conn.mode, 'live');
+  assert.equal(C.conn.heartbeatMs, 15000);
+  // the reader comes back to a stream that spoke a moment ago: nothing to do
+  doc.dispatchEvent(new w.Event('visibilitychange'));
+  assert.equal(C.conn.sock, first, 'a stream heard from recently is kept');
+  assert.equal(wsUrls.length, 1);
+  // a ping counts as the stream speaking
+  C.conn.heardAt = Date.now() - 60000;
+  first.onmessage({ data: JSON.stringify({ type: 'ping' }) });
+  assert.ok(Date.now() - C.conn.heardAt < 1000, 'a ping counts as hearing from the stream');
+  // the phone slept: the socket still says open, but nothing has come for a
+  // minute (the server pings every 15s) — on waking the page opens a new one,
+  // whose replay brings the turns it missed
+  C.conn.heardAt = Date.now() - 60000;
+  doc.dispatchEvent(new w.Event('visibilitychange'));
+  assert.equal(wsUrls.length, 2, 'a fresh stream is opened on waking');
+  assert.notEqual(C.conn.sock, first);
+  assert.equal(C.conn.mode, 'connecting');
+  // the dead socket, should it ever speak, is not heard
+  assert.equal(first.onmessage, null, 'the dead socket is unhooked');
+  // and while the page simply stays open, the watchdog's limit does the same
+  C.conn.sock.onopen();
+  assert.equal(C.reviveIfSilent(45000), false, 'just opened: not silent');
+  C.conn.heardAt = Date.now() - 60000;
+  assert.equal(C.reviveIfSilent(45000), true);
+  assert.equal(wsUrls.length, 3);
+  // a pending retry runs at once when the reader is back, not after its back-off
+  C.conn.sock.onopen();
+  C.conn.sock.onclose();
+  assert.equal(C.conn.mode, 'retrying');
+  w.dispatchEvent(new w.Event('online'));
+  assert.equal(C.conn.mode, 'connecting');
+  assert.equal(wsUrls.length, 4);
+});
+
+test('whose turn: the working light passes from Claude to Codex as the turn does, on the header and in the agents panel (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  const working = () => [...doc.querySelectorAll('#avatars .avatar-ring.working')]
+    .map(r => /Claude/.test(r.title) ? 'claude' : 'codex').join(',');
+  const card = a => doc.querySelector(`.agent-card[data-agent="${a}"] .ac-activity`).textContent;
+  C.handle({ type: 'user_echo', text: 'both of you' });
+  C.handle({ type: 'stream', kind: 'start', stream_id: 's1', pane: 'room', model: 'claude' });
+  C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's1', pane: 'room', model: 'claude', text: 'mine' });
+  assert.equal(working(), 'claude');
+  assert.equal(card('claude'), 'working…');
+  assert.equal(card('codex'), 'idle');
+  C.handle({ type: 'stream', kind: 'done', stream_id: 's1', pane: 'room', model: 'claude', outcome: 'completed' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'mine', stream_id: 's1' });
+  // Claude has finished; the room is still busy with Codex's turn
+  C.handle({ type: 'stream', kind: 'start', stream_id: 's2', pane: 'room', model: 'codex' });
+  C.handle({ type: 'stream', kind: 'text_delta', stream_id: 's2', pane: 'room', model: 'codex', text: 'and mine' });
+  assert.equal(working(), 'codex', 'only the bot whose turn it is spins');
+  assert.equal(card('claude'), 'idle');
+  assert.equal(card('codex'), 'working…', 'the panel shows Codex at work before it calls any tool');
+  assert.equal(C.state.busy, true, 'the room is still mid-turn');
+  // a bridge that sends no 'done' still ends the turn with the bot's message
+  C.handle({ type: 'room', speaker: 'codex', text: 'and mine', stream_id: 's2' });
+  assert.equal(working(), '');
+  assert.equal(card('codex'), 'idle');
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.busy, false);
+  // only the two named modes exist, and a bot that is not one is refused
+  assert.equal(C.setAgentMode('claude', 'thinking'), false);
+  assert.equal(C.setAgentMode('gemini', 'working'), false);
+  assert.equal(C.setAgentMode('claude', 'idle'), false, 'already idle: no move');
 });
 
 test('permission card: shows the decision only once the server took it; a failed answer stays answerable (happy-dom)',
