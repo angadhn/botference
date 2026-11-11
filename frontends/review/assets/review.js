@@ -131,14 +131,30 @@
   }
 
   // --- one-way mirror to server ---
-  let syncTimer = null, syncState = 'off';
+  // ---- did this browser's comments last reach the server? ONE mode, changed only through setSync() ----
+  //   unsent — nothing exchanged yet (the page just opened)
+  //   saved  — the last load or save went through
+  //   failed — the last load or save did not ("sync failed" in the sidebar)
+  // (syncTimer is only a short pause that batches quick edits into one save.)
+  const SYNC_MODES = ['unsent', 'saved', 'failed'];
+  const SYNC_MOVES = { unsent: ['saved', 'failed'], saved: ['failed'], failed: ['saved'] };
+  const SYNC = { mode: 'unsent' };
+  // the one setter: refuses a move the table does not allow (returns false)
+  function setSync(next) {
+    if (next === SYNC.mode) return true;
+    if (!SYNC_MODES.includes(next) || !SYNC_MOVES[SYNC.mode].includes(next)) return false;
+    SYNC.mode = next;
+    renderPresence();
+    return true;
+  }
+  let syncTimer = null;
   function pushState() {
     if (!LIVE) return;
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
       api('/state', { method: 'POST', body: JSON.stringify({ build: META, decisions: store() }) })
-        .then(r => { syncState = r.ok ? 'ok' : 'err'; if (r.ok) serverAnswered(); renderPresence(); })
-        .catch(() => { syncState = 'err'; renderPresence(); });
+        .then(r => { if (r.ok) serverAnswered(); setSync(r.ok ? 'saved' : 'failed'); renderPresence(); })
+        .catch(() => setSync('failed'));
     }, 400);
   }
   const save = d => { setStore(d); pushState(); };
@@ -243,7 +259,7 @@
   let probeTimer = null;
   function connState() {
     if (LINK.mode === 'down') return ['down', '✕ server down — node review/server.mjs'];
-    if (syncState === 'err') return ['err', '○ sync failed — is the server running?'];
+    if (SYNC.mode === 'failed') return ['err', '○ sync failed — is the server running?'];
     if (LINK.mode === 'retrying') return ['err', '○ live updates lost — reconnecting…'];
     return ['ok', `● live — you are ${ME || '…'}`];
   }
@@ -2209,10 +2225,10 @@
       const mine = (j.users || {})[j.me] || {};
       for (const [id, v] of Object.entries(mine)) if (!(id in d)) { d[id] = v; added++; }
       if (added) setStore(d);
-      syncState = 'ok'; serverAnswered(); renderPresence();
+      serverAnswered(); setSync('saved'); renderPresence();
       rerender(); pushState();
     }).catch(() => {
-      syncState = 'err'; setLink('down'); renderPresence();
+      setSync('failed'); setLink('down'); renderPresence();
     });
 
     // live transport: WebSocket first, SSE fallback. WS is primary because
@@ -2556,7 +2572,7 @@
   window.__review = {
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
-    openComposer, setChatMode, CHAT_MODES, setAgentWork, AGENT_WORK, PRESENCE, MODELS,
+    openComposer, setSync, SYNC_MODES, get sync() { return SYNC.mode; }, setChatMode, CHAT_MODES, setAgentWork, AGENT_WORK, PRESENCE, MODELS,
     setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
   };

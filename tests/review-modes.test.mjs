@@ -854,3 +854,21 @@ test('agent work: idle ↔ working, the verb only ever beside working (happy-dom
     assert.ok(!ring(a).classList.contains('working'));
   }
 });
+
+// ============================== did the comments reach the server? (sync mode)
+test('sync mode: unsent → saved/failed, saved ↔ failed, shown in the sidebar (happy-dom)', needsHappy, async t => {
+  let fail = true;
+  const pg = await page(t, { routes: { '/state': () => { if (fail) throw new TypeError('Failed to fetch'); return { ok: true }; } } });
+  const R = pg.R;
+  const conn = () => pg.doc.querySelector('#presence .conn').textContent;
+  assert.deepEqual([...R.SYNC_MODES], ['unsent', 'saved', 'failed']);
+  assert.equal(R.sync, 'saved', 'the first load went through');
+  await new Promise(r => setTimeout(r, 500)); // the boot save, after its short pause
+  assert.equal(R.sync, 'failed');
+  assert.match(conn(), /sync failed/);
+  assert.equal(R.setSync('unsent'), false, 'never back to unsent');
+  assert.equal(R.setSync('ok'), false, 'not a mode');
+  fail = false;
+  assert.equal(R.setSync('saved'), true);
+  assert.doesNotMatch(conn(), /sync failed/);
+});
