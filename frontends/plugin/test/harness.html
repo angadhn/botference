@@ -7075,8 +7075,10 @@ async function selftest() {
   check('…and is not offered a fold control either — there is nothing to fold',
     !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore.fold'));
 
-  // the threshold itself: three drawn units still read straight through, the
-  // fourth is what folds — and a fold that hides one reply says so in the
+  // the threshold itself: the last two ROUNDS always stay (a round is a
+  // person's message and everything after it), so four alternating units —
+  // two rounds — still read straight through; the fifth, a third person
+  // message, is what folds — and a fold that hides one reply says so in the
   // singular
   const OTHER = RECORD.threads[0];
   const otherCard = () => S.querySelector('.card[data-thread="' + OTHER.id + '"]');
@@ -7088,13 +7090,17 @@ async function selftest() {
   check('three units still read straight through', !otherMore());
   OTHER.msgs.push({ author: 'claude', ts: iso(56), text: 'Unit four.' });
   d.setPage(RECORD);
-  check('…and the fourth unit folds the thread', !!otherMore());
+  check('…and so do four: two rounds, nothing to fold', !otherMore());
+  OTHER.msgs.push({ author: 'angadh', ts: iso(54), text: 'Unit five.' });
+  d.setPage(RECORD);
+  check('…and the fifth unit, a third round, folds the thread', !!otherMore());
   check('…hiding exactly one reply, in the singular',
     otherMore().textContent.trim() === 'Show 1 earlier reply');
-  check('…with the root and the last two units still on screen', (() => {
+  check('…with the root and the last two rounds still on screen', (() => {
     const t = otherCard().querySelector('.thread').textContent;
     return t.includes(OTHER.msgs[0].text.slice(0, 30))
-      && t.includes('Unit three.') && t.includes('Unit four.') && !t.includes('Unit two.');
+      && t.includes('Unit three.') && t.includes('Unit four.') && t.includes('Unit five.')
+      && !t.includes('Unit two.');
   })());
 
   // a new reply arrives in a thread that is still folded: it must show up at
@@ -7164,21 +7170,14 @@ async function selftest() {
   moreOf(threeCard()).click();
   check('…and opens again from the same place', !moreOf(threeCard()) && !!foldOf(threeCard()));
 
-  // the page chat is a thread like any other in this respect
+  // the page chat is NOT a thread in this respect: it never folds its
+  // middle. A long one opens on its newest messages and shows older ones as
+  // the reader scrolls up — that is the ?longchat=1 pose's business.
   d.open('chat');
   const chatCard = () => S.querySelector('.pane[data-pane="chat"] .card.chatpane');
-  check('the page chat is offered the same control once it is long enough',
-    !!foldOf(chatCard()) || !!moreOf(chatCard()));
-  if (foldOf(chatCard())) {
-    foldOf(chatCard()).click();
-    check('…and folds by hand too', !!moreOf(chatCard()));
-    moreOf(chatCard()).click();
-    check('…and opens again', !moreOf(chatCard()));
-  } else {
-    moreOf(chatCard()).click();
-    check('…and opens by hand', !moreOf(chatCard()));
-    check('…leaving the fold control in its place', !!foldOf(chatCard()));
-  }
+  check('the page chat is drawn', !!chatCard());
+  check('…with no fold control in either direction: it reads straight through',
+    !foldOf(chatCard()) && !moreOf(chatCard()));
   d.open('comments');
 
   // ---- organising the archive: kinds, tags and names ---------------------
@@ -12731,7 +12730,11 @@ async function selftestQuestionRevise() {
   try {
     d.open('comments');
     await until(() => chips().length >= 2, 5000);
-    const offer = chips().find(c => !c.classList.contains('refused'));
+    // the thread keeps its last two rounds on screen, so the EARLIER offer
+    // (the "File it" chip this one corrects) is drawn above it: pick the
+    // rewrite by what it does, not by coming first
+    const offer = chips().find(c => !c.classList.contains('refused')
+      && c.querySelector('[data-act="q-revise"]'));
     const refused = chips().find(c => c.classList.contains('refused'));
 
     // ---- the offer, and the word that makes it a different act ----
