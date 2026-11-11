@@ -12194,3 +12194,18 @@ unknown move; `leave` is legal from either mode.
   `?selftest=1` (a redraw from bot events while editing a page-chat message
   in a real browser: the box, its text, its caret and focus, and no second
   box from a second ✎).
+
+## Amendment (2026-11-11): the remembered model list is refreshed when the panel opens
+
+`D.models` — what the model menu, the @-menu and the route pills read — was
+filled by the `models` broadcast (which comes with a bot's turn or a switch)
+and by opening the model menu (`openModels`, `GET /models`). A model that
+became available in between was missing until the next message. Now
+`open()` also calls `refreshModels()` when the panel actually opens (not on a
+tab switch while it is open): the same `onModels` → `GET /models`, no new
+endpoint. Both paths put the answer in through one `ingestModels(r)`
+(models, options, status, effort, verbosity, who goes first, bridge, the
+command table, keys); `refreshModels` shows no "loading…" line, ignores a
+failure (the remembered list stays as it was) and repaints an open menu in
+place (`syncModels`). The model menu still asks for itself when opened.
+Tests: `test/modelsrefresh.test.mjs`.

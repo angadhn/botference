@@ -6826,22 +6826,11 @@ ${bubbleShellHtml()}`;
       D.models.err = false;
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
-      const r = await cb('onModels')();
+      let r;
+      try { r = await cb('onModels')(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.models.loading = false;
       if (r && r.ok !== false) {
-        D.models.current = r.current || {};
-        D.models.options = r.options || null;
-        // a companion that never heard of `status` simply has no gauges
-        D.models.status = r.status || null;
-        // …and one that never heard of effort/verbosity gets no pickers and no
-        // reply-length switch, rather than empty ones
-        D.models.effort = r.effort || null;
-        D.models.verbosity = r.verbosity || '';
-        D.models.first_reply = r.first_reply || '';
-        D.models.bridge = r.bridge || '';
-        if (Array.isArray(r.commands) && r.commands.length) D.commands = r.commands;
-        // …and one too old to have keys at all leaves the billing row out
-        ingestKeys(r.keys);
+        ingestModels(r);
         D.models.err = false;
       } else {
         D.models.options = null;
@@ -6853,14 +6842,38 @@ ${bubbleShellHtml()}`;
       if (D.modelsOpen) paintModels();
     }
 
-    // The same GET, without the repaint: used when the only thing that can
-    // have moved is the companion's own answer about the keys.
+    // The companion's whole answer about the agents (GET /models), into the
+    // remembered copy every model picker, the @-menu and the route pills read.
+    function ingestModels(r) {
+      D.models.current = r.current || {};
+      D.models.options = r.options || null;
+      // a companion that never heard of `status` simply has no gauges
+      D.models.status = r.status || null;
+      // …and one that never heard of effort/verbosity gets no pickers and no
+      // reply-length switch, rather than empty ones
+      D.models.effort = r.effort || null;
+      D.models.verbosity = r.verbosity || '';
+      D.models.first_reply = r.first_reply || '';
+      D.models.bridge = r.bridge || '';
+      if (Array.isArray(r.commands) && r.commands.length) {
+        D.commands = r.commands;
+        if (D.helpOpen) paintHelp();
+      }
+      // …and one too old to have keys at all leaves the billing row out
+      ingestKeys(r.keys);
+    }
+    // The same GET, without the "loading…" line: the remembered list is
+    // otherwise only refreshed by a `models` broadcast (a bot turn, a switch),
+    // so a model that became available since would be missing until the next
+    // message. Asked when the panel opens (and when a billing switch waits on
+    // a key). A failure leaves what is remembered alone. An open model menu
+    // is repainted in place, never rebuilt (syncModels).
     async function refreshModels() {
       let r;
       try { r = await cb('onModels')(); }
       catch { return; }
       if (!r || r.ok === false) return;
-      ingestKeys(r.keys);
+      ingestModels(r);
       if (D.modelsOpen) syncModels();
     }
 
@@ -10746,6 +10759,10 @@ ${bubbleShellHtml()}`;
       // can the companion turn speech into text? asked at every opening, so a
       // model installed since shows its mic without a reload
       micStatus();
+      // …and which models are on offer, for the same reason: the remembered
+      // list is otherwise refreshed only when a bot answers. (The model menu
+      // asks again whenever it is opened — openModels.)
+      if (!D.opened) refreshModels();
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
