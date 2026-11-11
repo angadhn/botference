@@ -199,6 +199,59 @@ test('apply ledger: an old {applied, flagged} ledger is read as the modes it mea
   assert.equal(cards.c2.reason, 'span ambiguous');
 });
 
+test('apply ledger: a record from newer software is refused out loud and never written over', async t => {
+  const dir = paper('ledger-newer');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const ledger = path.join(dir, 'review', 'state', 'apply.json');
+  const eng = await engineFor(dir);
+  const cases = [
+    // a format number this engine does not know yet
+    JSON.stringify({ format: 99, round: null, cards: { c1: { mode: 'applied' } } }),
+    // a shape it cannot read: a card mode it has never heard of
+    JSON.stringify({ format: 2, round: null, cards: { c1: { mode: 'half-applied' } } }),
+    // a field it has never heard of
+    JSON.stringify({ round: null, cards: {}, rounds: [] }),
+  ];
+  for (const text of cases) {
+    fs.writeFileSync(ledger, text);
+    const pub = eng.publicLedger();
+    assert.match(pub.error, /review software is older than its record of applied changes \(review\/state\/apply\.json\), so nothing was changed\. In the hub, turn this paper off and then on again to update it\./, text);
+    assert.deepEqual(eng.apply(['c1']).applied, []);
+    assert.match(eng.commit().reason, /older than its record/);
+    assert.match(eng.revert().reason, /older than its record/);
+    assert.equal(eng.syncDecisions({ c1: 'accepted' }).ok, false);
+    assert.equal(eng.setCardMode('c1', 'accepted').ok, false);
+    assert.equal(fs.readFileSync(ledger, 'utf8'), text, 'the record is byte-for-byte as it was');
+  }
+  assert.equal(fs.readFileSync(path.join(dir, 'main.tex'), 'utf8'), PAPER, 'the source is untouched');
+});
+
+test('apply ledger: a record without a format number still reads, and is saved with one', async t => {
+  const dir = paper('ledger-unversioned');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const ledger = path.join(dir, 'review', 'state', 'apply.json');
+  fs.writeFileSync(ledger, JSON.stringify({ round: null, cards: { c1: { mode: 'accepted' } } }));
+  const eng = await engineFor(dir);
+  const { LEDGER_FORMAT } = await import(path.join(dir, 'review', 'apply.mjs'));
+  assert.equal(eng.publicLedger().error, undefined);
+  assert.equal(eng.publicLedger().cards.c1.mode, 'accepted');
+  assert.ok(eng.setCardMode('c2', 'accepted').ok);
+  const saved = JSON.parse(fs.readFileSync(ledger, 'utf8'));
+  assert.equal(saved.format, LEDGER_FORMAT);
+  assert.equal(saved.cards.c1.mode, 'accepted');
+  assert.equal(saved.cards.c2.mode, 'accepted');
+});
+
+test('apply ledger: the page says so in one line and draws no card as not applied (happy-dom)', needsHappy, async t => {
+  const msg = "This paper's review software is older than its record of applied changes (review/state/apply.json), so nothing was changed. In the hub, turn this paper off and then on again to update it.";
+  const pg = await page(t, { data: { apply: { cards: {}, round: null, error: msg } } });
+  assert.equal(pg.doc.getElementById('apply-blocked').textContent, msg);
+  pg.focus('s1');
+  const accept = pg.doc.querySelector('.card[data-id="s1"] [data-act="accepted"]');
+  assert.equal(accept.disabled, true, 'no button may change a card whose state is not known');
+  assert.match(pg.doc.querySelector('.card[data-id="s1"]').textContent, /not known/);
+});
+
 // ============================================================ B5: card modes
 
 test('card modes: one list, one table; rejecting an applied edit is refused until it is reverted', async t => {
@@ -427,6 +480,49 @@ test('connection: a backup feed that never delivers is never shown as live (happ
   assert.match(conn(), /● live/);
 });
 
+// ================================================= working chip (2026-11-11)
+
+test('working chip: two turns back to back on one card keep it on across the gap (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {});
+  const glow = () => pg.doc.querySelector('.card[data-id="s1"]').classList.contains('working');
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  assert.ok(glow());
+  // the bridge ends turn 1 and starts turn 2 on the same card in one breath;
+  // turn 1's reply fetch answers only after turn 2 has begun
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.chipMode('s1'), 'landing', 'still on in the gap');
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm2' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'working', 'the late fetch does not say "replied" over turn 2');
+  assert.match(pg.R.activityOf('s1').msg, /agents are working/);
+  assert.ok(glow());
+  // a stray move from an earlier turn is refused, not applied
+  assert.equal(pg.R.setChip('s1', 'off'), false);
+  assert.equal(pg.R.setChip('s1', 'replied', 'replied ✓'), false);
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  // turn 2 ends: replied, and off only after that
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm2' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'replied');
+  assert.ok(!glow(), 'nothing running or waiting: the glow is off');
+});
+
+test('working chip: a queued answer arriving after the turn started does not downgrade it (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {});
+  assert.deepEqual([...pg.R.CHIP_MODES], ['off', 'sending', 'waiting', 'working', 'landing', 'replied', 'note', 'failed']);
+  assert.equal(pg.R.setChip('s1', 'sending', 'sending to agents…'), true);
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.setChip('s1', 'waiting', 'queued — waiting for agents'), false);
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  // the "replied" line fades by itself, and only from replied
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm1' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'replied');
+  assert.equal(pg.R.setChip('s1', 'off'), true);
+  assert.equal(pg.R.chipMode('s1'), 'off');
+});
+
 // ======================================================== B8, B9: processes
 
 test('every git / pandoc / build call in the engine carries a time limit', () => {
@@ -484,6 +580,66 @@ chat.proc.on('exit', () => setTimeout(() => { console.log('SURVIVED'); process.e
     env: { ...process.env, BOTFERENCE_HOME: root, BOTFERENCE_PROJECT_ROOT: root },
   });
   assert.match(r.stdout, /SURVIVED/, `the process died: ${r.stderr.slice(0, 600)}`);
+});
+
+test('the link to the bots is one named mode: starting → idle → busy → idle → gone', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-modes-link-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'core'), { recursive: true });
+  // a bridge that is ready, answers one turn, then exits
+  fs.writeFileSync(path.join(root, 'core', 'botference_ink_bridge.py'), [
+    'import sys, json, time',
+    'print(json.dumps({"type": "ready"}), flush=True)',
+    'sys.stdin.readline()',
+    'time.sleep(0.2)',
+    'print(json.dumps({"type": "ready"}), flush=True)',
+    'time.sleep(0.3)',
+    'sys.exit(0)',
+  ].join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'project.json'), '{}');
+  const rd = path.join(root, 'review');
+  fs.mkdirSync(path.join(rd, 'state'), { recursive: true });
+  fs.copyFileSync(path.join(ENGINE, 'chat.mjs'), path.join(rd, 'chat.mjs'));
+  const script = path.join(root, 'drive.mjs');
+  fs.writeFileSync(script, `
+import { BridgeChat, LINK_STATES } from ${JSON.stringify(path.join(rd, 'chat.mjs'))};
+const seen = [];
+const chat = new BridgeChat({ reviewDir: ${JSON.stringify(rd)}, cfg: {}, onEvent: ev => {
+  if (ev.kind === 'turn-start' || ev.kind === 'turn-end' || ev.kind === 'bridge-exit') seen.push(ev.kind + ':' + chat.link);
+} });
+const out = { states: LINK_STATES, before: chat.link, beforeAvailable: chat.available };
+chat.start();
+out.started = chat.link;
+const wait = (cond) => new Promise(r => { const i = setInterval(() => { if (cond()) { clearInterval(i); r(); } }, 20); });
+await wait(() => chat.link === 'idle');
+out.idleReady = chat.ready;
+chat.submit({ mention_id: 'm1', target_id: 'c1', author: 'ada', text: '@claude hi' });
+out.afterSubmit = chat.link;
+await wait(() => chat.link === 'gone');
+out.goneAvailable = chat.available;
+out.refused = chat.setLink('idle');
+out.afterRefused = chat.link;
+out.submitWhenGone = chat.submit({ mention_id: 'm2', target_id: 'c1', author: 'ada', text: '@claude again' });
+out.seen = seen;
+console.log(JSON.stringify(out));
+process.exit(0);
+`);
+  const r = spawnSync(process.execPath, [script], {
+    encoding: 'utf8', timeout: 20000,
+    env: { ...process.env, BOTFERENCE_HOME: root, BOTFERENCE_PROJECT_ROOT: root },
+  });
+  const out = JSON.parse(r.stdout.trim().split('\n').pop() || '{}');
+  assert.deepEqual(out.states, ['off', 'starting', 'idle', 'busy', 'gone'], r.stderr.slice(0, 600));
+  assert.equal(out.before, 'off');
+  assert.equal(out.beforeAvailable, false);
+  assert.equal(out.started, 'starting');
+  assert.equal(out.idleReady, true);
+  assert.equal(out.afterSubmit, 'busy');
+  assert.deepEqual(out.seen, ['turn-start:busy', 'turn-end:idle', 'bridge-exit:gone']);
+  assert.equal(out.goneAvailable, false);
+  assert.equal(out.refused, false, 'nothing leaves gone');
+  assert.equal(out.afterRefused, 'gone');
+  assert.equal(out.submitWhenGone.queued, false);
 });
 
 // ---------------------------------------------------------------- the page

@@ -646,9 +646,12 @@
   const CM = window.CardModes || null;
   const cardMode = id => (APPLY.cards && APPLY.cards[id] && APPLY.cards[id].mode) || 'pending';
   const cardDecision = id => (CM ? CM.DECISION_OF_MODE[cardMode(id)] : cardMode(id)) || 'pending';
-  const decisionAllowed = (id, decision) => !CM || CM.decisionAllowed(cardMode(id), decision);
+  // the server could not read its record of applied changes (APPLY.error):
+  // every card's mode is unknown, so no card is drawn as if nothing were
+  // applied, and no button may change one
+  const decisionAllowed = (id, decision) => !APPLY.error && (!CM || CM.decisionAllowed(cardMode(id), decision));
   const isApplyReady = id => cardMode(id) === 'accepted' || cardMode(id) === 'flagged';
-  const refusedText = id => cardMode(id) === 'committed'
+  const refusedText = id => APPLY.error ? APPLY.error : cardMode(id) === 'committed'
     ? 'This change is already committed.'
     : 'This change is already written into the source. Revert the round first, then reject or reset it.';
   // accept / reject / reset: the decision goes into this person's own file
@@ -762,7 +765,8 @@
     const t = esc(c.id);
     // P4 (owner-only): apply state + button for accepted span cards
     const mode = cardMode(c.id), entry = (APPLY.cards || {})[c.id] || {};
-    const applyBadge = mode === 'applied' ? '<span class="badge apply-badge">applied, uncommitted</span>'
+    const applyBadge = APPLY.error ? '<span class="badge apply-badge">not known</span>'
+      : mode === 'applied' ? '<span class="badge apply-badge">applied, uncommitted</span>'
       : mode === 'committed' ? `<span class="badge apply-badge">committed ${esc(entry.sha || '')}</span>` : '';
     const applyBtn = IS_OWNER && isApplyReady(c.id) && (c.current_text || c.source_json)
       ? `<button data-act="apply" data-target="${t}">⚡ apply</button>` : '';
@@ -1193,14 +1197,24 @@
     const st = c.type === 'user-comment' ? (c.resolved ? 'resolved' : 'open') : cardDecision(c.id);
     return `<div class="mini">
       <span class="dot"></span><span class="mini-author">${esc(cardAuthors(c)[0])}</span>
-      <span class="badge st-${esc(st)}">${esc(st)}</span>${(ACTIVITY[c.id] || {}).working ? '<span class="spin">◐</span>' : ''}
+      <span class="badge st-${esc(st)}">${esc(st)}</span>${chipBusy(c.id) ? '<span class="spin">◐</span>' : ''}
       ${excerpt ? `<span class="mini-quote">“${esc(excerpt)}”</span>` : ''}
       ${lastLine ? `<span class="mini-last">${esc(lastLine)}</span>` : ''}
       <span class="mini-thread">${th.length ? `${th.length} repl${th.length === 1 ? 'y' : 'ies'} · ` : ''}more ›</span>
     </div>`;
   }
 
+  // one plain line across the top of the page while the record of applied
+  // changes cannot be read (most often: this paper's copy of the review
+  // software is older than the record) — the cards' state is not known
+  function renderApplyBlocked() {
+    let b = document.getElementById('apply-blocked');
+    if (!APPLY.error) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'apply-blocked'; b.setAttribute('role', 'alert'); document.body.appendChild(b); }
+    if (b.textContent !== APPLY.error) b.textContent = APPLY.error;
+  }
   function render() {
+    renderApplyBlocked();
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') { pendingRender = true; return; }
     // spotlight: while a thread is focused, everything else recedes (CSS)
     document.body.classList.toggle('spotlight', !!FOCUSED);
@@ -1216,7 +1230,7 @@
         : cardDecision(c.id);
       div.className = `card t-${kind} s-${sc} ${focused ? 'focused' : 'collapsed'}`;
       div.style.setProperty('--author', authorColor(cardAuthors(c)[0]));
-      if ((ACTIVITY[c.id] || {}).working) div.classList.add('working');
+      if (chipBusy(c.id)) div.classList.add('working');
       div.dataset.id = c.id;
       div.innerHTML = focused ? cardHtml(c, dec) : collapsedHtml(c, dec);
       margin.appendChild(div);
@@ -1356,18 +1370,18 @@
 
   // --- P4 sidebar: apply-all / commit / revert (owner) + hosted pending queue ---
   function doApply(ids, all) {
-    (ids || []).forEach(id => chip(id, 'applying…'));
+    (ids || []).forEach(id => setChip(id, 'note', 'applying…'));
     api('/apply', { method: 'POST', body: JSON.stringify(all ? { all_accepted: true } : { ids }) })
       .then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
-        if (j.error) (ids || []).forEach(id => chip(id, j.error, true));
-        (j.flagged || []).forEach(f => chip(f.id, 'apply flagged: ' + f.reason, true));
-        (j.applied || []).forEach(id => chip(id, 'applied — rebuilding page…'));
+        if (j.error) (ids || []).forEach(id => setChip(id, 'failed', j.error));
+        (j.flagged || []).forEach(f => setChip(f.id, 'failed', 'apply flagged: ' + f.reason));
+        (j.applied || []).forEach(id => setChip(id, 'note', 'applied — rebuilding page…'));
         // cards the server passed over say why, instead of "applying…" forever
-        (j.skipped || []).forEach(sk => chip(sk.id, 'not applied: ' + sk.reason, true));
+        (j.skipped || []).forEach(sk => setChip(sk.id, 'failed', 'not applied: ' + sk.reason));
         if (j.build_error) toast('Rebuild failed: ' + j.build_error, true);
         rerender(); // the rebuild's SSE 'site' event reloads the page with the new render
-      }).catch(() => (ids || []).forEach(id => chip(id, 'apply failed — server unreachable', true)));
+      }).catch(() => (ids || []).forEach(id => setChip(id, 'failed', 'apply failed — server unreachable')));
   }
   // The "Changes" widget (owner only) lives inside the task console: committing
   // IS a document-level task, so the accept → ⚡ Apply → ✓ Commit / ↩ Revert
@@ -1735,7 +1749,7 @@
     const th = mergedThread(c.id);
     const excerpt = String(c.quote || c.excerpt || c.anchor_text || c.current_text || '').slice(0, 80);
     const first = String(c.comment || c.text || c.proposed_text || '').split('\n')[0].slice(0, 100);
-    const working = (ACTIVITY[c.id] || {}).working || PRESENCE.tid === c.id;
+    const working = chipBusy(c.id) || PRESENCE.tid === c.id;
     const reopenBtn = c.resolved
       ? `<button class="rebtn" data-mob-reopen="${esc(c.id)}" data-mine="${c.mine ? '1' : ''}" data-handle="${esc(c.author)}">↩ reopen</button>` : '';
     return `<div class="mob-entry" data-mob-id="${esc(c.id)}" style="--author:${authorColor(cardAuthors(c)[0])}">
@@ -2116,16 +2130,16 @@
       const send = () => {
         const text = ta.value.trim();
         if (!text) return;
-        if (!MENTION_RE.test(text)) { taskChip('add @claude, @codex or @all — nothing reaches an agent without an explicit tag', true); return; }
+        if (!MENTION_RE.test(text)) { setChip(CONSOLE_ID, 'failed', 'add @claude, @codex or @all — nothing reaches an agent without an explicit tag'); return; }
         ta.value = '';
-        taskChip('<span class="spin">◐</span> sending…');
+        setChip(CONSOLE_ID, 'sending', '<span class="spin">◐</span> sending…');
         api('/task', { method: 'POST', body: JSON.stringify({ mention_id: `task:${Date.now()}:${djb2(text)}`, text }) })
           .then(async r => {
             const j = await r.json().catch(() => ({}));
-            if (r.status === 409) { setChatMode(false); taskChip('server not started with --chat', true); return; }
-            if (!r.ok || j.queued === false) { taskChip(`task rejected${j.reason ? ': ' + j.reason : ''}`, true); return; }
-            taskChip('queued — waiting for agents');
-          }).catch(() => taskChip('server unreachable', true));
+            if (r.status === 409) { setChatMode(false); setChip(CONSOLE_ID, 'failed', 'server not started with --chat'); return; }
+            if (!r.ok || j.queued === false) { setChip(CONSOLE_ID, 'failed', `task rejected${j.reason ? ': ' + j.reason : ''}`); return; }
+            setChip(CONSOLE_ID, 'waiting', 'queued — waiting for agents');
+          }).catch(() => setChip(CONSOLE_ID, 'failed', 'server unreachable'));
       };
       console_.querySelector('#tc-send').addEventListener('click', send);
       ta.addEventListener('keydown', e => {
@@ -2138,12 +2152,6 @@
     const n = allSuggestions().filter(c => isApplyReady(c.id)).length;
     const sum = console_.querySelector('#tc-summary');
     if (sum) sum.textContent = APPLY.round ? 'applied, uncommitted' : n ? `${n} accepted, ready to apply` : '';
-    syncTaskActivity();
-  }
-  function taskChip(html, err) {
-    const a = activityOf(CONSOLE_ID);
-    a.msg = html; a.err = !!err;
-    a.working = !err && /queued|working|sending|landing|writing/i.test(html || '');
     syncTaskActivity();
   }
   function syncTaskActivity() {
@@ -2252,6 +2260,34 @@
   // bot surface; activity survives rerenders because threadHtml re-injects it
   const ACTIVITY = {};
   const activityOf = id => (ACTIVITY[id] = ACTIVITY[id] || { streams: {} });
+  // ---- a card's status chip: ONE mode per card, changed only through setChip() ----
+  //   off      — nothing shown
+  //   sending  — the request is on its way to the server
+  //   waiting  — queued: waiting for the agents (or for the owner to approve)
+  //   working  — a turn on this card is running
+  //   landing  — that turn ended; its reply is being fetched
+  //   replied  — the reply is in (shown for a few seconds, then off)
+  //   note     — a plain line not about a turn (applying…, rebuilding…)
+  //   failed   — something went wrong (shown as an error)
+  // The card glows while sending / waiting / working / landing. A late answer
+  // from an earlier turn can never blank a later one: replied is reached only
+  // from landing, off only from replied, and only the turn's own end (or an
+  // error) moves a card out of working.
+  const CHIP_MODES = ['off', 'sending', 'waiting', 'working', 'landing', 'replied', 'note', 'failed'];
+  const CHIP_BUSY = ['sending', 'waiting', 'working', 'landing'];
+  const CHIP_MOVES = {
+    off: ['sending', 'waiting', 'working', 'landing', 'note', 'failed'],
+    sending: ['waiting', 'working', 'landing', 'failed'],
+    waiting: ['sending', 'working', 'landing', 'failed'],
+    working: ['landing', 'failed'],
+    landing: ['replied', 'sending', 'waiting', 'working', 'failed'],
+    replied: ['off', 'sending', 'waiting', 'working', 'landing', 'note', 'failed'],
+    note: ['sending', 'waiting', 'working', 'landing', 'failed'],
+    failed: ['sending', 'waiting', 'working', 'landing', 'note'],
+  };
+  const REPLIED_SHOWN_MS = 4000;
+  const chipMode = id => (ACTIVITY[id] && ACTIVITY[id].chip) || 'off';
+  function chipBusy(id) { return CHIP_BUSY.includes(chipMode(id)); }
   let posTimer = null;
   const positionSoon = () => { clearTimeout(posTimer); posTimer = setTimeout(position, 120); };
   const permHtml = ev => `<div class="perm-card"><div class="who">permission request — ${esc(ev.model || 'agent')}</div>
@@ -2282,32 +2318,37 @@
     const btn = th.querySelector(':scope > .thread-reply');
     if (btn) btn.insertAdjacentHTML('beforebegin', activityHtml(id));
     const card = th.closest('.card');
-    if (card) card.classList.toggle('working', !!(ACTIVITY[id] || {}).working);
+    if (card) card.classList.toggle('working', chipBusy(id));
     positionSoon();
   }
-  function chip(cardId, text, err) {
+  // the one setter: refuses a move the table does not allow (returns false)
+  function setChip(cardId, mode, text = '') {
+    const from = chipMode(cardId);
+    if (!CHIP_MODES.includes(mode) || (mode !== from && !CHIP_MOVES[from].includes(mode))) return false;
     const a = activityOf(cardId);
-    a.msg = text; a.err = !!err;
-    a.working = !err && /queued|working|sending|landing|writing/i.test(text || '');
-    if (!text && !Object.keys(a.streams).length && !a.perm && !a.choice && !a.notice) delete ACTIVITY[cardId];
+    clearTimeout(a.fade); a.fade = null;
+    a.chip = mode; a.msg = mode === 'off' ? '' : text; a.err = mode === 'failed';
+    if (mode === 'replied') a.fade = setTimeout(() => setChip(cardId, 'off'), REPLIED_SHOWN_MS);
+    if (mode === 'off' && !Object.keys(a.streams).length && !a.perm && !a.choice && !a.notice) delete ACTIVITY[cardId];
     syncActivity(cardId);
     // collapsed cards have no .thread for syncActivity to hit: toggle their glow directly
     const mini = document.querySelector(`.card.collapsed[data-id="${CSS.escape(cardId)}"]`);
-    if (mini) { mini.classList.toggle('working', !!(ACTIVITY[cardId] || {}).working); positionSoon(); }
+    if (mini) { mini.classList.toggle('working', chipBusy(cardId)); positionSoon(); }
+    return true;
   }
   function maybeMention(targetId, text, mentionId) {
     if (!LIVE || !MENTION_RE.test(text)) return;
-    chip(targetId, 'sending to agents…');
+    setChip(targetId, 'sending', 'sending to agents…');
     api('/mention', { method: 'POST', body: JSON.stringify({ mention_id: mentionId, target_id: targetId, text }) })
       .then(async r => {
         const j = await r.json().catch(() => ({}));
-        if (r.status === 409) { setChatMode(false); chip(targetId, 'server not started with --chat', true); toast('Restart the server as: node review/server.mjs --chat', true); return; }
+        if (r.status === 409) { setChatMode(false); setChip(targetId, 'failed', 'server not started with --chat'); toast('Restart the server as: node review/server.mjs --chat', true); return; }
         // hosted guest: the summons sits in the owner's approval queue — say so honestly
-        if (j.pending) { chip(targetId, `queued — waiting for ${esc(OWNER_HANDLE || 'the owner')} to approve`); return; }
-        if (!r.ok || j.queued === false) { chip(targetId, `mention rejected${j.reason ? ': ' + j.reason : ''}`, true); return; }
-        chip(targetId, `queued${j.position > 1 ? ' (#' + j.position + ')' : ''} — waiting for agents`);
+        if (j.pending) { setChip(targetId, 'waiting', `queued — waiting for ${esc(OWNER_HANDLE || 'the owner')} to approve`); return; }
+        if (!r.ok || j.queued === false) { setChip(targetId, 'failed', `mention rejected${j.reason ? ': ' + j.reason : ''}`); return; }
+        setChip(targetId, 'waiting', `queued${j.position > 1 ? ' (#' + j.position + ')' : ''} — waiting for agents`);
       })
-      .catch(() => chip(targetId, 'server unreachable', true));
+      .catch(() => setChip(targetId, 'failed', 'server unreachable'));
   }
   // NO chat panel: the margin threads + anchored mentions are the ONLY
   // conversation surface. System status and unanchored/off-page permission or
@@ -2389,22 +2430,24 @@
     if (m.kind === 'turn-start') {
       if (m.user_text) LAST_USER_TEXT = m.user_text;
       presenceTurnStart(tid, m.user_text);
-      if (tid) { activityOf(tid).streams = {}; chip(tid, '<span class="spin">◐</span> agents are working…'); }
+      if (tid) { activityOf(tid).streams = {}; setChip(tid, 'working', '<span class="spin">◐</span> agents are working…'); }
       // unanchored turns (e.g. server transcript notes): presence strip only
     } else if (m.kind === 'turn-end') {
       presenceIdle();
-      if (tid) chip(tid, 'reply landing…');
+      if (tid) setChip(tid, 'landing', 'reply landing…');
       // pull the canonical thread state before clearing activity, so the chip
-      // never outlives the reply it announces
+      // never outlives the reply it announces. If the next turn on this card
+      // started meanwhile, it owns the chip and its live text: leave both.
+      const stillLanding = () => tid && chipMode(tid) === 'landing';
       api('/data').then(r => r.json()).then(j => {
         adoptData(j);
-        if (tid && ACTIVITY[tid]) ACTIVITY[tid].streams = {};
+        if (stillLanding()) ACTIVITY[tid].streams = {};
         rerender();
-        if (tid) { chip(tid, 'replied ✓'); setTimeout(() => chip(tid, ''), 4000); }
-      }).catch(() => { if (tid) chip(tid, 'done — refresh to see the reply', true); });
+        if (tid) setChip(tid, 'replied', 'replied ✓');
+      }).catch(() => { if (stillLanding()) setChip(tid, 'failed', 'done — refresh to see the reply'); });
     } else if (m.kind === 'permission-timeout') {
       toast('Permission request timed out — denied by default.', true);
-      if (tid) chip(tid, 'permission timed out (denied)', true);
+      if (tid) setChip(tid, 'failed', 'permission timed out (denied)');
     } else if (m.kind === 'stream') {
       const e = m.ev || {};
       if (m.final) {
@@ -2457,11 +2500,11 @@
       toast(`Agents asked "${m.prompt || 'a setup question'}" — answered automatically: ${m.picked}.`);
     } else if (m.kind === 'choice-timeout') {
       toast('Choice request timed out — dismissed by default.', true);
-      if (tid) chip(tid, 'choice timed out (dismissed)', true);
+      if (tid) setChip(tid, 'failed', 'choice timed out (dismissed)');
     } else if (m.kind === 'bridge-exit') {
       presenceIdle();
       toast(`Agent bridge exited (code ${m.code}). Restart the server with --chat.`, true);
-      for (const id of Object.keys(ACTIVITY)) chip(id, 'agent bridge exited — restart the server with --chat', true);
+      for (const id of Object.keys(ACTIVITY)) setChip(id, 'failed', 'agent bridge exited — restart the server with --chat');
     }
   }
 
@@ -2474,7 +2517,7 @@
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
     openComposer, setChatMode, PRESENCE, MODELS,
-    setCardMode, cardMode, doApply, activityOf,
+    setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
   };
 })();

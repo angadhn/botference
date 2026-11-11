@@ -67,14 +67,45 @@ export function execFailure(e, what, ms) {
   return `${what} failed: ${String((e && (e.stderr || e.message)) || e).trim().slice(0, 300)}`;
 }
 
+// ---- the record's format number ---------------------------------------------
+// state/apply.json carries `format`. Bump LEDGER_FORMAT whenever its shape
+// changes. Each paper keeps its own copy of this engine, so an older copy can
+// meet a record a newer copy wrote: it must refuse that record out loud and
+// never read it as "nothing applied" or write over it. Records from before
+// the number existed (no `format`) are format 1 or the older {applied,
+// flagged} maps, and are read as before.
+export const LEDGER_FORMAT = 2;
+export const tooNewMessage = rel =>
+  `This paper's review software is older than its record of applied changes (${rel}), so nothing was changed. `
+  + 'In the hub, turn this paper off and then on again to update it.';
+const isMap = v => !!v && typeof v === 'object' && !Array.isArray(v);
+const LEDGER_KEYS = ['format', 'round', 'cards', 'applied', 'flagged'];
+// null when this engine can read `raw`; otherwise why not (for the log)
+export function ledgerProblem(raw) {
+  if (!isMap(raw)) return 'not a JSON object';
+  if ('format' in raw) {
+    if (!Number.isInteger(raw.format) || raw.format < 1) return `format ${JSON.stringify(raw.format)} is not a format number`;
+    if (raw.format > LEDGER_FORMAT) return `format ${raw.format} is newer than ${LEDGER_FORMAT}`;
+  }
+  const extra = Object.keys(raw).filter(k => !LEDGER_KEYS.includes(k));
+  if (extra.length) return `unknown fields: ${extra.join(', ')}`;
+  if (raw.round != null && !isMap(raw.round)) return 'round is not an object';
+  if ('cards' in raw) {
+    if (!isMap(raw.cards)) return 'cards is not an object';
+    for (const [id, c] of Object.entries(raw.cards)) {
+      if (!isMap(c) || !CARD_MODES.includes(c.mode)) return `card ${id} has an unknown mode ${JSON.stringify(c && c.mode)}`;
+    }
+  }
+  for (const k of ['applied', 'flagged']) if (k in raw && !isMap(raw[k])) return `${k} is not an object`;
+  return null;
+}
+
 // the ledger before suggestion cards had one mode each: {applied, flagged}
 // maps. Read it as the modes it meant, so an old round still commits.
 function normalizeLedger(raw) {
   const l = { round: (raw && raw.round) || null, cards: {} };
   if (raw && raw.cards && typeof raw.cards === 'object') {
-    for (const [id, c] of Object.entries(raw.cards)) {
-      if (c && CARD_MODES.includes(c.mode)) l.cards[id] = { ...c };
-    }
+    for (const [id, c] of Object.entries(raw.cards)) l.cards[id] = { ...c };
     return l;
   }
   for (const [id, f] of Object.entries((raw && raw.flagged) || {})) {
@@ -113,12 +144,17 @@ export class ApplyEngine {
     this.ledgerRel = path.join(path.basename(reviewDir), 'state', 'apply.json');
   }
 
-  // {ok, ledger} or {ok:false, reason} — an unreadable ledger is never empty
+  // {ok, ledger} or {ok:false, reason} — an unreadable ledger is never empty,
+  // and one this engine is too old to understand is refused, never rewritten
   loadLedger() {
     const r = readJsonState(this.ledgerFile);
     if (r.state === 'missing') return { ok: true, ledger: normalizeLedger(null) };
-    if (r.state === 'ok' && r.value && typeof r.value === 'object' && !Array.isArray(r.value)) {
-      return { ok: true, ledger: normalizeLedger(r.value) };
+    if (r.state === 'ok' && isMap(r.value)) {
+      const problem = ledgerProblem(r.value);
+      if (!problem) return { ok: true, ledger: normalizeLedger(r.value) };
+      const reason = tooNewMessage(this.ledgerRel);
+      console.error(`review: ${reason} (${problem})`);
+      return { ok: false, reason, tooNew: true };
     }
     const reason = unreadableMessage(this.ledgerRel, 'The record of applied changes');
     console.error(`review: ${reason} (${(r.error && r.error.message) || 'not a JSON object'})`);
@@ -126,7 +162,7 @@ export class ApplyEngine {
   }
   saveLedger(l) {
     fs.mkdirSync(path.dirname(this.ledgerFile), { recursive: true });
-    writeJsonAtomic(this.ledgerFile, { round: l.round, cards: l.cards });
+    writeJsonAtomic(this.ledgerFile, { format: LEDGER_FORMAT, round: l.round, cards: l.cards });
   }
   // the public way to change one card's mode: load, move, save
   setCardMode(id, next, extra) {
