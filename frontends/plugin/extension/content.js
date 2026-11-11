@@ -3822,6 +3822,9 @@
   // Esc closes the drawer wherever the focus is
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape' || !drawer) return;
+    // Esc while choosing a character with an input method drops that
+    // character; it closes nothing
+    if (e.isComposing || e.keyCode === 229) return;
     // one layer at a time: the overlap chooser, then an open lightbox (a figure
     // from a code-block run), then the drawer. The first two are up whether or
     // not the panel is — a chooser can be opened on a dormant page — so they

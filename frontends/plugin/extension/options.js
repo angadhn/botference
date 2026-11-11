@@ -313,6 +313,7 @@
 
   // ⌘/Ctrl+Enter anywhere on the page saves, like every other composer here
   document.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;   // the input method's key, not ours
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); el('save').click(); }
   });
 

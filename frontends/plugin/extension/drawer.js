@@ -1764,6 +1764,39 @@
     }
   }
 
+  // ── typing with an input method (Japanese, Chinese, accents…) ────────────
+  // While the reader is choosing a character with an input method, the
+  // browser is "composing": the half-made text is in the box, and Enter, the
+  // arrows and Esc belong to the input method, not to us. A rebuild of the
+  // box in that moment would cut the half-made text short, so a redraw waits
+  // until the character is chosen. ONE value, D.ime. Its modes, named here:
+  //   'none'      — null: nothing is being composed
+  //   'composing' — { mode, el }: a character is being chosen in box `el`
+  //   'held'      — { mode, el }: …and a redraw is waiting for it to finish
+  const IME_MODES = ['none', 'composing', 'held'];
+  const imeMode = v => (v && (v.mode === 'composing' || v.mode === 'held') ? v.mode : 'none');
+  // …and every way it changes (imeMove refuses the rest):
+  //   start — none → composing, in one box
+  //   hold  — composing | held → held (a redraw was asked for)
+  //   end   — anything → none: the character was chosen, or the box lost the
+  //           focus or left the page; never refused
+  const IME_MOVES = ['start', 'hold', 'end'];
+  function imeMove(v, move, el) {
+    if (IME_MOVES.indexOf(move) === -1) throw new Error('typing: no such move ' + move);
+    if (move === 'end') return null;
+    const mode = imeMode(v);
+    if (move === 'start') {
+      if (mode !== 'none') throw new Error('typing: a character is already being chosen');
+      if (!el) throw new Error('typing: start needs a box');
+      return { mode: 'composing', el };
+    }
+    if (mode === 'none') throw new Error('typing: nothing is being composed');
+    return { mode: 'held', el: v.el };   // hold
+  }
+  // Is this key press part of choosing a character? (229 is what a browser
+  // reports for a key the input method has taken.)
+  const composingKey = e => !!e && (e.isComposing === true || e.keyCode === 229);
+
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
   // message, so the completion follows the CARET, not the start of the box.
@@ -2315,6 +2348,9 @@
       // it was asked for from, which gets the focus back when it closes
       commands: null, helpOpen: false, helpFrom: '',
       focused: null,
+      // a character being chosen with an input method (IME_MODES), changed
+      // only by moveIme
+      ime: null,
       // a page with no highlights has no Comments to open on
       tab: CAPS.highlights ? 'comments' : 'chat',
       // 'threads' = the Comments/Page-chat tabs; 'pages' = the library of every
@@ -5709,6 +5745,11 @@ ${bubbleShellHtml()}`;
     // The same three moves as openSession, against the page's own archive
     // rather than a council project's: set the chat aside, clear what the old
     // one left behind, and let the record reload put the empty state up.
+    // THE one function that changes D.ime (imeMove refuses the illegal moves)
+    function moveIme(move, el) {
+      D.ime = imeMove(D.ime, move, el);
+      return D.ime;
+    }
     // THE one function that changes D.newchat (newChatMove refuses the
     // illegal moves).
     function moveNewChat(move, arg) {
@@ -6322,6 +6363,15 @@ ${bubbleShellHtml()}`;
       if (pane.scrollTop !== keep) pane.scrollTop = keep;
     }
     function keepTyping(paint) {
+      // a character half chosen with an input method: the redraw waits for it
+      // (see IME_MODES); one whose box has lost the focus is over already
+      if (imeMode(D.ime) !== 'none') {
+        if (D.ime.el.isConnected && D.shadow.activeElement === D.ime.el) {
+          if (imeMode(D.ime) === 'composing') moveIme('hold');
+          return;
+        }
+        moveIme('end');
+      }
       const typing = noteTyping();
       harvestDrafts();
       paint();
@@ -7814,6 +7864,20 @@ ${bubbleShellHtml()}`;
       // covers a focus the reader gives back by hand, e.g. after Esc — and the
       // focus keepTyping gives back after a live refresh of the list, whose
       // rebuilt menu starts out hidden.)
+      // choosing a character with an input method: a redraw asked for in the
+      // meantime is held, and done the moment the character is chosen
+      D.shadow.addEventListener('compositionstart', e => {
+        const el = e.target;
+        if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT')) return;
+        if (imeMode(D.ime) !== 'none') moveIme('end');
+        moveIme('start', el);
+      });
+      D.shadow.addEventListener('compositionend', () => {
+        const was = imeMode(D.ime);
+        if (was === 'none') return;
+        moveIme('end');
+        if (was === 'held') { render(); if (D.view === 'pages') renderPages(); }
+      });
       D.shadow.addEventListener('focusin', e => {
         const el = e.target;
         if (el && el.dataset && el.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(el); }
@@ -7826,6 +7890,10 @@ ${bubbleShellHtml()}`;
 
       // Enter/⌘↩ send rules live below; see the comment at the send branch
       D.shadow.addEventListener('keydown', e => {
+        // A key pressed while choosing a character with an input method is the
+        // input method's: Enter there picks the character, it never sends, and
+        // Esc there drops the half-made character, it never closes anything.
+        if (composingKey(e)) return;
         // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
         // and nothing else. ⌘↩ still sends: finishing a mention is not a
         // reason to hold a finished message back.
@@ -12861,6 +12929,7 @@ ${bubbleShellHtml()}`;
     newChatMove, NEWCHAT_MODES, NEWCHAT_MOVES,              // test/modes.test.mjs
     rowEditMove, rowEditMode, ROW_EDIT_MODES, ROW_EDIT_MOVES, // test/modes.test.mjs
     bubbleHowMove, BUB_PLACES, BUB_STACKS, BUB_HOW_MOVES,   // test/modes.test.mjs
+    imeMove, imeMode, composingKey, IME_MODES, IME_MOVES,   // test/compose.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

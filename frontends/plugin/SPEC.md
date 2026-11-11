@@ -12250,3 +12250,25 @@ illegal move. Nothing the reader sees changes, except where noted.
 - Tests: `test/modes.test.mjs` (each machine and its refusals; in happy-dom:
   the new-chat ask, no, the chooser, a failed open, yes; the rename and tag
   boxes keeping their text through an unfocused refresh, one box at a time).
+
+## Amendment (2026-11-11): typing with an input method
+
+While a character is being chosen with an input method (Japanese, Chinese,
+accents — the browser's "composition"), the half-made text is in the box and
+Enter, the arrows and Esc belong to the input method.
+
+- **No key of ours mid-choice.** The drawer's one keydown listener returns at
+  once for a key with `isComposing` or `keyCode` 229 (`composingKey`): Enter
+  never sends (thread box, page chat, library, edit box, row boxes), the
+  @-menu and tag menu do not take arrows, Esc closes nothing. content.js's Esc
+  handler and the options page's ⌘↩ do the same.
+- **No redraw mid-choice.** ONE value, `D.ime`, with `IME_MODES` = none /
+  composing / held, changed only by `moveIme` → the pure `imeMove`; moves
+  start / hold / end (`start` is refused while composing, `hold` with nothing
+  composed). `compositionstart` in a text box moves `start`; `keepTyping` —
+  which every pane rebuild runs inside — moves `hold` and paints nothing while
+  that box still has the focus; `compositionend` moves `end` and, if a redraw
+  was held, runs `render()` (and the pages list when it is showing). A
+  composition whose box has lost the focus or left the page is ended by the
+  next rebuild rather than holding it.
+- Tests: `test/compose.test.mjs`.
