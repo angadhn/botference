@@ -427,6 +427,49 @@ test('connection: a backup feed that never delivers is never shown as live (happ
   assert.match(conn(), /● live/);
 });
 
+// ================================================= working chip (2026-11-11)
+
+test('working chip: two turns back to back on one card keep it on across the gap (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {});
+  const glow = () => pg.doc.querySelector('.card[data-id="s1"]').classList.contains('working');
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  assert.ok(glow());
+  // the bridge ends turn 1 and starts turn 2 on the same card in one breath;
+  // turn 1's reply fetch answers only after turn 2 has begun
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.chipMode('s1'), 'landing', 'still on in the gap');
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm2' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'working', 'the late fetch does not say "replied" over turn 2');
+  assert.match(pg.R.activityOf('s1').msg, /agents are working/);
+  assert.ok(glow());
+  // a stray move from an earlier turn is refused, not applied
+  assert.equal(pg.R.setChip('s1', 'off'), false);
+  assert.equal(pg.R.setChip('s1', 'replied', 'replied ✓'), false);
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  // turn 2 ends: replied, and off only after that
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm2' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'replied');
+  assert.ok(!glow(), 'nothing running or waiting: the glow is off');
+});
+
+test('working chip: a queued answer arriving after the turn started does not downgrade it (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {});
+  assert.deepEqual([...pg.R.CHIP_MODES], ['off', 'sending', 'waiting', 'working', 'landing', 'replied', 'note', 'failed']);
+  assert.equal(pg.R.setChip('s1', 'sending', 'sending to agents…'), true);
+  pg.R.chatEvent({ kind: 'turn-start', target_id: 's1', mention_id: 'm1' });
+  assert.equal(pg.R.setChip('s1', 'waiting', 'queued — waiting for agents'), false);
+  assert.equal(pg.R.chipMode('s1'), 'working');
+  // the "replied" line fades by itself, and only from replied
+  pg.R.chatEvent({ kind: 'turn-end', target_id: 's1', mention_id: 'm1' });
+  await pg.tick();
+  assert.equal(pg.R.chipMode('s1'), 'replied');
+  assert.equal(pg.R.setChip('s1', 'off'), true);
+  assert.equal(pg.R.chipMode('s1'), 'off');
+});
+
 // ======================================================== B8, B9: processes
 
 test('every git / pandoc / build call in the engine carries a time limit', () => {
