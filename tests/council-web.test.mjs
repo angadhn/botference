@@ -2541,6 +2541,69 @@ test('billing: flipping a switch retires idle bridges — the next turn already 
   } finally { s.stop(); }
 });
 
+test('billing: a chat on screen whose bots a switch stopped is told so in one line, follows its reopened chat, and loses no message', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=watch001' });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  await c.next(e => e.type === 'room' && e.text === 'echo: /resume watch001', 8000);
+  await c.next(e => e.type === 'ready');
+  const spawned = s.spawnEnvs().length;
+  const r = await (await post(s.base, '/key-mode', { agent: 'codex', mode: 'subscription' })).json();
+  assert.equal(r.applies, 'now', 'nothing is left running on the old billing');
+  const stop = await c.next(e => e.type === 'bots_stopped');
+  assert.equal(stop.text,
+    "Codex's billing changed, so Claude and Codex were stopped in this chat for the change to take effect. "
+    + 'They start again with your next message.');
+  assert.notEqual(stop.bridge_id, hello.bridge_id, 'the tab is moved to the reopened chat');
+  assert.equal(stop.resuming, true);
+  // a message sent while the chat is still being reopened waits for it
+  const sent = await (await post(s.base, '/input', { text: 'after-switch', bridge: stop.bridge_id })).json();
+  assert.equal(sent.ok, true);
+  await c.next(e => e.type === 'room' && e.text === 'echo: after-switch', 8000);
+  const tail = c.events.slice(c.events.indexOf(stop));
+  const at = pred => tail.findIndex(pred);
+  const note = at(e => e.type === 'room' && e.speaker === 'system' && e.text === stop.text);
+  const ready = at((e, i) => e.type === 'ready' && i > note);
+  const echo = at(e => e.type === 'user_echo' && e.text === 'after-switch');
+  assert.ok(note > 0, 'the reopened chat says it too, so a reload keeps the line');
+  assert.ok(note < ready && ready < echo, 'the line lands with the redrawn chat; the message after it, not wiped by it');
+  assert.equal(s.spawnEnvs().length, spawned + 1, 'one new bot process, under the new billing');
+  assert.match(fs.readFileSync(s.rx, 'utf8'), /^\/resume watch001$(?:[\s\S]*^\/resume watch001$)/m, 'the same chat was reopened');
+  // a reload of the chat replays the line
+  const d = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=watch001' });
+  t.after(() => d.close());
+  await d.next(e => e.type === 'replay_done');
+  assert.equal(d.events.filter(e => e.type === 'room' && e.text === stop.text).length, 1);
+});
+
+test('billing: a stopped chat on the page — one line, the new bridge named in later posts, redrawn without a blank (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { C, transcript, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'user_echo', text: 'plan the trip' });
+  C.handle({ type: 'room', speaker: 'claude', text: 'Here is a plan' });
+  C.handle({ type: 'ready' });
+  const text = "Claude's billing changed, so Claude and Codex were stopped in this chat for the change to take effect. They start again with your next message.";
+  C.handle({ type: 'bots_stopped', text, bridge_id: 'b2', resuming: true });
+  assert.match(transcript.textContent, /Claude and Codex were stopped in this chat/, 'said at once');
+  assert.equal(C.state.bridgeId, 'b2');
+  // the reopened chat is drawn offscreen: never a blank moment
+  C.handle({ type: 'clear_panes' });
+  assert.match(transcript.textContent, /Here is a plan/, 'the chat stays on screen while it is reopened');
+  C.handle({ type: 'restore', entries: [{ speaker: 'user', text: 'plan the trip' }, { speaker: 'claude', text: 'Here is a plan' }] });
+  C.handle({ type: 'room', speaker: 'system', text });
+  C.handle({ type: 'ready' });
+  assert.match(transcript.textContent, /Here is a plan/);
+  assert.equal(transcript.textContent.split('were stopped in this chat').length - 1, 1, 'the line shows once');
+  posts.length = 0;
+  await C.sendInput('carry on');
+  assert.equal(posts[0].body.bridge, 'b2', 'the next message goes to the reopened chat');
+});
+
 test('billing: keys never cross the tunnel — a proxied write is refused, the switch and the status are not', async () => {
   const s = await startServer();
   try {

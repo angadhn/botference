@@ -3786,7 +3786,7 @@
         liveCard = null;
         resetLanes();
         state.replaying = true; // a restore replay follows: pin, no heuristics
-        if (state.pendingSwitch) {
+        if (state.pendingSwitch || state.resuming) {
           // in-flight switch: keep the optimistic (or outgoing) transcript on
           // screen and build the authoritative one offscreen — never blank.
           // A fresh buffer also drops a resuming bridge's interstitial
@@ -3824,6 +3824,16 @@
       case 'choice_cleared': settleCard(); break;
       case 'permission_timeout': settleCard('timed out — denied by default'); break;
       case 'choice_timeout': settleCard('timed out — dismissed'); break;
+      case 'bots_stopped':
+        // a billing change stopped this chat's bots; the server is opening
+        // the chat again under the new billing and this tab now follows that
+        // bridge. The chat is redrawn offscreen (clear_panes, above) and
+        // swapped in at its ready, so the reader sees no blank moment.
+        state.bridgeId = ev.bridge_id || null;
+        state.resuming = !!ev.resuming;
+        addMsg('system', ev.text || 'The bots were stopped. They start again with your next message.');
+        setBusy(false);
+        break;
       case 'bridge_exit':
         if (replayBuffer || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
