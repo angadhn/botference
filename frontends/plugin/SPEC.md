@@ -12318,3 +12318,35 @@ by `moveFoot` → the pure `footMove`; moves land / letgo.
   (another tab, the bubble shut); and the scroller found away from `at` and
   not at its foot — a reader who scrolled by some other means. No timer.
 - Tests: `test/footkeep.test.mjs`.
+
+## Amendment (2026-11-11): comment status — every label from one function
+
+A thread's status is kept as several flags on the record (`resolved` +
+`resolved_at`/`_by`, `addressed` + `addressed_at`/`_by`, `orphaned`, `mark`),
+written from five places (store.mjs `setResolved`/`setAddressed`/re-anchoring,
+server.mjs `POST /orphan`, content.js's optimistic writes, drawer.js's
+optimistic resolve / "not done"). The labels used to read those flags each
+their own way. Now every label reads ONE function:
+
+- **Extension:** `threadStatus(t, local)` in drawer.js →
+  `{ stage, mark, orphaned }`: `stage` one of `THREAD_STAGES` = open / ready /
+  resolved (`threadStage`; resolved outranks ready), `mark` one of
+  `THREAD_MARKS` = highlight / strike (`threadMark`), `orphaned` = the page's
+  live answer when it has one, else the record's. The card's class and
+  section, the quote's badges, the bubble's ✓/↺, the overlap chooser's row,
+  the "can strike" / "can question" gates, and content.js's page paint
+  (`stagePaint`), "new wording" relocation and track-changes gate all read it.
+- **Companion:** `threadStage` / `THREAD_STAGES` in store.mjs, the same rule;
+  `isResolved` and `isAddressed` are read through it.
+  `test/status.test.mjs` holds the two to one table, old records included (a
+  record with both `resolved` and `addressed` is resolved).
+- **One disagreement fixed:** the drawer's optimistic resolve / reopen now
+  clears "ready for review" as the companion's `setResolved` does (and puts it
+  back if the companion refuses), so a reopened thread reads "open" at once,
+  not "ready" until the record came back.
+
+Not done (the stored format is unchanged): the flags are still stored and
+written as before. A full conversion would store one `status` field, change
+it only through one store.mjs setter that refuses illegal moves, migrate old
+records on read, and make content.js / drawer.js / server.mjs stop writing
+the flags themselves.

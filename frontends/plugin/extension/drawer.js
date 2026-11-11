@@ -267,8 +267,38 @@
   // and could drift into a card and a page that disagree. content.js reads
   // them from window.BFPDrawer, which loads first (manifest.json).
   //
-  // Resolved: closed by the reader. Nothing else closes a thread.
-  const isResolvedThread = t => !!(t && t.resolved);
+  // A thread's STATUS is what every label about it says — the card's class
+  // and its section, the badges on its quote, the bubble's ✓/↺, the overlap
+  // chooser's row, and the paint on the page. It is ONE function over the
+  // record's flags, threadStatus, and every label reads it; nothing reads the
+  // flags directly to decide what to call a thread. (The flags themselves are
+  // still what the companion stores and changes — store.mjs setResolved /
+  // setAddressed, POST /orphan, POST /mark — see SPEC "comment status".)
+  //
+  // The STAGE, its three names (THREAD_STAGES), resolved outranking ready:
+  //   'open'     — waiting on the bots, or on nobody
+  //   'ready'    — a bot has answered since the reader last wrote: "ready for
+  //                review", waiting on the reader (`addressed`)
+  //   'resolved' — closed by the reader. Nothing else closes a thread.
+  const THREAD_STAGES = ['open', 'ready', 'resolved'];
+  const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // …the MARK, its two names (THREAD_MARKS): what was done to the passage
+  const THREAD_MARKS = ['highlight', 'strike'];
+  const threadMark = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
+  // …and whether its passage can no longer be found. The page's own live
+  // answer (`local`: true / false, or null when it has not looked) outranks
+  // the record's `orphaned`, which is only the last answer it reported.
+  function threadStatus(t, local) {
+    return {
+      stage: threadStage(t),
+      mark: threadMark(t),
+      orphaned: local != null ? !!local : !!(t && t.orphaned),
+    };
+  }
+  // the paint a highlight wears on the page for its stage (anchor.js
+  // paintOffsets: true = green, 'ready' = amber, false = yellow)
+  const stagePaint = t => ({ resolved: true, ready: 'ready', open: false })[threadStage(t)];
+  const isResolvedThread = t => threadStage(t) === 'resolved';
   // THE READER'S ANSWER to "is this folder yours?" — about a council root
   // (project pages) or a site's repo (blog pages). One value with three
   // names, kept in `state` on the record the companion sends (server.mjs
@@ -4181,7 +4211,7 @@ ${bubbleShellHtml()}`;
     // last wrote in it, so it is waiting on the READER now, not on the bots —
     // "ready for review", never "resolved": closing the reader's question is
     // the reader's click and nothing else's.
-    const isAddressed = t => !!(t && t.addressed && !t.resolved);
+    const isAddressed = t => threadStage(t) === 'ready';
     // `extra` rides INSIDE the quote, flowing after the closing curly quote the
     // way the orphan badge always has — a badge in the row beside it would take
     // a flex share and squeeze a three-line quote down to a column.
@@ -4189,7 +4219,7 @@ ${bubbleShellHtml()}`;
     // and the margin have to agree about what was done to the passage — a card
     // that quoted a deletion as if it were a highlight would leave the reader
     // wondering which of the two they were looking at.
-    const isStruck = t => !!(t && t.mark === 'strike');
+    const isStruck = t => threadMark(t) === 'strike';
     const strikeBadge = t => (isStruck(t)
       ? `<span class="badge strike-badge" title="${esc('this passage is struck through — a suggested deletion')}">${
         (t.msgs || []).some(m => m && m.kind !== 'tools' && String(m.text || '').trim())
@@ -4252,7 +4282,7 @@ ${bubbleShellHtml()}`;
     // weight of decision. Striking a passage is a statement about the document;
     // un-striking it is a correction, and it is drawn as one: no red, half the
     // opacity, and the same glyph without its line.
-    const canMark = t => CAPS.strike && D.owner && !t.resolved;
+    const canMark = t => CAPS.strike && D.owner && !isResolved(t);
     const markBtn = t => {
       if (!canMark(t)) return '';
       if (D.marking[t.id]) return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
@@ -4281,7 +4311,7 @@ ${bubbleShellHtml()}`;
     // memory), and not on a FILED thread: a thread the reader has closed is an
     // argument that is over, and the passage is still there to be selected if
     // they want a question out of it after all.
-    const canQuestion = t => D.owner && !t.resolved;
+    const canQuestion = t => D.owner && !isResolved(t);
     const questionBtn = t => {
       if (!canQuestion(t)) return '';
       if (D.questions.busy === t.id) return `<span class="rebtn thr-q busy" aria-hidden="true">◌</span>`;
@@ -4506,7 +4536,7 @@ ${bubbleShellHtml()}`;
     }
 
     function cardHtml(t) {
-      const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
+      const orph = threadStatus(t, D.orphans[t.id]).orphaned;
       const author = threadAuthor(t);
       const ready = isAddressed(t);
       const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '',
@@ -4559,7 +4589,7 @@ ${bubbleShellHtml()}`;
     // to five sentences once that job has drained over the top of it. The
     // card cannot tell and does not need to.
     function resolvedCardHtml(t) {
-      const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
+      const orph = threadStatus(t, D.orphans[t.id]).orphaned;
       const open = !!D.resolvedCards[t.id];
       const author = threadAuthor(t);
       const cls = ['card', 'resolved', open ? 'unfolded' : '', orph ? 'orphaned' : '',
@@ -8302,7 +8332,7 @@ ${bubbleShellHtml()}`;
       // on the page must always open its card, so the filter stands aside
       // rather than swallowing the click.
       if (D.commenter && !inThread(t, D.commenter)) { D.commenter = ''; changed = true; }
-      if (!t.resolved) return changed;
+      if (!isResolved(t)) return changed;
       if (!D.resolvedOpen) { D.resolvedOpen = true; changed = true; }
       if (!D.resolvedCards[id]) { D.resolvedCards[id] = true; changed = true; }
       if (D.tab !== 'comments') { D.tab = 'comments'; paintTabs(); changed = true; }
@@ -9514,6 +9544,12 @@ ${bubbleShellHtml()}`;
       if (!t || D.resolving[target]) return;
       const was = !!t.resolved;
       const wasSummary = t.summary;
+      // Either direction ends "ready for review" — the companion's setResolved
+      // does exactly this, so the optimistic copy does too, or a reopened
+      // thread would read "ready" here and "open" everywhere else until the
+      // record came back
+      const wasAddr = { addressed: t.addressed, addressed_by: t.addressed_by, addressed_at: t.addressed_at };
+      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
       if (on) {
         t.resolved = true;
         if (!t.summary) t.summary = localDigest(t);
@@ -9539,6 +9575,7 @@ ${bubbleShellHtml()}`;
         if (now) {
           if (was) now.resolved = true; else delete now.resolved;
           if (wasSummary == null) delete now.summary; else now.summary = wasSummary;
+          for (const k of Object.keys(wasAddr)) if (wasAddr[k] !== undefined) now[k] = wasAddr[k];
         }
         note(target, (r && r.error) || (on ? 'could not resolve that thread' : 'could not reopen that thread'), true);
         return;   // note() renders
@@ -11480,7 +11517,7 @@ ${bubbleShellHtml()}`;
       return '';
     }
     function pickRow(t) {
-      const struck = t.mark === 'strike';
+      const struck = isStruck(t);
       const kind = struck ? 'strikeout' : 'comment';
       const note = pickNote(t);
       const what = note ? '“' + note + '”' : (struck ? 'suggested deletion' : 'no note yet');
@@ -11850,7 +11887,7 @@ ${bubbleShellHtml()}`;
     // whole HERE, and from then on it is only ever patched around.
     function buildBubble(box, t) {
       const fresh = t.id === NEW_ID;
-      const struck = fresh && t.mark === 'strike';
+      const struck = fresh && threadMark(t) === 'strike';
       box.classList.toggle('bnew', fresh);
       box.setAttribute('aria-label', fresh ? 'new comment' : 'comment');
       box.innerHTML = `
@@ -11933,7 +11970,7 @@ ${bubbleShellHtml()}`;
       if (res) {
         const html = id === NEW_ID ? ''
           : D.resolving[id] ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
-          : t.resolved
+          : isResolved(t)
             ? `<button class="brebtn breopen" type="button" data-act="reopen" data-target="${esc(id)}"
                 title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`
             : `<button class="brebtn bresolve" type="button" data-act="resolve" data-target="${esc(id)}"
@@ -13068,6 +13105,8 @@ ${bubbleShellHtml()}`;
   const api = {
     create, authorColor, isBot, HINT, PAGE_TARGET,
     isResolvedThread, isInsertionThread,                    // content.js + test/collapse.test.mjs
+    threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
+    THREAD_STAGES, THREAD_MARKS,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
