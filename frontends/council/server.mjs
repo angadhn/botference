@@ -321,9 +321,18 @@ const helloEvent = b => ({
 //              throwaway chat, so it is held back — never shown, never kept
 //              (it used to flash on screen before the saved chat was drawn);
 //   resuming — start-up is over and the saved chat is being drawn;
-//   live     — the chat is open and answering.
-const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'live'];
-const BRIDGE_MOVES = new Set(['starting>live', 'opening>resuming', 'resuming>live']);
+//   idle     — the chat is open and waiting for a message;
+//   working  — the chat is open and a message is being answered (between an
+//              input sent and the next ready).
+// A message sent while still 'starting' moves it straight to 'working'. The
+// spawn-time /resume is a turn in flight while 'opening', so an opening
+// bridge, like a working one, counts as mid-turn (midTurn) and is never
+// evicted; 'resuming' does not, as before.
+export const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'idle', 'working'];
+export const BRIDGE_MOVES = new Set([
+  'starting>idle', 'starting>working', 'opening>resuming', 'resuming>idle',
+  'idle>working', 'working>idle',
+]);
 
 export class Bridge {
   constructor(claimedSid = null) {
@@ -339,7 +348,6 @@ export class Bridge {
     this.sid = null;
     this.claimedSid = claimedSid;
     this.phase = claimedSid ? 'opening' : 'starting';
-    this.busy = false;             // between an input send and the next ready
     this.networkProject = '';
     this.lastUsed = Date.now();
     // completion_context is pinned outside history: the bridge emits it once
@@ -393,13 +401,17 @@ export class Bridge {
   setPhase(to) {
     if (!BRIDGE_PHASES.includes(to) || !BRIDGE_MOVES.has(this.phase + '>' + to)) return false;
     this.phase = to;
-    if (to === 'live') this.claimedSid = null;
+    if (this.live()) this.claimedSid = null;
     return true;
   }
+  // the chat is open (answering or waiting)
+  live() { return this.phase === 'idle' || this.phase === 'working'; }
+  // a turn is in flight: never evicted or retired
+  midTurn() { return this.phase === 'working' || this.phase === 'opening'; }
   // still bringing a saved chat up: a tab attaching now builds it offscreen
   opening() { return this.phase === 'opening' || this.phase === 'resuming'; }
   // the process's own start-up is over (its first 'ready' has come)
-  startedUp() { return this.phase === 'resuming' || this.phase === 'live'; }
+  startedUp() { return this.phase === 'resuming' || this.live(); }
   pushHistory(ev) {
     const history = this.history;
     if (ev.type === 'stream' && ev.kind === 'text_delta') {
@@ -529,12 +541,11 @@ export class Bridge {
     }
     if (ev.type === 'ready') {
       presence.closeBridge(this.id, 'interrupted', 'ready_without_terminal');
-      this.busy = false;
       // a spawn-time /resume is done at the ready that ENDS its turn — the
       // bridge's startup ready arrives first, and is itself held back
       if (this.phase === 'opening') { this.setPhase('resuming'); return; }
       if (this.phase === 'resuming') {
-        this.setPhase('live');
+        this.setPhase('idle');
         // said before the ready, so a page building the chat offscreen has
         // it in place when the chat is swapped in (and a reload keeps it)
         if (this.notice) { this.broadcast({ type: 'room', speaker: 'system', text: this.notice }); this.notice = ''; }
@@ -542,7 +553,8 @@ export class Bridge {
         for (const m of this.held.splice(0)) this.deliver(m.text, m.attachments);
         return;
       }
-      this.setPhase('live');
+      // a ready ends any turn; 'idle' already idle is no move at all
+      if (this.phase !== 'idle') this.setPhase('idle');
     }
     // start-up lines of a process that is about to open a saved chat
     if (this.phase === 'opening' && ev.type !== 'exit') return;
@@ -601,7 +613,9 @@ export class Bridge {
         if (ctx) obj = { ...obj, text: obj.text + '\n\n' + ctx };
       } catch (e) { console.error('[project-network] context:', e.message); }
     }
-    if (obj && obj.type === 'input') this.busy = true;
+    // a message starts a turn; the spawn-time /resume is sent while opening
+    // (already counted as mid-turn) and a second message mid-turn is no move
+    if (obj && obj.type === 'input' && (this.phase === 'starting' || this.phase === 'idle')) this.setPhase('working');
     this.lastUsed = Date.now();
     this.proc.stdin.write(JSON.stringify(obj) + '\n');
     return true;
@@ -662,7 +676,7 @@ function sessionKnownMissing(sid) {
 function reapIdleBridge() {
   let victim = null;
   for (const b of bridges.values()) {
-    if (b.busy || presence.hasBridge(b.id) || b.subscriberCount() > 0) continue;
+    if (b.midTurn() || presence.hasBridge(b.id) || b.subscriberCount() > 0) continue;
     if (!victim || b.lastUsed < victim.lastUsed) victim = b;
   }
   if (victim) despawnBridge(victim);
@@ -880,7 +894,7 @@ const anyBridgeAvailable = () => {
 function retireIdleBridges(why) {
   let kept = false;
   for (const b of [...bridges.values()]) {
-    if (b.busy || presence.hasBridge(b.id)) { kept = true; continue; }
+    if (b.midTurn() || presence.hasBridge(b.id)) { kept = true; continue; }
     const watched = b.subscriberCount() > 0;
     const sid = b.sid || b.claimedSid;
     despawnBridge(b);
