@@ -379,6 +379,111 @@ eq('insertion: a diff insertion, or an auto-thread that replaced nothing',
   ].map(D.isInsertionThread),
   [true, true, false, false, false, false, false]);
 
+// ---- a long CHAT: the window on its newest messages -------------------------
+// chatWindowPlan / chatWindowMove: the page chat and the library chat never
+// fold; they draw their newest stretch and grow upward. Pure arithmetic here.
+{
+  const P = D.chatWindowPlan, M = D.chatWindowMove;
+  const T = i => `2026-11-11T09:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`;
+  // n messages, the reader and a bot taking turns: one unit per message
+  const chat = n => Array.from({ length: n }, (_, i) => (i % 2 ? bot : you)(T(i)));
+  const U = list => D.msgUnits(list);
+
+  eq('chat window: the two modes, named', D.CHAT_WINDOW_MODES, ['newest', 'from']);
+  eq('chat window: the four moves, named', D.CHAT_WINDOW_MOVES, ['pin', 'reveal', 'widen', 'reset']);
+  eq('chat window: about twenty messages, twenty more per reveal', [D.CHAT_WINDOW, D.CHAT_STEP], [20, 20]);
+
+  // a short chat shows everything, and pinning it changes nothing drawn
+  {
+    const u = U(chat(6));
+    eq('short chat: everything shows', P(u, null), { start: 0, hidden: 0, mode: 'newest' });
+    const w = M(u, null, 'pin');
+    eq('short chat: pinned at its first message', [w.key, w.at], [T(0) + '|angadh', 0]);
+    eq('…and still everything shows', P(u, w).start, 0);
+  }
+  // an empty chat has nothing to pin
+  eq('empty chat: pin leaves it newest', M([], null, 'pin'), null);
+
+  // the default window: fifty one-message units → the last twenty
+  const u50 = U(chat(50));
+  eq('default window: the newest twenty of fifty', P(u50, null), { start: 30, hidden: 30, mode: 'newest' });
+
+  // whole units: a bot turn of fourteen answers and a tool row straddles the
+  // twentieth message from the end, and is drawn whole, not cut
+  {
+    const list = [];
+    for (let i = 0; i < 5; i++) list.push((i % 2 ? bot : you)(T(i)));
+    list.push(you(T(5)));
+    list.push(tools(T(6)));
+    for (let i = 7; i < 21; i++) list.push(bot(T(i)));
+    for (let i = 21; i < 31; i++) list.push((i % 2 ? you : codex)(T(i)));
+    const u = U(list);
+    const big = u.findIndex(x => x.length === 15);
+    ok('whole units: the long bot turn is one unit of fifteen rows', big === 6, 'index ' + big);
+    // from the end: ten singles (10), then the big turn (24) — the window
+    // starts AT the big turn, not inside it; its tool row is not a message
+    eq('whole units: the window starts at the turn, not inside it', P(u, null).start, big);
+    eq('…and counts the messages above it (tool rows are not messages)', P(u, null).hidden, 6);
+  }
+
+  // reveal steps up by about twenty, then to the top, then stops
+  {
+    let w = M(u50, null, 'pin');
+    eq('pinned: same as the default', P(u50, w).start, 30);
+    w = M(u50, w, 'reveal');
+    eq('reveal: twenty more above', [P(u50, w).start, P(u50, w).hidden], [10, 10]);
+    w = M(u50, w, 'reveal');
+    eq('reveal: the rest, when fewer than twenty remain', [P(u50, w).start, P(u50, w).hidden], [0, 0]);
+    const again = M(u50, w, 'reveal');
+    ok('reveal at the top: nothing older, the value is unchanged', again === w);
+    // a reveal from the 'newest' mode starts from the default stretch
+    eq('reveal from newest: twenty above the default stretch', P(u50, M(u50, null, 'reveal')).start, 10);
+  }
+
+  // new messages arriving at the bottom do not move the top
+  {
+    const w = M(u50, null, 'pin');
+    const u60 = U(chat(60));
+    eq('arrivals: the anchored top stays where it was', P(u60, w), { start: 30, hidden: 30, mode: 'from' });
+    eq('…where an unanchored window would have moved down', P(u60, null).start, 40);
+    const r = M(u50, w, 'reveal');
+    eq('…and nothing revealed is hidden by them', P(u60, r).start, 10);
+  }
+
+  // widening to include a message
+  {
+    const w = M(u50, null, 'pin');
+    const to7 = M(u50, w, 'widen', m => m.ts === T(7));
+    eq('widen: the window grows up to the message', P(u50, to7).start, 7);
+    ok('widen: a message already shown changes nothing', M(u50, w, 'widen', m => m.ts === T(40)) === w);
+    ok('widen: a message that is not there changes nothing', M(u50, w, 'widen', m => m.ts === 'nope') === w);
+    eq('widen from newest: pins and grows', P(u50, M(u50, null, 'widen', m => m.ts === T(3))).start, 3);
+  }
+
+  // reset, and a value the list no longer matches
+  {
+    const w = M(u50, M(u50, null, 'pin'), 'reveal');
+    eq('reset: back to newest', M(u50, w, 'reset'), null);
+    eq('…which draws the default stretch again', P(u50, M(u50, w, 'reset')).start, 30);
+    // the anchor message deleted: the remembered index stands in for it
+    const gone = U(chat(50).filter(m => m.ts !== T(10)));
+    eq('anchor deleted: the window keeps its place', P(gone, w).start, 10);
+    // a different, shorter chat: never less than the default stretch
+    const other = U(chat(25).map(m => ({ ...m, ts: 'x' + m.ts })));
+    eq('a different chat: never less than its newest stretch', P(other, { key: 'gone|x', at: 40 }).start, 5);
+  }
+
+  // illegal moves are refused
+  {
+    let threw = false;
+    try { M(u50, M(u50, null, 'pin'), 'pin'); } catch { threw = true; }
+    ok('pin on a pinned window is refused', threw);
+    threw = false;
+    try { M(u50, null, 'slide'); } catch { threw = true; }
+    ok('an unknown move is refused', threw);
+  }
+}
+
 // ---- report -----------------------------------------------------------------
 console.log(`\ncollapse: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }

@@ -2127,6 +2127,9 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
    a thread is housekeeping, not a way back into anything */
 .showmore.fold { opacity: .65; border-bottom-style: dotted }
 .showmore.fold:hover, .showmore.fold:focus-visible { opacity: 1 }
+/* a chat's window: the same quiet line at the TOP of what is drawn, since
+   that is where older messages appear (a chat never folds its middle) */
+.showmore.earlier { margin: 0 0 8px; text-align: center }
 /* where the folded messages were: a hairline with the count on it, so the
    first message is not read as answered by the last two. Not clickable —
    the control is the line at the foot. */

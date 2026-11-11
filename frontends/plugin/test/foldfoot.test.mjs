@@ -9,10 +9,12 @@
 //   · the bubble beside a highlight: the lip ("+N" / "− stack up") sits in its
 //     own slot under the cards and over the reply box, in the same place open
 //     or shut, and fanning open leaves the stack scrolled to the newest card;
-//   · the side panel's threads and page chat: "Show N earlier replies" /
+//   · the side panel's comment threads: "Show N earlier replies" /
 //     "Hide N earlier replies" is drawn after the last message, a quiet count
 //     marks the gap while folded, and unfolding lands the foot of that thread
-//     at the bottom of the pane.
+//     at the bottom of the pane. (The page chat no longer folds at all since
+//     2026-11-11 — it is a window on its newest messages, chatwindow.test.mjs —
+//     so here it only checks landing, staying put, and the absence of a fold.)
 //
 // happy-dom does not lay anything out, so the geometry is stubbed: every
 // `.card` reports a fixed box, every `.pane` and `.bbody` a fixed height.
@@ -102,22 +104,15 @@ const lastReply = el => kidsOf(el).filter(k => k.classList.contains('reply')).po
 ok('a chat that has just arrived opens at its foot, not its top',
   chatPane.scrollTop === LANDED, 'scrollTop=' + chatPane.scrollTop);
 
-// ---- 2. the panel's control is at the foot, folded --------------------------
+// ---- 2. a chat never folds ----------------------------------------------------
+// (2026-11-11) The page chat no longer folds its middle: it shows a window on
+// its newest messages and reveals older ones from the top (chatwindow.test.mjs).
+// Ten messages fit the window whole, so there is no control of any kind.
 {
-  const kids = kidsOf(chatThread());
-  const ctrls = chatThread().querySelectorAll('.showmore');
-  ok('folded: exactly one fold control in the chat', ctrls.length === 1, ctrls.length);
-  const c = ctrls[0];
-  ok('…it is the "Show" one', c && c.dataset.act === 'expand' && /^Show 5 earlier replies$/.test(c.textContent),
-    c && c.textContent);
-  ok('…and it is the LAST thing in the thread, after the newest message',
-    c && kids[kids.length - 1] === c, kids.map(k => k.className).join(' | '));
-  const gap = chatThread().querySelector('.foldgap');
-  ok('folded: a quiet count sits in the gap', !!gap && gap.textContent.trim() === '5 earlier replies', gap && gap.textContent);
-  ok('…right after the first message', gap && gap.previousElementSibling
-    && /chat message 0/.test(gap.previousElementSibling.textContent));
-  ok('…and it is not a control: no button, no action',
-    gap && gap.tagName !== 'BUTTON' && !gap.hasAttribute('data-act') && !gap.querySelector('button, [data-act]'));
+  ok('a chat: no fold control', !chatThread().querySelector('.showmore[data-act="expand"], .showmore[data-act="fold"]'));
+  ok('…no count in a gap', !chatThread().querySelector('.foldgap'));
+  ok('…and, short enough to fit its window, no "Show earlier" line either', !chatThread().querySelector('.showmore'));
+  ok('…every message is drawn', chatThread().querySelectorAll('.reply').length === 10);
 }
 
 // ---- 3. a reader scrolled up is not moved by a reply or a poll --------------
@@ -129,35 +124,13 @@ drawer.setPage(page(conv(11, 'chat')));
 await tick(10);
 ok('…nor does a poll bringing nothing new', chatPane.scrollTop === 120, chatPane.scrollTop);
 
-// ---- 4. unfolding the chat lands at its newest message ----------------------
-chatPane.scrollTop = 0;
-chatThread().querySelector('.showmore[data-act="expand"]').click();
-await tick(10);
-{
-  const kids = kidsOf(chatThread());
-  const ctrls = chatThread().querySelectorAll('.showmore');
-  ok('open: still exactly one fold control', ctrls.length === 1, ctrls.length);
-  ok('…the "Hide" one, in the same place: last, after the newest message',
-    ctrls[0] && ctrls[0].dataset.act === 'fold' && kids[kids.length - 1] === ctrls[0]
-    && /^Hide 9 earlier replies$/.test(ctrls[0].textContent), ctrls[0] && ctrls[0].textContent);
-  ok('open: no count in the gap', !chatThread().querySelector('.foldgap'));
-  ok('…every message is drawn', chatThread().querySelectorAll('.reply').length === 11);
-  ok('unfolding lands the reader at the newest message, at the bottom of the pane',
-    chatPane.scrollTop === LANDED, 'scrollTop=' + chatPane.scrollTop);
-  ok('…which is the last message drawn', /chat message 10/.test(lastReply(chatThread()).textContent));
-}
+// ---- 4/5. (the chat's own fold control is gone; see chatwindow.test.mjs) --------
 chatPane.scrollTop = 200;
 drawer.setPage(page(conv(12, 'chat')));
 await tick(10);
-ok('open: a bot answering does not move a reader who scrolled up', chatPane.scrollTop === 200, chatPane.scrollTop);
-
-// ---- 5. folding keeps the control under the reader's finger -----------------
-chatPane.scrollTop = 1400;
-chatThread().querySelector('.showmore[data-act="fold"]').click();
-await tick(10);
-ok('folding does not send the reader to the top of the pane', chatPane.scrollTop === 1400, chatPane.scrollTop);
-ok('…and the chat is folded again', !!chatThread().querySelector('.showmore[data-act="expand"]')
-  && !!chatThread().querySelector('.foldgap'));
+ok('a bot answering does not move a reader who scrolled up', chatPane.scrollTop === 200, chatPane.scrollTop);
+ok('…and the chat still draws every message, unfolded', chatThread().querySelectorAll('.reply').length === 12
+  && !chatThread().querySelector('.showmore'));
 
 // ---- 6. switching to a chat while its tab is hidden -------------------------
 // the reader is on Comments when a different page's chat arrives; the landing

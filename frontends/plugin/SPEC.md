@@ -498,7 +498,7 @@ Contract deltas agreed during live testing — authoritative over the sections a
   links a font-only `katex-fonts.css` into the PAGE document (both web-accessible).
   Obsidian export is unchanged and deliberately so: the raw `$…$` source is what
   reaches the vault, because Obsidian typesets it itself.
-- Folding is the reader's, once they say so: any thread (or page chat) with 3+
+- Folding is the reader's, once they say so: any comment thread with 3+
   drawn units carries a manual control in the same slot the expander uses —
   "Hide N earlier replies" when it is open, "Show N earlier replies" when it is
   not. That slot is the FOOT of the thread's messages (after the last message,
@@ -511,7 +511,7 @@ Contract deltas agreed during live testing — authoritative over the sections a
   opened by hand stays open however long it grows. `collapsePlan(units, manual)`
   takes undefined (the rule decides) / FOLD_OPEN / FOLD_SHUT and is the whole
   state machine (test/collapse.test.mjs).
-- Long threads fold: past 3 drawn units a thread (and the page chat) keeps its
+- Long threads fold: past 3 drawn units a comment thread keeps its
   root and the last 2 units and hides the rest behind one `.showmore` line at
   the foot (with a non-clickable `.foldgap` count, "N earlier replies", left in
   the gap after the root),
@@ -526,6 +526,24 @@ Contract deltas agreed during live testing — authoritative over the sections a
   a page delete); the outbox, streaming blocks and the status chip render after
   the fold and are therefore always visible. `msgUnits`/`collapsePlan` are pure
   and unit-tested (test/collapse.test.mjs).
+- Chats do not fold (2026-11-11 amendment). The page chat and the library chat
+  (`isChatTarget`) draw a WINDOW on their newest messages instead, like a
+  messaging app: whole units from the end until they hold about 20 messages
+  (`CHAT_WINDOW`; tool rows are not messages), and only those units are built.
+  A `.showmore.earlier` line, "Show earlier messages · N more", is the first
+  thing in the window when anything older exists; pressing it, scrolling up to
+  within 200px of it, or turning the wheel up on a pane already at its top
+  reveals about 20 more (`CHAT_STEP`), and the first message on screen is kept
+  at the same place (anchor by ts+author, scroll by however far it moved). The
+  window is ANCHORED: per chat one value in `D.chatWin` — absent ('newest') or
+  `{key, at}` ('from', the first shown message) — changed only through
+  `moveChatWindow` (moves pin / reveal / widen / reset; pure arithmetic in
+  `chatWindowPlan`/`chatWindowMove`, test/collapse.test.mjs and
+  test/chatwindow.test.mjs). The first draw pins it, so a reply arriving never
+  moves the top. Jumps to an older message (↑ source, a suggestion's preview)
+  widen it to that message. It resets to the newest stretch on a different
+  page, a different council chat or `leaveChat`, a cleared library, and when
+  the panel is reopened (landing at the foot if the reader had widened it).
 - Export comes in two modes, chosen at the crystal: **Everything** (the note as
   it has always been) and **Comments only** — the reading without the
   conversation. "Comments only" drops every bot-authored message and every
@@ -1697,7 +1715,8 @@ Contract deltas agreed during live testing — authoritative over the sections a
     Pages view, which is about other pages.
   - **Meta and jump.** One quiet line: who wrote it · `n/m done` · the thread's
     quote or "page chat" (the fold's own line keeps the count). `↑ source`
-    crosses to the right tab, unfolds the thread (`D.expanded → FOLD_OPEN` —
+    crosses to the right tab, unfolds the thread (`D.expanded → FOLD_OPEN`, or
+    for page chat widens its window to the message —
     an older list is exactly what a long thread hides), spotlights the card
     through the existing `focus()`, and flashes the message itself
     (`.reply.tasksrc`). The fold is session state like every other reading
