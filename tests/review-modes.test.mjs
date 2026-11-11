@@ -199,6 +199,59 @@ test('apply ledger: an old {applied, flagged} ledger is read as the modes it mea
   assert.equal(cards.c2.reason, 'span ambiguous');
 });
 
+test('apply ledger: a record from newer software is refused out loud and never written over', async t => {
+  const dir = paper('ledger-newer');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const ledger = path.join(dir, 'review', 'state', 'apply.json');
+  const eng = await engineFor(dir);
+  const cases = [
+    // a format number this engine does not know yet
+    JSON.stringify({ format: 99, round: null, cards: { c1: { mode: 'applied' } } }),
+    // a shape it cannot read: a card mode it has never heard of
+    JSON.stringify({ format: 2, round: null, cards: { c1: { mode: 'half-applied' } } }),
+    // a field it has never heard of
+    JSON.stringify({ round: null, cards: {}, rounds: [] }),
+  ];
+  for (const text of cases) {
+    fs.writeFileSync(ledger, text);
+    const pub = eng.publicLedger();
+    assert.match(pub.error, /review software is older than its record of applied changes \(review\/state\/apply\.json\), so nothing was changed\. In the hub, turn this paper off and then on again to update it\./, text);
+    assert.deepEqual(eng.apply(['c1']).applied, []);
+    assert.match(eng.commit().reason, /older than its record/);
+    assert.match(eng.revert().reason, /older than its record/);
+    assert.equal(eng.syncDecisions({ c1: 'accepted' }).ok, false);
+    assert.equal(eng.setCardMode('c1', 'accepted').ok, false);
+    assert.equal(fs.readFileSync(ledger, 'utf8'), text, 'the record is byte-for-byte as it was');
+  }
+  assert.equal(fs.readFileSync(path.join(dir, 'main.tex'), 'utf8'), PAPER, 'the source is untouched');
+});
+
+test('apply ledger: a record without a format number still reads, and is saved with one', async t => {
+  const dir = paper('ledger-unversioned');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const ledger = path.join(dir, 'review', 'state', 'apply.json');
+  fs.writeFileSync(ledger, JSON.stringify({ round: null, cards: { c1: { mode: 'accepted' } } }));
+  const eng = await engineFor(dir);
+  const { LEDGER_FORMAT } = await import(path.join(dir, 'review', 'apply.mjs'));
+  assert.equal(eng.publicLedger().error, undefined);
+  assert.equal(eng.publicLedger().cards.c1.mode, 'accepted');
+  assert.ok(eng.setCardMode('c2', 'accepted').ok);
+  const saved = JSON.parse(fs.readFileSync(ledger, 'utf8'));
+  assert.equal(saved.format, LEDGER_FORMAT);
+  assert.equal(saved.cards.c1.mode, 'accepted');
+  assert.equal(saved.cards.c2.mode, 'accepted');
+});
+
+test('apply ledger: the page says so in one line and draws no card as not applied (happy-dom)', needsHappy, async t => {
+  const msg = "This paper's review software is older than its record of applied changes (review/state/apply.json), so nothing was changed. In the hub, turn this paper off and then on again to update it.";
+  const pg = await page(t, { data: { apply: { cards: {}, round: null, error: msg } } });
+  assert.equal(pg.doc.getElementById('apply-blocked').textContent, msg);
+  pg.focus('s1');
+  const accept = pg.doc.querySelector('.card[data-id="s1"] [data-act="accepted"]');
+  assert.equal(accept.disabled, true, 'no button may change a card whose state is not known');
+  assert.match(pg.doc.querySelector('.card[data-id="s1"]').textContent, /not known/);
+});
+
 // ============================================================ B5: card modes
 
 test('card modes: one list, one table; rejecting an applied edit is refused until it is reverted', async t => {

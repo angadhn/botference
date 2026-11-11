@@ -646,9 +646,12 @@
   const CM = window.CardModes || null;
   const cardMode = id => (APPLY.cards && APPLY.cards[id] && APPLY.cards[id].mode) || 'pending';
   const cardDecision = id => (CM ? CM.DECISION_OF_MODE[cardMode(id)] : cardMode(id)) || 'pending';
-  const decisionAllowed = (id, decision) => !CM || CM.decisionAllowed(cardMode(id), decision);
+  // the server could not read its record of applied changes (APPLY.error):
+  // every card's mode is unknown, so no card is drawn as if nothing were
+  // applied, and no button may change one
+  const decisionAllowed = (id, decision) => !APPLY.error && (!CM || CM.decisionAllowed(cardMode(id), decision));
   const isApplyReady = id => cardMode(id) === 'accepted' || cardMode(id) === 'flagged';
-  const refusedText = id => cardMode(id) === 'committed'
+  const refusedText = id => APPLY.error ? APPLY.error : cardMode(id) === 'committed'
     ? 'This change is already committed.'
     : 'This change is already written into the source. Revert the round first, then reject or reset it.';
   // accept / reject / reset: the decision goes into this person's own file
@@ -762,7 +765,8 @@
     const t = esc(c.id);
     // P4 (owner-only): apply state + button for accepted span cards
     const mode = cardMode(c.id), entry = (APPLY.cards || {})[c.id] || {};
-    const applyBadge = mode === 'applied' ? '<span class="badge apply-badge">applied, uncommitted</span>'
+    const applyBadge = APPLY.error ? '<span class="badge apply-badge">not known</span>'
+      : mode === 'applied' ? '<span class="badge apply-badge">applied, uncommitted</span>'
       : mode === 'committed' ? `<span class="badge apply-badge">committed ${esc(entry.sha || '')}</span>` : '';
     const applyBtn = IS_OWNER && isApplyReady(c.id) && (c.current_text || c.source_json)
       ? `<button data-act="apply" data-target="${t}">⚡ apply</button>` : '';
@@ -1200,7 +1204,17 @@
     </div>`;
   }
 
+  // one plain line across the top of the page while the record of applied
+  // changes cannot be read (most often: this paper's copy of the review
+  // software is older than the record) — the cards' state is not known
+  function renderApplyBlocked() {
+    let b = document.getElementById('apply-blocked');
+    if (!APPLY.error) { if (b) b.remove(); return; }
+    if (!b) { b = document.createElement('div'); b.id = 'apply-blocked'; b.setAttribute('role', 'alert'); document.body.appendChild(b); }
+    if (b.textContent !== APPLY.error) b.textContent = APPLY.error;
+  }
   function render() {
+    renderApplyBlocked();
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') { pendingRender = true; return; }
     // spotlight: while a thread is focused, everything else recedes (CSS)
     document.body.classList.toggle('spotlight', !!FOCUSED);
