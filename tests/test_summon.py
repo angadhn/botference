@@ -535,6 +535,38 @@ class GateAdapter(MockAdapter):
         return await self.send(message)
 
 
+class OneQuestionUI(MockUI):
+    """Shows one write question at a time, as the terminal and web pages do:
+    a second question arriving while one is open is an error, recorded."""
+
+    def __init__(self):
+        super().__init__()
+        self.asked: list = []
+        self.errors: list[str] = []
+        self._open: asyncio.Future | None = None
+
+    async def request_write_permission(self, request):
+        if self._open is not None and not self._open.done():
+            self.errors.append(f"{request.model} asked while a question was open")
+            raise RuntimeError("Permission request already pending")
+        self.asked.append(request)
+        self._open = asyncio.get_running_loop().create_future()
+        try:
+            return await self._open
+        finally:
+            self._open = None
+
+    def answer(self, value):
+        self._open.set_result(value)
+
+    async def wait_for_question(self, n):
+        for _ in range(300):
+            if len(self.asked) >= n and self._open is not None:
+                return self.asked[n - 1]
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"question {n} never came; errors: {self.errors}")
+
+
 @pytest.mark.asyncio
 class TestParallelTurn:
     async def test_both_bots_run_at_once_and_neither_sees_the_other(self, tmp_path):
@@ -566,6 +598,56 @@ class TestParallelTurn:
         # (GateAdapter routes resume through send, so the second send is the resume)
         assert "Codex's take" in claude.send_calls[1]
         assert "Claude's take" in codex.send_calls[1]
+
+    async def test_two_write_requests_at_once_wait_in_turn_and_each_answer_reaches_its_bot(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        shared_a = (tmp_path / "shared-a").resolve()
+        shared_b = (tmp_path / "shared-b").resolve()
+        c, claude, codex, _ = _make_botference(
+            claude_responses=[_ok(f'<write-access-request path="{shared_a}" reason="assets" />'),
+                              _ok("Claude carried on")],
+            codex_responses=[_ok(f'<write-access-request path="{shared_b}" reason="logs" />'),
+                             _ok("Codex carried on")],
+            tmp_path=project,
+        )
+        ui = OneQuestionUI()
+        turn = asyncio.create_task(c.handle_input("/parallel tidy up", ui))
+        first = await ui.wait_for_question(1)
+        await asyncio.sleep(0.05)
+        assert len(ui.asked) == 1, "the second question waits; it is not shown on top"
+        ui.answer(True)
+        second = await ui.wait_for_question(2)
+        assert {first.model, second.model} == {"claude", "codex"}
+        ui.answer(False)
+        await asyncio.wait_for(turn, 5)
+        approved = claude if first.model == "claude" else codex
+        denied = codex if approved is claude else claude
+        assert approved.resume_calls[-1].startswith("Write access to")
+        assert "is now approved" in approved.resume_calls[-1]
+        assert "was denied" in denied.resume_calls[-1]
+        assert not ui.errors
+
+    async def test_a_second_request_already_covered_by_the_first_answer_is_not_asked(self, tmp_path):
+        project = tmp_path / "proj"
+        project.mkdir()
+        shared = (tmp_path / "shared").resolve()
+        c, claude, codex, _ = _make_botference(
+            claude_responses=[_ok(f'<write-access-request path="{shared}" reason="assets" />'),
+                              _ok("Claude carried on")],
+            codex_responses=[_ok(f'<write-access-request path="{shared}" reason="assets" />'),
+                             _ok("Codex carried on")],
+            tmp_path=project,
+        )
+        ui = OneQuestionUI()
+        turn = asyncio.create_task(c.handle_input("/parallel tidy up", ui))
+        await ui.wait_for_question(1)
+        ui.answer(True)
+        await asyncio.wait_for(turn, 5)
+        assert len(ui.asked) == 1
+        resumes = [claude.resume_calls[-1], codex.resume_calls[-1]]
+        assert sum("is now approved" in r for r in resumes) == 1
+        assert sum("is already available" in r for r in resumes) == 1
 
     async def test_a_bare_parallel_sends_nothing(self, tmp_path):
         c, claude, codex, ui = _make_botference(tmp_path=tmp_path)

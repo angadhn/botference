@@ -539,8 +539,10 @@ export class Bridge {
     // never jam the turn queue (mirrors the review frontend's behavior)
     if (ev.type === 'permission_request') {
       clearTimeout(this.permTimer);
+      const asked = ev.request_id;
       this.permTimer = setTimeout(() => {
-        this.send({ type: 'permission_response', allow: false });
+        // names the question it answers, so it can never deny a later one
+        this.send({ type: 'permission_response', allow: false, request_id: asked });
         this.broadcast({ type: 'permission_timeout' });
       }, 120000);
     }
@@ -1065,7 +1067,11 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/permission') {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);
-      const ok = bridge && bridge.send({ type: 'permission_response', allow: !!data.allow });
+      // the answer names the question it answers (one bot's question at a
+      // time is on screen; the next waits behind it in the controller)
+      const answer = { type: 'permission_response', allow: !!data.allow };
+      if (typeof data.request_id === 'string' && data.request_id) answer.request_id = data.request_id.slice(0, 200);
+      const ok = bridge && bridge.send(answer);
       // the default-deny stays armed until an answer actually reached the bot
       if (ok) clearTimeout(bridge.permTimer);
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));

@@ -179,6 +179,9 @@ class InkBridge:
         # save the root to project.json). Once and deny stay bools so every
         # caller written before "always" existed reads them as it did.
         self._pending_permission: asyncio.Future[bool | str] | None = None
+        # the request_id of the question on screen: an answer naming another
+        # one (late, or from a second tab) must not answer this one
+        self._pending_permission_id = ""
         self._pending_choice: asyncio.Future[int | None] | None = None
         self._stream_buffer: dict[tuple, dict] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
@@ -435,6 +438,7 @@ class InkBridge:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[bool | str] = loop.create_future()
         self._pending_permission = future
+        self._pending_permission_id = request.request_id
         emit({
             "type": "permission_request",
             "request_id": request.request_id,
@@ -455,8 +459,12 @@ class InkBridge:
             self._pending_permission = None
             emit({"type": "permission_cleared"})
 
-    def resolve_permission_request(self, allow: bool, always: bool = False) -> None:
+    def resolve_permission_request(
+        self, allow: bool, always: bool = False, request_id: str | None = None,
+    ) -> None:
         if self._pending_permission is None or self._pending_permission.done():
+            return
+        if request_id and request_id != self._pending_permission_id:
             return
         self._pending_permission.set_result("always" if allow and always else bool(allow))
 
@@ -888,8 +896,10 @@ async def main() -> None:
             continue
 
         if msg.get("type") == "permission_response":
+            rid = msg.get("request_id")
             bridge.resolve_permission_request(
                 bool(msg.get("allow")), always=bool(msg.get("always")),
+                request_id=rid if isinstance(rid, str) else None,
             )
             continue
 

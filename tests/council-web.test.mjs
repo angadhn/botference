@@ -3733,6 +3733,39 @@ test('permission card: shows the decision only once the server took it; a failed
   assert.match(card2.textContent, /allowed/);
 });
 
+test('permission cards: the second bot\'s question comes after the first is answered, and each answer names its own question (happy-dom)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { doc, C, posts } = await mkHarness(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  C.handle({ type: 'permission_request', request_id: 'q1', model: 'claude', path: '/x/a', reason: 'r' });
+  posts.length = 0;
+  doc.querySelector('.msg.card.perm button.allow').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[0], { url: '/permission', body: { bridge: 'b1', allow: true, request_id: 'q1' } });
+  // the controller clears the first, then puts the waiting one
+  C.handle({ type: 'permission_cleared' });
+  C.handle({ type: 'permission_request', request_id: 'q2', model: 'codex', path: '/x/b', reason: 'r' });
+  const cards = doc.querySelectorAll('.msg.card.perm');
+  assert.equal(cards.length, 2);
+  assert.match(cards[0].textContent, /allowed/);
+  assert.match(cards[1].textContent, /@codex wants to write/);
+  cards[1].querySelector('button.deny').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.deepEqual(posts[1].body, { bridge: 'b1', allow: false, request_id: 'q2' });
+});
+
+test('permission: the answer reaches the bot process naming the question it answers', async t => {
+  const s = await startServer();
+  t.after(s.stop);
+  await post(s.base, '/input', { text: '/trigger-permission' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'permission_request'));
+  await post(s.base, '/permission', { allow: true, request_id: 'r1' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && /permission: true/.test(e.text)));
+  const sent = fs.readFileSync(`${s.rx}.perm`, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(sent, [{ type: 'permission_response', allow: true, request_id: 'r1' }]);
+});
+
 test('dictation: a second tap while the browser asks for the mic starts nothing; Esc then lets the mic go (happy-dom)',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C, rec } = await mkMicHarness(t);

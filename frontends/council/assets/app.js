@@ -2380,10 +2380,10 @@
       <div class="acts"><button class="allow">Allow</button><button class="deny">Deny</button></div>
       <div class="card-note">auto-denied after 2 minutes if unanswered</div>`;
     div.querySelector('.allow').addEventListener('click', () => {
-      answerCard(div, '/permission', { allow: true }, 'allowed');
+      answerCard(div, '/permission', { allow: true, request_id: ev.request_id }, 'allowed');
     });
     div.querySelector('.deny').addEventListener('click', () => {
-      answerCard(div, '/permission', { allow: false }, 'denied');
+      answerCard(div, '/permission', { allow: false, request_id: ev.request_id }, 'denied');
     });
     container().appendChild(div);
     liveCard = div;

@@ -581,6 +581,26 @@ class TestNotifyEmission:
         bridge.resolve_permission_request(True, always=True)
         assert await asyncio.wait_for(task, timeout=2.0) == "always"
 
+    async def test_an_answer_to_another_question_does_not_answer_this_one(
+        self, tmp_path, monkeypatch
+    ):
+        from botference import WritePermissionRequest
+
+        monkeypatch.setattr(binkb, "emit", lambda obj: None)
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        request = WritePermissionRequest(
+            request_id="r2", model="codex", path="logs", reason="write logs",
+        )
+        task = asyncio.create_task(bridge.request_write_permission(request))
+        await asyncio.sleep(0)
+        # a late deny for the question before (r1) is ignored…
+        bridge.resolve_permission_request(False, request_id="r1")
+        await asyncio.sleep(0)
+        assert not task.done()
+        # …and the answer naming r2 (or naming none, as older pages do) lands
+        bridge.resolve_permission_request(True, request_id="r2")
+        assert await asyncio.wait_for(task, timeout=2.0) is True
+
 
 @pytest.mark.asyncio
 class TestStreamCoalescing:

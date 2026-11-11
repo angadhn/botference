@@ -102,6 +102,9 @@ rl.on('line', line => {
     emit({ type: 'ready' });
   }
   if (msg.type === 'permission_response') {
+    // recorded verbatim (one JSON line each) so tests can see what the bot
+    // process was told, request_id included
+    if (rxFile) fs.appendFileSync(`${rxFile}.perm`, JSON.stringify(msg) + '\n');
     emit({ type: 'permission_cleared' });
     emit({ type: 'room', speaker: 'system', text: `permission: ${msg.allow}` });
     emit({ type: 'ready' });
