@@ -53,6 +53,8 @@ rl.on('line', line => {
     // the resumed chat active (what the real bridge does after a resume),
     // then falls through to the generic echo turn below
     const rs = /^\/resume ([\w-]+)$/.exec(String(msg.text).trim());
+    // a chat that cannot be opened: the process dies mid-resume
+    if (rs && rs[1].startsWith('die')) { setTimeout(() => process.exit(1), 1500); return; }
     if (rs) {
       emit({
         type: 'projects', active_project_id: 'p1', inbox_session_count: 0,

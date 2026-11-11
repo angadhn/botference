@@ -486,8 +486,20 @@ export class Bridge {
       if (this.available) this.disconnect({ reason: 'bridge_stream_closed' });
     });
   }
+  // the process is gone while messages still wait for the chat to open:
+  // say so, and hand the words back so the reader can send them again
+  dropHeld() {
+    const texts = this.held.splice(0).map(m => m.text).filter(t => t.trim());
+    if (!texts.length) return;
+    this.broadcast({
+      type: 'not_sent', texts,
+      text: `Not sent: this chat could not be opened, so ${texts.length === 1 ? 'your message' : 'your messages'} `
+        + 'did not reach the bots. The words are back in the message box.',
+    });
+  }
   disconnect(detail = {}) {
     this.available = false;
+    this.dropHeld();
     this.broadcast({ type: 'bridge_exit', ...detail });
     despawnBridge(this);
   }
@@ -563,6 +575,7 @@ export class Bridge {
     }
     if (ev.type === 'exit') {
       this.available = false;
+      this.dropHeld();
       this.broadcast(ev);
       despawnBridge(this);
       // /quit closes THIS chat's bridge; the server stops with the last one
@@ -879,6 +892,8 @@ function retireIdleBridges(why) {
     if (nb.opening()) nb.notice = text;
     nb.adopt(b, { type: 'bots_stopped', text, bridge_id: nb.id, resuming: nb.opening() });
     if (!nb.opening()) nb.broadcast({ type: 'room', speaker: 'system', text });
+    // messages waiting for the retired process to open the chat wait for this one
+    for (const m of b.held.splice(0)) nb.deliver(m.text, m.attachments);
   }
   return kept ? 'next-bridge' : 'now';
 }

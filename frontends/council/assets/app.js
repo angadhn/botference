@@ -1978,10 +1978,14 @@
     if (to !== 'working') { const act = card.querySelector('.agent-act'); if (act) act.remove(); }
     return true;
   }
-  // a turn is over: a card still "working" in it can only have been stopped
-  // (its end never came — an Esc on a controller that did not report it)
+  // A card RESTORED from a saved chat (a /resume) still saying "working" can
+  // only have been stopped: the process that ran it is gone, and a build
+  // agent never outlives the turn it runs in. Saved chats from before the
+  // controller wrote "cancelled" have such cards; at the ready after the
+  // restore they end as cancelled. A card drawn live is left alone — its end
+  // comes from the controller (done, failed, timeout or cancelled).
   function endWorkingAgentCards() {
-    for (const card of container().querySelectorAll('.msg.agent[data-status="working"]')) {
+    for (const card of container().querySelectorAll('.msg.agent[data-status="working"][data-restored]')) {
       const start = Number(card.dataset.start) || Date.now();
       setAgentCardStatus(card, 'cancelled', (Date.now() - start) / 1000);
       card.classList.remove('streaming');
@@ -3679,8 +3683,11 @@
       }
       case 'restore':
         for (const e of ev.entries || []) {
-          if (String(e.speaker).toLowerCase() === 'agent' && e.agent) handleAgentRoom(e);
-          else addMsg(e.speaker, e.text);
+          if (String(e.speaker).toLowerCase() === 'agent' && e.agent) {
+            handleAgentRoom(e);
+            const card = summonCard(e.agent.id);
+            if (card) card.dataset.restored = '1';
+          } else addMsg(e.speaker, e.text);
         }
         break;
       case 'video_watch':
@@ -3871,6 +3878,19 @@
         addMsg('system', ev.text || 'The bots were stopped. They start again with your next message.');
         setBusy(false);
         break;
+      case 'not_sent': {
+        // messages that waited for a chat that never opened: one line, and
+        // the words back in the box (ahead of anything typed since)
+        if (replayBuffer || state.pendingSwitch) endSwitch();
+        addMsg('system', ev.text || 'Not sent: this chat could not be opened.');
+        const back = (ev.texts || []).join('\n');
+        if (back) {
+          const now = els.input.value;
+          els.input.value = now.trim() ? back + '\n' + now : back;
+          autosize(); refreshCompletions(); syncSend();
+        }
+        break;
+      }
       case 'bridge_exit':
         if (replayBuffer || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
