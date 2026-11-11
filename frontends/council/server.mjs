@@ -295,7 +295,7 @@ function publishProjects(ev, source) {
   // a fresh bridge's empty startup placeholder (emitted before its first
   // 'ready', ahead of panel hydration) must not wipe a populated sidebar in
   // every tab; post-ready empty snapshots are real (workspace emptied out)
-  if (latestProjects && emptySnapshot(ev) && source && !source.readySeen) return;
+  if (latestProjects && emptySnapshot(ev) && source && !source.startedUp()) return;
   latestProjects = ev;
   latestProjectsFrom = source ? source.id : null;
   for (const b of bridges.values()) b.broadcast(remarkProjects(ev, b, b === source), false);
@@ -306,11 +306,24 @@ const helloEvent = b => ({
   bridge: !!(b && b.available),
   bridge_id: b ? b.id : null,
   chat: b ? (b.sid || b.claimedSid) : null,
-  resuming: !!(b && b.resuming),
+  resuming: !!(b && b.opening()),
   // how often the server speaks at the least: the page treats a stream silent
   // for well past this as dead (a sleeping phone's socket) and reopens it
   heartbeat_ms: SSE_HEARTBEAT_MS,
 });
+
+// A bridge process is in one of BRIDGE_PHASES, kept in this.phase and moved
+// only by setPhase, which refuses a move not in BRIDGE_MOVES:
+//   starting — a new process with no saved chat to open: what it says while
+//              starting up IS its chat, so it is shown;
+//   opening  — a new process told to open a saved chat (the spawn-time
+//              /resume): what it says while starting up belongs to a
+//              throwaway chat, so it is held back — never shown, never kept
+//              (it used to flash on screen before the saved chat was drawn);
+//   resuming — start-up is over and the saved chat is being drawn;
+//   live     — the chat is open and answering.
+const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'live'];
+const BRIDGE_MOVES = new Set(['starting>live', 'opening>resuming', 'resuming>live']);
 
 export class Bridge {
   constructor(claimedSid = null) {
@@ -325,9 +338,8 @@ export class Bridge {
     // bridge's own 'projects' events (the session flagged active)
     this.sid = null;
     this.claimedSid = claimedSid;
-    this.resuming = !!claimedSid;
+    this.phase = claimedSid ? 'opening' : 'starting';
     this.busy = false;             // between an input send and the next ready
-    this.readySeen = false;        // the startup ready has arrived
     this.networkProject = '';
     this.lastUsed = Date.now();
     // completion_context is pinned outside history: the bridge emits it once
@@ -340,6 +352,16 @@ export class Bridge {
     this.wsClients = new Set();   // WebSocket connections (primary transport)
   }
   subscriberCount() { return this.clients.size + this.wsClients.size; }
+  setPhase(to) {
+    if (!BRIDGE_PHASES.includes(to) || !BRIDGE_MOVES.has(this.phase + '>' + to)) return false;
+    this.phase = to;
+    if (to === 'live') this.claimedSid = null;
+    return true;
+  }
+  // still bringing a saved chat up: a tab attaching now builds it offscreen
+  opening() { return this.phase === 'opening' || this.phase === 'resuming'; }
+  // the process's own start-up is over (its first 'ready' has come)
+  startedUp() { return this.phase === 'resuming' || this.phase === 'live'; }
   pushHistory(ev) {
     const history = this.history;
     if (ev.type === 'stream' && ev.kind === 'text_delta') {
@@ -448,7 +470,7 @@ export class Bridge {
       for (const s of ev.inbox_sessions || []) if (s.active) { active = s.session_id; this.networkProject = ''; }
       if (active) {
         this.sid = active;
-        if (active === this.claimedSid) { this.claimedSid = null; this.resuming = false; }
+        if (active === this.claimedSid) this.claimedSid = null;
       }
       // workspace state: pinned globally + fanned out to every tab, never
       // recorded in this bridge's history (see publishProjects)
@@ -459,10 +481,12 @@ export class Bridge {
       presence.closeBridge(this.id, 'interrupted', 'ready_without_terminal');
       this.busy = false;
       // a spawn-time /resume is done at the ready that ENDS its turn — the
-      // bridge's startup ready arrives first and must not clear the claim
-      if (this.resuming && this.readySeen) { this.resuming = false; this.claimedSid = null; }
-      this.readySeen = true;
+      // bridge's startup ready arrives first, and is itself held back
+      if (this.phase === 'opening') { this.setPhase('resuming'); return; }
+      this.setPhase('live');
     }
+    // start-up lines of a process that is about to open a saved chat
+    if (this.phase === 'opening' && ev.type !== 'exit') return;
     // default-deny/dismiss timers: an unanswered permission is denied and an
     // unanswered choice dismissed after 120s, so a walked-away browser can
     // never jam the turn queue (mirrors the review frontend's behavior)

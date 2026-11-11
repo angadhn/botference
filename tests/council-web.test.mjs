@@ -516,6 +516,39 @@ test('bridge pool: an unknown chat id falls back to the primary bridge with a ro
   assert.ok(!d.events.some(e => e.type === 'route_error'));
 });
 
+test('opening a saved chat: the new bot process\'s start-up lines never reach the page — only the saved chat does', async t => {
+  const { wsConnect } = await import('./fixtures/ws-client.mjs');
+  const s = await startServer();
+  t.after(s.stop);
+  const c = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=idle0001' });
+  t.after(() => c.close());
+  const hello = await c.next(e => e.type === 'hello');
+  assert.equal(hello.resuming, true);
+  // the resume's own turn arrives, then its ready
+  await c.next(e => e.type === 'room' && e.text === 'echo: /resume idle0001', 8000);
+  await c.next(e => e.type === 'ready');
+  const after = c.events.slice(c.events.indexOf(hello));
+  assert.ok(!after.some(e => e.type === 'room' && /Council room ready/.test(e.text)),
+    'the throwaway start-up line is held back');
+  assert.equal(after.filter(e => e.type === 'ready').length, 1,
+    'only the ready that ends the resume reaches the page — the start-up ready would end the switch early');
+  assert.ok(after.some(e => e.type === 'completion_context'), 'the command list still arrives');
+  // a reload of the same chat replays nothing from the start-up either
+  const d = await wsConnect({ host: '127.0.0.1', port: s.port, path: '/ws?chat=idle0001' });
+  t.after(() => d.close());
+  const helloD = await d.next(e => e.type === 'hello');
+  assert.equal(helloD.bridge_id, hello.bridge_id, 'same live bridge');
+  assert.equal(helloD.resuming, false, 'the chat is open now');
+  await d.next(e => e.type === 'replay_done');
+  assert.ok(!d.events.some(e => e.type === 'room' && /Council room ready/.test(e.text)));
+  assert.ok(d.events.some(e => e.type === 'room' && e.text === 'echo: /resume idle0001'));
+  // the first chat (no saved chat to open) still shows its start-up line
+  const p = await wsConnect({ host: '127.0.0.1', port: s.port });
+  t.after(() => p.close());
+  await p.next(e => e.type === 'replay_done');
+  assert.ok(p.events.some(e => e.type === 'room' && /Council room ready/.test(e.text)));
+});
+
 // ---------------------------------------------------------------- tunnel
 
 test('tunnel helper: named tunnel uses `cloudflared tunnel run` with the configured name', async t => {
