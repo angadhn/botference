@@ -118,7 +118,7 @@
     PENDING_M = j.pending_mentions || [];
     // additive server fields; a server predating them simply doesn't send them —
     // chat detection falls back to SSE events / 409s, and the out-of-band line hides
-    if (typeof j.chat === 'boolean') PRESENCE.chat = j.chat;
+    if (typeof j.chat === 'boolean') setChatMode(j.chat ? 'on' : 'off');
     SRC_DIRTY = Array.isArray(j.source_dirty) ? j.source_dirty : SRC_DIRTY;
     // presence / roster / grants (additive: older servers omit them)
     if (Array.isArray(j.presence)) PEOPLE = j.presence;
@@ -131,14 +131,30 @@
   }
 
   // --- one-way mirror to server ---
-  let syncTimer = null, syncState = 'off';
+  // ---- did this browser's comments last reach the server? ONE mode, changed only through setSync() ----
+  //   unsent — nothing exchanged yet (the page just opened)
+  //   saved  — the last load or save went through
+  //   failed — the last load or save did not ("sync failed" in the sidebar)
+  // (syncTimer is only a short pause that batches quick edits into one save.)
+  const SYNC_MODES = ['unsent', 'saved', 'failed'];
+  const SYNC_MOVES = { unsent: ['saved', 'failed'], saved: ['failed'], failed: ['saved'] };
+  const SYNC = { mode: 'unsent' };
+  // the one setter: refuses a move the table does not allow (returns false)
+  function setSync(next) {
+    if (next === SYNC.mode) return true;
+    if (!SYNC_MODES.includes(next) || !SYNC_MOVES[SYNC.mode].includes(next)) return false;
+    SYNC.mode = next;
+    renderPresence();
+    return true;
+  }
+  let syncTimer = null;
   function pushState() {
     if (!LIVE) return;
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => {
       api('/state', { method: 'POST', body: JSON.stringify({ build: META, decisions: store() }) })
-        .then(r => { syncState = r.ok ? 'ok' : 'err'; if (r.ok) serverAnswered(); renderPresence(); })
-        .catch(() => { syncState = 'err'; renderPresence(); });
+        .then(r => { if (r.ok) serverAnswered(); setSync(r.ok ? 'saved' : 'failed'); renderPresence(); })
+        .catch(() => setSync('failed'));
     }, 400);
   }
   const save = d => { setStore(d); pushState(); };
@@ -151,11 +167,39 @@
   const otherAgent = a => (a === 'claude' ? 'codex' : 'claude');
   const cap = a => a[0].toUpperCase() + a.slice(1);
   const VERBS = ['crystallizing', 'architecting', 'mulling', 'drafting', 'responding', 'pondering', 'sketching', 'weighing'];
+  // ---- are the agents attached to this server? ONE mode, changed only through setChatMode() ----
+  //   unknown — not known yet (or a server predating the /data "chat" field)
+  //   on      — the server was started with --chat and its agents are there
+  //   off     — no agents: started without --chat, or the agents' process ended
+  // Nothing goes back to unknown once the answer is known.
+  const CHAT_MODES = ['unknown', 'on', 'off'];
+  const CHAT_MOVES = { unknown: ['on', 'off'], on: ['off'], off: ['on'] };
   const PRESENCE = {
-    chat: null, // null = unknown (a server predating the /data "chat" field); true/false once known
+    chat: 'unknown', // one of CHAT_MODES
     tid: null,  // target of the in-flight anchored turn, for click-to-jump
-    agents: Object.fromEntries(AGENTS.map(a => [a, { active: false, verb: '', exhausted: null }])),
+    // per agent: `work` (one of AGENT_WORK, changed only through setAgentWork;
+    // `verb` is the word shown while working and is empty while idle), and
+    // `exhausted` — the out-of-credits reason or null. Credits are a separate
+    // matter from working: a bot out of credits can still be mid-turn.
+    agents: Object.fromEntries(AGENTS.map(a => [a, { work: 'idle', verb: '', exhausted: null }])),
   };
+  // ---- what each agent is doing: ONE mode per agent ----
+  //   idle    — not on a turn
+  //   working — on a turn; its avatar ring turns and the tooltip shows a verb
+  const AGENT_WORK = ['idle', 'working'];
+  const AGENT_WORK_MOVES = { idle: ['working'], working: ['idle'] };
+  // the one setter: refuses a move the table does not allow (returns false).
+  // Picks the verb on the way into working and clears it on the way out, so a
+  // verb can never sit beside an idle agent. Callers redraw.
+  function setAgentWork(agent, next) {
+    const s = PRESENCE.agents[agent];
+    if (!s) return false;
+    if (next === s.work) return true;
+    if (!AGENT_WORK.includes(next) || !AGENT_WORK_MOVES[s.work].includes(next)) return false;
+    s.work = next;
+    s.verb = next === 'working' ? pickVerb() : '';
+    return true;
+  }
 
   // ── credit-exhaustion detection + model-switcher state ──
   // An agent's turn output carrying one of these is treated as "out of credits"
@@ -215,7 +259,7 @@
   let probeTimer = null;
   function connState() {
     if (LINK.mode === 'down') return ['down', '✕ server down — node review/server.mjs'];
-    if (syncState === 'err') return ['err', '○ sync failed — is the server running?'];
+    if (SYNC.mode === 'failed') return ['err', '○ sync failed — is the server running?'];
     if (LINK.mode === 'retrying') return ['err', '○ live updates lost — reconnecting…'];
     return ['ok', `● live — you are ${ME || '…'}`];
   }
@@ -293,7 +337,7 @@
     const el = document.getElementById('presence');
     if (el) {
       const [cls, txt] = connState();
-      const chatTxt = PRESENCE.chat === null ? 'agents: —' : `agents: ${PRESENCE.chat ? 'on' : 'off'}`;
+      const chatTxt = PRESENCE.chat === 'unknown' ? 'agents: —' : `agents: ${PRESENCE.chat}`;
       el.innerHTML = `<div class="conn ${cls}">${esc(txt)}</div>
         <div class="chatmode" title="agent chat (server started with --chat)">${chatTxt}</div>${budgetHtml()}`;
     }
@@ -308,10 +352,10 @@
       const s = PRESENCE.agents[a];
       const name = cap(a);
       const tip = s.exhausted ? `${name} is out of credits — ${s.exhausted}`
-        : s.active ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
+        : s.work === 'working' ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
       // white brand glyph (currentColor) on the agent's accent circle: reads
       // identically in both themes
-      return `<div class="avatar-ring${s.active ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
+      return `<div class="avatar-ring${s.work === 'working' ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
     }).join('');
     av.innerHTML = humans + (humans ? '<span class="av-div" aria-hidden="true"></span>' : '') + agents
       + `<button class="av-btn" id="people-btn" title="People">👥</button>`
@@ -325,25 +369,27 @@
     let routed = AGENTS.filter(a => new RegExp('@' + a + '\\b', 'i').test(t));
     if (/@all\b/i.test(t) || !routed.length) routed = AGENTS.slice(); // @all (or unknown routing) shows both
     for (const a of AGENTS) {
-      const s = PRESENCE.agents[a];
-      s.active = routed.includes(a);
-      if (s.active) s.verb = pickVerb();
+      setAgentWork(a, 'idle'); // a fresh turn: a fresh verb for each agent on it
+      if (routed.includes(a)) setAgentWork(a, 'working');
     }
     renderPresence();
   }
   function presenceStream(who) {
-    const s = PRESENCE.agents[String(who).toLowerCase().includes('codex') ? 'codex' : 'claude'];
-    if (s && !s.active) { s.active = true; s.verb = pickVerb(); renderPresence(); }
+    const a = String(who).toLowerCase().includes('codex') ? 'codex' : 'claude';
+    if (PRESENCE.agents[a].work !== 'working' && setAgentWork(a, 'working')) renderPresence();
   }
   function presenceIdle() {
     PRESENCE.tid = null;
-    for (const a of AGENTS) PRESENCE.agents[a].active = false;
+    for (const a of AGENTS) setAgentWork(a, 'idle');
     renderPresence();
   }
-  function setChatMode(on) {
-    if (PRESENCE.chat === on) return;
-    PRESENCE.chat = on;
+  // the one setter: refuses a move the table does not allow (returns false)
+  function setChatMode(next) {
+    if (next === PRESENCE.chat) return true;
+    if (!CHAT_MODES.includes(next) || !CHAT_MOVES[PRESENCE.chat].includes(next)) return false;
+    PRESENCE.chat = next;
     renderPresence();
+    return true;
   }
 
   // ── model switcher (sidebar) + credit-exhaustion affordances ──
@@ -365,7 +411,7 @@
   function renderModelSwitcher() {
     const el = document.getElementById('settings-models');
     if (!el) return;
-    el.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+    el.innerHTML = PRESENCE.chat === 'on' ? AGENTS.map(modelRow).join('')
       : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
   }
   // optimistic switch: clear the exhausted flag now, post the control command;
@@ -2078,7 +2124,7 @@
       <div class="so-note">${esc(u.quota_note || 'Weekly subscription quota — not exposed by either provider. Run /usage in Claude Code.')}</div>
       <div class="so-sec">agent models</div><div id="settings-models"></div>`;
     const ms = settingsPanel.querySelector('#settings-models');
-    if (ms) ms.innerHTML = PRESENCE.chat === true ? AGENTS.map(modelRow).join('')
+    if (ms) ms.innerHTML = PRESENCE.chat === 'on' ? AGENTS.map(modelRow).join('')
       : '<div class="so-empty">agents are not attached (start the server with --chat)</div>';
     if (LIVE) api('/usage').then(r => r.ok ? r.json() : null).then(j => {
       if (!j || settingsPanel.hidden) return;
@@ -2136,7 +2182,7 @@
         api('/task', { method: 'POST', body: JSON.stringify({ mention_id: `task:${Date.now()}:${djb2(text)}`, text }) })
           .then(async r => {
             const j = await r.json().catch(() => ({}));
-            if (r.status === 409) { setChatMode(false); setChip(CONSOLE_ID, 'failed', 'server not started with --chat'); return; }
+            if (r.status === 409) { setChatMode('off'); setChip(CONSOLE_ID, 'failed', 'server not started with --chat'); return; }
             if (!r.ok || j.queued === false) { setChip(CONSOLE_ID, 'failed', `task rejected${j.reason ? ': ' + j.reason : ''}`); return; }
             setChip(CONSOLE_ID, 'waiting', 'queued — waiting for agents');
           }).catch(() => setChip(CONSOLE_ID, 'failed', 'server unreachable'));
@@ -2179,10 +2225,10 @@
       const mine = (j.users || {})[j.me] || {};
       for (const [id, v] of Object.entries(mine)) if (!(id in d)) { d[id] = v; added++; }
       if (added) setStore(d);
-      syncState = 'ok'; serverAnswered(); renderPresence();
+      serverAnswered(); setSync('saved'); renderPresence();
       rerender(); pushState();
     }).catch(() => {
-      syncState = 'err'; setLink('down'); renderPresence();
+      setSync('failed'); setLink('down'); renderPresence();
     });
 
     // live transport: WebSocket first, SSE fallback. WS is primary because
@@ -2342,7 +2388,7 @@
     api('/mention', { method: 'POST', body: JSON.stringify({ mention_id: mentionId, target_id: targetId, text }) })
       .then(async r => {
         const j = await r.json().catch(() => ({}));
-        if (r.status === 409) { setChatMode(false); setChip(targetId, 'failed', 'server not started with --chat'); toast('Restart the server as: node review/server.mjs --chat', true); return; }
+        if (r.status === 409) { setChatMode('off'); setChip(targetId, 'failed', 'server not started with --chat'); toast('Restart the server as: node review/server.mjs --chat', true); return; }
         // hosted guest: the summons sits in the owner's approval queue — say so honestly
         if (j.pending) { setChip(targetId, 'waiting', `queued — waiting for ${esc(OWNER_HANDLE || 'the owner')} to approve`); return; }
         if (!r.ok || j.queued === false) { setChip(targetId, 'failed', `mention rejected${j.reason ? ': ' + j.reason : ''}`); return; }
@@ -2395,7 +2441,14 @@
     const sent = pb
       ? api('/permission', { method: 'POST', body: JSON.stringify({ type: 'permission_response', allow: pb.dataset.perm === 'allow' }) })
       : api('/choice', { method: 'POST', body: JSON.stringify({ type: 'choice_response', index: i >= 0 ? i : null }) });
-    sent.then(r => { if (!r.ok) throw new Error(String(r.status)); clearInterrupts(pb ? 'perm' : 'choice'); })
+    // a question that closed meanwhile (timed out, taken back, answered in
+    // another tab) is refused by the server with a reason: say it, drop the card
+    sent.then(async r => {
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json().catch(() => ({}));
+      clearInterrupts(pb ? 'perm' : 'choice');
+      if (j && j.ok === false) toast(j.reason || 'That question is no longer open.', true);
+    })
       .catch(() => {
         btn.disabled = false;
         toast('Your answer did not reach the agents — the review server did not answer. Try again.', true);
@@ -2419,7 +2472,7 @@
   const ENV_RE = /^\s*(?:\(→[^)\n]*\)\s*)?(?:@(?:claude|codex)\s+)?\[review chat/;
   function chatEvent(m) {
     const tid = m.target_id || null;
-    setChatMode(m.kind !== 'bridge-exit'); // any chat event proves --chat; a dead bridge means agents are off
+    setChatMode(m.kind === 'bridge-exit' ? 'off' : 'on'); // any chat event proves --chat; a dead bridge means agents are off
     if (m.kind === 'completion_context') {
       applyModelState({ scoped: (m.ev || {}).scoped });
       return;
@@ -2446,6 +2499,7 @@
         if (tid) setChip(tid, 'replied', 'replied ✓');
       }).catch(() => { if (stillLanding()) setChip(tid, 'failed', 'done — refresh to see the reply'); });
     } else if (m.kind === 'permission-timeout') {
+      clearInterrupts('perm'); // the question is closed: no buttons left to answer it
       toast('Permission request timed out — denied by default.', true);
       if (tid) setChip(tid, 'failed', 'permission timed out (denied)');
     } else if (m.kind === 'stream') {
@@ -2499,10 +2553,12 @@
     } else if (m.kind === 'choice-auto') {
       toast(`Agents asked "${m.prompt || 'a setup question'}" — answered automatically: ${m.picked}.`);
     } else if (m.kind === 'choice-timeout') {
+      clearInterrupts('choice');
       toast('Choice request timed out — dismissed by default.', true);
       if (tid) setChip(tid, 'failed', 'choice timed out (dismissed)');
     } else if (m.kind === 'bridge-exit') {
       presenceIdle();
+      clearInterrupts('perm'); clearInterrupts('choice'); // nobody is left to answer them
       toast(`Agent bridge exited (code ${m.code}). Restart the server with --chat.`, true);
       for (const id of Object.keys(ACTIVITY)) setChip(id, 'failed', 'agent bridge exited — restart the server with --chat');
     }
@@ -2516,7 +2572,7 @@
   window.__review = {
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
-    openComposer, setChatMode, PRESENCE, MODELS,
+    openComposer, setSync, SYNC_MODES, get sync() { return SYNC.mode; }, setChatMode, CHAT_MODES, setAgentWork, AGENT_WORK, PRESENCE, MODELS,
     setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
   };

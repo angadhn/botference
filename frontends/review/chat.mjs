@@ -20,8 +20,45 @@ const LINK_MOVES = {
   gone: [],
 };
 
+// ---- a question the bots put to the owner: ONE status per kind of question ----
+// Two kinds: 'permission' (may a bot write somewhere?) and 'choice' (pick one
+// of these options). Each kind has at most one open question at a time, and
+// its status is changed only through setAsk().
+//   none       — no question of this kind has been asked yet
+//   asked      — on screen, waiting for the owner's answer
+//   answered   — the owner answered in time
+//   timed-out  — nobody answered within the time limit, so it was refused
+//                (a permission) or dismissed (a choice) on the owner's behalf
+//   withdrawn  — the bots took it back, a newer question replaced it, or the
+//                bot process ended
+// The timer only asks for the move to timed-out. Whichever of "answer" and
+// "time limit" comes first wins; the other is refused by setAsk, so a late
+// answer never reaches the bots after the refusal already has (or the reverse).
+export const ASK_STATES = ['none', 'asked', 'answered', 'timed-out', 'withdrawn'];
+export const ASK_MOVES = {
+  none: ['asked'],
+  asked: ['asked', 'answered', 'timed-out', 'withdrawn'], // asked -> asked: a newer question replaces it
+  answered: ['asked'],
+  'timed-out': ['asked'],
+  withdrawn: ['asked'],
+};
+export const ASK_KINDS = ['permission', 'choice'];
+export const ASK_TIMEOUT_MS = 120000;
+// what the bots are sent when the time limit passes with no answer
+const ASK_DEFAULT = {
+  permission: { type: 'permission_response', allow: false },
+  choice: { type: 'choice_response', index: null },
+};
+// plain words for an answer that arrived when no question was open
+const ASK_CLOSED = {
+  none: 'There is no question from the agents waiting for an answer.',
+  answered: 'That question was already answered.',
+  'timed-out': 'Too late: nobody answered within two minutes, so it was turned down automatically.',
+  withdrawn: 'The agents no longer need an answer to that question.',
+};
+
 export class BridgeChat {
-  constructor({ reviewDir, cfg, onEvent }) {
+  constructor({ reviewDir, cfg, onEvent, askTimeoutMs = ASK_TIMEOUT_MS }) {
     this.review = reviewDir;
     this.cfg = cfg;
     this.onEvent = onEvent;         // (obj) => broadcast as SSE 'chat'
@@ -29,6 +66,10 @@ export class BridgeChat {
     this.current = null;            // {target_id, mention_id}
     this.seen = new Set();          // mention_id dedupe across debounce/reload
     this.link = 'off';              // one of LINK_STATES; change it only via setLink()
+    // the open question of each kind: { status (one of ASK_STATES), seq, timer };
+    // change it only via setAsk()
+    this.asks = { permission: { status: 'none', seq: 0, timer: null }, choice: { status: 'none', seq: 0, timer: null } };
+    this.askTimeoutMs = askTimeoutMs;
     this.proc = null;
     this.lockFile = path.join(reviewDir, 'state', '.chat-lock');
     // dedupe survives server restarts, but only turn-completed mentions are
@@ -72,6 +113,36 @@ export class BridgeChat {
     this.link = next;
     return true;
   }
+  // the one setter for a question's status: refuses a move the table does not
+  // allow. Moving to 'asked' opens a fresh question and starts its time limit;
+  // leaving 'asked' stops it. Returns true when the move was made.
+  setAsk(kind, next) {
+    const ask = this.asks[kind];
+    if (!ask || !ASK_STATES.includes(next) || !ASK_MOVES[ask.status].includes(next)) return false;
+    clearTimeout(ask.timer);
+    ask.timer = null;
+    ask.status = next;
+    if (next === 'asked') {
+      const seq = ++ask.seq;
+      ask.timer = setTimeout(() => this.askTimedOut(kind, seq), this.askTimeoutMs);
+    }
+    return true;
+  }
+  // the time limit passed: refuse on the owner's behalf, unless the question
+  // was settled (or replaced) first
+  askTimedOut(kind, seq) {
+    if (this.asks[kind].seq !== seq || !this.setAsk(kind, 'timed-out')) return;
+    this.send(ASK_DEFAULT[kind]);
+    this.onEvent({ kind: `${kind}-timeout`, target_id: this.current?.target_id || null });
+  }
+  // the owner's answer: sent on only while the question is still open
+  answerAsk(kind, payload) {
+    const was = this.asks[kind].status;
+    if (!this.setAsk(kind, 'answered')) return { ok: false, reason: ASK_CLOSED[was] || ASK_CLOSED.none };
+    this.send(payload);
+    return { ok: true };
+  }
+
   // read-only views of the mode, for callers (server.mjs reads `available`)
   get available() { return this.link === 'starting' || this.link === 'idle' || this.link === 'busy'; }
   get ready() { return this.link === 'idle'; }
@@ -221,10 +292,12 @@ export class BridgeChat {
     });
     this.proc.on('error', err => {
       this.setLink('gone');
+      for (const k of ASK_KINDS) this.setAsk(k, 'withdrawn');
       this.onEvent({ kind: 'bridge-exit', code: -1, error: err.message });
     });
     this.proc.on('exit', code => {
       this.setLink('gone');
+      for (const k of ASK_KINDS) this.setAsk(k, 'withdrawn');
       this.onEvent({ kind: 'bridge-exit', code });
       try { fs.unlinkSync(this.lockFile); } catch { }
     });
@@ -265,14 +338,8 @@ export class BridgeChat {
       return;
     }
     if (ev.type === 'permission_request' || ev.type === 'permission_cleared') {
-      if (ev.type === 'permission_request') {
-        // default-deny: unanswered requests are denied after 120s
-        clearTimeout(this.permTimer);
-        this.permTimer = setTimeout(() => {
-          this.send({ type: 'permission_response', allow: false });
-          this.onEvent({ kind: 'permission-timeout', target_id: this.current?.target_id || null });
-        }, 120000);
-      } else clearTimeout(this.permTimer);
+      // unanswered requests are refused after the time limit (see setAsk)
+      this.setAsk('permission', ev.type === 'permission_request' ? 'asked' : 'withdrawn');
       this.onEvent({ kind: 'permission', target_id: this.current?.target_id || null, ev });
       return;
     }
@@ -286,26 +353,22 @@ export class BridgeChat {
         this.onEvent({ kind: 'choice-auto', target_id: this.current?.target_id || null, prompt: ev.prompt, picked: ev.options[stay] });
         return;
       }
-      // any other picker: show it in the page; default-dismiss after 120s so
-      // an unanswered choice can never jam the queue (mirrors permissions)
-      clearTimeout(this.choiceTimer);
-      this.choiceTimer = setTimeout(() => {
-        this.send({ type: 'choice_response', index: null });
-        this.onEvent({ kind: 'choice-timeout', target_id: this.current?.target_id || null });
-      }, 120000);
+      // any other picker: show it in the page; dismissed after the time limit
+      // so an unanswered choice can never jam the queue (mirrors permissions)
+      this.setAsk('choice', 'asked');
       this.onEvent({ kind: 'choice', target_id: this.current?.target_id || null, ev });
       return;
     }
     if (ev.type === 'choice_cleared') {
-      clearTimeout(this.choiceTimer);
+      this.setAsk('choice', 'withdrawn');
       this.onEvent({ kind: 'choice', target_id: this.current?.target_id || null, ev });
       return;
     }
     this.onEvent({ kind: 'meta', type: ev.type });
   }
 
-  answerPermission(payload) { clearTimeout(this.permTimer); this.send(payload); }
-  answerChoice(payload) { clearTimeout(this.choiceTimer); this.send(payload); }
+  answerPermission(payload) { return this.answerAsk('permission', payload); }
+  answerChoice(payload) { return this.answerAsk('choice', payload); }
 
   send(obj) { this.proc.stdin.write(JSON.stringify(obj) + '\n'); }
 

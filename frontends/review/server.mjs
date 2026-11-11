@@ -850,8 +850,10 @@ function chatEndpoint(req, res, url) {
     try {
       const data = JSON.parse(body);
       if ((data.text || '').length > (CFG.bridge?.mention_max_chars || 4000)) throw new Error('too long');
-      if (url === '/permission') { chat.answerPermission(data); res.writeHead(200, JSON_HEAD).end('{"ok":true}'); return; }
-      if (url === '/choice') { chat.answerChoice(data); res.writeHead(200, JSON_HEAD).end('{"ok":true}'); return; }
+      // an answer to a question that is no longer open (timed out, withdrawn,
+      // already answered) is refused, in plain words, rather than sent on
+      if (url === '/permission') { res.writeHead(200, JSON_HEAD).end(JSON.stringify(chat.answerPermission(data))); return; }
+      if (url === '/choice') { res.writeHead(200, JSON_HEAD).end(JSON.stringify(chat.answerChoice(data))); return; }
       if (url === '/model') {
         // owner-only (gated above): a model switch is a control turn, not a
         // mention. Strictly validate the shape so only /model @agent <model>
