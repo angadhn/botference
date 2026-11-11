@@ -1133,7 +1133,7 @@ async function mkHarness(t) {
 test('replay lands pinned at the bottom — heuristics suppressed mid-replay, late layout shift re-asserted',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C, chat, geo } = await mkHarness(t);
-  assert.equal(C.state.inServerReplay, true, 'boots in server-replay mode');
+  assert.equal(C.state.transcriptMode, 'catching_up', 'boots in server-replay mode');
   // history replay: many messages, arriving in bursts with "paints" between
   C.handle({ type: 'hello' });
   for (let i = 0; i < 10; i++) C.handle({ type: 'room', speaker: i % 2 ? 'claude' : 'codex', text: `long replayed message ${i}` });
@@ -1144,13 +1144,13 @@ test('replay lands pinned at the bottom — heuristics suppressed mid-replay, la
   assert.equal(chat.scrollTop, chat.scrollHeight, 'mid-replay append still pins — no scrolled-up misfire');
   // a HISTORICAL ready (replayed from server history) must not end replay mode
   C.handle({ type: 'ready' });
-  assert.equal(C.state.inServerReplay, true, 'historical ready does not end the replay');
+  assert.equal(C.state.transcriptMode, 'catching_up', 'historical ready does not end the replay');
   geo.top = 120;
   C.handle({ type: 'room', speaker: 'codex', text: 'after historical ready' });
   assert.equal(chat.scrollTop, chat.scrollHeight, 'still pinned after a replayed ready');
   // the server boundary ends the replay: pinned at the very bottom
   C.handle({ type: 'replay_done' });
-  assert.equal(C.state.inServerReplay, false);
+  assert.equal(C.state.transcriptMode, 'live');
   assert.equal(chat.scrollTop, chat.scrollHeight, 'replay_done pins to bottom');
   assert.equal(doc.getElementById('jump').hasAttribute('hidden'), true, 'no jump pill after landing');
   // late layout shift (fonts/images settling) after the boundary: the
@@ -1410,6 +1410,55 @@ test('composer pill row: the memory is per chat, and survives a reload',
   await new Promise(r => setTimeout(r, 10));
   assert.equal(fresh.posts[fresh.posts.length - 1].body.text, '@codex and one more thing',
     'and the first message after a reload still reaches them');
+});
+
+test('the transcript pane has one named mode, moved only by the legal moves (pure rule + walk through a switch)',
+  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
+  const { C } = await mkHarness(t);
+  const M = C.transcriptMove;
+  assert.deepEqual([...C.TRANSCRIPT_MODES], ['live', 'catching_up', 'redrawing',
+    'offscreen_catching_up', 'offscreen_redrawing', 'offscreen_waiting']);
+  // the pure rule: legal moves…
+  for (const [from, to, pane] of [
+    ['catching_up', 'live', false], ['redrawing', 'live', false], ['live', 'redrawing', false],
+    ['offscreen_catching_up', 'offscreen_waiting', false], ['offscreen_waiting', 'live', false],
+    ['offscreen_catching_up', 'catching_up', false], ['offscreen_redrawing', 'redrawing', false],
+    ['live', 'catching_up', false], ['offscreen_waiting', 'catching_up', false],
+    ['live', 'offscreen_catching_up', true], ['catching_up', 'offscreen_catching_up', true],
+    ['offscreen_waiting', 'offscreen_redrawing', true], ['offscreen_waiting', 'offscreen_redrawing', false],
+  ]) assert.equal(M(from, to, pane), true, `${from} > ${to}${pane ? ' (new hidden pane)' : ''}`);
+  // …and refused ones: into a hidden build without a hidden pane, out of one
+  // with a pane, a redraw that skips the server's catch-up, unknown names
+  for (const [from, to, pane] of [
+    ['live', 'offscreen_catching_up', false], ['live', 'offscreen_redrawing', false],
+    ['offscreen_waiting', 'live', true], ['catching_up', 'redrawing', false],
+    ['live', 'offscreen_waiting', false], ['redrawing', 'offscreen_waiting', false],
+    ['catching_up', 'offscreen_redrawing', true], ['live', 'live', false],
+    ['live', 'replaying', false], ['bogus', 'live', false],
+  ]) assert.equal(M(from, to, pane), false, `${from} > ${to}${pane ? ' (new hidden pane)' : ''}`);
+  // the setter refuses an illegal move and leaves the mode alone
+  assert.equal(C.state.transcriptMode, 'catching_up');
+  assert.equal(C.setTranscriptMode('redrawing'), false);
+  assert.equal(C.state.transcriptMode, 'catching_up');
+  // a walk through a real switch to a chat whose bridge is still opening
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  C.handle({ type: 'replay_done' });
+  assert.equal(C.state.transcriptMode, 'live');
+  C.handle({ type: 'clear_panes' });
+  assert.equal(C.state.transcriptMode, 'redrawing', 'a /new or /resume redraws on screen');
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.transcriptMode, 'live');
+  C.switchTo('sidB');
+  assert.equal(C.state.transcriptMode, 'offscreen_catching_up');
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.transcriptMode, 'offscreen_catching_up', 'a replayed ready changes nothing');
+  C.handle({ type: 'replay_done' });
+  assert.equal(C.state.transcriptMode, 'offscreen_waiting', 'opening chat: wait for its live ready');
+  C.handle({ type: 'clear_panes' });
+  assert.equal(C.state.transcriptMode, 'offscreen_redrawing');
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.transcriptMode, 'live', 'the hidden pane swaps in at the ready');
 });
 
 test('chat switch: reattach to the target bridge, optimistic cached render, offscreen reconcile, never a blank transcript',

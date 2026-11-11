@@ -351,8 +351,9 @@
     // new-chat dropdown (the user answered up front) and by the first-send
     // picker, cleared when we land in a different chat.
     filingAsked: false,
-    inServerReplay: true,  // between (re)connect and the server's replay_done boundary
-    replaying: false,      // between clear_panes (resume/new) and the bridge's next ready
+    // what the transcript pane is doing: one of TRANSCRIPT_MODES, moved only
+    // by setTranscriptMode. A page boots catching up on the server's replay.
+    transcriptMode: 'catching_up',
     pendingSwitch: null,   // session id of an in-flight sidebar chat switch
     currentSid: null,      // active session id (from 'projects' events)
     routeErrorSid: null,   // chat id the server just refused (route_error)
@@ -367,6 +368,35 @@
     laneCard: null,        // the in-progress turn's lane card element (null between turns)
     laneTimer: null,       // interval ticking the running lanes' elapsed clocks
   };
+  // The transcript pane's modes (what each means: at setTranscriptMode) and
+  // the one pure rule for moving between them. freshPane: the move brings a
+  // new hidden pane (a switch's or a redraw's offscreen build).
+  const TRANSCRIPT_MODES = ['live', 'catching_up', 'redrawing',
+    'offscreen_catching_up', 'offscreen_redrawing', 'offscreen_waiting'];
+  const OFFSCREEN_MODES = ['offscreen_catching_up', 'offscreen_redrawing', 'offscreen_waiting'];
+  // what each offscreen mode becomes when its hidden pane is swapped in
+  const SWAPS_TO = { offscreen_catching_up: 'catching_up', offscreen_redrawing: 'redrawing', offscreen_waiting: 'live' };
+  const TRANSCRIPT_MOVES = new Set([
+    // the server's replay is over (replay_done), or a redraw ends (ready)
+    'catching_up>live', 'redrawing>live',
+    'offscreen_catching_up>offscreen_waiting', 'offscreen_redrawing>offscreen_waiting',
+    // the chat is cleared with no switch under way
+    'live>redrawing', 'offscreen_waiting>offscreen_redrawing',
+    // the hidden pane is swapped in
+    ...Object.entries(SWAPS_TO).map(([a, b]) => a + '>' + b),
+    // a (re)connect with no switch starts a clean catch-up from anywhere
+    ...TRANSCRIPT_MODES.map(m => m + '>catching_up'),
+  ]);
+  const TRANSCRIPT_MOVES_WITH_PANE = new Set([
+    // a (re)connect for a switch, or a clear during the server's replay
+    ...TRANSCRIPT_MODES.map(m => m + '>offscreen_catching_up'),
+    // a clear while switching or opening, once the server's replay is over
+    ...['live', 'redrawing', 'offscreen_redrawing', 'offscreen_waiting'].map(m => m + '>offscreen_redrawing'),
+  ]);
+  function transcriptMove(from, to, freshPane) {
+    if (!TRANSCRIPT_MODES.includes(from) || !TRANSCRIPT_MODES.includes(to)) return false;
+    return (freshPane ? TRANSCRIPT_MOVES_WITH_PANE : TRANSCRIPT_MOVES).has(from + '>' + to);
+  }
   // switching chats re-attaches this tab's stream to another bridge, and the
   // authoritative transcript arrives as that bridge's history replay. This is
   // an honest client-side cache of the last few rendered transcripts —
@@ -766,7 +796,7 @@
     });
     const wasPinned = pinned();
     container().appendChild(div);
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
 
   // ── pre-send exhaustion guard ──
@@ -1351,18 +1381,41 @@
   function updateEmpty() {
     els.empty.hidden = els.transcript.children.length > 0;
   }
-  // During a chat switch the authoritative replay renders into an offscreen
-  // buffer (the previous/cached transcript stays visible — no blank flash)
-  // and is swapped in when the replay completes.
+  // ── what the transcript pane is doing ──
+  // One of TRANSCRIPT_MODES, kept in state.transcriptMode and moved only by
+  // setTranscriptMode, which refuses a move transcriptMove does not allow:
+  //   live                  — showing the open chat; events land on screen;
+  //   catching_up           — the server is replaying this chat's history
+  //                           onto the screen ((re)connect → replay_done);
+  //   redrawing             — the chat was cleared (resume / new chat) and is
+  //                           being drawn again on screen, until the next ready;
+  //   offscreen_catching_up — a switched-to chat's history is being built in
+  //                           a hidden pane while the old view stays on screen
+  //                           (no blank flash);
+  //   offscreen_redrawing   — a cleared chat is being drawn in a hidden pane;
+  //   offscreen_waiting     — the hidden pane has the history; it swaps in at
+  //                           the opening chat's first live ready.
+  // The hidden pane (replayBuffer) exists exactly in the offscreen_ modes;
+  // only setTranscriptMode sets or drops it. Swapping it in moves each
+  // offscreen_ mode to its on-screen twin (SWAPS_TO).
   let replayBuffer = null;
   const container = () => replayBuffer || els.transcript;
+  function offscreen() { return OFFSCREEN_MODES.includes(state.transcriptMode); }
+  function serverReplay() { return state.transcriptMode === 'catching_up' || state.transcriptMode === 'offscreen_catching_up'; }
+  function setTranscriptMode(to, freshPane = null) {
+    if (!transcriptMove(state.transcriptMode, to, !!freshPane)) return false;
+    state.transcriptMode = to;
+    if (!OFFSCREEN_MODES.includes(to)) replayBuffer = null;
+    else if (freshPane) replayBuffer = freshPane;
+    return true;
+  }
   const raf = typeof window.requestAnimationFrame === 'function'
     ? cb => window.requestAnimationFrame(cb) : cb => setTimeout(cb, 16);
   const atBottom = () => els.chat.scrollTop + els.chat.clientHeight >= els.chat.scrollHeight - 90;
   // While a replay streams in, the "did the user scroll up?" heuristic is
   // meaningless (the user did nothing — the layout is moving under them),
   // so it is suppressed entirely and the view stays pinned.
-  const replayActive = () => state.inServerReplay || state.replaying;
+  const replayActive = () => state.transcriptMode !== 'live' && state.transcriptMode !== 'offscreen_waiting';
   const pinned = () => replayActive() || atBottom();
   function pinBottom() { els.chat.scrollTop = els.chat.scrollHeight; els.jump.hidden = true; }
   // pin now AND after layout settles (fonts, images, status strip): a late
@@ -1374,7 +1427,7 @@
   }
   let holdFollowUntil = 0;   // a deliberate layout change (unfolding a report) is not new content
   function follow(wasPinned) {
-    if (replayBuffer) return; // offscreen render: nothing to scroll
+    if (offscreen()) return; // offscreen render: nothing to scroll
     if (Date.now() < holdFollowUntil) return;
     if (wasPinned) pinBottom();
     else els.jump.hidden = false;
@@ -1389,7 +1442,7 @@
   const SCROLL_KEY = 'council-scroll';
   let scrollMemoTimer = null;
   function rememberScroll() {
-    if (!state.currentSid || replayBuffer || state.inServerReplay) return;
+    if (!state.currentSid || offscreen() || serverReplay()) return;
     if (scrollMemoTimer) return;
     scrollMemoTimer = setTimeout(() => {
       scrollMemoTimer = null;
@@ -1462,7 +1515,7 @@
   }
   // offered by paint() for every markdown message, live and replayed alike
   function noteTasks(div, body) {
-    if (replayBuffer) return;               // offscreen build: the flush rescans
+    if (offscreen()) return;                // offscreen build: the flush rescans
     if (taskLists(body).length) {
       if (!atOrAfter(div, taskSrc)) return;
       if (div !== taskSrc) { taskSrc = div; taskAt = replayActive() ? 0 : Date.now(); }
@@ -1830,7 +1883,7 @@
     }
     container().appendChild(div);
     noteTasks(div, div.querySelector('.body'));
-    if (!replayBuffer) {
+    if (!offscreen()) {
       updateEmpty();
       follow(wasPinned);
     }
@@ -1857,7 +1910,7 @@
     const live = base && state.streams[base];
     if (live && live.el && live.el.parentNode) live.el.parentNode.insertBefore(div, live.el);
     else container().appendChild(div);
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
     return div;
   }
 
@@ -2050,7 +2103,7 @@
       container().appendChild(card);   // no summoner on screen: stand alone
     }
     paintAgentHead(card, meta);
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
     return card;
   }
   // drop every live stream that was painting into this card
@@ -2088,7 +2141,7 @@
       paint(card, ev.text);
       tickAgentClocks();
     }
-    if (!replayBuffer) follow(wasPinned);
+    if (!offscreen()) follow(wasPinned);
   }
   // `stream` events tagged with agent meta: deltas paint the card's body
   function handleAgentStream(ev) {
@@ -2157,7 +2210,7 @@
       <div class="lane-rows"></div>`;
     container().appendChild(div);
     state.laneCard = div;
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
     return div;
   }
   function paintLane(lane) {
@@ -2312,7 +2365,7 @@
     });
     container().appendChild(div);
     liveCard = div;
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
   // ── the lasso card ──
   // What a `/lasso <words>` (or a bot's `lasso:` line) turned up: past
@@ -2357,7 +2410,7 @@
       await sendInput('/lasso attach ' + b.dataset.n);
     });
     container().appendChild(div);
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
 
   // …and what the chat is CARRYING, above the composer, until the ✕ takes it
@@ -2393,7 +2446,7 @@
     });
     container().appendChild(div);
     liveCard = div;
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
 
   // ── sidebar ──
@@ -2779,7 +2832,7 @@
   // offscreen buffer that swaps in when it completes. First visits keep the
   // old chat + a syncing pill — never a blank flash.
   function snapshotCurrent() {
-    if (!state.currentSid || replayBuffer || !els.transcript.children.length) return;
+    if (!state.currentSid || offscreen() || !els.transcript.children.length) return;
     cachePut(state.currentSid, {
       html: els.transcript.innerHTML,
       scrollTop: els.chat.scrollTop,
@@ -2817,11 +2870,11 @@
   // decide the landing scroll — same content as the cached paint keeps the
   // user's place, anything else lands pinned at the bottom
   function flushReplayBuffer() {
-    if (!replayBuffer) return;
+    if (!offscreen()) return;
     const sid = state.pendingSwitch;
     const cached = sid ? sessionCache.get(sid) : null;
     const buf = replayBuffer;
-    replayBuffer = null;
+    setTranscriptMode(SWAPS_TO[state.transcriptMode]);
     const sameAsCached = !!cached && cached.html === buf.innerHTML;
     els.transcript.innerHTML = '';
     while (buf.firstChild) els.transcript.appendChild(buf.firstChild);
@@ -3357,7 +3410,7 @@
     });
     container().appendChild(div);
     liveCard = div;
-    if (!replayBuffer) { updateEmpty(); follow(wasPinned); }
+    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
 
   function submit() {
@@ -3808,10 +3861,10 @@
         // a buffered switch replay ends at the bridge's LIVE idle boundary —
         // 'ready' events replayed from server history don't count (the
         // connect replay ends at replay_done instead)
-        if (!state.inServerReplay) {
-          if (replayBuffer) endSwitch();
+        if (!serverReplay()) {
+          if (offscreen()) endSwitch();
           else if (state.pendingSwitch) { state.pendingSwitch = null; setSyncing(false); }
-          if (state.replaying) { state.replaying = false; settleBottom(); }
+          if (state.transcriptMode === 'redrawing') { setTranscriptMode('live'); settleBottom(); }
         }
         // a watch always ends inside the turn it started in; if its 'done'
         // was lost (history trimmed, tab joined mid-watch) the idle boundary
@@ -3831,24 +3884,29 @@
         state.streams = {};
         liveCard = null;
         resetLanes();
-        state.replaying = true; // a restore replay follows: pin, no heuristics
+        // a restore replay follows: pin, no heuristics (redrawing). Inside
+        // the server's own replay it is all one catch-up, ended by replay_done
         if (state.pendingSwitch || state.resuming) {
           // in-flight switch: keep the optimistic (or outgoing) transcript on
           // screen and build the authoritative one offscreen — never blank.
           // A fresh buffer also drops a resuming bridge's interstitial
           // startup events, which are plumbing, not this chat's transcript.
-          replayBuffer = document.createElement('div');
+          setTranscriptMode(serverReplay() ? 'offscreen_catching_up' : 'offscreen_redrawing',
+            document.createElement('div'));
         } else {
           els.transcript.innerHTML = '';
           updateEmpty();
           rescanTasks();
+          const to = { live: 'redrawing', offscreen_waiting: 'offscreen_redrawing' }[state.transcriptMode];
+          if (to) setTranscriptMode(to);
         }
         break;
-      case 'replay_done':
-        // server-side history replay boundary (connect/reconnect/reattach)
-        state.inServerReplay = false;
-        state.replaying = false;
-        if (replayBuffer && !state.resuming) {
+      case 'replay_done': {
+        // server-side history replay boundary (connect/reconnect/reattach):
+        // the catch-up (or redraw) is over; a hidden pane waits to swap in
+        const over = offscreen() ? 'offscreen_waiting' : 'live';
+        if (state.transcriptMode !== over) setTranscriptMode(over);
+        if (offscreen() && !state.resuming) {
           // attached to a live chat: its replayed history IS the transcript
           endSwitch();
           break;
@@ -3856,8 +3914,9 @@
         // a resuming bridge keeps buffering until its live 'ready';
         // otherwise land where the reader was before the reload, or pinned
         // at the very bottom, re-asserted after layout settles
-        if (!replayBuffer) { if (!recallScroll()) settleBottom(); }
+        if (!offscreen()) { if (!recallScroll()) settleBottom(); }
         break;
+      }
       case 'permission_request': permissionCard(ev); break;
       case 'permission_cleared': settleCard(); break;
       case 'choice_request': choiceCard(ev); break;
@@ -3883,7 +3942,7 @@
       case 'not_sent': {
         // messages that waited for a chat that never opened: one line, and
         // the words back in the box (ahead of anything typed since)
-        if (replayBuffer || state.pendingSwitch) endSwitch();
+        if (offscreen() || state.pendingSwitch) endSwitch();
         addMsg('system', ev.text || 'Not sent: this chat could not be opened.');
         const back = (ev.texts || []).join('\n');
         if (back) {
@@ -3894,12 +3953,12 @@
         break;
       }
       case 'bridge_exit':
-        if (replayBuffer || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
+        if (offscreen() || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
         setBusy(false);
         break;
       case 'exit':
-        if (replayBuffer || state.pendingSwitch) endSwitch();
+        if (offscreen() || state.pendingSwitch) endSwitch();
         addMsg('system', 'session ended.');
         setBusy(false);
         break;
@@ -3965,9 +4024,7 @@
     // scroll pinned until the server's replay_done boundary
     els.transcript.innerHTML = '';
     state.streams = {};
-    replayBuffer = null;
-    state.inServerReplay = true;
-    state.replaying = false;
+    setTranscriptMode('catching_up');
     state.pendingSwitch = null;
     resetLanes();
     setSyncing(false);
@@ -3979,12 +4036,10 @@
   // one offscreen; anything else starts clean
   function prepView() {
     if (state.pendingSwitch) {
-      replayBuffer = document.createElement('div');
+      setTranscriptMode('offscreen_catching_up', document.createElement('div'));
       state.streams = {};
       liveCard = null;
       resetLanes();
-      state.inServerReplay = true;
-      state.replaying = false;
     } else {
       resetView();
     }
@@ -4091,6 +4146,8 @@
     noteAgentTurn, exhaustReason, modelsFor, effortsFor,
     laneEvent, hashSid, syncHash, routeHash, chatParam,
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
+    // the transcript pane's modes: the pure move rule and the one setter
+    TRANSCRIPT_MODES, transcriptMove, setTranscriptMode,
     renderRoutes, routeNow, routeWordOf, defaultRoute,
     projectTasks: () => ptasks,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
