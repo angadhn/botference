@@ -3776,8 +3776,9 @@ test('a message waiting for a chat that never opens is not lost silently: one li
   const ns = await c.next(e => e.type === 'not_sent', 8000);
   assert.deepEqual(ns.texts, ['my long careful message']);
   assert.equal(ns.text, 'Not sent: this chat could not be opened, so your message did not reach the bots. The words are back in the message box.');
-  const i = c.events.indexOf(ns);
-  assert.ok(c.events.slice(i).some(e => e.type === 'bridge_exit'), 'the exit is reported after it');
+  // the exit may come in a later frame than the line: wait for it, then check the order
+  const exit = await c.next(e => e.type === 'bridge_exit', 8000);
+  assert.ok(c.events.indexOf(exit) > c.events.indexOf(ns), 'the exit is reported after it');
   assert.ok(!fs.readFileSync(s.rx, 'utf8').includes('my long careful message'), 'it never reached a bot');
 });
 
