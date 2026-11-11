@@ -40,11 +40,12 @@ export function permissionChoiceForKey(input: string): PermissionChoice | null {
 }
 
 /** The bridge message for an answer. `always` rides beside `allow`, so a
- *  bridge that predates it still reads an allow. */
-export function permissionResponse(requestId: string, choice: PermissionChoice) {
+ *  bridge that predates it still reads an allow. The request_id goes back
+ *  when the question carried one, and is left out when it did not. */
+export function permissionResponse(requestId: string | undefined, choice: PermissionChoice) {
   return {
     type: "permission_response" as const,
-    request_id: requestId,
+    ...(requestId ? { request_id: requestId } : {}),
     allow: choice !== "deny",
     ...(choice === "always" ? { always: true } : {}),
   };

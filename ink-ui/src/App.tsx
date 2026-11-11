@@ -83,9 +83,21 @@ import {
   PERMISSION_LABELS,
   cyclePermissionChoice,
   permissionChoiceForKey,
-  permissionResponse,
   type PermissionChoice,
 } from "./permission.js";
+import {
+  NO_QUESTION,
+  choiceAnswer,
+  choiceQuestionFrom,
+  clearedFrom,
+  moveQuestions,
+  permissionAnswer,
+  permissionQuestionFrom,
+  waitingNote,
+  type PermissionQuestion,
+  type QuestionEvent,
+  type QuestionState,
+} from "./questions.js";
 import {
   createV2Activity,
   formatV2ActivityText,
@@ -132,13 +144,6 @@ interface BridgeArgs {
   debugPanes: boolean;
   claudeEffort: string;
   claudeTransport: string;
-}
-
-interface PendingPermission {
-  request_id: string;
-  model: string;
-  path: string;
-  reason: string;
 }
 
 type StateUpdate<T> = T | ((prev: T) => T);
@@ -441,9 +446,11 @@ const StatusBar = React.memo(function StatusBar({
 function PermissionPrompt({
   request,
   choice,
+  waiting,
 }: {
-  request: PendingPermission;
+  request: PermissionQuestion;
   choice: PermissionChoice;
+  waiting: string;
 }) {
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
@@ -475,7 +482,7 @@ function PermissionPrompt({
         })}
       </Box>
       <Text color={THEME.statusMuted} wrap="truncate-end">
-        {PERMISSION_KEYS_HINT}
+        {waiting ? `${PERMISSION_KEYS_HINT} | ${waiting}` : PERMISSION_KEYS_HINT}
       </Text>
     </Box>
   );
@@ -485,10 +492,12 @@ function ChoicePrompt({
   prompt,
   options,
   index,
+  waiting,
 }: {
   prompt: string;
   options: string[];
   index: number;
+  waiting: string;
 }) {
   return (
     <Box flexDirection="column" paddingX={1} width="100%">
@@ -509,7 +518,9 @@ function ChoicePrompt({
         );
       })}
       <Text color={THEME.statusMuted} wrap="truncate-end">
-        Up/Down selects | Enter confirms | Esc dismisses
+        {waiting
+          ? `Up/Down selects | Enter confirms | Esc dismisses | ${waiting}`
+          : "Up/Down selects | Enter confirms | Esc dismisses"}
       </Text>
     </Box>
   );
@@ -566,10 +577,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   const [desiredCol, setDesiredCol] = useState<number | null>(null);
   const [imageAttachments, setImageAttachmentsState] = useState<Map<number, string>>(new Map());
-  const [pendingPermission, setPendingPermission] = useState<PendingPermission | null>(null);
-  const [permissionChoice, setPermissionChoice] = useState<PermissionChoice>("once");
-  const [pendingChoice, setPendingChoice] = useState<{ prompt: string; options: string[] } | null>(null);
-  const [choiceIndex, setChoiceIndex] = useState(0);
+  // The one field for "which question is on screen" (named modes in
+  // questions.ts), with any that wait their turn; changed only through
+  // moveQuestion() below.
+  const [questions, setQuestionsState] = useState<QuestionState>(NO_QUESTION);
+  const questionsRef = useRef<QuestionState>(NO_QUESTION);
   const [completionCtx, setCompletionCtx] = useState<{
     global: string[];
     scoped: Record<string, string[]>;
@@ -602,6 +614,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (move.changed) {
       turnModeRef.current = move.mode;
       setTurnModeState(move.mode);
+    }
+    return move.changed;
+  }, []);
+  const moveQuestion = useCallback((event: QuestionEvent): boolean => {
+    const move = moveQuestions(questionsRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`question_move_refused:${event.type}:${move.reason}`);
+      return false;
+    }
+    if (move.changed) {
+      questionsRef.current = move.state;
+      setQuestionsState(move.state);
     }
     return move.changed;
   }, []);
@@ -1123,8 +1147,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
       setQueuedCount(0);
       setHint("");
-      setPendingPermission(null);
-      setPendingChoice(null);
+      moveQuestion({ type: "engine_stopped" });
       setRoomEntries((prev) => capDisplayEntries([
         ...prev,
         { speaker: "system", text: engineStoppedNotice(how, unanswered.length) },
@@ -1336,30 +1359,20 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           });
           break;
         case "permission_request":
-          setPendingPermission({
-            request_id: msg.request_id as string,
-            model: msg.model as string,
-            path: msg.path as string,
-            reason: msg.reason as string,
-          });
-          setPermissionChoice("once");
-          setHint("Approve or deny the protected write.");
+          // Shown now, or waits its turn behind the question on screen.
+          if (moveQuestion({ type: "arrived", question: permissionQuestionFrom(msg) })) {
+            setHint("Approve or deny the protected write.");
+          }
           break;
         case "permission_cleared":
-          setPendingPermission(null);
+          moveQuestion(clearedFrom("permission", msg));
           setHint("");
           break;
         case "choice_request":
-          setPendingChoice({
-            prompt: typeof msg.prompt === "string" ? msg.prompt : "",
-            options: Array.isArray(msg.options)
-              ? (msg.options as unknown[]).map(String)
-              : [],
-          });
-          setChoiceIndex(0);
+          moveQuestion({ type: "arrived", question: choiceQuestionFrom(msg) });
           break;
         case "choice_cleared":
-          setPendingChoice(null);
+          moveQuestion(clearedFrom("choice", msg));
           break;
         case "notify":
           sendDesktopNotification(
@@ -1441,11 +1454,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // ── Submission logic ───────────────────────────────────
 
   const submit = useCallback(() => {
-    if (pendingPermission) {
+    if (questionsRef.current.mode === "permission") {
       setHint("Resolve the protected write request first.");
       return;
     }
-    if (pendingChoice) {
+    if (questionsRef.current.mode === "choice") {
       setHint("Answer the pending question first (Up/Down + Enter, Esc dismisses).");
       return;
     }
@@ -1497,33 +1510,30 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [focusedPane, pendingPermission, pendingChoice, moveTurn, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
+  }, [focusedPane, moveTurn, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((choice: PermissionChoice) => {
     const proc = bridgeRef.current;
-    if (!pendingPermission || !proc?.stdin?.writable) {
+    const state = questionsRef.current;
+    if (state.mode !== "permission" || !proc?.stdin?.writable) {
       return;
     }
-    proc.stdin.write(JSON.stringify(
-      permissionResponse(pendingPermission.request_id, choice),
-    ) + "\n");
+    proc.stdin.write(JSON.stringify(permissionAnswer(state.onScreen, choice)) + "\n");
     setHint(
       choice === "deny" ? "Denying protected write..."
         : choice === "always" ? "Allowing protected write for every session..."
         : "Allowing protected write...",
     );
-  }, [pendingPermission]);
+  }, []);
 
   const respondToChoice = useCallback((index: number) => {
     const proc = bridgeRef.current;
-    if (!pendingChoice || !proc?.stdin?.writable) {
+    const state = questionsRef.current;
+    if (state.mode !== "choice" || !proc?.stdin?.writable) {
       return;
     }
-    proc.stdin.write(JSON.stringify({
-      type: "choice_response",
-      index,
-    }) + "\n");
-  }, [pendingChoice]);
+    proc.stdin.write(JSON.stringify(choiceAnswer(state.onScreen, index)) + "\n");
+  }, []);
 
   const interrupt = useCallback(() => {
     const proc = bridgeRef.current;
@@ -1588,17 +1598,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    if (pendingPermission) {
+    const question = questionsRef.current;
+    if (question.mode === "permission") {
+      const highlighted = question.onScreen.highlighted;
       if (key.leftArrow) {
-        setPermissionChoice((prev) => cyclePermissionChoice(prev, -1));
+        moveQuestion({ type: "highlight_permission", choice: cyclePermissionChoice(highlighted, -1) });
         return;
       }
       if (key.rightArrow || key.tab) {
-        setPermissionChoice((prev) => cyclePermissionChoice(prev, 1));
+        moveQuestion({ type: "highlight_permission", choice: cyclePermissionChoice(highlighted, 1) });
         return;
       }
       if (key.return) {
-        respondToPermission(permissionChoice);
+        respondToPermission(highlighted);
         return;
       }
       if (key.escape) {
@@ -1612,18 +1624,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       return;
     }
 
-    if (pendingChoice) {
-      const optionCount = pendingChoice.options.length;
+    if (question.mode === "choice") {
+      const index = question.onScreen.highlighted;
       if (key.upArrow) {
-        setChoiceIndex((prev) => Math.max(0, prev - 1));
+        moveQuestion({ type: "highlight_choice", index: index - 1 });
         return;
       }
       if (key.downArrow || key.tab) {
-        setChoiceIndex((prev) => Math.min(optionCount - 1, prev + 1));
+        moveQuestion({ type: "highlight_choice", index: index + 1 });
         return;
       }
       if (key.return) {
-        respondToChoice(choiceIndex);
+        respondToChoice(index);
         return;
       }
       if (key.escape) {
@@ -1913,13 +1925,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
-        {pendingPermission ? (
-          <PermissionPrompt request={pendingPermission} choice={permissionChoice} />
-        ) : pendingChoice ? (
+        {questions.mode === "permission" ? (
+          <PermissionPrompt
+            request={questions.onScreen}
+            choice={questions.onScreen.highlighted}
+            waiting={waitingNote(questions)}
+          />
+        ) : questions.mode === "choice" ? (
           <ChoicePrompt
-            prompt={pendingChoice.prompt}
-            options={pendingChoice.options}
-            index={choiceIndex}
+            prompt={questions.onScreen.prompt}
+            options={questions.onScreen.options}
+            index={questions.onScreen.highlighted}
+            waiting={waitingNote(questions)}
           />
         ) : (
           <>
