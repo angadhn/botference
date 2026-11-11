@@ -40,6 +40,8 @@ What never wakes a bot:
 - anything written by someone not on your allowed list, even if it names a
   bot (the log says "not on the allowed list");
 - anything in a resolved thread;
+- a post with no text (Google adds one when a thread is resolved or
+  reopened);
 - every comment that was already in the Doc when the watcher first looked
   at it (so switching it on does not answer old comments).
 

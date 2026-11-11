@@ -197,6 +197,21 @@ class TestAddressedTo:
         posts = [post("p1", "hmm"), post("p2", "agreed", "stranger"), post("p3", "ok")]
         assert addressed_to(posts, 2) == ()
 
+    @pytest.mark.parametrize("content", [None, "", "   "])
+    def test_post_with_no_text_is_for_nobody(self, content):
+        posts = [post("p1", "Claude?"), post("p2", "Claude: yes", "agent"),
+                 {**post("p3", ""), "content": content, "commentAction": "RESOLVE"}]
+        if content is None:
+            del posts[2]["content"]
+        assert addressed_to(posts, 2) == ()
+
+    def test_empty_agent_post_does_not_end_the_look_back(self):
+        posts = [post("p1", "Claude?"), post("p2", "Claude: yes", "agent"),
+                 {**post("p3", "", "agent"), "commentAction": "REOPEN"},
+                 post("p4", "and why?")]
+        del posts[2]["content"]
+        assert addressed_to(posts, 3) == ("claude",)
+
     def test_unsigned_agent_post_wakes_nobody(self):
         posts = [post("p1", "x"), post("p2", "no name", "agent"), post("p3", "so?")]
         assert addressed_to(posts, 2) == ()
@@ -276,6 +291,20 @@ class TestWatching:
         env.docs.threads().append(thread("c1", post("p1", "tighten this")))
         w.look()
         assert env.waker.runs == [] and env.state()["items"] == {}
+
+    @pytest.mark.parametrize("action", ["RESOLVE", "REOPEN"])
+    def test_owner_resolve_or_reopen_post_wakes_nobody(self, env, action):
+        w = env.make()
+        first_look(env, w)
+        env.docs.threads().append(thread("c1", post("p1", "Claude?")))
+        w.look()
+        marker = {"postId": "p2", "commentAction": action,
+                  "author": post("x", "")["author"]}  # Google sends no content
+        env.docs.find("c1")["replies"].append(marker)
+        w.look()
+        assert [b for b, _ in env.waker.runs] == ["claude"]
+        assert f"{DOC}/p2/claude" not in env.state()["items"]
+        assert "p2" in env.state()["docs"][DOC]["known"]
 
     def test_resolved_thread_wakes_nobody(self, env):
         w = env.make()

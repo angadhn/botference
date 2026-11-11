@@ -226,17 +226,27 @@ def thread_posts(comment: dict) -> list[dict]:
     return [head] + [r for r in comment.get("replies") or [] if isinstance(r, dict)]
 
 
+def has_text(post: dict) -> bool:
+    content = post.get("content")
+    return isinstance(content, str) and bool(content.strip())
+
+
 def addressed_to(posts: list[dict], i: int) -> tuple[str, ...]:
     """The bots post i is for (author checks aside). A name wins; a reply
-    naming nobody goes to the bot that spoke last before it in the thread."""
+    naming nobody goes to the bot that spoke last before it in the thread.
+    A post with no text (Google adds one, with commentAction RESOLVE or
+    REOPEN, when a thread is resolved or reopened) is for nobody, and an
+    agent post with no text is skipped when looking back."""
     post = posts[i]
+    if not has_text(post):
+        return ()
     named = bots_named(post.get("content") or "")
     if named:
         return tuple(sorted(named))
     if i == 0:
         return ()
     for earlier in reversed(posts[:i]):
-        if is_agent(earlier) and not earlier.get("deleted"):
+        if is_agent(earlier) and not earlier.get("deleted") and has_text(earlier):
             bot = agent_bot(earlier)
             return (bot,) if bot else ()
     return ()
@@ -603,7 +613,9 @@ class Watcher:
                 continue
             known.add(post_id)
             entry.setdefault("known", []).append(post_id)
-            if post.get("deleted") or comment.get("status") == "RESOLVED":
+            # no text: a resolve/reopen marker, never a message for a bot
+            if (post.get("deleted") or not has_text(post)
+                    or comment.get("status") == "RESOLVED"):
                 continue
             role = role_of(post, allowed)
             if role is Role.AGENT:
