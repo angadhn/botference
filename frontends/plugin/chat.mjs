@@ -1879,10 +1879,15 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
     // a question one number could answer for the page the reader is on. So
     // /health can now name them, and a reader can see that THEIR page's turn is
     // the one running rather than the one waiting.
+    // `silent` marks the filing clerk's turns (a summary, a quiz card): they
+    // never say turn-start or turn-end, so nothing may spin for them.
+    // `agents` is who the running turn named, for a tab that arrives mid-turn.
     jobs: () => [
       ...(current ? [{ url: current.job.url, target: current.job.target,
-        control: !!current.job.control, running: true }] : []),
-      ...queue.map(j => ({ url: j.url, target: j.target, control: !!j.control, running: false })),
+        control: !!current.job.control, silent: !!(current.job.summary || current.job.card),
+        agents: (current.agents || []).slice(), running: true }] : []),
+      ...queue.map(j => ({ url: j.url, target: j.target, control: !!j.control,
+        silent: !!(j.summary || j.card), running: false })),
     ],
     // Forget every turn this page has WAITING. The one in flight is left alone
     // deliberately: it is inside the bridge's protocol (a step has gone out and

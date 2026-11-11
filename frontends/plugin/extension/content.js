@@ -2054,12 +2054,18 @@
 
   // ---- page load / refresh --------------------------------------------------
   async function loadPage() {
+    // where the drawer's turns stood when this was asked (see drawer.setTurns)
+    const asked = drawer ? drawer.turnAsk() : 0;
     const r = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
     // reaching the companion at all is the connection signal the user cares
     // about; the WS `conn` broadcasts only ever confirm it (see connHttp)
     connHttp(!!r.ok);
     if (!r.ok) return null;
     const rec = (r.data && r.data.page !== undefined) ? r.data.page : r.data;
+    // which of this page's chats the bots are answering right now — the
+    // companion's own record, not part of the page's
+    const turns = r.data && Array.isArray(r.data.turns) ? r.data.turns : null;
+    if (rec) delete rec.turns;
     // a real record on the companion is the ONLY thing that marks this page
     // registered — page:null means it has never been acted on, and nothing
     // may be POSTed for it until it is
@@ -2087,6 +2093,7 @@
     fteNoteSession();
     reanchorAll();
     if (drawer) drawer.setPage(PAGE);
+    if (drawer && turns) drawer.setTurns(turns, asked, 'page');
     // a rename arrives as a `page` event, which lands here — so this is also
     // where everything else that shows a name finds out about it
     announceTitle();
@@ -2471,8 +2478,8 @@
   const RESYNC_MIN_MS = 1500;             // never refetch more often than this
   const WAIT_TICK_MS = 4000;              // how often a waiting page looks up
   const SEND_CHECKS_MS = [4000, 10000];   // the safety net after a send
-  const WAIT_POLLS_MAX = 30;              // …and then it stops asking (~2 min)
-  const TURN_QUIET_MS = 45000;            // a running turn nobody has heard from
+  const WAIT_POLLS_MAX = 30;              // …and then it asks less often (~2 min)
+  const WAIT_SLOW_MS = 30000;             // …this often, for as long as it waits
   let port = null;
   let portTimer = null;
   let waitTimer = null;
@@ -2569,18 +2576,17 @@
       connectPort();
       if (now - lastPingAt >= PING_MS) { lastPingAt = now; pingPort(); }
       if (!active || !drawer) return;
-      // a page that is waiting on the bots and hearing nothing looks it up —
-      // but not for ever: a companion that has genuinely stopped answering is
-      // not worth a request every few seconds until the tab is closed
+      // a page that is waiting on the bots and hearing nothing looks it up:
+      // the record says which turns are really still running (drawer
+      // setTurns), so a turn whose ending was lost in transit comes down and
+      // one in a long, silent tool run stays up. Briskly at first, then — a
+      // turn can run for many minutes — at a slower pace for as long as it lasts.
       if (drawer.isWaiting() && now - lastEventAt > WAIT_TICK_MS) {
         if (waitPolls < WAIT_POLLS_MAX) { waitPolls++; resync('waiting'); }
+        else if (now - lastResyncAt >= WAIT_SLOW_MS) resync('still-waiting');
       } else {
         waitPolls = 0;
       }
-      // …and a turn still marked running long after the last word about it had
-      // its ending lost in transit. The chip comes down; the record is already
-      // whatever the resync made it.
-      for (const t of drawer.quietTurns(TURN_QUIET_MS)) drawer.endTurn(t);
     }, WAIT_TICK_MS);
   }
 
@@ -3459,8 +3465,11 @@
         const r = await api('GET', '/page?url=' + encodeURIComponent(LIBRARY_URL));
         if (!r.ok) return failure(r);
         const d = r.data;
+        // the companion's record of the library chat's turn rides along
+        const turns = d && Array.isArray(d.turns) ? d.turns : null;
+        if (d) delete d.turns;
         LIBRARY = (d && d.url) ? d : null;
-        return { ok: true, page: LIBRARY };
+        return { ok: true, page: LIBRARY, turns };
       },
       onLibraryReply: async (text, route) => {
         const r = await api('POST', '/reply',

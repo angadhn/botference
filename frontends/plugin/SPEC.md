@@ -469,9 +469,9 @@ Contract deltas agreed during live testing — authoritative over the sections a
   /edit always, and /delete for guests, defaults author to the caller's own handle.
   An unbreakable tie resolves to the first match with `ambiguous:true` in the
   response. store.resolveMsg() is the single resolver. The drawer's queued status is
-  lifecycle-scoped: written only if the turn hasn't already started (epoch check),
-  superseded by the working chip at turn-start, structurally removed at
-  reply/turn-end/error.
+  the chat's turn in 'waiting' (see "Is a bot working?"): entered only if the
+  chat has not moved since the send left (a stamp check), replaced by the
+  working chip at turn-start, gone at turn-end/error.
 - Pages view: the row for the page you are on is the emphasised one — accent
   rail, faint accent wash, its title at full contrast and bold — and the other
   rows step back (title at ~60% of --heading, meta at .75 opacity, both restored
@@ -561,12 +561,41 @@ Contract deltas agreed during live testing — authoritative over the sections a
   fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', resumed:true}`
   on every socket (re)open makes each drawer refetch what it may have missed;
   and after any send, checks at 4s and 10s refetch if no event has arrived.
-  A page that is visibly waiting and hearing nothing polls every 4s (bounded,
-  ~2 min). A running turn with no event for 45s is settled locally
-  (`quietTurns`/`endTurn`) so a lost `turn-end` cannot spin for ever, and a
-  refetch that shows the bots answered clears a stale wait structurally. One
-  malformed event can never freeze the stream: `onEvent` catches, counts, and
-  the next event is handled normally (the failure triggers a refetch).
+  A page that is visibly waiting (any chat's turn not idle) and hearing nothing
+  polls every 4s for ~2 min, then every 30s for as long as the turn lasts. Each
+  refetch brings the companion's own record of the page's turns (GET /page
+  `turns`), which settles a lost `turn-end` (the record says nothing is running)
+  without ever taking the chip down for mere silence. One malformed event can
+  never freeze the stream: `onEvent` catches, counts, and the next event is
+  handled normally (the failure triggers a refetch).
+- Is a bot working? (2026-11-11) One value per chat — the page chat, the
+  library chat, each thread — in `D.turns`, with its modes named in one list,
+  `TURN_MODES = ['idle', 'waiting', 'working', 'stopping', 'lost']`, and changed
+  only by `moveTurn` → pure `turnMove`, which refuses a move from a mode it does
+  not start from (`TURN_MOVES`: wait idle|waiting|lost→waiting; start any→working;
+  hear working|stopping→same, who is speaking / which video; stop
+  working→stopping; unstop stopping→working; lose waiting|working|stopping→lost;
+  end any→idle, never refused). Everything that draws the working chip, the
+  stop button, a card's `working` class, the footbar chip and `isWaiting()`
+  reads that one value; the eleven fields it replaced (`running`, `watching`,
+  `turnAgents`, `liveAgents`, `speaker`, `turnSeq`, `heard`, the `transient`
+  and `bots` flags on notes, `quietTurns`/`endTurn` and content.js's 45-second
+  `TURN_QUIET_MS`) are gone. The truth is the companion's: `turn-start` →
+  working, `turn-end` → idle, `turn-dropped` ends a wait, an `error` with no
+  turn running ends it; and GET /page (and the library's) carries
+  `turns: [{target, state: 'running'|'waiting', agents?}]` from every bridge
+  child's `jobs()` (server.mjs `turnsFor`; control and silent summary/card turns
+  are left out). `setTurns(record, asked, scope)` levels the chats with it
+  (pure `turnPlan`), skipping any chat that moved after the record was asked
+  for. So the chip and the stop button stay on until the bot really finishes,
+  the reader stops it, or the turn fails — a ten-minute tool run included —
+  and a reload or a second tab mid-turn comes back working (or waiting). Stop
+  shows "stopping…" in place of the button until the turn ends; a refused stop
+  puts the button back and says why. When the companion cannot be reached
+  (connection offline, or the extension reloaded under the tab), every chat
+  with a turn under way moves to 'lost' and says "can’t reach the companion —
+  the bot may still be working" (no stop button); the next record that arrives
+  decides. test/turnmode.test.mjs.
 - Waiting states say what they are waiting for: `chat.submit` reports
   `wait: 'bridge_starting' | 'busy' | 'pool_busy'` (absent once the turn is
   genuinely running), which rides POST /thread and /reply beside
@@ -2846,9 +2875,9 @@ with a turn coming gets the ORDINARY waiting note on its own card — *"◐ queu
 in this review round…"*. That is the whole spinner story, and it is deliberately
 not a new affordance: a round of twelve reads as twelve waiting THREADS, one of
 them working, rather than twelve spinners stacked on a page chat that is not
-where the work is. Each note is taken down by exactly what takes down any wait —
-that thread's own `turn-start`, or a refetch showing a new bot message in it
-(`clearAnsweredWaits`).
+where the work is. Each note is that thread's turn in 'waiting', and moves on
+exactly as any wait does — that thread's own `turn-start`, or a refetch whose
+`turns` record says its turn is running or gone (`setTurns`).
 
 The reader still lands on **Page chat** after sending, where the button and the
 preamble are; the tab strip's count is what says the threads have started
