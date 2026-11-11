@@ -161,8 +161,29 @@
   const PRESENCE = {
     chat: 'unknown', // one of CHAT_MODES
     tid: null,  // target of the in-flight anchored turn, for click-to-jump
-    agents: Object.fromEntries(AGENTS.map(a => [a, { active: false, verb: '', exhausted: null }])),
+    // per agent: `work` (one of AGENT_WORK, changed only through setAgentWork;
+    // `verb` is the word shown while working and is empty while idle), and
+    // `exhausted` — the out-of-credits reason or null. Credits are a separate
+    // matter from working: a bot out of credits can still be mid-turn.
+    agents: Object.fromEntries(AGENTS.map(a => [a, { work: 'idle', verb: '', exhausted: null }])),
   };
+  // ---- what each agent is doing: ONE mode per agent ----
+  //   idle    — not on a turn
+  //   working — on a turn; its avatar ring turns and the tooltip shows a verb
+  const AGENT_WORK = ['idle', 'working'];
+  const AGENT_WORK_MOVES = { idle: ['working'], working: ['idle'] };
+  // the one setter: refuses a move the table does not allow (returns false).
+  // Picks the verb on the way into working and clears it on the way out, so a
+  // verb can never sit beside an idle agent. Callers redraw.
+  function setAgentWork(agent, next) {
+    const s = PRESENCE.agents[agent];
+    if (!s) return false;
+    if (next === s.work) return true;
+    if (!AGENT_WORK.includes(next) || !AGENT_WORK_MOVES[s.work].includes(next)) return false;
+    s.work = next;
+    s.verb = next === 'working' ? pickVerb() : '';
+    return true;
+  }
 
   // ── credit-exhaustion detection + model-switcher state ──
   // An agent's turn output carrying one of these is treated as "out of credits"
@@ -315,10 +336,10 @@
       const s = PRESENCE.agents[a];
       const name = cap(a);
       const tip = s.exhausted ? `${name} is out of credits — ${s.exhausted}`
-        : s.active ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
+        : s.work === 'working' ? `${name} is ${s.verb}… — click to jump to the thread` : `${name} — idle`;
       // white brand glyph (currentColor) on the agent's accent circle: reads
       // identically in both themes
-      return `<div class="avatar-ring${s.active ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
+      return `<div class="avatar-ring${s.work === 'working' ? ' working' : ''}${s.exhausted ? ' exhausted' : ''}" data-agent="${a}" style="--author:var(--${a})" title="${esc(tip)}"><span class="avatar">${MARKS[a] || ''}</span>${s.exhausted ? '<span class="warn-badge" aria-hidden="true">⚠</span>' : ''}</div>`;
     }).join('');
     av.innerHTML = humans + (humans ? '<span class="av-div" aria-hidden="true"></span>' : '') + agents
       + `<button class="av-btn" id="people-btn" title="People">👥</button>`
@@ -332,19 +353,18 @@
     let routed = AGENTS.filter(a => new RegExp('@' + a + '\\b', 'i').test(t));
     if (/@all\b/i.test(t) || !routed.length) routed = AGENTS.slice(); // @all (or unknown routing) shows both
     for (const a of AGENTS) {
-      const s = PRESENCE.agents[a];
-      s.active = routed.includes(a);
-      if (s.active) s.verb = pickVerb();
+      setAgentWork(a, 'idle'); // a fresh turn: a fresh verb for each agent on it
+      if (routed.includes(a)) setAgentWork(a, 'working');
     }
     renderPresence();
   }
   function presenceStream(who) {
-    const s = PRESENCE.agents[String(who).toLowerCase().includes('codex') ? 'codex' : 'claude'];
-    if (s && !s.active) { s.active = true; s.verb = pickVerb(); renderPresence(); }
+    const a = String(who).toLowerCase().includes('codex') ? 'codex' : 'claude';
+    if (PRESENCE.agents[a].work !== 'working' && setAgentWork(a, 'working')) renderPresence();
   }
   function presenceIdle() {
     PRESENCE.tid = null;
-    for (const a of AGENTS) PRESENCE.agents[a].active = false;
+    for (const a of AGENTS) setAgentWork(a, 'idle');
     renderPresence();
   }
   // the one setter: refuses a move the table does not allow (returns false)
@@ -2536,7 +2556,7 @@
   window.__review = {
     chatEvent, applyModelState, renderModelSwitcher, switchModel,
     noteAgentTurn, exhaustReason, presendExhaustedFor, updateComposerWarn,
-    openComposer, setChatMode, CHAT_MODES, PRESENCE, MODELS,
+    openComposer, setChatMode, CHAT_MODES, setAgentWork, AGENT_WORK, PRESENCE, MODELS,
     setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
   };

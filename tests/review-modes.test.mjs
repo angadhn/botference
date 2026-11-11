@@ -827,3 +827,30 @@ test('chat mode: unknown → on/off, on ↔ off, never back to unknown (happy-do
   R.chatEvent({ kind: 'meta', type: 'x' });
   assert.equal(R.PRESENCE.chat, 'on', 'any event from the agents proves they are back');
 });
+
+// ============================== what each agent is doing (agent work mode)
+test('agent work: idle ↔ working, the verb only ever beside working (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {});
+  const R = pg.R;
+  const ring = a => pg.doc.querySelector(`#avatars .avatar-ring[data-agent="${a}"]`);
+  assert.deepEqual([...R.AGENT_WORK], ['idle', 'working']);
+  assert.equal(R.PRESENCE.agents.claude.work, 'idle');
+  assert.equal(R.setAgentWork('claude', 'busy'), false, 'not a mode');
+  assert.equal(R.setAgentWork('nobody', 'working'), false, 'not an agent');
+  R.chatEvent({ kind: 'turn-start', target_id: 's1', user_text: '@claude look' });
+  assert.equal(R.PRESENCE.agents.claude.work, 'working');
+  assert.ok(R.PRESENCE.agents.claude.verb);
+  assert.equal(R.PRESENCE.agents.codex.work, 'idle', 'not tagged, not working');
+  assert.equal(R.PRESENCE.agents.codex.verb, '');
+  assert.ok(ring('claude').classList.contains('working'));
+  assert.ok(!ring('codex').classList.contains('working'));
+  // a stream from the other bot mid-turn shows it working too
+  R.chatEvent({ kind: 'stream', target_id: 's1', ev: { model: 'codex', delta: 'hi' } });
+  assert.equal(R.PRESENCE.agents.codex.work, 'working');
+  R.chatEvent({ kind: 'turn-end', target_id: 's1' });
+  for (const a of ['claude', 'codex']) {
+    assert.equal(R.PRESENCE.agents[a].work, 'idle');
+    assert.equal(R.PRESENCE.agents[a].verb, '', 'no verb beside an idle agent');
+    assert.ok(!ring(a).classList.contains('working'));
+  }
+});
