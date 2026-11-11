@@ -169,6 +169,58 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
   ok('…and says why', /no council here/.test(d3.el.projpick.textContent));
 }
 
+// ---- 4. a message on its way out ---------------------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the outbox states, named', D.OUTBOX_STATES, ['sending', 'failed']);
+  const legal = { sending: ['failed'], failed: ['sending'] };
+  for (const from of D.OUTBOX_STATES) for (const to of D.OUTBOX_STATES) {
+    const want = legal[from].includes(to);
+    eq(`${from} → ${to}: ${want ? 'allowed' : 'refused'}`, D.canOutboxMove({ state: from }, to), want);
+    ok(`${from} → ${to}: moveOutbox ${want ? 'moves' : 'throws'}`, want ? !throws(() => D.moveOutbox({ state: from }, to)) : throws(() => D.moveOutbox({ state: from }, to)));
+  }
+  ok('a state that is not one throws', throws(() => D.moveOutbox({ state: 'sending' }, 'sent')));
+  ok('an entry in no known state cannot move', !D.canOutboxMove({ state: 'x' }, 'sending') && !D.canOutboxMove(null, 'failed'));
+  const e = { state: 'sending', error: '' };
+  D.moveOutbox(e, 'failed', 'made-up refusal');
+  eq('failed carries why', [e.state, e.error], ['failed', 'made-up refusal']);
+  D.moveOutbox(e, 'sending');
+  eq('retry clears it', [e.state, e.error], ['sending', '']);
+}
+
+// ---- 4b. …in the drawer: a refused send, then a retry ------------------------
+{
+  const answers = [];
+  const d4 = D.create({
+    cssText: '.panel{}',
+    onReply: () => new Promise(r => answers.push(r)),
+  });
+  d4.setConn(true); d4.setAuthor('reader'); d4.open('comments');
+  d4.setPage({ url: URL_, title: 'Article', page_chat: [],
+    threads: [{ id: 'q1', quote: 'a made-up passage', msgs: [{ author: 'reader', ts: '1', text: 'made up' }] }] });
+  await tick(20);
+  d4.tab = 'comments';
+  const S = d4.shadow;
+  const box = S.querySelector('.card[data-thread="q1"] textarea') || S.querySelector('textarea[data-target="q1"]');
+  if (box) {
+    box.value = 'a made-up reply';
+    const send = S.querySelector('.card[data-thread="q1"] [data-act="send"]');
+    if (send) send.click(); else box.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+    await tick(10);
+    const entry = () => (d4.outbox.q1 || [])[0];
+    eq('the message is on its way', entry() && entry().state, 'sending');
+    answers.shift()({ ok: false, error: 'made-up refusal' }); await tick(10);
+    eq('refused: failed, with why', entry() && [entry().state, entry().error], ['failed', 'made-up refusal']);
+    const retry = S.querySelector('[data-act="send-retry"]');
+    if (retry) {
+      retry.click(); await tick(5);
+      eq('retry: sending again', entry() && entry().state, 'sending');
+      answers.shift()({ ok: true }); await tick(10);
+      eq('delivered: it leaves the outbox', (d4.outbox.q1 || []).length, 0);
+    } else ok('a retry button is offered on a failed send', false);
+  } else ok('the thread has a reply box', false);
+}
+
 console.log(`drawermodes: ${pass} passed, ${fail} failed`);
 await w.happyDOM.close();
 if (fail) { console.log('failures:\n  ' + failures.join('\n  ')); process.exit(1); }

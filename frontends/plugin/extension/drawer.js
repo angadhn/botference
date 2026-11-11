@@ -1885,6 +1885,23 @@
   //   got  — loading → loaded
   //   lost — loading → failed, `arg` = why, kept in the list's `errKey`
   //          ('err' by default; null when the list words its own failure)
+  // A MESSAGE ON ITS WAY OUT (D.outbox): shown under the composer until the
+  // companion has it. Its `state` is one of OUTBOX_STATES, changed only by
+  // moveOutbox; a delivered message leaves the outbox altogether, so there is
+  // no 'sent'.
+  //   sending → failed   the companion refused it, or did not answer (`error`)
+  //   failed  → sending  the reader pressed retry
+  // Anything else is refused: a message already going is not sent twice.
+  const OUTBOX_STATES = Object.freeze(['sending', 'failed']);
+  const OUTBOX_MOVES = Object.freeze({ sending: ['failed'], failed: ['sending'] });
+  const canOutboxMove = (e, next) => !!e && !!OUTBOX_MOVES[e.state] && OUTBOX_MOVES[e.state].indexOf(next) !== -1;
+  function moveOutbox(e, next, error) {
+    if (OUTBOX_STATES.indexOf(next) === -1) throw new Error('outbox: no such state ' + next);
+    if (!canOutboxMove(e, next)) throw new Error('outbox: cannot go ' + (e && e.state) + ' → ' + next);
+    e.state = next;
+    e.error = next === 'failed' ? String(error || '') : '';
+    return e;
+  }
   const LOAD_MODES = Object.freeze(['idle', 'loading', 'loaded', 'failed']);
   const LOAD_MOVES = Object.freeze({ ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] });
   const LOAD_TO = { ask: 'loading', got: 'loaded', lost: 'failed' };
@@ -2468,7 +2485,7 @@
       // instant Send is pressed, and the composer empties. On success it is
       // dropped and the server's own copy takes its place; on failure it stays
       // put with a retry, so the text is never in limbo and never lost.
-      outbox: {},          // target -> [{id, text, state:'sending'|'failed', error, seen}]
+      outbox: {},          // target -> [{id, text, state (OUTBOX_STATES, via moveOutbox), error, seen}]
       sendLock: {},        // target -> true for the synchronous span of a send
       pending: null,       // {quote, prefix, suffix} while composing a new thread
       confirm: null,       // threadId whose "delete thread?" confirm is showing
@@ -8947,8 +8964,7 @@ ${bubbleShellHtml()}`;
     // The asynchronous half. Retry re-enters here with the same entry, so this
     // is also the whole retry path.
     async function deliver(target, entry) {
-      entry.state = 'sending';
-      entry.error = '';
+      // born 'sending' (enqueue), or moved back to it by retrySend — never here
       // Where this chat's turn stood, sampled BEFORE the await: anything that
       // moves it while the POST is out means the bots started (or finished)
       // first and "queued…" is already false. A brand-new thread has no id and
@@ -8970,8 +8986,7 @@ ${bubbleShellHtml()}`;
       if (!res || res.ok === false) {
         // the text stays exactly where the user can see it, with a way to send
         // it again — never silently back in a box they have stopped looking at
-        entry.state = 'failed';
-        entry.error = (res && res.error) || SEND_FAIL;
+        moveOutbox(entry, 'failed', (res && res.error) || SEND_FAIL);
         render();
         return;
       }
@@ -9020,12 +9035,11 @@ ${bubbleShellHtml()}`;
 
     function retrySend(target, id) {
       const e = findOut(target, id);
-      if (!e || e.state === 'sending') return;
+      if (!canOutboxMove(e, 'sending')) return;
       // its baseline may have moved while it sat there failed
       e.seen = countSame(target, e.text) +
         outboxFor(target).filter(x => x !== e && x.text === e.text && x.state === 'sending').length;
-      e.state = 'sending';
-      e.error = '';
+      moveOutbox(e, 'sending');
       render();
       deliver(target, e);
     }
@@ -13390,6 +13404,7 @@ ${bubbleShellHtml()}`;
     setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
     POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
     LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
+    OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
