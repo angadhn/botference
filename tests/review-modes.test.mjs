@@ -724,3 +724,88 @@ async function page(t, { data = {}, routes = {} }) {
     openConsole: () => { const b = doc.getElementById('tc-toggle-btn'); if (!doc.getElementById('apply-bar').innerHTML) b.click(); },
   };
 }
+
+// ============================== a question the bots put to the owner (ask status)
+// The two-minute auto-refusal used to be a bare timer racing the owner's click:
+// a late answer was still sent to the bots after the refusal had gone. Now
+// each question has one status (ASK_STATES) changed only through setAsk(), and
+// whichever of "answer" / "time limit" comes first wins.
+async function askChat(t, timeoutMs = 40) {
+  const { BridgeChat, ASK_STATES, ASK_MOVES } = await import(path.join(ENGINE, 'chat.mjs'));
+  const rd = fs.mkdtempSync(path.join(os.tmpdir(), 'review-modes-ask-'));
+  t.after(() => fs.rmSync(rd, { recursive: true, force: true }));
+  const events = [], sent = [];
+  const chat = new BridgeChat({ reviewDir: rd, cfg: {}, onEvent: ev => events.push(ev), askTimeoutMs: timeoutMs });
+  chat.proc = { stdin: { write: line => sent.push(JSON.parse(line)) } };
+  t.after(() => { for (const k of ['permission', 'choice']) clearTimeout(chat.asks[k].timer); });
+  return { chat, events, sent, ASK_STATES, ASK_MOVES, wait: ms => new Promise(r => setTimeout(r, ms)) };
+}
+
+test('ask status: the move table — legal moves made, illegal ones refused', async t => {
+  const { chat, ASK_STATES, ASK_MOVES } = await askChat(t, 10000);
+  assert.deepEqual(ASK_STATES, ['none', 'asked', 'answered', 'timed-out', 'withdrawn']);
+  for (const from of ASK_STATES) for (const to of ASK_STATES) {
+    chat.asks.permission = { status: from, seq: 0, timer: null };
+    const ok = chat.setAsk('permission', to);
+    assert.equal(ok, ASK_MOVES[from].includes(to), `${from} -> ${to}`);
+    assert.equal(chat.asks.permission.status, ok ? to : from);
+    clearTimeout(chat.asks.permission.timer);
+  }
+  assert.equal(chat.setAsk('permission', 'bogus'), false);
+  assert.equal(chat.setAsk('nonsense', 'asked'), false);
+});
+
+test('ask status: answer first, then the time limit — the answer stands, no refusal is sent', async t => {
+  const { chat, events, sent, wait } = await askChat(t);
+  chat.handle({ type: 'permission_request', model: 'claude', reason: 'write', path: 'x.tex' });
+  assert.equal(chat.asks.permission.status, 'asked');
+  assert.deepEqual(chat.answerPermission({ type: 'permission_response', allow: true }), { ok: true });
+  await wait(100);
+  assert.equal(chat.asks.permission.status, 'answered');
+  assert.deepEqual(sent, [{ type: 'permission_response', allow: true }]);
+  assert.equal(events.filter(e => e.kind === 'permission-timeout').length, 0);
+});
+
+test('ask status: time limit first, then a late answer — refused in plain words, never sent', async t => {
+  const { chat, events, sent, wait } = await askChat(t);
+  chat.handle({ type: 'choice_request', prompt: 'which?', options: ['a', 'b'] });
+  await wait(100);
+  assert.equal(chat.asks.choice.status, 'timed-out');
+  assert.deepEqual(sent, [{ type: 'choice_response', index: null }]);
+  assert.equal(events.filter(e => e.kind === 'choice-timeout').length, 1);
+  const late = chat.answerChoice({ type: 'choice_response', index: 0 });
+  assert.equal(late.ok, false);
+  assert.match(late.reason, /Too late/);
+  assert.equal(chat.asks.choice.status, 'timed-out');
+  assert.equal(sent.length, 1, 'the late answer never reached the bots');
+});
+
+test('ask status: a withdrawn or replaced question cannot time out, and a second answer is refused', async t => {
+  const { chat, events, sent, wait } = await askChat(t);
+  chat.handle({ type: 'permission_request', model: 'claude' });
+  chat.handle({ type: 'permission_cleared' });
+  assert.equal(chat.asks.permission.status, 'withdrawn');
+  chat.handle({ type: 'choice_request', prompt: 'p', options: ['a'] });
+  chat.handle({ type: 'choice_request', prompt: 'q', options: ['b'] }); // replaces the first
+  assert.deepEqual(chat.answerChoice({ type: 'choice_response', index: 0 }), { ok: true });
+  assert.equal(chat.answerChoice({ type: 'choice_response', index: 0 }).ok, false, 'already answered');
+  await wait(100);
+  assert.equal(events.filter(e => /-timeout$/.test(e.kind)).length, 0, 'no stale timer fired');
+  assert.deepEqual(sent, [{ type: 'choice_response', index: 0 }]);
+  assert.equal(chat.answerPermission({ type: 'permission_response', allow: true }).ok, false);
+});
+
+test('a question that timed out leaves the page, and a late click says why (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, { routes: { '/permission': () => ({ ok: false, reason: 'Too late: nobody answered within two minutes, so it was turned down automatically.' }) } });
+  const ask = () => pg.R.chatEvent({ kind: 'permission', target_id: null, ev: { type: 'permission_request', model: 'claude', reason: 'write', path: 'x.tex' } });
+  const allow = () => pg.doc.querySelector('#toasts [data-perm="allow"]');
+  ask();
+  assert.ok(allow());
+  pg.R.chatEvent({ kind: 'permission-timeout', target_id: null });
+  assert.equal(allow(), null, 'no buttons left for a closed question');
+  ask();
+  allow().click();
+  await pg.tick();
+  assert.equal(allow(), null);
+  assert.match(pg.toasts(), /Too late/);
+});

@@ -2395,7 +2395,14 @@
     const sent = pb
       ? api('/permission', { method: 'POST', body: JSON.stringify({ type: 'permission_response', allow: pb.dataset.perm === 'allow' }) })
       : api('/choice', { method: 'POST', body: JSON.stringify({ type: 'choice_response', index: i >= 0 ? i : null }) });
-    sent.then(r => { if (!r.ok) throw new Error(String(r.status)); clearInterrupts(pb ? 'perm' : 'choice'); })
+    // a question that closed meanwhile (timed out, taken back, answered in
+    // another tab) is refused by the server with a reason: say it, drop the card
+    sent.then(async r => {
+      if (!r.ok) throw new Error(String(r.status));
+      const j = await r.json().catch(() => ({}));
+      clearInterrupts(pb ? 'perm' : 'choice');
+      if (j && j.ok === false) toast(j.reason || 'That question is no longer open.', true);
+    })
       .catch(() => {
         btn.disabled = false;
         toast('Your answer did not reach the agents — the review server did not answer. Try again.', true);
@@ -2446,6 +2453,7 @@
         if (tid) setChip(tid, 'replied', 'replied ✓');
       }).catch(() => { if (stillLanding()) setChip(tid, 'failed', 'done — refresh to see the reply'); });
     } else if (m.kind === 'permission-timeout') {
+      clearInterrupts('perm'); // the question is closed: no buttons left to answer it
       toast('Permission request timed out — denied by default.', true);
       if (tid) setChip(tid, 'failed', 'permission timed out (denied)');
     } else if (m.kind === 'stream') {
@@ -2499,10 +2507,12 @@
     } else if (m.kind === 'choice-auto') {
       toast(`Agents asked "${m.prompt || 'a setup question'}" — answered automatically: ${m.picked}.`);
     } else if (m.kind === 'choice-timeout') {
+      clearInterrupts('choice');
       toast('Choice request timed out — dismissed by default.', true);
       if (tid) setChip(tid, 'failed', 'choice timed out (dismissed)');
     } else if (m.kind === 'bridge-exit') {
       presenceIdle();
+      clearInterrupts('perm'); clearInterrupts('choice'); // nobody is left to answer them
       toast(`Agent bridge exited (code ${m.code}). Restart the server with --chat.`, true);
       for (const id of Object.keys(ACTIVITY)) setChip(id, 'failed', 'agent bridge exited — restart the server with --chat');
     }
