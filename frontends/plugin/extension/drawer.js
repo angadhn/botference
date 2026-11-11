@@ -1632,6 +1632,138 @@
   const isEditOf = (ed, target, r) => editMode(ed) === 'open' && !!r
     && ed.target === String(target) && ed.ts === String(r.ts) && ed.author === String(r.author == null ? '' : r.author);
 
+  // ── "+ new chat" and its archive chooser ─────────────────────────────────
+  // What the "+ new chat" control is doing is ONE value, D.newchat.mode, never
+  // a pile of flags. Its modes, named here:
+  //   'idle'     — the two buttons, nothing more
+  //   'confirm'  — the one-step "start a fresh chat here?" ask is up
+  //   'reading'  — the archive chooser is open, its rows being read
+  //   'list'     — the archive chooser is open, its rows on screen
+  //   'starting' — a fresh chat is being started (after yes)
+  //   'opening'  — a set-aside chat is being opened (`index` says which)
+  // The rest of the value is data, not a mode: `list` (the rows once read, or
+  // null), `err` (the last thing that went wrong, or '').
+  const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
+  // …and every way it changes, in one list (newChatMove refuses the rest):
+  //   ask     — idle | list → confirm      ("+ new chat")
+  //   decline — confirm → idle             ("no")
+  //   start   — confirm → starting         ("yes")
+  //   show    — idle | confirm → reading, or → list when the rows are known
+  //   hide    — reading | list → idle      ("archive" pressed again)
+  //   read    — the rows arrived (`arg` = rows): kept; reading → list
+  //   unread  — the rows could not be read (`arg` = why): reading → list
+  //   open    — list → opening, on row `arg`
+  //   done    — starting | opening → idle; the archive is read afresh next time
+  //   failed  — starting → idle, opening → list, with `arg` = why
+  const NEWCHAT_MOVES = ['ask', 'decline', 'start', 'show', 'hide', 'read', 'unread', 'open', 'done', 'failed'];
+  const NEWCHAT_FROM = {
+    ask: ['idle', 'list'], decline: ['confirm'], start: ['confirm'],
+    show: ['idle', 'confirm'], hide: ['reading', 'list'], open: ['list'],
+    done: ['starting', 'opening'], failed: ['starting', 'opening'],
+  };
+  const newChatIdle = () => ({ mode: 'idle', index: null, list: null, err: '' });
+  // The one way the value changes. Pure: (value, move, arg) → value. An
+  // unknown move, or a move from a mode it does not start from, throws.
+  // read/unread are never refused: the answer may land after the reader has
+  // closed the chooser, and then it is only kept (or dropped).
+  function newChatMove(nc, move, arg) {
+    if (NEWCHAT_MOVES.indexOf(move) === -1) throw new Error('new chat: no such move ' + move);
+    const cur = nc && NEWCHAT_MODES.indexOf(nc.mode) !== -1 ? nc : newChatIdle();
+    const from = NEWCHAT_FROM[move];
+    if (from && from.indexOf(cur.mode) === -1) throw new Error('new chat: cannot ' + move + ' while ' + cur.mode);
+    const at = (mode, extra) => ({ ...cur, index: null, ...extra, mode });
+    switch (move) {
+      case 'ask': return at('confirm', { err: '' });
+      case 'decline': return at('idle');
+      case 'start': return at('starting', { err: '' });
+      case 'show': return at(cur.list ? 'list' : 'reading', { err: '' });
+      case 'hide': return at('idle', { err: '' });
+      case 'read': return cur.mode === 'reading'
+        ? at('list', { list: Array.isArray(arg) ? arg : [] })
+        : { ...cur, list: Array.isArray(arg) ? arg : [] };
+      case 'unread': return cur.mode === 'reading' ? at('list', { err: String(arg || '') }) : cur;
+      case 'open': {
+        const i = Number(arg);
+        if (!Number.isInteger(i) || i < 0) throw new Error('new chat: open needs a row');
+        return { ...cur, mode: 'opening', index: i, err: '' };
+      }
+      case 'done': return at('idle', { list: null, err: '' });
+      default: return at(cur.mode === 'starting' ? 'idle' : 'list', { err: String(arg || '') });   // failed
+    }
+  }
+  const newChatBusy = nc => !!nc && (nc.mode === 'starting' || nc.mode === 'opening');
+
+  // ── a row's inline editor in the pages list ─────────────────────────────
+  // Renaming a page and tagging it are one box under one row, so they are ONE
+  // value, D.pages.row, never two fields. Its modes, named here:
+  //   'none'   — the value is null: no row is being edited
+  //   'rename' — the value is { kind: 'rename', url, text }: that row's name box
+  //   'tag'    — the value is { kind: 'tag', url, text }: that row's tags box
+  // `text` is what is in the box, kept as it is typed, so a refresh of the
+  // list draws the box again with it — focused or not.
+  const ROW_EDIT_MODES = ['none', 'rename', 'tag'];
+  const rowEditMode = v => (v && (v.kind === 'rename' || v.kind === 'tag') ? v.kind : 'none');
+  // …and every way it changes (rowEditMove refuses the rest):
+  //   open  — anything → rename | tag, on one row, seeded with `text`
+  //           (opening another row's box closes the one that was open)
+  //   type  — rename | tag → the same, with the box's text as it now is
+  //   close — anything → none (saved, cancelled, the filter changed)
+  const ROW_EDIT_MOVES = ['open', 'type', 'close'];
+  function rowEditMove(v, move, arg) {
+    if (ROW_EDIT_MOVES.indexOf(move) === -1) throw new Error('row editor: no such move ' + move);
+    if (move === 'close') return null;
+    const a = arg || {};
+    if (move === 'open') {
+      if (a.kind !== 'rename' && a.kind !== 'tag') throw new Error('row editor: open needs rename or tag');
+      if (!a.url) throw new Error('row editor: open needs a page');
+      return { kind: a.kind, url: String(a.url), text: String(a.text == null ? '' : a.text) };
+    }
+    if (rowEditMode(v) === 'none') throw new Error('row editor: no row is being edited');
+    return { ...v, text: String(a.text == null ? '' : a.text) };   // type
+  }
+
+  // ── one pop-up bubble's own state ────────────────────────────────────────
+  // Each open bubble had three yes/no notes (stack fanned, dragged by hand,
+  // started as a new comment). They are ONE value per thread now, B.how[id],
+  // with two named parts:
+  //   place — who chooses where it sits:
+  //     'ours'    we chose it; a fan may choose again
+  //     'growing' we chose it while it was a new comment; the answer growing
+  //               it may choose again too (see onBubbleResize)
+  //     'theirs'  the reader dragged it; nothing chooses again
+  //   stack — its stack of cards: 'shut' (the newest card) or 'open' (fanned)
+  // null is { place: 'ours', stack: 'shut' }.
+  const BUB_PLACES = ['ours', 'growing', 'theirs'];
+  const BUB_STACKS = ['shut', 'open'];
+  // …and every way it changes (bubbleHowMove refuses the rest):
+  //   drag   — the reader moved it: place → theirs
+  //   adopt  — the new comment became its thread: ours → growing
+  //   close  — the bubble was shut: growing → ours (the rest is kept)
+  //   fan    — stack shut → open
+  //   unfan  — stack open → shut
+  //   forget — back to null (a new comment on another passage)
+  const BUB_HOW_MOVES = ['drag', 'adopt', 'close', 'fan', 'unfan', 'forget'];
+  const bubHow = h => ({
+    place: h && BUB_PLACES.indexOf(h.place) !== -1 ? h.place : 'ours',
+    stack: h && BUB_STACKS.indexOf(h.stack) !== -1 ? h.stack : 'shut',
+  });
+  function bubbleHowMove(h, move) {
+    if (BUB_HOW_MOVES.indexOf(move) === -1) throw new Error('bubble: no such move ' + move);
+    if (move === 'forget') return null;
+    const cur = bubHow(h);
+    switch (move) {
+      case 'drag': return { ...cur, place: 'theirs' };
+      case 'adopt': return cur.place === 'theirs' ? cur : { ...cur, place: 'growing' };
+      case 'close': return cur.place === 'growing' ? { ...cur, place: 'ours' } : cur;
+      case 'fan':
+        if (cur.stack !== 'shut') throw new Error('bubble: the stack is already open');
+        return { ...cur, stack: 'open' };
+      default:   // unfan
+        if (cur.stack !== 'open') throw new Error('bubble: the stack is already shut');
+        return { ...cur, stack: 'shut' };
+    }
+  }
+
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
   // message, so the completion follows the CARET, not the start of the box.
@@ -2168,12 +2300,9 @@
       publish: { confirm: false, busy: false, err: '', note: '', link: '' },
       // "+ new chat", which every page with a page chat has and which a project
       // artifact page does NOT (its archive bar already is this control, and two
-      // of them would be two answers to one question).
-      //   confirm  the one-step inline ask, like every other confirm here
-      //   open     true while the "archive ▾" chooser is showing
-      //   list     the set-aside chats, once asked for (GET /page-chat-archive)
-      //   busy     '' when idle, 'new' while starting one, 'i<n>' while opening one
-      newchat: { confirm: false, busy: '', err: '', open: false, list: null, loading: false },
+      // of them would be two answers to one question). One named mode
+      // (NEWCHAT_MODES), changed only by moveNewChat.
+      newchat: newChatIdle(),
       // "continue in council": no confirm (it is a copy — nothing on this page
       // changes and no bot is summoned), so just the in-flight flag, the error,
       // and the link to the chat it made, kept on screen in case the new tab
@@ -2194,10 +2323,11 @@
       // `confirm` = the url whose inline "delete page + its chat?" is showing;
       // `rowErr` = a refusal from the companion, shown under the row it is about;
       // `kind`/`tag` = the filter the list is under ('' = everything), which is
-      // remembered per browser; `renaming`/`tagging` = the url whose inline
-      // editor is open (owner only — a guest never sees the affordance)
+      // remembered per browser; `row` = the one row whose inline rename or tag
+      // box is open, and what is typed in it (ROW_EDIT_MODES; owner only — a
+      // guest never sees the affordance), changed only by moveRowEdit
       pages: { list: null, loading: false, err: '', confirm: null, rowErr: null,
-               kind: '', tag: '', renaming: null, tagging: null, pick: 0 },
+               kind: '', tag: '', row: null, pick: 0 },
       // whether this browser is the OWNER of this companion, as the companion
       // itself says (GET /whoami, through the background). Renaming and tagging
       // are the owner's; a guest is refused and never sees the controls.
@@ -4775,7 +4905,7 @@ ${bubbleShellHtml()}`;
         showBubble(target);
         const find = () => { const b = bubbleEl(target);
           return b && b.querySelector('.sgcard[data-sg="' + cssq(id) + '"]'); };
-        if (!find() && !B.fan[target]) fanBubble(target);
+        if (!find() && !bubFanned(target)) fanBubble(target);
         const card = find();
         if (!card) return false;
         card.scrollIntoView({ block: 'nearest' });
@@ -5246,17 +5376,19 @@ ${bubbleShellHtml()}`;
     function newChatBtnHtml() {
       if (!canNewChat()) return '';
       const N = D.newchat;
-      if (N.confirm) return '';
+      if (N.mode === 'confirm') return '';
       const n = pageArchive().length;
+      const busy = newChatBusy(N);
+      const shown = N.mode === 'reading' || N.mode === 'list' || N.mode === 'opening';
       return `<button class="archsend newchat" data-act="page-chat-new" type="button"
           title="set this chat aside and start a fresh one — your comments stay, and the old chat is kept"${
-        N.busy ? ' disabled' : ''}>+ new chat</button>`
+        busy ? ' disabled' : ''}>+ new chat</button>`
         + (n ? `<button class="archsend newchatarch" data-act="page-chat-arch" type="button"
-            aria-expanded="${N.open ? 'true' : 'false'}"
+            aria-expanded="${shown ? 'true' : 'false'}"
             title="${esc(`${n} chat${n === 1 ? '' : 's'} set aside on this page`)}"${
-          N.busy ? ' disabled' : ''}>archive ${N.open ? '▴' : '▾'}</button>` : '')
-        + (N.busy === 'new' ? '<span class="rvnote busy">starting a fresh chat…</span>'
-          : N.busy ? '<span class="rvnote busy">opening that chat…</span>' : '')
+          busy ? ' disabled' : ''}>archive ${shown ? '▴' : '▾'}</button>` : '')
+        + (N.mode === 'starting' ? '<span class="rvnote busy">starting a fresh chat…</span>'
+          : N.mode === 'opening' ? '<span class="rvnote busy">opening that chat…</span>' : '')
         + (N.err ? `<span class="rvnote err">${esc(N.err)}</span>` : '');
     }
 
@@ -5265,7 +5397,7 @@ ${bubbleShellHtml()}`;
     // is no.
     function newChatConfirmHtml() {
       const N = D.newchat;
-      if (!N.confirm || !canNewChat()) return '';
+      if (N.mode !== 'confirm' || !canNewChat()) return '';
       return `<div class="reviewrow confirm ncrow">
         <span class="rvq">start a fresh chat here? your comments stay; the old chat is kept in the archive</span>
         <button class="rebtn yes" data-act="page-chat-new-yes" type="button">yes</button>
@@ -5278,17 +5410,17 @@ ${bubbleShellHtml()}`;
     // one you put down.
     function newChatListHtml() {
       const N = D.newchat;
-      if (!N.open || !canNewChat()) return '';
+      if ((N.mode !== 'reading' && N.mode !== 'list' && N.mode !== 'opening') || !canNewChat()) return '';
       let body;
-      if (N.loading) body = `<div class="archnote">reading this page&rsquo;s chats…</div>`;
+      if (N.mode === 'reading') body = `<div class="archnote">reading this page&rsquo;s chats…</div>`;
       else if (N.err) body = `<div class="archnote err">${esc(N.err)}</div>`;
       else if (!N.list || !N.list.length) body = `<div class="archnote">no chats set aside here yet</div>`;
       else {
         body = N.list.slice().reverse().map(row => {
           const name = row.title || row.first || 'an empty chat';
-          return `<button class="archrow${N.busy === 'i' + row.index ? ' busy' : ''}"
+          return `<button class="archrow${N.mode === 'opening' && N.index === row.index ? ' busy' : ''}"
             data-act="page-chat-open" data-index="${row.index}" type="button"${
-            N.busy ? ' disabled' : ''}>
+            newChatBusy(N) ? ' disabled' : ''}>
             <span class="at">${esc(name)}</span>
             <span class="ax">${esc(shortAge(row.archived_at))}${
             row.count ? ` · ${row.count}` : ''}</span></button>`;
@@ -5577,32 +5709,31 @@ ${bubbleShellHtml()}`;
     // The same three moves as openSession, against the page's own archive
     // rather than a council project's: set the chat aside, clear what the old
     // one left behind, and let the record reload put the empty state up.
+    // THE one function that changes D.newchat (newChatMove refuses the
+    // illegal moves).
+    function moveNewChat(move, arg) {
+      D.newchat = newChatMove(D.newchat, move, arg);
+      return D.newchat;
+    }
     async function startPageChat() {
-      const N = D.newchat;
-      if (N.busy) return;
-      N.busy = 'new'; N.err = ''; N.confirm = false;
+      if (D.newchat.mode !== 'confirm') return;
+      moveNewChat('start');
       render();
       const r = await cb('onPageChatNew')();
-      N.busy = '';
       if (r && r.ok) {
-        N.open = false;
-        N.list = null;                  // the archive has one more in it now
+        moveNewChat('done');            // the archive has one more in it now
         leaveChat();
       } else {
-        N.err = (r && r.error) || 'could not start a fresh chat here';
+        moveNewChat('failed', (r && r.error) || 'could not start a fresh chat here');
       }
       render();
     }
 
     async function loadPageArchive() {
-      const N = D.newchat;
-      if (N.loading) return;
-      N.loading = true; N.err = '';
       render();
       const r = await cb('onPageChatArchive')();
-      N.loading = false;
-      if (r && r.ok) N.list = r.archive || [];
-      else N.err = (r && r.error) || 'the companion did not answer';
+      if (r && r.ok) moveNewChat('read', r.archive || []);
+      else moveNewChat('unread', (r && r.error) || 'the companion did not answer');
       render();
     }
 
@@ -5610,18 +5741,15 @@ ${bubbleShellHtml()}`;
     // is filed in the same motion — so this is never a way of losing the one
     // you are in.
     async function openPageChat(index) {
-      const N = D.newchat;
-      if (N.busy) return;
-      N.busy = 'i' + index; N.err = '';
+      if (D.newchat.mode !== 'list' || !Number.isInteger(index) || index < 0) return;
+      moveNewChat('open', index);
       render();
       const r = await cb('onPageChatOpen')(index);
-      N.busy = '';
       if (r && r.ok) {
-        N.open = false;
-        N.list = null;
+        moveNewChat('done');
         leaveChat();
       } else {
-        N.err = (r && r.error) || 'could not open that chat';
+        moveNewChat('failed', (r && r.error) || 'could not open that chat');
       }
       render();
     }
@@ -5877,8 +6005,8 @@ ${bubbleShellHtml()}`;
     // The rename box carries the name the row is CURRENTLY shown under —
     // emptying it is how a reader takes their own name back off and lets the
     // page call itself whatever it calls itself again.
-    const renameHtml = p => `<div class="pedit rename">
-        <input class="pinput" type="text" value="${esc(p.title || '')}" aria-label="Name for this page"
+    const renameHtml = (p, text) => `<div class="pedit rename">
+        <input class="pinput" type="text" value="${esc(text)}" aria-label="Name for this page"
           maxlength="200" data-act="rename-input" data-url="${esc(p.url)}">
         <button class="rebtn" data-act="rename-save" data-url="${esc(p.url)}" type="button">save</button>
         <button class="rebtn" data-act="rename-no" type="button">cancel</button>
@@ -5893,8 +6021,9 @@ ${bubbleShellHtml()}`;
     // makes the menu below offer every tag in use (pick-from-existing) instead
     // of only completions of the last tag. saveTags splits on commas and drops
     // empties, so the seed costs nothing on the way back.
-    const tagEditHtml = p => `<div class="pedit tags">
-        <input class="pinput" type="text" value="${esc(tagsOfRow(p).join(', ') + (tagsOfRow(p).length ? ', ' : ''))}"
+    const tagSeed = p => tagsOfRow(p).join(', ') + (tagsOfRow(p).length ? ', ' : '');
+    const tagEditHtml = (p, text) => `<div class="pedit tags">
+        <input class="pinput" type="text" value="${esc(text)}"
           aria-label="Tags for this page" maxlength="520" autocomplete="off"
           data-act="tag-input" data-url="${esc(p.url)}">
         <button class="rebtn" data-act="tag-save" data-url="${esc(p.url)}" type="button">save</button>
@@ -5918,8 +6047,10 @@ ${bubbleShellHtml()}`;
       // companion never sees either control, and the companion would refuse
       // them anyway.
       const mine = !!D.owner;
-      const editing = D.pages.renaming != null && sameUrl(D.pages.renaming, p.url);
-      const filing = D.pages.tagging != null && sameUrl(D.pages.tagging, p.url);
+      const row = D.pages.row;
+      const onRow = rowEditMode(row) !== 'none' && sameUrl(row.url, p.url);
+      const editing = onRow && row.kind === 'rename';
+      const filing = onRow && row.kind === 'tag';
       const acts = confirming
         ? `<span class="pconfirm">delete page + its chat?
              <button class="rebtn yes" data-act="page-del-yes" data-url="${esc(p.url)}" type="button">yes</button>
@@ -5932,7 +6063,7 @@ ${bubbleShellHtml()}`;
              title="${esc(EXPORT_ROW_TIP())}" aria-label="${esc(EXPORT_ROW_TIP())}">${OBSIDIAN_SVG}</button>
            <button class="rebtn pdel" data-act="page-del" data-url="${esc(p.url)}" type="button"
              title="Delete this page and its chat" aria-label="Delete this page and its chat">✕</button>`;
-      const edit = mine && editing ? renameHtml(p) : (mine && filing ? tagEditHtml(p) : '');
+      const edit = mine && editing ? renameHtml(p, row.text) : (mine && filing ? tagEditHtml(p, row.text) : '');
       return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}" data-kind="${esc(kindOfRow(p))}">
         <button class="prow-main" data-act="page-open" data-url="${esc(p.url)}" type="button"
           title="${esc(cur ? 'back to this page’s comments' : p.url)}">
@@ -7291,8 +7422,8 @@ ${bubbleShellHtml()}`;
       'filter-kind': (btn) => setKindFilter(btn.dataset.kind || ''),
       'filter-tag': (btn) => toggleTagFilter(btn.dataset.tag || ''),
       'filter-clear': () => setFilter('', ''),
-      'page-rename': (btn) => openRowEditor('renaming', btn.dataset.url),
-      'page-tag': (btn) => openRowEditor('tagging', btn.dataset.url),
+      'page-rename': (btn) => openRowEditor('rename', btn.dataset.url),
+      'page-tag': (btn) => openRowEditor('tag', btn.dataset.url),
       'rename-save': (btn) => saveRename(btn.dataset.url),
       'tag-save': (btn) => saveTags(btn.dataset.url),
       'tag-pick': (btn) => completeTag(btn.dataset.tag),
@@ -7421,14 +7552,19 @@ ${bubbleShellHtml()}`;
       'arch-new': () => openSession(null),
       // "+ new chat" on every OTHER page: one inline step, because the reader's
       // real question is whether their comments are about to go with it
-      'page-chat-new': () => { D.newchat.confirm = true; D.newchat.err = ''; render(); },
+      'page-chat-new': () => {
+        if (D.newchat.mode !== 'idle' && D.newchat.mode !== 'list') return;
+        moveNewChat('ask'); render();
+      },
       'continue-council': () => continueInCouncil(),
-      'page-chat-new-no': () => { D.newchat.confirm = false; render(); },
+      'page-chat-new-no': () => { if (D.newchat.mode === 'confirm') moveNewChat('decline'); render(); },
       'page-chat-new-yes': () => startPageChat(),
       'page-chat-arch': () => {
-        const N = D.newchat;
-        N.open = !N.open; N.err = '';
-        if (N.open && !N.list && !N.loading) { loadPageArchive(); return; }
+        const m = D.newchat.mode;
+        if (m === 'reading' || m === 'list') { moveNewChat('hide'); render(); return; }
+        if (m !== 'idle' && m !== 'confirm') return;
+        moveNewChat('show');
+        if (D.newchat.mode === 'reading') { loadPageArchive(); return; }
         render();
       },
       'page-chat-open': (btn) => openPageChat(Number(btn.dataset.index)),
@@ -7662,6 +7798,10 @@ ${bubbleShellHtml()}`;
         }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
+        // a row's name or tags box keeps what is typed in D.pages.row, so a
+        // refresh of the list while the box is not focused does not empty it
+        if (ta && ta.dataset && /^(rename|tag)-input$/.test(ta.dataset.act || '')
+            && rowEditMode(D.pages.row) !== 'none') moveRowEdit('type', { text: ta.value });
         // the artifact's brief lives in D.artifact as it is typed, the way a
         // composer's draft lives in D.drafts: a redraw while the box is not
         // focused (keepTyping only carries a FOCUSED box) must not empty it
@@ -7763,7 +7903,7 @@ ${bubbleShellHtml()}`;
           if (MIC.mode === 'asking' || MIC.mode === 'recording') { e.preventDefault(); micCancel(); return; }
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
-          if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
+          if (rowEditMode(D.pages.row) !== 'none') { closeRowEditors(); return; }
           // Esc inside a bubble is about the bubble. It reaches this listener
           // rather than content.js's because the focus is in the bubble's own
           // composer, in this shadow root — and closing it must never fall
@@ -10572,19 +10712,24 @@ ${bubbleShellHtml()}`;
     const toggleTagFilter = tag =>
       setFilter(D.pages.kind, tag.toLowerCase() === D.pages.tag.toLowerCase() ? '' : tag);
 
-    function openRowEditor(which, url) {
+    // THE one function that changes D.pages.row (rowEditMove refuses the
+    // illegal moves)
+    function moveRowEdit(move, arg) {
+      D.pages.row = rowEditMove(D.pages.row, move, arg);
+      return D.pages.row;
+    }
+    function openRowEditor(kind, url) {
       if (!D.owner || !url) return;
-      D.pages.renaming = which === 'renaming' ? url : null;
-      D.pages.tagging = which === 'tagging' ? url : null;
+      const p = (D.pages.list || []).find(r => sameUrl(r.url, url)) || { url };
+      moveRowEdit('open', { kind, url, text: kind === 'rename' ? (p.title || '') : tagSeed(p) });
       D.pages.pick = 0;
       D.pages.rowErr = null;
       renderPages();
       focusRowEditor();
     }
     function closeRowEditors(quiet) {
-      const had = D.pages.renaming || D.pages.tagging;
-      D.pages.renaming = null;
-      D.pages.tagging = null;
+      const had = rowEditMode(D.pages.row) !== 'none';
+      moveRowEdit('close');
       D.pages.pick = 0;
       if (had && !quiet) renderPages();
     }
@@ -10670,6 +10815,7 @@ ${bubbleShellHtml()}`;
       const caret = el.value.length - (rest ? rest.length + 2 : 0);
       el.focus();
       try { el.setSelectionRange(caret, caret); } catch { /* ignore */ }
+      if (rowEditMode(D.pages.row) !== 'none') moveRowEdit('type', { text: el.value });
       D.pages.pick = 0;
       paintTagMenu(el);
     }
@@ -10839,7 +10985,7 @@ ${bubbleShellHtml()}`;
         // the provisional paint, so the old bubble goes without a cancel
         if (isBubbleOpen(NEW_ID)) hideBubble(NEW_ID, true);
         // …and its place is chosen afresh: the offset was from the OLD passage
-        delete B.off[NEW_ID]; delete B.moved[NEW_ID]; delete B.fan[NEW_ID];
+        delete B.off[NEW_ID]; moveBubbleHow(NEW_ID, 'forget');
         D.pending = anchor;
         showBubble(NEW_ID);
         return D;
@@ -11184,18 +11330,15 @@ ${bubbleShellHtml()}`;
       open: [],      // thread ids, OLDEST FIRST: the z-order, and the cap
       el: {},        // threadId -> its .bubble element, while it is open
       off: {},       // threadId -> {dx, dy} from the mark — survives a close
-      moved: {},     // threadId -> true once the READER has dragged it. The
-                     // difference matters: a place we chose may be re-chosen
-                     // when the bubble changes size, a place they chose may not
+      how: {},       // threadId -> who places it, and its stack open or shut:
+                     // ONE value (BUB_PLACES, BUB_STACKS), changed only by
+                     // moveBubbleHow. A place we chose may be re-chosen when
+                     // the bubble changes size, a place they chose may not
       size: {},      // threadId -> {w, h} the reader dragged it to — survives a close
-      fan: {},       // threadId -> true while its stack is fanned open
       conn: {},      // threadId -> {x1,y1,x2,y2} the connector's ends, as last drawn
       note: {},      // threadId -> a brief line in its header ("oldest closed")
       ro: {},        // threadId -> a ResizeObserver on its box (see makeBubbleEl)
       retry: {},     // threadId -> how many times we have waited for its paint
-      grow: {},      // threadId -> true for a bubble that STARTED as a new comment
-                     // (see onBubbleResize): it was placed when it held nothing
-                     // but a composer, and the answer then grows it
       drag: null,    // {id, mode:'move'|'size', …} while a gesture is in flight
       wired: false,
     };
@@ -11212,6 +11355,15 @@ ${bubbleShellHtml()}`;
     const r1 = n => Math.round(n * 10) / 10;
 
     const bubbleEl = id => (id && B.el[id]) || null;
+    // THE one function that changes B.how (bubbleHowMove refuses the illegal
+    // moves)
+    function moveBubbleHow(id, move) {
+      const h = bubbleHowMove(B.how[id], move);
+      if (h) B.how[id] = h; else delete B.how[id];
+      return bubHow(h);
+    }
+    const bubPlace = id => bubHow(B.how[id]).place;
+    const bubFanned = id => bubHow(B.how[id]).stack === 'open';
     // THE ONE BUBBLE THAT IS NOT A THREAD YET. A new comment started from a
     // selection has a passage and a composer but no id until the companion
     // mints one; it goes by the same '__new__' the panel's pending card does,
@@ -11431,7 +11583,7 @@ ${bubbleShellHtml()}`;
     function bubbleWant(t) {
       const all = bubbleEntries(t);
       if (all.length <= BUB_SQUASH_AT) return { cards: all, lip: null };
-      const fanned = !!B.fan[t.id];
+      const fanned = bubFanned(t.id);
       const hidden = all.length - 1;
       const lip = { sig: (fanned ? 'open' : 'shut') + '|' + hidden,
                     make: () => bubbleFanHtml(t.id, fanned, hidden) };
@@ -11764,7 +11916,7 @@ ${bubbleShellHtml()}`;
     // never-re-picked rule exactly as before.
     function onBubbleResize(id) {
       if (!isBubbleOpen(id)) return;
-      if (B.grow[id] && !B.moved[id] && !B.size[id] && !B.drag) {
+      if (bubPlace(id) === 'growing' && !B.size[id] && !B.drag) {
         const box = bubbleEl(id);
         const u = unionRect(markRects(id));
         if (box && u && u.bottom > 0 && u.top < window.innerHeight) {
@@ -11963,7 +12115,7 @@ ${bubbleShellHtml()}`;
       const y = bclamp(BUB_PAD, g.y0 + (e.clientY - g.py), Math.max(BUB_PAD, H - bh - BUB_PAD));
       const home = bubbleCandidates(g.id, bw, bh)[0];
       B.off[g.id] = { dx: x - home.x, dy: y - home.y };
-      B.moved[g.id] = true;          // theirs now: nothing re-picks it
+      moveBubbleHow(g.id, 'drag');   // theirs now: nothing re-picks it
       placeBubble(g.id);
     }
     function onBubbleUp() {
@@ -12065,7 +12217,7 @@ ${bubbleShellHtml()}`;
       try { if (B.ro[who]) B.ro[who].disconnect(); } catch (_) { /* gone already */ }
       delete B.ro[who];
       delete B.retry[who];
-      delete B.grow[who];
+      moveBubbleHow(who, 'close');
       delete B.el[who];
       B.open = B.open.filter(x => x !== who);
       if (B.drag && B.drag.id === who) B.drag = null;
@@ -12093,7 +12245,7 @@ ${bubbleShellHtml()}`;
       delete B.el[from];
       B.el[to] = el;
       B.open = B.open.map(x => (x === from ? to : x));
-      for (const k of ['off', 'moved', 'size', 'fan', 'conn', 'note']) {
+      for (const k of ['off', 'how', 'size', 'conn', 'note']) {
         if (B[k][from] !== undefined) { B[k][to] = B[k][from]; delete B[k][from]; }
       }
       delete B.retry[from];
@@ -12102,7 +12254,7 @@ ${bubbleShellHtml()}`;
       if (g) g.setAttribute('data-thread', to);
       el.setAttribute('data-thread', to);
       el.classList.remove('bnew');
-      B.grow[to] = true;
+      moveBubbleHow(to, 'adopt');
       // keep the caret where it was: a reader who just pressed Enter is still
       // in this box and may well type the next line straight away
       const hadFocus = !!(D.shadow.activeElement && el.contains(D.shadow.activeElement));
@@ -12141,11 +12293,11 @@ ${bubbleShellHtml()}`;
     function fanBubble(id) {
       const who = id || frontBubble();
       if (!who) return D;
-      const opening = !B.fan[who];
-      B.fan[who] = opening;
+      const opening = !bubFanned(who);
+      moveBubbleHow(who, opening ? 'fan' : 'unfan');
       render();
       const el = bubbleEl(who);
-      if (el && !B.moved[who]) {
+      if (el && bubPlace(who) !== 'theirs') {
         B.off[who] = chooseOffset(who, el.offsetWidth || 320, el.offsetHeight || 160);
         placeBubble(who);
       }
@@ -12547,7 +12699,8 @@ ${bubbleShellHtml()}`;
           on: bubblesOn(), open: !!box, thread: box ? who : '',
           count: B.open.length, front: frontBubble(),
           z: box ? Number(box.style.zIndex || 0) : 0,
-          fanned: !!B.fan[who], moved: !!B.moved[who], placed: !!B.off[who],
+          fanned: bubFanned(who), moved: bubPlace(who) === 'theirs', placed: !!B.off[who],
+          place: bubPlace(who),
           sized: !!B.size[who],
           offset: B.off[who] ? { ...B.off[who] } : null,
           size: B.size[who] ? { ...B.size[who] } : null,
@@ -12705,6 +12858,9 @@ ${bubbleShellHtml()}`;
     msgWindowPlan, msgWindowMove, msgWindowMode,            // test/collapse.test.mjs (the message window)
     MSG_WINDOW, MSG_STEP, MSG_WINDOW_MODES, MSG_WINDOW_MOVES,
     editMove, editMode, isEditOf, EDIT_MODES, EDIT_MOVES,   // test/editbox.test.mjs
+    newChatMove, NEWCHAT_MODES, NEWCHAT_MOVES,              // test/modes.test.mjs
+    rowEditMove, rowEditMode, ROW_EDIT_MODES, ROW_EDIT_MOVES, // test/modes.test.mjs
+    bubbleHowMove, BUB_PLACES, BUB_STACKS, BUB_HOW_MOVES,   // test/modes.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

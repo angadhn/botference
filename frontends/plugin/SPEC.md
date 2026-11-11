@@ -10107,7 +10107,8 @@ double-clicking the panel's own resize grip.
 size without the reader's hand on its edge — five cards where there was one —
 and a page-anchored bubble that no longer fits will not be clamped back; it
 would simply hang off the bottom with its composer out of reach. So a fan runs
-`chooseOffset` again *unless the reader has dragged this one* (`B.moved`), in
+`chooseOffset` again *unless the reader has dragged this one* (`B.how[id].place`
+is `'theirs'`; see the 2026-11-11 named-modes amendment), in
 which case where it sits is their decision. Fanning open also scrolls the stack
 to the **foot** — the newest card — after the placement is re-picked: the
 reader reads back in time by scrolling up (2026-11-10 amendment; it used to
@@ -11580,7 +11581,8 @@ does exactly what it always did.
 - **Growth.** A bubble that started as a new comment was placed when it held
   only a composer. While its passage is on the glass and the reader has not
   dragged or sized it, if the answer grows it off the glass or down over its
-  own words, it is placed again by `chooseOffset` (`B.grow`, `onBubbleResize`).
+  own words, it is placed again by `chooseOffset` (`B.how[id].place` is
+  `'growing'`, `onBubbleResize`).
   Every other bubble keeps the never-re-picked rule.
 
 ### Testing
@@ -12209,3 +12211,42 @@ command table, keys); `refreshModels` shows no "loading…" line, ignores a
 failure (the remembered list stays as it was) and repaints an open menu in
 place (`syncModels`). The model menu still asks for itself when opened.
 Tests: `test/modelsrefresh.test.mjs`.
+
+## Amendment (2026-11-11): three controls with one named mode each
+
+Three controls kept their state as loose flags. Each is now ONE value with
+its modes named in one list, changed through one function that refuses an
+illegal move. Nothing the reader sees changes, except where noted.
+
+- **"+ new chat" and its archive chooser** — was `confirm`, `open`, `loading`
+  flags beside a `busy` text field (`''` / `'new'` / `'i<n>'`). Now
+  `D.newchat = { mode, index, list, err }`, `mode` one of `NEWCHAT_MODES` =
+  idle / confirm / reading / list / starting / opening, changed only by
+  `moveNewChat` → the pure `newChatMove(value, move, arg)`; moves
+  `NEWCHAT_MOVES` = ask / decline / start / show / hide / read / unread / open /
+  done / failed. `read`/`unread` (the archive's answer) are never refused: an
+  answer that lands after the chooser was closed only keeps the rows. Seen
+  differently: the ask and the open chooser no longer show at the same time —
+  pressing one closes the other.
+- **A page row's rename / tag box** — was two fields, `D.pages.renaming` and
+  `D.pages.tagging`, for one mode, and the typed text lived only in the box,
+  so a live refresh of the list while the box was not focused put the old
+  name back. Now `D.pages.row` = null or `{ kind: 'rename'|'tag', url, text }`
+  (`ROW_EDIT_MODES` = none / rename / tag), changed only by `moveRowEdit` →
+  `rowEditMove`; moves open / type / close. Every `input` in the box (and a
+  picked tag) moves `type`, and the row is drawn from `text`. Seen
+  differently: what was typed survives a refresh, focused or not.
+- **One pop-up bubble** — was three yes/no maps per thread, `B.fan` (stack
+  fanned), `B.moved` (dragged by hand) and `B.grow` (started as a new
+  comment). Now one value per thread, `B.how[id] = { place, stack }`:
+  `place` one of `BUB_PLACES` = ours / growing / theirs (who chooses where it
+  sits), `stack` one of `BUB_STACKS` = shut / open. Changed only by
+  `moveBubbleHow` → `bubbleHowMove`; moves drag / adopt / close / fan / unfan /
+  forget. `fan` on an open stack and `unfan` on a shut one are refused. This
+  also settles "the fold is open written two ways": the stack's open state is
+  the one word `'open'` (the lip's signature already used it); the panel's
+  older fold value (`D.expanded`, `FOLD_OPEN`) had already been removed.
+  `bubbleState()` still answers `fanned` and `moved`, and now `place` too.
+- Tests: `test/modes.test.mjs` (each machine and its refusals; in happy-dom:
+  the new-chat ask, no, the chooser, a failed open, yes; the rename and tag
+  boxes keeping their text through an unfocused refresh, one box at a time).
