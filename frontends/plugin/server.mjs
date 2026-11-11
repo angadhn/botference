@@ -550,6 +550,24 @@ function queueRows() {
   }
   return [...by.values()];
 }
+// THE COMPANION'S OWN RECORD OF ONE PAGE'S TURNS, for GET /page: which of its
+// chats (the page chat, a thread) has a bot turn running, and which have one
+// waiting to start. The drawer's working chip and stop button follow this —
+// not how long it has been since anything was heard — so a reload, a second
+// tab or a lost turn-end all come back to the truth. Control turns carry no
+// page, and the filing clerk's silent turns never spin, so neither is listed.
+function turnsFor(u) {
+  const key = store.pageKey(u);
+  const out = [];
+  for (const c of allChats()) {
+    for (const j of (c.jobs ? c.jobs() : [])) {
+      if (j.control || j.silent || !j.url || store.pageKey(j.url) !== key) continue;
+      out.push({ target: j.target || store.PAGE_CHAT, state: j.running ? 'running' : 'waiting',
+        ...(j.running ? { agents: j.agents || [] } : {}) });
+    }
+  }
+  return out;
+}
 // a setting is process-wide inside a child, so it is imposed on every child
 // that is awake; the asleep ones read the same config.json when they spawn
 const controlAll = text => { for (const c of allChats()) c.control(text); };
@@ -4411,11 +4429,14 @@ export function handler(req, res) {
     // use for ten past conversations on every page load, and a record that
     // shipped them would grow without bound in the one response every tab
     // fetches most often. The messages are one POST /page-chat-open away.
+    // `turns` rides along (turnsFor): the record says what was said, this says
+    // which of its chats a bot is answering right now
+    const turns = turnsFor(u);
     return page
       ? res.writeHead(200, JSON_HEAD).end(JSON.stringify(
         store.chatArchiveOf(page).length
-          ? { ...page, chat_archive: store.chatArchiveSummary(page) } : page))
-      : ok(res, { page: null });
+          ? { ...page, chat_archive: store.chatArchiveSummary(page), turns } : { ...page, turns }))
+      : ok(res, { page: null, turns });
   }
   if (req.method === 'GET' && url === '/events') {
     sseOpen(res);

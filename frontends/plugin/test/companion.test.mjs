@@ -246,7 +246,8 @@ async function main() {
   // --- page CRUD --------------------------------------------------------
   await test('GET /page on an unknown url returns page:null', async () => {
     const r = await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`);
-    assert.deepEqual(r.json, { ok: true, page: null });
+    // `turns`: the companion's record of what is running there — nothing
+    assert.deepEqual(r.json, { ok: true, page: null, turns: [] });
   });
 
   await test('POST /page creates the shell record', async () => {
@@ -457,7 +458,8 @@ async function main() {
     // the url where nothing said) and `session_title` is what the botference
     // chat behind it is currently called — both belong on the record. The
     // article text does not, and this list is how that stays true.
-    assert.deepEqual(Object.keys(page), ['version', 'url', 'title', 'site', 'kind', 'created_at',
+    // (`turns` rides on every GET /page — what is running now, never stored)
+    assert.deepEqual(Object.keys(page).filter(k => k !== 'turns'), ['version', 'url', 'title', 'site', 'kind', 'created_at',
       'updated_at', 'session_id', 'threads', 'page_chat', 'session_title'],
     'article_text is never persisted');
     const msgs = page.threads[0].msgs;
@@ -2081,7 +2083,7 @@ async function main() {
   // work on anything else. What is its own is the turn it sends.
   const LIB = 'bfp://library';
   await test('the library is created by the first thing said in it, with a session of its own', async () => {
-    assert.deepEqual((await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json, { ok: true, page: null },
+    assert.deepEqual((await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json, { ok: true, page: null, turns: [] },
       'nothing exists until somebody asks something');
     const from = inputs(logFile).length;
     const r = await POST(base, '/reply',
@@ -2161,7 +2163,10 @@ async function main() {
     const r = await POST(base, '/delete-page', { url: LIB, delete_session: true });
     assert.equal(r.json.ok, true);
     assert.equal(r.json.session_deleted, true);
-    assert.deepEqual((await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json, { ok: true, page: null });
+    // (a library turn asked earlier may still be running: `turns` says so, and
+    // is not the record)
+    const { turns: _running, ...gone } = (await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json;
+    assert.deepEqual(gone, { ok: true, page: null });
     await POST(base, '/reply', { url: LIB, thread_id: '__page__', text: 'starting over, no bots' });
     const back = (await GET(base, `/page?url=${encodeURIComponent(LIB)}`)).json;
     assert.equal(back.title, 'Library');

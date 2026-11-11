@@ -26,14 +26,18 @@
 //
 //   {t:'hello',  url}                 register this tab's page + wake check
 //        → {ok:true, known:bool,      known = this normUrl appears in /index
-//           connected:bool,           WS currently open?
+//           socket:'connecting'|      the WS, in config.js's CONN_MODES
+//                  'connected'|'offline',
 //           threads:N|0,              cached thread count for this page
 //           index:{…}}
 //   {t:'get-index'}
-//        → {ok:true, index:{…}, connected:bool}
+//        → {ok:true, index:{…}, socket:'…'}
 //   {t:'api', method:'GET'|'POST', path:'/page?url=…', body?:{…}}
 //        → {ok:true, status:200, data:{…}}          companion answered
 //        → {ok:false, error:'…', status?:N, data?:…} transport or 4xx/5xx
+//        → {ok:false, timeout:true, error:'…'}       past its time limit
+//                                     (config.js requestLimitMs); `error` is
+//                                     the one plain line the drawer shows
 //   {t:'gdocs-export', url, want?}    FALLBACK transport for the Google Docs
 //                                     adapter's export — the plain text, or
 //                                     (want:'bytes', format=docx) the same
@@ -103,8 +107,8 @@
 //   {t:'ws',   ev:{…}}                a companion event, verbatim, as
 //                                     specified in SPEC.md's event stream
 //                                     (page / chat / bridge / hello / ping)
-//   {t:'conn', connected:bool,        WS opened or dropped. `resumed` marks a
-//              resumed?:bool}         socket that has just (re)opened: nobody
+//   {t:'conn', socket:'connected'|    WS opened or dropped. `resumed` marks a
+//     'offline', resumed?:bool}       socket that has just (re)opened: nobody
 //                                     can say what was missed while it was
 //                                     down, so the drawer refetches its page
 //   {t:'whereami'}                    a freshly started worker asking an
@@ -114,7 +118,7 @@
 // content ⇄ background   (chrome.runtime.connect, port name 'bfp')
 //
 //   A long-lived port per tab. The content script posts {t:'ping', url} on it
-//   and gets {t:'pong', connected} back; the worker registers the tab from
+//   and gets {t:'pong', socket} back; the worker registers the tab from
 //   that url and delivers {t:'ws'}/{t:'conn'} through the port when it is
 //   there. The point is the DISCONNECT: when Chrome retires the worker the
 //   port dies, and that is the content script's cue to reconnect (which starts
@@ -207,7 +211,25 @@ function normUrl(u) {
 
 // ---- state ---------------------------------------------------------------
 let ws = null;
-let wsState = 'closed';      // closed | connecting | open
+// The live socket's state, in the connection's ONE list of modes (config.js
+// CONN_MODES: 'connecting' | 'connected' | 'offline'; never 'reload', which is
+// a tab's). Nothing but moveSocket writes it, and every tab hears it as is.
+let wsState = 'offline';
+function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsState; }
+// The socket is long-lived, so it has no time limit of its own; its heartbeat
+// is the check instead. The companion pings every 15s (server.mjs
+// HEARTBEAT_MS), so a 'connected' socket that has heard NOTHING for three of
+// those is one whose other end has gone quiet without closing it (a sleeping
+// laptop, a dropped network): it is dropped and opened again, and the tabs
+// refetch what they missed. Looked at on every keepalive alarm and every tab's
+// ping, so it runs while anyone is watching.
+const SOCKET_SILENT_MS = 45000;
+let socketHeardAt = 0;
+function checkSocketSilence(now = Date.now()) {
+  if (wsState !== 'connected' || !socketHeardAt || now - socketHeardAt < SOCKET_SILENT_MS) return false;
+  forceReconnect();
+  return true;
+}
 let backoff = 1000;          // ms, doubles to 30s, resets on open
 let retryTimer = null;
 let indexCache = {};         // pageKey -> {url,title,threads,updated_at}
@@ -276,14 +298,33 @@ async function api(method, path, body) {
     init.body = JSON.stringify(body);
   }
   if (Object.keys(headers).length) init.headers = headers;
+  // No request waits for ever (config.js requestLimitMs): past its limit it is
+  // abandoned and answered {timeout:true} with one plain line saying what did
+  // not go through, which content.js shows in the drawer.
+  // The fetch is called off (abort) AND raced, so the answer comes back on
+  // time even where a fetch ignores its signal.
+  const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  if (ctl) init.signal = ctl.signal;
+  let timedOut = false;
+  let limit = null;
+  const expiry = new Promise(resolve => {
+    limit = setTimeout(() => { timedOut = true; if (ctl) ctl.abort(); resolve(null); },
+      CFG.requestLimitMs(init.method, path));
+  });
+  const late = () => ({ ok: false, timeout: true, error: CFG.timeoutLine(init.method, path) });
   let res;
   try {
-    res = await fetch(CFG.httpUrl(CONF.base, path), init);
+    res = await Promise.race([fetch(CFG.httpUrl(CONF.base, path), init), expiry]);
   } catch (e) {
-    return { ok: false, error: 'companion unreachable (' + (e && e.message ? e.message : e) + ')' };
+    clearTimeout(limit);
+    if (timedOut) return late();
+    return { ok: false, error: CFG.CONN_WORDS.offline + ' — could not reach it (' + (e && e.message ? e.message : e) + ')' };
   }
+  if (timedOut) return late();
   let data = null;
-  const text = await res.text().catch(() => '');
+  const text = await Promise.race([res.text().catch(() => ''), expiry]);
+  clearTimeout(limit);
+  if (timedOut) return late();
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!res.ok) {
     const err = res.status === 401 ? AUTH_FAIL
@@ -365,8 +406,8 @@ function refreshIndexSoon() {
 // params on the /ws url (CFG.wsUrlFor). The reconnect/backoff logic below is
 // exactly as it was — only the address is now a function of the settings.
 async function ensureSocket() {
-  if (wsState === 'open' || wsState === 'connecting') return;
-  wsState = 'connecting';
+  if (wsState === 'connected' || wsState === 'connecting') return;
+  moveSocket('retry');
   await configReady;
   // a second caller may have won the race while we awaited the config
   if (wsState !== 'connecting') return;
@@ -379,22 +420,24 @@ async function ensureSocket() {
   try {
     sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CONF.password, CONF.handle));
   } catch {
-    wsState = 'closed';
+    moveSocket('fail');
     scheduleRetry();
     return;
   }
   sock.onopen = () => {
     if (sock !== ws) return;
-    wsState = 'open';
+    moveSocket('reach');
+    socketHeardAt = Date.now();
     backoff = 1000;
     // `resumed` is a standing instruction, not news: a socket that has just
     // opened cannot say what happened while it was shut, so every drawer
     // refetches its page instead of trusting the events it may have missed.
-    broadcastAll({ t: 'conn', connected: true, resumed: true });
+    broadcastAll({ t: 'conn', socket: wsState, resumed: true });
     refreshIndex(true);
   };
   sock.onmessage = e => {
     if (sock !== ws) return;
+    socketHeardAt = Date.now();   // a ping counts: it is the heartbeat
     let ev = null;
     try { ev = JSON.parse(e.data); } catch { return; }
     if (!ev || ev.type === 'ping') return;
@@ -404,8 +447,10 @@ async function ensureSocket() {
   };
   sock.onclose = () => {
     if (sock !== ws) return;
-    if (wsState !== 'closed') broadcastAll({ t: 'conn', connected: false });
-    wsState = 'closed';
+    if (CFG.canConnMove(wsState, 'fail')) {
+      moveSocket('fail');
+      broadcastAll({ t: 'conn', socket: wsState });
+    }
     ws = null;
     scheduleRetry();
   };
@@ -423,7 +468,8 @@ function forceReconnect() {
   if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
   backoff = 1000;
   try { ws && ws.close(); } catch { /* ignore */ }
-  wsState = 'closed';
+  // the old socket is done with, whatever it was doing
+  if (CFG.canConnMove(wsState, 'fail')) moveSocket('fail');
   ws = null;
   ensureSocket();
 }
@@ -832,9 +878,10 @@ chrome.runtime.onConnect.addListener(port => {
   port.onMessage.addListener(msg => {
     if (!msg) return;
     if (msg.url) registerTab(tabId, msg.url);
+    checkSocketSilence();
     ensureSocket();
     // the answer doubles as the liveness receipt the page is asking for
-    try { port.postMessage({ t: 'pong', connected: wsState === 'open' }); } catch { /* gone */ }
+    try { port.postMessage({ t: 'pong', socket: wsState }); } catch { /* gone */ }
   });
   port.onDisconnect.addListener(() => {
     if (tabId != null && ports.get(tabId) === port) ports.delete(tabId);
@@ -904,11 +951,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // world, so a content script has no other way to learn it.
         await configReady;
         return { ok: true, known: !!entry, threads: entry ? (entry.threads || 0) : 0,
-                 connected: wsState === 'open', index: indexCache, base: CONF.base };
+                 socket: wsState, index: indexCache, base: CONF.base };
       }
       case 'get-index': {
         await refreshIndex(false);
-        return { ok: true, index: indexCache, connected: wsState === 'open' };
+        return { ok: true, index: indexCache, socket: wsState };
       }
       case 'api': {
         const r = await api(msg.method, msg.path, msg.body);
@@ -965,7 +1012,7 @@ chrome.action.onClicked.addListener(tab => {
     // content script not present (chrome:// page, or injected before install)
     chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['anchor.js', 'adapters.js', 'drawer.js', 'content.js'],
+      files: ['anchor.js', 'adapters.js', 'config.js', 'drawer.js', 'content.js'],
     }).then(() => chrome.tabs.sendMessage(tab.id, { t: 'toggle' })).catch(() => openInPdfViewer(tab));
   });
 });
@@ -1011,11 +1058,12 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 chrome.alarms.create(KEEPALIVE, { periodInMinutes: 0.5 });
 chrome.alarms.onAlarm.addListener(a => {
   if (a.name !== KEEPALIVE) return;
+  checkSocketSilence();
   ensureSocket();
   // twice a minute, whatever else happens: no allow rule outlives its deadline
   // by more than one tick, whoever's worker wrote it
   sweepBypass();
-  if (wsState === 'open') refreshIndex(true);
+  if (wsState === 'connected') refreshIndex(true);
 });
 
 chrome.runtime.onInstalled.addListener(() => { ensureSocket(); refreshIndex(true); reopenViewerTabs(); });

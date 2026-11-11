@@ -457,6 +457,11 @@
   const COPY_FAIL = 'this browser would not let the drawer copy';
   const COPY_HOLD = 1400;      // how long the button says so
   const PAGE_TARGET = '__page__';
+  // The connection's one list of modes, its moves and its words live in
+  // config.js (CONN_MODES), shared with the worker and content.js; loaded as a
+  // content script ahead of this file, and required in node for the tests.
+  const CFG = root.BFPConfig
+    || (typeof module !== 'undefined' && typeof require === 'function' ? require('./config.js') : null);
   // The library — one conversation about everything the reader has annotated,
   // as opposed to one page. On the wire it is an ordinary page chat on a page
   // nobody visits (`bfp://library`, the companion's store.mjs owns the
@@ -1465,6 +1470,109 @@
     mdSlots.clear();
   }
 
+  // ── is a bot working? one chat's turn, as one value ─────────────────────
+  // Every chat — the page chat, the library chat, each comment thread — has
+  // ONE value in D.turns saying where its bot turn stands. Its modes:
+  //   'idle'     — no turn (the value may also be null): nothing to wait for.
+  //   'waiting'  — the companion has taken a message and the turn has not
+  //                started yet (the agents are waking, another chat has the
+  //                floor). `text` says why, in plain words.
+  //   'working'  — a bot is answering. The working chip and its stop button
+  //                show, and STAY, until the turn really ends — however long
+  //                a tool run keeps it quiet.
+  //   'stopping' — the reader pressed stop; the turn has not ended yet.
+  //   'lost'     — a turn was under way and the companion cannot be reached,
+  //                so nobody here can say whether it still is.
+  // The truth comes from the companion: its turn-start / turn-end events, and
+  // its own record of what is running (GET /page `turns`, see setTurns), which
+  // is what a reload, a second tab or a lost event comes back to. Never from
+  // how long it has been quiet.
+  const TURN_MODES = ['idle', 'waiting', 'working', 'stopping', 'lost'];
+  const turnMode = t => (t && TURN_MODES.indexOf(t.mode) > 0 ? t.mode : 'idle');
+  // what a 'lost' chat says, where its working chip was
+  const TURN_LOST_TEXT = 'can’t reach the companion — the bot may still be working';
+  // …and every way it changes, with the modes each move may start from
+  // (turnMove refuses the rest):
+  //   wait   — idle|waiting|lost → waiting (arg {text})
+  //   start  — any → working (arg {agents}): a turn began, or the companion
+  //            says one is running; from working it is the next turn
+  //   hear   — working|stopping → the same mode, with who is speaking or what
+  //            video is being watched (arg {speaker} | {watching})
+  //   stop   — working → stopping
+  //   unstop — stopping → working: the stop did not go through
+  //   lose   — waiting|working|stopping → lost
+  //   end    — any → idle: finished, failed, dropped, or the chat was put
+  //            away. Never refused.
+  const TURN_MOVES = Object.freeze({
+    wait: ['idle', 'waiting', 'lost'], start: TURN_MODES, hear: ['working', 'stopping'],
+    stop: ['working'], unstop: ['stopping'], lose: ['waiting', 'working', 'stopping'], end: TURN_MODES,
+  });
+  const canTurnMove = (t, move) => !!TURN_MOVES[move] && TURN_MOVES[move].indexOf(turnMode(t)) !== -1;
+  // The one way the value changes. Pure: (value, move, arg, at) → value. `at`
+  // is a stamp the caller hands in on every boundary (anything but `hear`), so
+  // "has this chat moved since I last looked?" is one comparison. An unknown
+  // move, or a move from a mode it does not start from, throws.
+  function turnMove(t, move, arg, at) {
+    if (!TURN_MOVES[move]) throw new Error('turn: no such move ' + move);
+    const mode = turnMode(t);
+    if (!canTurnMove(t, move)) throw new Error('turn: cannot ' + move + ' while ' + mode);
+    const a = arg || {};
+    const stamp = at == null ? ((t && t.at) || 0) : at;
+    if (move === 'end') return { mode: 'idle', at: stamp };
+    if (move === 'lose') return { mode: 'lost', at: stamp };
+    if (move === 'wait') {
+      const text = String(a.text || (mode === 'waiting' && t.text) || 'waiting to start…');
+      return { mode: 'waiting', at: stamp, text };
+    }
+    if (move === 'start') {
+      return { mode: 'working', at: stamp, speaker: '', watching: '', live: [],
+               agents: Array.isArray(a.agents) ? a.agents.filter(Boolean).map(String) : [] };
+    }
+    if (move === 'stop') return { ...t, mode: 'stopping', at: stamp };
+    if (move === 'unstop') return { ...t, mode: 'working', at: stamp };
+    // hear
+    const next = { ...t, live: (t.live || []).slice() };
+    if (a.speaker) {
+      next.speaker = String(a.speaker);
+      if (next.live.indexOf(next.speaker) === -1) next.live.push(next.speaker);
+    }
+    if (a.watching !== undefined) next.watching = String(a.watching || '');
+    return next;
+  }
+  // What the companion's record says about one page (GET /page `turns`:
+  // [{target, state: 'running'|'waiting', agents}]), as the moves that bring
+  // the chats in `scope` level with it. Pure: (turns now, record, scope test,
+  // `asked` = the stamp when the record was asked for) → [[target, move, arg]].
+  // A chat that has moved since the question was asked is left alone: what it
+  // knows is newer than the answer.
+  function turnPlan(turns, record, inScope, asked) {
+    const want = {};
+    for (const r of record || []) {
+      if (!r || !r.target) continue;
+      // a page's lane is serial: if any of a chat's turns is running, it is
+      // working, whatever is queued behind it
+      if (r.state === 'running' || !want[r.target]) want[r.target] = r;
+    }
+    const moves = [];
+    const targets = Object.keys(turns || {}).concat(Object.keys(want))
+      .filter((k, i, all) => all.indexOf(k) === i && inScope(k));
+    for (const k of targets) {
+      const t = (turns || {})[k] || null;
+      if (t && (t.at || 0) > asked) continue;
+      const mode = turnMode(t), r = want[k];
+      if (!r) { if (mode !== 'idle') moves.push([k, 'end']); continue; }
+      if (r.state === 'running') {
+        if (mode !== 'working' && mode !== 'stopping') moves.push([k, 'start', { agents: r.agents }]);
+        continue;
+      }
+      // waiting on the companion's side: a chat we thought was working has
+      // finished that turn, and the next one has not begun
+      if (mode === 'working' || mode === 'stopping') moves.push([k, 'end']);
+      if (mode !== 'waiting') moves.push([k, 'wait', {}]);
+    }
+    return moves;
+  }
+
   // ── a long conversation: a window on its newest messages ────────────────
   // Every message list the panel draws — the page chat, the library chat and
   // every comment thread — is read the way a messaging app is read: it opens
@@ -2186,28 +2294,19 @@
       // 'panel' | 'bubbles' — where a click on a highlight takes the reader.
       // Default 'panel', which is the drawer this has always opened.
       bubbles: 'panel',
-      running: {},         // target -> true while a turn is in flight
-      // target -> the YouTube url Gemini is watching for this turn, if any.
-      // Neither bot can watch video; while one is being watched for them the
-      // turn genuinely is waiting on something, and the status line says so.
-      watching: {},
-      turnAgents: {},      // target -> ['claude'|'codex'] as announced by turn-start
-      liveAgents: {},      // target -> agents actually seen streaming this turn
-      speaker: {},         // target -> the agent whose stream arrived most recently
-      // target -> status line {text, err, transient}. `transient` marks a line
-      // that is only true WHILE WE WAIT ("queued…", "stopping…"): the working
-      // chip supersedes it and any turn boundary removes it. A plain note (a
-      // refusal, an error) is a message and survives the turn.
+      // target -> where that chat's bot turn stands (TURN_MODES): its mode,
+      // and while working who is on it (`agents` as turn-start named them,
+      // `live` as seen streaming, `speaker` most recently, `watching` the video
+      // Gemini is watching for it). Nothing but moveTurn writes it.
+      turns: {},
+      // the stamp moveTurn hands every boundary. The companion pumps its queue
+      // from inside the call that answers the POST, so `turn-start` regularly
+      // beats {queued:true} back to us; a send whose chat has moved since it
+      // left has missed its window to say "queued".
+      turnClock: 0,
+      // target -> status line {text, err}: a refusal, an error — a message
+      // about the chat that survives the turn. Waits are the turn's, not this.
       notes: {},
-      // target -> a counter bumped on every turn boundary for that target. The
-      // companion pumps its queue from inside the call that answers the POST,
-      // so `turn-start` regularly beats {queued:true} back to us; a send whose
-      // generation has already moved on has missed its window to say "queued".
-      turnSeq: {},
-      // target -> when a chat event for it last arrived. A turn ends with an
-      // event, so a running turn nobody has heard from in a long time is a
-      // turn whose ending was lost in transit — see quietTurns/endTurn.
-      heard: {},
       // the open @-menu, if any: {target, start, end, caret, items, index}
       mention: null,
       // 'all' | 'comments' — which export the crystal will run, remembered
@@ -2438,11 +2537,14 @@
       // the companion's record for the reserved url (null = nothing said in it
       // yet, which is a state and not an error)
       library: { page: null, loading: false, err: '', confirm: false, note: '' },
-      connected: false,
-      connKnown: false,    // false until the background has told us either way
-      // the extension was reloaded under this tab: nothing here can reach the
-      // companion again, however healthy the companion is (see contextLost)
-      reloadNeeded: false,
+      // is this tab in touch with the companion: ONE mode (config.js
+      // CONN_MODES — connecting / connected / offline / reload). 'connecting'
+      // until the first answer either way; 'reload' once the extension was
+      // updated under this tab (see contextLost). Nothing but setConn writes it.
+      conn: 'connecting',
+      // the last request to the companion that ran out of time, as the line
+      // the reader sees ('' = none); the next answer that arrives clears it
+      timeout: '',
       bridge: '',
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
@@ -3506,13 +3608,14 @@ ${bubbleShellHtml()}`;
     // spoke last; before any stream at all it sits on the first named agent.
     const AGENT_ORDER = ['claude', 'codex'];
     function agentsFor(target) {
-      const named = D.turnAgents[target] || [];
-      const list = named.length ? named : (D.liveAgents[target] || []);
+      const t = D.turns[target] || {};
+      const named = t.agents || [];
+      const list = named.length ? named : (t.live || []);
       return list.slice().sort((a, b) => AGENT_ORDER.indexOf(a) - AGENT_ORDER.indexOf(b));
     }
     function speakerFor(target) {
       const roster = agentsFor(target);
-      const s = D.speaker[target];
+      const s = (D.turns[target] || {}).speaker;
       return (s && roster.indexOf(s) !== -1) ? s : (roster[0] || null);
     }
     function workingLabel(targets) {
@@ -3543,10 +3646,7 @@ ${bubbleShellHtml()}`;
     // every bot file-write and says so, then lets the turn finish). Showing
     // only the chip would swallow that message, and showing only the note
     // would claim the turn had stopped when it has not.
-    // …with one exception, and it is the whole point of `transient`: a waiting
-    // line ("queued…") is a claim about a turn that has NOT started, so the
-    // chip does not sit beside it, it replaces it. Structural, so the promise
-    // holds even if an event went missing.
+    // Everything here reads the chat's ONE turn value (D.turns, TURN_MODES).
     // A wait is a live state, so it looks like one: the same ◐ the working chip
     // falls back to. Flat text next to a composer reads as something that has
     // stalled — which is exactly how "queued…" was being read while the bridge
@@ -3554,16 +3654,19 @@ ${bubbleShellHtml()}`;
     function statusHtml(target) {
       const note = D.notes[target];
       const noteHtml = note
-        ? `<div class="status-chip${note.err ? ' err' : ''}">` +
-          `${note.transient ? '<span class="spin">◐</span>' : ''}${esc(note.text)}</div>` : '';
-      const watchHtml = D.watching[target]
+        ? `<div class="status-chip${note.err ? ' err' : ''}">${esc(note.text)}</div>` : '';
+      const t = D.turns[target];
+      const mode = turnMode(t);
+      if (mode === 'waiting') return `<div class="status-chip"><span class="spin">◐</span>${esc(t.text)}</div>` + noteHtml;
+      if (mode === 'lost') return `<div class="status-chip">${esc(TURN_LOST_TEXT)}</div>` + noteHtml;
+      if (mode !== 'working' && mode !== 'stopping') return noteHtml;
+      const watchHtml = t.watching
         ? '<div class="status-chip"><span class="spin">◐</span>Gemini is watching the video…</div>' : '';
-      if (D.running[target]) {
-        return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button></div>`
-          + watchHtml + (note && note.transient ? '' : noteHtml);
-      }
-      if (watchHtml) return watchHtml + noteHtml;
-      return noteHtml;
+      const tail = mode === 'stopping'
+        ? '<span class="stopping">stopping…</span>'
+        : '<button class="stop" data-act="interrupt" type="button" title="stop this turn">✕ stop</button>';
+      return `<div class="status-chip" aria-label="${esc(workingLabel([target]))}">${chipBody([target])}${tail}</div>`
+        + watchHtml + noteHtml;
     }
 
     // The composer is NEVER frozen by a send in flight: the message has already
@@ -4540,7 +4643,7 @@ ${bubbleShellHtml()}`;
       const author = threadAuthor(t);
       const ready = isAddressed(t);
       const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '',
-        D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : '',
+        D.focused === t.id ? 'focused' : '', turnBusy(t.id) ? 'working' : '',
         // a strikeout that has just been minted out of a discussion says so for
         // a few seconds (ARRIVED_MS) and then reads like any other card
         D.strikes.arrived[t.id] ? 'arrived' : ''].filter(Boolean).join(' ');
@@ -4593,7 +4696,7 @@ ${bubbleShellHtml()}`;
       const open = !!D.resolvedCards[t.id];
       const author = threadAuthor(t);
       const cls = ['card', 'resolved', open ? 'unfolded' : '', orph ? 'orphaned' : '',
-        D.focused === t.id ? 'focused' : '', D.running[t.id] ? 'working' : ''].filter(Boolean).join(' ');
+        D.focused === t.id ? 'focused' : '', turnBusy(t.id) ? 'working' : ''].filter(Boolean).join(' ');
       const n = (t.msgs || []).length;
       const by = t.resolved_by ? ` by ${esc(t.resolved_by)}` : '';
       const pending = !t.summary_by;   // still the companion's placeholder
@@ -4662,11 +4765,11 @@ ${bubbleShellHtml()}`;
     // perfectly and nothing in this tab can reach it — telling that reader to
     // go and start a server they already started is a wild goose chase. One
     // sentence, no steps, no retry button (there is nothing to retry).
-    const offlineHtml = () => D.reloadNeeded
-      ? `<div class="notice"><b>Discuss was updated — reload this tab to reconnect.</b>` +
+    const offlineHtml = () => D.conn === 'reload'
+      ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.reload)}</b>` +
         `<div class="sub">the companion is fine; this tab's copy of the extension is not</div></div>`
-      : (D.connKnown && !D.connected)
-      ? `<div class="notice"><b>Companion offline — the plugin needs its local server:</b>` +
+      : D.conn === 'offline'
+      ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.offline)}</b>` +
         `<ol class="steps">` +
         `<li>open Terminal</li>` +
         `<li>run: <code>botference plugin</code>` +
@@ -4676,6 +4779,11 @@ ${bubbleShellHtml()}`;
         `<div class="alt">one-time alternative: <code>botference plugin --install-autostart</code> ` +
         `— starts at login, no terminal again (macOS)</div>` +
         `<button data-act="retry" type="button">↻ Retry connection</button></div>`
+      // a request that ran out of time (config.js timeoutLine): one plain line
+      // saying what did not go through. Under the offline card it would only
+      // repeat what that card says, so it shows only while the link is up.
+      : D.timeout
+      ? `<div class="notice timeout">${esc(D.timeout)}</div>`
       : '';
 
     // Sites where nothing can be wrapped keep the pane (and its history) but
@@ -5816,7 +5924,7 @@ ${bubbleShellHtml()}`;
     function leaveChat() {
       delete D.outbox[PAGE_TARGET];
       delete D.notes[PAGE_TARGET];
-      delete D.running[PAGE_TARGET];
+      moveTurn(PAGE_TARGET, 'end');
       for (const k of Object.keys(D.streams)) {
         if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
       }
@@ -5886,11 +5994,11 @@ ${bubbleShellHtml()}`;
     // typed message never did: a QUEUED marker on every thread with a turn
     // coming.
     //
-    // Those markers are the ordinary waiting notes, one per thread target, so a
-    // round of twelve renders as twelve cards each saying it is waiting rather
-    // than as twelve spinners stacked on the page chat. Each is cleared by
-    // exactly what clears any wait: that thread's own turn-start, or a refetch
-    // that shows a new bot message in it (clearAnsweredWaits).
+    // Those markers are each thread's own turn in 'waiting', so a round of
+    // twelve renders as twelve cards each saying it is waiting rather than as
+    // twelve spinners stacked on the page chat. Each moves on exactly as any
+    // wait does: that thread's own turn-start, or a refetch whose record says
+    // its turn is running or gone (setTurns).
     async function sendReview() {
       const r = D.review;
       if (r.busy) return;
@@ -5906,8 +6014,9 @@ ${bubbleShellHtml()}`;
         r.note = `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`;
       } else {
         for (const id of a.threads || []) {
-          if (D.running[id]) continue;   // this one is already under way
-          D.notes[id] = { text: 'queued in this review round…', transient: true, bots: botsIn(id) };
+          if (!canTurnMove(D.turns[id], 'wait')) continue;   // this one is already under way
+          delete D.notes[id];
+          moveTurn(id, 'wait', { text: 'queued in this review round…' });
         }
         // off a draft the round has one more step, and the receipt says so —
         // otherwise the wrap-up arriving in page chat looks like a bot going
@@ -6504,13 +6613,11 @@ ${bubbleShellHtml()}`;
 
     function paintConn() {
       if (!D.mounted) return;
-      const off = D.reloadNeeded || (D.connKnown && !D.connected);
-      D.el.conn.classList.toggle('off', off);
-      D.el.conn.classList.toggle('pending', !D.reloadNeeded && !D.connKnown);
+      D.el.conn.classList.toggle('off', D.conn === 'offline' || D.conn === 'reload');
+      D.el.conn.classList.toggle('pending', D.conn === 'connecting');
+      // the same words everywhere (config.js CONN_WORDS); offline is a button
       D.el.conn.querySelector('.ctext').textContent =
-        D.reloadNeeded ? 'reload this tab'
-          : !D.connKnown ? 'connecting…'
-          : (D.connected ? 'connected' : 'companion offline — retry');
+        CFG.CONN_WORDS[D.conn] + (D.conn === 'offline' ? ' — retry' : '');
     }
 
     // ---- the review round strip -----------------------------------------
@@ -6566,12 +6673,17 @@ ${bubbleShellHtml()}`;
 
     function paintFoot() {
       if (!D.mounted) return;
-      const busy = Object.keys(D.running).filter(k => D.running[k]);
-      const anyRunning = busy.length > 0;
+      const busy = turnsIn('working', 'stopping');
+      const lost = turnsIn('lost');
+      const anyRunning = busy.length > 0 || lost.length > 0;
       let html = '';
-      if (anyRunning) {
-        html = chipBody(busy) + `<button class="stop" data-act="interrupt" type="button">✕ stop</button>`;
+      if (busy.length) {
+        html = chipBody(busy) + (turnsIn('working').length
+          ? `<button class="stop" data-act="interrupt" type="button">✕ stop</button>`
+          : '<span class="stopping">stopping…</span>');
         D.el.foot.setAttribute('aria-label', workingLabel(busy));
+      } else if (lost.length) {
+        html = esc(TURN_LOST_TEXT);
       } else if (D.foot) {
         html = esc(D.foot);
       } else if (D.bridge) {
@@ -6579,7 +6691,7 @@ ${bubbleShellHtml()}`;
       } else {
         html = esc(HINT);
       }
-      if (!anyRunning) D.el.foot.removeAttribute('aria-label');
+      if (!busy.length) D.el.foot.removeAttribute('aria-label');
       D.el.foot.innerHTML = html;
       D.el.foot.classList.toggle('err', !!D.footErr && !anyRunning);
     }
@@ -7615,7 +7727,7 @@ ${bubbleShellHtml()}`;
       'ptasks-fold': () => { D.ptasksOpen = !D.ptasksOpen; render(); },
       'tasks-jump': () => jumpToTasks(),
       'interrupt': (btn) => doInterrupt(btn),
-      'retry': () => cb('onReconnect')(),
+      'retry': () => reconnect(),
       'warn-dismiss': () => setWarning(''),
       'copy': (btn) => doCopy(btn),
       'edit': (btn) => startEdit(btn),
@@ -7939,7 +8051,7 @@ ${bubbleShellHtml()}`;
         }, { passive: true });
       }
 
-      D.el.conn.addEventListener('click', () => { if (!D.connected) cb('onReconnect')(); });
+      D.el.conn.addEventListener('click', () => { if (D.conn === 'offline') reconnect(); });
 
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
@@ -8339,28 +8451,53 @@ ${bubbleShellHtml()}`;
       return changed;
     }
 
-    function note(target, text, err, transient) {
+    function note(target, text, err) {
       const key = target == null ? PAGE_TARGET : target;
-      // a wait remembers how many bot messages this target had when it was
-      // written, which is what lets a later refetch decide it is over
-      if (text) D.notes[key] = { text, err: !!err, transient: !!transient,
-                                 ...(transient ? { bots: botsIn(key) } : {}) };
+      if (text) D.notes[key] = { text, err: !!err };
       else delete D.notes[key];
       render();
     }
 
-    // A waiting line lives and dies with the wait. Removal is SILENT: the reply
-    // that arrives is the only "ready" anyone needs, so nothing takes its place.
-    function clearWaiting(target) {
-      const n = D.notes[target];
-      if (!n || !n.transient) return false;
-      delete D.notes[target];
-      return true;
+    // ---- a chat's turn (TURN_MODES) ----------------------------------------
+    // THE one function that changes D.turns (turnMove refuses the illegal
+    // moves). A turn that is over takes its half-typed streams with it; a wait
+    // ending is SILENT — the reply that arrived is the only "ready" anyone
+    // needs. The caller renders.
+    function moveTurn(target, move, arg) {
+      if (target == null || target === '') throw new Error('turn: no target');
+      D.turns[target] = turnMove(D.turns[target] || null, move, arg, move === 'hear' ? null : ++D.turnClock);
+      if (turnMode(D.turns[target]) === 'idle') {
+        for (const k of Object.keys(D.streams)) if (D.streams[k].target === target) delete D.streams[k];
+      }
+      return D.turns[target];
     }
-    // True only inside the window the word "queued" describes: this target has
-    // no turn running and none has begun or ended since the send left.
-    const queueWindowOpen = (key, epoch) =>
-      key != null && !D.running[key] && D.turnSeq[key] === epoch;
+    const turnOf = target => turnMode(D.turns[target]);
+    const turnStamp = target => (D.turns[target] && D.turns[target].at) || 0;
+    // working or stopping: a bot is on it, the chip shows
+    const turnBusy = target => { const m = turnOf(target); return m === 'working' || m === 'stopping'; };
+    // every chat whose turn is in one of `modes`
+    const turnsIn = (...modes) => Object.keys(D.turns).filter(k => modes.indexOf(turnOf(k)) !== -1);
+    // Level the chats in `scope` ('page': this page's chat and threads;
+    // 'library': the library chat) with the companion's own record of what is
+    // running (GET /page `turns`). `asked` is turnAsk() sampled before the
+    // request left: a chat that has moved since knows better than the answer.
+    function setTurns(record, asked, scope) {
+      if (!Array.isArray(record)) return false;   // an older companion: nothing to go on
+      const lib = scope === 'library';
+      const rows = record.map(r => (r && lib ? { ...r, target: LIBRARY_TARGET } : r));
+      const inScope = k => (lib ? k === LIBRARY_TARGET : k !== LIBRARY_TARGET);
+      const moves = turnPlan(D.turns, rows, inScope, Number(asked) || 0);
+      for (const [k, move, arg] of moves) moveTurn(k, move, arg);
+      if (moves.length) render();
+      return moves.length > 0;
+    }
+    // The companion cannot be reached: every chat with a turn under way says
+    // so instead of spinning, and the next record that does arrive decides.
+    function loseTurns() {
+      const hit = turnsIn('waiting', 'working', 'stopping');
+      for (const k of hit) moveTurn(k, 'lose');
+      return hit.length > 0;
+    }
 
     // What the wait actually says. The companion knows WHY the turn has not
     // started — the bridge is being woken (ten or twenty seconds, cold), or
@@ -8394,7 +8531,6 @@ ${bubbleShellHtml()}`;
       if (res.position > 1) return `queued (#${res.position})`;
       return 'queued…';
     }
-    const bumpTurn = target => { D.turnSeq[target] = (D.turnSeq[target] || 0) + 1; };
 
     // WHICH COPY OF A COMPOSER IS THE LIVE ONE. A thread can have two on the
     // page at once — the panel's card, and a bubble beside its highlight —
@@ -8664,12 +8800,12 @@ ${bubbleShellHtml()}`;
     async function deliver(target, entry) {
       entry.state = 'sending';
       entry.error = '';
-      // Which turn generation this send belongs to, sampled BEFORE the await:
-      // anything that moves this target's counter while the POST is out means
-      // the bots started (or finished) first and "queued…" is already false. A
-      // brand-new thread has no id and no history yet, so its window is open
-      // exactly while its minted id has never been named by a turn event.
-      const epoch = target === '__new__' ? undefined : D.turnSeq[target];
+      // Where this chat's turn stood, sampled BEFORE the await: anything that
+      // moves it while the POST is out means the bots started (or finished)
+      // first and "queued…" is already false. A brand-new thread has no id and
+      // no history yet, so its window is open exactly while its minted id has
+      // never been named by a turn event.
+      const since = target === '__new__' ? 0 : turnStamp(target);
       let res;
       try {
         res = target === '__new__'
@@ -8724,8 +8860,10 @@ ${bubbleShellHtml()}`;
       // why the bots are not coming, and must never be dressed up as "queued".
       if (res.reason) note(key == null ? null : key, res.reason, true);
       else if (!res.queued) note(target === '__new__' ? null : target, null);
-      else if (queueWindowOpen(key, epoch)) {
-        note(key, waitText(res, key), false, true);
+      else if (key != null && turnStamp(key) === since && canTurnMove(D.turns[key], 'wait')) {
+        delete D.notes[key];   // the wait replaces whatever was said last time
+        moveTurn(key, 'wait', { text: waitText(res, key) });
+        render();
       } else render();   // the turn is already under way, or already over: say nothing
     }
 
@@ -9501,11 +9639,18 @@ ${bubbleShellHtml()}`;
     async function doInterrupt(btn) {
       const card = btn && btn.closest && btn.closest('.card[data-thread], .bubble[data-thread]');
       const target = card ? card.getAttribute('data-thread') : null;
-      note(target, 'stopping…', false, true);   // a wait, not a message: the turn's end takes it away
+      // the chip says "stopping…" until the turn's own end takes it away; the
+      // footbar's stop is for whatever is working on this page
+      const stopping = (target ? [target] : turnsIn('working')).filter(t => canTurnMove(D.turns[t], 'stop'));
+      for (const t of stopping) moveTurn(t, 'stop');
+      render();
       let r;
       try { r = await cb('onInterrupt')(); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      if (r && r.ok === false) note(target, r.error || 'could not stop that turn', true);
+      if (r && r.ok === false) {
+        for (const t of stopping) if (canTurnMove(D.turns[t], 'unstop')) moveTurn(t, 'unstop');
+        note(target, r.error || 'could not stop that turn', true);
+      }
     }
 
     // Deleting a WHOLE THREAD (`ts` absent) has an heir, sometimes. The reader
@@ -10915,11 +11060,12 @@ ${bubbleShellHtml()}`;
       }
       if (D.pages.list) D.pages.list = D.pages.list.filter(p => !sameUrl(p.url, url));
       if (r.current) {
-        D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
-        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
+        // every chat of the dead page is over — which also means a send still in
+        // flight for it can no longer claim a queue slot (its stamp has moved)
+        for (const t of Object.keys(D.turns)) if (t !== LIBRARY_TARGET) moveTurn(t, 'end');
+        D.streams = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
         resetMsgWindows(LIBRARY_TARGET);
         if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
-        D.turnSeq = {};   // a send still in flight for the dead page can no longer claim a queue slot
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
       }
@@ -11094,11 +11240,13 @@ ${bubbleShellHtml()}`;
     async function loadLibrary() {
       if (D.library.loading) return;
       D.library.loading = true;
+      const asked = D.turnClock;
       const r = await cb('onLibrary')();
       D.library.loading = false;
       if (r && r.ok !== false) {
         D.library.page = (r.page && r.page.url) ? r.page : null;
         D.library.err = '';
+        setTurns(r.turns, asked, 'library');
       } else {
         D.library.err = (r && r.error) || 'could not reach the companion';
         D.library.note = D.library.err;
@@ -11138,7 +11286,7 @@ ${bubbleShellHtml()}`;
       D.library.err = false;
       delete D.outbox[LIBRARY_TARGET];
       delete D.notes[LIBRARY_TARGET];
-      delete D.running[LIBRARY_TARGET];
+      moveTurn(LIBRARY_TARGET, 'end');
       moveMsgWindow(LIBRARY_TARGET, 'reset');
       if (D.edit && D.edit.target === LIBRARY_TARGET) moveEdit('leave');
       renderLibrary();
@@ -11260,25 +11408,6 @@ ${bubbleShellHtml()}`;
       return D;
     }
 
-    // A refetch is the other way a wait can end. The events that would have
-    // taken "queued…" down (turn-start, reply, turn-end) can be lost outright —
-    // an extension service worker dies and the tab is never told another thing
-    // until content.js resyncs — so the RECORD gets the same authority they
-    // have: if the bots have answered since the wait was written, the wait is
-    // over, whatever we did or did not hear.
-    function botsIn(target) {
-      return realMsgs(target).filter(m => m && isBot(m.author)).length;
-    }
-    function clearAnsweredWaits() {
-      let changed = false;
-      for (const key of Object.keys(D.notes)) {
-        const n = D.notes[key];
-        if (!n || !n.transient || n.bots == null) continue;
-        if (botsIn(key) > n.bots) { delete D.notes[key]; changed = true; }
-      }
-      return changed;
-    }
-
     function setPage(page) {
       const was = (D.page && D.page.url) ? String(D.page.url) : '';
       const wasSid = (D.page && D.page.session_id) || '';
@@ -11304,7 +11433,6 @@ ${bubbleShellHtml()}`;
         D.lasso = { ...D.lasso, target: '', query: '', results: [], head: '', err: '',
                     busy: '', searching: '', declined: [], done: '' };
       }
-      clearAnsweredWaits();
       // a different page is a different chat: it opens at its newest message
       if (was !== (page && page.url ? String(page.url) : '')) D.land = PAGE_TARGET;
       // …and its windows start again from the newest stretch (the library's,
@@ -11458,12 +11586,40 @@ ${bubbleShellHtml()}`;
       render();
       return D;
     }
-    function setConn(on) {
-      const changed = D.connected !== !!on || !D.connKnown;
-      D.connected = !!on; D.connKnown = true;
-      paintConn();
-      if (changed) render();   // the offline notice lives in the panes
+    // THE one function that changes D.conn: a move from config.js's
+    // CONN_MOVES ('retry' | 'reach' | 'fail' | 'unload'; true and false are
+    // shorthand for reach and fail). A move the current mode does not allow —
+    // an answer arriving after the extension was reloaded, say — is refused:
+    // nothing changes and it answers false.
+    function setConn(move) {
+      const m = move === true ? 'reach' : move === false ? 'fail' : move;
+      if (!CFG.canConnMove(D.conn, m)) return false;
+      const was = D.conn;
+      D.conn = CFG.connMove(was, m);
+      // a turn under way can no longer be vouched for; the next record that
+      // arrives says what became of it (setTurns)
+      if (D.conn === 'offline' || D.conn === 'reload') loseTurns();
+      // …and the library's own record is only read while it is open
+      if (D.conn === 'connected' && was !== 'connected' && turnOf(LIBRARY_TARGET) === 'lost' && D.view === 'pages') loadLibrary();
+      if (D.mounted) {
+        paintConn();
+        if (was !== D.conn) render();   // the offline notice lives in the panes
+      }
+      return true;
+    }
+    // A request ran out of time (text), or a later one was answered (null).
+    function noteTimeout(text) {
+      const t = text ? String(text) : '';
+      if (D.timeout === t) return D;
+      D.timeout = t;
+      if (D.mounted) render();
       return D;
+    }
+    // Retry, pressed: 'connecting…' while content.js tries the socket and the
+    // page again, which then says reach or fail
+    function reconnect() {
+      setConn('retry');
+      return cb('onReconnect')();
     }
     function setTheme(t) { if (D.host) { if (t) D.host.setAttribute('data-theme', t); else D.host.removeAttribute('data-theme'); } return D; }
 
@@ -12705,28 +12861,31 @@ ${bubbleShellHtml()}`;
       // target here and everything downstream — chips, streams, the window,
       // outbox reconciliation — works on it without knowing what it is.
       const target = isLibraryUrl(ev.url) ? LIBRARY_TARGET : (ev.target || PAGE_TARGET);
-      D.heard[target] = Date.now();   // this turn is demonstrably still being reported
+      // Something about a turn we were waiting on (or had lost touch with) is
+      // proof it has begun, even if the turn-start that should have said so
+      // never reached us. An idle chat is not started this way: a stray event
+      // is not a turn, and the companion's record settles it on the next look.
+      const begun = () => {
+        const m = turnOf(target);
+        if (m === 'waiting' || m === 'lost') { moveTurn(target, 'start'); return true; }
+        return false;
+      };
       switch (ev.kind) {
         case 'video-watch':
-          if (ev.state === 'start') D.watching[target] = ev.url || 'a video';
-          else delete D.watching[target];
+          begun();
+          if (turnBusy(target)) moveTurn(target, 'hear', { watching: ev.state === 'start' ? (ev.url || 'a video') : '' });
           render();
           break;
         case 'turn-start':
-          D.running[target] = true;
-          delete D.watching[target];
-          bumpTurn(target);   // closes the "queued…" window for any send still in flight
-          // an older companion sends no `agents`; the chip then stays generic
-          D.turnAgents[target] = Array.isArray(ev.agents) ? ev.agents.filter(Boolean) : [];
-          D.liveAgents[target] = [];
-          delete D.speaker[target];
+          // closes the "queued…" window for any send still in flight (its
+          // stamp has moved). An older companion sends no `agents`; the chip
+          // then stays generic.
+          moveTurn(target, 'start', { agents: ev.agents });
           delete D.notes[target];
           render();
           break;
         case 'stream': {
-          // text is arriving, so whatever we were waiting for has begun — even
-          // if the turn-start that should have said so never reached us
-          if (clearWaiting(target)) render();
+          if (begun()) render();
           const key = ev.stream_id || (ev.model + ':' + target);
           const s = D.streams[key]
             || (D.streams[key] = { who: ev.model || 'claude', target, text: '', shown: 0, done: false,
@@ -12739,10 +12898,10 @@ ${bubbleShellHtml()}`;
           if (!typewriterOn()) s.shown = s.text.length;
           // the floor has moved: redraw so the spinning ring follows it — a
           // build agent is not on the roster; its card spins for itself
-          if (ev.model && ev.model !== 'agent') {
-            const live = D.liveAgents[target] || (D.liveAgents[target] = []);
-            if (live.indexOf(ev.model) === -1) live.push(ev.model);
-            if (D.speaker[target] !== ev.model) { D.speaker[target] = ev.model; render(); }
+          if (ev.model && ev.model !== 'agent' && turnBusy(target)) {
+            const was = D.turns[target].speaker;
+            moveTurn(target, 'hear', { speaker: ev.model });
+            if (was !== ev.model) render();
           }
           // fast path: patch the live <pre> instead of rebuilding the pane
           if (!paintStream(key)) render();
@@ -12768,58 +12927,31 @@ ${bubbleShellHtml()}`;
             }
           }
           appendMsg(target, ev.msg);
-          clearWaiting(target);   // the answer is here; nothing is waiting on anything
+          // a bot's answer is here: whatever we were waiting on has begun, and
+          // the chip stays until the turn's own end
+          if (ev.msg && isBot(ev.msg.author)) begun();
           render();
           break;
         case 'turn-end':
-          delete D.running[target];
-          delete D.watching[target];
-          bumpTurn(target);
-          clearWaiting(target);   // never leave "queued…" (or "stopping…") behind a finished turn
-          delete D.turnAgents[target];
-          delete D.liveAgents[target];
-          delete D.speaker[target];
-          for (const k of Object.keys(D.streams)) if (D.streams[k].target === target) delete D.streams[k];
+          // a finished turn takes its chip, its "stopping…" and its streams
+          moveTurn(target, 'end');
           render();
+          break;
+        case 'turn-dropped':
+          // a turn that was waiting and will now never start (the chat was
+          // put away under it); a turn already working is not this one
+          if (turnOf(target) === 'waiting') { moveTurn(target, 'end'); render(); }
           break;
         case 'error':
           // A turn that is still running keeps its chip: the companion reports
           // a refused file-write (and anything else it survives) as an error
           // event mid-turn and then ends the turn normally. Only an error that
-          // arrives with no turn in flight IS the end of one.
-          if (!D.running[target]) {
-            delete D.turnAgents[target];
-            delete D.liveAgents[target];
-            delete D.speaker[target];
-            bumpTurn(target);   // no turn in flight: this error IS the end of one
-          }
-          // overwrites any "queued…" outright — the reason replaces the wait
+          // arrives with no turn in flight IS the end of one — and the reason
+          // replaces any wait outright.
+          if (!turnBusy(target)) moveTurn(target, 'end');
           note(target, ev.error || 'the bots hit an error', true);
           break;
       }
-    }
-
-    // A turn ENDS with an event, so a turn that is still "running" long after
-    // the last thing anyone heard about it is a turn whose end never arrived —
-    // the worker died mid-answer, and the chip would otherwise spin for ever.
-    // The record cannot say (it holds messages, not turns), so silence is the
-    // only evidence there is; content.js supplies the patience.
-    function quietTurns(ms) {
-      const now = Date.now();
-      return Object.keys(D.running).filter(t => now - (D.heard[t] || 0) >= (ms || 0));
-    }
-    // Exactly what a `turn-end` does, for a turn-end that never came.
-    function endTurn(target) {
-      if (!D.running[target]) return false;
-      delete D.running[target];
-      bumpTurn(target);
-      clearWaiting(target);
-      delete D.turnAgents[target];
-      delete D.liveAgents[target];
-      delete D.speaker[target];
-      for (const k of Object.keys(D.streams)) if (D.streams[k].target === target) delete D.streams[k];
-      render();
-      return true;
     }
 
     // Optimistic local append so the thread moves the instant the event lands;
@@ -12844,7 +12976,7 @@ ${bubbleShellHtml()}`;
     }
 
     Object.assign(D, {
-      mount, open, close, toggle, render, setPage, setOrphans, setConn, setTheme, setWarning, setAuthor,
+      mount, open, close, toggle, render, setPage, setOrphans, setConn, noteTimeout, setTheme, setWarning, setAuthor,
       setExportMode, setOwner, setProject, setRound, setBlog, blogRoot,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
@@ -12968,7 +13100,12 @@ ${bubbleShellHtml()}`;
         };
       },
       openModels, closeModels, setWidth: w => applyWidth(w),
-      showPages, showThreads, refreshPages, quietTurns, endTurn,
+      showPages, showThreads, refreshPages,
+      // the companion's record of this page's turns (GET /page `turns`):
+      // content.js samples turnAsk() before the request and hands both back
+      setTurns, turnAsk: () => D.turnClock,
+      // where one chat's turn stands (TURN_MODES) — the harness and tests read it
+      turnMode: target => turnOf(target == null ? PAGE_TARGET : target),
       // Whether a ```python block may be run from here: the companion's answer
       // to GET /run (owner, and not switched off). False until it has said so,
       // and false for ever for a guest — the button is not drawn at all.
@@ -13005,7 +13142,7 @@ ${bubbleShellHtml()}`;
       // not — and, if it never got its styles, takes itself off the page
       // rather than sit there as raw text over somebody's reading.
       contextLost() {
-        D.reloadNeeded = true;
+        setConn('unload');
         try { if (detachWatch) detachWatch.disconnect(); } catch (_) { /* gone already */ }
         try { if (headWatch) headWatch.disconnect(); } catch (_) { /* gone already */ }
         detachWatch = headWatch = detachRoot = headRoot = null;
@@ -13095,8 +13232,7 @@ ${bubbleShellHtml()}`;
       // how many events were thrown out because handling them threw — 0 in a
       // healthy session, and the harness asserts on it
       eventErrors: () => D.badEvents || 0,
-      isWaiting: () => Object.keys(D.notes).some(k => D.notes[k] && D.notes[k].transient)
-        || Object.keys(D.running).length > 0
+      isWaiting: () => turnsIn('waiting', 'working', 'stopping', 'lost').length > 0
         || Object.keys(D.outbox).some(k => (D.outbox[k] || []).some(e => e.state === 'sending')),
     });
     return D;
@@ -13122,6 +13258,7 @@ ${bubbleShellHtml()}`;
     bubbleHowMove, BUB_PLACES, BUB_STACKS, BUB_HOW_MOVES,   // test/modes.test.mjs
     imeMove, imeMode, composingKey, IME_MODES, IME_MOVES,   // test/compose.test.mjs
     footMove, footMode, FOOT_MODES, FOOT_MOVES,             // test/footkeep.test.mjs
+    turnMove, turnMode, turnPlan, canTurnMove, TURN_MODES, TURN_MOVES, TURN_LOST_TEXT, // test/turnmode.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

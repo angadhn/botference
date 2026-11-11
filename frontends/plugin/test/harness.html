@@ -3023,9 +3023,9 @@ const askedUrl = path => {
 
 const editPosts = [];         // every /edit the drawer sent, in order
 function companion(method, path, body) {
-  if (OFFLINE) return { ok: false, error: 'companion unreachable (Failed to fetch)' };
+  if (OFFLINE) return { ok: false, error: 'companion offline — could not reach it (Failed to fetch)' };
   // the transient failure of a cold worker, spent one call at a time
-  if (failCalls > 0) { failCalls--; return { ok: false, error: 'companion unreachable (Failed to fetch)' }; }
+  if (failCalls > 0) { failCalls--; return { ok: false, error: 'companion offline — could not reach it (Failed to fetch)' }; }
   const route = String(path).split('?')[0];
   // A hosted companion has an owner and it has guests. Everything that changes
   // the companion itself (the export, the page library, the agent controls) is
@@ -3400,13 +3400,17 @@ function companion(method, path, body) {
   // the library is an ordinary page record on a reserved url — the companion
   // creates it on the first message and answers {page:null} until then
   if (method === 'GET' && route === '/page' && askedUrl(path) === LIBRARY_URL) {
-    return { ok: true, status: 200, data: LIBRARY || { ok: true, page: null } };
+    const turns = liveTurnsOn(LIBRARY_URL);
+    return { ok: true, status: 200, data: LIBRARY ? { ...LIBRARY, turns } : { ok: true, page: null, turns } };
   }
   // a page nobody has acted on has no record — and a GET never creates one
   if (method === 'GET' && route === '/page') {
+    // `turns` is the companion's record of what is running on this page
+    // (server.mjs turnsFor): every turn-start this fake has sent, until its end
+    const turns = liveTurnsOn(PAGE_URL);
     return freshKnown
-      ? { ok: true, status: 200, data: RECORD }
-      : { ok: true, status: 200, data: { ok: true, page: null } };
+      ? { ok: true, status: 200, data: { ...RECORD, turns } }
+      : { ok: true, status: 200, data: { ok: true, page: null, turns } };
   }
   if (method === 'POST' && route === '/page') {
     freshKnown = true;                 // the upsert is what brings it into being
@@ -4114,7 +4118,31 @@ const contentListeners = [];
 // tab) is what puts it back.
 let workerAlive = true;
 const livePorts = new Set();
+// The companion's record of which chats have a turn running, as GET /page
+// `turns` reports it: every turn-start this fake sends, until its turn-end —
+// whether or not the event was ever delivered (a turn runs on the companion,
+// not in the tab). Tests that hand the drawer events directly are counted too.
+const LIVE_TURNS = new Map();   // url|target -> {target, state, agents}
+function trackTurn(ev) {
+  if (!ev || ev.type !== 'chat') return;
+  const key = (ev.url || PAGE_URL) + '|' + (ev.target || '__page__');
+  if (ev.kind === 'turn-start') {
+    LIVE_TURNS.set(key, { target: ev.target || '__page__', state: 'running', agents: ev.agents || [] });
+  } else if (ev.kind === 'turn-end' || ev.kind === 'turn-dropped') LIVE_TURNS.delete(key);
+}
+function liveTurnsOn(url) {
+  const dr = window.__bfp && window.__bfp.drawer;
+  if (dr && !dr.__turnsTracked) {
+    const on = dr.onEvent;
+    // a deliberately broken event (a selftest hands one in) must reach the
+    // drawer, which drops it; this fake record just does not count it
+    dr.onEvent = ev => { try { trackTurn(ev); } catch { /* not a turn */ } return on(ev); };
+    dr.__turnsTracked = true;
+  }
+  return [...LIVE_TURNS.entries()].filter(([k]) => k.startsWith(url + '|')).map(([, v]) => v);
+}
 function toContent(msg) {
+  if (msg && msg.t === 'ws') trackTurn(msg.ev);
   if (!workerAlive || !delivering) return;   // nothing to deliver it
   for (const fn of contentListeners) { try { fn(msg, {}, () => {}); } catch (e) { console.error(e); } }
 }
@@ -4171,11 +4199,11 @@ window.chrome = {
             helloUrls.push(msg.url);
             // `base` is the companion's own origin, which only the worker knows
             // — the drawer needs it to WRITE a `/files/…` link that opens
-            if (OFFLINE) return { ok: true, known: false, threads: 0, connected: false, index: {}, base: COMPANION_BASE };
+            if (OFFLINE) return { ok: true, known: false, threads: 0, socket: 'offline', index: {}, base: COMPANION_BASE };
             // a page with no record is not "known": it stays dormant on a
             // revisit exactly as a never-annotated page always has
-            if (!freshKnown) return { ok: true, known: false, threads: 0, connected: true, index: {}, base: COMPANION_BASE };
-            return { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {}, base: COMPANION_BASE };
+            if (!freshKnown) return { ok: true, known: false, threads: 0, socket: 'connected', index: {}, base: COMPANION_BASE };
+            return { ok: true, known: true, threads: RECORD.threads.length, socket: 'connected', index: {}, base: COMPANION_BASE };
           case 'get-index': return companion('GET', '/index');
           case 'api':
             // the proxy only ever talks to the companion; a site adapter that
@@ -4247,7 +4275,7 @@ window.chrome = {
             log('open-options' + (want ? ': ' + want : ''));
             return { ok: true, focus: want };
           }
-          case 'reconnect': setTimeout(() => toContent({ t: 'conn', connected: true }), 300); return { ok: true };
+          case 'reconnect': setTimeout(() => toContent({ t: 'conn', socket: 'connected' }), 300); return { ok: true };
           default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
         }
       })();
@@ -4275,7 +4303,7 @@ window.chrome = {
         postMessage(msg) {
           if (!workerAlive) return;
           if (msg && msg.t === 'ping') {
-            setTimeout(() => port._msg.forEach(fn => { try { fn({ t: 'pong', connected: true }); } catch {} }), 5);
+            setTimeout(() => port._msg.forEach(fn => { try { fn({ t: 'pong', socket: 'connected' }); } catch {} }), 5);
           }
         },
         disconnect() { livePorts.delete(port); },
@@ -4310,6 +4338,7 @@ window.chrome = {
 <script src="../extension/anchor.js"></script>
 <script src="../extension/blockdiff.js"></script>
 <script src="../extension/adapters.js"></script>
+<script src="../extension/config.js"></script>
 <script src="../extension/drawer.js"></script>
 <script src="../extension/content.js"></script>
 
@@ -5188,12 +5217,13 @@ async function selftest() {
   check('…and the late {queued} answer was never written down at all', !sawQueued);
 
   // Belt and braces: an older companion (or a dropped event) can start pouring
-  // text out with no turn-start in front of it. The wait ends on the evidence.
-  d.note('__page__', 'queued…', false, true);
+  // text out with no turn-start in front of it. The wait ends on the evidence:
+  // the turn has begun, so the chat is working (chip and stop) until it ends.
+  d.setTurns([{ target: '__page__', state: 'waiting' }], d.turnAsk(), 'page');
   d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'stream',
               model: 'claude', stream_id: 's-nostart', text: 'answering already…' });
   check('text arriving with no turn-start of its own still ends the wait',
-    !chatStatus().length);
+    d.turnMode('__page__') === 'working' && !/waiting to start/.test(chatStatusText()));
   d.onEvent({ type: 'chat', url: PAGE_URL, target: '__page__', kind: 'turn-end' });
 
   // ---- @ completes itself -------------------------------------------------
@@ -5359,8 +5389,8 @@ async function selftest() {
 
   // 1. the worker dies. The port dying IS the notice, and the record settles it.
   const LOST = 'the answer nobody was told about';
-  d.note('__page__', 'queued…', false, true);
-  check('a wait is on screen to be stranded', /queued/.test(chatStatusText()));
+  d.setTurns([{ target: '__page__', state: 'waiting' }], d.turnAsk(), 'page');
+  check('a wait is on screen to be stranded', /waiting to start/.test(chatStatusText()));
   window.__bfpWorker.kill();
   RECORD.page_chat.push({ author: 'codex', ts: now(), text: LOST });
   toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });   // delivered nowhere
@@ -5369,7 +5399,7 @@ async function selftest() {
   check('…and refetches the answer it was never told about',
     !!await until(() => (chatText().includes(LOST) ? true : null), 8000));
   check('…which takes the stale wait with it',
-    !!await until(() => (!/queued/.test(chatStatusText()) ? true : null), 8000));
+    !!await until(() => (!/waiting to start/.test(chatStatusText()) ? true : null), 8000));
   check('…quietly — a worker respawn is not an error the reader should see',
     !S.querySelector('.status-chip.err'));
 
@@ -5392,12 +5422,12 @@ async function selftest() {
     window.__bfp.liveness.log.some(w => w === 'after-send' || w === 'waiting'));
   window.__bfpWorker.hear();
 
-  // 3. that turn's ENDING was lost with everything else. A turn ends with an
-  // event and nothing else, so a turn nobody has heard from in a long time is
-  // settled from this side — otherwise the working chip spins for ever.
-  const quiet = d.quietTurns(0);
-  for (const t of quiet) d.endTurn(t);
-  check('a turn whose end was lost is settled from this side, not left spinning',
+  // 3. that turn's ENDING was lost with everything else. The companion's own
+  // record of what is running (GET /page `turns`) settles it — here, nothing
+  // is — so the working chip comes down instead of spinning for ever. Silence
+  // alone never takes it down: a long tool run is silent too.
+  d.setTurns([], d.turnAsk(), 'page');
+  check('a turn whose end was lost is settled by the companion\'s record, not left spinning',
     !S.querySelector('.pane[data-pane="chat"] .status-chip .avatar-ring'));
   check('…leaving the chat with no chip and no wait', !chatStatus().length);
   check('…while the answers it did deliver are still on screen',
@@ -7408,7 +7438,7 @@ async function selftest() {
 
   check('the drawer starts out connected', !banner());
   // 1. the socket says it is not open. That is not evidence of anything.
-  toContent({ t: 'conn', connected: false });
+  toContent({ t: 'conn', socket: 'offline' });
   await sleep(120);
   check('a socket that is not open does not accuse the companion of being down', !banner());
   // 2. one failed request, then health: still not a verdict
@@ -7425,7 +7455,7 @@ async function selftest() {
   check('…in the header too', /offline/i.test(connText()));
   // 4. …and it heals itself the moment the pipe is back, with nothing clicked
   failCalls = 0;
-  toContent({ t: 'conn', connected: true, resumed: true });
+  toContent({ t: 'conn', socket: 'connected', resumed: true });
   const healed = await until(() => !banner(), 8000);
   check('the banner clears itself when the companion comes back', !!healed);
   check('…without anybody pressing Retry', /connected/i.test(connText()));
@@ -14073,7 +14103,7 @@ async function selftestWorkspace() {
   // page is when it arrives; switching mid-turn is the reader choosing that,
   // not something the drawer should paper over.
   await until(() => (((window.__bfp.page || {}).page_chat) || []).length >= 2, 9000);
-  await until(() => !d.running[PAGE_T], 9000);
+  await until(() => d.turnMode(PAGE_T) === 'idle', 9000);
   await sleep(300);
 
   // ---- the council wrote, and the drawer catches up ----------------------

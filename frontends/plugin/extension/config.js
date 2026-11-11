@@ -8,8 +8,9 @@
 //   bfp:password    shared password; '' = a local companion with no auth
 //   bfp:handle      display name/handle this browser signs its messages with
 //
-// Loaded by background.js (importScripts) and by options.html (a plain script
-// tag). Nothing in here touches the network or the DOM, and nothing in here
+// Loaded by background.js (importScripts), by options.html (a plain script
+// tag), and as a content script ahead of drawer.js and content.js (for the
+// connection's one list of modes and words, CONN_MODES). Nothing in here touches the network or the DOM, and nothing in here
 // reads chrome.* except the two explicit storage helpers at the bottom — so
 // the whole file runs in node, which is where test/adapters.test.mjs unit-tests
 // it (normalizeBase · wsUrlFor · authHeaders · sanitizeHandle · isLocal).
@@ -39,6 +40,90 @@
       ? 'The running Discuss companion does not support this draft command. Restart or update the companion, then retry. Nothing was sent to the bots.'
       : '';
   }
+
+  // ── is the extension in touch with the companion? ─────────────────────────
+  // ONE list of modes, and ONE set of words for them, for every layer that
+  // keeps or shows the connection: the worker's live socket (background.js
+  // wsState), the drawer's header dot and its notices (drawer.js D.conn), and
+  // what content.js relays between them. Nothing else names these states.
+  //   'connecting' — not known yet, or trying again
+  //   'connected'  — the companion answered
+  //   'offline'    — it did not (after a couple of quick second chances, for
+  //                  the drawer; the socket simply closed, for the worker)
+  //   'reload'     — the extension was updated under this tab: nothing here
+  //                  can reach the companion until the tab is reloaded. Final.
+  const CONN_MODES = Object.freeze(['connecting', 'connected', 'offline', 'reload']);
+  // …the words shown for each (the header dot), and the two notices built on them
+  const CONN_WORDS = Object.freeze({
+    connecting: 'connecting…', connected: 'connected', offline: 'companion offline', reload: 'reload this tab',
+  });
+  const CONN_NOTICE = Object.freeze({
+    offline: 'Companion offline — the plugin needs its local server:',
+    reload: 'Discuss was updated — reload this tab to reconnect.',
+  });
+  // …and every way it changes, with the modes each move may start from:
+  //   retry  — connecting|connected|offline → connecting (a fresh try)
+  //   reach  — connecting|connected|offline → connected
+  //   fail   — connecting|connected → offline
+  //   unload — any → reload
+  const CONN_MOVES = Object.freeze({
+    retry: ['connecting', 'connected', 'offline'],
+    reach: ['connecting', 'connected', 'offline'],
+    fail: ['connecting', 'connected'],
+    unload: CONN_MODES,
+  });
+  const CONN_TO = { retry: 'connecting', reach: 'connected', fail: 'offline', unload: 'reload' };
+  const canConnMove = (mode, move) => !!CONN_MOVES[move] && CONN_MOVES[move].indexOf(mode) !== -1;
+  // Pure: (mode, move) → mode. An unknown move, or one from a mode it does not
+  // start from, throws — callers that hear from the outside world ask
+  // canConnMove first and drop the move (a late answer after a reload, say).
+  function connMove(mode, move) {
+    if (!CONN_MOVES[move]) throw new Error('connection: no such move ' + move);
+    if (!canConnMove(mode, move)) throw new Error('connection: cannot ' + move + ' while ' + mode);
+    return CONN_TO[move];
+  }
+
+  // ── how long a request to the companion may take ──────────────────────────
+  // Every one-shot request has a limit; none may wait for ever. Most are a
+  // read or a small write on this machine and answer in milliseconds, so 30s
+  // is already a companion that is not answering. The few below do real work
+  // before they answer (a recording to transcribe, a commit, an export, a
+  // preview build, a search, a chat copied into the council …) and get three
+  // minutes. The live event socket is not a request: it is checked by its
+  // heartbeat instead (background.js SOCKET_SILENT_MS).
+  const REQUEST_MS = 30000;
+  const SLOW_REQUEST_MS = 180000;
+  const SLOW_ROUTES = ['/transcribe', '/publish', '/export', '/suggest-preview', '/suggest-accept',
+    '/suggest-accept-all', '/lasso', '/summarize', '/project-create', '/project-chat',
+    '/continue-in-council', '/pdf-annotations', '/page-image', '/snapshot', '/send-review',
+    '/make-artifact', '/run', '/fte-route', '/blog-page', '/blog-image', '/files', '/relay',
+    '/fresh', '/delete-page', '/page-chat-new', '/page-chat-open', '/question', '/question-revise',
+    '/model', '/effort', '/key-mode', '/draft-blog', '/draft-blog/thread'];
+  const routeOf = p => String(p || '').split('?')[0];
+  const requestLimitMs = (method, path) =>
+    (SLOW_ROUTES.indexOf(routeOf(path)) !== -1 ? SLOW_REQUEST_MS : REQUEST_MS);
+  // …and, when one runs out, what it was, in the reader's words: the line the
+  // drawer shows says WHAT did not go through, and that it can be tried again
+  const REQUEST_WHAT = {
+    'POST /reply': 'your message', 'POST /thread': 'your comment', 'POST /draft-blog': 'your message',
+    'POST /draft-blog/thread': 'your comment', 'POST /edit': 'your edit', 'POST /delete': 'the delete',
+    'POST /interrupt': 'the stop', 'POST /resolve': 'resolving the comment', 'POST /tick': 'the tick',
+    'POST /export': 'the export', 'POST /transcribe': 'the dictation', 'POST /run': 'running the code',
+    'POST /publish': 'the publish', 'POST /send-review': 'sending the review', 'POST /page': 'saving this page',
+    'POST /snapshot': 'saving the page text', 'POST /rename-page': 'the rename', 'POST /tag-page': 'the tag',
+    'POST /delete-page': 'the delete', 'POST /model': 'the model change', 'POST /effort': 'the effort change',
+    'GET /page': 'loading this page', 'GET /index': 'loading your pages', 'GET /lasso': 'the search',
+  };
+  function requestWhat(method, path) {
+    const m = String(method || 'GET').toUpperCase();
+    return REQUEST_WHAT[m + ' ' + routeOf(path)] || (m === 'GET' ? 'loading that' : 'that change');
+  }
+  // "Your message did not go through — the companion took too long. Try again."
+  function timeoutLine(method, path) {
+    const w = requestWhat(method, path);
+    return w.charAt(0).toUpperCase() + w.slice(1) + ' did not go through — the companion took too long. Try again.';
+  }
+
   // bfp:pdf is the one setting here that is not about the wire: whether a web
   // PDF is opened in Discuss's own viewer (so it can be annotated) or left to
   // the browser's. Stored the same way as the rest because it is read in the
@@ -168,6 +253,8 @@
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,
     commandRoute, commandError,
+    CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
+    REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPConfig = api;

@@ -1344,7 +1344,7 @@ async function publishAndInject(ident) {
   // the file's own name, extension and all — the adapter sends it with the
   // record, and this is here so a reader looking at the page can see it too
   window.__BFP_PDF_FILE = LOCAL ? Adapters.pdfFileName(SRC) : '';
-  try { await loadScripts(['../vendor/katex/katex.min.js', '../anchor.js', '../drawer.js', '../content.js']); }
+  try { await loadScripts(['../vendor/katex/katex.min.js', '../anchor.js', '../config.js', '../drawer.js', '../content.js']); }
   catch (e) { console.warn('[botference] the annotator did not load:', (e && e.message) || e); }
   watchTitle();
   // the scan may have finished before the annotator existed (the identity-last

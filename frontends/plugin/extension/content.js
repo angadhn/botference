@@ -73,7 +73,9 @@
   const Anchor = window.BFPAnchor;
   const Drawer = window.BFPDrawer;
   const Adapters = window.BFPAdapters || null;
-  if (!Anchor || !Drawer) return;
+  // config.js: the connection's one list of modes and its words (CONN_MODES)
+  const CFG = window.BFPConfig;
+  if (!Anchor || !Drawer || !CFG) return;
 
   // ---- normUrl: must match background.js and the companion's store.mjs ----
   const STRIP_PARAM = /^(utm_[^=]*|fbclid|gclid)$/i;
@@ -548,7 +550,7 @@
   // There is nothing to repair from here: a content script cannot re-inject
   // itself, and only a reload of the tab puts a live one back. So the only
   // honest behaviour is to notice ONCE, say so ONCE, and go quiet.
-  const RELOAD_NOTE = 'Discuss was updated — reload this tab to reconnect.';
+  const RELOAD_NOTE = CFG.CONN_NOTICE.reload;
   // Chrome's own wording, in the two spellings it has used.
   const isContextGone = e =>
     /extension context (?:was )?invalidated/i.test(String((e && e.message) || e || ''));
@@ -635,12 +637,24 @@
     if (drawer && drawer.setFilesBase) drawer.setFilesBase(FILES_BASE);
   }
 
+  // A worker that never calls back (killed mid-request) must not leave a
+  // request waiting for ever either: past the worker's own limit plus a little,
+  // the answer is a timeout. Messages that are not requests to the companion
+  // get a generous one — they only wait on the worker itself.
+  const BG_SPARE_MS = 5000;
+  const BG_OTHER_MS = 90000;
   function bg(msg) {
     return new Promise(resolve => {
       if (GUARD.gone || !extensionAlive()) {
         GUARD.lose();
         return resolve({ ok: false, error: RELOAD_NOTE });
       }
+      let settled = false;
+      const done = r => { if (settled) return; settled = true; clearTimeout(backstop); resolve(r); };
+      const backstop = setTimeout(() => done(msg.t === 'api'
+        ? { ok: false, timeout: true, error: CFG.timeoutLine(msg.method, msg.path) }
+        : { ok: false, timeout: true, error: 'the extension did not answer in time — try again' }),
+      msg.t === 'api' ? CFG.requestLimitMs(msg.method, msg.path) + BG_SPARE_MS : BG_OTHER_MS);
       try {
         // page_url rides on everything: the worker's routing table is memory
         // only, and this is what puts this tab back in it after a respawn
@@ -650,17 +664,28 @@
           const err = alive(() => chrome.runtime.lastError, null);
           if (err) {
             GUARD.saw(err);
-            return resolve({ ok: false, error: err.message });
+            return done({ ok: false, error: err.message });
           }
-          resolve(r || { ok: false, error: 'no response from background' });
+          done(r || { ok: false, error: 'no response from background' });
         });
       } catch (e) {
         GUARD.saw(e);
-        resolve({ ok: false, error: String((e && e.message) || e) });
+        done({ ok: false, error: String((e && e.message) || e) });
       }
     });
   }
-  const api = (method, path, body) => bg({ t: 'api', method, path, body });
+  // Every request to the companion goes through here. One that ran out of time
+  // is never dropped silently: the drawer shows one plain line saying what did
+  // not go through and that it can be tried again (and a timeout counts as the
+  // companion not answering, toward the connection's verdict); the next answer
+  // that does arrive takes the line down.
+  const api = (method, path, body) => bg({ t: 'api', method, path, body }).then(r => {
+    if (r && r.timeout) {
+      if (drawer) drawer.noteTimeout(r.error);
+      if (!/^\/page\?/.test(String(path))) connHttp(false);   // loadPage reports its own
+    } else if (r && r.ok && drawer) drawer.noteTimeout(null);
+    return r;
+  });
 
   // A shared companion has an OWNER and it has guests. Owner-only endpoints
   // (export, delete-page, the model/effort/verbosity/relay controls) answer 403
@@ -2001,8 +2026,9 @@
   //
   // So: only HTTP may say "offline", and only after it has been given a couple
   // of quick second chances; the socket may only ever say "yes". The drawer
-  // already has the soft state for the in-between — `connKnown:false` renders
-  // "connecting…" rather than a banner — and this keeps it there.
+  // holds the one connection mode (config.js CONN_MODES, D.conn) and its
+  // 'connecting' is the soft state for the in-between; this file only relays
+  // moves to it ('reach', 'fail'), and keeps the count of failures in a row.
   const CONN_GRACE = 2;                     // failures tolerated before the verdict
   const CONN_RETRY_MS = [700, 2000];        // …each one chased up, quickly
   let connFails = 0;
@@ -2012,13 +2038,13 @@
     if (ok) {
       connFails = 0;
       connRetries = 0;
-      if (drawer) drawer.setConn(true);
+      if (drawer) drawer.setConn('reach');
       return;
     }
     connFails++;
     if (connFails > CONN_GRACE) {
       // genuinely unreachable, and now it is worth saying so
-      if (drawer) drawer.setConn(false);
+      if (drawer) drawer.setConn('fail');
       return;
     }
     // still in grace: say nothing, and go and look again rather than waiting
@@ -2029,9 +2055,10 @@
   }
 
   // A socket coming up is proof the companion is there; a socket being down is
-  // not proof of anything at all, so it never sets the banner.
-  function connSocket(up) {
-    if (up) { connFails = 0; connRetries = 0; if (drawer) drawer.setConn(true); }
+  // not proof of anything at all, so it never sets the banner. `socket` is the
+  // worker's own mode for it, in the same list.
+  function connSocket(socket) {
+    if (socket === 'connected') { connFails = 0; connRetries = 0; if (drawer) drawer.setConn('reach'); }
   }
 
   // ---- what this page is CALLED --------------------------------------------
@@ -2054,12 +2081,18 @@
 
   // ---- page load / refresh --------------------------------------------------
   async function loadPage() {
+    // where the drawer's turns stood when this was asked (see drawer.setTurns)
+    const asked = drawer ? drawer.turnAsk() : 0;
     const r = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
     // reaching the companion at all is the connection signal the user cares
     // about; the WS `conn` broadcasts only ever confirm it (see connHttp)
     connHttp(!!r.ok);
     if (!r.ok) return null;
     const rec = (r.data && r.data.page !== undefined) ? r.data.page : r.data;
+    // which of this page's chats the bots are answering right now — the
+    // companion's own record, not part of the page's
+    const turns = r.data && Array.isArray(r.data.turns) ? r.data.turns : null;
+    if (rec) delete rec.turns;
     // a real record on the companion is the ONLY thing that marks this page
     // registered — page:null means it has never been acted on, and nothing
     // may be POSTed for it until it is
@@ -2087,6 +2120,7 @@
     fteNoteSession();
     reanchorAll();
     if (drawer) drawer.setPage(PAGE);
+    if (drawer && turns) drawer.setTurns(turns, asked, 'page');
     // a rename arrives as a `page` event, which lands here — so this is also
     // where everything else that shows a name finds out about it
     announceTitle();
@@ -2376,8 +2410,8 @@
       if (!r || !r.ok) return;
       noteBase(r);
       // already awake: stay awake, and re-anchor against the new record
-      if (active) { loadPage().then(() => connSocket(!!r.connected)); return; }
-      if (r.known) activate(false).then(() => connSocket(!!r.connected));
+      if (active) { loadPage().then(() => connSocket(r.socket)); return; }
+      if (r.known) activate(false).then(() => connSocket(r.socket));
     });
     return true;
   }
@@ -2430,9 +2464,9 @@
       drawer.mount();
       runReady();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
-      // `connected` here is the SOCKET, which a freshly woken worker has not
+      // `socket` here is the worker's, which a freshly woken worker has not
       // opened yet — so it may confirm, never deny (see connHttp/connSocket)
-      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) { noteBase(r); connSocket(!!r.connected); } });
+      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) { noteBase(r); connSocket(r.socket); } });
       await loadPage();
       // a page that already earned its record gets the scraped title, kind and
       // file name refreshed on every visit, exactly as before; a page that
@@ -2471,8 +2505,8 @@
   const RESYNC_MIN_MS = 1500;             // never refetch more often than this
   const WAIT_TICK_MS = 4000;              // how often a waiting page looks up
   const SEND_CHECKS_MS = [4000, 10000];   // the safety net after a send
-  const WAIT_POLLS_MAX = 30;              // …and then it stops asking (~2 min)
-  const TURN_QUIET_MS = 45000;            // a running turn nobody has heard from
+  const WAIT_POLLS_MAX = 30;              // …and then it asks less often (~2 min)
+  const WAIT_SLOW_MS = 30000;             // …this often, for as long as it waits
   let port = null;
   let portTimer = null;
   let waitTimer = null;
@@ -2569,18 +2603,17 @@
       connectPort();
       if (now - lastPingAt >= PING_MS) { lastPingAt = now; pingPort(); }
       if (!active || !drawer) return;
-      // a page that is waiting on the bots and hearing nothing looks it up —
-      // but not for ever: a companion that has genuinely stopped answering is
-      // not worth a request every few seconds until the tab is closed
+      // a page that is waiting on the bots and hearing nothing looks it up:
+      // the record says which turns are really still running (drawer
+      // setTurns), so a turn whose ending was lost in transit comes down and
+      // one in a long, silent tool run stays up. Briskly at first, then — a
+      // turn can run for many minutes — at a slower pace for as long as it lasts.
       if (drawer.isWaiting() && now - lastEventAt > WAIT_TICK_MS) {
         if (waitPolls < WAIT_POLLS_MAX) { waitPolls++; resync('waiting'); }
+        else if (now - lastResyncAt >= WAIT_SLOW_MS) resync('still-waiting');
       } else {
         waitPolls = 0;
       }
-      // …and a turn still marked running long after the last word about it had
-      // its ending lost in transit. The chip comes down; the record is already
-      // whatever the resync made it.
-      for (const t of drawer.quietTurns(TURN_QUIET_MS)) drawer.endTurn(t);
     }, WAIT_TICK_MS);
   }
 
@@ -3459,8 +3492,11 @@
         const r = await api('GET', '/page?url=' + encodeURIComponent(LIBRARY_URL));
         if (!r.ok) return failure(r);
         const d = r.data;
+        // the companion's record of the library chat's turn rides along
+        const turns = d && Array.isArray(d.turns) ? d.turns : null;
+        if (d) delete d.turns;
         LIBRARY = (d && d.url) ? d : null;
-        return { ok: true, page: LIBRARY };
+        return { ok: true, page: LIBRARY, turns };
       },
       onLibraryReply: async (text, route) => {
         const r = await api('POST', '/reply',
@@ -3589,7 +3625,9 @@
         if (!r.data || r.data.ok === false) return { ok: false, error: (r.data && r.data.error) || 'transcription failed' };
         return { ok: true, text: r.data.text || '', seconds: r.data.seconds };
       },
-      onReconnect: () => bg({ t: 'reconnect' }),
+      // Retry: the socket, and the page — whose answer is what moves the
+      // drawer's 'connecting…' on to connected or back to offline
+      onReconnect: () => { bg({ t: 'reconnect' }); return active ? loadPage() : null; },
       // The quote clicked: go to the mark. On a PDF the mark may be on a page
       // that has not been rendered yet — a strikeout minted for page 2 out of a
       // discussion on page 13 — and then there is nothing painted to scroll to.
@@ -3988,10 +4026,10 @@
     if (msg.t === 'conn') {
       // the socket opening is proof; the socket dropping is not — the
       // companion is very often still answering, and the reconnect is ours
-      connSocket(!!msg.connected);
+      connSocket(msg.socket);
       // a socket that has just come back cannot say what it missed while it
       // was down, so the record is asked instead of assumed
-      if (msg.connected && msg.resumed) resync('socket-resumed');
+      if (msg.socket === 'connected' && msg.resumed) resync('socket-resumed');
       sendResponse({ ok: true });
       return;
     }
@@ -4540,13 +4578,13 @@
       // not barge in: activate(false) restores the highlights and leaves the
       // drawer shut until asked for, exactly as an annotated page does.
       if (PROJECT) {
-        activate(false).then(() => connSocket(!!r.connected));
+        activate(false).then(() => connSocket(r.socket));
         return;
       }
       if (r.known) {
         // an annotated page: wake up and restore the highlights, but do not
         // barge in — the drawer stays shut until asked for
-        activate(false).then(() => connSocket(!!r.connected));
+        activate(false).then(() => connSocket(r.socket));
         return;
       }
       // A text-identified local PDF whose record still sits under its old
@@ -4559,7 +4597,7 @@
         api('GET', '/page?url=' + encodeURIComponent(URL_NOW)).then(pr => {
           const rec = pr && pr.ok
             ? (pr.data && pr.data.page !== undefined ? pr.data.page : pr.data) : null;
-          if (rec && rec.url) activate(false).then(() => connSocket(!!r.connected));
+          if (rec && rec.url) activate(false).then(() => connSocket(r.socket));
         });
       }
     });

@@ -469,9 +469,9 @@ Contract deltas agreed during live testing — authoritative over the sections a
   /edit always, and /delete for guests, defaults author to the caller's own handle.
   An unbreakable tie resolves to the first match with `ambiguous:true` in the
   response. store.resolveMsg() is the single resolver. The drawer's queued status is
-  lifecycle-scoped: written only if the turn hasn't already started (epoch check),
-  superseded by the working chip at turn-start, structurally removed at
-  reply/turn-end/error.
+  the chat's turn in 'waiting' (see "Is a bot working?"): entered only if the
+  chat has not moved since the send left (a stamp check), replaced by the
+  working chip at turn-start, gone at turn-end/error.
 - Pages view: the row for the page you are on is the emphasised one — accent
   rail, faint accent wash, its title at full contrast and bold — and the other
   rows step back (title at ~60% of --heading, meta at .75 opacity, both restored
@@ -558,15 +558,44 @@ Contract deltas agreed during live testing — authoritative over the sections a
   "queued…"). Belt and braces, all four: a long-lived port per tab
   (`chrome.runtime.connect`, name `bfp`) whose DISCONNECT is the page's notice
   that the worker died — it reconnects (starting a worker) and refetches; a
-  fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', resumed:true}`
+  fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', socket:'connected', resumed:true}`
   on every socket (re)open makes each drawer refetch what it may have missed;
   and after any send, checks at 4s and 10s refetch if no event has arrived.
-  A page that is visibly waiting and hearing nothing polls every 4s (bounded,
-  ~2 min). A running turn with no event for 45s is settled locally
-  (`quietTurns`/`endTurn`) so a lost `turn-end` cannot spin for ever, and a
-  refetch that shows the bots answered clears a stale wait structurally. One
-  malformed event can never freeze the stream: `onEvent` catches, counts, and
-  the next event is handled normally (the failure triggers a refetch).
+  A page that is visibly waiting (any chat's turn not idle) and hearing nothing
+  polls every 4s for ~2 min, then every 30s for as long as the turn lasts. Each
+  refetch brings the companion's own record of the page's turns (GET /page
+  `turns`), which settles a lost `turn-end` (the record says nothing is running)
+  without ever taking the chip down for mere silence. One malformed event can
+  never freeze the stream: `onEvent` catches, counts, and the next event is
+  handled normally (the failure triggers a refetch).
+- Is a bot working? (2026-11-11) One value per chat — the page chat, the
+  library chat, each thread — in `D.turns`, with its modes named in one list,
+  `TURN_MODES = ['idle', 'waiting', 'working', 'stopping', 'lost']`, and changed
+  only by `moveTurn` → pure `turnMove`, which refuses a move from a mode it does
+  not start from (`TURN_MOVES`: wait idle|waiting|lost→waiting; start any→working;
+  hear working|stopping→same, who is speaking / which video; stop
+  working→stopping; unstop stopping→working; lose waiting|working|stopping→lost;
+  end any→idle, never refused). Everything that draws the working chip, the
+  stop button, a card's `working` class, the footbar chip and `isWaiting()`
+  reads that one value; the eleven fields it replaced (`running`, `watching`,
+  `turnAgents`, `liveAgents`, `speaker`, `turnSeq`, `heard`, the `transient`
+  and `bots` flags on notes, `quietTurns`/`endTurn` and content.js's 45-second
+  `TURN_QUIET_MS`) are gone. The truth is the companion's: `turn-start` →
+  working, `turn-end` → idle, `turn-dropped` ends a wait, an `error` with no
+  turn running ends it; and GET /page (and the library's) carries
+  `turns: [{target, state: 'running'|'waiting', agents?}]` from every bridge
+  child's `jobs()` (server.mjs `turnsFor`; control and silent summary/card turns
+  are left out). `setTurns(record, asked, scope)` levels the chats with it
+  (pure `turnPlan`), skipping any chat that moved after the record was asked
+  for. So the chip and the stop button stay on until the bot really finishes,
+  the reader stops it, or the turn fails — a ten-minute tool run included —
+  and a reload or a second tab mid-turn comes back working (or waiting). Stop
+  shows "stopping…" in place of the button until the turn ends; a refused stop
+  puts the button back and says why. When the companion cannot be reached
+  (connection offline, or the extension reloaded under the tab), every chat
+  with a turn under way moves to 'lost' and says "can’t reach the companion —
+  the bot may still be working" (no stop button); the next record that arrives
+  decides. test/turnmode.test.mjs.
 - Waiting states say what they are waiting for: `chat.submit` reports
   `wait: 'bridge_starting' | 'busy' | 'pool_busy'` (absent once the turn is
   genuinely running), which rides POST /thread and /reply beside
@@ -1251,10 +1280,45 @@ Contract deltas agreed during live testing — authoritative over the sections a
     fresh extension page, which is a fresh worker wake far more often than a tab
     on an article. Now only HTTP may say "offline", and only after `CONN_GRACE`
     (2) failures, each chased up by an automatic recheck at 700ms and 2s; the
-    socket may only ever confirm. The drawer's existing soft state
-    (`connKnown:false` → "connecting…") covers the gap, and a `conn` event
-    clears the banner and refetches with nothing clicked. Shared layer, so
-    articles get it too.
+    socket may only ever confirm. The drawer's soft state ('connecting',
+    "connecting…") covers the gap, and a `conn` event clears the banner and
+    refetches with nothing clicked. Shared layer, so articles get it too.
+  · **One connection mode, one set of words** (2026-11-11). The connection was
+    kept three ways — the worker's socket as closed/connecting/open, content.js
+    relaying true/false, the drawer's `connected` + `connKnown` + `reloadNeeded`
+    with its own words. Now config.js (loaded as a content script ahead of
+    drawer.js, and by the worker, the PDF viewer's injector and the harness)
+    names it once: `CONN_MODES = ['connecting', 'connected', 'offline',
+    'reload']`, the moves `CONN_MOVES` (retry connecting|connected|offline →
+    connecting; reach connecting|connected|offline → connected; fail
+    connecting|connected → offline; unload any → reload, final) through pure
+    `connMove`, and the words `CONN_WORDS` / `CONN_NOTICE` that the header
+    dot, the offline card and the "reload this tab" line all print. The worker
+    keeps its socket in the same list (`wsState`, `moveSocket`) and relays it as
+    `{t:'conn', socket, resumed?}`, `{t:'pong', socket}` and `hello`'s
+    `socket`; content.js keeps only its failure count and relays moves
+    (`setConn('reach'|'fail')`); the drawer keeps the one mode in `D.conn`,
+    changed only by `setConn`, which refuses a move its mode does not allow (a
+    late answer after the extension was reloaded). Retry shows "connecting…"
+    while it re-opens the socket and re-reads the page. test/connmode.test.mjs,
+    test/background-socket.test.mjs.
+  · **No request waits for ever** (2026-11-11). Every extension → companion
+    request has a time limit (config.js `requestLimitMs`: 30s, or 3 minutes for
+    the routes that do real work before answering — transcribe, publish,
+    export, previews, search, the council copy …). The worker's `api()` calls
+    the fetch off (AbortController) and races it, and answers
+    `{ok:false, timeout:true, error}` where `error` is one plain line naming
+    what did not go through (`timeoutLine`: "Your message did not go through —
+    the companion took too long. Try again."). content.js's `bg()` has a
+    backstop a little past that limit for a worker that never calls back.
+    content.js's `api()` hands any timeout to the drawer (`noteTimeout`), which
+    shows the line at the top of the panes — not under the offline card, which
+    already says it — until the next request is answered; a timeout also counts
+    as the companion not answering toward the connection's verdict. The live
+    socket is not a request: the companion pings every 15s and the worker drops
+    and reopens a 'connected' socket that has heard nothing for 45s
+    (`checkSocketSilence`, on every keepalive alarm and tab ping), after which
+    the tabs refetch as on any reopen.
 
 - **Local PDFs** (`file://`, and the identity that makes them possible).
   The papers people actually annotate are on their own disk. The reason they
@@ -2846,9 +2910,9 @@ with a turn coming gets the ORDINARY waiting note on its own card — *"◐ queu
 in this review round…"*. That is the whole spinner story, and it is deliberately
 not a new affordance: a round of twelve reads as twelve waiting THREADS, one of
 them working, rather than twelve spinners stacked on a page chat that is not
-where the work is. Each note is taken down by exactly what takes down any wait —
-that thread's own `turn-start`, or a refetch showing a new bot message in it
-(`clearAnsweredWaits`).
+where the work is. Each note is that thread's turn in 'waiting', and moves on
+exactly as any wait does — that thread's own `turn-start`, or a refetch whose
+`turns` record says its turn is running or gone (`setTurns`).
 
 The reader still lands on **Page chat** after sending, where the button and the
 preamble are; the tab strip's count is what says the threads have started
