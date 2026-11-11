@@ -1836,6 +1836,12 @@
   //   'opening'  — a set-aside chat is being opened (`index` says which)
   // The rest of the value is data, not a mode: `list` (the rows once read, or
   // null), `err` (the last thing that went wrong, or '').
+  // THE POP-OVERS over the drawer: the /help list, the model picker, the
+  // export chooser and the project picker. At most ONE is open — opening one
+  // closes whichever was — so which one is a single named value (POPOVERS),
+  // kept in D.popover and changed only by setPopover. (It was four yes/no
+  // flags, and two of them could be up at once.)
+  const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects']);
   const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
   // …and every way it changes, in one list (newChatMove refuses the rest):
   //   ask     — idle | list → confirm      ("+ new chat")
@@ -2367,7 +2373,8 @@
       // 'all' | 'comments' — which export the crystal will run, remembered
       // across sessions by content.js (setExportMode) and changed by choosing
       exportMode: 'all',
-      exportOpen: false,
+      // which pop-over is open (POPOVERS): one value, changed by setPopover
+      popover: 'none',
       // The council projects this page is filed under, and the roster the
       // picker lists. `filed` is the authority (it comes back from every
       // POST); `list` is fetched once per open and kept. `declined` holds the
@@ -2376,7 +2383,6 @@
       // suggestion is not a fact about the page.
       projects: { list: null, filed: [], loading: false, err: '', busy: '',
                   declined: [], roots: [], newOpen: false, started: [] },
-      projOpen: false,
       // ---- lasso (SPEC "lasso — bringing what you have read and said…") ---
       // What a `/lasso …` just found, and where to draw it. Offers only:
       // `results` is thrown away by "dismiss", by the next search and by
@@ -2564,9 +2570,9 @@
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       // the command table the /help popup and the slash menu read (null =
-      // the fallback copy); helpOpen/helpFrom = the popup, and the composer
-      // it was asked for from, which gets the focus back when it closes
-      commands: null, helpOpen: false, helpFrom: '',
+      // the fallback copy); helpFrom = the composer the /help popup was asked
+      // for from, which gets the focus back when it closes
+      commands: null, helpFrom: '',
       focused: null,
       // a character being chosen with an input method (IME_MODES), changed
       // only by moveIme
@@ -2613,7 +2619,6 @@
                 // whether one turned up. Never a mode — the drawer does not get
                 // to invent one.
                 keyPending: null },
-      modelsOpen: false,
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
       pushed: null,        // saved inline style of <html> while the page is pushed
@@ -6154,7 +6159,7 @@ ${bubbleShellHtml()}`;
       if (!want) { D.projects.err = 'give the project a name'; paintProjPick(); return; }
       D.projects.busy = 'new';
       D.projects.err = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       render();
       let r = null;
       try { r = await cb('onCreateProject')(want, root || '', why || ''); }
@@ -6165,8 +6170,8 @@ ${bubbleShellHtml()}`;
         D.projects.list = null;        // there is one more of them now
         D.projects.newOpen = false;
         D.projects.started = (D.projects.started || []).concat([want]);
-        if (D.projOpen) closeProjPick();
-      } else if (D.projOpen) paintProjPick();
+        if (popIs('projects')) closeProjPick();
+      } else if (popIs('projects')) paintProjPick();
       paintFiled();
       render();
     }
@@ -7255,7 +7260,7 @@ ${bubbleShellHtml()}`;
 
     async function openModels() {
       if (!D.mounted) return;
-      D.modelsOpen = true;
+      setPopover('models');
       D.el.pop.hidden = false;
       D.models.loading = true;
       D.models.note = '';
@@ -7275,7 +7280,7 @@ ${bubbleShellHtml()}`;
         D.models.note = (r && r.error) || 'could not reach the companion';
         D.models.err = true;
       }
-      if (D.modelsOpen) paintModels();
+      if (popIs('models')) paintModels();
     }
 
     // The companion's whole answer about the agents (GET /models), into the
@@ -7293,7 +7298,7 @@ ${bubbleShellHtml()}`;
       D.models.bridge = r.bridge || '';
       if (Array.isArray(r.commands) && r.commands.length) {
         D.commands = r.commands;
-        if (D.helpOpen) paintHelp();
+        if (popIs('help')) paintHelp();
       }
       // …and one too old to have keys at all leaves the billing row out
       ingestKeys(r.keys);
@@ -7310,7 +7315,7 @@ ${bubbleShellHtml()}`;
       catch { return; }
       if (!r || r.ok === false) return;
       ingestModels(r);
-      if (D.modelsOpen) syncModels();
+      if (popIs('models')) syncModels();
     }
 
     // ---- the /help popup ---------------------------------------------------
@@ -7331,8 +7336,7 @@ ${bubbleShellHtml()}`;
     }
     function openHelp(target) {
       if (!D.mounted || !D.el.helppop) return;
-      if (D.modelsOpen) closeModels();
-      D.helpOpen = true;
+      setPopover('help');
       D.helpFrom = target || '';
       closeMention();
       paintHelp();
@@ -7342,20 +7346,44 @@ ${bubbleShellHtml()}`;
     }
     // Esc events a layer has already answered (see api.escape)
     const escUsed = new WeakSet();
-    function closeHelp() {
-      if (!D.helpOpen) return;
-      D.helpOpen = false;
-      if (D.el.helppop) D.el.helppop.hidden = true;
-      const box = D.helpFrom && composerBox(D.helpFrom);
-      D.helpFrom = '';
-      if (box) box.focus();
+    // ---- which pop-over is open (POPOVERS) ----------------------------------
+    // THE ONE SETTER. Any pop-over may replace any other, so the only move it
+    // refuses is to a name that is not on the list. Leaving one takes its
+    // panel down (POP_HIDE), which is how opening the next closes the last.
+    const popIs = name => D.popover === name;
+    function setPopover(next) {
+      if (POPOVERS.indexOf(next) === -1) throw new Error('pop-over: no such one ' + next);
+      const prev = POPOVERS.indexOf(D.popover) === -1 ? 'none' : D.popover;
+      if (prev === next) return false;
+      D.popover = next;
+      if (POP_HIDE[prev]) POP_HIDE[prev](next);
+      return true;
     }
-
-    function closeModels() {
-      D.modelsOpen = false;
-      if (D.el.pop) D.el.pop.hidden = true;
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onDocDown, true);
-    }
+    const POP_HIDE = {
+      // the composer /help was asked from gets the focus back — when /help
+      // closes, not when another pop-over takes its place
+      help: next => {
+        if (D.el.helppop) D.el.helppop.hidden = true;
+        const box = next === 'none' && D.helpFrom && composerBox(D.helpFrom);
+        D.helpFrom = '';
+        if (box) box.focus();
+      },
+      models: () => {
+        if (D.el.pop) D.el.pop.hidden = true;
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onDocDown, true);
+      },
+      export: () => {
+        if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
+      },
+      projects: () => {
+        if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
+        if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
+      },
+    };
+    // closing is "none", and only for the one that is open
+    function closeHelp() { if (popIs('help')) setPopover('none'); }
+    function closeModels() { if (popIs('models')) setPopover('none'); }
     // page-side clicks: everything inside the shadow root retargets to the host,
     // so this only ever fires for clicks on the page itself
     const onDocDown = e => { if (!D.host || !D.host.contains(e.target)) closeModels(); };
@@ -7583,7 +7611,7 @@ ${bubbleShellHtml()}`;
     // says what it reads.
     const ACTS = {
       'close': () => close(),
-      'models': () => { if (D.modelsOpen) closeModels(); else openModels(); },
+      'models': () => { if (popIs('models')) closeModels(); else openModels(); },
       'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
       'mic': (btn, target) => micTap(target),
@@ -7621,8 +7649,8 @@ ${bubbleShellHtml()}`;
       'pdf-import': () => doPdfImport(),
       'pdf-import-no': () => { PDF.dismissed = true; PDF.err = ''; render(); },
       'pdf-saved-ok': () => { PDF.out = null; render(); },
-      'export': () => { if (D.exportOpen) closeExportPick(); else openExportPick(); },
-      'filein': () => { if (D.projOpen) closeProjPick(); else openProjPick(); },
+      'export': () => { if (popIs('export')) closeExportPick(); else openExportPick(); },
+      'filein': () => { if (popIs('projects')) closeProjPick(); else openProjPick(); },
       'proj-file': (btn) => fileInProject(btn.dataset.root, btn.dataset.pid, !btn.dataset.on),
       // the bot's suggestion, answered. Yes files it; no puts the chip away
       // for this tab and is not remembered anywhere else — the reader may
@@ -7926,12 +7954,12 @@ ${bubbleShellHtml()}`;
         if (e.target && e.target.closest && e.target.closest('button.mic')) e.preventDefault();
       }, true);
       D.shadow.addEventListener('mousedown', e => {
-        if (!D.helpOpen || !e.target.closest) return;
+        if (!popIs('help') || !e.target.closest) return;
         if (e.target.closest('.popover.helppop')) return;
         closeHelp();
       }, true);
       D.shadow.addEventListener('mousedown', e => {
-        if (!D.modelsOpen || !e.target.closest) return;
+        if (!popIs('models') || !e.target.closest) return;
         if (e.target.closest('.popover') || e.target.closest('[data-act="models"]')) return;
         closeModels();
       }, true);
@@ -7952,7 +7980,7 @@ ${bubbleShellHtml()}`;
       // focused — the answer that settles it is always the companion's.
       if (typeof window !== 'undefined') {
         window.addEventListener('focus', () => {
-          if (D.modelsOpen && D.models.keyPending) refreshModels();
+          if (popIs('models') && D.models.keyPending) refreshModels();
         });
       }
 
@@ -7987,8 +8015,8 @@ ${bubbleShellHtml()}`;
           if (inBox) syncMention(inBox); else closeMention();
         }
         // …and so does anything that is not the export chooser or its button
-        if (D.exportOpen && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
-        if (D.projOpen && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
+        if (popIs('export') && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
+        if (popIs('projects') && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
           if (card && card.dataset.thread !== PAGE_TARGET) focus(card.dataset.thread);
@@ -8260,10 +8288,10 @@ ${bubbleShellHtml()}`;
             return;
           }
           if (D.light) closeLight();
-          else if (D.helpOpen) closeHelp();
-          else if (D.projOpen) closeProjPick();
-          else if (D.exportOpen) closeExportPick();
-          else if (D.modelsOpen) closeModels();
+          else if (popIs('help')) closeHelp();
+          else if (popIs('projects')) closeProjPick();
+          else if (popIs('export')) closeExportPick();
+          else if (popIs('models')) closeModels();
           else close();
           return;
         }
@@ -9924,16 +9952,11 @@ ${bubbleShellHtml()}`;
     }
     function openExportPick() {
       if (!D.mounted) return;
-      closeModels();
-      D.exportOpen = true;
+      setPopover('export');
       paintExportPick();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onExportDown, true);
     }
-    function closeExportPick() {
-      D.exportOpen = false;
-      if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
-    }
+    function closeExportPick() { if (popIs('export')) setPopover('none'); }
     const onExportDown = e => { if (!D.host || !D.host.contains(e.target)) closeExportPick(); };
     // Choosing is also remembering: the next export, here or from a row in the
     // pages list, uses this until it is changed again.
@@ -10052,8 +10075,7 @@ ${bubbleShellHtml()}`;
     }
     async function openProjPick() {
       if (!D.mounted) return;
-      closeModels(); closeExportPick();
-      D.projOpen = true;
+      setPopover('projects');
       D.projects.loading = !D.projects.list;
       D.projects.err = '';
       paintProjPick();
@@ -10068,13 +10090,9 @@ ${bubbleShellHtml()}`;
         D.projects.err = (e && e.message) || 'could not read your council';
       }
       D.projects.loading = false;
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
     }
-    function closeProjPick() {
-      D.projOpen = false;
-      if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
-      if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
-    }
+    function closeProjPick() { if (popIs('projects')) setPopover('none'); }
     const onProjDown = e => { if (!D.host || !D.host.contains(e.target)) closeProjPick(); };
 
     // The one mutation, shared by the picker and the bot's chip. Attaching is
@@ -10084,7 +10102,7 @@ ${bubbleShellHtml()}`;
       const key = `${root}\u0000${id}`;
       D.projects.busy = key;
       D.projects.err = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       try {
         const r = await cb('onFileProject')(root, id, attach);
         D.projects.filed = (r && r.filed) || [];
@@ -10092,7 +10110,7 @@ ${bubbleShellHtml()}`;
         D.projects.err = (e && e.message) || 'could not file this page';
       }
       D.projects.busy = '';
-      if (D.projOpen) paintProjPick();
+      if (popIs('projects')) paintProjPick();
       paintFiled();
       render();
     }
@@ -11591,7 +11609,7 @@ ${bubbleShellHtml()}`;
       const m = mode === 'comments' ? 'comments' : 'all';
       if (m === D.exportMode) return D;
       D.exportMode = m;
-      if (D.exportOpen) paintExportPick();
+      if (popIs('export')) paintExportPick();
       if (D.view === 'pages') renderPages();
       return D;
     }
@@ -12894,13 +12912,13 @@ ${bubbleShellHtml()}`;
         // the command table rides the same broadcast (chat.mjs modelsEvent)
         if (Array.isArray(ev.commands) && ev.commands.length) {
           D.commands = ev.commands;
-          if (D.helpOpen) paintHelp();
+          if (popIs('help')) paintHelp();
         }
         // which auth each agent bills, and whether there is a key to bill —
         // the companion's own setting, and the only thing that can settle a
         // billing switch waiting on a key
         ingestKeys(ev.keys);
-        if (D.modelsOpen) syncModels();
+        if (popIs('models')) syncModels();
         return;
       }
       // the round the reader started, as the companion sees it (server.mjs
@@ -13233,7 +13251,7 @@ ${bubbleShellHtml()}`;
         // …then the /help popup, which is a layer over the drawer. The same
         // key then reaches the drawer's own listener with nothing left open,
         // which would close the drawer — so the event is marked as used up.
-        if (D.helpOpen) { closeHelp(); if (ev) escUsed.add(ev); return true; }
+        if (popIs('help')) { closeHelp(); if (ev) escUsed.add(ev); return true; }
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's
@@ -13295,6 +13313,7 @@ ${bubbleShellHtml()}`;
     threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
     THREAD_STAGES, THREAD_MARKS, THREAD_MOVES, threadMove,  // test/status.test.mjs
     setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
+    POPOVERS,                                               // test/drawermodes.test.mjs
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
