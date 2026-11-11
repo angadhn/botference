@@ -70,8 +70,8 @@ geom('clientHeight', el => (el.classList.contains('pane') ? PANE_H : el.classLis
 geom('scrollHeight', el => (el.classList.contains('pane') ? CARD_TOP + CARD_H + 40 : el.classList.contains('bbody') ? BODY_SH : null));
 
 // ---- a long conversation ----------------------------------------------------
-// ten messages, the reader and claude taking turns: ten units, so the rule
-// keeps the first and the last two and folds the seven between them
+// ten messages, the reader and claude taking turns: five rounds, so the rule
+// keeps the first message and the last two rounds and folds the five between
 const conv = (n, tag) => Array.from({ length: n }, (_, i) => ({
   ts: `2026-11-10T10:${String(i).padStart(2, '0')}:00.000Z`,
   author: i % 2 ? 'claude' : 'reader',
@@ -108,12 +108,12 @@ ok('a chat that has just arrived opens at its foot, not its top',
   const ctrls = chatThread().querySelectorAll('.showmore');
   ok('folded: exactly one fold control in the chat', ctrls.length === 1, ctrls.length);
   const c = ctrls[0];
-  ok('…it is the "Show" one', c && c.dataset.act === 'expand' && /^Show 7 earlier replies$/.test(c.textContent),
+  ok('…it is the "Show" one', c && c.dataset.act === 'expand' && /^Show 5 earlier replies$/.test(c.textContent),
     c && c.textContent);
   ok('…and it is the LAST thing in the thread, after the newest message',
     c && kids[kids.length - 1] === c, kids.map(k => k.className).join(' | '));
   const gap = chatThread().querySelector('.foldgap');
-  ok('folded: a quiet count sits in the gap', !!gap && gap.textContent.trim() === '7 earlier replies', gap && gap.textContent);
+  ok('folded: a quiet count sits in the gap', !!gap && gap.textContent.trim() === '5 earlier replies', gap && gap.textContent);
   ok('…right after the first message', gap && gap.previousElementSibling
     && /chat message 0/.test(gap.previousElementSibling.textContent));
   ok('…and it is not a control: no button, no action',

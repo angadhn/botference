@@ -35,6 +35,9 @@ function eq(name, got, want) {
 const you = t => ({ author: 'angadh', ts: t, text: t });
 const bot = t => ({ author: 'claude', ts: t, text: t });
 const tools = t => ({ author: 'claude', ts: t, kind: 'tools', text: 'Explored\n└ Read' });
+const codex = t => ({ author: 'codex', ts: t, text: t });
+// the companion's own line (server.mjs store.appendMsg author 'botference')
+const notice = t => ({ author: 'botference', ts: t, text: 'Updated a file' });
 const ids = units => units.map(u => u.map(m => m.ts));
 
 // `fold` is the reader's own decision: undefined (the rule decides),
@@ -81,19 +84,19 @@ function visible(msgs, fold) {
   }
 }
 
-// ---- 3. a long thread keeps the root and the live tail ----------------------
+// ---- 3. a long thread keeps the root and the last two rounds ----------------
 {
-  // 12 alternating messages = 12 units
+  // 12 alternating messages = 12 units, six rounds
   const msgs = [];
   for (let i = 0; i < 12; i++) msgs.push(i % 2 ? bot('b' + i) : you('u' + i));
   const p = plan(msgs);
   ok('12 units fold', p.collapsed === true, JSON.stringify(p));
   eq('the fold starts after the thread root', p.from, D.KEEP_HEAD);
-  eq('…and ends KEEP_TAIL from the end', p.to, 12 - D.KEEP_TAIL);
-  eq('the count is what is hidden', p.hidden, 12 - D.KEEP_HEAD - D.KEEP_TAIL);
+  eq('…and ends where the second-to-last person message is', p.to, 8);
+  eq('the count is what is hidden', p.hidden, 7);
 
-  eq('the root and the last two are what is left',
-    visible(msgs), ['u0', '⋯9', 'u10', 'b11']);
+  eq('the root and the last two rounds are what is left',
+    visible(msgs), ['u0', '⋯7', 'u8', 'b9', 'u10', 'b11']);
 
   // the expander sits between the root and the tail, exactly once
   eq('exactly one expander', visible(msgs).filter(x => String(x)[0] === '⋯').length, 1);
@@ -127,14 +130,18 @@ function visible(msgs, fold) {
 
 // ---- 5. the smallest fold, and the one that is not worth drawing ------------
 {
-  // the tightest thread that folds: four units, one of them hidden. The line
-  // has to say so in the singular.
+  // four alternating units are the root's round plus one more: two rounds,
+  // all of it live
   const four = [you('u0'), bot('b1'), you('u2'), bot('b3')];
-  const p4 = plan(four);
-  ok('4 units fold', p4.collapsed === true, JSON.stringify(p4));
-  eq('…hiding exactly one message', p4.hidden, 1);
-  eq('…the one between the root and the live tail', visible(four), ['u0', '⋯1', 'u2', 'b3']);
-  eq('…and the line reads in the singular', D.moreLabel(p4.hidden), 'Show 1 earlier reply');
+  eq('4 alternating units are two rounds and stay whole', plan(four).collapsed, false);
+  // the tightest thread that folds: five units, one of them hidden. The line
+  // has to say so in the singular.
+  const five = [you('u0'), bot('b1'), you('u2'), bot('b3'), you('u4')];
+  const p5 = plan(five);
+  ok('5 units fold', p5.collapsed === true, JSON.stringify(p5));
+  eq('…hiding exactly one message', p5.hidden, 1);
+  eq('…the one between the root and the last two rounds', visible(five), ['u0', '⋯1', 'u2', 'b3', 'u4']);
+  eq('…and the line reads in the singular', D.moreLabel(p5.hidden), 'Show 1 earlier reply');
   eq('two or more stay plural', D.moreLabel(2), 'Show 2 earlier replies');
   eq('…however many there are', D.moreLabel(11), 'Show 11 earlier replies');
 
@@ -153,7 +160,7 @@ function visible(msgs, fold) {
   // the degenerate shape the guard exists for: units in the middle, but no
   // message inside any of them
   const tiny = D.collapsePlan(
-    [[you('a')], [tools('t')], [you('b')], [bot('c')]], false);
+    [[you('a')], [tools('t')], [you('b')], [bot('c')], [you('d')]], false);
   eq('a middle made only of tool rows is not worth folding', tiny.collapsed, false);
   eq('…and claims nothing', tiny.hidden, 0);
 }
@@ -173,20 +180,22 @@ function visible(msgs, fold) {
   ok('the thread is still collapsed', plan(msgs).collapsed === true);
   eq('a second answer in the same turn folds nothing away', plan(msgs).hidden, before.hidden);
 
-  // a fresh exchange: two new units at the tail, so two old ones roll into the
-  // fold — and still nothing springs open
+  // a fresh exchange: a new round at the tail, so the oldest live round rolls
+  // into the fold — and still nothing springs open
   msgs.push(you('ask'), bot('answer'));
   const after = plan(msgs);
   const seen = visible(msgs);
   ok('a fresh exchange is on screen',
     seen.indexOf('ask') !== -1 && seen.indexOf('answer') !== -1, JSON.stringify(seen));
   ok('the thread is still collapsed', after.collapsed === true);
-  // the two units that used to be the live tail are inside the fold now: u10,
-  // and the turn carrying both b11 and 'fresh' — three messages between them
-  eq('…and the two units it displaced rolled into the fold',
-    after.hidden, before.hidden + 3);
-  ok('…so the old tail is off screen',
-    seen.indexOf('u10') === -1 && seen.indexOf('fresh') === -1, JSON.stringify(seen));
+  // the round that was the older of the two live ones (u8, b9) is inside the
+  // fold now; the newer one (u10, b11 + 'fresh') is still live
+  eq('…and the round it displaced rolled into the fold',
+    after.hidden, before.hidden + 2);
+  ok('…so the displaced round is off screen',
+    seen.indexOf('u8') === -1 && seen.indexOf('b9') === -1, JSON.stringify(seen));
+  ok('…and the round before the new one is not',
+    seen.indexOf('u10') !== -1 && seen.indexOf('fresh') !== -1, JSON.stringify(seen));
   eq('the claim still matches what is actually hidden',
     after.hidden, msgs.filter(m => m.kind !== 'tools').length
       - seen.filter(x => String(x)[0] !== '⋯').length);
@@ -217,8 +226,8 @@ function visible(msgs, fold) {
 
   // a fold somebody ASKED for is tighter than one the drawer chose
   const twelve = line(12);
-  eq('the rule keeps two units of tail', plan(twelve).hidden, 12 - D.KEEP_HEAD - D.KEEP_TAIL);
-  eq('…a hand fold keeps one', D.collapsePlan(D.msgUnits(twelve), D.FOLD_SHUT).hidden,
+  eq('the rule keeps two rounds of tail', plan(twelve).hidden, 7);
+  eq('…a hand fold keeps one unit', D.collapsePlan(D.msgUnits(twelve), D.FOLD_SHUT).hidden,
     12 - D.KEEP_HEAD - D.KEEP_TAIL_SHUT);
   eq('…and still shows the newest unit',
     visible(twelve, D.FOLD_SHUT).slice(-1), ['b11']);
@@ -254,7 +263,7 @@ function visible(msgs, fold) {
   for (let i = 0; i < 40; i++) many.push([you('u' + i)]);
   eq('an expanded thread never folds', D.collapsePlan(many, true).collapsed, false);
   eq('…while the same thread folded would hide 37',
-    D.collapsePlan(many, false).hidden, 40 - D.KEEP_HEAD - D.KEEP_TAIL);
+    D.collapsePlan(many, false).hidden, 37);
 }
 
 // ---- 9. a summoned build agent's cards nest under the summoner ---------------
@@ -298,6 +307,58 @@ function visible(msgs, fold) {
   ok('a nested card is not an "earlier reply"',
     p.collapsed && p.hidden === flat.hidden && p.hidden === p.to - p.from,
     JSON.stringify(p) + ' vs ' + JSON.stringify(flat));
+}
+
+// ---- 10. rounds, not units: fresh replies are never folded away -------------
+{
+  eq('who counts as a person',
+    [you('a'), bot('b'), codex('c'), tools('t'), notice('n'),
+      { author: ' Botference ', ts: 'n2', text: 'x' }, { author: 'agent', ts: 'g', text: 'x' },
+      { author: 'passage', ts: 'p', text: 'x' }, null].map(D.isPersonMsg),
+    [true, false, false, false, false, false, false, false, false]);
+  ok('the system authors are one named list',
+    Array.isArray(D.SYSTEM_AUTHORS) && D.SYSTEM_AUTHORS.indexOf('botference') !== -1);
+
+  // a companion notice lands between two bots' answers to the same question:
+  // it must not split the round and push the first answer into the fold
+  const notes = [you('u0'), bot('b1'), you('u2'), bot('b3'), you('u4'), bot('b5'),
+    you('ask'), tools('ct'), bot('cr'), notice('n'), codex('cx'), bot('cr2')];
+  const seen1 = visible(notes);
+  ok('a notice does not fold the answer before it',
+    seen1.indexOf('cr') !== -1 && seen1.indexOf('ct') !== -1, JSON.stringify(seen1));
+  ok('…nor the question it answers', seen1.indexOf('ask') !== -1, JSON.stringify(seen1));
+  eq('…the last two rounds are live and the older middle folds',
+    seen1, ['u0', '⋯3', 'u4', 'b5', 'ask', 'ct', 'cr', 'n', 'cx', 'cr2']);
+
+  // the person asks again while the slower bot is still on the first question
+  const quick = [you('u0'), bot('b1'), you('u2'), bot('b3'), you('u4'), bot('b5'),
+    you('A'), bot('rA'), you('B'), codex('rB')];
+  const seen2 = visible(quick);
+  ok('an answer to the previous message stays when the next one is typed',
+    seen2.indexOf('rA') !== -1, JSON.stringify(seen2));
+  eq('…with both rounds live', seen2, ['u0', '⋯5', 'A', 'rA', 'B', 'rB']);
+
+  // only the bots and the app ever speak: the last two units, as before
+  const botsOnly = [notice('n0'), bot('b1'), notice('n2'), bot('b3'), notice('n4'), codex('c5')];
+  eq('no person message: the last two units stay',
+    visible(botsOnly), ['n0', '⋯3', 'n4', 'c5']);
+
+  // one person message after the root: it and everything after it stay
+  const one = [notice('n0'), bot('b1'), notice('n2'), bot('b3'), you('u4'), bot('b5'), notice('n6'), codex('c7')];
+  eq('one person message: never hidden, nor anything after it',
+    visible(one), ['n0', '⋯3', 'u4', 'b5', 'n6', 'c7']);
+  // …and when it is the newest unit, the tail is still two units long
+  const last = [notice('n0'), bot('b1'), notice('n2'), bot('b3'), you('u4')];
+  eq('the tail is never shorter than two units', visible(last), ['n0', '⋯2', 'b3', 'u4']);
+  // the root is the only person message: everything after it is its round
+  const rootOnly = [you('u0'), bot('b1'), notice('n2'), codex('c3'), notice('n4'), bot('b5')];
+  eq('a single round is never folded', plan(rootOnly).collapsed, false);
+
+  // a fold the reader asked for is as tight as ever: the newest unit only
+  eq('a hand fold still keeps only the newest unit',
+    visible(notes, D.FOLD_SHUT), ['u0', '⋯8', 'cx', 'cr2']);
+  eq('…and the hidden count still ignores tool rows',
+    D.collapsePlan(D.msgUnits(notes), D.FOLD_SHUT).hidden, 8);
 }
 
 // ---- thread status: the rules the drawer and the page share ------------------

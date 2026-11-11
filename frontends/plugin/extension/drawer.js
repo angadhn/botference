@@ -1446,9 +1446,20 @@
   // plus every answer in it — is another. Collapsing by message would let a
   // turn's "Explored · 4 steps" row survive on its own, hovering above an
   // answer that had been hidden, which is worse than showing nothing.
+  //
+  // What stays live at the end is counted in ROUNDS, not units: a round is a
+  // person's message and everything after it up to their next one. Counting
+  // units let a companion notice ("Updated … in your site") or a second bot's
+  // late answer push a fresh reply into the fold seconds after it arrived.
+  // So the fold keeps the last two person messages and everything after the
+  // first of them; it never hides the newest person message or anything after
+  // it, and the tail is never shorter than the last two units.
   const COLLAPSE_AT = 3;   // units on screen before any folding happens
   const KEEP_HEAD = 1;     // the thread root: the message under the quote
-  const KEEP_TAIL = 2;     // the tail of the conversation, always live
+  const KEEP_ROUNDS = 2;   // the last two rounds stay live, always
+  // …and at least the last two units, which is the whole rule for a thread
+  // where nobody but the bots ever speaks
+  const KEEP_TAIL_UNITS = 2;
   // A fold the reader ASKED for is tighter than one the drawer chose: they
   // want the thread out of the way, not tidied. The newest unit still shows,
   // so a folded thread that gets an answer still says so.
@@ -1507,6 +1518,18 @@
   // a bot's turn, for grouping: the bot's words, its tool rows, and any agent
   // card that could not be nested
   const botish = m => m.kind === 'tools' || isBot(m.author) || isAgentCard(m);
+  // Authors that are the app talking, never a person, in every message list
+  // the drawer draws. One list, so the fold and anything else asking "did a
+  // person say this?" cannot disagree.
+  //   botference — the companion's own notices (server.mjs: "Updated … in
+  //                your site", receipts; chat.mjs: "Error starting codex")
+  //   agent      — a summoned build agent's card, even one missing its meta
+  //   passage    — the quoted passage server.mjs puts in a draft's history
+  const SYSTEM_AUTHORS = ['botference', 'agent', 'passage'];
+  // A person's message: what starts a round. Not a tool row, not a bot, not
+  // an agent card, not the app's own notice.
+  const isPersonMsg = m => !!m && !botish(m)
+    && SYSTEM_AUTHORS.indexOf(String(m.author || '').trim().toLowerCase()) === -1;
   function msgUnits(list) {
     const msgs = nestMsgs(list).top;
     const units = [];
@@ -1518,6 +1541,18 @@
       units.push(span);
     }
     return units;
+  }
+
+  // Where the automatic fold's live tail begins: the unit holding the
+  // KEEP_ROUNDS-th last person message (the newest one if there is only one),
+  // but never later than KEEP_TAIL_UNITS from the end. A thread with no
+  // person message at all keeps the last KEEP_TAIL_UNITS units.
+  function liveTailStart(units) {
+    const n = units.length;
+    const people = [];
+    for (let i = 0; i < n; i++) if ((units[i] || []).some(isPersonMsg)) people.push(i);
+    const rounds = people.length ? people[Math.max(0, people.length - KEEP_ROUNDS)] : n;
+    return Math.min(n - KEEP_TAIL_UNITS, rounds);
   }
 
   // What to draw, given those units: units [from, to) fold away and `hidden`
@@ -1533,7 +1568,7 @@
     const none = { collapsed: false, from: n, to: n, hidden: 0, manual: false };
     const shut = manual === FOLD_SHUT;
     if (!shut && (manual || n <= COLLAPSE_AT)) return none;
-    const from = KEEP_HEAD, to = n - (shut ? KEEP_TAIL_SHUT : KEEP_TAIL);
+    const from = KEEP_HEAD, to = shut ? n - KEEP_TAIL_SHUT : liveTailStart(units);
     if (to <= from) return none;
     // tool rows are process detail, not messages — the line says "9 earlier
     // replies" and the reader must find nine of them when it opens
@@ -12460,7 +12495,8 @@ ${bubbleShellHtml()}`;
     diffTokens, wordDiff, richHtml,                         // test/math.test.mjs (suggestion cards)
     msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
     nestMsgs, agentStatus, isAgentCard,                     // test/collapse.test.mjs (summoned agents)
-    COLLAPSE_AT, KEEP_HEAD, KEEP_TAIL, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
+    COLLAPSE_AT, KEEP_HEAD, KEEP_ROUNDS, KEEP_TAIL_UNITS, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
+    isPersonMsg, SYSTEM_AUTHORS,                            // test/collapse.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs
