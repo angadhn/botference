@@ -42,6 +42,13 @@ import {
   type TurnMode,
 } from "./turnState.js";
 import {
+  MOUSE_SELECTION_HINT,
+  moveMouseMode,
+  toggledMouseMode,
+  wantsMouseTracking,
+  type MouseMode,
+} from "./mouseMode.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -548,7 +555,11 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [queuedCount, setQueuedCount] = useState(0);
   const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
   const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
-  const [mouseSelectionMode, setMouseSelectionMode] = useState(false);
+  // The one field for "what the mouse does right now" (named modes in
+  // mouseMode.ts); changed only through moveMouse() below.
+  const [mouseMode, setMouseModeState] = useState<MouseMode>("app_scroll");
+  const mouseModeRef = useRef<MouseMode>("app_scroll");
+  const mouseSelectionMode = mouseMode === "terminal_select";
   const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
   const [roomScroll, setRoomScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
@@ -591,6 +602,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (move.changed) {
       turnModeRef.current = move.mode;
       setTurnModeState(move.mode);
+    }
+    return move.changed;
+  }, []);
+  const moveMouse = useCallback((to: MouseMode): boolean => {
+    const from = mouseModeRef.current;
+    const move = moveMouseMode(from, to);
+    if (!move.ok) {
+      flightRecorder.note(`mouse_move_refused:${from}->${to}`);
+      return false;
+    }
+    if (move.changed) {
+      mouseModeRef.current = move.mode;
+      setMouseModeState(move.mode);
     }
     return move.changed;
   }, []);
@@ -941,9 +965,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [hitTestPaneForEvent, roomFlatLines]);
 
   useEffect(() => {
-    setMouseTrackingEnabled(!mouseSelectionMode);
+    setMouseTrackingEnabled(wantsMouseTracking(mouseMode));
     return () => setMouseTrackingEnabled(true);
-  }, [mouseSelectionMode]);
+  }, [mouseMode]);
 
   useEffect(() => {
     return () => {
@@ -1552,19 +1576,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Ctrl+Y — toggle native terminal text selection (mouse passthrough).
     if (input.toLowerCase() === "y" && key.ctrl) {
-      setMouseSelectionMode((prev) => {
-        const next = !prev;
-        setHint(next
-          ? "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling."
-          : "");
-        return next;
-      });
+      const next = toggledMouseMode(mouseModeRef.current);
+      if (moveMouse(next)) {
+        setHint(next === "terminal_select" ? MOUSE_SELECTION_HINT : "");
+      }
       return;
     }
 
-    if (mouseSelectionMode && key.escape) {
-      setMouseSelectionMode(false);
-      setHint("");
+    if (mouseModeRef.current === "terminal_select" && key.escape) {
+      if (moveMouse("app_scroll")) setHint("");
       return;
     }
 
@@ -1850,7 +1870,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget);
   const busyText = formatV2ActivityText(activeV2Activity);
-  const selectionHint = "Mouse selection mode: drag to select text; Ctrl+Y or Esc returns to scrolling.";
+  const selectionHint = MOUSE_SELECTION_HINT;
   const queueHint = queuedCount > 0
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
     : "";

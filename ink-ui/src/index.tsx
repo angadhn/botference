@@ -19,6 +19,7 @@ import {
   processTerminalInputChunk,
   type MouseEventInfo,
 } from "./v2/stdinFilter.js";
+import { moveTerminalMouse, type TerminalMouseMode } from "./mouseMode.js";
 import { createFlightRecorder } from "./v2/flightRecorder.js";
 import { startUserTimingPurge } from "./v2/perfHygiene.js";
 // Re-export so consumers (App.tsx) can import the type from the index module.
@@ -81,27 +82,27 @@ export function onShiftEnter(handler: ShiftEnterHandler) {
 
 // ── Mouse tracking terminal mode ───────────────────────────
 
-// True once the final terminal restore has run (any exit path). Declared here
-// because setMouseTrackingEnabled consults it and runs at module load.
-let didRestoreTerminal = false;
+// The app's hold on the terminal's mouse, as one named mode (mouseMode.ts):
+// tracking_off / tracking_on / restored. "restored" means the final terminal
+// restore has run (any exit path) and is final: Ink's own exit hook unmounts
+// the React tree AFTER our process 'exit' restore, and an App effect cleanup
+// then asks for tracking again — the move table refuses that, or the shell
+// prompt would receive escape-sequence garbage on every mouse move. Declared
+// here because setMouseTrackingEnabled runs at module load.
+let terminalMouse: TerminalMouseMode = "tracking_off";
 
-let mouseTrackingEnabled = false;
+/** The one setter for terminalMouse. True when the mode changed. */
+function moveTerminalMouseTo(to: TerminalMouseMode): boolean {
+  const move = moveTerminalMouse(terminalMouse, to);
+  if (!move.ok || !move.changed) return false;
+  terminalMouse = move.mode;
+  return true;
+}
 
 export function setMouseTrackingEnabled(enabled: boolean) {
-  if (!process.stdout.isTTY || mouseTrackingEnabled === enabled) return;
-  // Never re-enable after the final terminal restore. Ink's own exit hook
-  // unmounts the React tree AFTER our process 'exit' restore has run, and an
-  // App effect cleanup calls setMouseTrackingEnabled(true) — without this
-  // guard that re-enables mouse tracking on the way out and the shell prompt
-  // receives escape-sequence garbage on every mouse move.
-  if (enabled && didRestoreTerminal) return;
-  mouseTrackingEnabled = enabled;
-  if (enabled) {
-    process.stdout.write(ENABLE_MOUSE_TRACKING);
-  } else {
-    process.stdout.write(DISABLE_MOUSE_TRACKING);
-    mouseTrackingEnabled = false;
-  }
+  if (!process.stdout.isTTY) return;
+  if (!moveTerminalMouseTo(enabled ? "tracking_on" : "tracking_off")) return;
+  process.stdout.write(enabled ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING);
 }
 
 // ── Stdin filter transform ─────────────────────────────────
@@ -225,9 +226,7 @@ if (useAltScreen) {
 }
 
 function restoreTerminal() {
-  if (didRestoreTerminal) return;
-  didRestoreTerminal = true;
-  mouseTrackingEnabled = false;
+  if (!moveTerminalMouseTo("restored")) return;
   try {
     process.stdin.unpipe(stdinFilter);
   } catch {
@@ -270,8 +269,8 @@ const suspendController = createSuspendResumeController(
     },
     isRaw: () =>
       (process.stdin as NodeJS.ReadStream & { isRaw?: boolean }).isRaw === true,
-    isExiting: () => didRestoreTerminal,
-    getMouseTracking: () => mouseTrackingEnabled,
+    isExiting: () => terminalMouse === "restored",
+    getMouseTracking: () => terminalMouse === "tracking_on",
     raiseSigtstp: () => {
       // Drop our handler so SIGTSTP regains its default disposition (stop),
       // then re-deliver it to the WHOLE foreground process group (pid 0) —
