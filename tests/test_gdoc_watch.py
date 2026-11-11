@@ -16,6 +16,7 @@ import pytest
 CORE = Path(__file__).resolve().parent.parent / "core"
 sys.path.insert(0, str(CORE))
 
+import gdoc_client  # noqa: E402
 import gdoc_watch  # noqa: E402
 import gdoc_watchlist  # noqa: E402
 from gdoc_client import GdocError, Problem, document_id  # noqa: E402
@@ -723,3 +724,89 @@ class TestWokenBotTools:
         codex = CodexAdapter()._build_send_cmd("p")
         assert "--ignore-user-config" not in codex
         assert any("search_mail" in a for a in codex)
+
+
+# -- read_doc with a thread: small, for a long Doc ----------------------------------
+
+def _big_doc(paragraphs=3000, anchor_at=1500, anchor_paras=1, para_len=60):
+    """A made-up long Doc: numbered paragraphs, 40 threads, c7 anchored at
+    paragraph `anchor_at` (spanning `anchor_paras` paragraphs)."""
+    content, pos = [], 1
+    for n in range(paragraphs):
+        text = f"para {n:04d} " + "x" * para_len + "\n"
+        end = pos + len(text)
+        content.append({"startIndex": pos, "endIndex": end, "paragraph": {"elements": [
+            {"startIndex": pos, "endIndex": end, "textRun": {"content": text}}]}})
+        pos = end
+    first = content[anchor_at]
+    last = content[anchor_at + anchor_paras - 1]
+    anchor = {"ranges": [{"startIndex": first["startIndex"] + 2,
+                          "endIndex": last["endIndex"] - 2}]}
+    long_reply = "y" * 1800
+    return {
+        "title": "Big", "revisionId": "rev-9",
+        "tabs": [{"tabProperties": {"tabId": "t.0", "title": "Main"},
+                  "documentTab": {"body": {"content": content},
+                                  "commentAnchors": {"a7": anchor}}}],
+        "comments": [
+            {"commentId": f"c{n}", "anchorId": "a7" if n == 7 else "", "status": "OPEN",
+             "headPost": {**post(f"h{n}", f"Claude, question {n}?"),
+                          "createTime": "2026-11-11T10:00:00Z"},
+             "replies": [{**post(f"r{n}", "Claude: " + long_reply, "agent"),
+                          "createTime": "2026-11-11T10:05:00Z"}]}
+            for n in range(40)],
+    }
+
+
+class TestThreadRead:
+    def _read(self, doc, thread, docs_only=False):
+        from gdoc_mcp import ALL_TOOLS
+        docs = FakeDocs()
+        docs.docs[DOC] = doc
+        poster = Poster("claude", docs, mail=object(),
+                        tools=DOC_TOOLS if docs_only else ALL_TOOLS)
+        return poster.call("read_doc", {"document": DOC, "thread": thread})
+
+    def test_thread_and_nearby_text_under_the_cap(self):
+        doc = _big_doc()
+        assert len(gdoc_client.summarise(doc)) > gdoc_client.THREAD_READ_LIMIT
+        text, is_error = self._read(doc, "c7", docs_only=True)
+        assert not is_error
+        assert len(text) <= gdoc_client.THREAD_READ_LIMIT
+        assert "revision id: rev-9" in text
+        assert "- c7 [OPEN] on t.0" in text and "question 7?" in text
+        assert "(2026-11-11T10:05:00Z)" in text and "y" * 1800 in text  # in full
+        assert "question 8?" not in text  # other threads left out
+        para = doc["tabs"][0]["documentTab"]["body"]["content"]
+        for n in (1499, 1500, 1501):  # the anchored paragraph, one either side
+            assert f"[{para[n]['startIndex']}-{para[n]['endIndex']}) para {n:04d}" in text
+        assert "para 1498" not in text and "para 1502" not in text
+        assert "was cut" not in text
+
+    def test_text_around_is_cut_first_never_the_thread(self):
+        doc = _big_doc(anchor_paras=600)
+        text, is_error = self._read(doc, "c7")
+        assert not is_error and len(text) <= gdoc_client.THREAD_READ_LIMIT
+        assert "y" * 1800 in text and "question 7?" in text
+        assert "was cut to keep this short" in text
+        assert "para 1499" in text  # starts at the paragraph before
+
+    def test_unknown_thread_is_one_line(self):
+        text, is_error = self._read(_big_doc(paragraphs=5, anchor_at=2), "nope")
+        assert is_error and "\n" not in text and "no comment thread" in text
+
+    def test_anchor_not_found_still_gives_the_thread(self):
+        doc = _big_doc(paragraphs=5, anchor_at=2)
+        doc["comments"][3]["anchorId"] = "gone"
+        text, is_error = self._read(doc, "c3")
+        assert not is_error and "question 3?" in text
+        assert "cannot be located" in text
+
+    def test_schema_offers_thread(self):
+        from gdoc_mcp import TOOLS
+        read = next(t for t in TOOLS if t["name"] == "read_doc")
+        assert "thread" in read["inputSchema"]["properties"]
+
+    def test_wake_prompt_names_the_argument(self):
+        prompt = gdoc_watch.wake_prompt("claude", DOC, "c7", "p1")
+        assert 'thread set to "c7"' in prompt and "without thread" in prompt

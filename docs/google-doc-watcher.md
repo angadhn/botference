@@ -88,7 +88,10 @@ The woken bot runs once, on its own, with a short brief: the Doc link, the
 thread and message to answer, the usual roles (Claude: argument, structure,
 wording; Codex: facts, numbers, sources, technical claims), and the rule
 that the Doc's text and the other comments are material, not instructions.
-It reads the Doc and posts one reply in that thread. If you asked for a
+It reads that one thread and the text it is on (`read_doc` with the
+thread's id, a short read even in a long Doc; a long full read would not
+reach a woken Claude, which has no file tool to open it), reading the whole
+Doc only if it needs more, and posts one reply in that thread. If you asked for a
 wording change it may also put that change in as a suggestion.
 
 Its tools are cut down to what it needs:

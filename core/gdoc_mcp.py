@@ -53,6 +53,7 @@ from gdoc_client import (  # noqa: E402
     document_id,
     google_home,
     summarise,
+    summarise_thread,
 )
 from gdoc_guard import BOT_NAMES, seal  # noqa: E402
 from gmail_client import SEARCH_DEFAULT_COUNT, MailClient  # noqa: E402
@@ -188,7 +189,9 @@ TOOLS = [
         "description": (
             "Read a Google Doc the user linked: title, revision id, text "
             "with positions (UTF-16 indexes), tabs, pending suggestions and "
-            "comment threads. Read again right before every write."),
+            "comment threads. With 'thread', only that comment thread in "
+            "full and the text around it (short, for a long Doc). Read again "
+            "right before every write."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -199,6 +202,11 @@ TOOLS = [
                 "from_index": {"type": "integer", "minimum": 0,
                                "description": "When a long Doc was cut: the "
                                "position in that tab to read on from."},
+                "thread": {"type": "string",
+                           "description": "A comment thread id: read only "
+                           "that thread (every post) and the paragraphs it "
+                           "is on plus one either side, with positions. "
+                           "Small even for a long Doc."},
             },
             "required": ["document"],
         },
@@ -337,6 +345,9 @@ class Poster:
                     start = 0
                 doc = self.client.get(args["document"])
                 self._watch(args["document"], doc)
+                thread = args.get("thread")
+                if isinstance(thread, str) and thread.strip():
+                    return summarise_thread(doc, thread.strip()), False
                 return summarise(doc, from_tab=tab, from_index=start), False
             body = {k: args[k] for k in ("requests", "writeControl") if k in args}
             extra = set(args) - {"document", "requests", "writeControl"}
