@@ -8742,7 +8742,20 @@ ${bubbleShellHtml()}`;
         <textarea rows="2">${esc(ed.text)}</textarea>
         <div class="crow"><span class="hint"></span><button class="cancel" type="button" data-act="edit-cancel">Cancel</button><button class="send" type="button" data-act="edit-save">Save</button></div></div></div>`;
     }
-    const editBox = () => (D.mounted ? D.shadow.querySelector('.composer[data-target="__edit__"] textarea') : null);
+    // THE box the reader is editing in. The panel's panes are drawn even while
+    // the panel is shut, so a message being edited in a bubble has a second,
+    // hidden copy of the box in the panel: the one with the focus is the one,
+    // else the one on show (the bubble's while the panel is shut, the panel's
+    // while it is open). Never simply the first in the page — that was the
+    // hidden copy, and Save saved its text instead of what was typed.
+    function editBox() {
+      if (!D.mounted) return null;
+      const all = [...D.shadow.querySelectorAll('.composer[data-target="__edit__"] textarea')];
+      if (all.length < 2) return all[0] || null;
+      const here = D.shadow.activeElement;
+      if (here && all.indexOf(here) !== -1) return here;
+      return all.find(b => !!(b.closest && b.closest('.bubble')) === !D.opened) || all[0];
+    }
     // what is in the box right now, into the value — a redraw, a save and an
     // input event all read it this way
     function noteEditBox() {

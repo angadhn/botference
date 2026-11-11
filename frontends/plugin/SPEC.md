@@ -12283,3 +12283,16 @@ sets the caret after the words) only when the reader has not moved on
 (`micMovedOn`: the focus is in that composer, or nowhere). Tests:
 `test/mic.test.mjs` (moved on: the words land, the focus stays on the page;
 stayed: the words at the caret, the box focused).
+
+## Amendment (2026-11-11): the edit box in a bubble is the one that is saved
+
+"Every edit box shares one saved-draft slot" is gone in its old form: the
+draft is `D.edit`, and only one message can be edited at a time. One trace of
+it was left. The panel's panes are drawn even while the panel is shut, so a
+message being edited in a bubble also has a hidden edit box in the panel, and
+`editBox()` took the first in the page — the hidden one. Typing in the bubble
+was then read back from the hidden copy, and Save saved the message's old
+text. `editBox()` now takes the box with the focus, else the one on show (the
+bubble's while the panel is shut, the panel's while it is open). Tests:
+`test/editbox.test.mjs` (a bubble with the panel shut: a redraw keeps the
+bubble's text and focus, Save saves the bubble's text).
