@@ -258,8 +258,9 @@ test('choice and permission requests round-trip through /choice and /permission'
   t.after(s.stop);
   await post(s.base, '/input', { text: '/trigger-choice' });
   await sseUntil(s.base, evs => evs.some(e => e.type === 'choice_request'));
-  await post(s.base, '/choice', { index: 1 });
-  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && /choice answered: 1/.test(e.text)));
+  // the answer names the question it answers, and the server passes it on
+  await post(s.base, '/choice', { index: 1, request_id: 'c1' });
+  await sseUntil(s.base, evs => evs.some(e => e.type === 'room' && /choice answered: 1 for c1/.test(e.text)));
   await post(s.base, '/input', { text: '/trigger-permission' });
   await sseUntil(s.base, evs => evs.some(e => e.type === 'permission_request'));
   await post(s.base, '/permission', { allow: false });
@@ -735,12 +736,12 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   assert.match(sys.textContent, /\/resume — switch/);
 
   // choice card: options render; clicking posts the index
-  C.handle({ type: 'choice_request', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
+  C.handle({ type: 'choice_request', request_id: 'q1', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
   const card = doc.querySelector('.msg.card:not(.answered)');
   assert.match(card.textContent, /Where should this chat live\?/);
   card.querySelector('button[data-i="1"]').click();
   await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(posts.pop(), { url: '/choice', body: { bridge: 'b1', index: 1 } });
+  assert.deepEqual(posts.pop(), { url: '/choice', body: { bridge: 'b1', index: 1, request_id: 'q1' } });
   assert.ok(card.classList.contains('answered'));
 
   // permission card: deny posts allow:false

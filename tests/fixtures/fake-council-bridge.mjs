@@ -69,7 +69,7 @@ rl.on('line', line => {
       });
     }
     if (msg.text === '/trigger-choice') {
-      emit({ type: 'choice_request', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
+      emit({ type: 'choice_request', request_id: 'c1', prompt: 'Where should this chat live?', options: ['Stay in inbox', 'Demo project'] });
       return; // choice_response resolves it below
     }
     if (msg.text === '/trigger-permission') {
@@ -100,7 +100,7 @@ rl.on('line', line => {
   }
   if (msg.type === 'choice_response') {
     emit({ type: 'choice_cleared' });
-    emit({ type: 'room', speaker: 'system', text: `choice answered: ${msg.index}` });
+    emit({ type: 'room', speaker: 'system', text: `choice answered: ${msg.index}${msg.request_id ? ` for ${msg.request_id}` : ''}` });
     emit({ type: 'ready' });
   }
   if (msg.type === 'permission_response') {

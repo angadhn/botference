@@ -2305,7 +2305,9 @@
       const b = e.target.closest('button[data-i]');
       if (!b || div.classList.contains('answered')) return;
       const i = Number(b.dataset.i);
-      answerCard(div, '/choice', { index: i >= 0 ? i : null },
+      // names the question it answers: a later question waiting behind this
+      // one can never be answered by a stale click
+      answerCard(div, '/choice', { index: i >= 0 ? i : null, request_id: ev.request_id },
         i >= 0 ? `you picked: ${ev.options[i]}` : 'dismissed');
     });
     container().appendChild(div);

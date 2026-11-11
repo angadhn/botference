@@ -573,8 +573,12 @@ export class Bridge {
     if (ev.type === 'permission_cleared') clearTimeout(this.permTimer);
     if (ev.type === 'choice_request') {
       clearTimeout(this.choiceTimer);
+      const asked = ev.request_id;
       this.choiceTimer = setTimeout(() => {
-        this.send({ type: 'choice_response', index: null });
+        // names the question it dismisses, so it can never dismiss a later one
+        const answer = { type: 'choice_response', index: null };
+        if (asked) answer.request_id = asked;
+        this.send(answer);
         this.broadcast({ type: 'choice_timeout' });
       }, 120000);
     }
@@ -1111,7 +1115,11 @@ export function handler(req, res) {
     readBody(req, res, 1000, data => {
       const bridge = bridgeForPost(data);
       const index = Number.isInteger(data.index) && data.index >= 0 ? data.index : null;
-      const ok = bridge && bridge.send({ type: 'choice_response', index });
+      // the answer names the question it answers (one at a time is on
+      // screen; the next waits behind it in the bridge)
+      const answer = { type: 'choice_response', index };
+      if (typeof data.request_id === 'string' && data.request_id) answer.request_id = data.request_id.slice(0, 200);
+      const ok = bridge && bridge.send(answer);
       if (ok) clearTimeout(bridge.choiceTimer);
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
     });

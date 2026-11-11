@@ -601,6 +601,66 @@ class TestNotifyEmission:
         bridge.resolve_permission_request(True, request_id="r2")
         assert await asyncio.wait_for(task, timeout=2.0) is True
 
+    async def test_two_choice_questions_in_a_row_wait_their_turn(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        monkeypatch.setattr(binkb, "emit", lambda obj: emitted.append(dict(obj)))
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        shown = lambda: [e for e in emitted if e["type"] == "choice_request"]
+
+        first = asyncio.create_task(bridge.request_choice("First?", ["a", "b"]))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(bridge.request_choice("Second?", ["c", "d"]))
+        await asyncio.sleep(0)
+        # only the first is on screen; the second waits behind it
+        assert [e["prompt"] for e in shown()] == ["First?"]
+        rid1 = shown()[0]["request_id"]
+        assert isinstance(rid1, str) and rid1
+        assert not second.done()
+
+        # an answer naming another question is refused
+        assert bridge.resolve_choice_request(0, request_id="not-this-one") is False
+        await asyncio.sleep(0)
+        assert not first.done()
+
+        # the right request_id answers the first; the second then takes the screen
+        assert bridge.resolve_choice_request(1, request_id=rid1) is True
+        assert await asyncio.wait_for(first, timeout=2.0) == 1
+        assert [e["prompt"] for e in shown()] == ["First?", "Second?"]
+        rid2 = shown()[1]["request_id"]
+        assert rid2 != rid1
+        types = [e["type"] for e in emitted]
+        assert types.index("choice_cleared") < len(types) - 1, "cleared before the next is shown"
+
+        # a late answer for the first does not answer the second
+        assert bridge.resolve_choice_request(0, request_id=rid1) is False
+        await asyncio.sleep(0)
+        assert not second.done()
+        # an answer naming none (older pages, the terminal UI) takes the one on screen
+        assert bridge.resolve_choice_request(0) is True
+        assert await asyncio.wait_for(second, timeout=2.0) == 0
+        assert [e["type"] for e in emitted].count("choice_cleared") == 2
+        # nothing on screen: any answer is refused
+        assert bridge.resolve_choice_request(0) is False
+
+    async def test_a_waiting_choice_question_cancelled_never_shows(
+        self, tmp_path, monkeypatch
+    ):
+        emitted: list[dict] = []
+        monkeypatch.setattr(binkb, "emit", lambda obj: emitted.append(dict(obj)))
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        first = asyncio.create_task(bridge.request_choice("First?", ["a"]))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(bridge.request_choice("Second?", ["b"]))
+        await asyncio.sleep(0)
+        second.cancel()
+        await asyncio.sleep(0)
+        assert bridge.resolve_choice_request(None) is True
+        assert await asyncio.wait_for(first, timeout=2.0) is None
+        assert [e.get("prompt") for e in emitted if e["type"] == "choice_request"] == ["First?"]
+        assert [e["type"] for e in emitted].count("choice_cleared") == 1
+
 
 @pytest.mark.asyncio
 class TestStreamCoalescing:
