@@ -1,5 +1,5 @@
-// foldfoot.test.mjs — the fold control of a long conversation lives at its
-// FOOT, and using it never takes the reader away from the newest message.
+// foldfoot.test.mjs — a conversation is read from its FOOT, and nothing the
+// drawer does on its own takes the reader away from the newest message.
 //
 // The reader's words: "I'm more likely to be at the bottom of a message […]
 // I'm probably going to want to read backwards in time, not forwards […]
@@ -9,12 +9,11 @@
 //   · the bubble beside a highlight: the lip ("+N" / "− stack up") sits in its
 //     own slot under the cards and over the reply box, in the same place open
 //     or shut, and fanning open leaves the stack scrolled to the newest card;
-//   · the side panel's comment threads: "Show N earlier replies" /
-//     "Hide N earlier replies" is drawn after the last message, a quiet count
-//     marks the gap while folded, and unfolding lands the foot of that thread
-//     at the bottom of the pane. (The page chat no longer folds at all since
-//     2026-11-11 — it is a window on its newest messages, chatwindow.test.mjs —
-//     so here it only checks landing, staying put, and the absence of a fold.)
+//   · the side panel: a chat opens at its newest message and a reply never
+//     moves a reader who has scrolled up. Nothing in the panel folds any more
+//     (2026-11-11): the page chat, the library and every comment thread are a
+//     window on their newest messages (chatwindow.test.mjs), so here it only
+//     checks landing, staying put, and the absence of any fold.
 //
 // happy-dom does not lay anything out, so the geometry is stubbed: every
 // `.card` reports a fixed box, every `.pane` and `.bbody` a fixed height.
@@ -72,8 +71,8 @@ geom('clientHeight', el => (el.classList.contains('pane') ? PANE_H : el.classLis
 geom('scrollHeight', el => (el.classList.contains('pane') ? CARD_TOP + CARD_H + 40 : el.classList.contains('bbody') ? BODY_SH : null));
 
 // ---- a long conversation ----------------------------------------------------
-// ten messages, the reader and claude taking turns: five rounds, so the rule
-// keeps the first message and the last two rounds and folds the five between
+// ten messages, the reader and claude taking turns: short enough to fit the
+// newest-messages window whole
 const conv = (n, tag) => Array.from({ length: n }, (_, i) => ({
   ts: `2026-11-10T10:${String(i).padStart(2, '0')}:00.000Z`,
   author: i % 2 ? 'claude' : 'reader',
@@ -151,33 +150,29 @@ await tick(5);
 ok('…once: coming back to the tab later leaves the reader where they were', chatPane.scrollTop === 50, chatPane.scrollTop);
 
 // ---- 7. a comment thread among other cards ----------------------------------
+// (2026-11-11) A comment thread no longer folds its middle either: it is a
+// window on its newest messages, like the chat (chatwindow.test.mjs). Ten
+// messages fit that window whole, so the card carries no control of any kind.
 root.querySelector('.tab[data-tab="comments"]').click();
 await tick(5);
 const longCard = () => root.querySelector(`.card[data-thread="${LONG}"]`);
 const longThread = () => longCard() && longCard().querySelector('.thread');
 {
-  const kids = kidsOf(longThread());
-  const ctrls = longCard().querySelectorAll('.showmore');
-  ok('a long comment thread: one control, at the foot of its messages',
-    ctrls.length === 1 && kids[kids.length - 1] === ctrls[0] && ctrls[0].dataset.act === 'expand',
-    kids.map(k => k.className).join(' | '));
-  ok('…and the count in its gap', !!longThread().querySelector('.foldgap'));
-  ok('a two-message thread has neither', !root.querySelector(`.card[data-thread="${SHORT}"] .showmore`)
-    && !root.querySelector(`.card[data-thread="${SHORT}"] .foldgap`));
+  ok('a ten-message comment thread: no fold control, no "Hide" control',
+    !longCard().querySelector('.showmore[data-act="expand"], .showmore[data-act="fold"]'));
+  ok('…no count in a gap', !longThread().querySelector('.foldgap'));
+  ok('…no "Show earlier" line either, since it fits its window', !longCard().querySelector('.showmore'));
+  ok('…every message is drawn', longThread().querySelectorAll('.reply').length === 10);
+  ok('a two-message thread has nothing either', !root.querySelector(`.card[data-thread="${SHORT}"] .showmore`));
 }
-comPane.scrollTop = 0;
-longCard().querySelector('.showmore[data-act="expand"]').click();
-await tick(10);
-ok('unfolding a comment thread brings the foot of ITS card to the bottom of the pane',
-  comPane.scrollTop === LANDED, comPane.scrollTop);
-ok('…with the control still last', kidsOf(longThread()).pop().dataset.act === 'fold');
 comPane.scrollTop = 333;
 drawer.setPage(page(conv(12, 'chat'), [
   { id: LONG, quote: 'a long passage', msgs: conv(12, 'long') },
   { id: SHORT, quote: 'a short passage', msgs: conv(2, 'short') },
 ]));
 await tick(10);
-ok('a reply landing in the open thread leaves a scrolled-up reader alone', comPane.scrollTop === 333, comPane.scrollTop);
+ok('a reply landing in a thread leaves a scrolled-up reader alone', comPane.scrollTop === 333, comPane.scrollTop);
+ok('…and is drawn, with nothing above it hidden', longThread().querySelectorAll('.reply').length === 12);
 
 // ---- 8. the bubble ------------------------------------------------------------
 drawer.close();

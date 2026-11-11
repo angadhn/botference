@@ -41,10 +41,10 @@
     ?math=1          a page chat full of TeX — inline, display, maths inside
                      markdown, dollar AMOUNTS that must stay prose, and one
                      broken formula that must survive as its own source
-    ?long=1          grow the second comment thread past the fold, so the
-                     "Show N earlier replies" line is on screen
-                     (&open=1 opens it, so the manual "Hide N earlier
-                     replies" control is on screen instead)
+    ?long=1          grow the second comment thread past its window (about
+                     20 messages), so "Show earlier messages · N more" is
+                     on screen at the top of its messages (&open=1 presses
+                     it, so the whole thread is drawn instead)
     ?pages=1         open the Pages view — the plugin's own list of every
                      annotated page (screenshot state)
     ?routes=1        the pill row over a comment thread's composer — who the
@@ -1508,10 +1508,10 @@ if (FILEIN === 'made') {
 // with none at all, so the pose shows every state the stamp has beside the
 // state it deliberately does not have.
 if (CHECKS === '1') {
-  // the pose's own chat, not the base fixture's plus it: a folded middle would
-  // hide exactly the messages under test
+  // the pose's own chat, not the base fixture's plus it: a long one would
+  // push the messages under test out of the newest-messages window
   // ONE @all turn and the four replies to it, consecutive, so the thread is two
-  // drawn units and nothing folds away the messages under test
+  // drawn units and every message under test is drawn
   RECORD.page_chat = ([
     { author: 'angadh', ts: iso(6), text: '@all what does it actually claim about the loads?' },
     { author: 'claude', ts: iso(5),
@@ -1741,7 +1741,7 @@ if (SUGGEST === 'picture') {
 // wrote it, and standing in whichever council chat the reader last opened.
 // `page_chat` is the drawer's mirror of THAT chat — restored messages, read
 // out of the session record by the companion — which is why the thread, the
-// fold and the composer under the archive bar need no special case at all.
+// window and the composer under the archive bar need no special case at all.
 if (WORKSPACE) {
   RECORD.url = 'file://' + WS_PROJECT.path;
   RECORD.title = 'Spaceship Engineering — the field-formation argument';
@@ -2830,11 +2830,11 @@ if (Q.get('math') === '1') {
     text: 'Right, so with $\\lambda = 0.4$ the half-life is $t_{1/2} = \\ln 2 / \\lambda$. Still $5 a seat though.' });
 }
 
-// ?long=1 — a comment thread long enough to fold, so the "Show N earlier
-// replies" line and the messages either side of it are screenshotable
+// ?long=1 — a comment thread longer than its window, so the "Show earlier
+// messages" line at the top of its newest stretch is screenshotable
 if (Q.get('long') === '1') {
   const t = RECORD.threads[1];
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= 12; i++) {
     t.msgs.push({ author: 'angadh', ts: iso(36 - i * 2), text: 'Follow-up ' + i + ': and what about the sentence after it?' });
     t.msgs.push({ author: 'claude', ts: iso(35 - i * 2), kind: 'tools', text: 'Explored\n└ Read the filing' });
     t.msgs.push({ author: 'claude', ts: iso(35 - i * 2), text: 'Answer ' + i + '. The construction is the same one, so the same caution applies.' });
@@ -5436,12 +5436,39 @@ async function selftest() {
 
   // the carve-out that matters: editing hands back the RAW markdown, never the
   // rendered sentence with its syntax stripped out
+  // (the editor is drawn by a redraw, so the reply is found afresh each time)
   const mineReply = mine.closest('.reply');
+  const mineSel = '.pane[data-pane="chat"] .reply[data-ts="' + mineReply.getAttribute('data-ts')
+    + '"][data-author="' + mineReply.getAttribute('data-author') + '"]';
   mineReply.querySelector('[data-act="edit"]').click();
-  const mta = await until(() => mineReply.querySelector('.ctext textarea'));
+  const mta = await until(() => S.querySelector(mineSel + ' .ctext textarea'));
   check('editing your own message round-trips the raw markdown, not the rendering',
     !!mta && mta.value === MINE_MD);
-  mineReply.querySelector('.ctext .cancel').click();
+  // THE EDIT BOX SURVIVES A REDRAW (2026-11-11). A bot event rebuilds the
+  // panel; the box must come back with what was typed, the caret and the
+  // focus — in this real browser, with real focus.
+  if (mta) {
+    mta.value = MINE_MD + ' and a made-up afterthought';
+    mta.setSelectionRange(5, 9);
+    mta.dispatchEvent(new Event('input', { bubbles: true }));
+    d.onEvent({ type: 'chat', url: PAGE_URL, kind: 'turn-start', agents: ['claude'] });
+    d.onEvent({ type: 'chat', url: PAGE_URL, kind: 'turn-end' });
+    await sleep(60);
+    const mta2 = S.querySelector(mineSel + ' .ctext textarea');
+    check('a redraw while editing puts the edit box back', !!mta2 && mta2 !== mta && !mta.isConnected);
+    check('…with what was typed in it', !!mta2 && mta2.value === MINE_MD + ' and a made-up afterthought');
+    check('…the caret where it was', !!mta2 && mta2.selectionStart === 5 && mta2.selectionEnd === 9);
+    check('…and the focus', !!mta2 && S.activeElement === mta2);
+    const other = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine [data-act="edit"]')]
+      .find(b => !b.closest(mineSel));
+    if (other) {
+      other.click();
+      await sleep(30);
+      check('a second ✎ opens no second box', S.querySelectorAll('.composer[data-target="__edit__"]').length === 1
+        && S.activeElement === S.querySelector(mineSel + ' .ctext textarea'));
+    }
+  }
+  S.querySelector(mineSel + ' .ctext .cancel').click();
   check('…and cancelling puts the rendering back',
     !!await until(() => {
       const el = [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine .ctext.md')]
@@ -5462,11 +5489,13 @@ async function selftest() {
     [...S.querySelectorAll('.pane[data-pane="chat"] .reply.mine:not(.sending) .ctext.md')]
       .find(x => /Filed under/.test(x.textContent)) || null);
   const twinReply = twinned.closest('.reply');
+  const twinSel = '.pane[data-pane="chat"] .reply[data-ts="' + twinReply.getAttribute('data-ts')
+    + '"][data-author="' + twinReply.getAttribute('data-author') + '"]';
   twinReply.querySelector('[data-act="edit"]').click();
-  const twinTa = await until(() => twinReply.querySelector('.ctext textarea'));
+  const twinTa = await until(() => S.querySelector(twinSel + ' .ctext textarea'));
   check('a message sharing its timestamp with another still edits as itself',
     !!twinTa && twinTa.value === MINE_MD);
-  twinReply.querySelector('.ctext .cancel').click();
+  S.querySelector(twinSel + ' .ctext .cancel').click();
 
   // ---- a resend the companion already has ({deduped:true}) ---------------
   const DUP = 'this one gets sent twice';
@@ -5939,7 +5968,7 @@ async function selftest() {
 
   // ---- the library: one conversation about everything in that list --------
   // It is a page chat on a page nobody is standing on, so the whole idiom is
-  // supposed to arrive here for free — markdown, tool rows, folding, the
+  // supposed to arrive here for free — markdown, tool rows, the newest-messages window, the
   // @-menu, the wait line, optimistic sends. These checks are about that.
   S.querySelector('[data-act="pages"]').click();
   await until(() => pane().querySelector('.libpane .composer'));
@@ -7002,151 +7031,128 @@ async function selftest() {
   check('a human message renders maths too', [...chatPane().querySelectorAll('.reply .ctext.md')]
     .some(e => /so .* then/.test(e.textContent) && e.querySelector('.md-math.inline .katex')));
 
-  // ---- long threads fold in the middle -----------------------------------
+  // ---- a long thread: a window on its newest messages ---------------------
+  // (2026-11-11) Nothing folds in the middle any more. A comment thread shows
+  // its newest ~20 messages, whole turns, and "Show earlier messages · N more"
+  // at the TOP of its messages; pressing it reveals the next stretch and keeps
+  // the message being read where it was on screen. A new reply never hides
+  // anything already shown.
   const LONG = RECORD.threads[1];
   const rootText = LONG.msgs[0].text;
-  for (let i = 1; i <= 6; i++) {
+  for (let i = 1; i <= 12; i++) {
     LONG.msgs.push({ author: 'angadh', ts: iso(36 - i * 2), text: 'Follow-up ' + i + ' about the paraphrase.' });
     LONG.msgs.push({ author: 'claude', ts: iso(35 - i * 2), kind: 'tools', text: 'Explored\n└ Read the filing' });
     LONG.msgs.push({ author: 'claude', ts: iso(35 - i * 2), text: 'Answer ' + i + ' to the follow-up.' });
   }
+  // A thread already on screen keeps everything it has drawn as it grows
+  // (its window is anchored where it opened, so a reply never hides
+  // anything). Opening the panel afresh is what starts it at its newest
+  // stretch, which is the case under test here.
   d.setPage(RECORD);
+  {
+    const c = S.querySelector('.card[data-thread="' + LONG.id + '"]');
+    check('a thread drawn whole, then grown long while the panel is open, hides nothing',
+      !!c && !c.querySelector('.showmore') && c.textContent.includes(rootText.slice(0, 30))
+      && c.textContent.includes('Answer 1 ') && c.textContent.includes('Answer 12'));
+  }
+  d.close();
   d.open('comments');
+  await sleep(40);
   const longCard = () => S.querySelector('.card[data-thread="' + LONG.id + '"]');
-  // two controls share the one slot now: the expander when it is folded, the
-  // manual "Hide N earlier replies" when it is open
-  const more = () => longCard().querySelector('.showmore[data-act="expand"]');
-  const foldBtn = () => longCard().querySelector('.showmore[data-act="fold"]');
+  const earlier = c => c && c.querySelector('.thread .showmore.earlier[data-act="earlier"]');
   const bodyOf = () => longCard().querySelector('.thread').textContent;
-  const shown = () => longCard().querySelectorAll('.reply').length;
+  const shown = () => longCard().querySelectorAll('.thread .reply').length;
+  const noFold = c => !!c && !c.querySelector('.showmore[data-act="expand"], .showmore[data-act="fold"], .foldgap');
 
-  check('a long thread folds behind one line', !!more());
-  check('…drawn at the FOOT of its messages, under the newest one',
-    !!more() && longCard().querySelector('.thread').lastElementChild === more());
-  check('…with a quiet, unclickable count where the messages were',
-    !!longCard().querySelector('.thread .foldgap')
-    && !longCard().querySelector('.thread .foldgap').closest('button'));
+  check('a long thread is not folded: no "Show/Hide N earlier replies", no gap line', noFold(longCard()));
+  check('…it opens on its newest messages, with "Show earlier messages" at the top',
+    !!earlier(longCard()) && longCard().querySelector('.thread').firstElementChild === earlier(longCard()));
   check('…which is a quiet control, not a card',
-    !!more() && !more().closest('.reply') && more().tagName === 'BUTTON');
-  const claim = Number((more().textContent.match(/\d+/) || [0])[0]);
+    !!earlier(longCard()) && !earlier(longCard()).closest('.reply') && earlier(longCard()).tagName === 'BUTTON');
+  const claim = Number((earlier(longCard()).textContent.match(/· (\d+) more/) || [0, 0])[1]);
   const hiddenNow = LONG.msgs.filter(m => m.kind !== 'tools').length - shown();
-  check('…and its count is the number of messages actually hidden',
-    claim === hiddenNow && claim > 0, more().textContent + ' vs ' + hiddenNow);
-  check('the thread root stays on screen', bodyOf().includes(rootText.slice(0, 30)));
-  check('…and so does the newest reply', bodyOf().includes('Answer 6'));
-  check('…while the middle is gone', !bodyOf().includes('Answer 2'));
+  check('…its count is the number of messages not drawn yet',
+    claim === hiddenNow && claim > 0);
+  check('…about twenty are drawn', shown() >= 20 && shown() <= 22);
+  check('…ending at the newest reply', bodyOf().includes('Answer 12'));
+  check('…in one unbroken run: nothing between the drawn messages is missing',
+    bodyOf().includes('Answer 4') && bodyOf().includes('Follow-up 5') && !bodyOf().includes('Answer 2 '));
   // a turn's "Explored" row must never survive on its own above an answer that
-  // was folded away
-  check('no tool row is left stranded above a hidden answer',
-    longCard().querySelectorAll('.tools').length ===
-      longCard().querySelectorAll('.reply.bot').length);
-  check('the composer and its status row stay below the fold, always',
+  // was not drawn
+  check('no tool row is left stranded above an answer that is not drawn',
+    [...longCard().querySelectorAll('.thread .tools')].every(t => t.nextElementSibling
+      && t.nextElementSibling.classList.contains('reply')));
+  check('the composer and its status row are below, always',
     !!longCard().querySelector('.composer textarea'));
 
-  more().click();
-  check('clicking it opens the thread in place', !more());
-  check('…and the foot of the thread is at the bottom of the pane, newest message in view', (() => {
+  // the reader reading the top of the thread: the card's top at the pane's
+  // top. Pressing the line must leave the message they were reading where it
+  // was on screen — measured in this real browser, not computed.
+  {
     const pane = longCard().closest('.pane');
-    const cr = longCard().getBoundingClientRect(), pr = pane.getBoundingClientRect();
-    return cr.bottom <= pr.bottom + 2 && cr.bottom >= pr.bottom - 40;
-  })());
-  check('…with "Hide" in the same place the "Show" was',
-    !!foldBtn() && longCard().querySelector('.thread').lastElementChild === foldBtn());
-  check('…showing every message', bodyOf().includes('Answer 2') && bodyOf().includes('Follow-up 3'));
+    pane.scrollTop += longCard().getBoundingClientRect().top - pane.getBoundingClientRect().top;
+    const pt = pane.getBoundingClientRect().top;
+    const first = [...longCard().querySelectorAll('.thread .reply[data-ts]')]
+      .find(r => r.getBoundingClientRect().bottom > pt);
+    const key = first && [first.getAttribute('data-ts'), first.getAttribute('data-author')];
+    const before = first ? first.getBoundingClientRect().top - pt : NaN;
+    earlier(longCard()).click();
+    await sleep(40);
+    const again = key && [...longCard().querySelectorAll('.thread .reply[data-ts]')]
+      .find(r => r.getAttribute('data-ts') === key[0] && r.getAttribute('data-author') === key[1]);
+    const after = again ? again.getBoundingClientRect().top - pane.getBoundingClientRect().top : NaN;
+    check('pressing it draws the earlier messages', bodyOf().includes(rootText.slice(0, 30))
+      && bodyOf().includes('Answer 1 ') && bodyOf().includes('Follow-up 2'));
+    check('…and the message being read stays where it was on screen',
+      !!again && Math.abs(after - before) <= 2);
+    check('…and with nothing older left, the line is gone', !earlier(longCard()));
+  }
   // one merged row per bot turn that used tools — the same count the pure
   // grouping function predicts from the record
   const toolUnits = window.BFPDrawer.msgUnits(LONG.msgs)
     .filter(u => u.some(m => m.kind === 'tools')).length;
-  check('…and every tool row with them',
-    longCard().querySelectorAll('.tools').length === toolUnits && toolUnits === 6);
-  // The fold is about LENGTH and nothing else, so this block owns the thread it
-  // measures: whatever the resolve and reply sections above left in it is
-  // cleared back to its root message first. (They used to leave it alone by
-  // luck — a thread a bot has answered now sits in Ready for review, so which
-  // thread the second row of the list is has stopped being a constant.)
+  check('…every tool row with them',
+    longCard().querySelectorAll('.tools').length === toolUnits && toolUnits === 12);
+  // a reply arriving never hides anything already on screen
+  LONG.msgs.push({ author: 'claude', ts: iso(1), text: 'An answer arriving late.' });
+  d.setPage(RECORD);
+  check('a new reply lands at the bottom', bodyOf().includes('An answer arriving late.'));
+  check('…and hides nothing that was shown', bodyOf().includes(rootText.slice(0, 30)) && bodyOf().includes('Answer 1 '));
+
+  // The window is about LENGTH and nothing else, so this block owns the thread
+  // it measures: whatever the resolve and reply sections above left in it is
+  // cleared back to its root message first.
   RECORD.threads[0].msgs = RECORD.threads[0].msgs.slice(0, 1);
   delete RECORD.threads[0].addressed;
   delete RECORD.threads[0].addressed_by;
   delete RECORD.threads[0].addressed_at;
   d.setPage(RECORD);
   await sleep(40);
-  check('a short thread is never folded',
+  check('a short thread carries no line at all',
     !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore'));
-  check('…and is not offered a fold control either — there is nothing to fold',
-    !S.querySelector('.card[data-thread="' + RECORD.threads[0].id + '"] .showmore.fold'));
 
-  // the threshold itself: the last two ROUNDS always stay (a round is a
-  // person's message and everything after it), so four alternating units —
-  // two rounds — still read straight through; the fifth, a third person
-  // message, is what folds — and a fold that hides one reply says so in the
-  // singular
+  // short threads read straight through, whatever their shape: what used to be
+  // the fold's threshold (a third round) hides nothing now
   const OTHER = RECORD.threads[0];
   const otherCard = () => S.querySelector('.card[data-thread="' + OTHER.id + '"]');
   OTHER.msgs.push({ author: 'claude', ts: iso(60), text: 'Unit two.' },
-                  { author: 'angadh', ts: iso(58), text: 'Unit three.' });
+                  { author: 'angadh', ts: iso(58), text: 'Unit three.' },
+                  { author: 'claude', ts: iso(56), text: 'Unit four.' },
+                  { author: 'angadh', ts: iso(54), text: 'Unit five.' });
   d.setPage(RECORD);
-  const otherMore = () => otherCard().querySelector('.showmore[data-act="expand"]');
-  const otherFold = () => otherCard().querySelector('.showmore[data-act="fold"]');
-  check('three units still read straight through', !otherMore());
-  OTHER.msgs.push({ author: 'claude', ts: iso(56), text: 'Unit four.' });
-  d.setPage(RECORD);
-  check('…and so do four: two rounds, nothing to fold', !otherMore());
-  OTHER.msgs.push({ author: 'angadh', ts: iso(54), text: 'Unit five.' });
-  d.setPage(RECORD);
-  check('…and the fifth unit, a third round, folds the thread', !!otherMore());
-  check('…hiding exactly one reply, in the singular',
-    otherMore().textContent.trim() === 'Show 1 earlier reply');
-  check('…with the root and the last two rounds still on screen', (() => {
+  check('five units: every one drawn, nothing hidden, no line', (() => {
     const t = otherCard().querySelector('.thread').textContent;
-    return t.includes(OTHER.msgs[0].text.slice(0, 30))
-      && t.includes('Unit three.') && t.includes('Unit four.') && t.includes('Unit five.')
-      && !t.includes('Unit two.');
+    return t.includes(OTHER.msgs[0].text.slice(0, 30)) && t.includes('Unit two.')
+      && t.includes('Unit five.') && !otherCard().querySelector('.showmore') && noFold(otherCard());
   })());
-
-  // a new reply arrives in a thread that is still folded: it must show up at
-  // the bottom without the hidden middle springing open under the reader
-  d.setPage(RECORD);
   for (let i = 1; i <= 8; i++) OTHER.msgs.push({ author: i % 2 ? 'claude' : 'angadh', ts: iso(30 - i), text: 'Line ' + i });
-  d.setPage(RECORD);
-  check('the thread stays folded as it grows', !!otherMore());
   OTHER.msgs.push({ author: 'claude', ts: iso(1), text: 'Brand new answer' });
   d.setPage(RECORD);
-  check('a reply arriving in a folded thread is visible immediately',
-    otherCard().querySelector('.thread').textContent.includes('Brand new answer'));
-  check('…without unfolding the middle', !!otherMore());
+  check('a thread that grows under twenty messages still hides nothing',
+    otherCard().querySelector('.thread').textContent.includes('Unit two.')
+    && otherCard().querySelector('.thread').textContent.includes('Brand new answer')
+    && !otherCard().querySelector('.showmore'));
 
-  // ---- folding by hand ----------------------------------------------------
-  // The automatic rule decides how a thread OPENS; from then on the reader
-  // decides. The same slot carries both directions — "Show N earlier replies"
-  // when it is folded, "Hide N earlier replies" when it is not — and whichever
-  // they chose sticks, including when the bots answer into it afterwards.
-  const foldOf = c => c.querySelector('.showmore[data-act="fold"]');
-  const moreOf = c => c.querySelector('.showmore[data-act="expand"]');
-
-  check('an open thread offers a way to fold it back', !!foldOf(longCard()));
-  check('…which says what it will hide, in the same words as the expander',
-    /^Hide \d+ earlier repl(y|ies)$/.test(foldOf(longCard()).textContent.trim()),
-    foldOf(longCard()).textContent);
-  foldOf(longCard()).click();
-  check('folding by hand folds it', !!moreOf(longCard()));
-  check('…tighter than the rule does, because it was asked for',
-    !bodyOf().includes('Answer 5') && bodyOf().includes('Answer 6'));
-  check('…keeping the thread root', bodyOf().includes(rootText.slice(0, 30)));
-  // and the whole point: it stays that way
-  LONG.msgs.push({ author: 'claude', ts: iso(1), text: 'An answer nobody asked to see.' });
-  d.setPage(RECORD);
-  check('a new reply does not undo a fold the reader asked for', !!moreOf(longCard()));
-  check('…and still lands where it can be seen',
-    bodyOf().includes('An answer nobody asked to see.'));
-  moreOf(longCard()).click();
-  check('opening it again is the same one control, the other way',
-    !moreOf(longCard()) && !!foldOf(longCard()));
-  LONG.msgs.push({ author: 'angadh', ts: iso(1), text: 'And one more of mine.' });
-  d.setPage(RECORD);
-  check('…and a thread opened by hand does not re-fold behind a new reply',
-    !moreOf(longCard()) && bodyOf().includes('Answer 2'));
-
-  // three units is the case the rule leaves alone and the reader may not want
   const THREE = {
     id: 't-1754500300-f9a0', quote: 'a passage with exactly three units under it',
     prefix: '', suffix: '', orphaned: false,
@@ -7159,25 +7165,15 @@ async function selftest() {
   RECORD.threads.push(THREE);
   const threeCard = () => S.querySelector('.card[data-thread="' + THREE.id + '"]');
   d.setPage(RECORD);
-  check('a three-unit thread is left open by the rule', !moreOf(threeCard()));
-  check('…but is still offered the control', !!foldOf(threeCard()));
-  foldOf(threeCard()).click();
-  check('…and folds when asked', !!moreOf(threeCard()));
-  check('…hiding the middle and keeping the newest', (() => {
-    const t = threeCard().querySelector('.thread').textContent;
-    return !t.includes('Second unit here.') && t.includes('Third unit here.');
-  })());
-  moreOf(threeCard()).click();
-  check('…and opens again from the same place', !moreOf(threeCard()) && !!foldOf(threeCard()));
+  check('a three-unit thread: all three drawn, and no control to fold it',
+    threeCard().querySelectorAll('.thread .reply').length === 3 && !threeCard().querySelector('.showmore'));
 
-  // the page chat is NOT a thread in this respect: it never folds its
-  // middle. A long one opens on its newest messages and shows older ones as
-  // the reader scrolls up — that is the ?longchat=1 pose's business.
+  // the page chat is drawn the same way; a long one is the ?longchat=1 pose's
+  // business
   d.open('chat');
   const chatCard = () => S.querySelector('.pane[data-pane="chat"] .card.chatpane');
   check('the page chat is drawn', !!chatCard());
-  check('…with no fold control in either direction: it reads straight through',
-    !foldOf(chatCard()) && !moreOf(chatCard()));
+  check('…with no fold control in either direction: it reads straight through', noFold(chatCard()));
   d.open('comments');
 
   // ---- organising the archive: kinds, tags and names ---------------------
@@ -7601,8 +7597,8 @@ async function selftest() {
     check('the chooser lists the chat that was set aside', arows.length === 1);
     tap(arows[0], 'the archived chat');
     await until(() => S.querySelector('.pane[data-pane="chat"] .thread'), 4000);
-    // …on its tail, folded, exactly as a restored chat always opens (leaveChat
-    // clears `expanded`), so what proves it came back is the END of it
+    // …on its newest stretch, exactly as a restored chat always opens
+    // (leaveChat resets its window), so what proves it came back is the END of it
     check('…and opening it brings the conversation back',
       !S.querySelector('.pane[data-pane="chat"] .empty')
       && /Round wrap-up/.test((S.querySelector('.pane[data-pane="chat"]') || {}).textContent || ''));
@@ -8928,10 +8924,8 @@ async function selftestPdfStrike() {
 
   // ---- …and the strike a BOT suggested and the reader took ----------------
   const disc = () => cardFor('t-1754600600-d4d4');
-  // FOUR units is a folded thread (collapsePlan, COLLAPSE_AT), and the first
-  // bot's reply is in the fold — which is the drawer doing its job, not a bug,
-  // and exactly what the reader opens before choosing between two suggestions.
-  hit('[data-act="expand"]', 'the "1 earlier reply" fold', disc());
+  // (Four units used to fold the first bot's reply away here; since
+  // 2026-11-11 nothing folds, so both suggestions are on screen as drawn.)
   await sleep(120);
   const chips = () => [...(disc() ? disc().querySelectorAll('.filechip.strikechip') : [])];
   const chipOf = who => (disc() || document).querySelector(
@@ -13289,22 +13283,22 @@ async function selftestMore() {
     && !r.textContent.includes('blog marker'));
   check('replies with no marker grow no disclosure', !!plain || true);
 
-  // …and the same thing inside a comment thread, where the long-thread fold lives
+  // …and the same thing inside a comment thread, which has its own window
   d.open('comments');
   await sleep(60);
   const card = [...S.querySelectorAll('.pane[data-pane="comments"] .card')]
     .find(c => c.textContent.includes('Fair but flattening'));
   check('a threaded reply folds the same way', !!card && !!card.querySelector('.more'));
   check('…showing the head only', !!card && !shown(card).includes('may exceed'));
-  const foldBefore = !!card.querySelector('.showmore');
+  const lineBefore = !!card.querySelector('.showmore');
   card.querySelector('.more-head').click();
   await sleep(30);
   const card2 = [...S.querySelectorAll('.pane[data-pane="comments"] .card')]
     .find(c => c.textContent.includes('Fair but flattening'));
   check('…and opening it inside a thread shows the rest',
     shown(card2).includes('may exceed'));
-  check('…leaving the thread’s own fold exactly as it was',
-    !!card2.querySelector('.showmore') === foldBefore);
+  check('…leaving the thread’s own window exactly as it was',
+    !!card2.querySelector('.showmore') === lineBefore);
 
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;
@@ -15138,13 +15132,13 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         log('mention: the ' + (slash ? 'slash' : '@') + '-menu, open (screenshot state)');
       }, 250);
     }
-    // ?long=1&open=1 — the same grown thread, opened, so the manual fold
-    // control (the other half of the same slot) is what a screenshot catches
+    // ?long=1&open=1 — the same grown thread with its earlier messages
+    // revealed, so the whole of it is what a screenshot catches
     if (Q.get('long') === '1' && Q.get('open') === '1') {
       setTimeout(() => {
-        const b = d.shadow.querySelector('.showmore[data-act="expand"]');
+        const b = d.shadow.querySelector('.showmore.earlier[data-act="earlier"]');
         if (b) b.click();
-        log('long: opened by hand — the fold control is on screen');
+        log('long: earlier messages revealed — the whole thread is on screen');
       }, 300);
     }
     if (Q.get('models')) setTimeout(() => d.shadow.querySelector('[data-act="models"]').click(), 200);

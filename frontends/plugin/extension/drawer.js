@@ -250,7 +250,7 @@
 //     vouched for
 // Opening a past chat is a companion-side move of the page's `session_id`,
 // so what renders under the bar is an ordinary page record with an ordinary
-// `page_chat` — the fold, the composer and the streaming are untouched.
+// `page_chat` — the window, the composer and the streaming are untouched.
 (function (root) {
   'use strict';
 
@@ -1435,45 +1435,20 @@
     mdSlots.clear();
   }
 
-  // ── long threads collapse in the middle ────────────────────────────────
-  // A thread that has been going for a while is mostly scrollback: the reader
-  // wants the passage it started from and whatever was said last, not the
-  // twenty turns in between. So past a threshold the middle folds away behind
-  // one quiet line and the thread stops pushing every other card off screen.
+  // ── a long conversation: a window on its newest messages ────────────────
+  // Every message list the panel draws — the page chat, the library chat and
+  // every comment thread — is read the way a messaging app is read: it opens
+  // on its newest stretch, and older messages appear above it when the reader
+  // asks ("Show earlier messages", or, in a chat, scrolling up to it). No
+  // middle ever folds away, so nothing the reader has not read can hide, and
+  // a new reply never hides anything already on screen. (Until 2026-11-11 a
+  // comment thread folded its middle instead; that fold is gone.)
   //
-  // The unit of collapsing is NOT the message, it is what the drawer draws: a
-  // person's message is one unit, and a bot's whole turn — its merged tool row
-  // plus every answer in it — is another. Collapsing by message would let a
-  // turn's "Explored · 4 steps" row survive on its own, hovering above an
-  // answer that had been hidden, which is worse than showing nothing.
-  //
-  // What stays live at the end is counted in ROUNDS, not units: a round is a
-  // person's message and everything after it up to their next one. Counting
-  // units let a companion notice ("Updated … in your site") or a second bot's
-  // late answer push a fresh reply into the fold seconds after it arrived.
-  // So the fold keeps the last two person messages and everything after the
-  // first of them; it never hides the newest person message or anything after
-  // it, and the tail is never shorter than the last two units.
-  const COLLAPSE_AT = 3;   // units on screen before any folding happens
-  const KEEP_HEAD = 1;     // the thread root: the message under the quote
-  const KEEP_ROUNDS = 2;   // the last two rounds stay live, always
-  // …and at least the last two units, which is the whole rule for a thread
-  // where nobody but the bots ever speaks
-  const KEEP_TAIL_UNITS = 2;
-  // A fold the reader ASKED for is tighter than one the drawer chose: they
-  // want the thread out of the way, not tidied. The newest unit still shows,
-  // so a folded thread that gets an answer still says so.
-  const KEEP_TAIL_SHUT = 1;
-
-  // …and once they have said so, it is theirs. `manual` is undefined (the rule
-  // above decides), FOLD_OPEN (they opened it) or FOLD_SHUT (they folded it),
-  // and a manual choice survives everything that happens afterwards — a thread
-  // somebody folded must not spring open because a bot answered into it.
-  const FOLD_OPEN = 'open';
-  const FOLD_SHUT = 'shut';
-  // Whether a manual fold/unfold control is worth offering at all: three drawn
-  // units is the same threshold the automatic rule uses.
-  const foldable = units => ((units || []).length) >= COLLAPSE_AT;
+  // The window is counted in MESSAGES (tool rows are not messages) but cut in
+  // whole UNITS — what the drawer draws: a person's message is one unit, and a
+  // bot's whole turn (its merged tool row plus every answer in it) is another
+  // — so a turn's "Explored · 4 steps" row never survives on its own above an
+  // answer that is not drawn.
 
   // The raw msgs list grouped exactly the way msgsHtml draws it.
   // Reddit-style nesting, decided ONCE for a list. A message with `parent_ts`
@@ -1518,18 +1493,6 @@
   // a bot's turn, for grouping: the bot's words, its tool rows, and any agent
   // card that could not be nested
   const botish = m => m.kind === 'tools' || isBot(m.author) || isAgentCard(m);
-  // Authors that are the app talking, never a person, in every message list
-  // the drawer draws. One list, so the fold and anything else asking "did a
-  // person say this?" cannot disagree.
-  //   botference — the companion's own notices (server.mjs: "Updated … in
-  //                your site", receipts; chat.mjs: "Error starting codex")
-  //   agent      — a summoned build agent's card, even one missing its meta
-  //   passage    — the quoted passage server.mjs puts in a draft's history
-  const SYSTEM_AUTHORS = ['botference', 'agent', 'passage'];
-  // A person's message: what starts a round. Not a tool row, not a bot, not
-  // an agent card, not the app's own notice.
-  const isPersonMsg = m => !!m && !botish(m)
-    && SYSTEM_AUTHORS.indexOf(String(m.author || '').trim().toLowerCase()) === -1;
   function msgUnits(list) {
     const msgs = nestMsgs(list).top;
     const units = [];
@@ -1543,123 +1506,131 @@
     return units;
   }
 
-  // Where the automatic fold's live tail begins: the unit holding the
-  // KEEP_ROUNDS-th last person message (the newest one if there is only one),
-  // but never later than KEEP_TAIL_UNITS from the end. A thread with no
-  // person message at all keeps the last KEEP_TAIL_UNITS units.
-  function liveTailStart(units) {
-    const n = units.length;
-    const people = [];
-    for (let i = 0; i < n; i++) if ((units[i] || []).some(isPersonMsg)) people.push(i);
-    const rounds = people.length ? people[Math.max(0, people.length - KEEP_ROUNDS)] : n;
-    return Math.min(n - KEEP_TAIL_UNITS, rounds);
-  }
-
-  // What to draw, given those units: units [from, to) fold away and `hidden`
-  // is what the expander line claims. Pure, and the only place the arithmetic
-  // lives (test/collapse.test.mjs drives it directly).
-  //
-  // `manual` is the reader's own decision about THIS thread, and it outranks
-  // the threshold in both directions: FOLD_SHUT folds a thread the rule would
-  // have left alone, FOLD_OPEN (or a plain `true`, which is what the expander
-  // used to set) keeps one open however long it grows.
-  function collapsePlan(units, manual) {
-    const n = (units || []).length;
-    const none = { collapsed: false, from: n, to: n, hidden: 0, manual: false };
-    const shut = manual === FOLD_SHUT;
-    if (!shut && (manual || n <= COLLAPSE_AT)) return none;
-    const from = KEEP_HEAD, to = shut ? n - KEEP_TAIL_SHUT : liveTailStart(units);
-    if (to <= from) return none;
-    // tool rows are process detail, not messages — the line says "9 earlier
-    // replies" and the reader must find nine of them when it opens
-    let hidden = 0;
-    for (let i = from; i < to; i++) {
-      for (const m of units[i]) if (m.kind !== 'tools') hidden++;
-    }
-    // hiding one message is worth the line ("Show 1 earlier reply"); hiding
-    // none is not — a middle made only of tool rows has nothing to announce
-    if (hidden < 1) return none;
-    return { collapsed: true, from, to, hidden, manual: shut };
-  }
-
-  // ── a long CHAT: a window on its newest messages ─────────────────────────
-  // The fold above is for comment threads. A chat (the page chat, the library
-  // chat) is read the way every messaging app is read: it opens on its newest
-  // stretch, and older messages appear above as the reader scrolls up. No
-  // middle ever folds away, so nothing the reader has not read can hide.
-  //
-  // The window is counted in MESSAGES (tool rows are not messages) but cut in
-  // whole UNITS (msgUnits), so a bot's turn is never split across its top edge.
-  const CHAT_WINDOW = 20;  // about this many messages when a chat opens
-  const CHAT_STEP = 20;    // …and about this many more per reveal
+  const MSG_WINDOW = 20;  // about this many messages when a conversation opens
+  const MSG_STEP = 20;    // …and about this many more per reveal
   const unitMsgCount = u => (u || []).filter(m => m && m.kind !== 'tools').length;
-  const chatUnitKey = u => (u && u[0] ? String(u[0].ts) + '|' + String(u[0].author || '') : '');
+  const unitKey = u => (u && u[0] ? String(u[0].ts) + '|' + String(u[0].author || '') : '');
 
-  // The window's ONE value, per chat target. It has two modes, named here:
+  // The window's ONE value, per target (a chat or a thread). It has two
+  // modes, named here:
   //   'newest' — the value is null: nothing pinned yet; the window is the
-  //              default newest stretch. A chat is in this mode when it has
-  //              just been opened (or reset), until its first draw pins it.
+  //              default newest stretch. A conversation is in this mode when
+  //              it has just been opened (or reset), until its first draw
+  //              pins it.
   //   'from'   — the value is { key, at }: the window starts at the unit whose
   //              first message is `key` ("ts|author"); `at` is that unit's
   //              index when it was set, used only if the key has gone (the
-  //              message was deleted, or this is a different chat now).
+  //              message was deleted, or this is a different conversation now).
   // ANCHORED, not a count from the end: a message arriving at the bottom
   // never moves the top, and nothing revealed is ever hidden again by one.
-  const CHAT_WINDOW_MODES = ['newest', 'from'];
-  const chatWindowMode = win => (win && win.key != null ? 'from' : 'newest');
-  // …and every way it changes, in one list (chatWindowMove refuses the rest):
+  const MSG_WINDOW_MODES = ['newest', 'from'];
+  const msgWindowMode = win => (win && win.key != null ? 'from' : 'newest');
+  // …and every way it changes, in one list (msgWindowMove refuses the rest):
   //   pin    — newest → from, at the default stretch (the first draw does it)
-  //   reveal — about CHAT_STEP more messages above the current top
+  //   reveal — about MSG_STEP more messages above the current top
   //   widen  — far enough up to include the message `test` picks out
-  //   reset  — back to newest (a different chat, the panel reopened)
-  const CHAT_WINDOW_MOVES = ['pin', 'reveal', 'widen', 'reset'];
+  //   reset  — back to newest (a different page or chat, the panel reopened)
+  const MSG_WINDOW_MOVES = ['pin', 'reveal', 'widen', 'reset'];
 
   // where the default newest stretch starts: whole units from the end until
-  // they hold `want` messages (or the chat runs out)
-  function chatStretchStart(units, end, want) {
+  // they hold `want` messages (or the conversation runs out)
+  function stretchStart(units, end, want) {
     let i = end, c = 0;
     while (i > 0 && c < want) { i--; c += unitMsgCount(units[i]); }
     return i;
   }
-  // What a chat draws: units [start, n), and `hidden` messages above them.
-  // Never less than the default newest stretch, whatever the value says — a
-  // stale anchor (a deleted message, a different chat) can only widen it.
-  function chatWindowPlan(units, win) {
+  // What a conversation draws: units [start, n), and `hidden` messages above
+  // them. Never less than the default newest stretch, whatever the value
+  // says — a stale anchor (a deleted message, a different conversation) can
+  // only widen it.
+  function msgWindowPlan(units, win) {
     const n = (units || []).length;
-    const dflt = chatStretchStart(units || [], n, CHAT_WINDOW);
+    const dflt = stretchStart(units || [], n, MSG_WINDOW);
     let start = dflt;
-    if (chatWindowMode(win) === 'from') {
+    if (msgWindowMode(win) === 'from') {
       let at = -1;
-      for (let i = 0; i < n; i++) if (chatUnitKey(units[i]) === win.key) { at = i; break; }
+      for (let i = 0; i < n; i++) if (unitKey(units[i]) === win.key) { at = i; break; }
       if (at < 0) at = Math.max(0, Math.min(n, Number(win.at) || 0));
       start = Math.min(at, dflt);
     }
     let hidden = 0;
     for (let i = 0; i < start; i++) hidden += unitMsgCount(units[i]);
-    return { start, hidden, mode: chatWindowMode(win) };
+    return { start, hidden, mode: msgWindowMode(win) };
   }
-  const chatWinAt = (units, i) => ({ key: chatUnitKey(units[i]), at: i });
+  const winAt = (units, i) => ({ key: unitKey(units[i]), at: i });
   // The one way the value changes. Pure: (units, value, move, test) → value.
   // An unknown move, or pinning a window that is already pinned, throws.
-  function chatWindowMove(units, win, move, test) {
-    if (CHAT_WINDOW_MOVES.indexOf(move) === -1) throw new Error('chat window: no such move ' + move);
-    const mode = chatWindowMode(win);
+  function msgWindowMove(units, win, move, test) {
+    if (MSG_WINDOW_MOVES.indexOf(move) === -1) throw new Error('message window: no such move ' + move);
+    const mode = msgWindowMode(win);
     if (move === 'reset') return null;
-    if (move === 'pin' && mode !== 'newest') throw new Error('chat window: already pinned');
+    if (move === 'pin' && mode !== 'newest') throw new Error('message window: already pinned');
     const n = (units || []).length;
     if (!n) return win || null;          // nothing to anchor to yet
-    const { start } = chatWindowPlan(units, win);
-    if (move === 'pin') return chatWinAt(units, start);
+    const { start } = msgWindowPlan(units, win);
+    if (move === 'pin') return winAt(units, start);
     if (move === 'reveal') {
-      if (start === 0) return mode === 'newest' ? chatWinAt(units, 0) : win;
-      return chatWinAt(units, chatStretchStart(units, start, CHAT_STEP));
+      if (start === 0) return mode === 'newest' ? winAt(units, 0) : win;
+      return winAt(units, stretchStart(units, start, MSG_STEP));
     }
     // widen: the unit holding the message `test` picks out
     let at = -1;
     for (let i = 0; i < n && at < 0; i++) if (typeof test === 'function' && units[i].some(m => test(m))) at = i;
-    if (at < 0 || at >= start) return mode === 'newest' ? chatWinAt(units, start) : win;
-    return chatWinAt(units, at);
+    if (at < 0 || at >= start) return mode === 'newest' ? winAt(units, start) : win;
+    return winAt(units, at);
   }
+
+  // ── editing one of your own messages ─────────────────────────────────────
+  // ✎ on a message puts an edit box where its words were. Which message is
+  // being edited is ONE value, D.edit, never the DOM: a redraw (a bot's reply
+  // landing, a poll) rebuilds the panel, and the box has to come back with
+  // what was typed in it. Two modes, named here:
+  //   'none' — the value is null: no message is being edited.
+  //   'open' — the value is { target, ts, author, text, start, end }: the
+  //            message (its conversation, its ts, its author — a ts alone is
+  //            not an identity, see findMsg) and the draft so far, with the
+  //            caret/selection inside it.
+  // One edit at a time, in the panel or in a bubble, wherever the message is
+  // drawn: the editor is drawn by whatever draws that message.
+  const EDIT_MODES = ['none', 'open'];
+  const editMode = ed => (ed && ed.target != null ? 'open' : 'none');
+  // …and every way it changes, in one list (editMove refuses the rest):
+  //   start  — none → open, on one message, its stored text as the draft
+  //   type   — open → open, the draft (and caret) as the reader left it
+  //   save   — open → none, once the companion has taken the new text
+  //   cancel — open → none, the message left as it was
+  //   leave  — anything → none: the reader left the chat or the page, or the
+  //            message is gone; never refused, since there may be no edit
+  const EDIT_MOVES = ['start', 'type', 'save', 'cancel', 'leave'];
+  // The one way the value changes. Pure: (value, move, arg) → value. An
+  // unknown move, a second start while one edit is open, and typing, saving
+  // or cancelling with none open all throw.
+  function editMove(ed, move, arg) {
+    if (EDIT_MOVES.indexOf(move) === -1) throw new Error('edit: no such move ' + move);
+    const mode = editMode(ed);
+    if (move === 'leave') return null;
+    if (move === 'start') {
+      if (mode === 'open') throw new Error('edit: one message is already being edited');
+      const a = arg || {};
+      if (a.target == null || a.target === '' || a.ts == null || a.ts === '') throw new Error('edit: start needs a message');
+      const text = String(a.text == null ? '' : a.text);
+      return { target: String(a.target), ts: String(a.ts), author: String(a.author == null ? '' : a.author),
+               text, start: text.length, end: text.length };
+    }
+    if (mode !== 'open') throw new Error('edit: no message is being edited');
+    if (move === 'type') {
+      const a = arg || {};
+      const text = a.text == null ? ed.text : String(a.text);
+      const clamp = (v, d) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(text.length, n)) : d; };
+      const start = clamp(a.start, Math.min(ed.start, text.length));
+      const end = Math.max(start, clamp(a.end, Math.min(ed.end, text.length)));
+      return { ...ed, text, start, end };
+    }
+    return null;   // save, cancel
+  }
+  // whether `r`, drawn in conversation `target`, is the message being edited
+  const isEditOf = (ed, target, r) => editMode(ed) === 'open' && !!r
+    && ed.target === String(target) && ed.ts === String(r.ts) && ed.author === String(r.author == null ? '' : r.author);
 
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
@@ -1762,17 +1733,6 @@
       if (h.indexOf(q) === 0) out.push(h);
     }
     return out;
-  }
-
-  // What the fold line says, in either direction. A fold that hides exactly one
-  // message has to read "Show 1 earlier reply" — folds start at four units, so
-  // the singular is the common case, not a curiosity — and the manual control
-  // is the same sentence with the other verb, because it is the same idea.
-  // …and with no verb at all ('count') it is the quiet marker left in the gap
-  // where the folded messages were: "9 earlier replies", not a control.
-  function moreLabel(hidden, action) {
-    return (action === 'hide' ? 'Hide ' : action === 'count' ? '' : 'Show ') + hidden +
-      ' earlier repl' + (hidden === 1 ? 'y' : 'ies');
   }
 
   // Official agent logomarks for the header presence cluster — the same Simple
@@ -2045,6 +2005,9 @@
                searching: '', declined: [], done: '' },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
+      // the message being edited and its draft (editMove): null, or
+      // { target, ts, author, text, start, end }. Nothing but moveEdit writes it.
+      edit: null,
       // WHO THE NEXT MESSAGE IN A THREAD IS FOR — the composer's pill row.
       // target -> 'none'|'claude'|'codex'|'all', set by clicking a pill and by
       // sending a message that typed a tag. UNSET is the normal state and does
@@ -2079,14 +2042,10 @@
       figs: {},            // "runId|name" -> data: url (fetched through the worker)
       figLoading: {},      // …-> a fetch is in flight
       light: null,         // the open lightbox's src, or null
-      // target -> true once the reader has opened a long thread's hidden
-      // middle. In memory for the session only: a collapse is a reading
-      // convenience, not a decision worth persisting.
-      expanded: {},
-      // chat target -> where its window starts (chatWindowPlan): absent is
-      // 'newest', { key, at } is 'from'. Comment threads never appear here,
-      // and nothing but moveChatWindow writes it.
-      chatWin: {},
+      // target (a chat or a comment thread) -> where its window starts
+      // (msgWindowPlan): absent is 'newest', { key, at } is 'from'. In memory
+      // for the session only, and nothing but moveMsgWindow writes it.
+      msgWin: {},
       // ---- the tasks card ------------------------------------------------
       // The newest checklist on this page, wherever it lives, pinned at the
       // top of both panes. DERIVED: `tasks` is recomputed from the record by
@@ -2938,7 +2897,8 @@ ${bubbleShellHtml()}`;
       const cut = autoFold(splitMore(r.text));
       const mkey = target + '|' + r.ts + '|more';
       const mopen = !!D.moreOpen[mkey];
-      const body = cut.more
+      const body = isEditOf(D.edit, target, r) ? editBoxHtml(D.edit)
+        : cut.more
         ? `<div class="ctext md" data-md="${esc(mdSlot(cut.head))}"></div>` +
           `<div class="more${mopen ? ' open' : ''}" data-more="${esc(mkey)}">` +
           `<button class="more-head" data-act="more" data-key="${esc(mkey)}" type="button" aria-expanded="${mopen}">` +
@@ -3014,129 +2974,67 @@ ${bubbleShellHtml()}`;
       return out.join('');
     }
 
-    // The folded middle of a long thread. One line, no card, no chrome — it is
-    // a way back into the scrollback, not a participant in the conversation.
-    // The same line, with the other verb, is how a thread is folded BY HAND:
-    // one control in one place that means "less of this" / "more of this",
-    // rather than a second widget somewhere else in the card.
+    // ---- a conversation's window (see msgWindowPlan) ----------------------
+    // Every target has one: the page chat, the library chat and each comment
+    // thread. D.msgWin holds its one value; nothing but moveMsgWindow writes it.
     //
-    // That one place is the FOOT of the thread's messages, under the newest
-    // one: the reader is nearly always at the bottom of a conversation, and
-    // reads back in time by scrolling up from there. Pressing it never takes
-    // them away from the newest message (see 'expand' and 'fold').
-    function moreHtml(target, hidden) {
-      return `<button class="showmore" data-act="expand" data-target="${esc(target)}" type="button" aria-expanded="false">${esc(moreLabel(hidden))}</button>`;
+    // THE one function that changes a window. `units` may be passed by a
+    // caller that already has them (the draw); otherwise they are read from
+    // the record. Returns whether the value changed.
+    function moveMsgWindow(target, move, test, units) {
+      if (!target) throw new Error('message window: no target');
+      const was = D.msgWin[target] || null;
+      const next = msgWindowMove(units || msgUnits(realMsgs(target)), was, move, test);
+      if (next) D.msgWin[target] = next; else delete D.msgWin[target];
+      return JSON.stringify(next) !== JSON.stringify(was);
     }
-    function foldHtml(target, hidden) {
-      return `<button class="showmore fold" data-act="fold" data-target="${esc(target)}" type="button" aria-expanded="true">${esc(moreLabel(hidden, 'hide'))}</button>`;
+    // every window (but `except`'s) back to its newest stretch: a different
+    // page, a deleted one, the panel reopened. Returns the targets whose
+    // drawing changes.
+    function resetMsgWindows(except) {
+      const ts = Object.keys(D.msgWin).filter(t => t !== except);
+      const wide = ts.filter(msgWidened);
+      for (const t of ts) moveMsgWindow(t, 'reset');
+      return wide;
     }
-    // …and where the folded messages WERE, right after the first one: a
-    // hairline saying how many are missing, so the first message is not read
-    // as if the last two answered it directly. Not a button — the control is
-    // at the foot, and there is only ever one of it.
-    function foldGapHtml(hidden) {
-      return `<div class="foldgap">${esc(moreLabel(hidden, 'count'))}</div>`;
+    // whether the reader is looking at more than a freshly opened one would show
+    function msgWidened(target) {
+      const units = msgUnits(realMsgs(target));
+      return msgWindowPlan(units, D.msgWin[target]).start !== msgWindowPlan(units, null).start;
+    }
+    // Make one message drawable: whatever it takes, the window grows up to
+    // it. `ts`/`author` name the message (author optional), `extra` is
+    // another test (a suggestion id). A summoned agent's card is nested under
+    // its parent's unit, so its parent counts as holding it.
+    function widenTo(target, ts, author, extra) {
+      const hit = m => !!m && ((ts != null && String(m.ts) === String(ts)
+        && (author == null || String(m.author) === String(author))) || (extra ? !!extra(m) : false));
+      const { kids } = nestMsgs(realMsgs(target));
+      return moveMsgWindow(target, 'widen', m => hit(m) || (kids.get(m) || []).some(hit));
     }
 
-    // (A CHAT — page or library — is handed straight on: it draws a window on its
-    // newest messages instead, chatMsgsHtml below.)
-    //
-    // The thread root and the live tail stay on screen; everything between them
-    // folds away until the reader asks for it, with a quiet count (foldGapHtml)
-    // in the gap. The control — moreHtml() — is the last thing this returns,
-    // under the newest message. The outbox, the streaming block and the status
-    // chip are rendered by the callers AFTER this, so a message being sent, a
-    // bot mid-answer and "agents are working…" are never inside the fold.
-    //
-    // Open, and long enough to be worth folding, the same slot at the foot
-    // offers the way back: "Hide N earlier replies", which is what a reader
-    // who has finished with a thread wants and had no way to say.
+    // The control at the TOP of a window: one quiet line, no card. In a chat
+    // it is the same reveal the scroll gives, for a keyboard or a pane too
+    // short to scroll; in a comment thread (a card is not its own scroller)
+    // it is the only way up.
+    function earlierHtml(target, hidden) {
+      const more = hidden ? ` · ${hidden} more` : '';
+      return `<button class="showmore earlier" data-act="earlier" data-target="${esc(target)}" type="button">Show earlier messages${more}</button>`;
+    }
+
+    // A conversation's messages: only the units in its window are built at
+    // all — a 370-message chat costs the same twenty-odd units per redraw as
+    // a short one. The first draw pins the window where it opened, so the
+    // reply that arrives next adds at the bottom without moving the top.
+    // Messages set aside by an edit (store.supersedeAfter) fold under one
+    // line, "before the edit", in the place they were: kept, not deleted.
+    // The outbox, the streaming block and the status chip are rendered by the
+    // callers AFTER this, so they are always below the newest message.
     function msgsHtml(target, list) {
       const units = msgUnits(list);
       const { kids } = nestMsgs(list);
-      if (isChatTarget(target)) return chatMsgsHtml(target, units, kids);
-      const plan = collapsePlan(units, D.expanded[target]);
-      // what folding this thread by hand WOULD hide — the label needs the
-      // number, and a thread with nothing to hide is offered no control
-      const byHand = plan.collapsed || !foldable(units) ? null : collapsePlan(units, FOLD_SHUT);
-      const out = [];
-      // Messages set aside by an edit (store.supersedeAfter) fold under one
-      // line, "before the edit", in the place they were: kept, not deleted.
-      let aside = [], asideCount = 0;
-      const flushAside = () => {
-        if (!aside.length) return;
-        const n = asideCount;
-        out.push(`<details class="superseded"><summary>before the edit · ${n} message${n === 1 ? '' : 's'} set aside</summary>${aside.join('')}</details>`);
-        aside = []; asideCount = 0;
-      };
-      for (let i = 0; i < units.length; i++) {
-        if (plan.collapsed && i === plan.from) { flushAside(); out.push(foldGapHtml(plan.hidden)); }
-        if (plan.collapsed && i >= plan.from && i < plan.to) continue;
-        const html = unitHtml(target, units[i], kids);
-        if (units[i].every(m => m.superseded)) {
-          aside.push(html);
-          asideCount += units[i].filter(m => m.kind !== 'tools').length;
-          continue;
-        }
-        flushAside();
-        out.push(html);
-      }
-      flushAside();
-      if (plan.collapsed) out.push(moreHtml(target, plan.hidden));
-      else if (byHand && byHand.collapsed) out.push(foldHtml(target, byHand.hidden));
-      return out.join('');
-    }
-
-    // ---- a chat's window (see chatWindowPlan) ------------------------------
-    // The two chats are the only targets with a window; every comment thread
-    // keeps the fold above. Which is which is isChatTarget (below, with the
-    // routing that already asked the same question).
-    function chatList(target) {
-      if (target === PAGE_TARGET) return (D.page && D.page.page_chat) || [];
-      if (target === LIBRARY_TARGET) return (D.library && D.library.page && D.library.page.page_chat) || [];
-      return [];
-    }
-    // THE one function that changes a chat's window. `units` may be passed by
-    // a caller that already has them (the draw); otherwise they are read from
-    // the record. Returns whether the value changed.
-    function moveChatWindow(target, move, test, units) {
-      if (!isChatTarget(target)) throw new Error('chat window: not a chat ' + target);
-      const was = D.chatWin[target] || null;
-      const next = chatWindowMove(units || msgUnits(chatList(target)), was, move, test);
-      if (next) D.chatWin[target] = next; else delete D.chatWin[target];
-      return JSON.stringify(next) !== JSON.stringify(was);
-    }
-    // whether the reader is looking at more than a freshly opened chat would show
-    function chatWidened(target) {
-      const units = msgUnits(chatList(target));
-      return chatWindowPlan(units, D.chatWin[target]).start !== chatWindowPlan(units, null).start;
-    }
-    // Make one message of a chat drawable: whatever it takes, the window grows
-    // up to it. `ts`/`author` name the message (author optional), `extra` is
-    // another test (a suggestion id). A summoned agent's card is nested under
-    // its parent's unit, so its parent counts as holding it.
-    function widenChatTo(target, ts, author, extra) {
-      const hit = m => !!m && ((ts != null && String(m.ts) === String(ts)
-        && (author == null || String(m.author) === String(author))) || (extra ? !!extra(m) : false));
-      const { kids } = nestMsgs(chatList(target));
-      return moveChatWindow(target, 'widen', m => hit(m) || (kids.get(m) || []).some(hit));
-    }
-
-    // The control at the TOP of a chat's window: the same reveal the scroll
-    // gives, for a keyboard, or a pane too short to scroll.
-    function earlierHtml(target, hidden) {
-      const more = hidden ? ` · ${hidden} more` : '';
-      return `<button class="showmore earlier" data-act="chat-earlier" data-target="${esc(target)}" type="button">Show earlier messages${more}</button>`;
-    }
-
-    // A chat's messages: only the units in its window are built at all — a
-    // 370-message chat costs the same twenty-odd units per redraw as a short
-    // one. The first draw of a chat pins its window where it opened, so the
-    // reply that arrives next adds at the bottom without moving the top.
-    // Messages set aside by an edit fold under their own line, as in msgsHtml.
-    function chatMsgsHtml(target, units, kids) {
-      if (units.length && chatWindowMode(D.chatWin[target]) === 'newest') moveChatWindow(target, 'pin', null, units);
-      const win = chatWindowPlan(units, D.chatWin[target]);
+      if (units.length && msgWindowMode(D.msgWin[target]) === 'newest') moveMsgWindow(target, 'pin', null, units);
+      const win = msgWindowPlan(units, D.msgWin[target]);
       const out = [];
       if (win.start > 0) out.push(earlierHtml(target, win.hidden));
       let aside = [], asideCount = 0;
@@ -3166,7 +3064,7 @@ ${bubbleShellHtml()}`;
     // sits, redraw, and scroll by however far it moved. Never lands at the
     // foot — reading back is the opposite of that.
     function revealEarlier(target) {
-      if (!isChatTarget(target) || !D.mounted) return false;
+      if (!target || !D.mounted) return false;
       const card = D.shadow.querySelector('.card[data-thread="' + cssq(target) + '"]');
       const pane = card && card.closest('.pane');
       let anchor = null, off = 0;
@@ -3180,7 +3078,10 @@ ${bubbleShellHtml()}`;
           off = el.getBoundingClientRect().top - pt;
         }
       }
-      if (!moveChatWindow(target, 'reveal')) return false;
+      if (!moveMsgWindow(target, 'reveal')) return false;
+      // reading back through one thread is the reader doing something else:
+      // a hold would pull the card's newest message back into view instead
+      if (D.hold) holdOff();
       render();
       if (anchor && pane) {
         const now = [...D.shadow.querySelectorAll('.card[data-thread="' + cssq(target) + '"] .reply[data-ts]')]
@@ -3196,7 +3097,7 @@ ${bubbleShellHtml()}`;
     function revealIfNearTop(pane) {
       const REVEAL_MARGIN = 200;
       if (!pane || pane.hidden) return false;
-      const btn = pane.querySelector('.showmore.earlier[data-act="chat-earlier"]');
+      const btn = pane.querySelector('.showmore.earlier[data-act="earlier"]');
       if (!btn) return false;
       const pr = pane.getBoundingClientRect(), br = btn.getBoundingClientRect();
       if (br.bottom < pr.top - REVEAL_MARGIN) return false;
@@ -4830,8 +4731,8 @@ ${bubbleShellHtml()}`;
     }
 
     // ↑ source. Whatever it takes to put the message on screen: the right tab,
-    // the thread unfolded (a long thread's middle is exactly where an older
-    // list hides) and spotlit the way a highlight click spotlights it, then the
+    // the conversation's window grown up to it (an older list is exactly what
+    // a long thread does not draw at first) and spotlit the way a highlight click spotlights it, then the
     // message itself flashed so the eye finds it among its neighbours.
     function jumpToTasks() {
       const s = D.tasks;
@@ -4843,11 +4744,10 @@ ${bubbleShellHtml()}`;
         paintTabs();
         rememberTab();
       }
-      // a thread unfolds; a chat's window grows up to the message
-      if (isChatTarget(s.target)) widenChatTo(s.target, s.ts, s.author);
-      else D.expanded[s.target] = FOLD_OPEN;
+      // the window — a chat's or a thread's — grows up to the message
+      widenTo(s.target, s.ts, s.author);
       if (!chat) focus(s.target);            // reveals a FILED thread, and dims the rest
-      render();                              // …and the unfold lands here
+      render();                              // …and the wider window lands here
       const pane = chat ? D.el.chat : D.el.comments;
       const reply = [...pane.querySelectorAll('.reply[data-ts]')].find(r =>
         r.getAttribute('data-ts') === String(s.ts) &&
@@ -4860,7 +4760,7 @@ ${bubbleShellHtml()}`;
     }
 
     // A proposal's preview clicked on the page: its card, on screen. The same
-    // landing ↑ source gives a message — the right tab, the thread unfolded
+    // landing ↑ source gives a message — the right tab, the thread's window grown to it
     // and spotlit where the card was made in one, the card itself flashed —
     // and nothing else: no state changes, no answer is given. Returns whether
     // the card was found.
@@ -4889,10 +4789,8 @@ ${bubbleShellHtml()}`;
         paintTabs();
         rememberTab();
       }
-      // a long thread's middle is folded; a long chat's older part is not drawn
-      if (isChatTarget(target)) {
-        widenChatTo(target, ts, null, m => ((m && m.suggestions) || []).some(c => c && String(c.id) === String(id)));
-      } else D.expanded[target] = FOLD_OPEN;
+      // a long conversation's older part is not drawn until it is asked for
+      widenTo(target, ts, null, m => ((m && m.suggestions) || []).some(c => c && String(c.id) === String(id)));
       if (!chat) focus(target);
       render();
       const pane = chat ? D.el.chat : D.el.comments;
@@ -5044,7 +4942,7 @@ ${bubbleShellHtml()}`;
     // this page is standing in, the rest of them, and the way between. What is
     // rendered underneath is unchanged — opening a past chat moves the page's
     // `session_id` and refills its `page_chat` with that chat's recent tail
-    // (companion side), so the thread, the fold, the composer and the
+    // (companion side), so the thread, the window, the composer and the
     // streaming all work exactly as they always did.
 
     // "3d", "2h", "now" — a chat list wants to say how stale a thing is in
@@ -5669,7 +5567,8 @@ ${bubbleShellHtml()}`;
       for (const k of Object.keys(D.streams)) {
         if (D.streams[k].target === PAGE_TARGET) delete D.streams[k];
       }
-      moveChatWindow(PAGE_TARGET, 'reset');   // a chat just opened shows its newest stretch
+      moveMsgWindow(PAGE_TARGET, 'reset');   // a chat just opened shows its newest stretch
+      if (D.edit && D.edit.target === PAGE_TARGET) moveEdit('leave');   // …and edits nothing of the old one
       D.land = PAGE_TARGET;             // …and is read from its newest message
       D.tab = 'chat';
     }
@@ -6166,6 +6065,8 @@ ${bubbleShellHtml()}`;
     // scroll offsets are restored after.
     function render() {
       if (!D.mounted) return;
+      // an edit whose message is no longer here (deleted, another page) ends
+      if (editMode(D.edit) === 'open' && !findMsg(D.edit.target, D.edit.ts, D.edit.author)) moveEdit('leave');
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
       const pTop = D.el.pages ? D.el.pages.scrollTop : 0;
       keepTyping(() => {
@@ -6194,6 +6095,10 @@ ${bubbleShellHtml()}`;
         // of the message it lives in (same ordinals, same /tick)
         fillTasks();
         lockRestored(D.shadow);
+        // the edit box holds the draft exactly (an HTML parser drops a
+        // textarea's leading newline, so the markup alone cannot promise it)
+        const eb = editBox();
+        if (eb && editMode(D.edit) === 'open' && eb.value !== D.edit.text) eb.value = D.edit.text;
       });
       D.el.comments.scrollTop = cTop;
       D.el.chat.scrollTop = chTop;
@@ -6211,10 +6116,12 @@ ${bubbleShellHtml()}`;
 
     function harvestDrafts() {
       if (!D.mounted) return;
+      // the edit box's draft is D.edit's, not D.drafts'
+      noteEditBox();
       D.shadow.querySelectorAll('.composer').forEach(c => {
         const target = c.getAttribute('data-target');
         const ta = c.querySelector('textarea');
-        if (!target || !ta) return;
+        if (!target || !ta || target === '__edit__') return;
         // No in-flight exception is needed any more: a sent message leaves the
         // composer synchronously (queueSend) and lives in D.outbox until the
         // companion confirms it, so there is nothing here to read back.
@@ -6919,22 +6826,11 @@ ${bubbleShellHtml()}`;
       D.models.err = false;
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
-      const r = await cb('onModels')();
+      let r;
+      try { r = await cb('onModels')(); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.models.loading = false;
       if (r && r.ok !== false) {
-        D.models.current = r.current || {};
-        D.models.options = r.options || null;
-        // a companion that never heard of `status` simply has no gauges
-        D.models.status = r.status || null;
-        // …and one that never heard of effort/verbosity gets no pickers and no
-        // reply-length switch, rather than empty ones
-        D.models.effort = r.effort || null;
-        D.models.verbosity = r.verbosity || '';
-        D.models.first_reply = r.first_reply || '';
-        D.models.bridge = r.bridge || '';
-        if (Array.isArray(r.commands) && r.commands.length) D.commands = r.commands;
-        // …and one too old to have keys at all leaves the billing row out
-        ingestKeys(r.keys);
+        ingestModels(r);
         D.models.err = false;
       } else {
         D.models.options = null;
@@ -6946,14 +6842,38 @@ ${bubbleShellHtml()}`;
       if (D.modelsOpen) paintModels();
     }
 
-    // The same GET, without the repaint: used when the only thing that can
-    // have moved is the companion's own answer about the keys.
+    // The companion's whole answer about the agents (GET /models), into the
+    // remembered copy every model picker, the @-menu and the route pills read.
+    function ingestModels(r) {
+      D.models.current = r.current || {};
+      D.models.options = r.options || null;
+      // a companion that never heard of `status` simply has no gauges
+      D.models.status = r.status || null;
+      // …and one that never heard of effort/verbosity gets no pickers and no
+      // reply-length switch, rather than empty ones
+      D.models.effort = r.effort || null;
+      D.models.verbosity = r.verbosity || '';
+      D.models.first_reply = r.first_reply || '';
+      D.models.bridge = r.bridge || '';
+      if (Array.isArray(r.commands) && r.commands.length) {
+        D.commands = r.commands;
+        if (D.helpOpen) paintHelp();
+      }
+      // …and one too old to have keys at all leaves the billing row out
+      ingestKeys(r.keys);
+    }
+    // The same GET, without the "loading…" line: the remembered list is
+    // otherwise only refreshed by a `models` broadcast (a bot turn, a switch),
+    // so a model that became available since would be missing until the next
+    // message. Asked when the panel opens (and when a billing switch waits on
+    // a key). A failure leaves what is remembered alone. An open model menu
+    // is repainted in place, never rebuilt (syncModels).
     async function refreshModels() {
       let r;
       try { r = await cb('onModels')(); }
       catch { return; }
       if (!r || r.ok === false) return;
-      ingestKeys(r.keys);
+      ingestModels(r);
       if (D.modelsOpen) syncModels();
     }
 
@@ -7400,7 +7320,7 @@ ${bubbleShellHtml()}`;
       'send-discard': (btn, target) => discardSend(target, btn.dataset.out),
       'cancel-new': () => cancelNew(),
       'tools': (btn) => { const k = btn.dataset.key; D.toolsOpen[k] = !D.toolsOpen[k]; render(); },
-      // both ways, unlike the thread fold: a reader who opened the long half
+      // both ways: a reader who opened the long half
       // of one answer is reading it, not committing to it
       'more': (btn) => { const k = btn.dataset.key; D.moreOpen[k] = !D.moreOpen[k]; render(); },
       // A long code block's fold. Toggled in place rather than through
@@ -7417,34 +7337,11 @@ ${bubbleShellHtml()}`;
       },
       'run': (btn) => doRun(btn),
       'run-stop': (btn) => doRunStop(btn),
-      // both directions are the reader's own decision about this thread, and
-      // both stick for the session — a new reply never undoes either.
-      // WHERE THE READER ENDS UP. Unfolding lands them at the newest message
-      // of that thread, at the bottom of the pane, and they scroll UP to go
-      // back in time; it is a deliberate act about this thread, so a hold on
-      // another one ends. Folding keeps the control under their finger.
-      'expand': (btn, target) => {
-        if (isChatTarget(target)) return;   // a chat has a window, not a fold
-        D.expanded[target] = FOLD_OPEN;
-        if (D.hold && D.hold !== target) holdOff();
-        render();
-        landAtFoot(target);
-      },
-      'fold': (btn, target) => {
-        if (isChatTarget(target)) return;
-        const pane = btn.closest('.pane');
-        const was = btn.getBoundingClientRect().top;
-        D.expanded[target] = FOLD_SHUT;
-        render();
-        const now = pane && D.shadow.querySelector('.card[data-thread="' + cssq(target)
-          + '"] .showmore[data-act="expand"]');
-        if (now) pane.scrollTop += now.getBoundingClientRect().top - was;
-      },
       // the tasks card: its fold is a reading position (session only, like
       // every other one here), and ↑ source is the way back to the message
-      // the line at the top of a chat's window: the next stretch of older
-      // messages, the one being read kept where it is on screen
-      'chat-earlier': (btn, target) => { revealEarlier(target); },
+      // the line at the top of a window (a chat's or a thread's): the next
+      // stretch of older messages, the one being read kept where it is on screen
+      'earlier': (btn, target) => { revealEarlier(target); },
       'tasks-fold': () => { D.tasksOpen = !D.tasksOpen; render(); },
       'ptasks-fold': () => { D.ptasksOpen = !D.ptasksOpen; render(); },
       'tasks-jump': () => jumpToTasks(),
@@ -7453,6 +7350,8 @@ ${bubbleShellHtml()}`;
       'warn-dismiss': () => setWarning(''),
       'copy': (btn) => doCopy(btn),
       'edit': (btn) => startEdit(btn),
+      'edit-save': () => { saveEdit(); },
+      'edit-cancel': () => cancelEdit(),
       'del-msg': (btn, target) => doDelete(target, btn.dataset.ts),
       'resolve': (btn, target) => doResolve(target, true),
       'reopen': (btn, target) => doResolve(target, false),
@@ -7754,6 +7653,7 @@ ${bubbleShellHtml()}`;
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
         const ta = e.target;
+        if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer[data-target="__edit__"]')) noteEditBox();
         if (ta && ta.tagName === 'TEXTAREA' && ta.closest && ta.closest('.composer')) {
           // a draft holds its composer open (the Send row) even after blur
           ta.closest('.composer').classList.toggle('has-draft', !!ta.value.trim());
@@ -7999,8 +7899,8 @@ ${bubbleShellHtml()}`;
 
     // ---- landing at the foot of a conversation ----------------------------
     // The newest message of a thread is the one a reader is reading; going
-    // back in time is scrolling UP from it. So unfolding a thread, and opening
-    // a chat, put the FOOT of that thread's card at the bottom of its pane.
+    // back in time is scrolling UP from it. So opening
+    // a chat puts the FOOT of its card at the bottom of its pane.
     // Returns whether it could (the card is drawn, on a pane that is showing).
     // Called only for the reader's own acts and for a chat that has just
     // arrived — never for a reply, a poll or a re-render, which leave the
@@ -8596,10 +8496,51 @@ ${bubbleShellHtml()}`;
       markCopied(btn, legacyCopy(f.html, f.text));
     }
 
+    // THE one function that changes D.edit (editMove refuses the illegal
+    // moves). Ending an edit also lets go of a bubble width held for it.
+    function moveEdit(move, arg) {
+      D.edit = editMove(D.edit, move, arg);
+      if (editMode(D.edit) === 'none' && D.mounted) {
+        D.shadow.querySelectorAll('.bubble[data-edit-held]').forEach(b => {
+          if (b.style.width === b.getAttribute('data-edit-held')) b.style.width = '';
+          b.removeAttribute('data-edit-held');
+        });
+      }
+      return D.edit;
+    }
+    // The editor, drawn in place of a message's words by whatever draws the
+    // message (replyHtml in the panel, bubbleCardHtml in a bubble) — so a
+    // redraw draws it again, with the draft. Its Save/Cancel are ordinary
+    // actions (ACTS 'edit-save' / 'edit-cancel').
+    function editBoxHtml(ed) {
+      return `<div class="ctext editing"><div class="composer" data-target="__edit__">
+        <textarea rows="2">${esc(ed.text)}</textarea>
+        <div class="crow"><span class="hint"></span><button class="cancel" type="button" data-act="edit-cancel">Cancel</button><button class="send" type="button" data-act="edit-save">Save</button></div></div></div>`;
+    }
+    const editBox = () => (D.mounted ? D.shadow.querySelector('.composer[data-target="__edit__"] textarea') : null);
+    // what is in the box right now, into the value — a redraw, a save and an
+    // input event all read it this way
+    function noteEditBox() {
+      const ta = editBox();
+      if (!ta || editMode(D.edit) !== 'open') return;
+      let start = null, end = null;
+      try { start = ta.selectionStart; end = ta.selectionEnd; } catch (_) { /* no selection */ }
+      moveEdit('type', { text: ta.value, start, end });
+    }
+    function focusEditBox() {
+      const ta = editBox();
+      if (!ta || editMode(D.edit) !== 'open') return;
+      try { ta.focus({ preventScroll: true }); } catch (_) { ta.focus(); }
+      try { ta.setSelectionRange(D.edit.start, D.edit.end); } catch (_) { /* no selection */ }
+    }
+
     function startEdit(btn) {
       const reply = btn.closest('.reply');
       const target = btn.dataset.target, ts = btn.dataset.ts;
-      if (!reply || reply.querySelector('textarea')) return;
+      if (!reply || !target || ts == null) return;
+      // One edit at a time: a ✎ pressed while another message is open hands
+      // the focus back to the box already open, rather than a second box.
+      if (editMode(D.edit) === 'open') { focusEditBox(); return; }
       const body = reply.querySelector('.ctext');
       // A bubble is as wide as its words (width: max-content), so swapping a
       // message for a textarea would narrow it and shift its edges under the
@@ -8607,35 +8548,36 @@ ${bubbleShellHtml()}`;
       // (A bubble the reader has sized already has a width of its own.)
       const bub = reply.closest('.bubble');
       const held = bub && !bub.style.width ? bub.getBoundingClientRect().width + 'px' : '';
-      if (held) bub.style.width = held;
+      if (held) { bub.style.width = held; bub.setAttribute('data-edit-held', held); }
       // The RAW stored text, never the rendered DOM. Messages are markdown on
       // screen now, so reading textContent back would hand the user their own
       // sentence with the syntax stripped out — and then save that as the
       // message. The record is the only source of truth for an editor.
-      const msg = findMsg(target, ts, reply.getAttribute('data-author'));
+      const author = reply.getAttribute('data-author') || '';
+      const msg = findMsg(target, ts, author);
       const old = msg && msg.text != null ? String(msg.text)
         : (body ? body.textContent : '');
-      body.innerHTML = `<div class="composer" data-target="__edit__">
-        <textarea rows="2">${esc(old)}</textarea>
-        <div class="crow"><span class="hint"></span><button class="cancel" type="button">Cancel</button><button class="send" type="button">Save</button></div></div>`;
-      const ta = body.querySelector('textarea');
-      ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length);
-      // A BUBBLE'S CARD IS NEVER REBUILT unless what it says has changed
-      // (patchStack keys and signs every card), so render() alone would leave
-      // the editor standing after Cancel. Wiping the card's signature makes
-      // the next repaint swap it for a fresh one — the message as it is.
-      const unedit = () => {
-        if (held && bub.style.width === held) bub.style.width = '';
-        reply.removeAttribute('data-bsig'); render();
-      };
-      body.querySelector('.cancel').addEventListener('click', ev => { ev.stopPropagation(); unedit(); });
-      body.querySelector('.send').addEventListener('click', async ev => {
-        ev.stopPropagation();
-        const v = ta.value.trim();
-        if (!v) return;
-        const r = await cb('onEdit')(target, ts, v);
-        if (r && r.ok === false) note(target, r.error || 'edit failed', true); else unedit();
-      });
+      moveEdit('start', { target, ts, author, text: old });
+      render();
+      focusEditBox();
+    }
+    function cancelEdit() {
+      if (editMode(D.edit) !== 'open') return;
+      moveEdit('cancel');
+      render();
+    }
+    async function saveEdit() {
+      if (editMode(D.edit) !== 'open') return;
+      noteEditBox();
+      const ed = D.edit;
+      const v = ed.text.trim();
+      if (!v) return;
+      const r = await cb('onEdit')(ed.target, ed.ts, v);
+      if (r && r.ok === false) { note(ed.target, r.error || 'edit failed', true); return; }
+      // the box may have been cancelled, or left, while the save was on its way
+      if (!isEditOf(D.edit, ed.target, { ts: ed.ts, author: ed.author })) return;
+      moveEdit('save');
+      render();
     }
 
     // ---- checklists -------------------------------------------------------
@@ -10577,8 +10519,9 @@ ${bubbleShellHtml()}`;
       if (D.pages.list) D.pages.list = D.pages.list.filter(p => !sameUrl(p.url, url));
       if (r.current) {
         D.streams = {}; D.running = {}; D.turnAgents = {}; D.liveAgents = {};
-        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {}; D.expanded = {};
-        moveChatWindow(PAGE_TARGET, 'reset');
+        D.speaker = {}; D.notes = {}; D.toolsOpen = {}; D.outbox = {};
+        resetMsgWindows(LIBRARY_TARGET);
+        if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
         D.turnSeq = {};   // a send still in flight for the dead page can no longer claim a queue slot
         D.confirm = null; D.focused = null; D.pending = null;
         D.foot = ''; D.footErr = false;
@@ -10793,7 +10736,8 @@ ${bubbleShellHtml()}`;
       delete D.outbox[LIBRARY_TARGET];
       delete D.notes[LIBRARY_TARGET];
       delete D.running[LIBRARY_TARGET];
-      moveChatWindow(LIBRARY_TARGET, 'reset');
+      moveMsgWindow(LIBRARY_TARGET, 'reset');
+      if (D.edit && D.edit.target === LIBRARY_TARGET) moveEdit('leave');
       renderLibrary();
     }
     function showThreads() {
@@ -10815,6 +10759,10 @@ ${bubbleShellHtml()}`;
       // can the companion turn speech into text? asked at every opening, so a
       // model installed since shows its mic without a reload
       micStatus();
+      // …and which models are on offer, for the same reason: the remembered
+      // list is otherwise refreshed only when a bot answers. (The model menu
+      // asks again whenever it is opened — openModels.)
+      if (!D.opened) refreshModels();
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
@@ -10832,14 +10780,13 @@ ${bubbleShellHtml()}`;
       // being asked for a specific tab (a highlight click, a new comment) is
       // always about THIS page — leave the pages library if it is up
       if (tab) { D.tab = tab; D.view = 'threads'; paintTabs(); rememberTab(); }
-      // REOPENED: both chats go back to their newest stretch. Only a window
-      // the reader had widened changes what is drawn, and only then is the
-      // page chat redrawn and landed at its newest message.
+      // REOPENED: every conversation — both chats and every thread — goes
+      // back to its newest stretch. Only a window the reader had widened
+      // changes what is drawn, and only then is the panel redrawn (and the
+      // page chat, if it was one of them, landed at its newest message).
       if (!D.opened) {
-        const wide = chatWidened(PAGE_TARGET), wideLib = chatWidened(LIBRARY_TARGET);
-        moveChatWindow(PAGE_TARGET, 'reset');
-        moveChatWindow(LIBRARY_TARGET, 'reset');
-        if (wide || wideLib) { render(); if (wide) D.land = PAGE_TARGET; }
+        const wide = resetMsgWindows();
+        if (wide.length) { render(); if (wide.indexOf(PAGE_TARGET) !== -1) D.land = PAGE_TARGET; }
       }
       landPending();
       D.opened = true;
@@ -10957,10 +10904,15 @@ ${bubbleShellHtml()}`;
       clearAnsweredWaits();
       // a different page is a different chat: it opens at its newest message
       if (was !== (page && page.url ? String(page.url) : '')) D.land = PAGE_TARGET;
-      // …and its window starts again from the newest stretch, as does a
-      // different council chat on the same page
-      if (was !== (page && page.url ? String(page.url) : '')
-        || wasSid !== ((page && page.session_id) || '')) moveChatWindow(PAGE_TARGET, 'reset');
+      // …and its windows start again from the newest stretch (the library's,
+      // which is not this page's, excepted); a different council chat on the
+      // same page resets the page chat's
+      if (was !== (page && page.url ? String(page.url) : '')) {
+        resetMsgWindows(LIBRARY_TARGET);
+        // an edit open on the page that was left goes with it
+        if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
+      }
+      else if (wasSid !== ((page && page.session_id) || '')) moveMsgWindow(PAGE_TARGET, 'reset');
       if (D.mounted) {
         const title = (page && page.title) || document.title || '—';
         D.el.title.textContent = title;
@@ -11331,7 +11283,8 @@ ${bubbleShellHtml()}`;
       const mine = !bot && sameAuthor(r.author);
       const who = agentOf(r.author);
       const text = String(r.text == null ? '' : r.text);
-      const body = text.trim()
+      const body = isEditOf(D.edit, target, r) ? editBoxHtml(D.edit)
+        : text.trim()
         ? `<div class="ctext md" data-md="${esc(mdSlot(stripMore(text)))}"></div>`
         : `<div class="ctext wordless">the passage was struck through, with no note</div>`;
       const acts = msgActsHtml(target, r, mine, mine);
@@ -11441,6 +11394,7 @@ ${bubbleShellHtml()}`;
           + '|' + D.suggest.busy + '|' + (D.suggest.note && D.suggest.note.ts === String(m.ts || '')
             ? D.suggest.note.text : '');
       const sigOf = m => String(m.text == null ? '' : m.text) + ' :: ' + (m.edited ? 'edited' : '') + sgSig(m)
+        + (isEditOf(D.edit, target, m) ? ' :: editing' : '')
         + (isAgentCard(m) ? ' :: ' + m.agent.status + '|' + m.agent.elapsed_s
           + (m.agent.status === 'working' ? '|' + agentStreamKey(target, m.agent.id) : '') : '');
       for (const m of top) {
@@ -12339,7 +12293,7 @@ ${bubbleShellHtml()}`;
       if (ev.type === 'round') { D.round = ev; paintRound(); return; }
       if (ev.type !== 'chat') return;
       // A library event is a page chat on the reserved url; give it its own
-      // target here and everything downstream — chips, streams, folding,
+      // target here and everything downstream — chips, streams, the window,
       // outbox reconciliation — works on it without knowing what it is.
       const target = isLibraryUrl(ev.url) ? LIBRARY_TARGET : (ev.target || PAGE_TARGET);
       D.heard[target] = Date.now();   // this turn is demonstrably still being reported
@@ -12687,7 +12641,7 @@ ${bubbleShellHtml()}`;
       // the library's record, handed in the way setPage hands the page's
       setLibrary: page => {
         // a cleared (or first) library conversation opens on its newest stretch
-        if (!page || !D.library.page) moveChatWindow(LIBRARY_TARGET, 'reset');
+        if (!page || !D.library.page) moveMsgWindow(LIBRARY_TARGET, 'reset');
         D.library.page = page || null;
         if (D.view === 'pages') renderLibrary();
       },
@@ -12746,12 +12700,11 @@ ${bubbleShellHtml()}`;
     // pure, for the node tests — no DOM, no KaTeX
     scanMath, protectMath,                                  // test/math.test.mjs
     diffTokens, wordDiff, richHtml,                         // test/math.test.mjs (suggestion cards)
-    msgUnits, collapsePlan, moreLabel, foldable,             // test/collapse.test.mjs
+    msgUnits,                                               // test/collapse.test.mjs
     nestMsgs, agentStatus, isAgentCard,                     // test/collapse.test.mjs (summoned agents)
-    COLLAPSE_AT, KEEP_HEAD, KEEP_ROUNDS, KEEP_TAIL_UNITS, KEEP_TAIL_SHUT, FOLD_OPEN, FOLD_SHUT,
-    chatWindowPlan, chatWindowMove, chatWindowMode,         // test/collapse.test.mjs (a chat's window)
-    CHAT_WINDOW, CHAT_STEP, CHAT_WINDOW_MODES, CHAT_WINDOW_MOVES,
-    isPersonMsg, SYSTEM_AUTHORS,                            // test/collapse.test.mjs
+    msgWindowPlan, msgWindowMove, msgWindowMode,            // test/collapse.test.mjs (the message window)
+    MSG_WINDOW, MSG_STEP, MSG_WINDOW_MODES, MSG_WINDOW_MOVES,
+    editMove, editMode, isEditOf, EDIT_MODES, EDIT_MOVES,   // test/editbox.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

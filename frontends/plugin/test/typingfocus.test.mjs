@@ -300,10 +300,9 @@ await tick(5);
 }
 
 // ---- 11. the edit box ------------------------------------------------------
-// In a pane the edit composer is drawn by startEdit straight into the DOM, and
-// a rebuild of the pane takes it away whole (see the report: not a focus fault
-// but a lost edit). Here: whatever happens, the redraw does not throw and does
-// not hand the focus to some other box.
+// Since 2026-11-11 the edit box is drawn from D.edit by the redraw itself, so
+// it comes back with its focus like any other box (editbox.test.mjs has the
+// rest: text, caret, refused moves). Here: the focus is on it, never elsewhere.
 {
   drawer.open('comments');
   await tick(5);
@@ -316,8 +315,8 @@ await tick(5);
     ok('edit box opens focused', !!box && active() === box);
     botReplies(THR2);
     const again = root.querySelector('.composer[data-target="__edit__"] textarea');
-    ok('edit box: focus is on the edit box or on nothing — never elsewhere',
-      !active() || active() === again, active() && active().tagName);
+    ok('edit box: a redraw puts the box back, and the focus on it',
+      !!again && again !== box && active() === again, active() && active().tagName);
   } else {
     ok('edit button found on a reader message', false, 'no [data-act="edit"]');
   }

@@ -13,7 +13,10 @@
 //     reader who is reading further up;
 //   · a jump to an older message (a suggestion's card) grows the window to it;
 //   · a different page, or the panel reopened, starts from the newest stretch.
-// Comment threads keep their fold (foldfoot.test.mjs, collapse.test.mjs).
+// Since 2026-11-11 a COMMENT THREAD is drawn the same way (section 11): its
+// newest stretch, the same line at its top, the same reveal that keeps the
+// reader's place, and nothing in its middle ever hidden. A card is not its own
+// scroller, so in a thread the line is the only way up (no scroll reveal).
 //
 // happy-dom does not lay anything out, so the geometry is stubbed: in a pane
 // whose window is 500px tall, every message is a 100px box stacked from 300px
@@ -71,9 +74,9 @@ const conv = (n, tag) => Array.from({ length: n }, (_, i) => ({
   ts: T(i), author: i % 2 ? 'claude' : 'reader', text: `${tag} message ${i}`,
 }));
 const THR = 'thr-long';
-const page = (chat, url) => ({
+const page = (chat, url, thr) => ({
   url: url || 'https://example.com/article', title: 'Article', page_chat: chat,
-  threads: [{ id: THR, quote: 'a long passage', msgs: conv(10, 'thread') }],
+  threads: [{ id: THR, quote: 'a long passage', msgs: thr || conv(10, 'thread') }],
 });
 
 const drawer = DR.create({ cssText: '.panel{}' });
@@ -217,14 +220,69 @@ await tick(10);
 drawer.showThreads();
 await tick(5);
 
-// ---- 11. a comment thread still folds exactly as before ---------------------
-root.querySelector('.tab[data-tab="comments"]').click();
-await tick(5);
+// ---- 11. a comment thread has the same window --------------------------------
+// The owner, 2026-11-11: comment threads "behave like the page chat: nothing
+// hidden in the middle, ever".
 {
-  const card = root.querySelector(`.card[data-thread="${THR}"]`);
-  ok('a long comment thread keeps its fold control', !!(card && card.querySelector('.showmore[data-act="expand"]')));
-  ok('…its gap line', !!(card && card.querySelector('.foldgap')));
-  ok('…and no chat window line', !(card && card.querySelector('.showmore.earlier')));
+  const URL5 = 'https://example.com/fifth';
+  drawer.setPage(page(conv(20, 'chat'), URL5, conv(50, 'thread')));
+  await tick(10);
+  root.querySelector('.tab[data-tab="comments"]').click();
+  await tick(5);
+  const comPane = root.querySelector('.pane[data-pane="comments"]');
+  const card = () => root.querySelector(`.card[data-thread="${THR}"]`);
+  const tr = () => [...card().querySelectorAll('.thread .reply')];
+  const tHas = i => tr().some(r => new RegExp(`thread message ${i}\\b`).test(r.textContent));
+  const tLine = () => card().querySelector('.thread .showmore.earlier');
+  ok('a long comment thread: no fold, no "Hide", no gap line',
+    !card().querySelector('.showmore[data-act="expand"], .showmore[data-act="fold"], .foldgap'));
+  ok('…only its newest twenty messages are drawn', tr().length === 20 && tHas(49) && tHas(30) && !tHas(29), tr().length);
+  ok('…with "Show earlier messages · 30 more" at the top of its messages',
+    !!tLine() && card().querySelector('.thread').firstElementChild === tLine()
+    && tLine().textContent.trim() === 'Show earlier messages · 30 more', tLine() && tLine().textContent);
+  // scrolling the comments pane up never reveals: the card is not its own
+  // scroller, and a pane of many cards must not grow under the reader
+  comPane.scrollTop = 200;
+  comPane.dispatchEvent(new w.Event('scroll'));
+  comPane.scrollTop = 0;
+  comPane.dispatchEvent(new w.Event('scroll'));
+  await tick(5);
+  ok('…scrolling the comments pane up does not reveal anything by itself', tr().length === 20, tr().length);
+  // the reader at the top of the pane, reading the thread's first drawn
+  // message (#30, 300px down): the line reveals twenty more and #30 stays put
+  comPane.scrollTop = 0;
+  tLine().click();
+  await tick(10);
+  ok('pressing it reveals twenty more', tr().length === 40 && tHas(10) && !tHas(9), tr().length);
+  {
+    const at30 = tr().findIndex(r => /thread message 30\b/.test(r.textContent));
+    ok('…keeping the message being read where it was on screen',
+      TOP + at30 * ROW - comPane.scrollTop === TOP, 'scrollTop=' + comPane.scrollTop);
+  }
+  ok('…and the line counts the rest', !!tLine() && /· 10 more$/.test(tLine().textContent));
+  // a reply arriving hides nothing already shown and does not move the reader
+  comPane.scrollTop = 777;
+  drawer.setPage(page(conv(20, 'chat'), URL5, conv(51, 'thread')));
+  await tick(10);
+  ok('a new reply in the thread is drawn at the bottom', tHas(50) && tr().length === 41, tr().length);
+  ok('…without hiding anything that was on screen', tHas(10) && !tHas(9));
+  ok('…or moving the reader', comPane.scrollTop === 777, comPane.scrollTop);
+  // a jump to an older message in a thread grows its window to it
+  const thr = conv(51, 'thread');
+  thr[3] = { ...thr[3], suggestions: [{ id: 'sg-thr', state: 'open', why: 'a made-up change', old: 'gamma', new: 'delta' }] };
+  drawer.setPage(page(conv(20, 'chat'), 'https://example.com/sixth', thr));
+  await tick(10);
+  ok('a different page: the thread opens on its newest twenty again', tr().length === 20 && !tHas(3), tr().length);
+  const found = drawer.focusSuggestion(THR, thr[3].ts, 'sg-thr');
+  await tick(5);
+  ok('a jump to a suggestion on an older thread message finds its card', found === true);
+  ok('…the thread\'s window grew up to that message, not further', tHas(3) && !tHas(2) && tr().length === 48, tr().length);
+  // the panel reopened: the thread goes back to its newest stretch too
+  drawer.close();
+  drawer.open('comments');
+  await tick(10);
+  ok('reopened: the thread is back to its newest twenty', tr().length === 20, tr().length);
+  ok('…and no chat line leaked into it from anywhere', card().querySelectorAll('.showmore').length === 1);
 }
 
 console.log(`chatwindow: ${pass} passed, ${fail} failed`);
