@@ -36,3 +36,8 @@ def _isolate_botference_state(tmp_path, monkeypatch):
     monkeypatch.setenv("BOTFERENCE_CLAUDE_MODEL_CACHE", str(tmp_path / "bf-no-claude-models"))
     monkeypatch.setenv("BOTFERENCE_CODEX_MODEL_CACHE", str(tmp_path / "bf-no-codex-models.json"))
     monkeypatch.setenv("BOTFERENCE_MODELS_SEEN_FILE", str(tmp_path / "bf-models-seen.json"))
+    # The Google poster's read_doc puts each Doc on the Doc-comment
+    # watcher's list (core/gdoc_watchlist.py): never the developer's real
+    # ~/.botference/gdoc-watch, and the watcher's log never their real one.
+    monkeypatch.setenv("BOTFERENCE_GDOC_WATCH_HOME", str(tmp_path / "bf-gdoc-watch"))
+    monkeypatch.setenv("BOTFERENCE_GDOC_WATCH_LOG", str(tmp_path / "bf-gdoc-watch.log"))

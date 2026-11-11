@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional
 
 import model_catalog
 from gdoc_mcp import (
+    ALL_TOOLS as POSTER_ALL_TOOLS,
     CLAUDE_DENIED_CONNECTOR_SERVERS,
     CLAUDE_TOOL_RULES,
     claude_mcp_config,
@@ -1092,9 +1093,16 @@ class ClaudeAdapter:
                  add_dirs: Optional[list[str]] = None,
                  settings: Optional[dict] = None,
                  stream_callback: Optional[StreamCallback] = None,
-                 append_system_prompt: str = ""):
+                 append_system_prompt: str = "",
+                 mcp_config: str = "",
+                 extra_args: Optional[list[str]] = None):
         self.model = model
-        self.tools = tools or ["Read", "Glob", "Grep", "Bash"]
+        # [] means no built-in tools at all (`--tools ""`); None the default.
+        self.tools = ["Read", "Glob", "Grep", "Bash"] if tools is None else tools
+        # A launch that brings its own poster config (the Doc-comment
+        # watcher's, Doc tools only) and its own extra flags.
+        self.mcp_config = mcp_config
+        self.extra_args = list(extra_args or [])
         self.effort = effort
         self.append_system_prompt = append_system_prompt
         self.timeout = timeout or _timeout_from_env(
@@ -1159,7 +1167,8 @@ class ClaudeAdapter:
             # The Google Docs poster goes with botference's settings, so the
             # council's Claude and every agent it summons get it (and the
             # settings' allow list names its tools).
-            cmd += ["--mcp-config", claude_mcp_config()]
+            cmd += ["--mcp-config", self.mcp_config or claude_mcp_config()]
+        cmd += self.extra_args
         return cmd
 
     async def send(self, prompt: str) -> AdapterResponse:
@@ -1947,8 +1956,14 @@ class CodexAdapter:
                  fallback_api_key: str = "",
                  network_access: bool = False,
                  image_generation: bool = False,
-                 stream_callback: Optional[StreamCallback] = None):
+                 stream_callback: Optional[StreamCallback] = None,
+                 poster_tools: tuple[str, ...] = POSTER_ALL_TOOLS,
+                 extra_args: Optional[list[str]] = None):
         self.requested_model = model
+        # Which poster tools Codex gets (the Doc-comment watcher: Doc tools
+        # only), and extra flags for such a launch (placed before the prompt).
+        self.poster_tools = poster_tools
+        self.extra_args = list(extra_args or [])
         self.model = model
         self.sandbox = sandbox
         self.cwd = cwd
@@ -2006,7 +2021,9 @@ class CodexAdapter:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         # The sandbox, the Google Docs poster in, OpenAI's app connectors
         # (Google Drive) out.
-        cmd += codex_config_overrides(self.sandbox, self.network_access)
+        cmd += codex_config_overrides(self.sandbox, self.network_access,
+                                      self.poster_tools)
+        cmd += self.extra_args
         cmd += ["--", scrub_surrogates(prompt)]
         return cmd
 
@@ -2038,7 +2055,9 @@ class CodexAdapter:
             cmd += ["-c", "sandbox_workspace_write.network_access=true"]
         # The sandbox, the Google Docs poster in, OpenAI's app connectors
         # (Google Drive) out.
-        cmd += codex_config_overrides(self.sandbox, self.network_access)
+        cmd += codex_config_overrides(self.sandbox, self.network_access,
+                                      self.poster_tools)
+        cmd += self.extra_args
         cmd += [
             "resume", self.thread_id,
             "--json",

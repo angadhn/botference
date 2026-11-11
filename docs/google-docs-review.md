@@ -36,6 +36,10 @@ chat, in one line that also says what to do.
 The same poster also lets both bots read the agent account's mail, read
 only: see `docs/google-mail.md`.
 
+You can also ask a bot something in the Doc itself: name it in a comment,
+and the Doc-comment watcher wakes it to answer in that thread, with no
+message in the chat. See `docs/google-doc-watcher.md`.
+
 ## How it works
 
 Neither bot talks to Google itself. botference has its **own** Google

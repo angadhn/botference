@@ -1082,6 +1082,8 @@ if (process.env.COUNCIL_NO_LISTEN !== '1') {
   process.on('unhandledRejection', err => logUncaught('unhandled promise rejection', err));
   acquireLock();
   ensurePrimary();
+  // Doc comments addressed to a bot are answered in the Doc (docs/google-doc-watcher.md)
+  if (HOSTED) import('./gdoc-watch.mjs').then(m => m.startGdocWatch({ home: HOME }));
   const server = http.createServer(handler);
   // WS is the browser's primary live-event transport (SSE is the fallback):
   // same auth gate as every request, same hello + history replay as /events
