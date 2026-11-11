@@ -12296,3 +12296,25 @@ text. `editBox()` now takes the box with the focus, else the one on show (the
 bubble's while the panel is shut, the panel's while it is open). Tests:
 `test/editbox.test.mjs` (a bubble with the panel shut: a redraw keeps the
 bubble's text and focus, Save saves the bubble's text).
+
+## Amendment (2026-11-11): a landing at the foot is kept while late content draws
+
+Landing at the newest message — a chat that has just arrived (`landPending`),
+a bubble's stack fanned open (`fanBubble`), the "new reply ↓" pip
+(`bubbleToFoot`) — used to be one scroll at that moment, so a picture or a
+formula in the newest reply that finished drawing later left the reader a
+little short of the bottom. The landing is now KEPT, as ONE value,
+`D.footKeep`, with `FOOT_MODES` = none / card / bubble
+(`{kind, id, at}`, `at` = the scroll offset the landing left), changed only
+by `moveFoot` → the pure `footMove`; moves land / letgo.
+
+- **Kept:** while it is, the landing is made again when a picture loads
+  anywhere in the drawer (a capture `load` listener), when the content under
+  it changes size (one `ResizeObserver` on the card or the bubble's stack),
+  and at the end of every `render()`.
+- **Let go:** the reader's own wheel, touch drag, scroll key outside a text
+  box, or grab of the scroll bar (a mousedown on the scroller itself) in that
+  scroller; "Show earlier" (`revealEarlier`); the place gone or not showing
+  (another tab, the bubble shut); and the scroller found away from `at` and
+  not at its foot — a reader who scrolled by some other means. No timer.
+- Tests: `test/footkeep.test.mjs`.

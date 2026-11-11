@@ -1797,6 +1797,38 @@
   // reports for a key the input method has taken.)
   const composingKey = e => !!e && (e.isComposing === true || e.keyCode === 229);
 
+  // ── a landing at the foot, kept while late content grows ─────────────────
+  // Landing at the newest message (a chat that has just arrived, a stack
+  // fanned open, the "new reply" pip) is a scroll to the foot at that moment.
+  // A picture or a formula in the newest reply that finishes drawing a moment
+  // later makes the conversation taller, and the reader is left a little
+  // short of the bottom. So the landing is KEPT — re-made whenever what is
+  // under it changes height — until the reader scrolls for themselves. ONE
+  // value, D.footKeep. Its modes, named here:
+  //   'none'   — null: no landing is being kept
+  //   'card'   — { kind: 'card', id, at }: the panel's card of conversation
+  //              `id` (landAtFoot), in its pane
+  //   'bubble' — { kind: 'bubble', id, at }: the stack of bubble `id`
+  // `at` is the scroll offset the landing left, or null. A scroller found
+  // somewhere else, and not at its foot, has been scrolled by the reader (by
+  // any means — a gesture this file does not listen for included).
+  const FOOT_MODES = ['none', 'card', 'bubble'];
+  const footMode = v => (v && (v.kind === 'card' || v.kind === 'bubble') ? v.kind : 'none');
+  // …and every way it changes (footMove refuses the rest):
+  //   land  — anything → card | bubble: the reader was just put at a foot
+  //   letgo — anything → none: the reader scrolled, asked for older
+  //           messages, or the place is gone or hidden; never refused
+  const FOOT_MOVES = ['land', 'letgo'];
+  function footMove(v, move, arg) {
+    if (FOOT_MOVES.indexOf(move) === -1) throw new Error('foot: no such move ' + move);
+    if (move === 'letgo') return null;
+    const a = arg || {};
+    if (a.kind !== 'card' && a.kind !== 'bubble') throw new Error('foot: land needs a card or a bubble');
+    if (a.id == null || a.id === '') throw new Error('foot: land needs which one');
+    const at = Number(a.at);
+    return { kind: a.kind, id: String(a.id), at: Number.isFinite(at) ? at : null };
+  }
+
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
   // message, so the completion follows the CARET, not the start of the box.
@@ -2113,6 +2145,10 @@
       // the conversation owed one landing at its foot (landPending), or null.
       // Only ever PAGE_TARGET today: a chat that has just arrived.
       land: null,
+      // a landing at the foot that is being kept while late content (a
+      // picture, a formula) grows the conversation (FOOT_MODES), changed only
+      // by moveFoot
+      footKeep: null,
       // 'type' | 'instant' — how a live answer arrives on screen (TYPE_TIP).
       // NOT named `typing`: the public surface is Object.assign'd onto this
       // very object and carries a `typing()` reader, which would eat the field.
@@ -3231,6 +3267,8 @@ ${bubbleShellHtml()}`;
     // foot — reading back is the opposite of that.
     function revealEarlier(target) {
       if (!target || !D.mounted) return false;
+      // older messages asked for: the reader is reading up, not at the foot
+      if (footMode(D.footKeep) !== 'none') moveFoot('letgo');
       const card = D.shadow.querySelector('.card[data-thread="' + cssq(target) + '"]');
       const pane = card && card.closest('.pane');
       let anchor = null, off = 0;
@@ -6301,6 +6339,9 @@ ${bubbleShellHtml()}`;
       // wrote in. Nothing else about render() changes — a drawer with no hold
       // behaves precisely as it did.
       holdInView();
+      // …and a landing at the foot that is being kept is made again on what
+      // was just drawn
+      keepFoot();
     }
 
     function harvestDrafts() {
@@ -7831,6 +7872,23 @@ ${bubbleShellHtml()}`;
         if (e.target && e.target.closest && e.target.closest('.composer')) return;
         if (SCROLL_KEYS.indexOf(e.key) !== -1) readerScroll();
       });
+      // …and the same gestures let go of a landing kept at the foot
+      // (D.footKeep), wherever it is: the panel's pane or a bubble's stack. A
+      // mousedown on the scroller itself is a grab of its scroll bar.
+      const footGesture = e => {
+        if (footMode(D.footKeep) === 'none') return;
+        const sc = footScroller(D.footKeep);
+        const t = e.target;
+        if (!sc || !t || !(t === sc || (sc.contains && sc.contains(t)))) return;
+        if (e.type === 'mousedown' && t !== sc) return;
+        if (e.type === 'keydown' && (SCROLL_KEYS.indexOf(e.key) === -1 || (t.closest && t.closest('.composer')))) return;
+        moveFoot('letgo');
+      };
+      for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) {
+        D.shadow.addEventListener(type, footGesture, { capture: true, passive: true });
+      }
+      // a picture that finishes loading late grows what is under the landing
+      D.shadow.addEventListener('load', () => keepFoot(), true);
 
       // A CHAT REVEALS ITS OLDER MESSAGES AS THE READER SCROLLS UP to the top
       // of its window (revealIfNearTop). The page chat scrolls in its own
@@ -8148,7 +8206,71 @@ ${bubbleShellHtml()}`;
     // paid, once, when the record lands (setPage), the drawer opens, or the
     // reader goes to the tab it is on.
     function landPending() {
-      if (D.land && landAtFoot(D.land)) D.land = null;
+      if (D.land && landAtFoot(D.land)) {
+        const pane = footScroller({ kind: 'card', id: D.land });
+        moveFoot('land', { kind: 'card', id: D.land, at: pane ? pane.scrollTop : null });
+        D.land = null;
+        watchFoot();
+      }
+    }
+
+    // THE one function that changes D.footKeep (footMove refuses the illegal
+    // moves). Letting go also stops watching what was under it.
+    let footRO = null, footSeen = null;
+    function moveFoot(move, arg) {
+      D.footKeep = footMove(D.footKeep, move, arg);
+      if (footMode(D.footKeep) === 'none' && footSeen) {
+        try { footRO.unobserve(footSeen); } catch (_) { /* gone already */ }
+        footSeen = null;
+      }
+      return D.footKeep;
+    }
+    // what the kept landing is ON (the content whose growth re-lands it), and
+    // the scroller it scrolls
+    function footContent(v) {
+      if (!D.mounted || footMode(v) === 'none') return null;
+      if (v.kind === 'card') return D.shadow.querySelector('.card[data-thread="' + cssq(v.id) + '"]');
+      const box = bubbleEl(v.id);
+      return box && box.querySelector('.bstack');
+    }
+    function footScroller(v) {
+      const el = footContent(v);
+      return el ? el.closest(v.kind === 'card' ? '.pane' : '.bbody') : null;
+    }
+    // the content under a kept landing is watched for a change of height (one
+    // ResizeObserver; a redraw draws a new card, so it is watched afresh)
+    function watchFoot() {
+      const el = footContent(D.footKeep);
+      if (el === footSeen) return;
+      try {
+        if (!footRO) footRO = new ResizeObserver(() => keepFoot());
+        if (footSeen) footRO.unobserve(footSeen);
+        footSeen = null;
+        if (el) { footRO.observe(el); footSeen = el; }
+      } catch (_) { /* no ResizeObserver: a picture's load still re-lands it */ }
+    }
+    // whether the kept place is at its foot right now (a card: its foot at
+    // the bottom of its pane; a bubble: its scroller at the end)
+    function footAtFoot(v, sc) {
+      if (v.kind === 'bubble') return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 24;
+      const card = footContent(v);
+      if (!card) return false;
+      return Math.abs(card.getBoundingClientRect().bottom + 8 - sc.getBoundingClientRect().bottom) < 24;
+    }
+    // Land again, if a landing is being kept. A place that is gone, or not
+    // showing (another tab, the bubble shut), or that the reader has scrolled
+    // away from, lets the landing go.
+    function keepFoot() {
+      const v = D.footKeep;
+      if (footMode(v) === 'none' || !D.mounted) return;
+      const sc = footScroller(v);
+      if (!sc) { moveFoot('letgo'); return; }
+      if (v.at != null && Math.abs(sc.scrollTop - v.at) > 2 && !footAtFoot(v, sc)) { moveFoot('letgo'); return; }
+      if (v.kind === 'card') {
+        if (!landAtFoot(v.id)) { moveFoot('letgo'); return; }
+      } else sc.scrollTop = sc.scrollHeight;
+      moveFoot('land', { kind: v.kind, id: v.id, at: sc.scrollTop });
+      watchFoot();
     }
 
     // Arriving at a thread means its TOP is at the top of the pane: the
@@ -11770,7 +11892,7 @@ ${bubbleShellHtml()}`;
     function bubbleToFoot(id) {
       const box = bubbleEl(id);
       const body = box && box.querySelector('.bbody');
-      if (body) body.scrollTop = body.scrollHeight;
+      if (body) { body.scrollTop = body.scrollHeight; moveFoot('land', { kind: 'bubble', id, at: body.scrollTop }); watchFoot(); }
       hidePip(id);
       return D;
     }
@@ -12404,7 +12526,7 @@ ${bubbleShellHtml()}`;
       // and they go back in time by scrolling up from there. Set after the
       // placement is re-picked, because that can change the scroller's height.
       const body = el && el.querySelector('.bbody');
-      if (body && opening) body.scrollTop = body.scrollHeight;
+      if (body && opening) { body.scrollTop = body.scrollHeight; moveFoot('land', { kind: 'bubble', id: who, at: body.scrollTop }); watchFoot(); }
       return D;
     }
     // WHAT A CLICK ON A HIGHLIGHT MEANS, when bubbles are on. Answers true
@@ -12960,6 +13082,7 @@ ${bubbleShellHtml()}`;
     rowEditMove, rowEditMode, ROW_EDIT_MODES, ROW_EDIT_MOVES, // test/modes.test.mjs
     bubbleHowMove, BUB_PLACES, BUB_STACKS, BUB_HOW_MOVES,   // test/modes.test.mjs
     imeMove, imeMode, composingKey, IME_MODES, IME_MOVES,   // test/compose.test.mjs
+    footMove, footMode, FOOT_MODES, FOOT_MOVES,             // test/footkeep.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs
