@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -182,7 +183,10 @@ class InkBridge:
         # the request_id of the question on screen: an answer naming another
         # one (late, or from a second tab) must not answer this one
         self._pending_permission_id = ""
-        self._pending_choice: asyncio.Future[int | None] | None = None
+        # "choose one" questions, in the order they were asked: only the
+        # head is ever on screen, the rest wait their turn (the same shape as
+        # the write-permission queue in Botference._ask_write_permission)
+        self._choice_asks: list[_ChoiceAsk] = []
         self._stream_buffer: dict[tuple, dict] = {}
         self._flush_handle: asyncio.TimerHandle | None = None
         self.stream_log_path = paths.session_dir / "stream-events.jsonl"
@@ -474,28 +478,65 @@ class InkBridge:
         """Show an arrow-key option picker in the Ink UI.
 
         Returns the selected option index, or None when dismissed (Esc).
+        A question asked while another is on screen waits behind it (in
+        self._choice_asks) and is shown the moment the one ahead is done;
+        each carries a request_id the answer names.
         """
-        if self._pending_choice is not None and not self._pending_choice.done():
-            raise RuntimeError("Choice request already pending")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[int | None] = loop.create_future()
-        self._pending_choice = future
+        ask = _ChoiceAsk(
+            request_id=str(uuid.uuid4()),
+            prompt=prompt,
+            options=list(options),
+            answer=asyncio.get_running_loop().create_future(),
+        )
+        self._choice_asks.append(ask)
+        if self._choice_asks[0] is ask:
+            self._show_choice(ask)
+        try:
+            return await ask.answer
+        finally:
+            was_head = self._choice_asks[0] is ask
+            self._choice_asks.remove(ask)
+            if was_head:
+                emit({"type": "choice_cleared"})
+                # the next question takes the screen the moment this one goes
+                if self._choice_asks:
+                    self._show_choice(self._choice_asks[0])
+
+    def _show_choice(self, ask: "_ChoiceAsk") -> None:
         emit({
             "type": "choice_request",
-            "prompt": prompt,
-            "options": list(options),
+            "request_id": ask.request_id,
+            "prompt": ask.prompt,
+            "options": ask.options,
         })
-        try:
-            return await future
-        finally:
-            self._pending_choice = None
-            emit({"type": "choice_cleared"})
 
-    def resolve_choice_request(self, index: object) -> None:
-        if self._pending_choice is None or self._pending_choice.done():
-            return
+    def resolve_choice_request(
+        self, index: object, request_id: str | None = None,
+    ) -> bool:
+        """Answer the question on screen (the head of the queue). Refused
+        (False) when none is up, it is already answered, or the answer names
+        another question (late, or from a second tab); an answer naming none
+        (older pages, the terminal UI) answers the one on screen."""
+        if not self._choice_asks:
+            return False
+        head = self._choice_asks[0]
+        if head.answer.done():
+            return False
+        if request_id and request_id != head.request_id:
+            return False
         value = index if isinstance(index, int) and index >= 0 else None
-        self._pending_choice.set_result(value)
+        head.answer.set_result(value)
+        return True
+
+
+@dataclass
+class _ChoiceAsk:
+    """One "choose one" question. The head of InkBridge._choice_asks is the
+    one on screen; the others wait their turn."""
+    request_id: str
+    prompt: str
+    options: list[str]
+    answer: asyncio.Future  # the reader's pick (an index, or None)
 
 
 async def _read_line() -> str:
@@ -904,7 +945,10 @@ async def main() -> None:
             continue
 
         if msg.get("type") == "choice_response":
-            bridge.resolve_choice_request(msg.get("index"))
+            rid = msg.get("request_id")
+            bridge.resolve_choice_request(
+                msg.get("index"), request_id=rid if isinstance(rid, str) else None,
+            )
             continue
 
     _executor.shutdown(wait=False)

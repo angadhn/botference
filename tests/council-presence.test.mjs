@@ -131,3 +131,51 @@ test('authenticated reconnect replaces runtime state; completion, reset, bridge 
   assert.notEqual(request(restarted.handler).json().runs[0].run_id, initial.runs[0].run_id);
   fresh.disconnect();
 });
+
+test('a bridge moves through its named phases only by the legal moves; mid-turn is read from the phase', async t => {
+  const { Bridge, BRIDGE_PHASES, BRIDGE_MOVES } = await council(t);
+  assert.deepEqual(BRIDGE_PHASES, ['starting', 'opening', 'resuming', 'idle', 'working']);
+  // every pair not in the move table is refused and leaves the phase alone
+  for (const from of BRIDGE_PHASES) for (const to of [...BRIDGE_PHASES, 'live', 'bogus']) {
+    const b = new Bridge();
+    b.phase = from;
+    const legal = BRIDGE_MOVES.has(from + '>' + to);
+    assert.equal(b.setPhase(to), legal, `${from} > ${to}`);
+    assert.equal(b.phase, legal ? to : from);
+  }
+  assert.ok(!BRIDGE_MOVES.has('idle>opening') && !BRIDGE_MOVES.has('working>starting'));
+  const written = [];
+  const wire = b => { b.proc = { stdin: { write: l => written.push(JSON.parse(l)) } }; b.available = true; return b; };
+  // a fresh chat: idle after start-up, working while a message is answered
+  const a = wire(new Bridge());
+  assert.equal(a.midTurn(), false);
+  a.handle({ type: 'ready' });
+  assert.equal(a.phase, 'idle');
+  a.send({ type: 'input', text: 'hi' });
+  assert.equal(a.phase, 'working');
+  assert.equal(a.midTurn(), true);
+  a.send({ type: 'input', text: 'and another' });
+  assert.equal(a.phase, 'working', 'a second message mid-turn is no move');
+  a.handle({ type: 'ready' });
+  assert.equal(a.phase, 'idle');
+  a.handle({ type: 'ready' });
+  assert.equal(a.phase, 'idle', 'a stray ready while idle changes nothing');
+  // a message sent before start-up ends goes straight to working
+  const s = wire(new Bridge());
+  s.send({ type: 'input', text: 'early' });
+  assert.equal(s.phase, 'working');
+  s.handle({ type: 'ready' });
+  assert.equal(s.phase, 'idle');
+  // a saved chat: opening (mid-turn, the /resume) > resuming > idle
+  const o = wire(new Bridge('saved'));
+  o.send({ type: 'input', text: '/resume saved' });
+  assert.equal(o.phase, 'opening');
+  assert.equal(o.midTurn(), true);
+  o.handle({ type: 'ready' });
+  assert.equal(o.phase, 'resuming');
+  assert.equal(o.midTurn(), false);
+  o.handle({ type: 'ready' });
+  assert.equal(o.phase, 'idle');
+  assert.equal(o.claimedSid, null);
+  for (const b of [a, s, o]) b.disconnect();
+});
