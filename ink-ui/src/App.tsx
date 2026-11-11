@@ -31,6 +31,17 @@ import { sendDesktopNotification } from "./v2/notify.js";
 import { IMAGE_EXTS, saveClipboardImage, tokenizePaste } from "./v2/attachments.js";
 import { flightRecorder, recordCrashEvidence } from "./index.js";
 import {
+  ENGINE_STOPPED_STATUS,
+  NOT_SENT_HINT,
+  canMoveTurnMode,
+  engineAccepts,
+  engineStoppedNotice,
+  moveTurnMode,
+  restoreUnanswered,
+  showsSpinner,
+  type TurnMode,
+} from "./turnState.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -526,7 +537,14 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [inputText, setInputTextState] = useState("");
   const [cursor, setCursorState] = useState(0);
   const [hint, setHint] = useState("");
-  const [ready, setReady] = useState(false);
+  // The one field for "is a bot working?" (named modes in turnState.ts);
+  // changed only through moveTurn() below.
+  const [turnMode, setTurnModeState] = useState<TurnMode>("starting");
+  const turnModeRef = useRef<TurnMode>("starting");
+  // What the user sent since the engine last said it was ready — handed back
+  // to the typing box if the engine stops before answering.
+  const unansweredRef = useRef<string[]>([]);
+  const ready = turnMode === "idle";
   const [queuedCount, setQueuedCount] = useState(0);
   const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
   const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
@@ -562,6 +580,19 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : update;
     cursorRef.current = Math.max(0, Math.min(next, inputTextRef.current.length));
     setCursorState(cursorRef.current);
+  }, []);
+  const moveTurn = useCallback((to: TurnMode): boolean => {
+    const from = turnModeRef.current;
+    const move = moveTurnMode(from, to);
+    if (!move.ok) {
+      flightRecorder.note(`turn_move_refused:${from}->${to}`);
+      return false;
+    }
+    if (move.changed) {
+      turnModeRef.current = move.mode;
+      setTurnModeState(move.mode);
+    }
+    return move.changed;
   }, []);
   const setImageAttachments = useCallback((update: StateUpdate<Map<number, string>>) => {
     const next = typeof update === "function"
@@ -1055,11 +1086,38 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       ]));
     });
 
+    // The engine is gone (exited, killed, or its pipe closed): stop the
+    // spinner, say so once, and hand back anything not yet answered.
+    const engineStopped = (how: { code?: number | null; signal?: string | null; reason?: string }) => {
+      if (!moveTurn("engine_stopped")) return;
+      const unanswered = unansweredRef.current;
+      unansweredRef.current = [];
+      if (unanswered.length > 0) {
+        const restored = restoreUnanswered(unanswered, inputTextRef.current);
+        setInputText(restored);
+        setCursor(restored.length);
+      }
+      setQueuedCount(0);
+      setHint("");
+      setPendingPermission(null);
+      setPendingChoice(null);
+      setRoomEntries((prev) => capDisplayEntries([
+        ...prev,
+        { speaker: "system", text: engineStoppedNotice(how, unanswered.length) },
+      ]));
+    };
+
     proc.on("error", (err) => {
       setRoomEntries((prev) => [
         ...prev,
         { speaker: "system", text: `Bridge spawn error: ${err.message}` },
       ]);
+      engineStopped({ reason: "it could not start" });
+    });
+    // Writing to a dead engine raises EPIPE on stdin; without a listener that
+    // error would crash the whole app.
+    proc.stdin?.on("error", () => {
+      engineStopped({});
     });
 
     const asString = (value: unknown, fallback = ""): string =>
@@ -1232,7 +1290,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setFocusedPane("room");
           break;
         case "ready":
-          setReady(true);
+          moveTurn("idle");
+          unansweredRef.current = [];
           setQueuedCount(0);
           setHint("");
           setBusyTarget(null);
@@ -1317,20 +1376,29 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       }
     });
 
-    proc.on("close", (code) => {
-      flightRecorder.note(`bridge_exit:${code}`, { flush: true });
-      if (code !== 0 && code !== null) {
-        recordCrashEvidence(
-          "bridge_exit",
-          new Error(`Python bridge exited with code ${code}`),
-        );
-        setRoomEntries((prev) => [
-          ...prev,
-          { speaker: "system", text: `Bridge exited with code ${code}. Press Ctrl+C to exit.` },
-        ]);
+    // Its reply pipe closing means the engine can no longer answer, even if
+    // the process has not been reaped yet. A clean exit (code 0) closes the
+    // app as before, in the "close" handler below.
+    rl.on("close", () => {
+      if (proc.exitCode === 0) return;
+      if (proc.exitCode !== null || proc.signalCode !== null) {
+        engineStopped({ code: proc.exitCode, signal: proc.signalCode });
       } else {
-        cleanup();
+        engineStopped({});
       }
+    });
+
+    proc.on("close", (code, signal) => {
+      flightRecorder.note(`bridge_exit:${code ?? signal}`, { flush: true });
+      if (code === 0) {
+        cleanup();
+        return;
+      }
+      recordCrashEvidence(
+        "bridge_exit",
+        new Error(`Python bridge exited with ${code !== null ? `code ${code}` : `signal ${signal}`}`),
+      );
+      engineStopped({ code, signal });
     });
 
     return () => {
@@ -1366,9 +1434,15 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Projects focused \u2014 Tab to Council to send messages");
       return;
     }
-    const queued = !ready;
+    const proc = bridgeRef.current;
+    if (!engineAccepts(turnModeRef.current) || !proc?.stdin?.writable) {
+      // Keep the text (and attachments) in the box and say plainly why.
+      setHint(NOT_SENT_HINT);
+      return;
+    }
+    const queued = turnModeRef.current !== "idle";
     if (!queued) {
-      setReady(false);
+      moveTurn("working");
       const nextBusyTarget = resolveBusyTarget(stripped, status.route);
       setBusyTarget(nextBusyTarget);
       setV2Activity(startV2ActivityFromInput(stripped, status.route));
@@ -1381,8 +1455,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     setCursor(0);
     setDesiredCol(null);
 
-    const proc = bridgeRef.current;
-    if (proc?.stdin?.writable) {
+    unansweredRef.current = [...unansweredRef.current, stripped];
+    {
       flightRecorder.note("user_submit");
       const msg: Record<string, unknown> = { type: "input", text: stripped };
       const attachments = imageAttachmentsRef.current;
@@ -1399,7 +1473,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [focusedPane, ready, pendingPermission, pendingChoice, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
+  }, [focusedPane, pendingPermission, pendingChoice, moveTurn, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((choice: PermissionChoice) => {
     const proc = bridgeRef.current;
@@ -1428,15 +1502,13 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [pendingChoice]);
 
   const interrupt = useCallback(() => {
-    if (ready) {
-      return;
-    }
     const proc = bridgeRef.current;
-    if (proc?.stdin?.writable) {
-      proc.stdin.write(JSON.stringify({ type: "interrupt" }) + "\n");
-      setHint("Interrupting...");
-    }
-  }, [ready]);
+    if (!proc?.stdin?.writable) return;
+    if (!canMoveTurnMode(turnModeRef.current, "stopping")) return;
+    moveTurn("stopping");
+    proc.stdin.write(JSON.stringify({ type: "interrupt" }) + "\n");
+    setHint("Interrupting...");
+  }, [moveTurn]);
 
   // ── Keyboard handling ──────────────────────────────────
 
@@ -1585,9 +1657,13 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         const command = projectRowCommand(row);
         if (!command) return;
         const proc = bridgeRef.current;
+        if (!engineAccepts(turnModeRef.current)) {
+          setHint(NOT_SENT_HINT);
+          return;
+        }
         if (proc?.stdin?.writable) {
-          if (ready) {
-            setReady(false);
+          if (turnModeRef.current === "idle") {
+            moveTurn("working");
             setBusyTarget("system");
             setV2Activity(createV2Activity("system", "system"));
           } else {
@@ -1778,7 +1854,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const queueHint = queuedCount > 0
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
     : "";
-  const statusText = mouseSelectionMode ? selectionHint : hint || queueHint || (!ready ? busyText : " ");
+  const engineDown = turnMode === "engine_stopped";
+  const statusText = mouseSelectionMode
+    ? selectionHint
+    : hint || (engineDown ? ENGINE_STOPPED_STATUS : queueHint || (showsSpinner(turnMode) ? busyText : " "));
 
   // ── Render ─────────────────────────────────────────────
 
@@ -1824,8 +1903,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           />
         ) : (
           <>
-            <Text color={(hint || mouseSelectionMode) ? THEME.textMuted : THEME.statusMuted}>
-              {mouseSelectionMode || hint || ready
+            <Text color={engineDown && !mouseSelectionMode ? THEME.warning : (hint || mouseSelectionMode) ? THEME.textMuted : THEME.statusMuted}>
+              {mouseSelectionMode || hint || !showsSpinner(turnMode)
                 ? statusText
                 : <BusyLine text={busyText} />}
             </Text>
