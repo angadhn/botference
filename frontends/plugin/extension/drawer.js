@@ -1842,6 +1842,39 @@
   // kept in D.popover and changed only by setPopover. (It was four yes/no
   // flags, and two of them could be up at once.)
   const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects']);
+  // A BUTTON THAT DOES ONE THING AND SAYS HOW IT WENT — send review, make
+  // artifact, publish (which ask first) and continue in council (which does
+  // not). Each keeps ONE value, `mode`, one of ACT_MODES, changed only by
+  // actMove; `err` is what a failure said and `note` what a success said, and
+  // each is written only by the move into its own mode. (They were a
+  // `confirm` and a `busy` flag beside err/note, and nothing stopped a button
+  // being "asking" and "working" at once.)
+  //   ask     — idle | done | failed → confirm   (the button pressed)
+  //   decline — confirm → idle                   ("no")
+  //   start   — confirm → busy                   ("yes")
+  //   go      — idle | done | failed → busy      (a button that does not ask)
+  //   done    — busy → done, `arg` = what to say (may be '')
+  //   failed  — busy → failed, `arg` = why
+  const ACT_MODES = Object.freeze(['idle', 'confirm', 'busy', 'done', 'failed']);
+  const ACT_MOVES = Object.freeze({
+    ask: ['idle', 'done', 'failed'], decline: ['confirm'], start: ['confirm'],
+    go: ['idle', 'done', 'failed'], done: ['busy'], failed: ['busy'],
+  });
+  const ACT_TO = { ask: 'confirm', decline: 'idle', start: 'busy', go: 'busy', done: 'done', failed: 'failed' };
+  const actMode = a => (a && ACT_MODES.indexOf(a.mode) !== -1 ? a.mode : 'idle');
+  const canActMove = (a, move) => !!ACT_MOVES[move] && ACT_MOVES[move].indexOf(actMode(a)) !== -1;
+  // The one way it changes. Changes the button's value in place (it also
+  // carries what the confirm row was typed into), and throws on an unknown
+  // move or one from the wrong mode — callers that might race ask canActMove.
+  function actMove(a, move, arg) {
+    if (!ACT_MOVES[move]) throw new Error('button: no such move ' + move);
+    if (!canActMove(a, move)) throw new Error('button: cannot ' + move + ' while ' + actMode(a));
+    a.mode = ACT_TO[move];
+    a.err = move === 'failed' ? String(arg || '') : '';
+    a.note = move === 'done' ? String(arg || '') : '';
+    return a;
+  }
+  const actIdle = extra => ({ mode: 'idle', err: '', note: '', ...(extra || {}) });
   const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
   // …and every way it changes, in one list (newChatMove refuses the rest):
   //   ask     — idle | list → confirm      ("+ new chat")
@@ -2545,28 +2578,29 @@
       project: opts.project || null,
       archive: { list: null, loading: false, err: '', current: null, busy: '' },
       picking: false,
-      // "send review": the one-step inline confirm (never window.confirm — see
-      // del-thread), the in-flight flag, and whatever the companion said last
-      review: { confirm: false, busy: false, err: '', note: '' },
+      // "send review": one ACT_MODES value — the one-step inline confirm (never
+      // window.confirm — see del-thread), the round in flight, and whatever the
+      // companion said last
+      review: actIdle(),
       // "make artifact": the same one-step inline confirm, plus the two things
       // this one has to ask — what it should be, and (filed in more than one
       // project) which project it goes in. `root`/`id` are the answer to the
       // second, set by the select; empty means "the one project there is".
-      artifact: { confirm: false, busy: false, err: '', note: '', brief: '', root: '', id: '' },
+      artifact: actIdle({ brief: '', root: '', id: '' }),
       // "publish": the same one-step confirm again, for the one act in this
       // drawer that puts something on the public internet. The sentence says
       // where and says that plainly; the button is the whole of the act.
-      publish: { confirm: false, busy: false, err: '', note: '', link: '' },
+      publish: actIdle(),
       // "+ new chat", which every page with a page chat has and which a project
       // artifact page does NOT (its archive bar already is this control, and two
       // of them would be two answers to one question). One named mode
       // (NEWCHAT_MODES), changed only by moveNewChat.
       newchat: newChatIdle(),
       // "continue in council": no confirm (it is a copy — nothing on this page
-      // changes and no bot is summoned), so just the in-flight flag, the error,
-      // and the link to the chat it made, kept on screen in case the new tab
-      // was blocked
-      council: { busy: false, err: '', url: '', reused: false, where: '' },
+      // changes and no bot is summoned), so an ACT_MODES value that goes
+      // straight to busy, plus the link to the chat it made, kept on screen in
+      // case the new tab was blocked
+      council: actIdle({ url: '', reused: false, where: '' }),
       // who WE are on this companion (setAuthor); '' until the background says
       author: opts.author || '',
       // the command table the /help popup and the slash menu read (null =
@@ -5557,9 +5591,9 @@ ${bubbleShellHtml()}`;
       // what the button may honestly promise: edits only where there is a
       // draft to edit, which is a confirmed project artifact and nowhere else
       const editable = !!(D.project && isYes(D.project));
-      const inner = r.busy
+      const inner = actMode(r) === 'busy'
         ? `<span class="rvnote busy">handing ${n} comment${n === 1 ? '' : 's'} to the bots…</span>`
-        : r.confirm
+        : actMode(r) === 'confirm'
           ? `<span class="rvq">send ${n} open comment${n === 1 ? '' : 's'} to the bots?</span>
              <button class="rebtn yes" data-act="review-yes" type="button">yes</button>
              <button class="rebtn" data-act="review-no" type="button">no</button>`
@@ -5573,9 +5607,9 @@ ${bubbleShellHtml()}`;
             + publishBtnHtml()
             + newChatBtnHtml()
             + councilBtnHtml()
-            + (r.err ? `<span class="rvnote err">${esc(r.err)}</span>`
-              : r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
-      return `<div class="reviewrow${r.confirm ? ' confirm' : ''}">${inner}</div>`
+            + (actMode(r) === 'failed' ? `<span class="rvnote err">${esc(r.err)}</span>`
+              : actMode(r) === 'done' && r.note ? `<span class="rvnote note">${esc(r.note)}</span>` : '');
+      return `<div class="reviewrow${actMode(r) === 'confirm' ? ' confirm' : ''}">${inner}</div>`
         + makeArtifactConfirmHtml() + publishConfirmHtml() + newChatConfirmHtml()
         + newChatListHtml() + artifactsHtml()
         + publishedHtml();
@@ -5613,9 +5647,9 @@ ${bubbleShellHtml()}`;
       const link = C.url || (prior && prior.url) || '';
       return `<button class="archsend tocouncil" data-act="continue-council" type="button"
           title="copy this chat and your margin comments into the council as a chat of your own, and open it there — this page keeps its chat"${
-        C.busy ? ' disabled' : ''}>continue in council ↗</button>`
-        + (C.busy ? '<span class="rvnote busy">copying to the council…</span>'
-          : C.err ? `<span class="rvnote err">${esc(C.err)}</span>`
+        actMode(C) === 'busy' ? ' disabled' : ''}>continue in council ↗</button>`
+        + (actMode(C) === 'busy' ? '<span class="rvnote busy">copying to the council…</span>'
+          : actMode(C) === 'failed' ? `<span class="rvnote err">${esc(C.err)}</span>`
           : link ? `<span class="rvnote note">${C.url
               ? (C.reused ? 'already in the council' : `copied${C.where ? ` to ${esc(C.where)}` : ''}`) + ' — '
               : 'in the council: '}<a href="${esc(link)}" target="_blank" rel="noopener">open ↗</a></span>`
@@ -5624,14 +5658,14 @@ ${bubbleShellHtml()}`;
 
     async function continueInCouncil() {
       const C = D.council;
-      if (C.busy) return;
-      C.busy = true; C.err = '';
+      if (!canActMove(C, 'go')) return;
+      actMove(C, 'go');
       render();
       const a = await cb('onContinueInCouncil')();
-      C.busy = false;
       if (!a || !a.ok) {
-        C.err = (a && a.error) || 'the companion did not answer';
+        actMove(C, 'failed', (a && a.error) || 'the companion did not answer');
       } else {
+        actMove(C, 'done');
         C.url = a.url || '';
         C.reused = !!a.reused;
         C.where = a.project_title || (a.project_id ? a.project_id : 'the Inbox');
@@ -5736,21 +5770,21 @@ ${bubbleShellHtml()}`;
     function publishBtnHtml() {
       if (!D.owner || !D.project || !isYes(D.project)) return '';
       const P = D.publish;
-      if (P.confirm) return '';
+      if (actMode(P) === 'confirm') return '';
       const t = publishTarget();
-      const busy = P.busy ? '<span class="rvnote busy">publishing…</span>' : '';
+      const busy = actMode(P) === 'busy' ? '<span class="rvnote busy">publishing…</span>' : '';
       return `<button class="archsend pubbtn" data-act="publish" type="button"
           title="${esc(t
             ? `copy this page into your website (${t.url}), commit it${t.push === false ? '' : ' and push'}`
             : 'publish target not set up — add it to config.json')}"${
-        t && !P.busy ? '' : ' disabled'}>publish</button>${busy}${
-        P.err ? `<span class="rvnote err">${esc(P.err)}</span>` : ''}`;
+        t && actMode(P) !== 'busy' ? '' : ' disabled'}>publish</button>${busy}${
+        actMode(P) === 'failed' ? `<span class="rvnote err">${esc(P.err)}</span>` : ''}`;
     }
 
     function publishConfirmHtml() {
       const P = D.publish;
       const t = publishTarget();
-      if (!P.confirm || !t || !D.owner) return '';
+      if (actMode(P) !== 'confirm' || !t || !D.owner) return '';
       return `<div class="reviewrow confirm pubrow">
         <span class="rvq">publish to <b>${esc(t.url)}</b>? This makes the page public.</span>
         <button class="rebtn yes" data-act="publish-yes" type="button">Publish</button>
@@ -5791,17 +5825,17 @@ ${bubbleShellHtml()}`;
     function makeArtifactBtnHtml() {
       if (!D.owner) return '';
       const A = D.artifact;
-      if (A.confirm) return '';
+      if (actMode(A) === 'confirm') return '';
       const filed = filedProjects();
-      const busy = A.busy
+      const busy = actMode(A) === 'busy'
         ? '<span class="rvnote busy">asking for the page…</span>' : '';
       return `<button class="archsend mkart" data-act="make-artifact" type="button"
           title="${esc(filed.length
             ? 'have the bots make a page out of this one — your comments, the chat and whatever you ask for — and put it in the project'
             : 'file this page in a project first — the folder button in the header')}"${
-        filed.length && !A.busy ? '' : ' disabled'}>make artifact</button>${busy}${
-        A.err ? `<span class="rvnote err">${esc(A.err)}</span>`
-          : A.note ? `<span class="rvnote note">${esc(A.note)}</span>` : ''}`;
+        filed.length && actMode(A) !== 'busy' ? '' : ' disabled'}>make artifact</button>${busy}${
+        actMode(A) === 'failed' ? `<span class="rvnote err">${esc(A.err)}</span>`
+          : actMode(A) === 'done' && A.note ? `<span class="rvnote note">${esc(A.note)}</span>` : ''}`;
     }
 
     // The confirm: one line of what it should be, and — where the page is filed
@@ -5809,7 +5843,7 @@ ${bubbleShellHtml()}`;
     // like every other confirm in this drawer.
     function makeArtifactConfirmHtml() {
       const A = D.artifact;
-      if (!A.confirm || !D.owner) return '';
+      if (actMode(A) !== 'confirm' || !D.owner) return '';
       const filed = filedProjects();
       const names = filed.map(f => {
         const known = (D.projects.list || []).find(p => p.root === f.root && p.id === f.id);
@@ -6061,17 +6095,16 @@ ${bubbleShellHtml()}`;
     // its turn is running or gone (setTurns).
     async function sendReview() {
       const r = D.review;
-      if (r.busy) return;
-      r.busy = true; r.err = ''; r.note = ''; r.confirm = false;
+      if (!canActMove(r, 'start')) return;
+      actMove(r, 'start');
       render();
       const a = await cb('onSendReview')();
-      r.busy = false;
       if (!a || !a.ok) {
-        r.err = (a && a.error) || 'the companion did not answer';
+        actMove(r, 'failed', (a && a.error) || 'the companion did not answer');
       } else if (!a.queued && a.reason) {
         // agents off, or a guest's budget: the review IS posted, only the bots
         // are withheld — say which of the two happened
-        r.note = `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`;
+        actMove(r, 'done', `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — but ${a.reason}`);
       } else {
         for (const id of a.threads || []) {
           if (!canTurnMove(D.turns[id], 'wait')) continue;   // this one is already under way
@@ -6082,9 +6115,9 @@ ${bubbleShellHtml()}`;
         // otherwise the wrap-up arriving in page chat looks like a bot going
         // off on its own
         const tail = (D.project && isYes(D.project)) ? '' : ', then a wrap-up in the chat';
-        r.note = a.omitted
+        actMove(r, 'done', a.omitted
           ? `sent ${a.sent} of ${a.total} comments — one turn each; send review again for the other ${a.omitted}`
-          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`;
+          : `sent ${a.sent} comment${a.sent === 1 ? '' : 's'} — one turn each, answered in the threads${tail}`);
       }
       // The round OPENS in page chat (the preamble is the last thing in the
       // pane) and the answers land on Comments. Landing here, where the button
@@ -6102,7 +6135,7 @@ ${bubbleShellHtml()}`;
     // but the outcome line, exactly as with a review.
     async function makeArtifact() {
       const A = D.artifact;
-      if (A.busy) return;
+      if (!canActMove(A, 'start')) return;
       const box = D.shadow.querySelector('.mkbrief');
       const sel = D.shadow.querySelector('[data-role="artifact-project"]');
       if (box) A.brief = box.value || '';
@@ -6110,17 +6143,16 @@ ${bubbleShellHtml()}`;
         const [root, ...rest] = String(sel.value).split(' ');
         A.root = root; A.id = rest.join(' ');
       }
-      A.busy = true; A.err = ''; A.note = ''; A.confirm = false;
+      actMove(A, 'start');
       render();
       const a = await cb('onMakeArtifact')(A.root, A.id, A.brief);
-      A.busy = false;
       if (!a || !a.ok) {
-        A.err = (a && a.error) || 'the companion did not answer';
+        actMove(A, 'failed', (a && a.error) || 'the companion did not answer');
       } else if (!a.queued && a.reason) {
-        A.note = a.reason;
+        actMove(A, 'done', a.reason);
       } else {
         A.brief = '';
-        A.note = `asked ${a.route === '@codex' ? 'codex' : 'claude'} — the page appears in this project when it is written`;
+        actMove(A, 'done', `asked ${a.route === '@codex' ? 'codex' : 'claude'} — the page appears in this project when it is written`);
       }
       D.tab = 'chat';
       paintTabs();
@@ -6135,17 +6167,19 @@ ${bubbleShellHtml()}`;
     // about them.
     async function doPublish() {
       const P = D.publish;
-      if (P.busy) return;
-      P.busy = true; P.err = ''; P.note = ''; P.confirm = false;
+      if (!canActMove(P, 'start')) return;
+      actMove(P, 'start');
       render();
       const r = await cb('onPublish')((publishTarget() || {}).name || '');
-      P.busy = false;
       if (!r || !r.ok) {
-        P.err = (r && r.error) || 'the companion did not answer';
+        actMove(P, 'failed', (r && r.error) || 'the companion did not answer');
       } else if (r.error) {
         // the commit stands; the push is what failed, and git's own words are
         // the only useful account of why
-        P.err = `committed, but not pushed \u2014 ${r.error}`;
+        actMove(P, 'failed', `committed, but not pushed \u2014 ${r.error}`);
+      } else {
+        // the address itself is drawn from the page record (publishedHtml)
+        actMove(P, 'done');
       }
       render();
     }
@@ -7836,8 +7870,8 @@ ${bubbleShellHtml()}`;
       // one step, inline, like del-thread: the count is the whole of the
       // warning, because "send" here spends real agent time on a message
       // nobody typed
-      'send-review': () => { D.review.confirm = true; D.review.err = ''; D.review.note = ''; render(); },
-      'review-no': () => { D.review.confirm = false; render(); },
+      'send-review': () => { if (canActMove(D.review, 'ask')) actMove(D.review, 'ask'); render(); },
+      'review-no': () => { if (canActMove(D.review, 'decline')) actMove(D.review, 'decline'); render(); },
       'review-yes': () => sendReview(),
       // …and its twin, which asks two more things before it spends the turn:
       // what the page should BE, and (filed in more than one project) which
@@ -7845,23 +7879,23 @@ ${bubbleShellHtml()}`;
       'make-artifact': () => {
         const filed = filedProjects();
         if (!filed.length) return;
-        D.artifact.confirm = true;
-        D.artifact.err = ''; D.artifact.note = '';
+        if (!canActMove(D.artifact, 'ask')) return;
+        actMove(D.artifact, 'ask');
         if (!D.artifact.id) { D.artifact.root = filed[0].root; D.artifact.id = filed[0].id; }
         render();
         const box = D.shadow.querySelector('.mkbrief');
         if (box) box.focus();
       },
-      'make-artifact-no': () => { D.artifact.confirm = false; render(); },
+      'make-artifact-no': () => { if (canActMove(D.artifact, 'decline')) actMove(D.artifact, 'decline'); render(); },
       'make-artifact-yes': () => makeArtifact(),
       // the one act here that makes something public, and it asks first —
       // naming the address, because that is the fact the reader is agreeing to
       'publish': () => {
         if (!publishTarget()) return;
-        D.publish.confirm = true; D.publish.err = ''; D.publish.note = '';
+        if (canActMove(D.publish, 'ask')) actMove(D.publish, 'ask');
         render();
       },
-      'publish-no': () => { D.publish.confirm = false; render(); },
+      'publish-no': () => { if (canActMove(D.publish, 'decline')) actMove(D.publish, 'decline'); render(); },
       'publish-yes': () => doPublish(),
       // the bot's NEW-project offer, answered. Yes creates the project and
       // files the page in it; no is the same non-event "No" is on every other
@@ -13313,7 +13347,7 @@ ${bubbleShellHtml()}`;
     threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
     THREAD_STAGES, THREAD_MARKS, THREAD_MOVES, threadMove,  // test/status.test.mjs
     setThreadStage, threadStatusFields, restoreThreadStatus, setThreadOrphaned,  // content.js
-    POPOVERS,                                               // test/drawermodes.test.mjs
+    POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

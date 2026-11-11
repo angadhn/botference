@@ -71,6 +71,61 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
   eq('a stray value is replaced, never kept beside a real one', drawer.popover, 'export');
 }
 
+// ---- 2. a button that asks, works, and says how it went ----------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the button modes, named', D.ACT_MODES, ['idle', 'confirm', 'busy', 'done', 'failed']);
+  eq('…and the moves', Object.keys(D.ACT_MOVES), ['ask', 'decline', 'start', 'go', 'done', 'failed']);
+  const legal = {
+    ask: ['idle', 'done', 'failed'], decline: ['confirm'], start: ['confirm'],
+    go: ['idle', 'done', 'failed'], done: ['busy'], failed: ['busy'],
+  };
+  for (const move of Object.keys(legal)) for (const mode of D.ACT_MODES) {
+    const want = legal[move].includes(mode);
+    eq(`${move} from ${mode}: ${want ? 'allowed' : 'refused'}`, D.canActMove({ mode }, move), want);
+    ok(`${move} from ${mode}: actMove ${want ? 'moves' : 'throws'}`, want ? !throws(() => D.actMove({ mode }, move)) : throws(() => D.actMove({ mode }, move)));
+  }
+  ok('an unknown move throws', throws(() => D.actMove({ mode: 'idle' }, 'confirm')));
+  const b = { mode: 'idle', err: '', note: '' };
+  D.actMove(b, 'ask'); D.actMove(b, 'start');
+  D.actMove(b, 'failed', 'no answer');
+  eq('failed carries why, and only why', [b.mode, b.err, b.note], ['failed', 'no answer', '']);
+  D.actMove(b, 'ask');
+  eq('asking again clears what was said', [b.mode, b.err, b.note], ['confirm', '', '']);
+  D.actMove(b, 'start'); D.actMove(b, 'done', 'sent 2');
+  eq('done carries what to say, and no error', [b.mode, b.err, b.note], ['done', '', 'sent 2']);
+  eq('a mode from nowhere reads as idle', D.canActMove({ mode: 'x' }, 'ask'), true);
+}
+
+// ---- 2b. …in the drawer: send review, a refused second click while working --
+{
+  let release;
+  const d2 = D.create({
+    cssText: '.panel{}',
+    onSendReview: () => new Promise(r => { release = r; }),
+  });
+  d2.setConn(true); d2.setAuthor('reader'); d2.open('comments');
+  d2.setPage({ url: URL_, title: 'Article', page_chat: [],
+    threads: [{ id: 'r1', quote: 'a made-up passage', msgs: [{ author: 'reader', ts: '1', text: 'made up' }] }] });
+  await tick(20);
+  const S = d2.shadow;
+  const btn = a => S.querySelector(`[data-act="${a}"]`);
+  ok('send review is offered', !!btn('send-review'));
+  btn('send-review').click(); await tick(5);
+  eq('pressed: asking', d2.review.mode, 'confirm');
+  ok('…the question is up, the button gone', !!btn('review-yes') && !btn('send-review'));
+  btn('review-no').click(); await tick(5);
+  eq('no: idle again', d2.review.mode, 'idle');
+  btn('send-review').click(); await tick(5);
+  btn('review-yes').click(); await tick(5);
+  eq('yes: working', d2.review.mode, 'busy');
+  ok('…and nothing to press while it works', !btn('send-review') && !btn('review-yes'));
+  release({ ok: false, error: 'made-up refusal' }); await tick(10);
+  eq('the answer: failed, with why', [d2.review.mode, d2.review.err], ['failed', 'made-up refusal']);
+  ok('…shown beside the button', /made-up refusal/.test((S.querySelector('.rvnote.err') || {}).textContent || ''));
+  d2.close && d2.close();
+}
+
 console.log(`drawermodes: ${pass} passed, ${fail} failed`);
 await w.happyDOM.close();
 if (fail) { console.log('failures:\n  ' + failures.join('\n  ')); process.exit(1); }
