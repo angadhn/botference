@@ -158,6 +158,38 @@ ok('refusal is said', await until(() => /microphone permission was refused/.test
   await tick(20);
 }
 
+// THE WORDS ARRIVE AFTER THE READER HAS MOVED ON. The transcript used to pull
+// the cursor back into the box it was dictated into, wherever the reader had
+// gone meanwhile. Now: it goes into that box, and the focus stays put.
+{
+  w.navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [{ stop() {} }] });
+  box().value = '';
+  box().focus();
+  mic().click();
+  await until(() => mic().classList.contains('recording'));
+  const elsewhere = w.document.createElement('input');
+  w.document.body.appendChild(elsewhere);
+  elsewhere.focus();
+  ok('the reader is typing on the web page now', w.document.activeElement === elsewhere && !root.activeElement);
+  const n = calls.transcribe.length;
+  mic().click();
+  ok('the clip goes off', await until(() => calls.transcribe.length === n + 1));
+  ok('the words land in the box it was dictated into', await until(() => box().value === 'dictated words'), box().value);
+  ok('…and the focus stays where the reader put it', w.document.activeElement === elsewhere && !root.activeElement,
+    String(root.activeElement && root.activeElement.tagName));
+  elsewhere.remove();
+
+  // …and a reader who stayed in the box keeps typing in it
+  box().value = 'stay ';
+  box().focus();
+  box().setSelectionRange(5, 5);
+  mic().click();
+  await until(() => mic().classList.contains('recording'));
+  mic().click();
+  ok('stayed: the words at the caret', await until(() => box().value === 'stay dictated words'), box().value);
+  ok('stayed: the box has the focus', root.activeElement === box());
+}
+
 // a companion that cannot transcribe: no mic at the next opening
 statusOk = false;
 drawer.close();

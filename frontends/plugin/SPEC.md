@@ -10107,7 +10107,8 @@ double-clicking the panel's own resize grip.
 size without the reader's hand on its edge — five cards where there was one —
 and a page-anchored bubble that no longer fits will not be clamped back; it
 would simply hang off the bottom with its composer out of reach. So a fan runs
-`chooseOffset` again *unless the reader has dragged this one* (`B.moved`), in
+`chooseOffset` again *unless the reader has dragged this one* (`B.how[id].place`
+is `'theirs'`; see the 2026-11-11 named-modes amendment), in
 which case where it sits is their decision. Fanning open also scrolls the stack
 to the **foot** — the newest card — after the placement is re-picked: the
 reader reads back in time by scrolling up (2026-11-10 amendment; it used to
@@ -11580,7 +11581,8 @@ does exactly what it always did.
 - **Growth.** A bubble that started as a new comment was placed when it held
   only a composer. While its passage is on the glass and the reader has not
   dragged or sized it, if the answer grows it off the glass or down over its
-  own words, it is placed again by `chooseOffset` (`B.grow`, `onBubbleResize`).
+  own words, it is placed again by `chooseOffset` (`B.how[id].place` is
+  `'growing'`, `onBubbleResize`).
   Every other bubble keeps the never-re-picked rule.
 
 ### Testing
@@ -12209,3 +12211,142 @@ command table, keys); `refreshModels` shows no "loading…" line, ignores a
 failure (the remembered list stays as it was) and repaints an open menu in
 place (`syncModels`). The model menu still asks for itself when opened.
 Tests: `test/modelsrefresh.test.mjs`.
+
+## Amendment (2026-11-11): three controls with one named mode each
+
+Three controls kept their state as loose flags. Each is now ONE value with
+its modes named in one list, changed through one function that refuses an
+illegal move. Nothing the reader sees changes, except where noted.
+
+- **"+ new chat" and its archive chooser** — was `confirm`, `open`, `loading`
+  flags beside a `busy` text field (`''` / `'new'` / `'i<n>'`). Now
+  `D.newchat = { mode, index, list, err }`, `mode` one of `NEWCHAT_MODES` =
+  idle / confirm / reading / list / starting / opening, changed only by
+  `moveNewChat` → the pure `newChatMove(value, move, arg)`; moves
+  `NEWCHAT_MOVES` = ask / decline / start / show / hide / read / unread / open /
+  done / failed. `read`/`unread` (the archive's answer) are never refused: an
+  answer that lands after the chooser was closed only keeps the rows. Seen
+  differently: the ask and the open chooser no longer show at the same time —
+  pressing one closes the other.
+- **A page row's rename / tag box** — was two fields, `D.pages.renaming` and
+  `D.pages.tagging`, for one mode, and the typed text lived only in the box,
+  so a live refresh of the list while the box was not focused put the old
+  name back. Now `D.pages.row` = null or `{ kind: 'rename'|'tag', url, text }`
+  (`ROW_EDIT_MODES` = none / rename / tag), changed only by `moveRowEdit` →
+  `rowEditMove`; moves open / type / close. Every `input` in the box (and a
+  picked tag) moves `type`, and the row is drawn from `text`. Seen
+  differently: what was typed survives a refresh, focused or not.
+- **One pop-up bubble** — was three yes/no maps per thread, `B.fan` (stack
+  fanned), `B.moved` (dragged by hand) and `B.grow` (started as a new
+  comment). Now one value per thread, `B.how[id] = { place, stack }`:
+  `place` one of `BUB_PLACES` = ours / growing / theirs (who chooses where it
+  sits), `stack` one of `BUB_STACKS` = shut / open. Changed only by
+  `moveBubbleHow` → `bubbleHowMove`; moves drag / adopt / close / fan / unfan /
+  forget. `fan` on an open stack and `unfan` on a shut one are refused. This
+  also settles "the fold is open written two ways": the stack's open state is
+  the one word `'open'` (the lip's signature already used it); the panel's
+  older fold value (`D.expanded`, `FOLD_OPEN`) had already been removed.
+  `bubbleState()` still answers `fanned` and `moved`, and now `place` too.
+- Tests: `test/modes.test.mjs` (each machine and its refusals; in happy-dom:
+  the new-chat ask, no, the chooser, a failed open, yes; the rename and tag
+  boxes keeping their text through an unfocused refresh, one box at a time).
+
+## Amendment (2026-11-11): typing with an input method
+
+While a character is being chosen with an input method (Japanese, Chinese,
+accents — the browser's "composition"), the half-made text is in the box and
+Enter, the arrows and Esc belong to the input method.
+
+- **No key of ours mid-choice.** The drawer's one keydown listener returns at
+  once for a key with `isComposing` or `keyCode` 229 (`composingKey`): Enter
+  never sends (thread box, page chat, library, edit box, row boxes), the
+  @-menu and tag menu do not take arrows, Esc closes nothing. content.js's Esc
+  handler and the options page's ⌘↩ do the same.
+- **No redraw mid-choice.** ONE value, `D.ime`, with `IME_MODES` = none /
+  composing / held, changed only by `moveIme` → the pure `imeMove`; moves
+  start / hold / end (`start` is refused while composing, `hold` with nothing
+  composed). `compositionstart` in a text box moves `start`; `keepTyping` —
+  which every pane rebuild runs inside — moves `hold` and paints nothing while
+  that box still has the focus; `compositionend` moves `end` and, if a redraw
+  was held, runs `render()` (and the pages list when it is showing). A
+  composition whose box has lost the focus or left the page is ended by the
+  next rebuild rather than holding it.
+- Tests: `test/compose.test.mjs`.
+
+## Amendment (2026-11-11): dictated words do not pull the cursor back
+
+The microphone's words used to be inserted with `box.focus()`, so a reader who
+had moved on while the clip was being transcribed (typing in another box, or
+on the web page) had the cursor pulled back. Now `micInsert` still puts the
+words into the box the dictation was started from, but takes the focus (and
+sets the caret after the words) only when the reader has not moved on
+(`micMovedOn`: the focus is in that composer, or nowhere). Tests:
+`test/mic.test.mjs` (moved on: the words land, the focus stays on the page;
+stayed: the words at the caret, the box focused).
+
+## Amendment (2026-11-11): the edit box in a bubble is the one that is saved
+
+"Every edit box shares one saved-draft slot" is gone in its old form: the
+draft is `D.edit`, and only one message can be edited at a time. One trace of
+it was left. The panel's panes are drawn even while the panel is shut, so a
+message being edited in a bubble also has a hidden edit box in the panel, and
+`editBox()` took the first in the page — the hidden one. Typing in the bubble
+was then read back from the hidden copy, and Save saved the message's old
+text. `editBox()` now takes the box with the focus, else the one on show (the
+bubble's while the panel is shut, the panel's while it is open). Tests:
+`test/editbox.test.mjs` (a bubble with the panel shut: a redraw keeps the
+bubble's text and focus, Save saves the bubble's text).
+
+## Amendment (2026-11-11): a landing at the foot is kept while late content draws
+
+Landing at the newest message — a chat that has just arrived (`landPending`),
+a bubble's stack fanned open (`fanBubble`), the "new reply ↓" pip
+(`bubbleToFoot`) — used to be one scroll at that moment, so a picture or a
+formula in the newest reply that finished drawing later left the reader a
+little short of the bottom. The landing is now KEPT, as ONE value,
+`D.footKeep`, with `FOOT_MODES` = none / card / bubble
+(`{kind, id, at}`, `at` = the scroll offset the landing left), changed only
+by `moveFoot` → the pure `footMove`; moves land / letgo.
+
+- **Kept:** while it is, the landing is made again when a picture loads
+  anywhere in the drawer (a capture `load` listener), when the content under
+  it changes size (one `ResizeObserver` on the card or the bubble's stack),
+  and at the end of every `render()`.
+- **Let go:** the reader's own wheel, touch drag, scroll key outside a text
+  box, or grab of the scroll bar (a mousedown on the scroller itself) in that
+  scroller; "Show earlier" (`revealEarlier`); the place gone or not showing
+  (another tab, the bubble shut); and the scroller found away from `at` and
+  not at its foot — a reader who scrolled by some other means. No timer.
+- Tests: `test/footkeep.test.mjs`.
+
+## Amendment (2026-11-11): comment status — every label from one function
+
+A thread's status is kept as several flags on the record (`resolved` +
+`resolved_at`/`_by`, `addressed` + `addressed_at`/`_by`, `orphaned`, `mark`),
+written from five places (store.mjs `setResolved`/`setAddressed`/re-anchoring,
+server.mjs `POST /orphan`, content.js's optimistic writes, drawer.js's
+optimistic resolve / "not done"). The labels used to read those flags each
+their own way. Now every label reads ONE function:
+
+- **Extension:** `threadStatus(t, local)` in drawer.js →
+  `{ stage, mark, orphaned }`: `stage` one of `THREAD_STAGES` = open / ready /
+  resolved (`threadStage`; resolved outranks ready), `mark` one of
+  `THREAD_MARKS` = highlight / strike (`threadMark`), `orphaned` = the page's
+  live answer when it has one, else the record's. The card's class and
+  section, the quote's badges, the bubble's ✓/↺, the overlap chooser's row,
+  the "can strike" / "can question" gates, and content.js's page paint
+  (`stagePaint`), "new wording" relocation and track-changes gate all read it.
+- **Companion:** `threadStage` / `THREAD_STAGES` in store.mjs, the same rule;
+  `isResolved` and `isAddressed` are read through it.
+  `test/status.test.mjs` holds the two to one table, old records included (a
+  record with both `resolved` and `addressed` is resolved).
+- **One disagreement fixed:** the drawer's optimistic resolve / reopen now
+  clears "ready for review" as the companion's `setResolved` does (and puts it
+  back if the companion refuses), so a reopened thread reads "open" at once,
+  not "ready" until the record came back.
+
+Not done (the stored format is unchanged): the flags are still stored and
+written as before. A full conversion would store one `status` field, change
+it only through one store.mjs setter that refuses illegal moves, migrate old
+records on read, and make content.js / drawer.js / server.mjs stop writing
+the flags themselves.

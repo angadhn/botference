@@ -2521,7 +2521,15 @@ export function appendMsg(page, threadId, {
 // the three fields, so a thread that was never addressed is byte-identical to
 // one that was addressed and then written into again, and every record written
 // before this reads as not-addressed.
-export const isAddressed = t => !!(t && t.addressed && !t.resolved);
+//
+// The three together are ONE named stage, read through one function by every
+// label (the drawer's twin is drawer.js threadStage; test/status.test.mjs
+// holds the two to the same table): resolved outranks ready, ready outranks
+// open. The flags are what is stored and what setAddressed / setResolved
+// change; nothing should decide what to CALL a thread from them directly.
+export const THREAD_STAGES = ['open', 'ready', 'resolved'];
+export const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+export const isAddressed = t => threadStage(t) === 'ready';
 
 export function setAddressed(thread, on, by) {
   if (!thread) return null;
@@ -2700,7 +2708,7 @@ export function healThread(thread, { quote, prefix, suffix, deleted, inserted } 
 // instantly, and it is what lets a summary job that drains after a reopen land
 // harmlessly instead of needing to be chased down and cancelled.
 export const SUMMARY_MAX = 2000;
-export const isResolved = t => !!(t && t.resolved);
+export const isResolved = t => threadStage(t) === 'resolved';
 
 export function setResolved(thread, on, by) {
   if (!thread) return null;

@@ -208,7 +208,41 @@ ok('⌘↩ in the edit box saves the edit', edits.length === 3 && edits[2].targe
   && edits[2].text === 'chat edit in progress');
 ok('…and ends it', !box());
 
-console.log(`editbox: ${pass} passed, ${fail} failed`);
+// A BUBBLE, WITH THE PANEL SHUT. The panel's panes are still drawn behind a
+// shut panel, so a message being edited in a bubble has a second, hidden edit
+// box in the panel — the old "one shared draft slot" in its last form. What
+// is typed in the bubble must be what is kept and what is saved, never the
+// hidden copy's text.
+drawer.close();
+drawer.setBubbles('bubbles');
+drawer.showBubble(THR);
+await tick(10);
+const bub = () => root.querySelector(`.bubble[data-thread="${THR}"]`);
+// four messages: the stack is shut on the newest; open it to reach the rest
+{ const lip = bub() && bub().querySelector('.bfan'); if (lip) lip.click(); await tick(5); }
+const bubBox = () => bub() && bub().querySelector('.composer[data-target="__edit__"] textarea');
+const bubMine = () => bub() && bub().querySelector(`.reply[data-ts="${msgs(4, 'x')[2].ts}"][data-author="reader"]`);
+ok('(a bubble is up on the thread, with the reader’s message in it)', !!bubMine(), bub() && bub().innerHTML.slice(0, 300));
+if (bubMine()) {
+  const edit = bubMine().querySelector('[data-act="edit"]');
+  edit.click();
+  await tick(5);
+  ok('✎ in the bubble opens its edit box, focused', !!bubBox() && active() === bubBox());
+  bubBox().value = 'typed in the bubble';
+  bubBox().setSelectionRange(5, 5);
+  bubBox().dispatchEvent(new w.Event('input', { bubbles: true }));
+  botEvent();
+  await tick(5);
+  ok('bubble: a redraw keeps what was typed in the bubble', !!bubBox() && bubBox().value === 'typed in the bubble',
+    bubBox() && bubBox().value);
+  ok('…and the focus in the bubble’s box', active() === bubBox());
+  bub().querySelector('[data-act="edit-save"]').click();
+  await tick(10);
+  ok('bubble: Save saves the bubble’s text, not the hidden copy’s', edits.length === 4
+    && edits[3].text === 'typed in the bubble', JSON.stringify(edits[3]));
+}
+
+console.log(`editbox:${pass} passed, ${fail} failed`);
 await w.happyDOM.close();
 if (fail) { console.log('failures:\n  ' + failures.join('\n  ')); process.exit(1); }
 process.exit(0);

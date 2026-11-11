@@ -267,8 +267,38 @@
   // and could drift into a card and a page that disagree. content.js reads
   // them from window.BFPDrawer, which loads first (manifest.json).
   //
-  // Resolved: closed by the reader. Nothing else closes a thread.
-  const isResolvedThread = t => !!(t && t.resolved);
+  // A thread's STATUS is what every label about it says — the card's class
+  // and its section, the badges on its quote, the bubble's ✓/↺, the overlap
+  // chooser's row, and the paint on the page. It is ONE function over the
+  // record's flags, threadStatus, and every label reads it; nothing reads the
+  // flags directly to decide what to call a thread. (The flags themselves are
+  // still what the companion stores and changes — store.mjs setResolved /
+  // setAddressed, POST /orphan, POST /mark — see SPEC "comment status".)
+  //
+  // The STAGE, its three names (THREAD_STAGES), resolved outranking ready:
+  //   'open'     — waiting on the bots, or on nobody
+  //   'ready'    — a bot has answered since the reader last wrote: "ready for
+  //                review", waiting on the reader (`addressed`)
+  //   'resolved' — closed by the reader. Nothing else closes a thread.
+  const THREAD_STAGES = ['open', 'ready', 'resolved'];
+  const threadStage = t => (!t ? 'open' : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+  // …the MARK, its two names (THREAD_MARKS): what was done to the passage
+  const THREAD_MARKS = ['highlight', 'strike'];
+  const threadMark = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
+  // …and whether its passage can no longer be found. The page's own live
+  // answer (`local`: true / false, or null when it has not looked) outranks
+  // the record's `orphaned`, which is only the last answer it reported.
+  function threadStatus(t, local) {
+    return {
+      stage: threadStage(t),
+      mark: threadMark(t),
+      orphaned: local != null ? !!local : !!(t && t.orphaned),
+    };
+  }
+  // the paint a highlight wears on the page for its stage (anchor.js
+  // paintOffsets: true = green, 'ready' = amber, false = yellow)
+  const stagePaint = t => ({ resolved: true, ready: 'ready', open: false })[threadStage(t)];
+  const isResolvedThread = t => threadStage(t) === 'resolved';
   // THE READER'S ANSWER to "is this folder yours?" — about a council root
   // (project pages) or a site's repo (blog pages). One value with three
   // names, kept in `state` on the record the companion sends (server.mjs
@@ -1632,6 +1662,203 @@
   const isEditOf = (ed, target, r) => editMode(ed) === 'open' && !!r
     && ed.target === String(target) && ed.ts === String(r.ts) && ed.author === String(r.author == null ? '' : r.author);
 
+  // ── "+ new chat" and its archive chooser ─────────────────────────────────
+  // What the "+ new chat" control is doing is ONE value, D.newchat.mode, never
+  // a pile of flags. Its modes, named here:
+  //   'idle'     — the two buttons, nothing more
+  //   'confirm'  — the one-step "start a fresh chat here?" ask is up
+  //   'reading'  — the archive chooser is open, its rows being read
+  //   'list'     — the archive chooser is open, its rows on screen
+  //   'starting' — a fresh chat is being started (after yes)
+  //   'opening'  — a set-aside chat is being opened (`index` says which)
+  // The rest of the value is data, not a mode: `list` (the rows once read, or
+  // null), `err` (the last thing that went wrong, or '').
+  const NEWCHAT_MODES = ['idle', 'confirm', 'reading', 'list', 'starting', 'opening'];
+  // …and every way it changes, in one list (newChatMove refuses the rest):
+  //   ask     — idle | list → confirm      ("+ new chat")
+  //   decline — confirm → idle             ("no")
+  //   start   — confirm → starting         ("yes")
+  //   show    — idle | confirm → reading, or → list when the rows are known
+  //   hide    — reading | list → idle      ("archive" pressed again)
+  //   read    — the rows arrived (`arg` = rows): kept; reading → list
+  //   unread  — the rows could not be read (`arg` = why): reading → list
+  //   open    — list → opening, on row `arg`
+  //   done    — starting | opening → idle; the archive is read afresh next time
+  //   failed  — starting → idle, opening → list, with `arg` = why
+  const NEWCHAT_MOVES = ['ask', 'decline', 'start', 'show', 'hide', 'read', 'unread', 'open', 'done', 'failed'];
+  const NEWCHAT_FROM = {
+    ask: ['idle', 'list'], decline: ['confirm'], start: ['confirm'],
+    show: ['idle', 'confirm'], hide: ['reading', 'list'], open: ['list'],
+    done: ['starting', 'opening'], failed: ['starting', 'opening'],
+  };
+  const newChatIdle = () => ({ mode: 'idle', index: null, list: null, err: '' });
+  // The one way the value changes. Pure: (value, move, arg) → value. An
+  // unknown move, or a move from a mode it does not start from, throws.
+  // read/unread are never refused: the answer may land after the reader has
+  // closed the chooser, and then it is only kept (or dropped).
+  function newChatMove(nc, move, arg) {
+    if (NEWCHAT_MOVES.indexOf(move) === -1) throw new Error('new chat: no such move ' + move);
+    const cur = nc && NEWCHAT_MODES.indexOf(nc.mode) !== -1 ? nc : newChatIdle();
+    const from = NEWCHAT_FROM[move];
+    if (from && from.indexOf(cur.mode) === -1) throw new Error('new chat: cannot ' + move + ' while ' + cur.mode);
+    const at = (mode, extra) => ({ ...cur, index: null, ...extra, mode });
+    switch (move) {
+      case 'ask': return at('confirm', { err: '' });
+      case 'decline': return at('idle');
+      case 'start': return at('starting', { err: '' });
+      case 'show': return at(cur.list ? 'list' : 'reading', { err: '' });
+      case 'hide': return at('idle', { err: '' });
+      case 'read': return cur.mode === 'reading'
+        ? at('list', { list: Array.isArray(arg) ? arg : [] })
+        : { ...cur, list: Array.isArray(arg) ? arg : [] };
+      case 'unread': return cur.mode === 'reading' ? at('list', { err: String(arg || '') }) : cur;
+      case 'open': {
+        const i = Number(arg);
+        if (!Number.isInteger(i) || i < 0) throw new Error('new chat: open needs a row');
+        return { ...cur, mode: 'opening', index: i, err: '' };
+      }
+      case 'done': return at('idle', { list: null, err: '' });
+      default: return at(cur.mode === 'starting' ? 'idle' : 'list', { err: String(arg || '') });   // failed
+    }
+  }
+  const newChatBusy = nc => !!nc && (nc.mode === 'starting' || nc.mode === 'opening');
+
+  // ── a row's inline editor in the pages list ─────────────────────────────
+  // Renaming a page and tagging it are one box under one row, so they are ONE
+  // value, D.pages.row, never two fields. Its modes, named here:
+  //   'none'   — the value is null: no row is being edited
+  //   'rename' — the value is { kind: 'rename', url, text }: that row's name box
+  //   'tag'    — the value is { kind: 'tag', url, text }: that row's tags box
+  // `text` is what is in the box, kept as it is typed, so a refresh of the
+  // list draws the box again with it — focused or not.
+  const ROW_EDIT_MODES = ['none', 'rename', 'tag'];
+  const rowEditMode = v => (v && (v.kind === 'rename' || v.kind === 'tag') ? v.kind : 'none');
+  // …and every way it changes (rowEditMove refuses the rest):
+  //   open  — anything → rename | tag, on one row, seeded with `text`
+  //           (opening another row's box closes the one that was open)
+  //   type  — rename | tag → the same, with the box's text as it now is
+  //   close — anything → none (saved, cancelled, the filter changed)
+  const ROW_EDIT_MOVES = ['open', 'type', 'close'];
+  function rowEditMove(v, move, arg) {
+    if (ROW_EDIT_MOVES.indexOf(move) === -1) throw new Error('row editor: no such move ' + move);
+    if (move === 'close') return null;
+    const a = arg || {};
+    if (move === 'open') {
+      if (a.kind !== 'rename' && a.kind !== 'tag') throw new Error('row editor: open needs rename or tag');
+      if (!a.url) throw new Error('row editor: open needs a page');
+      return { kind: a.kind, url: String(a.url), text: String(a.text == null ? '' : a.text) };
+    }
+    if (rowEditMode(v) === 'none') throw new Error('row editor: no row is being edited');
+    return { ...v, text: String(a.text == null ? '' : a.text) };   // type
+  }
+
+  // ── one pop-up bubble's own state ────────────────────────────────────────
+  // Each open bubble had three yes/no notes (stack fanned, dragged by hand,
+  // started as a new comment). They are ONE value per thread now, B.how[id],
+  // with two named parts:
+  //   place — who chooses where it sits:
+  //     'ours'    we chose it; a fan may choose again
+  //     'growing' we chose it while it was a new comment; the answer growing
+  //               it may choose again too (see onBubbleResize)
+  //     'theirs'  the reader dragged it; nothing chooses again
+  //   stack — its stack of cards: 'shut' (the newest card) or 'open' (fanned)
+  // null is { place: 'ours', stack: 'shut' }.
+  const BUB_PLACES = ['ours', 'growing', 'theirs'];
+  const BUB_STACKS = ['shut', 'open'];
+  // …and every way it changes (bubbleHowMove refuses the rest):
+  //   drag   — the reader moved it: place → theirs
+  //   adopt  — the new comment became its thread: ours → growing
+  //   close  — the bubble was shut: growing → ours (the rest is kept)
+  //   fan    — stack shut → open
+  //   unfan  — stack open → shut
+  //   forget — back to null (a new comment on another passage)
+  const BUB_HOW_MOVES = ['drag', 'adopt', 'close', 'fan', 'unfan', 'forget'];
+  const bubHow = h => ({
+    place: h && BUB_PLACES.indexOf(h.place) !== -1 ? h.place : 'ours',
+    stack: h && BUB_STACKS.indexOf(h.stack) !== -1 ? h.stack : 'shut',
+  });
+  function bubbleHowMove(h, move) {
+    if (BUB_HOW_MOVES.indexOf(move) === -1) throw new Error('bubble: no such move ' + move);
+    if (move === 'forget') return null;
+    const cur = bubHow(h);
+    switch (move) {
+      case 'drag': return { ...cur, place: 'theirs' };
+      case 'adopt': return cur.place === 'theirs' ? cur : { ...cur, place: 'growing' };
+      case 'close': return cur.place === 'growing' ? { ...cur, place: 'ours' } : cur;
+      case 'fan':
+        if (cur.stack !== 'shut') throw new Error('bubble: the stack is already open');
+        return { ...cur, stack: 'open' };
+      default:   // unfan
+        if (cur.stack !== 'open') throw new Error('bubble: the stack is already shut');
+        return { ...cur, stack: 'shut' };
+    }
+  }
+
+  // ── typing with an input method (Japanese, Chinese, accents…) ────────────
+  // While the reader is choosing a character with an input method, the
+  // browser is "composing": the half-made text is in the box, and Enter, the
+  // arrows and Esc belong to the input method, not to us. A rebuild of the
+  // box in that moment would cut the half-made text short, so a redraw waits
+  // until the character is chosen. ONE value, D.ime. Its modes, named here:
+  //   'none'      — null: nothing is being composed
+  //   'composing' — { mode, el }: a character is being chosen in box `el`
+  //   'held'      — { mode, el }: …and a redraw is waiting for it to finish
+  const IME_MODES = ['none', 'composing', 'held'];
+  const imeMode = v => (v && (v.mode === 'composing' || v.mode === 'held') ? v.mode : 'none');
+  // …and every way it changes (imeMove refuses the rest):
+  //   start — none → composing, in one box
+  //   hold  — composing | held → held (a redraw was asked for)
+  //   end   — anything → none: the character was chosen, or the box lost the
+  //           focus or left the page; never refused
+  const IME_MOVES = ['start', 'hold', 'end'];
+  function imeMove(v, move, el) {
+    if (IME_MOVES.indexOf(move) === -1) throw new Error('typing: no such move ' + move);
+    if (move === 'end') return null;
+    const mode = imeMode(v);
+    if (move === 'start') {
+      if (mode !== 'none') throw new Error('typing: a character is already being chosen');
+      if (!el) throw new Error('typing: start needs a box');
+      return { mode: 'composing', el };
+    }
+    if (mode === 'none') throw new Error('typing: nothing is being composed');
+    return { mode: 'held', el: v.el };   // hold
+  }
+  // Is this key press part of choosing a character? (229 is what a browser
+  // reports for a key the input method has taken.)
+  const composingKey = e => !!e && (e.isComposing === true || e.keyCode === 229);
+
+  // ── a landing at the foot, kept while late content grows ─────────────────
+  // Landing at the newest message (a chat that has just arrived, a stack
+  // fanned open, the "new reply" pip) is a scroll to the foot at that moment.
+  // A picture or a formula in the newest reply that finishes drawing a moment
+  // later makes the conversation taller, and the reader is left a little
+  // short of the bottom. So the landing is KEPT — re-made whenever what is
+  // under it changes height — until the reader scrolls for themselves. ONE
+  // value, D.footKeep. Its modes, named here:
+  //   'none'   — null: no landing is being kept
+  //   'card'   — { kind: 'card', id, at }: the panel's card of conversation
+  //              `id` (landAtFoot), in its pane
+  //   'bubble' — { kind: 'bubble', id, at }: the stack of bubble `id`
+  // `at` is the scroll offset the landing left, or null. A scroller found
+  // somewhere else, and not at its foot, has been scrolled by the reader (by
+  // any means — a gesture this file does not listen for included).
+  const FOOT_MODES = ['none', 'card', 'bubble'];
+  const footMode = v => (v && (v.kind === 'card' || v.kind === 'bubble') ? v.kind : 'none');
+  // …and every way it changes (footMove refuses the rest):
+  //   land  — anything → card | bubble: the reader was just put at a foot
+  //   letgo — anything → none: the reader scrolled, asked for older
+  //           messages, or the place is gone or hidden; never refused
+  const FOOT_MOVES = ['land', 'letgo'];
+  function footMove(v, move, arg) {
+    if (FOOT_MOVES.indexOf(move) === -1) throw new Error('foot: no such move ' + move);
+    if (move === 'letgo') return null;
+    const a = arg || {};
+    if (a.kind !== 'card' && a.kind !== 'bubble') throw new Error('foot: land needs a card or a bubble');
+    if (a.id == null || a.id === '') throw new Error('foot: land needs which one');
+    const at = Number(a.at);
+    return { kind: a.kind, id: String(a.id), at: Number.isFinite(at) ? at : null };
+  }
+
   // ── @-mentions: completing the handle you are typing ─────────────────────
   // Mentions are the only way to summon a bot and they work anywhere in a
   // message, so the completion follows the CARET, not the start of the box.
@@ -1948,6 +2175,10 @@
       // the conversation owed one landing at its foot (landPending), or null.
       // Only ever PAGE_TARGET today: a chat that has just arrived.
       land: null,
+      // a landing at the foot that is being kept while late content (a
+      // picture, a formula) grows the conversation (FOOT_MODES), changed only
+      // by moveFoot
+      footKeep: null,
       // 'type' | 'instant' — how a live answer arrives on screen (TYPE_TIP).
       // NOT named `typing`: the public surface is Object.assign'd onto this
       // very object and carries a `typing()` reader, which would eat the field.
@@ -2168,12 +2399,9 @@
       publish: { confirm: false, busy: false, err: '', note: '', link: '' },
       // "+ new chat", which every page with a page chat has and which a project
       // artifact page does NOT (its archive bar already is this control, and two
-      // of them would be two answers to one question).
-      //   confirm  the one-step inline ask, like every other confirm here
-      //   open     true while the "archive ▾" chooser is showing
-      //   list     the set-aside chats, once asked for (GET /page-chat-archive)
-      //   busy     '' when idle, 'new' while starting one, 'i<n>' while opening one
-      newchat: { confirm: false, busy: '', err: '', open: false, list: null, loading: false },
+      // of them would be two answers to one question). One named mode
+      // (NEWCHAT_MODES), changed only by moveNewChat.
+      newchat: newChatIdle(),
       // "continue in council": no confirm (it is a copy — nothing on this page
       // changes and no bot is summoned), so just the in-flight flag, the error,
       // and the link to the chat it made, kept on screen in case the new tab
@@ -2186,6 +2414,9 @@
       // it was asked for from, which gets the focus back when it closes
       commands: null, helpOpen: false, helpFrom: '',
       focused: null,
+      // a character being chosen with an input method (IME_MODES), changed
+      // only by moveIme
+      ime: null,
       // a page with no highlights has no Comments to open on
       tab: CAPS.highlights ? 'comments' : 'chat',
       // 'threads' = the Comments/Page-chat tabs; 'pages' = the library of every
@@ -2194,10 +2425,11 @@
       // `confirm` = the url whose inline "delete page + its chat?" is showing;
       // `rowErr` = a refusal from the companion, shown under the row it is about;
       // `kind`/`tag` = the filter the list is under ('' = everything), which is
-      // remembered per browser; `renaming`/`tagging` = the url whose inline
-      // editor is open (owner only — a guest never sees the affordance)
+      // remembered per browser; `row` = the one row whose inline rename or tag
+      // box is open, and what is typed in it (ROW_EDIT_MODES; owner only — a
+      // guest never sees the affordance), changed only by moveRowEdit
       pages: { list: null, loading: false, err: '', confirm: null, rowErr: null,
-               kind: '', tag: '', renaming: null, tagging: null, pick: 0 },
+               kind: '', tag: '', row: null, pick: 0 },
       // whether this browser is the OWNER of this companion, as the companion
       // itself says (GET /whoami, through the background). Renaming and tagging
       // are the owner's; a guest is refused and never sees the controls.
@@ -3065,6 +3297,8 @@ ${bubbleShellHtml()}`;
     // foot — reading back is the opposite of that.
     function revealEarlier(target) {
       if (!target || !D.mounted) return false;
+      // older messages asked for: the reader is reading up, not at the foot
+      if (footMode(D.footKeep) !== 'none') moveFoot('letgo');
       const card = D.shadow.querySelector('.card[data-thread="' + cssq(target) + '"]');
       const pane = card && card.closest('.pane');
       let anchor = null, off = 0;
@@ -3632,6 +3866,17 @@ ${bubbleShellHtml()}`;
       if (!text) { note(target, 'no speech was heard', true); return; }
       micInsert(target, text);
     }
+    // Whether the focus is now somewhere other than this box's own composer
+    // (its box, its mic, its Send) — in another box of the drawer, or on the
+    // web page. Nothing focused at all is not moving on.
+    function micMovedOn(box) {
+      const here = D.shadow.activeElement;
+      const comp = box.closest && box.closest('.composer');
+      if (here) return !(comp ? comp.contains(here) : here === box);
+      const doc = box.ownerDocument || document;
+      const page = doc.activeElement;
+      return !!page && page !== doc.body && page !== doc.documentElement && page !== D.host;
+    }
     function micInsert(target, text) {
       const box = composerBox(target);
       if (!box) {
@@ -3645,10 +3890,16 @@ ${bubbleShellHtml()}`;
       const same = box === MIC.box || box === D.shadow.activeElement;
       const [a, b] = same ? [box.selectionStart, box.selectionEnd] : [null, null];
       const out = spliceDictation(box.value, a, b, text);
+      // A reader who has moved on while the words were on their way (typing
+      // in another box, clicking into the web page) keeps the focus where it
+      // is: the words still go into this box, quietly.
+      const movedOn = micMovedOn(box);
       box.value = out.value;
       D.drafts[target] = out.value;
-      box.focus();
-      try { box.setSelectionRange(out.caret, out.caret); } catch (_) { /* not a textarea */ }
+      if (!movedOn) {
+        box.focus();
+        try { box.setSelectionRange(out.caret, out.caret); } catch (_) { /* not a textarea */ }
+      }
       // the ordinary typing path: has-draft, the @-menu, the pill row
       box.dispatchEvent(new Event('input', { bubbles: true }));
       MIC.box = null; MIC.caret = null;
@@ -3960,7 +4211,7 @@ ${bubbleShellHtml()}`;
     // last wrote in it, so it is waiting on the READER now, not on the bots —
     // "ready for review", never "resolved": closing the reader's question is
     // the reader's click and nothing else's.
-    const isAddressed = t => !!(t && t.addressed && !t.resolved);
+    const isAddressed = t => threadStage(t) === 'ready';
     // `extra` rides INSIDE the quote, flowing after the closing curly quote the
     // way the orphan badge always has — a badge in the row beside it would take
     // a flex share and squeeze a three-line quote down to a column.
@@ -3968,7 +4219,7 @@ ${bubbleShellHtml()}`;
     // and the margin have to agree about what was done to the passage — a card
     // that quoted a deletion as if it were a highlight would leave the reader
     // wondering which of the two they were looking at.
-    const isStruck = t => !!(t && t.mark === 'strike');
+    const isStruck = t => threadMark(t) === 'strike';
     const strikeBadge = t => (isStruck(t)
       ? `<span class="badge strike-badge" title="${esc('this passage is struck through — a suggested deletion')}">${
         (t.msgs || []).some(m => m && m.kind !== 'tools' && String(m.text || '').trim())
@@ -4031,7 +4282,7 @@ ${bubbleShellHtml()}`;
     // weight of decision. Striking a passage is a statement about the document;
     // un-striking it is a correction, and it is drawn as one: no red, half the
     // opacity, and the same glyph without its line.
-    const canMark = t => CAPS.strike && D.owner && !t.resolved;
+    const canMark = t => CAPS.strike && D.owner && !isResolved(t);
     const markBtn = t => {
       if (!canMark(t)) return '';
       if (D.marking[t.id]) return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
@@ -4060,7 +4311,7 @@ ${bubbleShellHtml()}`;
     // memory), and not on a FILED thread: a thread the reader has closed is an
     // argument that is over, and the passage is still there to be selected if
     // they want a question out of it after all.
-    const canQuestion = t => D.owner && !t.resolved;
+    const canQuestion = t => D.owner && !isResolved(t);
     const questionBtn = t => {
       if (!canQuestion(t)) return '';
       if (D.questions.busy === t.id) return `<span class="rebtn thr-q busy" aria-hidden="true">◌</span>`;
@@ -4285,7 +4536,7 @@ ${bubbleShellHtml()}`;
     }
 
     function cardHtml(t) {
-      const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
+      const orph = threadStatus(t, D.orphans[t.id]).orphaned;
       const author = threadAuthor(t);
       const ready = isAddressed(t);
       const cls = ['card', ready ? 'ready' : '', orph ? 'orphaned' : '',
@@ -4338,7 +4589,7 @@ ${bubbleShellHtml()}`;
     // to five sentences once that job has drained over the top of it. The
     // card cannot tell and does not need to.
     function resolvedCardHtml(t) {
-      const orph = D.orphans[t.id] != null ? D.orphans[t.id] : !!t.orphaned;
+      const orph = threadStatus(t, D.orphans[t.id]).orphaned;
       const open = !!D.resolvedCards[t.id];
       const author = threadAuthor(t);
       const cls = ['card', 'resolved', open ? 'unfolded' : '', orph ? 'orphaned' : '',
@@ -4775,7 +5026,7 @@ ${bubbleShellHtml()}`;
         showBubble(target);
         const find = () => { const b = bubbleEl(target);
           return b && b.querySelector('.sgcard[data-sg="' + cssq(id) + '"]'); };
-        if (!find() && !B.fan[target]) fanBubble(target);
+        if (!find() && !bubFanned(target)) fanBubble(target);
         const card = find();
         if (!card) return false;
         card.scrollIntoView({ block: 'nearest' });
@@ -5246,17 +5497,19 @@ ${bubbleShellHtml()}`;
     function newChatBtnHtml() {
       if (!canNewChat()) return '';
       const N = D.newchat;
-      if (N.confirm) return '';
+      if (N.mode === 'confirm') return '';
       const n = pageArchive().length;
+      const busy = newChatBusy(N);
+      const shown = N.mode === 'reading' || N.mode === 'list' || N.mode === 'opening';
       return `<button class="archsend newchat" data-act="page-chat-new" type="button"
           title="set this chat aside and start a fresh one — your comments stay, and the old chat is kept"${
-        N.busy ? ' disabled' : ''}>+ new chat</button>`
+        busy ? ' disabled' : ''}>+ new chat</button>`
         + (n ? `<button class="archsend newchatarch" data-act="page-chat-arch" type="button"
-            aria-expanded="${N.open ? 'true' : 'false'}"
+            aria-expanded="${shown ? 'true' : 'false'}"
             title="${esc(`${n} chat${n === 1 ? '' : 's'} set aside on this page`)}"${
-          N.busy ? ' disabled' : ''}>archive ${N.open ? '▴' : '▾'}</button>` : '')
-        + (N.busy === 'new' ? '<span class="rvnote busy">starting a fresh chat…</span>'
-          : N.busy ? '<span class="rvnote busy">opening that chat…</span>' : '')
+          busy ? ' disabled' : ''}>archive ${shown ? '▴' : '▾'}</button>` : '')
+        + (N.mode === 'starting' ? '<span class="rvnote busy">starting a fresh chat…</span>'
+          : N.mode === 'opening' ? '<span class="rvnote busy">opening that chat…</span>' : '')
         + (N.err ? `<span class="rvnote err">${esc(N.err)}</span>` : '');
     }
 
@@ -5265,7 +5518,7 @@ ${bubbleShellHtml()}`;
     // is no.
     function newChatConfirmHtml() {
       const N = D.newchat;
-      if (!N.confirm || !canNewChat()) return '';
+      if (N.mode !== 'confirm' || !canNewChat()) return '';
       return `<div class="reviewrow confirm ncrow">
         <span class="rvq">start a fresh chat here? your comments stay; the old chat is kept in the archive</span>
         <button class="rebtn yes" data-act="page-chat-new-yes" type="button">yes</button>
@@ -5278,17 +5531,17 @@ ${bubbleShellHtml()}`;
     // one you put down.
     function newChatListHtml() {
       const N = D.newchat;
-      if (!N.open || !canNewChat()) return '';
+      if ((N.mode !== 'reading' && N.mode !== 'list' && N.mode !== 'opening') || !canNewChat()) return '';
       let body;
-      if (N.loading) body = `<div class="archnote">reading this page&rsquo;s chats…</div>`;
+      if (N.mode === 'reading') body = `<div class="archnote">reading this page&rsquo;s chats…</div>`;
       else if (N.err) body = `<div class="archnote err">${esc(N.err)}</div>`;
       else if (!N.list || !N.list.length) body = `<div class="archnote">no chats set aside here yet</div>`;
       else {
         body = N.list.slice().reverse().map(row => {
           const name = row.title || row.first || 'an empty chat';
-          return `<button class="archrow${N.busy === 'i' + row.index ? ' busy' : ''}"
+          return `<button class="archrow${N.mode === 'opening' && N.index === row.index ? ' busy' : ''}"
             data-act="page-chat-open" data-index="${row.index}" type="button"${
-            N.busy ? ' disabled' : ''}>
+            newChatBusy(N) ? ' disabled' : ''}>
             <span class="at">${esc(name)}</span>
             <span class="ax">${esc(shortAge(row.archived_at))}${
             row.count ? ` · ${row.count}` : ''}</span></button>`;
@@ -5577,32 +5830,36 @@ ${bubbleShellHtml()}`;
     // The same three moves as openSession, against the page's own archive
     // rather than a council project's: set the chat aside, clear what the old
     // one left behind, and let the record reload put the empty state up.
+    // THE one function that changes D.ime (imeMove refuses the illegal moves)
+    function moveIme(move, el) {
+      D.ime = imeMove(D.ime, move, el);
+      return D.ime;
+    }
+    // THE one function that changes D.newchat (newChatMove refuses the
+    // illegal moves).
+    function moveNewChat(move, arg) {
+      D.newchat = newChatMove(D.newchat, move, arg);
+      return D.newchat;
+    }
     async function startPageChat() {
-      const N = D.newchat;
-      if (N.busy) return;
-      N.busy = 'new'; N.err = ''; N.confirm = false;
+      if (D.newchat.mode !== 'confirm') return;
+      moveNewChat('start');
       render();
       const r = await cb('onPageChatNew')();
-      N.busy = '';
       if (r && r.ok) {
-        N.open = false;
-        N.list = null;                  // the archive has one more in it now
+        moveNewChat('done');            // the archive has one more in it now
         leaveChat();
       } else {
-        N.err = (r && r.error) || 'could not start a fresh chat here';
+        moveNewChat('failed', (r && r.error) || 'could not start a fresh chat here');
       }
       render();
     }
 
     async function loadPageArchive() {
-      const N = D.newchat;
-      if (N.loading) return;
-      N.loading = true; N.err = '';
       render();
       const r = await cb('onPageChatArchive')();
-      N.loading = false;
-      if (r && r.ok) N.list = r.archive || [];
-      else N.err = (r && r.error) || 'the companion did not answer';
+      if (r && r.ok) moveNewChat('read', r.archive || []);
+      else moveNewChat('unread', (r && r.error) || 'the companion did not answer');
       render();
     }
 
@@ -5610,18 +5867,15 @@ ${bubbleShellHtml()}`;
     // is filed in the same motion — so this is never a way of losing the one
     // you are in.
     async function openPageChat(index) {
-      const N = D.newchat;
-      if (N.busy) return;
-      N.busy = 'i' + index; N.err = '';
+      if (D.newchat.mode !== 'list' || !Number.isInteger(index) || index < 0) return;
+      moveNewChat('open', index);
       render();
       const r = await cb('onPageChatOpen')(index);
-      N.busy = '';
       if (r && r.ok) {
-        N.open = false;
-        N.list = null;
+        moveNewChat('done');
         leaveChat();
       } else {
-        N.err = (r && r.error) || 'could not open that chat';
+        moveNewChat('failed', (r && r.error) || 'could not open that chat');
       }
       render();
     }
@@ -5877,8 +6131,8 @@ ${bubbleShellHtml()}`;
     // The rename box carries the name the row is CURRENTLY shown under —
     // emptying it is how a reader takes their own name back off and lets the
     // page call itself whatever it calls itself again.
-    const renameHtml = p => `<div class="pedit rename">
-        <input class="pinput" type="text" value="${esc(p.title || '')}" aria-label="Name for this page"
+    const renameHtml = (p, text) => `<div class="pedit rename">
+        <input class="pinput" type="text" value="${esc(text)}" aria-label="Name for this page"
           maxlength="200" data-act="rename-input" data-url="${esc(p.url)}">
         <button class="rebtn" data-act="rename-save" data-url="${esc(p.url)}" type="button">save</button>
         <button class="rebtn" data-act="rename-no" type="button">cancel</button>
@@ -5893,8 +6147,9 @@ ${bubbleShellHtml()}`;
     // makes the menu below offer every tag in use (pick-from-existing) instead
     // of only completions of the last tag. saveTags splits on commas and drops
     // empties, so the seed costs nothing on the way back.
-    const tagEditHtml = p => `<div class="pedit tags">
-        <input class="pinput" type="text" value="${esc(tagsOfRow(p).join(', ') + (tagsOfRow(p).length ? ', ' : ''))}"
+    const tagSeed = p => tagsOfRow(p).join(', ') + (tagsOfRow(p).length ? ', ' : '');
+    const tagEditHtml = (p, text) => `<div class="pedit tags">
+        <input class="pinput" type="text" value="${esc(text)}"
           aria-label="Tags for this page" maxlength="520" autocomplete="off"
           data-act="tag-input" data-url="${esc(p.url)}">
         <button class="rebtn" data-act="tag-save" data-url="${esc(p.url)}" type="button">save</button>
@@ -5918,8 +6173,10 @@ ${bubbleShellHtml()}`;
       // companion never sees either control, and the companion would refuse
       // them anyway.
       const mine = !!D.owner;
-      const editing = D.pages.renaming != null && sameUrl(D.pages.renaming, p.url);
-      const filing = D.pages.tagging != null && sameUrl(D.pages.tagging, p.url);
+      const row = D.pages.row;
+      const onRow = rowEditMode(row) !== 'none' && sameUrl(row.url, p.url);
+      const editing = onRow && row.kind === 'rename';
+      const filing = onRow && row.kind === 'tag';
       const acts = confirming
         ? `<span class="pconfirm">delete page + its chat?
              <button class="rebtn yes" data-act="page-del-yes" data-url="${esc(p.url)}" type="button">yes</button>
@@ -5932,7 +6189,7 @@ ${bubbleShellHtml()}`;
              title="${esc(EXPORT_ROW_TIP())}" aria-label="${esc(EXPORT_ROW_TIP())}">${OBSIDIAN_SVG}</button>
            <button class="rebtn pdel" data-act="page-del" data-url="${esc(p.url)}" type="button"
              title="Delete this page and its chat" aria-label="Delete this page and its chat">✕</button>`;
-      const edit = mine && editing ? renameHtml(p) : (mine && filing ? tagEditHtml(p) : '');
+      const edit = mine && editing ? renameHtml(p, row.text) : (mine && filing ? tagEditHtml(p, row.text) : '');
       return `<div class="prow${cur ? ' current' : ''}" data-url="${esc(p.url)}" data-kind="${esc(kindOfRow(p))}">
         <button class="prow-main" data-act="page-open" data-url="${esc(p.url)}" type="button"
           title="${esc(cur ? 'back to this page’s comments' : p.url)}">
@@ -6112,6 +6369,9 @@ ${bubbleShellHtml()}`;
       // wrote in. Nothing else about render() changes — a drawer with no hold
       // behaves precisely as it did.
       holdInView();
+      // …and a landing at the foot that is being kept is made again on what
+      // was just drawn
+      keepFoot();
     }
 
     function harvestDrafts() {
@@ -6191,6 +6451,15 @@ ${bubbleShellHtml()}`;
       if (pane.scrollTop !== keep) pane.scrollTop = keep;
     }
     function keepTyping(paint) {
+      // a character half chosen with an input method: the redraw waits for it
+      // (see IME_MODES); one whose box has lost the focus is over already
+      if (imeMode(D.ime) !== 'none') {
+        if (D.ime.el.isConnected && D.shadow.activeElement === D.ime.el) {
+          if (imeMode(D.ime) === 'composing') moveIme('hold');
+          return;
+        }
+        moveIme('end');
+      }
       const typing = noteTyping();
       harvestDrafts();
       paint();
@@ -7291,8 +7560,8 @@ ${bubbleShellHtml()}`;
       'filter-kind': (btn) => setKindFilter(btn.dataset.kind || ''),
       'filter-tag': (btn) => toggleTagFilter(btn.dataset.tag || ''),
       'filter-clear': () => setFilter('', ''),
-      'page-rename': (btn) => openRowEditor('renaming', btn.dataset.url),
-      'page-tag': (btn) => openRowEditor('tagging', btn.dataset.url),
+      'page-rename': (btn) => openRowEditor('rename', btn.dataset.url),
+      'page-tag': (btn) => openRowEditor('tag', btn.dataset.url),
       'rename-save': (btn) => saveRename(btn.dataset.url),
       'tag-save': (btn) => saveTags(btn.dataset.url),
       'tag-pick': (btn) => completeTag(btn.dataset.tag),
@@ -7421,14 +7690,19 @@ ${bubbleShellHtml()}`;
       'arch-new': () => openSession(null),
       // "+ new chat" on every OTHER page: one inline step, because the reader's
       // real question is whether their comments are about to go with it
-      'page-chat-new': () => { D.newchat.confirm = true; D.newchat.err = ''; render(); },
+      'page-chat-new': () => {
+        if (D.newchat.mode !== 'idle' && D.newchat.mode !== 'list') return;
+        moveNewChat('ask'); render();
+      },
       'continue-council': () => continueInCouncil(),
-      'page-chat-new-no': () => { D.newchat.confirm = false; render(); },
+      'page-chat-new-no': () => { if (D.newchat.mode === 'confirm') moveNewChat('decline'); render(); },
       'page-chat-new-yes': () => startPageChat(),
       'page-chat-arch': () => {
-        const N = D.newchat;
-        N.open = !N.open; N.err = '';
-        if (N.open && !N.list && !N.loading) { loadPageArchive(); return; }
+        const m = D.newchat.mode;
+        if (m === 'reading' || m === 'list') { moveNewChat('hide'); render(); return; }
+        if (m !== 'idle' && m !== 'confirm') return;
+        moveNewChat('show');
+        if (D.newchat.mode === 'reading') { loadPageArchive(); return; }
         render();
       },
       'page-chat-open': (btn) => openPageChat(Number(btn.dataset.index)),
@@ -7628,6 +7902,23 @@ ${bubbleShellHtml()}`;
         if (e.target && e.target.closest && e.target.closest('.composer')) return;
         if (SCROLL_KEYS.indexOf(e.key) !== -1) readerScroll();
       });
+      // …and the same gestures let go of a landing kept at the foot
+      // (D.footKeep), wherever it is: the panel's pane or a bubble's stack. A
+      // mousedown on the scroller itself is a grab of its scroll bar.
+      const footGesture = e => {
+        if (footMode(D.footKeep) === 'none') return;
+        const sc = footScroller(D.footKeep);
+        const t = e.target;
+        if (!sc || !t || !(t === sc || (sc.contains && sc.contains(t)))) return;
+        if (e.type === 'mousedown' && t !== sc) return;
+        if (e.type === 'keydown' && (SCROLL_KEYS.indexOf(e.key) === -1 || (t.closest && t.closest('.composer')))) return;
+        moveFoot('letgo');
+      };
+      for (const type of ['wheel', 'touchmove', 'keydown', 'mousedown']) {
+        D.shadow.addEventListener(type, footGesture, { capture: true, passive: true });
+      }
+      // a picture that finishes loading late grows what is under the landing
+      D.shadow.addEventListener('load', () => keepFoot(), true);
 
       // A CHAT REVEALS ITS OLDER MESSAGES AS THE READER SCROLLS UP to the top
       // of its window (revealIfNearTop). The page chat scrolls in its own
@@ -7662,6 +7953,10 @@ ${bubbleShellHtml()}`;
         }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
+        // a row's name or tags box keeps what is typed in D.pages.row, so a
+        // refresh of the list while the box is not focused does not empty it
+        if (ta && ta.dataset && /^(rename|tag)-input$/.test(ta.dataset.act || '')
+            && rowEditMode(D.pages.row) !== 'none') moveRowEdit('type', { text: ta.value });
         // the artifact's brief lives in D.artifact as it is typed, the way a
         // composer's draft lives in D.drafts: a redraw while the box is not
         // focused (keepTyping only carries a FOCUSED box) must not empty it
@@ -7674,6 +7969,20 @@ ${bubbleShellHtml()}`;
       // covers a focus the reader gives back by hand, e.g. after Esc — and the
       // focus keepTyping gives back after a live refresh of the list, whose
       // rebuilt menu starts out hidden.)
+      // choosing a character with an input method: a redraw asked for in the
+      // meantime is held, and done the moment the character is chosen
+      D.shadow.addEventListener('compositionstart', e => {
+        const el = e.target;
+        if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT')) return;
+        if (imeMode(D.ime) !== 'none') moveIme('end');
+        moveIme('start', el);
+      });
+      D.shadow.addEventListener('compositionend', () => {
+        const was = imeMode(D.ime);
+        if (was === 'none') return;
+        moveIme('end');
+        if (was === 'held') { render(); if (D.view === 'pages') renderPages(); }
+      });
       D.shadow.addEventListener('focusin', e => {
         const el = e.target;
         if (el && el.dataset && el.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(el); }
@@ -7686,6 +7995,10 @@ ${bubbleShellHtml()}`;
 
       // Enter/⌘↩ send rules live below; see the comment at the send branch
       D.shadow.addEventListener('keydown', e => {
+        // A key pressed while choosing a character with an input method is the
+        // input method's: Enter there picks the character, it never sends, and
+        // Esc there drops the half-made character, it never closes anything.
+        if (composingKey(e)) return;
         // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
         // and nothing else. ⌘↩ still sends: finishing a mention is not a
         // reason to hold a finished message back.
@@ -7763,7 +8076,7 @@ ${bubbleShellHtml()}`;
           if (MIC.mode === 'asking' || MIC.mode === 'recording') { e.preventDefault(); micCancel(); return; }
           // Esc peels one layer at a time: whichever popover is open, then the
           // drawer itself
-          if (D.pages.renaming || D.pages.tagging) { closeRowEditors(); return; }
+          if (rowEditMode(D.pages.row) !== 'none') { closeRowEditors(); return; }
           // Esc inside a bubble is about the bubble. It reaches this listener
           // rather than content.js's because the focus is in the bubble's own
           // composer, in this shadow root — and closing it must never fall
@@ -7923,7 +8236,71 @@ ${bubbleShellHtml()}`;
     // paid, once, when the record lands (setPage), the drawer opens, or the
     // reader goes to the tab it is on.
     function landPending() {
-      if (D.land && landAtFoot(D.land)) D.land = null;
+      if (D.land && landAtFoot(D.land)) {
+        const pane = footScroller({ kind: 'card', id: D.land });
+        moveFoot('land', { kind: 'card', id: D.land, at: pane ? pane.scrollTop : null });
+        D.land = null;
+        watchFoot();
+      }
+    }
+
+    // THE one function that changes D.footKeep (footMove refuses the illegal
+    // moves). Letting go also stops watching what was under it.
+    let footRO = null, footSeen = null;
+    function moveFoot(move, arg) {
+      D.footKeep = footMove(D.footKeep, move, arg);
+      if (footMode(D.footKeep) === 'none' && footSeen) {
+        try { footRO.unobserve(footSeen); } catch (_) { /* gone already */ }
+        footSeen = null;
+      }
+      return D.footKeep;
+    }
+    // what the kept landing is ON (the content whose growth re-lands it), and
+    // the scroller it scrolls
+    function footContent(v) {
+      if (!D.mounted || footMode(v) === 'none') return null;
+      if (v.kind === 'card') return D.shadow.querySelector('.card[data-thread="' + cssq(v.id) + '"]');
+      const box = bubbleEl(v.id);
+      return box && box.querySelector('.bstack');
+    }
+    function footScroller(v) {
+      const el = footContent(v);
+      return el ? el.closest(v.kind === 'card' ? '.pane' : '.bbody') : null;
+    }
+    // the content under a kept landing is watched for a change of height (one
+    // ResizeObserver; a redraw draws a new card, so it is watched afresh)
+    function watchFoot() {
+      const el = footContent(D.footKeep);
+      if (el === footSeen) return;
+      try {
+        if (!footRO) footRO = new ResizeObserver(() => keepFoot());
+        if (footSeen) footRO.unobserve(footSeen);
+        footSeen = null;
+        if (el) { footRO.observe(el); footSeen = el; }
+      } catch (_) { /* no ResizeObserver: a picture's load still re-lands it */ }
+    }
+    // whether the kept place is at its foot right now (a card: its foot at
+    // the bottom of its pane; a bubble: its scroller at the end)
+    function footAtFoot(v, sc) {
+      if (v.kind === 'bubble') return sc.scrollHeight - sc.scrollTop - sc.clientHeight < 24;
+      const card = footContent(v);
+      if (!card) return false;
+      return Math.abs(card.getBoundingClientRect().bottom + 8 - sc.getBoundingClientRect().bottom) < 24;
+    }
+    // Land again, if a landing is being kept. A place that is gone, or not
+    // showing (another tab, the bubble shut), or that the reader has scrolled
+    // away from, lets the landing go.
+    function keepFoot() {
+      const v = D.footKeep;
+      if (footMode(v) === 'none' || !D.mounted) return;
+      const sc = footScroller(v);
+      if (!sc) { moveFoot('letgo'); return; }
+      if (v.at != null && Math.abs(sc.scrollTop - v.at) > 2 && !footAtFoot(v, sc)) { moveFoot('letgo'); return; }
+      if (v.kind === 'card') {
+        if (!landAtFoot(v.id)) { moveFoot('letgo'); return; }
+      } else sc.scrollTop = sc.scrollHeight;
+      moveFoot('land', { kind: v.kind, id: v.id, at: sc.scrollTop });
+      watchFoot();
     }
 
     // Arriving at a thread means its TOP is at the top of the pane: the
@@ -7955,7 +8332,7 @@ ${bubbleShellHtml()}`;
       // on the page must always open its card, so the filter stands aside
       // rather than swallowing the click.
       if (D.commenter && !inThread(t, D.commenter)) { D.commenter = ''; changed = true; }
-      if (!t.resolved) return changed;
+      if (!isResolved(t)) return changed;
       if (!D.resolvedOpen) { D.resolvedOpen = true; changed = true; }
       if (!D.resolvedCards[id]) { D.resolvedCards[id] = true; changed = true; }
       if (D.tab !== 'comments') { D.tab = 'comments'; paintTabs(); changed = true; }
@@ -8517,7 +8894,20 @@ ${bubbleShellHtml()}`;
         <textarea rows="2">${esc(ed.text)}</textarea>
         <div class="crow"><span class="hint"></span><button class="cancel" type="button" data-act="edit-cancel">Cancel</button><button class="send" type="button" data-act="edit-save">Save</button></div></div></div>`;
     }
-    const editBox = () => (D.mounted ? D.shadow.querySelector('.composer[data-target="__edit__"] textarea') : null);
+    // THE box the reader is editing in. The panel's panes are drawn even while
+    // the panel is shut, so a message being edited in a bubble has a second,
+    // hidden copy of the box in the panel: the one with the focus is the one,
+    // else the one on show (the bubble's while the panel is shut, the panel's
+    // while it is open). Never simply the first in the page — that was the
+    // hidden copy, and Save saved its text instead of what was typed.
+    function editBox() {
+      if (!D.mounted) return null;
+      const all = [...D.shadow.querySelectorAll('.composer[data-target="__edit__"] textarea')];
+      if (all.length < 2) return all[0] || null;
+      const here = D.shadow.activeElement;
+      if (here && all.indexOf(here) !== -1) return here;
+      return all.find(b => !!(b.closest && b.closest('.bubble')) === !D.opened) || all[0];
+    }
     // what is in the box right now, into the value — a redraw, a save and an
     // input event all read it this way
     function noteEditBox() {
@@ -9154,6 +9544,12 @@ ${bubbleShellHtml()}`;
       if (!t || D.resolving[target]) return;
       const was = !!t.resolved;
       const wasSummary = t.summary;
+      // Either direction ends "ready for review" — the companion's setResolved
+      // does exactly this, so the optimistic copy does too, or a reopened
+      // thread would read "ready" here and "open" everywhere else until the
+      // record came back
+      const wasAddr = { addressed: t.addressed, addressed_by: t.addressed_by, addressed_at: t.addressed_at };
+      delete t.addressed; delete t.addressed_by; delete t.addressed_at;
       if (on) {
         t.resolved = true;
         if (!t.summary) t.summary = localDigest(t);
@@ -9179,6 +9575,7 @@ ${bubbleShellHtml()}`;
         if (now) {
           if (was) now.resolved = true; else delete now.resolved;
           if (wasSummary == null) delete now.summary; else now.summary = wasSummary;
+          for (const k of Object.keys(wasAddr)) if (wasAddr[k] !== undefined) now[k] = wasAddr[k];
         }
         note(target, (r && r.error) || (on ? 'could not resolve that thread' : 'could not reopen that thread'), true);
         return;   // note() renders
@@ -10572,19 +10969,24 @@ ${bubbleShellHtml()}`;
     const toggleTagFilter = tag =>
       setFilter(D.pages.kind, tag.toLowerCase() === D.pages.tag.toLowerCase() ? '' : tag);
 
-    function openRowEditor(which, url) {
+    // THE one function that changes D.pages.row (rowEditMove refuses the
+    // illegal moves)
+    function moveRowEdit(move, arg) {
+      D.pages.row = rowEditMove(D.pages.row, move, arg);
+      return D.pages.row;
+    }
+    function openRowEditor(kind, url) {
       if (!D.owner || !url) return;
-      D.pages.renaming = which === 'renaming' ? url : null;
-      D.pages.tagging = which === 'tagging' ? url : null;
+      const p = (D.pages.list || []).find(r => sameUrl(r.url, url)) || { url };
+      moveRowEdit('open', { kind, url, text: kind === 'rename' ? (p.title || '') : tagSeed(p) });
       D.pages.pick = 0;
       D.pages.rowErr = null;
       renderPages();
       focusRowEditor();
     }
     function closeRowEditors(quiet) {
-      const had = D.pages.renaming || D.pages.tagging;
-      D.pages.renaming = null;
-      D.pages.tagging = null;
+      const had = rowEditMode(D.pages.row) !== 'none';
+      moveRowEdit('close');
       D.pages.pick = 0;
       if (had && !quiet) renderPages();
     }
@@ -10670,6 +11072,7 @@ ${bubbleShellHtml()}`;
       const caret = el.value.length - (rest ? rest.length + 2 : 0);
       el.focus();
       try { el.setSelectionRange(caret, caret); } catch { /* ignore */ }
+      if (rowEditMode(D.pages.row) !== 'none') moveRowEdit('type', { text: el.value });
       D.pages.pick = 0;
       paintTagMenu(el);
     }
@@ -10839,7 +11242,7 @@ ${bubbleShellHtml()}`;
         // the provisional paint, so the old bubble goes without a cancel
         if (isBubbleOpen(NEW_ID)) hideBubble(NEW_ID, true);
         // …and its place is chosen afresh: the offset was from the OLD passage
-        delete B.off[NEW_ID]; delete B.moved[NEW_ID]; delete B.fan[NEW_ID];
+        delete B.off[NEW_ID]; moveBubbleHow(NEW_ID, 'forget');
         D.pending = anchor;
         showBubble(NEW_ID);
         return D;
@@ -11114,7 +11517,7 @@ ${bubbleShellHtml()}`;
       return '';
     }
     function pickRow(t) {
-      const struck = t.mark === 'strike';
+      const struck = isStruck(t);
       const kind = struck ? 'strikeout' : 'comment';
       const note = pickNote(t);
       const what = note ? '“' + note + '”' : (struck ? 'suggested deletion' : 'no note yet');
@@ -11184,18 +11587,15 @@ ${bubbleShellHtml()}`;
       open: [],      // thread ids, OLDEST FIRST: the z-order, and the cap
       el: {},        // threadId -> its .bubble element, while it is open
       off: {},       // threadId -> {dx, dy} from the mark — survives a close
-      moved: {},     // threadId -> true once the READER has dragged it. The
-                     // difference matters: a place we chose may be re-chosen
-                     // when the bubble changes size, a place they chose may not
+      how: {},       // threadId -> who places it, and its stack open or shut:
+                     // ONE value (BUB_PLACES, BUB_STACKS), changed only by
+                     // moveBubbleHow. A place we chose may be re-chosen when
+                     // the bubble changes size, a place they chose may not
       size: {},      // threadId -> {w, h} the reader dragged it to — survives a close
-      fan: {},       // threadId -> true while its stack is fanned open
       conn: {},      // threadId -> {x1,y1,x2,y2} the connector's ends, as last drawn
       note: {},      // threadId -> a brief line in its header ("oldest closed")
       ro: {},        // threadId -> a ResizeObserver on its box (see makeBubbleEl)
       retry: {},     // threadId -> how many times we have waited for its paint
-      grow: {},      // threadId -> true for a bubble that STARTED as a new comment
-                     // (see onBubbleResize): it was placed when it held nothing
-                     // but a composer, and the answer then grows it
       drag: null,    // {id, mode:'move'|'size', …} while a gesture is in flight
       wired: false,
     };
@@ -11212,6 +11612,15 @@ ${bubbleShellHtml()}`;
     const r1 = n => Math.round(n * 10) / 10;
 
     const bubbleEl = id => (id && B.el[id]) || null;
+    // THE one function that changes B.how (bubbleHowMove refuses the illegal
+    // moves)
+    function moveBubbleHow(id, move) {
+      const h = bubbleHowMove(B.how[id], move);
+      if (h) B.how[id] = h; else delete B.how[id];
+      return bubHow(h);
+    }
+    const bubPlace = id => bubHow(B.how[id]).place;
+    const bubFanned = id => bubHow(B.how[id]).stack === 'open';
     // THE ONE BUBBLE THAT IS NOT A THREAD YET. A new comment started from a
     // selection has a passage and a composer but no id until the companion
     // mints one; it goes by the same '__new__' the panel's pending card does,
@@ -11431,7 +11840,7 @@ ${bubbleShellHtml()}`;
     function bubbleWant(t) {
       const all = bubbleEntries(t);
       if (all.length <= BUB_SQUASH_AT) return { cards: all, lip: null };
-      const fanned = !!B.fan[t.id];
+      const fanned = bubFanned(t.id);
       const hidden = all.length - 1;
       const lip = { sig: (fanned ? 'open' : 'shut') + '|' + hidden,
                     make: () => bubbleFanHtml(t.id, fanned, hidden) };
@@ -11478,7 +11887,7 @@ ${bubbleShellHtml()}`;
     // whole HERE, and from then on it is only ever patched around.
     function buildBubble(box, t) {
       const fresh = t.id === NEW_ID;
-      const struck = fresh && t.mark === 'strike';
+      const struck = fresh && threadMark(t) === 'strike';
       box.classList.toggle('bnew', fresh);
       box.setAttribute('aria-label', fresh ? 'new comment' : 'comment');
       box.innerHTML = `
@@ -11520,7 +11929,7 @@ ${bubbleShellHtml()}`;
     function bubbleToFoot(id) {
       const box = bubbleEl(id);
       const body = box && box.querySelector('.bbody');
-      if (body) body.scrollTop = body.scrollHeight;
+      if (body) { body.scrollTop = body.scrollHeight; moveFoot('land', { kind: 'bubble', id, at: body.scrollTop }); watchFoot(); }
       hidePip(id);
       return D;
     }
@@ -11561,7 +11970,7 @@ ${bubbleShellHtml()}`;
       if (res) {
         const html = id === NEW_ID ? ''
           : D.resolving[id] ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
-          : t.resolved
+          : isResolved(t)
             ? `<button class="brebtn breopen" type="button" data-act="reopen" data-target="${esc(id)}"
                 title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`
             : `<button class="brebtn bresolve" type="button" data-act="resolve" data-target="${esc(id)}"
@@ -11764,7 +12173,7 @@ ${bubbleShellHtml()}`;
     // never-re-picked rule exactly as before.
     function onBubbleResize(id) {
       if (!isBubbleOpen(id)) return;
-      if (B.grow[id] && !B.moved[id] && !B.size[id] && !B.drag) {
+      if (bubPlace(id) === 'growing' && !B.size[id] && !B.drag) {
         const box = bubbleEl(id);
         const u = unionRect(markRects(id));
         if (box && u && u.bottom > 0 && u.top < window.innerHeight) {
@@ -11963,7 +12372,7 @@ ${bubbleShellHtml()}`;
       const y = bclamp(BUB_PAD, g.y0 + (e.clientY - g.py), Math.max(BUB_PAD, H - bh - BUB_PAD));
       const home = bubbleCandidates(g.id, bw, bh)[0];
       B.off[g.id] = { dx: x - home.x, dy: y - home.y };
-      B.moved[g.id] = true;          // theirs now: nothing re-picks it
+      moveBubbleHow(g.id, 'drag');   // theirs now: nothing re-picks it
       placeBubble(g.id);
     }
     function onBubbleUp() {
@@ -12065,7 +12474,7 @@ ${bubbleShellHtml()}`;
       try { if (B.ro[who]) B.ro[who].disconnect(); } catch (_) { /* gone already */ }
       delete B.ro[who];
       delete B.retry[who];
-      delete B.grow[who];
+      moveBubbleHow(who, 'close');
       delete B.el[who];
       B.open = B.open.filter(x => x !== who);
       if (B.drag && B.drag.id === who) B.drag = null;
@@ -12093,7 +12502,7 @@ ${bubbleShellHtml()}`;
       delete B.el[from];
       B.el[to] = el;
       B.open = B.open.map(x => (x === from ? to : x));
-      for (const k of ['off', 'moved', 'size', 'fan', 'conn', 'note']) {
+      for (const k of ['off', 'how', 'size', 'conn', 'note']) {
         if (B[k][from] !== undefined) { B[k][to] = B[k][from]; delete B[k][from]; }
       }
       delete B.retry[from];
@@ -12102,7 +12511,7 @@ ${bubbleShellHtml()}`;
       if (g) g.setAttribute('data-thread', to);
       el.setAttribute('data-thread', to);
       el.classList.remove('bnew');
-      B.grow[to] = true;
+      moveBubbleHow(to, 'adopt');
       // keep the caret where it was: a reader who just pressed Enter is still
       // in this box and may well type the next line straight away
       const hadFocus = !!(D.shadow.activeElement && el.contains(D.shadow.activeElement));
@@ -12141,11 +12550,11 @@ ${bubbleShellHtml()}`;
     function fanBubble(id) {
       const who = id || frontBubble();
       if (!who) return D;
-      const opening = !B.fan[who];
-      B.fan[who] = opening;
+      const opening = !bubFanned(who);
+      moveBubbleHow(who, opening ? 'fan' : 'unfan');
       render();
       const el = bubbleEl(who);
-      if (el && !B.moved[who]) {
+      if (el && bubPlace(who) !== 'theirs') {
         B.off[who] = chooseOffset(who, el.offsetWidth || 320, el.offsetHeight || 160);
         placeBubble(who);
       }
@@ -12154,7 +12563,7 @@ ${bubbleShellHtml()}`;
       // and they go back in time by scrolling up from there. Set after the
       // placement is re-picked, because that can change the scroller's height.
       const body = el && el.querySelector('.bbody');
-      if (body && opening) body.scrollTop = body.scrollHeight;
+      if (body && opening) { body.scrollTop = body.scrollHeight; moveFoot('land', { kind: 'bubble', id: who, at: body.scrollTop }); watchFoot(); }
       return D;
     }
     // WHAT A CLICK ON A HIGHLIGHT MEANS, when bubbles are on. Answers true
@@ -12547,7 +12956,8 @@ ${bubbleShellHtml()}`;
           on: bubblesOn(), open: !!box, thread: box ? who : '',
           count: B.open.length, front: frontBubble(),
           z: box ? Number(box.style.zIndex || 0) : 0,
-          fanned: !!B.fan[who], moved: !!B.moved[who], placed: !!B.off[who],
+          fanned: bubFanned(who), moved: bubPlace(who) === 'theirs', placed: !!B.off[who],
+          place: bubPlace(who),
           sized: !!B.size[who],
           offset: B.off[who] ? { ...B.off[who] } : null,
           size: B.size[who] ? { ...B.size[who] } : null,
@@ -12695,6 +13105,8 @@ ${bubbleShellHtml()}`;
   const api = {
     create, authorColor, isBot, HINT, PAGE_TARGET,
     isResolvedThread, isInsertionThread,                    // content.js + test/collapse.test.mjs
+    threadStatus, threadStage, threadMark, stagePaint,      // content.js + test/status.test.mjs
+    THREAD_STAGES, THREAD_MARKS,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
@@ -12705,6 +13117,11 @@ ${bubbleShellHtml()}`;
     msgWindowPlan, msgWindowMove, msgWindowMode,            // test/collapse.test.mjs (the message window)
     MSG_WINDOW, MSG_STEP, MSG_WINDOW_MODES, MSG_WINDOW_MOVES,
     editMove, editMode, isEditOf, EDIT_MODES, EDIT_MOVES,   // test/editbox.test.mjs
+    newChatMove, NEWCHAT_MODES, NEWCHAT_MOVES,              // test/modes.test.mjs
+    rowEditMove, rowEditMode, ROW_EDIT_MODES, ROW_EDIT_MOVES, // test/modes.test.mjs
+    bubbleHowMove, BUB_PLACES, BUB_STACKS, BUB_HOW_MOVES,   // test/modes.test.mjs
+    imeMove, imeMode, composingKey, IME_MODES, IME_MOVES,   // test/compose.test.mjs
+    footMove, footMode, FOOT_MODES, FOOT_MOVES,             // test/footkeep.test.mjs
     mentionToken, mentionCandidates,                        // test/mentions.test.mjs
     slashToken, slashCandidates, SLASH_COMMANDS,            // test/mentions.test.mjs
     FALLBACK_COMMANDS, pluginCommands, helpGroups, mentionHint, HELP_CMD, // test/mentions.test.mjs

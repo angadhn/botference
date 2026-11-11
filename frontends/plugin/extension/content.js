@@ -465,7 +465,7 @@
   // the record says so, 'highlight' for everything else — which is every
   // thread made before the second tool existed, and every thread on an
   // ordinary article, where there is no second tool.
-  const markOf = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
+  const markOf = t => Drawer.threadMark(t);
   let drawer = null;
   // The first-turn context travels once per page and the companion only ever
   // uses it on the session-creating turn (chat.mjs: `first: !sid`). Two
@@ -1299,7 +1299,7 @@
       // and one a bot has answered but the reader has not yet filed is painted
       // amber, so the same glance says which passages are waiting on them
       Anchor.paintOffsets(index, locs[t.id].start, locs[t.id].end, t.id,
-        t.resolved ? true : (t.addressed ? 'ready' : false), markOf(t));
+        Drawer.stagePaint(t), markOf(t));
     }
     // the quiet markers (the owner's own ✎ written into the post): painted
     // from the record, never reported as orphans — a marker that no longer
@@ -1393,7 +1393,7 @@
   // a thread the bots have answered and the reader has not filed: an open
   // thread has had no claim made about it, and a filed one is finished.
   function relocateRewritten(t, raw) {
-    if (!t || !t.addressed || t.resolved) return null;
+    if (!t || Drawer.threadStage(t) !== 'ready') return null;
     const said = Anchor.newWording(t);
     if (!said) return null;
     // the OLD context still applies: a rewrite replaces the passage, not the
@@ -1423,7 +1423,7 @@
   // (the rule itself lives in drawer.js, shared with the thread card)
   const isInsertion = Drawer.isInsertionThread;
   function noteTrack(t, r, was) {
-    if (!t.addressed || Drawer.isResolvedThread(t)) return;
+    if (Drawer.threadStage(t) !== 'ready') return;
     was = String(was || '').trim();
     if (!was && isInsertion(t)) {
       tracks[t.id] = { was: '', insert: true, unique: r.unique !== false, long: false, by: changedBy(t) };
@@ -3822,6 +3822,9 @@
   // Esc closes the drawer wherever the focus is
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape' || !drawer) return;
+    // Esc while choosing a character with an input method drops that
+    // character; it closes nothing
+    if (e.isComposing || e.keyCode === 229) return;
     // one layer at a time: the overlap chooser, then an open lightbox (a figure
     // from a code-block run), then the drawer. The first two are up whether or
     // not the panel is — a chooser can be opened on a dormant page — so they
