@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-11
+
+- **Council: the login page no longer opens the phone keyboard by itself.** The password box used to take the focus as the page loaded, so on a phone the keyboard came up over the page at once. Tap the box to type.
+
 ## 2026-11-10
 
 - **Discuss: a long chat reads like a messaging app.** The page chat and the library chat no longer fold their middle away behind "Show N earlier replies". They open on the newest twenty or so messages; scroll up to the top (or press "Show earlier messages" there) and the next twenty appear above, with the message you were reading kept where it was. A new reply never pushes older ones out of view, and jumping to an older message still finds it. Comment threads fold as before. The extension needs a reload.

@@ -132,7 +132,7 @@ button:hover { background:var(--accent-hover) }
 <form method="POST" action="/auth">
 <h1>Botference council</h1>
 <p>This planning room is password-protected.</p>
-<input type="password" name="password" placeholder="password" autofocus autocomplete="current-password" aria-label="password">
+<input type="password" name="password" placeholder="password" autocomplete="current-password" aria-label="password">
 <input type="hidden" name="next" value="${escHtml(next)}">
 <button>enter</button>
 ${bad ? '<div class="err">wrong password — try again</div>' : ''}
