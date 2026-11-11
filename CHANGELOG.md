@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-11
+
+- **Discuss: comment threads no longer fold either.** A comment thread in the side panel now reads like the page chat: it shows its newest twenty or so messages, and when there are older ones, "Show earlier messages · N more" sits at the top of the thread. Pressing it shows the next twenty above, with the message you were reading kept where it was. Nothing in the middle of a thread is ever hidden, and a new reply never hides anything already on screen. "Show N earlier replies" and "Hide N earlier replies" are gone. Jumping to an older message (a checklist's ↑ source, a suggestion on the page) still opens the thread far enough to show it. The extension needs a reload.
+
 ## 2026-11-10
 
 - **Discuss: a long chat reads like a messaging app.** The page chat and the library chat no longer fold their middle away behind "Show N earlier replies". They open on the newest twenty or so messages; scroll up to the top (or press "Show earlier messages" there) and the next twenty appear above, with the message you were reading kept where it was. A new reply never pushes older ones out of view, and jumping to an older message still finds it. Comment threads fold as before. The extension needs a reload.

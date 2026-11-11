@@ -2112,9 +2112,10 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
 .lightbox img { max-width: 100%; max-height: 100%; background: #fff; border-radius: 8px;
   box-shadow: var(--shadow) }
 
-/* the fold control of a long thread: one quiet line at the FOOT of its
-   messages, under the newest one, deliberately not a card and not a
-   button-looking button — it is a way back into the scrollback */
+/* the line at the TOP of a conversation's window (a chat or a comment
+   thread): "Show earlier messages · N more". One quiet line, deliberately not
+   a card and not a button-looking button — it is a way back into the
+   scrollback. (.showmore is also a long run output's "Show all N lines".) */
 .showmore {
   display: block; width: 100%; margin: 2px 0 6px; padding: 4px 0;
   background: none; border: 0; border-radius: 0;
@@ -2123,22 +2124,7 @@ details.superseded[open] { border-left: 2px dotted var(--muted); padding-left: 8
   text-align: left; cursor: pointer; min-height: 22px;
 }
 .showmore:hover { color: var(--accent); border-bottom-color: var(--accent) }
-/* the same line asking for the opposite thing: quieter still, because folding
-   a thread is housekeeping, not a way back into anything */
-.showmore.fold { opacity: .65; border-bottom-style: dotted }
-.showmore.fold:hover, .showmore.fold:focus-visible { opacity: 1 }
-/* a chat's window: the same quiet line at the TOP of what is drawn, since
-   that is where older messages appear (a chat never folds its middle) */
 .showmore.earlier { margin: 0 0 8px; text-align: center }
-/* where the folded messages were: a hairline with the count on it, so the
-   first message is not read as answered by the last two. Not clickable —
-   the control is the line at the foot. */
-.foldgap {
-  display: flex; align-items: center; gap: 8px; margin: 2px 0 8px;
-  font: 11px/1.4 var(--sans); color: var(--muted); opacity: .8;
-  user-select: none; cursor: default;
-}
-.foldgap::before, .foldgap::after { content: ''; flex: 1 1 auto; border-top: 1px dotted var(--line) }
 
 /* TeX math (KaTeX). katex.min.css is linked into this same shadow root ahead
    of this file; its @font-face rules are inert there, so content.js plants a

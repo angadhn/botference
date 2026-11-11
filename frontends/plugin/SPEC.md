@@ -498,52 +498,41 @@ Contract deltas agreed during live testing — authoritative over the sections a
   links a font-only `katex-fonts.css` into the PAGE document (both web-accessible).
   Obsidian export is unchanged and deliberately so: the raw `$…$` source is what
   reaches the vault, because Obsidian typesets it itself.
-- Folding is the reader's, once they say so: any comment thread with 3+
-  drawn units carries a manual control in the same slot the expander uses —
-  "Hide N earlier replies" when it is open, "Show N earlier replies" when it is
-  not. That slot is the FOOT of the thread's messages (after the last message,
-  above the outbox, streaming block, status chip and composer); see the
-  2026-11-10 amendment. A hand fold is tighter than the automatic one (KEEP_TAIL_SHUT = 1: the
-  root and the newest unit), and the choice outranks the rule for that target
-  for the rest of the session — in memory, per target, cleared with everything
-  else on a page delete. Neither direction is undone by a new reply: a folded
-  thread that gets an answer shows it at the bottom and stays folded, and one
-  opened by hand stays open however long it grows. `collapsePlan(units, manual)`
-  takes undefined (the rule decides) / FOLD_OPEN / FOLD_SHUT and is the whole
-  state machine (test/collapse.test.mjs).
-- Long threads fold: past 3 drawn units a comment thread keeps its
-  root and the last 2 units and hides the rest behind one `.showmore` line at
-  the foot (with a non-clickable `.foldgap` count, "N earlier replies", left in
-  the gap after the root),
-  "Show N earlier replies" — singular "Show 1 earlier reply" when the fold hides
-  exactly one, which a four-unit thread does — N counting messages and not tool
-  rows. A middle that holds no message at all (only tool rows) is not folded, so
-  the line never claims zero. The unit of
-  folding is what the drawer draws — a person's message, or a bot's whole turn
-  (its merged tools row plus every answer in it) — so a tools disclosure can
-  never survive above an answer that was folded away. Expansion is one-way and
-  per-target, in memory for the session (`D.expanded`, cleared with the rest on
-  a page delete); the outbox, streaming blocks and the status chip render after
-  the fold and are therefore always visible. `msgUnits`/`collapsePlan` are pure
-  and unit-tested (test/collapse.test.mjs).
-- Chats do not fold (2026-11-11 amendment). The page chat and the library chat
-  (`isChatTarget`) draw a WINDOW on their newest messages instead, like a
-  messaging app: whole units from the end until they hold about 20 messages
-  (`CHAT_WINDOW`; tool rows are not messages), and only those units are built.
-  A `.showmore.earlier` line, "Show earlier messages · N more", is the first
-  thing in the window when anything older exists; pressing it, scrolling up to
-  within 200px of it, or turning the wheel up on a pane already at its top
-  reveals about 20 more (`CHAT_STEP`), and the first message on screen is kept
-  at the same place (anchor by ts+author, scroll by however far it moved). The
-  window is ANCHORED: per chat one value in `D.chatWin` — absent ('newest') or
-  `{key, at}` ('from', the first shown message) — changed only through
-  `moveChatWindow` (moves pin / reveal / widen / reset; pure arithmetic in
-  `chatWindowPlan`/`chatWindowMove`, test/collapse.test.mjs and
+- Nothing folds (2026-11-11 amendment). Every message list the panel draws —
+  the page chat, the library chat, every comment thread (open, or a resolved
+  card opened) — is a WINDOW on its newest messages, like a messaging app:
+  whole units from the end until they hold about 20 messages (`MSG_WINDOW`;
+  tool rows are not messages), and only those units are built. The unit is
+  what the drawer draws — a person's message, or a bot's whole turn (its
+  merged tools row plus every answer in it) — so a tools disclosure never
+  survives above an answer that is not drawn. A `.showmore.earlier` line,
+  "Show earlier messages · N more" (`data-act="earlier"`), is the first thing
+  in the window when anything older exists; pressing it reveals about 20 more
+  (`MSG_STEP`) and the first message on screen is kept at the same place
+  (anchor by ts+author, scroll by however far it moved). In a chat, scrolling
+  up to within 200px of the line, or turning the wheel up on a pane already
+  at its top, does the same. A comment card is not its own scroller, so in a
+  thread the line is the only way up (scrolling the Comments pane never
+  reveals by itself), and pressing it ends a send-hold, which would otherwise
+  pull the card's newest message back into view. The window is ANCHORED: per
+  target one value in `D.msgWin` — absent ('newest') or `{key, at}` ('from',
+  the first shown message) — changed only through `moveMsgWindow` (moves pin
+  / reveal / widen / reset, `MSG_WINDOW_MOVES`; pure arithmetic in
+  `msgWindowPlan`/`msgWindowMove`, test/collapse.test.mjs and
   test/chatwindow.test.mjs). The first draw pins it, so a reply arriving never
-  moves the top. Jumps to an older message (↑ source, a suggestion's preview)
-  widen it to that message. It resets to the newest stretch on a different
-  page, a different council chat or `leaveChat`, a cleared library, and when
-  the panel is reopened (landing at the foot if the reader had widened it).
+  moves the top and never hides anything already shown — a thread drawn whole
+  stays whole however long it grows while the panel is open. Jumps to an
+  older message (↑ source, a suggestion's preview) widen the window to that
+  message (`widenTo`), in a chat or a thread alike. Every window but the
+  library's resets to the newest stretch on a different page or a page
+  delete; the page chat's on a different council chat or `leaveChat`; the
+  library's when it is cleared; and all of them when the panel is reopened
+  (landing the page chat at its foot if the reader had widened it). The
+  outbox, streaming blocks and the status chip render after the window and
+  are therefore always visible. Until 2026-11-11 comment threads folded their
+  middle instead ("Show N earlier replies" / "Hide N earlier replies",
+  `collapsePlan`, `D.expanded`); that fold, its hand-fold state and its
+  `.foldgap` marker are gone.
 - Export comes in two modes, chosen at the crystal: **Everything** (the note as
   it has always been) and **Comments only** — the reading without the
   conversation. "Comments only" drops every bot-authored message and every
@@ -1714,16 +1703,15 @@ Contract deltas agreed during live testing — authoritative over the sections a
     Page chat needs. Both copies come from the same message text. Not in the
     Pages view, which is about other pages.
   - **Meta and jump.** One quiet line: who wrote it · `n/m done` · the thread's
-    quote or "page chat" (the fold's own line keeps the count). `↑ source`
-    crosses to the right tab, unfolds the thread (`D.expanded → FOLD_OPEN`, or
-    for page chat widens its window to the message —
-    an older list is exactly what a long thread hides), spotlights the card
+    quote or "page chat". `↑ source` crosses to the right tab, widens that
+    conversation's window to the message (`widenTo` — an older list is
+    exactly what a long thread does not draw at first), spotlights the card
     through the existing `focus()`, and flashes the message itself
     (`.reply.tasksrc`). The fold is session state like every other reading
     position in the drawer (`D.tasksOpen`), never persisted.
   - Tests: harness `?selftest=1` (the card appears, newest wins, a revision
     replaces it, a card tick is the same `/tick` as a thread tick and both
-    renderings move, a thread-sourced list and its jump, the fold, the card
+    renderings move, a thread-sourced list and its jump, the card's fold, the card
     disappearing with its list) and `?workspace=1&selftest=1` (a restored list,
     read-only, shown though its message is folded away). Screenshot states:
     `?tasks=1` and `?tasks=1&folded=1`.
@@ -1822,7 +1810,7 @@ plans `/resume` when it is set and `/new` when it is not). So nothing new was
 invented: `POST /project-chat {sid}` sets `session_id`/`session_title` and
 replaces `page_chat` with that session's recent tail; `{new:true}` clears all
 three. What renders under the archive bar is an ordinary page record, so the
-fold (head + tail + "Show N earlier replies"), the composer and the streaming
+window on the newest messages, the composer and the streaming
 are untouched.
 
 Restored messages (`restored:true`) came out of a session record, not out of
@@ -3002,7 +2990,7 @@ why the write rule and the snapshot path ride there too.
 reply, with a `.more` disclosure under it in the same grammar as the tools row
 above: a 12px muted `▸ more` button, `aria-expanded`, and a `.more-body` that
 holds the tail's own markdown behind a rail. Both directions (`more` / `less`),
-unlike the thread fold — a reader who opened the long half of one answer is
+unlike the "Show earlier messages" line — a reader who opened the long half of one answer is
 reading it, not committing to it. State is `D.moreOpen[target|ts|more]`,
 session-only, and it survives a re-render exactly as `D.toolsOpen` does.
 
@@ -3019,8 +3007,8 @@ session-only, and it survives a re-render exactly as `D.toolsOpen` does.
 - **A live stream shows the whole answer with the seam stripped** — mid-turn
   there is no settled message to key a fold on, and a marker appearing and then
   vanishing in the preview is worse than no marker at all.
-- **It composes with the long-thread fold** without touching it: the fold works
-  on units, and a folded unit is not drawn at all.
+- **It composes with the newest-messages window** without touching it: the
+  window works on units, and a unit outside it is not drawn at all.
 
 **Everywhere else the text is read.** `views.mjs` (the reading room) and
 `reader.js` (the phone) draw the same split as a `<details class="more">` —
@@ -3034,7 +3022,7 @@ negatives, the three copies, the reading room, the note, and the prompt lines).
 Harness `?more=1&selftest=1` drives the fold in the DOM — head alone, no marker
 in the prose, the disclosure opening and closing, the ordinals not moving, the
 fold surviving a re-render, a fenced marker folding nothing, and the same
-inside a comment thread with the thread's own fold untouched. `?more=1` /
+inside a comment thread with the thread's own window untouched. `?more=1` /
 `?more=open` are the screenshot states.
 
 ### Amendment (2026-08-19, shipped): collateral edits — the changes nobody commented on
@@ -5706,10 +5694,10 @@ claude and then codex had codex answering in claude's words.
   workflow the feature exists for.
 - **`from_thread` and `from_msg` may dangle**, by design. They are provenance,
   not foreign keys — deleting the discussion is the point of the feature.
-- **A suggestion can be inside the long-thread fold.** Four units is a folded
-  thread (`collapsePlan`), so on a conversation that went back and forth the
-  first bot's chip sits behind "Show 1 earlier reply". That is the fold doing
-  its job; the reader opens it to compare the two proposals anyway.
+- **A suggestion can be above a long thread's window.** A thread past about
+  20 messages opens on its newest stretch, so an early bot's chip may sit
+  behind "Show earlier messages". (Until 2026-11-11 a four-unit thread folded
+  its middle, which hid the first bot's chip; nothing folds now.)
 - **A struck thread cannot be filed and then re-struck.** Reopen it first; the
   refusal says so.
 
@@ -7152,7 +7140,7 @@ to police a percentage. It skips (exit 0) with no Chromium, exactly as
   threads, ~66 ms at 300, ~140 ms at 600 — linear, and it is what a Send
   actually costs (a small number of rebuilds; two on the minimal path). The
   designed fix is **windowing**: only the cards near the scroll position are
-  built, the rest are height-reserved placeholders. Per-thread folding and the
+  built, the rest are height-reserved placeholders. The per-thread newest-messages window and the
   closed Resolved archive already do a version of this and are why the number
   is as good as it is. **Designed, not built** — it has to be reconciled with
   the send-hold (`holdInView` needs the held card to be a real node), with
@@ -10919,7 +10907,7 @@ a `page` broadcast that lands in `loadPage` — so:
 ### 5. Click-through
 
 A click on a struck mark or the `<ins>` opens the drawer on the card: the
-chat tab for a page-chat card, the Comments tab (thread unfolded and focused)
+chat tab for a page-chat card, the Comments tab (thread's window widened to it, and focused)
 for a card made in a thread; the card is scrolled into view and flashed with
 the existing ↑-source flash (`.sgcard.tasksrc`, the `.reply.tasksrc`
 animation). The new drawer method is `focusSuggestion(target, ts, id)`. The
@@ -12074,6 +12062,11 @@ Tests: `ownership.test.mjs` (paragraphInsert, `/fte-route` with a new paragraph)
 gear row), blog repo `test_routing.mjs` (the paragraph wire item).
 
 ## Amendment (2026-11-10): the fold control is at the foot, and lands at the newest message
+
+(The panel half of this is superseded by the 2026-11-11 amendments: no
+conversation in the panel folds any more — chats and comment threads are a
+window on their newest messages, with "Show earlier messages" at the TOP.
+The bubble half stands.)
 
 > "When I click on the hover pop ups it always shows as stacked. I think the
 > stack and unstack should just be in the same location, but on the bottom
