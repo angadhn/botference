@@ -2,7 +2,9 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   TURN_MODES,
+  activityFor,
   canMoveTurnMode,
+  keepsActivity,
   engineAccepts,
   engineStoppedNotice,
   moveTurnMode,
@@ -67,5 +69,23 @@ describe("turn state (is a bot working?)", () => {
     assert.equal(restoreUnanswered(["first", "second"], "draft"), "first\n\nsecond\n\ndraft");
     assert.equal(restoreUnanswered(["only"], ""), "only");
     assert.equal(restoreUnanswered([], "draft"), "draft");
+  });
+});
+
+describe("who is busy (the turn's activity detail)", () => {
+  it("only the spinner modes may carry a busy detail", () => {
+    assert.deepEqual(TURN_MODES.filter((m) => keepsActivity(m)), ["starting", "working", "stopping"]);
+  });
+
+  it("a bot cannot be busy while idle or after the engine stopped", () => {
+    assert.equal(activityFor("idle", { who: "claude" }), null);
+    assert.equal(activityFor("engine_stopped", { who: "claude" }), null);
+  });
+
+  it("while working, the detail is kept", () => {
+    const busy = { who: "codex" };
+    assert.equal(activityFor("working", busy), busy);
+    assert.equal(activityFor("stopping", busy), busy);
+    assert.equal(activityFor("working", null), null);
   });
 });

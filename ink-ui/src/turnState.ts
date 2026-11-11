@@ -57,6 +57,18 @@ export function showsSpinner(mode: TurnMode): boolean {
   return mode === "starting" || mode === "working" || mode === "stopping";
 }
 
+/** May the turn carry a "who is busy, doing what" detail in this mode? Only
+ *  while the spinner runs: nobody is busy while idle or once engine_stopped. */
+export function keepsActivity(mode: TurnMode): boolean {
+  return showsSpinner(mode);
+}
+
+/** The rule for the turn's busy detail: a proposed detail is kept only in a
+ *  mode that may carry one; otherwise there is none. */
+export function activityFor<T>(mode: TurnMode, proposed: T | null): T | null {
+  return keepsActivity(mode) ? proposed : null;
+}
+
 export const ENGINE_STOPPED_STATUS =
   "The engine stopped. Press Ctrl+C, then open botference again.";
 

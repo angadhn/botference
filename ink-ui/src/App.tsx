@@ -36,6 +36,8 @@ import {
   canMoveTurnMode,
   engineAccepts,
   engineStoppedNotice,
+  activityFor,
+  keepsActivity,
   moveTurnMode,
   restoreUnanswered,
   showsSpinner,
@@ -166,32 +168,8 @@ import {
 // (type: "slash_commands") so they stay in sync with the canonical
 // dispatcher in core/botference.py.
 
-type BusyTarget = "claude" | "codex" | "all" | "system" | null;
-
-function resolveBusyTarget(input: string, currentRoute: string): BusyTarget {
-  const trimmed = input.trim();
-  if (trimmed.startsWith("@claude")) return "claude";
-  if (trimmed.startsWith("@codex")) return "codex";
-  if (trimmed.startsWith("@all")) return "all";
-  if (trimmed.startsWith("/")) return "system";
-  if (currentRoute === "@claude") return "claude";
-  if (currentRoute === "@codex") return "codex";
-  return "all";
-}
-
-function v2ActivityFromBusyTarget(target: BusyTarget): V2Activity {
-  switch (target) {
-    case "claude":
-      return createV2Activity("claude", "claude");
-    case "codex":
-      return createV2Activity("codex", "codex");
-    case "all":
-      return createV2Activity("all", "all");
-    case "system":
-    case null:
-      return createV2Activity("system", "system");
-  }
-}
+// While the spinner runs but nothing says who is busy yet (e.g. starting).
+const UNKNOWN_ACTIVITY: V2Activity = createV2Activity("system", "system", 0);
 
 // ── Sub-components ─────────────────────────────────────────
 // The transcript Pane and the animated BusyLine live in panes.tsx (imported
@@ -564,8 +542,12 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const unansweredRef = useRef<string[]>([]);
   const ready = turnMode === "idle";
   const [queuedCount, setQueuedCount] = useState(0);
-  const [busyTarget, setBusyTarget] = useState<BusyTarget>(null);
-  const [v2Activity, setV2Activity] = useState<V2Activity | null>(null);
+  // Who is busy, doing what — a detail of the turn, not a second mode: it
+  // exists only while the turn mode runs the spinner (activityFor in
+  // turnState.ts), is dropped by moveTurn() when the turn ends, and changes
+  // only through setActivity() below.
+  const [activity, setActivityState] = useState<V2Activity | null>(null);
+  const activityRef = useRef<V2Activity | null>(null);
   // The one field for "what the mouse does right now" (named modes in
   // mouseMode.ts); changed only through moveMouse() below.
   const [mouseMode, setMouseModeState] = useState<MouseMode>("app_scroll");
@@ -614,8 +596,21 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (move.changed) {
       turnModeRef.current = move.mode;
       setTurnModeState(move.mode);
+      if (!keepsActivity(move.mode) && activityRef.current !== null) {
+        activityRef.current = null;
+        setActivityState(null);
+      }
     }
     return move.changed;
+  }, []);
+  const setActivity = useCallback((update: StateUpdate<V2Activity | null>) => {
+    const proposed = typeof update === "function"
+      ? (update as (prev: V2Activity | null) => V2Activity | null)(activityRef.current)
+      : update;
+    const next = activityFor(turnModeRef.current, proposed);
+    if (next === activityRef.current) return;
+    activityRef.current = next;
+    setActivityState(next);
   }, []);
   const moveQuestion = useCallback((event: QuestionEvent): boolean => {
     const move = moveQuestions(questionsRef.current, event);
@@ -1237,7 +1232,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             break;
           }
 
-          setV2Activity((prev) => updateV2ActivityForStream(prev, msg));
+          setActivity((prev) => updateV2ActivityForStream(prev, msg));
 
           if (msg.kind === "start") {
             streamSegmentsRef.current.set(streamId, createStreamSegmentState());
@@ -1341,8 +1336,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           unansweredRef.current = [];
           setQueuedCount(0);
           setHint("");
-          setBusyTarget(null);
-          setV2Activity(null);
           break;
         case "queue": {
           const pending = typeof msg.pending === "number" ? msg.pending : 0;
@@ -1480,9 +1473,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     const queued = turnModeRef.current !== "idle";
     if (!queued) {
       moveTurn("working");
-      const nextBusyTarget = resolveBusyTarget(stripped, status.route);
-      setBusyTarget(nextBusyTarget);
-      setV2Activity(startV2ActivityFromInput(stripped, status.route));
+      setActivity(startV2ActivityFromInput(stripped, status.route));
       setHint("");
     } else {
       setQueuedCount((prev) => prev + 1);
@@ -1510,7 +1501,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     // Clear attachments after send
     setImageAttachments(new Map());
     nextImageId.current = 1;
-  }, [focusedPane, moveTurn, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
+  }, [focusedPane, moveTurn, setActivity, setCursor, setImageAttachments, setInputText, status.route, status.mode]);
 
   const respondToPermission = useCallback((choice: PermissionChoice) => {
     const proc = bridgeRef.current;
@@ -1696,8 +1687,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         if (proc?.stdin?.writable) {
           if (turnModeRef.current === "idle") {
             moveTurn("working");
-            setBusyTarget("system");
-            setV2Activity(createV2Activity("system", "system"));
+            setActivity(createV2Activity("system", "system"));
           } else {
             setQueuedCount((prev) => prev + 1);
             setHint("Queued project command.");
@@ -1880,8 +1870,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       : "You (@claude/@codex/@all, /help):";
 
   const cursorColor = ready ? THEME.ready : THEME.warning;
-  const activeV2Activity = v2Activity ?? v2ActivityFromBusyTarget(busyTarget);
-  const busyText = formatV2ActivityText(activeV2Activity);
+  const busyText = formatV2ActivityText(activity ?? UNKNOWN_ACTIVITY);
   const selectionHint = MOUSE_SELECTION_HINT;
   const queueHint = queuedCount > 0
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
