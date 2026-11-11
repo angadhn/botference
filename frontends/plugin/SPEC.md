@@ -558,7 +558,7 @@ Contract deltas agreed during live testing — authoritative over the sections a
   "queued…"). Belt and braces, all four: a long-lived port per tab
   (`chrome.runtime.connect`, name `bfp`) whose DISCONNECT is the page's notice
   that the worker died — it reconnects (starting a worker) and refetches; a
-  fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', resumed:true}`
+  fresh worker asks every open tab `{t:'whereami'}`; `{t:'conn', socket:'connected', resumed:true}`
   on every socket (re)open makes each drawer refetch what it may have missed;
   and after any send, checks at 4s and 10s refetch if no event has arrived.
   A page that is visibly waiting (any chat's turn not idle) and hearing nothing
@@ -1280,10 +1280,28 @@ Contract deltas agreed during live testing — authoritative over the sections a
     fresh extension page, which is a fresh worker wake far more often than a tab
     on an article. Now only HTTP may say "offline", and only after `CONN_GRACE`
     (2) failures, each chased up by an automatic recheck at 700ms and 2s; the
-    socket may only ever confirm. The drawer's existing soft state
-    (`connKnown:false` → "connecting…") covers the gap, and a `conn` event
-    clears the banner and refetches with nothing clicked. Shared layer, so
-    articles get it too.
+    socket may only ever confirm. The drawer's soft state ('connecting',
+    "connecting…") covers the gap, and a `conn` event clears the banner and
+    refetches with nothing clicked. Shared layer, so articles get it too.
+  · **One connection mode, one set of words** (2026-11-11). The connection was
+    kept three ways — the worker's socket as closed/connecting/open, content.js
+    relaying true/false, the drawer's `connected` + `connKnown` + `reloadNeeded`
+    with its own words. Now config.js (loaded as a content script ahead of
+    drawer.js, and by the worker, the PDF viewer's injector and the harness)
+    names it once: `CONN_MODES = ['connecting', 'connected', 'offline',
+    'reload']`, the moves `CONN_MOVES` (retry connecting|connected|offline →
+    connecting; reach connecting|connected|offline → connected; fail
+    connecting|connected → offline; unload any → reload, final) through pure
+    `connMove`, and the words `CONN_WORDS` / `CONN_NOTICE` that the header
+    dot, the offline card and the "reload this tab" line all print. The worker
+    keeps its socket in the same list (`wsState`, `moveSocket`) and relays it as
+    `{t:'conn', socket, resumed?}`, `{t:'pong', socket}` and `hello`'s
+    `socket`; content.js keeps only its failure count and relays moves
+    (`setConn('reach'|'fail')`); the drawer keeps the one mode in `D.conn`,
+    changed only by `setConn`, which refuses a move its mode does not allow (a
+    late answer after the extension was reloaded). Retry shows "connecting…"
+    while it re-opens the socket and re-reads the page. test/connmode.test.mjs,
+    test/background-socket.test.mjs.
 
 - **Local PDFs** (`file://`, and the identity that makes them possible).
   The papers people actually annotate are on their own disk. The reason they

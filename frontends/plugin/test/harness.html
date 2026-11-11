@@ -4197,11 +4197,11 @@ window.chrome = {
             helloUrls.push(msg.url);
             // `base` is the companion's own origin, which only the worker knows
             // — the drawer needs it to WRITE a `/files/…` link that opens
-            if (OFFLINE) return { ok: true, known: false, threads: 0, connected: false, index: {}, base: COMPANION_BASE };
+            if (OFFLINE) return { ok: true, known: false, threads: 0, socket: 'offline', index: {}, base: COMPANION_BASE };
             // a page with no record is not "known": it stays dormant on a
             // revisit exactly as a never-annotated page always has
-            if (!freshKnown) return { ok: true, known: false, threads: 0, connected: true, index: {}, base: COMPANION_BASE };
-            return { ok: true, known: true, threads: RECORD.threads.length, connected: true, index: {}, base: COMPANION_BASE };
+            if (!freshKnown) return { ok: true, known: false, threads: 0, socket: 'connected', index: {}, base: COMPANION_BASE };
+            return { ok: true, known: true, threads: RECORD.threads.length, socket: 'connected', index: {}, base: COMPANION_BASE };
           case 'get-index': return companion('GET', '/index');
           case 'api':
             // the proxy only ever talks to the companion; a site adapter that
@@ -4273,7 +4273,7 @@ window.chrome = {
             log('open-options' + (want ? ': ' + want : ''));
             return { ok: true, focus: want };
           }
-          case 'reconnect': setTimeout(() => toContent({ t: 'conn', connected: true }), 300); return { ok: true };
+          case 'reconnect': setTimeout(() => toContent({ t: 'conn', socket: 'connected' }), 300); return { ok: true };
           default: return { ok: false, error: 'unknown ' + (msg && msg.t) };
         }
       })();
@@ -4301,7 +4301,7 @@ window.chrome = {
         postMessage(msg) {
           if (!workerAlive) return;
           if (msg && msg.t === 'ping') {
-            setTimeout(() => port._msg.forEach(fn => { try { fn({ t: 'pong', connected: true }); } catch {} }), 5);
+            setTimeout(() => port._msg.forEach(fn => { try { fn({ t: 'pong', socket: 'connected' }); } catch {} }), 5);
           }
         },
         disconnect() { livePorts.delete(port); },
@@ -4336,6 +4336,7 @@ window.chrome = {
 <script src="../extension/anchor.js"></script>
 <script src="../extension/blockdiff.js"></script>
 <script src="../extension/adapters.js"></script>
+<script src="../extension/config.js"></script>
 <script src="../extension/drawer.js"></script>
 <script src="../extension/content.js"></script>
 
@@ -7435,7 +7436,7 @@ async function selftest() {
 
   check('the drawer starts out connected', !banner());
   // 1. the socket says it is not open. That is not evidence of anything.
-  toContent({ t: 'conn', connected: false });
+  toContent({ t: 'conn', socket: 'offline' });
   await sleep(120);
   check('a socket that is not open does not accuse the companion of being down', !banner());
   // 2. one failed request, then health: still not a verdict
@@ -7452,7 +7453,7 @@ async function selftest() {
   check('…in the header too', /offline/i.test(connText()));
   // 4. …and it heals itself the moment the pipe is back, with nothing clicked
   failCalls = 0;
-  toContent({ t: 'conn', connected: true, resumed: true });
+  toContent({ t: 'conn', socket: 'connected', resumed: true });
   const healed = await until(() => !banner(), 8000);
   check('the banner clears itself when the companion comes back', !!healed);
   check('…without anybody pressing Retry', /connected/i.test(connText()));

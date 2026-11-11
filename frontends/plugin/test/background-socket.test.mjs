@@ -81,7 +81,7 @@ await test('a reconnect leaves the NEW socket in charge when the old one finishe
   await tick(); await tick();
   assert.equal(W.sockets.length, 1, 'one socket opened');
   W.sockets[0].onopen();
-  assert.equal(W.run('wsState'), 'open');
+  assert.equal(W.run('wsState'), 'connected');
 
   W.run('forceReconnect()');
   await tick(); await tick();
@@ -93,7 +93,7 @@ await test('a reconnect leaves the NEW socket in charge when the old one finishe
   assert.equal(W.run('wsState'), 'connecting', 'and still connecting, not closed');
   assert.equal(W.run('retryTimer'), null, 'no second retry was scheduled on top of it');
   fresh.onopen();
-  assert.equal(W.run('wsState'), 'open');
+  assert.equal(W.run('wsState'), 'connected');
   assert.equal(W.sockets.length, 2, 'no third socket');
   W.run('if (retryTimer) clearTimeout(retryTimer)');
 });
@@ -109,7 +109,7 @@ await test("the old socket's late error cannot close the new one", async () => {
   await tick();
   assert.equal(W.sockets[1].closed, false);
   W.sockets[1].onopen();
-  assert.equal(W.run('wsState'), 'open');
+  assert.equal(W.run('wsState'), 'connected');
 });
 
 await test('the CURRENT socket closing still reports offline and retries, exactly as before', async () => {
@@ -119,10 +119,31 @@ await test('the CURRENT socket closing still reports offline and retries, exactl
   W.sockets[0].onopen();
   W.sent.length = 0;
   W.sockets[0].onclose();
-  assert.equal(W.run('wsState'), 'closed');
+  assert.equal(W.run('wsState'), 'offline');
   assert.equal(W.run('ws'), null);
   assert.notEqual(W.run('retryTimer'), null, 'a retry is scheduled');
   W.run('clearTimeout(retryTimer); retryTimer = null');
+});
+
+await test("the socket's state is the connection's one list, and every tab hears it as is", async () => {
+  const W = boot();
+  assert.deepEqual([...W.run('CFG.CONN_MODES')], ['connecting', 'connected', 'offline', 'reload']);
+  W.run("registerTab(7, 'https://example.com/a')");   // one tab to tell
+  W.run('ensureSocket()');
+  await tick(); await tick();
+  assert.equal(W.run('wsState'), 'connecting');
+  W.sent.length = 0;
+  W.sockets[0].onopen();
+  assert.equal(W.run('wsState'), 'connected');
+  assert.ok(W.sent.some(m => m.t === 'conn' && m.socket === 'connected' && m.resumed === true),
+    'the tabs are told, in the same words: ' + JSON.stringify(W.sent));
+  assert.ok(!W.sent.some(m => 'connected' in m), 'no second vocabulary beside it');
+  W.sent.length = 0;
+  W.sockets[0].onclose();
+  assert.ok(W.sent.some(m => m.t === 'conn' && m.socket === 'offline'));
+  assert.throws(() => W.run("moveSocket('fail')"), /cannot fail while offline/, 'an illegal move is refused');
+  assert.equal(W.run('wsState'), 'offline');
+  W.run('if (retryTimer) clearTimeout(retryTimer); retryTimer = null');
 });
 
 console.log(`\nbackground-socket: ${pass} passed, ${fails.length} failed`);

@@ -73,7 +73,9 @@
   const Anchor = window.BFPAnchor;
   const Drawer = window.BFPDrawer;
   const Adapters = window.BFPAdapters || null;
-  if (!Anchor || !Drawer) return;
+  // config.js: the connection's one list of modes and its words (CONN_MODES)
+  const CFG = window.BFPConfig;
+  if (!Anchor || !Drawer || !CFG) return;
 
   // ---- normUrl: must match background.js and the companion's store.mjs ----
   const STRIP_PARAM = /^(utm_[^=]*|fbclid|gclid)$/i;
@@ -548,7 +550,7 @@
   // There is nothing to repair from here: a content script cannot re-inject
   // itself, and only a reload of the tab puts a live one back. So the only
   // honest behaviour is to notice ONCE, say so ONCE, and go quiet.
-  const RELOAD_NOTE = 'Discuss was updated — reload this tab to reconnect.';
+  const RELOAD_NOTE = CFG.CONN_NOTICE.reload;
   // Chrome's own wording, in the two spellings it has used.
   const isContextGone = e =>
     /extension context (?:was )?invalidated/i.test(String((e && e.message) || e || ''));
@@ -2001,8 +2003,9 @@
   //
   // So: only HTTP may say "offline", and only after it has been given a couple
   // of quick second chances; the socket may only ever say "yes". The drawer
-  // already has the soft state for the in-between — `connKnown:false` renders
-  // "connecting…" rather than a banner — and this keeps it there.
+  // holds the one connection mode (config.js CONN_MODES, D.conn) and its
+  // 'connecting' is the soft state for the in-between; this file only relays
+  // moves to it ('reach', 'fail'), and keeps the count of failures in a row.
   const CONN_GRACE = 2;                     // failures tolerated before the verdict
   const CONN_RETRY_MS = [700, 2000];        // …each one chased up, quickly
   let connFails = 0;
@@ -2012,13 +2015,13 @@
     if (ok) {
       connFails = 0;
       connRetries = 0;
-      if (drawer) drawer.setConn(true);
+      if (drawer) drawer.setConn('reach');
       return;
     }
     connFails++;
     if (connFails > CONN_GRACE) {
       // genuinely unreachable, and now it is worth saying so
-      if (drawer) drawer.setConn(false);
+      if (drawer) drawer.setConn('fail');
       return;
     }
     // still in grace: say nothing, and go and look again rather than waiting
@@ -2029,9 +2032,10 @@
   }
 
   // A socket coming up is proof the companion is there; a socket being down is
-  // not proof of anything at all, so it never sets the banner.
-  function connSocket(up) {
-    if (up) { connFails = 0; connRetries = 0; if (drawer) drawer.setConn(true); }
+  // not proof of anything at all, so it never sets the banner. `socket` is the
+  // worker's own mode for it, in the same list.
+  function connSocket(socket) {
+    if (socket === 'connected') { connFails = 0; connRetries = 0; if (drawer) drawer.setConn('reach'); }
   }
 
   // ---- what this page is CALLED --------------------------------------------
@@ -2383,8 +2387,8 @@
       if (!r || !r.ok) return;
       noteBase(r);
       // already awake: stay awake, and re-anchor against the new record
-      if (active) { loadPage().then(() => connSocket(!!r.connected)); return; }
-      if (r.known) activate(false).then(() => connSocket(!!r.connected));
+      if (active) { loadPage().then(() => connSocket(r.socket)); return; }
+      if (r.known) activate(false).then(() => connSocket(r.socket));
     });
     return true;
   }
@@ -2437,9 +2441,9 @@
       drawer.mount();
       runReady();
       drawer.setPage({ url: URL_NOW, title: headline(), site: HOSTNAME, threads: [], page_chat: [] });
-      // `connected` here is the SOCKET, which a freshly woken worker has not
+      // `socket` here is the worker's, which a freshly woken worker has not
       // opened yet — so it may confirm, never deny (see connHttp/connSocket)
-      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) { noteBase(r); connSocket(!!r.connected); } });
+      bg({ t: 'hello', url: IDENT_HREF }).then(r => { if (r && r.ok) { noteBase(r); connSocket(r.socket); } });
       await loadPage();
       // a page that already earned its record gets the scraped title, kind and
       // file name refreshed on every visit, exactly as before; a page that
@@ -3598,7 +3602,9 @@
         if (!r.data || r.data.ok === false) return { ok: false, error: (r.data && r.data.error) || 'transcription failed' };
         return { ok: true, text: r.data.text || '', seconds: r.data.seconds };
       },
-      onReconnect: () => bg({ t: 'reconnect' }),
+      // Retry: the socket, and the page — whose answer is what moves the
+      // drawer's 'connecting…' on to connected or back to offline
+      onReconnect: () => { bg({ t: 'reconnect' }); return active ? loadPage() : null; },
       // The quote clicked: go to the mark. On a PDF the mark may be on a page
       // that has not been rendered yet — a strikeout minted for page 2 out of a
       // discussion on page 13 — and then there is nothing painted to scroll to.
@@ -3994,10 +4000,10 @@
     if (msg.t === 'conn') {
       // the socket opening is proof; the socket dropping is not — the
       // companion is very often still answering, and the reconnect is ours
-      connSocket(!!msg.connected);
+      connSocket(msg.socket);
       // a socket that has just come back cannot say what it missed while it
       // was down, so the record is asked instead of assumed
-      if (msg.connected && msg.resumed) resync('socket-resumed');
+      if (msg.socket === 'connected' && msg.resumed) resync('socket-resumed');
       sendResponse({ ok: true });
       return;
     }
@@ -4546,13 +4552,13 @@
       // not barge in: activate(false) restores the highlights and leaves the
       // drawer shut until asked for, exactly as an annotated page does.
       if (PROJECT) {
-        activate(false).then(() => connSocket(!!r.connected));
+        activate(false).then(() => connSocket(r.socket));
         return;
       }
       if (r.known) {
         // an annotated page: wake up and restore the highlights, but do not
         // barge in — the drawer stays shut until asked for
-        activate(false).then(() => connSocket(!!r.connected));
+        activate(false).then(() => connSocket(r.socket));
         return;
       }
       // A text-identified local PDF whose record still sits under its old
@@ -4565,7 +4571,7 @@
         api('GET', '/page?url=' + encodeURIComponent(URL_NOW)).then(pr => {
           const rec = pr && pr.ok
             ? (pr.data && pr.data.page !== undefined ? pr.data.page : pr.data) : null;
-          if (rec && rec.url) activate(false).then(() => connSocket(!!r.connected));
+          if (rec && rec.url) activate(false).then(() => connSocket(r.socket));
         });
       }
     });

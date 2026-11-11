@@ -427,6 +427,11 @@
   const COPY_FAIL = 'this browser would not let the drawer copy';
   const COPY_HOLD = 1400;      // how long the button says so
   const PAGE_TARGET = '__page__';
+  // The connection's one list of modes, its moves and its words live in
+  // config.js (CONN_MODES), shared with the worker and content.js; loaded as a
+  // content script ahead of this file, and required in node for the tests.
+  const CFG = root.BFPConfig
+    || (typeof module !== 'undefined' && typeof require === 'function' ? require('./config.js') : null);
   // The library — one conversation about everything the reader has annotated,
   // as opposed to one page. On the wire it is an ordinary page chat on a page
   // nobody visits (`bfp://library`, the companion's store.mjs owns the
@@ -2300,11 +2305,11 @@
       // the companion's record for the reserved url (null = nothing said in it
       // yet, which is a state and not an error)
       library: { page: null, loading: false, err: '', confirm: false, note: '' },
-      connected: false,
-      connKnown: false,    // false until the background has told us either way
-      // the extension was reloaded under this tab: nothing here can reach the
-      // companion again, however healthy the companion is (see contextLost)
-      reloadNeeded: false,
+      // is this tab in touch with the companion: ONE mode (config.js
+      // CONN_MODES — connecting / connected / offline / reload). 'connecting'
+      // until the first answer either way; 'reload' once the extension was
+      // updated under this tab (see contextLost). Nothing but setConn writes it.
+      conn: 'connecting',
       bridge: '',
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
@@ -4506,11 +4511,11 @@ ${bubbleShellHtml()}`;
     // perfectly and nothing in this tab can reach it — telling that reader to
     // go and start a server they already started is a wild goose chase. One
     // sentence, no steps, no retry button (there is nothing to retry).
-    const offlineHtml = () => D.reloadNeeded
-      ? `<div class="notice"><b>Discuss was updated — reload this tab to reconnect.</b>` +
+    const offlineHtml = () => D.conn === 'reload'
+      ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.reload)}</b>` +
         `<div class="sub">the companion is fine; this tab's copy of the extension is not</div></div>`
-      : (D.connKnown && !D.connected)
-      ? `<div class="notice"><b>Companion offline — the plugin needs its local server:</b>` +
+      : D.conn === 'offline'
+      ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.offline)}</b>` +
         `<ol class="steps">` +
         `<li>open Terminal</li>` +
         `<li>run: <code>botference plugin</code>` +
@@ -6331,13 +6336,11 @@ ${bubbleShellHtml()}`;
 
     function paintConn() {
       if (!D.mounted) return;
-      const off = D.reloadNeeded || (D.connKnown && !D.connected);
-      D.el.conn.classList.toggle('off', off);
-      D.el.conn.classList.toggle('pending', !D.reloadNeeded && !D.connKnown);
+      D.el.conn.classList.toggle('off', D.conn === 'offline' || D.conn === 'reload');
+      D.el.conn.classList.toggle('pending', D.conn === 'connecting');
+      // the same words everywhere (config.js CONN_WORDS); offline is a button
       D.el.conn.querySelector('.ctext').textContent =
-        D.reloadNeeded ? 'reload this tab'
-          : !D.connKnown ? 'connecting…'
-          : (D.connected ? 'connected' : 'companion offline — retry');
+        CFG.CONN_WORDS[D.conn] + (D.conn === 'offline' ? ' — retry' : '');
     }
 
     // ---- the review round strip -----------------------------------------
@@ -7447,7 +7450,7 @@ ${bubbleShellHtml()}`;
       'ptasks-fold': () => { D.ptasksOpen = !D.ptasksOpen; render(); },
       'tasks-jump': () => jumpToTasks(),
       'interrupt': (btn) => doInterrupt(btn),
-      'retry': () => cb('onReconnect')(),
+      'retry': () => reconnect(),
       'warn-dismiss': () => setWarning(''),
       'copy': (btn) => doCopy(btn),
       'edit': (btn) => startEdit(btn),
@@ -7749,7 +7752,7 @@ ${bubbleShellHtml()}`;
         }, { passive: true });
       }
 
-      D.el.conn.addEventListener('click', () => { if (!D.connected) cb('onReconnect')(); });
+      D.el.conn.addEventListener('click', () => { if (D.conn === 'offline') reconnect(); });
 
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
@@ -11172,17 +11175,32 @@ ${bubbleShellHtml()}`;
       render();
       return D;
     }
-    function setConn(on) {
-      const changed = D.connected !== !!on || !D.connKnown;
-      D.connected = !!on; D.connKnown = true;
+    // THE one function that changes D.conn: a move from config.js's
+    // CONN_MOVES ('retry' | 'reach' | 'fail' | 'unload'; true and false are
+    // shorthand for reach and fail). A move the current mode does not allow —
+    // an answer arriving after the extension was reloaded, say — is refused:
+    // nothing changes and it answers false.
+    function setConn(move) {
+      const m = move === true ? 'reach' : move === false ? 'fail' : move;
+      if (!CFG.canConnMove(D.conn, m)) return false;
+      const was = D.conn;
+      D.conn = CFG.connMove(was, m);
       // a turn under way can no longer be vouched for; the next record that
       // arrives says what became of it (setTurns)
-      if (!on) loseTurns();
+      if (D.conn === 'offline' || D.conn === 'reload') loseTurns();
       // …and the library's own record is only read while it is open
-      if (on && changed && turnOf(LIBRARY_TARGET) === 'lost' && D.view === 'pages') loadLibrary();
-      paintConn();
-      if (changed) render();   // the offline notice lives in the panes
-      return D;
+      if (D.conn === 'connected' && was !== 'connected' && turnOf(LIBRARY_TARGET) === 'lost' && D.view === 'pages') loadLibrary();
+      if (D.mounted) {
+        paintConn();
+        if (was !== D.conn) render();   // the offline notice lives in the panes
+      }
+      return true;
+    }
+    // Retry, pressed: 'connecting…' while content.js tries the socket and the
+    // page again, which then says reach or fail
+    function reconnect() {
+      setConn('retry');
+      return cb('onReconnect')();
     }
     function setTheme(t) { if (D.host) { if (t) D.host.setAttribute('data-theme', t); else D.host.removeAttribute('data-theme'); } return D; }
 
@@ -12698,8 +12716,7 @@ ${bubbleShellHtml()}`;
       // not — and, if it never got its styles, takes itself off the page
       // rather than sit there as raw text over somebody's reading.
       contextLost() {
-        D.reloadNeeded = true;
-        loseTurns();
+        setConn('unload');
         try { if (detachWatch) detachWatch.disconnect(); } catch (_) { /* gone already */ }
         try { if (headWatch) headWatch.disconnect(); } catch (_) { /* gone already */ }
         detachWatch = headWatch = detachRoot = headRoot = null;
