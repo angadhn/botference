@@ -529,6 +529,66 @@ chat.proc.on('exit', () => setTimeout(() => { console.log('SURVIVED'); process.e
   assert.match(r.stdout, /SURVIVED/, `the process died: ${r.stderr.slice(0, 600)}`);
 });
 
+test('the link to the bots is one named mode: starting → idle → busy → idle → gone', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-modes-link-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'core'), { recursive: true });
+  // a bridge that is ready, answers one turn, then exits
+  fs.writeFileSync(path.join(root, 'core', 'botference_ink_bridge.py'), [
+    'import sys, json, time',
+    'print(json.dumps({"type": "ready"}), flush=True)',
+    'sys.stdin.readline()',
+    'time.sleep(0.2)',
+    'print(json.dumps({"type": "ready"}), flush=True)',
+    'time.sleep(0.3)',
+    'sys.exit(0)',
+  ].join('\n') + '\n');
+  fs.writeFileSync(path.join(root, 'project.json'), '{}');
+  const rd = path.join(root, 'review');
+  fs.mkdirSync(path.join(rd, 'state'), { recursive: true });
+  fs.copyFileSync(path.join(ENGINE, 'chat.mjs'), path.join(rd, 'chat.mjs'));
+  const script = path.join(root, 'drive.mjs');
+  fs.writeFileSync(script, `
+import { BridgeChat, LINK_STATES } from ${JSON.stringify(path.join(rd, 'chat.mjs'))};
+const seen = [];
+const chat = new BridgeChat({ reviewDir: ${JSON.stringify(rd)}, cfg: {}, onEvent: ev => {
+  if (ev.kind === 'turn-start' || ev.kind === 'turn-end' || ev.kind === 'bridge-exit') seen.push(ev.kind + ':' + chat.link);
+} });
+const out = { states: LINK_STATES, before: chat.link, beforeAvailable: chat.available };
+chat.start();
+out.started = chat.link;
+const wait = (cond) => new Promise(r => { const i = setInterval(() => { if (cond()) { clearInterval(i); r(); } }, 20); });
+await wait(() => chat.link === 'idle');
+out.idleReady = chat.ready;
+chat.submit({ mention_id: 'm1', target_id: 'c1', author: 'ada', text: '@claude hi' });
+out.afterSubmit = chat.link;
+await wait(() => chat.link === 'gone');
+out.goneAvailable = chat.available;
+out.refused = chat.setLink('idle');
+out.afterRefused = chat.link;
+out.submitWhenGone = chat.submit({ mention_id: 'm2', target_id: 'c1', author: 'ada', text: '@claude again' });
+out.seen = seen;
+console.log(JSON.stringify(out));
+process.exit(0);
+`);
+  const r = spawnSync(process.execPath, [script], {
+    encoding: 'utf8', timeout: 20000,
+    env: { ...process.env, BOTFERENCE_HOME: root, BOTFERENCE_PROJECT_ROOT: root },
+  });
+  const out = JSON.parse(r.stdout.trim().split('\n').pop() || '{}');
+  assert.deepEqual(out.states, ['off', 'starting', 'idle', 'busy', 'gone'], r.stderr.slice(0, 600));
+  assert.equal(out.before, 'off');
+  assert.equal(out.beforeAvailable, false);
+  assert.equal(out.started, 'starting');
+  assert.equal(out.idleReady, true);
+  assert.equal(out.afterSubmit, 'busy');
+  assert.deepEqual(out.seen, ['turn-start:busy', 'turn-end:idle', 'bridge-exit:gone']);
+  assert.equal(out.goneAvailable, false);
+  assert.equal(out.refused, false, 'nothing leaves gone');
+  assert.equal(out.afterRefused, 'gone');
+  assert.equal(out.submitWhenGone.queued, false);
+});
+
 // ---------------------------------------------------------------- the page
 
 const PAGE_TEX = `\\documentclass{article}

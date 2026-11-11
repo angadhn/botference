@@ -5,6 +5,21 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
+// ---- the link to the bots: ONE mode, changed only through setLink() ----
+//   off       — the bot process has not been started
+//   starting  — started; waiting for its first "ready"
+//   idle      — ready for the next turn
+//   busy      — a turn is in flight
+//   gone      — the bot process exited or could not start (final)
+export const LINK_STATES = ['off', 'starting', 'idle', 'busy', 'gone'];
+const LINK_MOVES = {
+  off: ['starting', 'gone'],
+  starting: ['idle', 'gone'],
+  idle: ['busy', 'gone'],
+  busy: ['idle', 'gone'],
+  gone: [],
+};
+
 export class BridgeChat {
   constructor({ reviewDir, cfg, onEvent }) {
     this.review = reviewDir;
@@ -13,7 +28,7 @@ export class BridgeChat {
     this.queue = [];                // pending turns, one in flight
     this.current = null;            // {target_id, mention_id}
     this.seen = new Set();          // mention_id dedupe across debounce/reload
-    this.ready = false;
+    this.link = 'off';              // one of LINK_STATES; change it only via setLink()
     this.proc = null;
     this.lockFile = path.join(reviewDir, 'state', '.chat-lock');
     // dedupe survives server restarts, but only turn-completed mentions are
@@ -49,6 +64,17 @@ export class BridgeChat {
     // for the explicitly-estimated line above.
     this.prices = { claude: 5.0, codex: 1.25 };
   }
+
+  // the one setter for the link mode: refuses a move the table does not allow
+  setLink(next) {
+    if (next === this.link) return true;
+    if (!LINK_STATES.includes(next) || !LINK_MOVES[this.link].includes(next)) return false;
+    this.link = next;
+    return true;
+  }
+  // read-only views of the mode, for callers (server.mjs reads `available`)
+  get available() { return this.link === 'starting' || this.link === 'idle' || this.link === 'busy'; }
+  get ready() { return this.link === 'idle'; }
 
   // model-switcher state for a late-connecting client (served in /data):
   // the scoped model lists + the current per-agent model/route/context.
@@ -185,7 +211,7 @@ export class BridgeChat {
         this.handle(ev);
       }
     });
-    this.available = true;
+    this.setLink('starting');
     this.proc.stderr.on('data', d => this.onEvent({ kind: 'bridge-log', text: String(d).slice(0, 500) }));
     // writing to a bot process that has already gone (EPIPE) is an error event
     // on its stdin; with no listener it would take the whole review server down
@@ -194,11 +220,11 @@ export class BridgeChat {
       this.onEvent({ kind: 'bridge-log', text: `could not send to the agents: ${String(err && err.message || err).slice(0, 200)}` });
     });
     this.proc.on('error', err => {
-      this.available = false; this.ready = false;
+      this.setLink('gone');
       this.onEvent({ kind: 'bridge-exit', code: -1, error: err.message });
     });
     this.proc.on('exit', code => {
-      this.available = false; this.ready = false;
+      this.setLink('gone');
       this.onEvent({ kind: 'bridge-exit', code });
       try { fs.unlinkSync(this.lockFile); } catch { }
     });
@@ -206,7 +232,7 @@ export class BridgeChat {
 
   handle(ev) {
     if (ev.type === 'ready') {
-      this.ready = true;
+      if (!this.setLink('idle')) return; // a late "ready" after the process is gone
       if (this.current) {
         if (this.current.mention_id) {
           this.completed = [...this.completed, this.current.mention_id].slice(-500);
@@ -374,12 +400,12 @@ This is an instruction about the document as a whole, not a reply to a comment. 
   }
 
   pump() {
-    if (!this.ready || this.current || !this.queue.length) return;
+    if (this.link !== 'idle' || this.current || !this.queue.length) return;
     const t = this.queue.shift();
     // author/routed ride along for usage attribution at turn-end; only
     // target_id/mention_id are echoed to clients (as before)
     this.current = { target_id: t.target_id, mention_id: t.mention_id, author: t.author || null, routed: t.routed || null };
-    this.ready = false;
+    this.setLink('busy');
     this.onEvent({ kind: 'turn-start', target_id: t.target_id, mention_id: t.mention_id,
       author: t.author || null, user_text: t.user_text || null });
     this.send({ type: 'input', text: t.text, attachments: [] });
