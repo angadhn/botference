@@ -518,6 +518,51 @@ class TestNotifyEmission:
         assert not any(e.get("type") == "notify" for e in emitted)
         assert any(e.get("type") == "ready" for e in emitted)
 
+    async def test_queue_moves_through_its_named_states(
+        self, tmp_path, monkeypatch
+    ):
+        # idle -> running -> interrupted -> idle, one field, illegal moves
+        # refused; a Stop while idle changes nothing
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+        monkeypatch.setattr(binkb, "_NOTIFY_MIN_TURN_SECONDS", 0.0)
+        assert binkb.QUEUE_STATES == ("idle", "running", "interrupted")
+        started = asyncio.Event()
+
+        async def handle_input(text, bridge, attachments=None):
+            started.set()
+            await asyncio.Event().wait()  # blocks until cancelled
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        assert not hasattr(queue, "_interrupted")
+        assert queue.state == "idle" and not queue.is_running
+        queue.interrupt()
+        assert queue.state == "idle", "a Stop with nothing running is no move"
+        assert queue._move("interrupted") is False
+        assert queue._move("bogus") is False
+        queue.submit("hello", [])
+        assert queue.state == "running" and queue.is_running
+        assert queue._move("running") is False
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        queue.interrupt()
+        assert queue.state == "interrupted"
+        assert queue.is_running, "an interrupted batch is still winding down"
+        queue.interrupt()
+        assert queue.state == "interrupted"
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert queue.state == "idle" and not queue.is_running
+        assert not any(e.get("type") == "notify" for e in emitted)
+        # the next batch starts fresh: it pings again when it finishes
+        async def quick(text, bridge, attachments=None):
+            pass
+
+        c.handle_input = quick
+        queue.submit("again", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert queue.state == "idle"
+        assert any(e.get("type") == "notify" for e in emitted)
+
     async def test_permission_request_pings_when_enabled(
         self, tmp_path, monkeypatch
     ):

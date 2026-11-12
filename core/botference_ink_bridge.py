@@ -665,6 +665,24 @@ async def _wait_for_turn(
     return should_exit
 
 
+# What the turn queue is doing. One of QUEUE_STATES, kept in
+# InputTurnQueue._state and moved only by InputTurnQueue._move, which refuses
+# a move not in QUEUE_MOVES:
+#   idle        — no batch of turns is running; the next input starts one;
+#   running     — a batch is running (inputs sent meanwhile join it);
+#   interrupted — the batch was interrupted (Stop): what is queued is
+#                 cleared and the turn cancelled, and when the batch ends no
+#                 "the bots have finished" ping is sent — the reader is here.
+# A Stop while idle, or a second one, is no move.
+QUEUE_STATES = ("idle", "running", "interrupted")
+QUEUE_MOVES = frozenset({
+    ("idle", "running"),
+    ("running", "interrupted"),
+    ("running", "idle"),
+    ("interrupted", "idle"),
+})
+
+
 class InputTurnQueue:
     """Serialize user inputs so messages submitted during a turn run next."""
 
@@ -680,7 +698,17 @@ class InputTurnQueue:
         self._pending: deque[QueuedInput] = deque()
         self._runner: asyncio.Task | None = None
         self._current_turn: asyncio.Task | None = None
-        self._interrupted = False
+        self._state = "idle"
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def _move(self, to: str) -> bool:
+        if (self._state, to) not in QUEUE_MOVES:
+            return False
+        self._state = to
+        return True
 
     @property
     def pending_count(self) -> int:
@@ -688,10 +716,7 @@ class InputTurnQueue:
 
     @property
     def is_running(self) -> bool:
-        return (
-            (self._runner is not None and not self._runner.done())
-            or (self._current_turn is not None and not self._current_turn.done())
-        )
+        return self._state != "idle"
 
     def submit(
         self, text: str, attachments: list[dict], watch: str | None = None,
@@ -710,11 +735,11 @@ class InputTurnQueue:
         )
         if was_running:
             self._emit_queue_state()
-        if not self.is_running:
+        if self._move("running"):
             self._runner = asyncio.create_task(self._run())
 
     def interrupt(self) -> None:
-        self._interrupted = True
+        self._move("interrupted")
         cleared = len(self._pending)
         self._pending.clear()
         if self._current_turn is not None and not self._current_turn.done():
@@ -734,8 +759,14 @@ class InputTurnQueue:
         emit({"type": "queue", "pending": len(self._pending)})
 
     async def _run(self) -> None:
+        try:
+            await self._run_batch()
+        finally:
+            self._current_turn = None
+            self._move("idle")
+
+    async def _run_batch(self) -> None:
         batch_started = time.monotonic()
-        self._interrupted = False
         while self._pending:
             item = self._pending.popleft()
             self._emit_queue_state()
@@ -773,7 +804,7 @@ class InputTurnQueue:
         An interrupt means the user is at the keyboard; short batches mean
         they never had a reason to look away.
         """
-        if self._interrupted or elapsed < _NOTIFY_MIN_TURN_SECONDS:
+        if self._state == "interrupted" or elapsed < _NOTIFY_MIN_TURN_SECONDS:
             return
         if not getattr(self._botference, "notify", False):
             return
