@@ -74,3 +74,90 @@ test('a bridge whose process says exit, or whose stream is lost, is closed', asy
   opening.disconnect({ code: 1 });
   assert.equal(opening.phase, 'closed');
 });
+
+// ── the page (happy-dom) ──
+const HOME = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+let HAPPY = true;
+try { await import('happy-dom'); } catch { HAPPY = false; }
+const needsDom = { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' };
+
+async function page(t) {
+  const { GlobalWindow } = await import('happy-dom');
+  const vm = await import('node:vm');
+  const w = new GlobalWindow({ url: 'http://localhost/', width: 1280, height: 900 });
+  t.after(() => w.happyDOM.close());
+  const doc = w.document;
+  const html = fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'index.html'), 'utf8');
+  doc.write(html.replace(/<script[^>]*src=[^>]*><\/script>/g, ''));
+  const posts = [];
+  w.fetch = async (url, opts) => {
+    posts.push({ url, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    return { status: 200, json: async () => ({ ok: true }) };
+  };
+  w.EventSource = class { constructor() { } close() { } };
+  const wsUrls = [];
+  w.WebSocket = class { constructor(url) { wsUrls.push(url); } close() { } send() { } };
+  vm.createContext(w);
+  vm.runInContext(fs.readFileSync(path.join(HOME, 'frontends', 'council', 'assets', 'app.js'), 'utf8'), w);
+  return { w, doc, C: w.__council, posts, wsUrls };
+}
+
+// ── 2. what the tab's stream waits on: one mode, not pendingSwitch + resuming ──
+test('attach modes: the pure move rule refuses illegal moves, and a move into a switch must name its chat', needsDom, async t => {
+  const { C } = await page(t);
+  assert.deepEqual([...C.ATTACH_MODES], ['open', 'switching', 'resuming', 'switching_resuming']);
+  assert.equal('pendingSwitch' in C.state, false, 'the old switch flag is gone');
+  assert.equal('resuming' in C.state, false, 'the old resuming flag is gone');
+  assert.equal(C.attachMove('open', 'switching', 'sidB'), true);
+  assert.equal(C.attachMove('open', 'switching', null), false, 'a switch names the chat it goes to');
+  assert.equal(C.attachMove('open', 'switching_resuming', 'sidB'), false, 'resuming is the server\'s word, never assumed');
+  assert.equal(C.attachMove('resuming', 'switching_resuming', 'sidB'), false);
+  assert.equal(C.attachMove('switching', 'switching_resuming', null), true, 'keeps the chat it has');
+  assert.equal(C.attachMove('switching_resuming', 'resuming', null), true);
+  assert.equal(C.attachMove('open', 'bogus', null), false);
+  assert.equal(C.attachMove('bogus', 'open', null), false);
+  // the setter keeps the target exactly in the switching modes
+  assert.equal(C.state.attachMode, 'open');
+  assert.equal(C.setAttachMode('switching'), false);
+  assert.equal(C.state.attachMode, 'open');
+  assert.equal(C.switchTarget(), null);
+  assert.equal(C.setAttachMode('resuming'), true);
+  assert.equal(C.switchTarget(), null);
+  assert.equal(C.setAttachMode('switching', 'sidX'), true);
+  assert.equal(C.switchTarget(), 'sidX');
+  assert.equal(C.setAttachMode('switching_resuming'), true);
+  assert.equal(C.switchTarget(), 'sidX', 'the target survives the server\'s word');
+  assert.equal(C.setAttachMode('resuming'), true);
+  assert.equal(C.switchTarget(), null, 'leaving the switch drops the target');
+  assert.equal(C.setAttachMode('open'), true);
+});
+
+test('attach modes through a real switch: picked, the process still opening, then settled', needsDom, async t => {
+  const { C, wsUrls } = await page(t);
+  C.handle({ type: 'hello', bridge_id: 'b1' });
+  assert.equal(C.state.attachMode, 'open');
+  C.handle({ type: 'replay_done' });
+  C.switchTo('sidB');
+  assert.equal(C.state.attachMode, 'switching');
+  assert.equal(C.switchTarget(), 'sidB');
+  assert.match(wsUrls[wsUrls.length - 1], /\?chat=sidB$/);
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  assert.equal(C.state.attachMode, 'switching_resuming');
+  C.handle({ type: 'replay_done' });
+  assert.equal(C.state.attachMode, 'switching_resuming', 'the opening chat still waits for its live ready');
+  C.handle({ type: 'clear_panes' });
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.attachMode, 'open', 'the live ready settles it');
+  assert.equal(C.switchTarget(), null);
+  // a reload onto a process still opening: resuming without a switch
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  assert.equal(C.state.attachMode, 'resuming');
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: false });
+  assert.equal(C.state.attachMode, 'open');
+  // a refused chat lets everything go
+  C.switchTo('nope');
+  C.handle({ type: 'hello', bridge_id: 'b2', resuming: true });
+  C.handle({ type: 'route_error', error: 'chat not found' });
+  assert.equal(C.state.attachMode, 'open');
+  assert.equal(C.switchTarget(), null);
+});

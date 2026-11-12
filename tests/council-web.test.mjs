@@ -1578,7 +1578,7 @@ test('sidebar: every project expands and opens its own chats — no "make active
   assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidC$/, 'opens the chat in its own bridge');
   // the controller confirms: the chat's project is now the active one, and it
   // auto-expands — while the project the user collapsed stays collapsed
-  C.state.pendingSwitch = null;
+  C.setAttachMode('open');
   C.handle(projects('p2'));
   assert.equal(C.state.currentSid, 'sidC');
   assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'));
