@@ -912,7 +912,8 @@ function fteLedger(msg) {
     if (msg.op !== 'put' || !msg.entry || typeof msg.entry !== 'object') return { ok: false, error: 'bad op' };
     const e = msg.entry;
     map[id] = {
-      state: ['inflight', 'acked', 'failed'].includes(e.state) ? e.state : 'failed',
+      // config.js FTE_STATES: anything else is kept as 'failed' (may be resent)
+      state: CFG.FTE_STATES.includes(e.state) ? e.state : 'failed',
       authorised: !!e.authorised,
       ack: e.ack && typeof e.ack === 'object' ? e.ack : null,
       url: String(e.url || '').slice(0, 2000),

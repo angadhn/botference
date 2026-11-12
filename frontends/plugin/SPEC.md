@@ -12465,3 +12465,79 @@ yes/no. It still has one writer per side: `store.setOrphaned` (POST /orphan,
 re-anchoring, healing) and the drawer's `setThreadOrphaned` (content.js's
 local copy). **`mark`** (highlight / strike) was already one field with one
 setter (`store.setThreadMark`).
+
+## Amendment (2026-11-12): the last unnamed modes in the plugin
+
+More states that were loose words or piles of yes/no, each now ONE value
+with its modes named in one frozen list, changed through one function that
+refuses an illegal move (throws). Nothing the reader sees changes, except
+where noted.
+
+- **A figure-edit batch** (content.js `fteSend`, the blog editor's "Send
+  changes") — its `state` was written by hand in four places and saved to the
+  worker's ledger. Now `FTE_STATES` = inflight / acked / failed in config.js
+  (shared, because background.js `fteLedger` stores the same word), changed
+  only by `fteBatchMove(entry, move, arg)`; moves send (none | failed |
+  inflight → inflight; an inflight batch still running in THIS script is
+  joined, never resent — the `mine` check), ack (inflight → acked, keeping the
+  ack) and fail (inflight → failed). Read only through `fteState`: a ledger
+  entry from before has the same three words and reads as it did; an unknown
+  word, or an acked entry with no ack, reads as failed (may be sent again).
+  Tests: `test/pagemodes.test.mjs`.
+- **A suggestion card's rendered preview on a book page** (content.js
+  `RP.byCard[id]`) — its `state` was written by hand with no list. Now
+  `RP_CARD_STATES` = queued / pending / ready / failed in blockdiff.js (the
+  preview's pure core, testable in node), changed only by the pure
+  `rpCardMove(card, move, arg)`; moves queue (none → queued), wait (queued |
+  pending → pending: still building, asked again shortly), got (queued |
+  pending → ready, `data` = the preview) and fail (queued | pending | ready →
+  failed, `why`; ready → failed when the page could not place it). Failed is
+  final for the page load, as before. Tests: `test/pagemodes.test.mjs`.
+- **A thread's request out** (the card head's ✓ / ↺ reopen, "not done",
+  highlight ⇄ strike) — was three per-thread yes/no maps, `D.resolving`,
+  `D.addressing`, `D.marking`, so a resolve and a "not done" on the same
+  thread could be in flight together. Now ONE value per thread,
+  `D.threadReq[id]`, one of `THREAD_REQS` = none / resolving / addressing /
+  marking (none is not stored), changed only by `setThreadReq` → the pure
+  `threadReqMove`: none → one of the others (a click), back to none (the
+  answer); anything else throws. A click on a thread whose request is out
+  does nothing, whichever verb it is. The busy ◌ shows on the same button as
+  before. Tests: `test/drawermodes.test.mjs`.
+- **The message line under the library and under the model picker** —
+  `D.library` had a `note` beside an `err` that was sometimes the failure
+  text (from its read) and sometimes a true/false colour switch;
+  `D.models.note` / `err` the same. Now each has ONE `line` =
+  `{ text, tone }`, `tone` one of `LINE_TONES` = plain / bad, written only by
+  `setLine(holder, text, tone)` (an unknown tone throws; an empty line is
+  plain). The library's read failure goes onto its line (the list words its
+  own failure: `loadMove(…, null)`). Seen differently: after a failed read, a
+  good one now clears the red line; before, the old failure text stayed up in
+  grey.
+- **The figure editor's tray outbox** (`test/fixtures/figure-text-editor.js`,
+  the test copy of the blog's `assets/js/figure-text-editor.js`; the blog's
+  own file is ported by hand) — its `state` was written by hand in five
+  places. Now `OUTBOX_STATES` = sending / failed / interrupted, changed only
+  by `moveOutbox(storeState, next, arg)` (`'none'` = no outbox), read through
+  `outboxState`; moves in `OUTBOX_MOVES`: none → sending; sending → failed |
+  interrupted (a reload) | none (delivered); failed | interrupted → sending |
+  none (nothing left to send). Exposed on `FigureTextEditorCore` for
+  `test/pagemodes.test.mjs`. (The editor's own `sending` yes/no beside it is
+  not touched — see the open list.)
+- **The comment status's shadow flags are gone** (replaces "the old flags are
+  kept as a shadow" in "comment status, one field"). Nothing writes
+  `resolved` / `addressed` any more: `store.setThreadStatus` and the
+  drawer's `setThreadStage` strip them; `normalizeThreadStatus` converts a
+  record that has flags and no `status` (resolved outranks ready outranks
+  open) and strips the flags, on read (`readPage`) and again on every
+  `savePage`. `threadStage` (store, drawer) reads the flags only when
+  `status` is missing; `isFiled` in reader.js and the PDF viewer's copy of it
+  do the same. The `_at` / `_by` stamps stay. Everything else reads
+  `threadStage` / `isResolved` / `isAddressed`, or `status`: the library
+  prompt (chat.mjs `libraryPrompt`) now describes `status` and how to read an
+  old file's flags; the PDF viewer's "filed threads are not written out" rule;
+  the harness's fake companion (`stageOf` / `normalizeStatus`, stripped as
+  the real one does). An older drawer or phone page that reads only the flags
+  will see every thread as open until it is reloaded. `test/status.test.mjs`
+  holds a source check that only the conversion path reads `.resolved` /
+  `.addressed` (and server.mjs's mirrored review comment, which is not a
+  thread).

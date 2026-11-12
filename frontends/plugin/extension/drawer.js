@@ -283,9 +283,10 @@
   // the same three names, the same move table, the same refusal, held to the
   // companion's by test/status.test.mjs. A record from before `status` (only
   // the old `resolved` / `addressed` flags) reads by the old rule: resolved
-  // outranks ready outranks open. The companion still writes those flags as a
-  // shadow of the status, for older readers; nothing here reads or writes them
-  // except to keep that shadow true on our local copy.
+  // outranks ready outranks open. Nothing writes those flags any more: the
+  // setter strips them from our local copy, as the companion strips them from
+  // the record. threadStage is their only reader, and only when `status` is
+  // missing.
   const THREAD_STAGES = Object.freeze(['open', 'ready', 'resolved']);
   const THREAD_MOVES = Object.freeze({
     open: Object.freeze(['open', 'ready', 'resolved']),
@@ -298,7 +299,8 @@
     : THREAD_STAGES.indexOf(t.status) >= 0 ? t.status
     : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
   // the stage's own fields: what an optimistic move changes, and what a
-  // refused one puts back (threadStatusFields / restoreThreadStatus)
+  // refused one puts back exactly (threadStatusFields / restoreThreadStatus) —
+  // an old record's flags included, so it is put back as it came
   const STATUS_FIELDS = ['status', 'resolved', 'resolved_at', 'resolved_by', 'addressed', 'addressed_at', 'addressed_by'];
   // THE ONE SETTER on this side — the local copy only; the companion's answer
   // replaces it. Same answers as store.setThreadStatus: { changed } or
@@ -313,8 +315,7 @@
     if (next === 'ready' && by) t.addressed_by = String(by);
     if (next === 'resolved' && by) t.resolved_by = String(by);
     t.status = next;
-    if (next === 'resolved') t.resolved = true; else delete t.resolved;
-    if (next === 'ready') t.addressed = true; else delete t.addressed;
+    delete t.resolved; delete t.addressed;   // the old flags: `status` is the truth
     return { changed: from !== next };
   }
   // An optimistic move the companion then refused is UNDONE, not moved back:
@@ -336,6 +337,28 @@
     if (!t || !!t.orphaned === !!on) return false;
     t.orphaned = !!on;
     return true;
+  }
+  // A THREAD'S REQUEST OUT — the card head's one-click verbs (✓ / ↺ reopen,
+  // "not done", highlight ⇄ strike) each wait on one round trip to the
+  // companion. At most ONE is out per thread, so which one is a single named
+  // value, one of THREAD_REQS, kept in D.threadReq[id] and changed only by
+  // setThreadReq → the pure threadReqMove. (It was three yes/no maps,
+  // D.resolving / D.addressing / D.marking, and a resolve and a "not done" on
+  // the same thread could be in flight together.)
+  //   'none'       — nothing out (the default; never stored)
+  //   'resolving'  — ✓ or ↺ reopen          (POST /resolve)
+  //   'addressing' — "not done"             (POST /addressed)
+  //   'marking'    — highlight ⇄ strike     (POST /mark)
+  // Moves: none → any other (a click), any other → none (the answer). A
+  // second click on a thread whose request is out is refused (throws; the
+  // verbs ask threadReq first and do nothing).
+  const THREAD_REQS = Object.freeze(['none', 'resolving', 'addressing', 'marking']);
+  const threadReqOf = v => (THREAD_REQS.indexOf(v) > 0 ? v : 'none');
+  function threadReqMove(cur, next) {
+    if (THREAD_REQS.indexOf(next) === -1) throw new Error('thread request: no such one ' + next);
+    const from = threadReqOf(cur);
+    if ((from === 'none') === (next === 'none')) throw new Error('thread request: cannot go ' + from + ' → ' + next);
+    return next;
   }
   // …the MARK, its two names (THREAD_MARKS): what was done to the passage
   const THREAD_MARKS = ['highlight', 'strike'];
@@ -1902,6 +1925,23 @@
     e.error = next === 'failed' ? String(error || '') : '';
     return e;
   }
+  // A MESSAGE LINE — the one line of small print under a control that says
+  // how the last thing went: the library's (D.library.line) and the model
+  // picker's (D.models.line). ONE shape, { text, tone }, `tone` one of
+  // LINE_TONES, written only by setLine. (Each was a `note` text beside an
+  // `err` that was sometimes the colour switch and sometimes the text.)
+  //   'plain' — news, or work under way
+  //   'bad'   — something went wrong; drawn in the failure colour
+  // An empty line is always plain.
+  const LINE_TONES = Object.freeze(['plain', 'bad']);
+  const noLine = () => ({ text: '', tone: 'plain' });
+  function setLine(holder, text, tone) {
+    const t = tone == null ? 'plain' : tone;
+    if (LINE_TONES.indexOf(t) === -1) throw new Error('message line: no such tone ' + tone);
+    const words = String(text || '');
+    holder.line = { text: words, tone: words ? t : 'plain' };
+    return holder.line;
+  }
   const LOAD_MODES = Object.freeze(['idle', 'loading', 'loaded', 'failed']);
   const LOAD_MOVES = Object.freeze({ ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] });
   const LOAD_TO = { ask: 'loading', got: 'loaded', lost: 'failed' };
@@ -2543,11 +2583,11 @@
       // a page that person has never been near. setPage clears it for exactly
       // that reason.
       commenter: '',
-      addressing: {},        // threadId -> a "not done" round trip is in flight
       resolvedCards: {},     // threadId -> the full thread under its digest is open
-      resolving: {},         // threadId -> a resolve/reopen is in flight
+      // threadId -> the ONE request out on it (THREAD_REQS: resolving /
+      // addressing / marking), changed only by setThreadReq; absent = none
+      threadReq: {},
       // ---- the strikeout, arrived at rather than chosen ------------------
-      // `marking` is a highlight⇄strike conversion in flight, per thread.
       // `strikes` is the OTHER path — a bot's `strike:` suggestion:
       //   busy      the ts of the reply whose chip is mid-flight
       //   declined  the ts of any suggestion the reader said no to. Per tab and
@@ -2561,7 +2601,6 @@
       //   updated   ts -> true where that chip did not MINT the strike but
       //             rewrote the note on one already there, so the chip can say
       //             which of the two things the reader's click actually did
-      marking: {},
       strikes: { busy: '', declined: [], made: {}, arrived: {}, updated: {} },
       // ---- the question vault -------------------------------------------
       // "This is interesting — make a question of it." One click; a bot writes
@@ -2670,8 +2709,9 @@
       owner: false,
       // the library conversation, which lives under the pages list: `page` is
       // the companion's record for the reserved url (null = nothing said in it
-      // yet, which is a state and not an error)
-      library: { page: null, load: 'idle', err: '', confirm: false, note: '' },
+      // yet, which is a state and not an error). `line` is the one line under
+      // it, { text, tone } (LINE_TONES), written only by setLine.
+      library: { page: null, load: 'idle', confirm: false, line: noLine() },
       // is this tab in touch with the companion: ONE mode (config.js
       // CONN_MODES — connecting / connected / offline / reload). 'connecting'
       // until the first answer either way; 'reload' once the extension was
@@ -2684,7 +2724,9 @@
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
-      models: { current: {}, options: null, status: null, bridge: '', note: '', load: 'idle',
+      // `line`: the one line under the pickers, { text, tone } (LINE_TONES),
+      // written only by setLine
+      models: { current: {}, options: null, status: null, bridge: '', line: noLine(), load: 'idle',
                 effort: null, verbosity: '',
                 // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
                 keys: null,
@@ -4480,17 +4522,17 @@ ${bubbleShellHtml()}`;
     // showing on hover like every other per-row control, because a control
     // that shouted would add its own clutter to the very rows it exists to
     // clear away.
-    const resolveBtn = t => (D.resolving[t.id]
+    const resolveBtn = t => (threadReq(t.id) === 'resolving'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-res" data-act="resolve" data-target="${esc(t.id)}" type="button" title="resolve — it files itself below and the highlight turns green" aria-label="resolve this thread">✓</button>`);
-    const reopenBtn = t => (D.resolving[t.id]
+    const reopenBtn = t => (threadReq(t.id) === 'resolving'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-reopen" data-act="reopen" data-target="${esc(t.id)}" type="button" title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`);
     // …and the same undo one rung lower: "not done" takes a thread OUT of
     // Ready for review and back into the open list. It sits beside the ✓ and
     // not instead of it — the reader may agree (✓, which files it) or disagree
     // (↺, which puts it back in the queue), and both are one click.
-    const notDoneBtn = t => (D.addressing[t.id]
+    const notDoneBtn = t => (threadReq(t.id) === 'addressing'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-notdone" data-act="not-done" data-target="${esc(t.id)}" type="button" title="not done — back to the open list, highlight back to yellow" aria-label="put this thread back in the open list">↺</button>`);
 
@@ -4522,7 +4564,7 @@ ${bubbleShellHtml()}`;
     const canMark = t => CAPS.strike && D.owner && !isResolved(t);
     const markBtn = t => {
       if (!canMark(t)) return '';
-      if (D.marking[t.id]) return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
+      if (threadReq(t.id) === 'marking') return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
       return isStruck(t)
         ? `<button class="rebtn thr-mark back" data-act="set-mark" data-target="${esc(t.id)}" data-mark="highlight" type="button" title="back to an ordinary highlight — the line comes off the passage" aria-label="back to a highlight">S</button>`
         // the line through the glyph is CSS and not a combining character:
@@ -6509,8 +6551,9 @@ ${bubbleShellHtml()}`;
         const msgs = (D.library.page && D.library.page.page_chat) || [];
         const body = msgsHtml(T, msgs) + outboxHtml(T) + streamsHtml(T);
         const has = !!(D.library.page && (msgs.length || (D.outbox[T] || []).length));
-        const note = D.library.note
-          ? `<div class="lib-note${D.library.err ? ' err' : ''}">${esc(D.library.note)}</div>` : '';
+        const ln = D.library.line;
+        const note = ln.text
+          ? `<div class="lib-note${ln.tone === 'bad' ? ' err' : ''}">${esc(ln.text)}</div>` : '';
         const acts = has
           ? `<button class="libact" data-act="lib-export" type="button" title="Write this conversation to Obsidian">Export</button>`
             + (D.library.confirm
@@ -6857,7 +6900,7 @@ ${bubbleShellHtml()}`;
       if (m.bridge === 'disabled') return 'off';
       // a companion that never answered is not the same as a sleeping bridge:
       // say nothing about the agents, the error line already speaks
-      if (m.err && !m.options) return 'unknown';
+      if (m.line.tone === 'bad' && !m.options) return 'unknown';
       if (m.bridge === 'stopped' || !m.options) return 'asleep';
       return 'live';
     }
@@ -7327,11 +7370,11 @@ ${bubbleShellHtml()}`;
       const el = D.el.pop && D.el.pop.querySelector('.pop-hint');
       if (!el) return;
       const m = D.models;
-      el.classList.toggle('err', !!m.err);
+      el.classList.toggle('err', m.line.tone === 'bad');
       // when the agents are asleep the sleep line has already said so; a second
       // line of small print under it would only repeat itself
       const text = isLoading(m) ? 'loading…'
-        : m.note ? m.note
+        : m.line.text ? m.line.text
         : popMode() === 'live' ? 'takes effect on the next turn'
         : '';
       el.textContent = text;
@@ -7343,8 +7386,7 @@ ${bubbleShellHtml()}`;
       setPopover('models');
       D.el.pop.hidden = false;
       if (canLoadMove(D.models, 'ask')) loadMove(D.models, 'ask');
-      D.models.note = '';
-      D.models.err = false;
+      setLine(D.models, '');
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
       let r;
@@ -7355,13 +7397,13 @@ ${bubbleShellHtml()}`;
       if (canLoadMove(D.models, settled)) loadMove(D.models, settled, '', null);
       if (r && r.ok !== false) {
         ingestModels(r);
-        D.models.err = false;
+        // the companion answered: a failure the line still shows no longer stands
+        if (D.models.line.tone === 'bad') setLine(D.models, '');
       } else {
         D.models.options = null;
         D.models.status = null;
         D.models.effort = null;
-        D.models.note = (r && r.error) || 'could not reach the companion';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not reach the companion', 'bad');
       }
       if (popIs('models')) paintModels();
     }
@@ -7472,17 +7514,14 @@ ${bubbleShellHtml()}`;
     const onDocDown = e => { if (!D.host || !D.host.contains(e.target)) closeModels(); };
 
     async function pickModel(agent, model) {
-      D.models.note = 'switching ' + agent + '…';
-      D.models.err = false;
+      setLine(D.models, 'switching ' + agent + '…', 'plain');
       paintModelHint();
       const r = await cb('onSetModel')(agent, model);
       if (r && r.ok === false) {
-        D.models.note = r.error || 'could not switch model';
-        D.models.err = true;
+        setLine(D.models, r.error || 'could not switch model', 'bad');
       } else {
         D.models.current = Object.assign({}, D.models.current, { [agent]: model });
-        D.models.note = agent + ' → ' + model + whenApplied(r);
-        D.models.err = false;
+        setLine(D.models, agent + ' → ' + model + whenApplied(r), 'plain');
       }
       paintModelHint();
     }
@@ -7497,20 +7536,17 @@ ${bubbleShellHtml()}`;
     // agent that has no effort levels, a bridge that died between the GET and
     // the POST) is the message.
     async function pickEffort(agent, level) {
-      D.models.note = agent + ' effort → ' + level + '…';
-      D.models.err = false;
+      setLine(D.models, agent + ' effort → ' + level + '…', 'plain');
       paintModelHint();
       let r;
       try { r = await cb('onSetEffort')(agent, level); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
-        D.models.note = (r && r.error) || 'could not change effort';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change effort', 'bad');
       } else {
         const eff = D.models.effort || (D.models.effort = { current: {}, options: null });
         eff.current = Object.assign({}, eff.current, { [agent]: level });
-        D.models.note = agent + ' effort → ' + level + whenApplied(r);
-        D.models.err = false;
+        setLine(D.models, agent + ' effort → ' + level + whenApplied(r), 'plain');
       }
       syncModels();
     }
@@ -7527,8 +7563,7 @@ ${bubbleShellHtml()}`;
       if (!agent || BILL_POS.indexOf(pos) === -1) return;
       if (pos === 'key' && keyStatus(agent) !== 'set') {
         D.models.keyPending = agent;
-        D.models.note = 'no ' + agent + ' key saved — opening settings…';
-        D.models.err = false;
+        setLine(D.models, 'no ' + agent + ' key saved — opening settings…', 'plain');
         syncModels();
         cb('onOpenOptions')(agent);
         return;
@@ -7540,20 +7575,17 @@ ${bubbleShellHtml()}`;
       // optimistic, like every other switch in here: it has to move under the
       // finger, and it goes back if the companion says no
       k.modes = Object.assign({}, k.modes, { [agent]: pos });
-      D.models.note = agent + ' billing → ' + BILL_LABEL[pos] + '…';
-      D.models.err = false;
+      setLine(D.models, agent + ' billing → ' + BILL_LABEL[pos] + '…', 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetKeyMode')(agent, pos); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         k.modes = Object.assign({}, k.modes, { [agent]: prev });
-        D.models.note = (r && r.error) || 'could not change billing';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change billing', 'bad');
       } else {
-        D.models.note = agent + ' billing → ' + BILL_LABEL[pos]
-          + (r.applies === 'next-restart' ? ' (from the next turn)' : '');
-        D.models.err = false;
+        setLine(D.models, agent + ' billing → ' + BILL_LABEL[pos]
+          + (r.applies === 'next-restart' ? ' (from the next turn)' : ''), 'plain');
       }
       syncModels();
     }
@@ -7570,8 +7602,7 @@ ${bubbleShellHtml()}`;
       if (!pending) return;
       D.models.keyPending = null;
       if (!(k && k[pending] === 'set')) {
-        D.models.note = 'no ' + pending + ' key saved — ' + pending + ' stays on the subscription';
-        D.models.err = false;
+        setLine(D.models, 'no ' + pending + ' key saved — ' + pending + ' stays on the subscription', 'plain');
       }
     }
 
@@ -7616,16 +7647,14 @@ ${bubbleShellHtml()}`;
       if (!level || D.models.verbosity === level) return;
       const prev = D.models.verbosity;
       D.models.verbosity = level;
-      D.models.note = 'replies: ' + level;
-      D.models.err = false;
+      setLine(D.models, 'replies: ' + level, 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetVerbosity')(level); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         D.models.verbosity = prev;
-        D.models.note = (r && r.error) || 'could not change how the bots talk';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change how the bots talk', 'bad');
       }
       syncModels();
     }
@@ -7635,16 +7664,14 @@ ${bubbleShellHtml()}`;
       if (!first || D.models.first_reply === first) return;
       const prev = D.models.first_reply;
       D.models.first_reply = first;
-      D.models.note = first === 'alternate' ? 'first to reply: they take turns' : 'first to reply: ' + (first === 'claude' ? 'Claude' : 'Codex');
-      D.models.err = false;
+      setLine(D.models, first === 'alternate' ? 'first to reply: they take turns' : 'first to reply: ' + (first === 'claude' ? 'Claude' : 'Codex'), 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetFirstReply')(first); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         D.models.first_reply = prev;
-        D.models.note = (r && r.error) || 'could not change who answers first';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change who answers first', 'bad');
       }
       syncModels();
     }
@@ -7657,19 +7684,16 @@ ${bubbleShellHtml()}`;
       if (D.relaying) return;
       D.relaying = true;
       const verb = kind === 'fresh' ? 'restarting' : 'relaying';
-      D.models.note = agent === 'both' ? verb + ' both…' : verb + ' ' + agent + '…';
-      D.models.err = false;
+      setLine(D.models, agent === 'both' ? verb + ' both…' : verb + ' ' + agent + '…', 'plain');
       syncModels();                       // disables every relay button first
       let r;
       try { r = await cb(kind === 'fresh' ? 'onFresh' : 'onRelay')(agent); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.relaying = false;
       if (!r || r.ok === false) {
-        D.models.note = (r && r.error) || 'could not reach the companion';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not reach the companion', 'bad');
       } else {
-        D.models.note = agent === 'both' ? 'both agents relayed' : agent + ' relayed';
-        D.models.err = false;
+        setLine(D.models, agent === 'both' ? 'both agents relayed' : agent + ' relayed', 'plain');
       }
       syncModels();
     }
@@ -7829,7 +7853,7 @@ ${bubbleShellHtml()}`;
       'pages': () => { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); },
       'pages-back': () => showThreads(),
       'lib-export': () => doLibraryExport(),
-      'lib-clear': () => { D.library.confirm = true; D.library.note = ''; renderLibrary(); },
+      'lib-clear': () => { D.library.confirm = true; setLine(D.library, ''); renderLibrary(); },
       'lib-clear-no': () => { D.library.confirm = false; renderLibrary(); },
       'lib-clear-yes': () => doLibraryClear(),
       'page-open': (btn) => openPageRow(btn.dataset.url),
@@ -8622,6 +8646,16 @@ ${bubbleShellHtml()}`;
       if (text) D.notes[key] = { text, err: !!err };
       else delete D.notes[key];
       render();
+    }
+
+    // ---- a thread's request out (THREAD_REQS) -------------------------------
+    // THE one function that changes D.threadReq (threadReqMove refuses a
+    // second request while one is out, and an answer with none out).
+    function threadReq(id) { return threadReqOf(D.threadReq[id]); }
+    function setThreadReq(id, next) {
+      const to = threadReqMove(D.threadReq[id], next);
+      if (to === 'none') delete D.threadReq[id]; else D.threadReq[id] = to;
+      return to;
     }
 
     // ---- a chat's turn (TURN_MODES) ----------------------------------------
@@ -9849,7 +9883,7 @@ ${bubbleShellHtml()}`;
     // is never blank for the frame before the answer comes back.
     async function doResolve(target, on) {
       const t = threadById(target);
-      if (!t || D.resolving[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const was = threadStatusFields(t);
       const wasSummary = t.summary;
       // Either direction ends "ready for review" — the companion's move does
@@ -9867,12 +9901,12 @@ ${bubbleShellHtml()}`;
         // it is still a true account of what the thread said last time, and
         // keeping it is what lets a late summary job land harmlessly.
       }
-      D.resolving[target] = true;
+      setThreadReq(target, 'resolving');
       render();
       let r;
       try { r = await cb('onResolve')(target, !!on); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.resolving[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         // put it back exactly as it was — including a summary we invented
         const now = threadById(target);
@@ -9897,16 +9931,16 @@ ${bubbleShellHtml()}`;
     // both the card and the line on the page back.
     async function doSetMark(target, mark) {
       const t = threadById(target);
-      if (!t || D.marking[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const want = mark === 'strike';
       const was = t.mark;
       if (want) t.mark = 'strike'; else delete t.mark;
-      D.marking[target] = true;
+      setThreadReq(target, 'marking');
       render();
       let r;
       try { r = await cb('onSetMark')(target, want ? 'strike' : 'highlight'); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.marking[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         const now = threadById(target);
         if (now) { if (was) now.mark = was; else delete now.mark; }
@@ -9927,16 +9961,16 @@ ${bubbleShellHtml()}`;
     // with reply-or-resolve as the two ways back out of it.
     async function doNotDone(target) {
       const t = threadById(target);
-      if (!t || D.addressing[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const was = threadStatusFields(t);
       // "not done" moves a READY thread back to open; on any other it is a no-op
       if (threadStage(t) === 'ready') setThreadStage(t, 'open');
-      D.addressing[target] = true;
+      setThreadReq(target, 'addressing');
       render();
       let r;
       try { r = await cb('onNotDone')(target); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.addressing[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         const now = threadById(target);
         if (now) restoreThreadStatus(now, was);
@@ -11402,25 +11436,24 @@ ${bubbleShellHtml()}`;
       const r = await cb('onLibrary')();
       if (r && r.ok !== false) {
         D.library.page = (r.page && r.page.url) ? r.page : null;
-        D.library.err = '';
         loadMove(D.library, 'got');
+        // the companion answered: a failure the line still shows no longer stands
+        if (D.library.line.tone === 'bad') setLine(D.library, '');
         setTurns(r.turns, asked, 'library');
       } else {
-        loadMove(D.library, 'lost', (r && r.error) || 'could not reach the companion');
-        D.library.note = D.library.err;
+        // the list words its own failure, on its one line
+        loadMove(D.library, 'lost', '', null);
+        setLine(D.library, (r && r.error) || 'could not reach the companion', 'bad');
       }
       if (D.view === 'pages') renderLibrary();
     }
 
     async function doLibraryExport() {
-      D.library.note = 'writing the note…';
-      D.library.err = false;
+      setLine(D.library, 'writing the note…');
       renderLibrary();
       const r = await cb('onExportPage')(LIBRARY_URL, 'all');
-      D.library.err = !(r && r.ok !== false);
-      D.library.note = D.library.err
-        ? ((r && r.error) || 'export failed')
-        : 'exported → ' + ((r && r.path) || 'your vault');
+      if (r && r.ok !== false) setLine(D.library, 'exported → ' + ((r && r.path) || 'your vault'));
+      else setLine(D.library, (r && r.error) || 'export failed', 'bad');
       renderLibrary();
     }
 
@@ -11429,19 +11462,16 @@ ${bubbleShellHtml()}`;
     // uses. What comes back is an empty library, not a missing one.
     async function doLibraryClear() {
       D.library.confirm = false;
-      D.library.note = 'clearing…';
-      D.library.err = false;
+      setLine(D.library, 'clearing…');
       renderLibrary();
       const r = await cb('onDeletePage')(LIBRARY_URL);
       if (!r || r.ok === false) {
-        D.library.err = true;
-        D.library.note = (r && r.error) || 'could not clear the library';
+        setLine(D.library, (r && r.error) || 'could not clear the library', 'bad');
         renderLibrary();
         return;
       }
       D.library.page = null;
-      D.library.note = '';
-      D.library.err = false;
+      setLine(D.library, '');
       delete D.outbox[LIBRARY_TARGET];
       delete D.notes[LIBRARY_TARGET];
       moveTurn(LIBRARY_TARGET, 'end');
@@ -12283,7 +12313,7 @@ ${bubbleShellHtml()}`;
       const res = box.querySelector('.bres');
       if (res) {
         const html = id === NEW_ID ? ''
-          : D.resolving[id] ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
+          : threadReq(id) === 'resolving' ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
           : isResolved(t)
             ? `<button class="brebtn breopen" type="button" data-act="reopen" data-target="${esc(id)}"
                 title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`
@@ -13405,6 +13435,8 @@ ${bubbleShellHtml()}`;
     POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
     LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
     OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
+    THREAD_REQS, threadReqMove,
+    LINE_TONES, setLine,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

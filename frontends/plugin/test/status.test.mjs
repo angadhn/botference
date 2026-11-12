@@ -11,9 +11,11 @@
 //     and `addressed` set, as an older companion could leave, is resolved);
 //   · the page's live orphan answer outranks the record's;
 //   · the paint a stage wears on the page;
+//   · nothing writes the old `resolved` / `addressed` flags; a record that has
+//     them is converted to `status` and stripped (on read and on save);
 //   · in the drawer (happy-dom): reopening a resolved thread that still had
 //     `addressed` on it reads "open" at once, as the companion will say,
-//     not "ready"; and a failed reopen puts every flag back.
+//     not "ready"; and a failed reopen puts every field back as it came.
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -90,8 +92,8 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
   const t = fresh();
   let r = store.setThreadStatus(t, 'ready', 'claude');
   ok('open → ready changes it', r.changed && !r.refused);
-  eq('…status, shadow flag and stamps', [t.status, t.addressed, t.addressed_by, typeof t.addressed_at, 'resolved' in t],
-    ['ready', true, 'claude', 'string', false]);
+  eq('…status and stamps, and no old flag beside them', [t.status, 'addressed' in t, t.addressed_by, typeof t.addressed_at, 'resolved' in t],
+    ['ready', false, 'claude', 'string', false]);
   const firstAt = t.addressed_at;
   r = store.setThreadStatus(t, 'ready', 'codex');
   ok('ready → ready is allowed, not a change of stage', !r.refused && r.changed === false);
@@ -99,8 +101,8 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
   ok('…at a stamp of its own', typeof t.addressed_at === 'string' && t.addressed_at >= firstAt);
   r = store.setThreadStatus(t, 'resolved', 'reader');
   eq('ready → resolved: the claim is spent, the filing stamped',
-    [r.changed, t.status, t.resolved, t.resolved_by, 'addressed' in t, 'addressed_at' in t, 'addressed_by' in t],
-    [true, 'resolved', true, 'reader', false, false, false]);
+    [r.changed, t.status, 'resolved' in t, t.resolved_by, 'addressed' in t, 'addressed_at' in t, 'addressed_by' in t],
+    [true, 'resolved', false, 'reader', false, false, false]);
   const before = JSON.stringify(t);
   r = store.setThreadStatus(t, 'ready', 'claude');
   ok('resolved → ready is REFUSED', !!r.refused && r.changed === false);
@@ -118,8 +120,11 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
   // the drawer's twin answers the same on the same moves
   const d = fresh();
-  ok('drawer: open → ready', D.setThreadStage(d, 'ready', 'claude').changed && d.status === 'ready' && d.addressed === true);
-  ok('drawer: ready → resolved', D.setThreadStage(d, 'resolved').changed && d.status === 'resolved' && d.resolved === true && !('addressed' in d));
+  ok('drawer: open → ready', D.setThreadStage(d, 'ready', 'claude').changed && d.status === 'ready' && !('addressed' in d));
+  ok('drawer: ready → resolved', D.setThreadStage(d, 'resolved').changed && d.status === 'resolved' && !('resolved' in d) && !('addressed' in d));
+  const oldD = { id: 'od', resolved: true, addressed: true, msgs: [] };
+  ok('drawer: a move on an old local copy strips its flags', D.setThreadStage(oldD, 'open').changed
+    && oldD.status === 'open' && !('resolved' in oldD) && !('addressed' in oldD));
   const snap = D.threadStatusFields(d);
   ok('drawer: resolved → ready refused', !!D.setThreadStage(d, 'ready').refused && d.status === 'resolved');
   ok('drawer: resolved → open', D.setThreadStage(d, 'open').changed && d.status === 'open' && !('resolved' in d));
@@ -140,7 +145,7 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
   const a = page.threads[0];
   store.setThreadStatus(a, 'resolved', 'reader');
   store.appendMsg(page, 'a', { author: 'claude', text: 'one more thing' });
-  eq('a bot answering a filed thread: reopened, then ready', [a.status, a.addressed, 'resolved' in a, a.addressed_by], ['ready', true, false, 'claude']);
+  eq('a bot answering a filed thread: reopened, then ready', [a.status, 'addressed' in a, 'resolved' in a, a.addressed_by], ['ready', false, false, 'claude']);
   store.appendMsg(page, 'a', { author: 'claude', kind: 'tools', text: 'Read file' });
   eq('a tools line leaves ready alone', a.status, 'ready');
   store.appendMsg(page, 'a', { author: 'reader', text: 'not quite' });
@@ -177,9 +182,10 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
     [by('o2').addressed_at, by('o2').addressed_by, by('o3').resolved_at, by('o3').resolved_by, by('o3').summary, by('o3').orphaned, by('o3').mark],
     [at, 'claude', at, 'reader', 'settled', true, 'strike']);
   eq('…messages untouched', page.threads.map(t => t.msgs.length), [1, 2, 1, 1, 1]);
-  eq('the impossible pair reads resolved, losing only the contradicting yes/no',
-    [by('o4').resolved, 'addressed' in by('o4'), by('o4').addressed_at, by('o4').addressed_by], [true, false, at, 'codex']);
-  eq('…and `false` flags simply go (absent means no)', ['resolved' in by('o5'), 'addressed' in by('o5')], [false, false]);
+  eq('the impossible pair reads resolved, its stamps kept',
+    [by('o4').status, by('o4').addressed_at, by('o4').addressed_by], ['resolved', at, 'codex']);
+  eq('every old flag is stripped on read, true or false', page.threads.map(t => ['resolved' in t, 'addressed' in t].join()),
+    Array(5).fill('false,false'));
   eq('reading converts in memory: the file on disk is not rewritten',
     [fs.readFileSync(file, 'utf8') === bytes, fs.statSync(file).mtimeMs === mtime], [true, true]);
   // a second read converts the same way, and still writes nothing
@@ -190,18 +196,19 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
   store.savePage(again);
   const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
   eq('the next save writes the status down', disk.threads.map(t => t.status), ['open', 'ready', 'resolved', 'resolved', 'open']);
-  // and what an OLDER reader, which knows only the flags, would make of it
-  const oldRule = t => (t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
-  eq('…with the old flags kept true, so an older reader sees the same stages',
-    disk.threads.map(oldRule), disk.threads.map(t => t.status));
+  eq('…and no old flag at all', disk.threads.filter(t => 'resolved' in t || 'addressed' in t).length, 0);
+  // a stray flag on a record in memory is not saved either
+  again.threads[0].resolved = false; again.threads[1].addressed = true;
+  store.savePage(again);
+  eq('savePage strips a stray flag', JSON.parse(fs.readFileSync(file, 'utf8')).threads.filter(t => 'resolved' in t || 'addressed' in t).length, 0);
   const third = store.readPage(URL_OLD);
   ok('a converted record reads back unchanged', JSON.stringify(third.threads) === JSON.stringify(disk.threads));
   // a record whose status and flags disagree (an older writer touched only the
-  // flags): the status is the truth, and the shadow is put right from it
+  // flags): the status is the truth, and the flag is stripped
   const odd = { status: 'open', resolved: true };
   eq('status outranks a stale shadow flag', [store.threadStage(odd), D.threadStage(odd)], ['open', 'open']);
   store.normalizeThreadStatus(odd);
-  ok('…and normalising puts the flag right', !('resolved' in odd));
+  ok('…and normalising strips the flag', !('resolved' in odd) && odd.status === 'open');
   ok('a record with a status that is not one falls back to its flags',
     store.threadStage({ status: 'nonsense', addressed: true }) === 'ready' && D.threadStage({ status: 'nonsense', addressed: true }) === 'ready');
 }
@@ -243,6 +250,35 @@ const card = () => root.querySelector('.pane[data-pane="comments"] .card[data-th
     const t = drawer.page.threads[0];
     eq('…with every field as it was', [t.resolved, t.addressed, t.addressed_by, t.status], [true, true, 'claude', undefined]);
   }
+}
+
+// ---- 1d. nothing but the conversion path touches the old flags ------------
+{
+  const PLUGIN = path.join(here, '..');
+  const files = [];
+  const walk = dir => { for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (f.name === 'test' || f.name === 'vendor' || f.name === 'node_modules') continue;
+    const full = path.join(dir, f.name);
+    if (f.isDirectory()) walk(full); else if (/\.(mjs|js|html)$/.test(f.name)) files.push(full);
+  } };
+  walk(PLUGIN);
+  const hits = [];
+  for (const f of files) {
+    fs.readFileSync(f, 'latin1').split('\n').forEach((line, i) => {
+      if (/^\s*(\/\/|\*)/.test(line)) return;                                   // a comment
+      const code = line.replace(/\b(data|body)\.(resolved|addressed)\b/g, '')    // a request's own field
+        .replace(/\.card\.resolved\b/g, '');                                   // a CSS class
+      if (/\.(resolved|addressed)\b(?!-)/.test(code)) hits.push(path.relative(PLUGIN, f) + ':' + (i + 1));
+    });
+  }
+  // the conversion path, and one field that is not a thread's: a mirrored
+  // review comment's own `resolved` (server.mjs POST /comments-sync)
+  const allowed = [/^extension\/drawer\.js:/, /^store\.mjs:/, /^reader\.js:/, /^extension\/pdf\/viewer\.js:/, /^server\.mjs:/];
+  const lines = hits.map(h => h.replace(/:\d+$/, ''));
+  eq('only the conversion path reads or writes .resolved / .addressed',
+    hits.filter(h => !allowed.some(r => r.test(h))), []);
+  eq('…and there, once each: threadStage + the setter (drawer), stageOfFlags (store), isFiled (reader, viewer), the review comment (server)',
+    lines.sort(), ['extension/drawer.js', 'extension/drawer.js', 'extension/pdf/viewer.js', 'reader.js', 'server.mjs', 'store.mjs']);
 }
 
 console.log(`status: ${pass} passed, ${fail} failed`);

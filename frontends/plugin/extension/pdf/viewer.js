@@ -876,6 +876,14 @@ function quadsForThread(id) {
 // already in the file — writing it back would put the supervisor's own comment
 // beside itself. One that has grown (a reply, a bot's answer) is written, and
 // its popup carries the original remark at the top, where it belongs.
+// Is this thread filed? Read off its one `status` field (store.mjs, a
+// thread's status); a record from before that field answers by its old
+// `resolved` flag. The same rule as reader.js isFiled: this page has no
+// drawer.js to read threadStage from.
+function isFiled(t) {
+  return !!t && (t.status ? t.status === 'resolved' : !!t.resolved);
+}
+
 function purelyImported(t) {
   const o = t && t.origin;
   if (!o || o.system !== 'pdf-annot') return false;
@@ -907,7 +915,7 @@ function collectItems(threads) {
     // way a comment that came out of this file already is not one.
     // (The vault note is the opposite: see export.mjs, which keeps filed
     //  threads because that note is the reader's own complete archive.)
-    if (t && t.resolved) { filed++; continue; }
+    if (isFiled(t)) { filed++; continue; }
     const groups = quadsForThread(t.id);
     if (!groups.length) { orphaned++; continue; }
     const msgs = (t.msgs || []).filter(m => m && m.kind !== 'tools');

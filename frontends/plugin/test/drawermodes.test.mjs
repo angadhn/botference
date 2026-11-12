@@ -4,6 +4,12 @@
 //
 //   1. the pop-overs (help, models, export, projects) — were four flags, and
 //      two could be up at once; now D.popover (POPOVERS) via setPopover.
+//   5. a thread's request out (✓ / ↺, "not done", highlight ⇄ strike) — were
+//      three maps, D.resolving / D.addressing / D.marking, so two could be out
+//      on one thread; now D.threadReq[id] (THREAD_REQS) via setThreadReq.
+//   6. the message line under the library and under the model picker — was a
+//      `note` beside an `err` that was sometimes the colour and sometimes the
+//      text; now one { text, tone } (LINE_TONES) via setLine.
 //
 // Made-up data only.
 import { createRequire } from 'node:module';
@@ -219,6 +225,113 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
       eq('delivered: it leaves the outbox', (d4.outbox.q1 || []).length, 0);
     } else ok('a retry button is offered on a failed send', false);
   } else ok('the thread has a reply box', false);
+}
+
+// ---- 5. a thread's request out: one at a time ---------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the requests, named', D.THREAD_REQS, ['none', 'resolving', 'addressing', 'marking']);
+  ok('…frozen', Object.isFrozen(D.THREAD_REQS));
+  for (const k of ['resolving', 'addressing', 'marking']) {
+    eq(`none → ${k}`, D.threadReqMove(undefined, k), k);
+    eq(`${k} → none (the answer)`, D.threadReqMove(k, 'none'), 'none');
+    for (const k2 of ['resolving', 'addressing', 'marking']) {
+      ok(`${k} → ${k2}: refused (one out at a time)`, throws(() => D.threadReqMove(k, k2)));
+    }
+  }
+  ok('an answer with nothing out is refused', throws(() => D.threadReqMove(undefined, 'none')));
+  ok('a request that is not one throws', throws(() => D.threadReqMove(undefined, 'deleting')));
+
+  const calls = [];
+  const held = {};
+  const d5 = D.create({
+    cssText: '.panel{}',
+    onResolve: (id, on) => { calls.push('resolve'); return new Promise(r => { held.resolve = r; }); },
+    onNotDone: id => { calls.push('not-done'); return new Promise(r => { held.notDone = r; }); },
+  });
+  d5.setConn(true); d5.setAuthor('reader'); d5.open('comments');
+  d5.setPage({ url: URL_, title: 'Article', page_chat: [],
+    threads: [{ id: 'r1', quote: 'a made-up passage', status: 'ready', addressed_by: 'claude',
+      msgs: [{ author: 'reader', ts: '1', text: 'made up' }, { author: 'claude', ts: '2', text: 'made up too' }] }] });
+  await tick(20);
+  const S = d5.shadow;
+  const btn = act => S.querySelector(`.card[data-thread="r1"] [data-act="${act}"]`);
+  const nd = btn('not-done');
+  ok('a ready thread offers "not done"', !!nd);
+  if (nd) {
+    nd.click(); await tick(5);
+    eq('"not done" is out', d5.threadReq.r1, 'addressing');
+    ok('…the card has gone back to open at once', !S.querySelector('.card[data-thread="r1"]').classList.contains('ready'));
+    const rs = btn('resolve');
+    if (rs) { rs.click(); await tick(5); }
+    eq('a ✓ while "not done" is out is refused: nothing sent', calls, ['not-done']);
+    eq('…and the request out is still the first', d5.threadReq.r1, 'addressing');
+    held.notDone({ ok: true }); await tick(10);
+    ok('answered: nothing out', !('r1' in d5.threadReq));
+    const rs2 = btn('resolve');
+    if (rs2) { rs2.click(); await tick(5); }
+    eq('now a ✓ goes', calls, ['not-done', 'resolve']);
+    eq('…resolving', d5.threadReq.r1, 'resolving');
+    held.resolve({ ok: true }); await tick(10);
+    ok('…answered: nothing out', !('r1' in d5.threadReq));
+  }
+}
+
+// ---- 6. a message line: text and a named tone --------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the tones, named', D.LINE_TONES, ['plain', 'bad']);
+  const h = {};
+  eq('plain by default', D.setLine(h, 'made-up news'), { text: 'made-up news', tone: 'plain' });
+  eq('bad', D.setLine(h, 'made-up failure', 'bad'), { text: 'made-up failure', tone: 'bad' });
+  eq('an empty line is plain, whatever was asked', D.setLine(h, '', 'bad'), { text: '', tone: 'plain' });
+  ok('a tone that is not one throws', throws(() => D.setLine(h, 'x', 'good')) && throws(() => D.setLine(h, 'x', true)));
+
+  // the model picker: a failed read says so in red; the next good one clears it
+  let answer = { ok: false, error: 'made-up: no companion' };
+  const d6 = D.create({ cssText: '.panel{}', onModels: async () => answer });
+  d6.setConn(true); d6.setAuthor('reader'); d6.open('comments');
+  d6.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
+  await tick(20);
+  const S = d6.shadow;
+  const hint = () => S.querySelector('.pop-hint');
+  const mb = S.querySelector('[data-act="models"]');
+  mb.hidden = false; mb.click(); await tick(10);
+  eq('models: the failure, on its one line', d6.models.line, { text: 'made-up: no companion', tone: 'bad' });
+  ok('…drawn in the failure colour', !!hint() && hint().classList.contains('err') && /no companion/.test(hint().textContent));
+  ok('…and no `note` / `err` beside it', !('note' in d6.models) && !('err' in d6.models));
+  mb.click(); await tick(5);                       // close
+  answer = { ok: true, current: { claude: 'x' }, options: { claude: ['x'] } };
+  mb.click(); await tick(10);
+  eq('a good read: the line is clear and plain', d6.models.line, { text: '', tone: 'plain' });
+  ok('…not drawn in the failure colour', !!hint() && !hint().classList.contains('err'));
+
+  // the library: a failed read in red; an export that worked, plain
+  let lib = { ok: false, error: 'made-up: library unreadable' };
+  const d7 = D.create({
+    cssText: '.panel{}',
+    onPages: async () => ({ ok: true, pages: [] }),
+    onLibrary: async () => lib,
+    onExportPage: async () => ({ ok: true, path: 'Made/Up.md' }),
+  });
+  d7.setConn(true); d7.setAuthor('reader'); d7.open('comments');
+  d7.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
+  await tick(20);
+  d7.showPages(); await tick(20);
+  const ln = () => d7.shadow.querySelector('.libpane .lib-note');
+  eq('library: the failure, on its one line', d7.library.line, { text: 'made-up: library unreadable', tone: 'bad' });
+  ok('…drawn in the failure colour', !!ln() && ln().classList.contains('err'));
+  ok('…and no `note` / `err` beside it', !('note' in d7.library) && !('err' in d7.library));
+  lib = { ok: true, page: { url: 'bfp://library', page_chat: [{ author: 'reader', ts: '1', text: 'made up' }] } };
+  d7.refreshLibrary(); await tick(20);
+  eq('a good read: the stale failure is gone', d7.library.line, { text: '', tone: 'plain' });
+  const x = d7.shadow.querySelector('[data-act="lib-export"]');
+  ok('the library offers export', !!x);
+  if (x) {
+    x.click(); await tick(20);
+    eq('export: plain news', d7.library.line, { text: 'exported → Made/Up.md', tone: 'plain' });
+    ok('…not in the failure colour', !!ln() && !ln().classList.contains('err'));
+  }
 }
 
 console.log(`drawermodes: ${pass} passed, ${fail} failed`);

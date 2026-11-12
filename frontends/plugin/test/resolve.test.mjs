@@ -56,7 +56,7 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
 
   const { changed } = store.setThreadStatus(t, 'resolved', 'angadh');
   ok('resolving says it changed something', changed);
-  ok('…and sets the flag', t.resolved === true);
+  ok('…and sets the status, with no old flag beside it', t.status === 'resolved' && !('resolved' in t));
   ok('…stamps it', typeof t.resolved_at === 'string' && t.resolved_at.length > 10);
   eq('…and attributes it, which is the one thing a reopen cannot recover',
     t.resolved_by, 'angadh');
@@ -90,11 +90,11 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
 
   const { changed } = store.setThreadStatus(t, 'ready', 'claude');
   ok('marking it says it changed something', changed);
-  ok('…and sets the flag', t.addressed === true);
+  ok('…and sets the status, with no old flag beside it', t.status === 'ready' && !('addressed' in t));
   ok('…stamps it', typeof t.addressed_at === 'string' && t.addressed_at.length > 10);
   eq('…and names the bot that claimed it', t.addressed_by, 'claude');
   ok('isAddressed agrees', store.isAddressed(t));
-  ok('…but nothing was resolved on the way', !t.resolved && !store.isResolved(t));
+  ok('…but nothing was resolved on the way', !store.isResolved(t));
 
   store.setThreadStatus(t, 'open');
   eq('clearing it leaves NO addressed fields behind — state, not history',
@@ -115,11 +115,11 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   // answer the amber badge was asking for.
   const u = thread([], { addressed: true, addressed_at: '1', addressed_by: 'claude' });
   store.setThreadStatus(u, 'resolved', 'angadh');
-  ok('filing a thread spends the claim rather than remembering it', !u.addressed);
+  ok('filing a thread spends the claim rather than remembering it', !store.isAddressed(u) && !('addressed' in u));
   const v = thread([], { resolved: true, addressed: true, addressed_at: '1', addressed_by: 'codex' });
   store.setThreadStatus(v, 'open');
   ok('…and reopening puts it back OPEN, not back into "ready for review"',
-    !v.addressed && !v.resolved);
+    store.threadStage(v) === 'open' && !('addressed' in v) && !('resolved' in v));
 }
 
 // ---- 1c. …and appendMsg is the only thing that decides it -----------------
@@ -139,7 +139,7 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   store.appendMsg(p, 't1', { author: 'claude', text: 'done — the units are fixed.' });
   ok('a BOT replying into a thread marks it ready for review', store.isAddressed(p.threads[0]));
   eq('…named as the claimant', p.threads[0].addressed_by, 'claude');
-  ok('…and STILL not resolved: that stays the reader’s click', !p.threads[0].resolved);
+  ok('…and STILL not resolved: that stays the reader’s click', !store.isResolved(p.threads[0]));
 
   store.appendMsg(p, 't1', { author: 'angadh', text: 'not quite — the second half.' });
   ok('the READER writing there makes it their open question again',
@@ -164,14 +164,14 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
   r.threads[0].resolved = true; r.threads[0].resolved_at = '1';
   store.appendMsg(r, 't1', { author: 'claude', text: 'one more thing.' });
   ok('a bot answering a FILED thread reopens it, as it always did',
-    !r.threads[0].resolved);
+    !store.isResolved(r.threads[0]));
   ok('…and it lands in "ready for review" rather than back at the top of the list',
     store.isAddressed(r.threads[0]));
 
   const s = mk();
   store.appendMsg(s, store.PAGE_CHAT, { author: 'claude', text: 'about the page as a whole…' });
   ok('page chat is not a thread and is never marked anything',
-    !s.threads[0].addressed && !s.page_chat[0].addressed);
+    !store.isAddressed(s.threads[0]) && !('status' in s.page_chat[0]) && !('addressed' in s.page_chat[0]));
 }
 
 // ---- 1d. re-anchoring onto the wording a change put there -----------------
@@ -352,8 +352,12 @@ const thread = (msgs, extra) => ({ id: 't1', quote: 'a passage', msgs, ...extra 
 // ---- the library's map of the archive ------------------------------------
 {
   const lib = chat.libraryPrompt('/tmp/x');
-  ok('the archive schema tells the agents a thread can be resolved',
-    /threads:\[\{quote, msgs:\[\{author, ts, text\}\], resolved, summary\}\]/.test(lib), lib.slice(0, 600));
+  ok('the archive schema tells the agents a thread has a status',
+    /threads:\[\{quote, msgs:\[\{author, ts, text\}\], status, summary\}\]/.test(lib), lib.slice(0, 600));
+  ok('…names its three values',
+    /"open", "ready"[^]*"resolved"/.test(lib));
+  ok('…and how to read an old file that has only the flags',
+    /`resolved: true` \(filed\)/.test(lib) && /`addressed: true` \(ready\)/.test(lib));
   ok('…and what that MEANS, so filed threads are not read back as open questions',
     /closed business, not an open question/.test(lib));
 }

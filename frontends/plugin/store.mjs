@@ -464,6 +464,8 @@ export function readPageByKey(key) {
 // so a hand-deleted page file can never leave a phantom row behind
 export function savePage(page) {
   page.updated_at = nowIso();
+  // `status` is the truth: a stray old `resolved` / `addressed` flag is not saved
+  for (const t of page.threads || []) normalizeThreadStatus(t);
   writeJson(pageFile(page.url), page);
   const idx = readIndex();
   const tags = tagsOf(page);
@@ -2544,20 +2546,18 @@ export function appendMsg(page, threadId, {
 // `addressed_by` while ready; leaving a stage removes its stamps, so a thread
 // reopened is byte-identical to one never resolved (state, not history).
 //
-// THE OLD FLAGS, KEPT AS A SHADOW. Every record this code writes still carries
-// `resolved: true` when its status is resolved and `addressed: true` when it is
-// ready (and neither otherwise), written by this setter alone. An older
-// drawer still loaded in a browser tab, an older phone page, or anything else
-// that only knows the flags reads a new record exactly as it always did. The
-// shadow is never READ here: `status` is the truth, and a record whose status
-// and flags disagree is put right from its status.
+// THE OLD FLAGS ARE GONE. `status` is the only record of the stage; nothing
+// writes the old `resolved` / `addressed` yes/no flags any more, and a record
+// that still carries them has them stripped (normalizeThreadStatus, on read
+// and again on save). `threadStage` falls back to them only for a record with
+// no `status` at all.
 //
 // OLD RECORDS (flags, no `status`) are converted as they are read (readPage →
 // normalizeThreadStatus): resolved outranks ready outranks open, which is the
 // rule every label already used. Converted in memory only, like `kind`; the
 // next ordinary save persists it, so reading never rewrites a file. The one
 // combination that cannot be stored any more — `resolved` AND `addressed` — is
-// read as resolved and loses only the `addressed: true` flag; its stamps stay.
+// read as resolved; its stamps stay.
 //
 // The drawer has a twin of all of this (drawer.js THREAD_MOVES /
 // setThreadStage) for its optimistic redraw; test/status.test.mjs holds the
@@ -2576,24 +2576,16 @@ export const threadStage = t => (!t ? 'open'
   : THREAD_STAGES.includes(t.status) ? t.status : stageOfFlags(t));
 export const isAddressed = t => threadStage(t) === 'ready';
 
-// the shadow flags, from the status (see above) — written here and nowhere else
-function shadowFlags(t, stage) {
-  let changed = false;
-  if (stage === 'resolved') { if (t.resolved !== true) { t.resolved = true; changed = true; } }
-  else if ('resolved' in t) { delete t.resolved; changed = true; }
-  if (stage === 'ready') { if (t.addressed !== true) { t.addressed = true; changed = true; } }
-  else if ('addressed' in t) { delete t.addressed; changed = true; }
-  return changed;
-}
-
-// An old record read: give it its `status`, and make its flags agree. True
-// when anything changed. Never touches a stamp, a message or anything else.
+// An old record read (or any record saved): give it its `status`, from the
+// old flags if it has no status, and strip the flags. True when anything
+// changed. Never touches a stamp, a message or anything else.
 export function normalizeThreadStatus(t) {
   if (!t || typeof t !== 'object') return false;
   const stage = threadStage(t);
   let changed = false;
   if (t.status !== stage) { t.status = stage; changed = true; }
-  return shadowFlags(t, stage) || changed;
+  for (const k of ['resolved', 'addressed']) if (k in t) { delete t[k]; changed = true; }
+  return changed;
 }
 
 // THE ONE SETTER. `by` is who made the move (stamped on 'ready' and
@@ -2624,7 +2616,7 @@ export function setThreadStatus(thread, next, by) {
     if (who) thread.resolved_by = who; else delete thread.resolved_by;
   }
   thread.status = next;
-  shadowFlags(thread, next);
+  normalizeThreadStatus(thread);
   return { thread, changed: from !== next };
 }
 

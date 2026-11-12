@@ -2904,11 +2904,21 @@ function msgIn(threadId, ts) {
 // has just asked something new, so any earlier claim is stale. A `tools` line
 // is a bot narrating, not answering, and never counts.
 // The fake companion's copy of store.mjs setThreadStatus: ONE stored
-// `status` (open / ready / resolved), the old flags kept as its shadow, and
-// the one refused move (resolved → ready). Written by this and nothing else.
+// `status` (open / ready / resolved) and the one refused move (resolved →
+// ready). Written by this and nothing else. The old `resolved` / `addressed`
+// flags are never written: stageOf reads them only for a record with no
+// `status` (store.threadStage), and normalizeStatus strips them as the
+// companion's readPage does.
+const stageOf = t => (!t ? 'open'
+  : ['open', 'ready', 'resolved'].indexOf(t.status) >= 0 ? t.status
+  : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+function normalizeStatus(t) {
+  if (!t) return;
+  t.status = stageOf(t);
+  delete t.resolved; delete t.addressed;
+}
 function stageTo(t, next, by) {
-  const from = ['open', 'ready', 'resolved'].indexOf(t.status) >= 0 ? t.status
-    : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open';
+  const from = stageOf(t);
   if (from === 'resolved' && next === 'ready') return false;
   if (from === next && next !== 'ready') return true;
   if (next !== 'ready') { delete t.addressed_at; delete t.addressed_by; }
@@ -2916,8 +2926,7 @@ function stageTo(t, next, by) {
   if (next === 'ready') { t.addressed_at = now(); if (by) t.addressed_by = String(by); else delete t.addressed_by; }
   if (next === 'resolved') { t.resolved_at = now(); if (by) t.resolved_by = String(by); else delete t.resolved_by; }
   t.status = next;
-  if (next === 'resolved') t.resolved = true; else delete t.resolved;
-  if (next === 'ready') t.addressed = true; else delete t.addressed;
+  delete t.resolved; delete t.addressed;
   return true;
 }
 // a pose that sets a scene and then puts it back: the status fields, whole
@@ -2928,7 +2937,7 @@ function reopenOnWrite(rec, threadId, msg) {
   if (!threadId || threadId === '__page__') return;
   const t = (rec.threads || []).find(x => x.id === threadId);
   if (!t) return;
-  if (t.resolved || t.status === 'resolved') stageTo(t, 'open');
+  if (stageOf(t) === 'resolved') stageTo(t, 'open');
   // a `tools` line marks nothing and UNMARKS nothing: it is a bot narrating,
   // and a summary that lands after its own answer must not take down the
   // "ready for review" that answer earned (store.appendMsg says the same)
@@ -3349,7 +3358,7 @@ function companion(method, path, body) {
     // workspace.openThreads: not resolved, and not ADDRESSED either — a thread
     // a bot has already replied into is waiting on the reader under "Ready for
     // review", and re-sending it would ask for work already reported
-    const open = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length);
+    const open = RECORD.threads.filter(t => stageOf(t) === 'open' && (t.msgs || []).length);
     if (!open.length) return { ok: false, status: 400, error: 'no open comments to send' };
     const preamble = editable
       ? 'Review round: I have been down this draft leaving comments in the margins. '
@@ -3426,6 +3435,8 @@ function companion(method, path, body) {
     // `turns` is the companion's record of what is running on this page
     // (server.mjs turnsFor): every turn-start this fake has sent, until its end
     const turns = liveTurnsOn(PAGE_URL);
+    // store.readPage: a thread from before `status` is converted as it is read
+    (RECORD.threads || []).forEach(normalizeStatus);
     return freshKnown
       ? { ok: true, status: 200, data: { ...RECORD, turns } }
       : { ok: true, status: 200, data: { ok: true, page: null, turns } };
@@ -3794,7 +3805,7 @@ function companion(method, path, body) {
     // looked, reopening is the reader saying "not done" — which is exactly the
     // answer the amber badge was asking for
     if (body.resolved) {
-      const first = !t.resolved;
+      const first = stageOf(t) !== 'resolved';
       if (first) stageTo(t, 'resolved', 'angadh');
       if (first) { t.summary = digestOf(t); delete t.summary_by; }
       log('resolved: ' + t.id);
@@ -3817,7 +3828,7 @@ function companion(method, path, body) {
     if (!t) return { ok: false, status: 404, error: 'unknown thread' };
     if (body.addressed) {
       if (!stageTo(t, 'ready', 'angadh')) return { ok: false, status: 409, error: 'this thread is filed — reopen it first' };
-    } else if (t.addressed || t.status === 'ready') stageTo(t, 'open');
+    } else if (stageOf(t) === 'ready') stageTo(t, 'open');
     log((body.addressed ? 'addressed: ' : 'not done: ') + t.id);
     RECORD.updated_at = new Date().toISOString();
     setTimeout(() => toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } }), 20);
@@ -3838,7 +3849,7 @@ function companion(method, path, body) {
     const want = nowReadsOf(t);
     const q = String(body.quote || '').replace(/\s+/g, ' ').trim();
     const same = a => String(a || '').replace(/\s+/g, ' ').trim();
-    if (!t.addressed || t.resolved || !want || !q || same(want) !== q) {
+    if (stageOf(t) !== 'ready' || !want || !q || same(want) !== q) {
       return { ok: false, status: 409, error: 'that is not the wording the bot quoted back' };
     }
     if (same(t.quote) === q) return { ok: true, status: 200, data: { ok: true, thread: t, changed: false } };
@@ -3862,7 +3873,7 @@ function companion(method, path, body) {
     const t = RECORD.threads.find(x => x.id === body.thread_id);
     if (!t) return { ok: false, status: 404, error: 'unknown thread' };
     const want = String(body.mark || '') === 'strike' ? 'strike' : '';
-    if (want === 'strike' && t.resolved) {
+    if (want === 'strike' && stageOf(t) === 'resolved') {
       return { ok: false, status: 409, error: 'this thread is filed — reopen it to change its markup' };
     }
     const changed = want !== (t.mark === 'strike' ? 'strike' : '');
@@ -5730,7 +5741,7 @@ async function selftest() {
   // named off the RECORD, not off the list's second row: a thread a bot has
   // already answered sits in Ready for review, so row order and record order
   // are no longer the same thing
-  const subject = RECORD.threads.filter(t => !t.resolved)[1].id;   // the thread with a bot in it
+  const subject = RECORD.threads.filter(t => stageOf(t) !== 'resolved')[1].id;   // the thread with a bot in it
   const yellow = bgOf(markFor(subject));
 
   check('every thread carries the resolve control, right there in the row',
@@ -7169,9 +7180,7 @@ async function selftest() {
   // it measures: whatever the resolve and reply sections above left in it is
   // cleared back to its root message first.
   RECORD.threads[0].msgs = RECORD.threads[0].msgs.slice(0, 1);
-  delete RECORD.threads[0].addressed;
-  delete RECORD.threads[0].addressed_by;
-  delete RECORD.threads[0].addressed_at;
+  stageTo(RECORD.threads[0], 'open');
   d.setPage(RECORD);
   await sleep(40);
   check('a short thread carries no line at all',
@@ -7540,7 +7549,7 @@ async function selftest() {
     d.open('chat');
     await sleep(80);
     const sendBtn = () => S.querySelector('[data-act="send-review"]');
-    const openN = RECORD.threads.filter(t => !t.resolved && !t.addressed && (t.msgs || []).length).length;
+    const openN = RECORD.threads.filter(t => stageOf(t) === 'open' && (t.msgs || []).length).length;
     check('an ordinary page carries the send-review row too', !!sendBtn());
     check('…on the Page chat tab, where the round opens',
       !!S.querySelector('.pane[data-pane="chat"] .reviewrow'));
@@ -12856,7 +12865,7 @@ async function selftestReady() {
     box.value = text;
     box.dispatchEvent(new Event('input', { bubbles: true }));
     cardFor(id).querySelector('.composer .send').click();
-    return !!await until(() => rec(id) && rec(id).addressed, 12000);
+    return !!await until(() => rec(id) && stageOf(rec(id)) === 'ready', 12000);
   }
 
   const threads = RECORD.threads.map(t => t.id);
@@ -12873,7 +12882,7 @@ async function selftestReady() {
   check('…and the reader is never the one who did it — the companion names the bot',
     !!rec(subject) && /^claude/i.test(String(rec(subject).addressed_by || '')));
   check('…and it is NOT resolved: a bot can never close the reader’s question',
-    !!rec(subject) && !rec(subject).resolved);
+    !!rec(subject) && stageOf(rec(subject)) !== 'resolved');
 
   await until(() => !!S.querySelector('.ready-sec'), 6000);
   check('a "Ready for review" section appears', !!S.querySelector('.ready-sec'));
@@ -12916,7 +12925,7 @@ async function selftestReady() {
     && addressedPosts[posts].addressed === false);
   check('…and the highlight goes back to yellow with it',
     !!markFor(subject) && !markFor(subject).classList.contains('bfp-ready'));
-  check('…and nothing was resolved on the way', !rec(subject).resolved);
+  check('…and nothing was resolved on the way', stageOf(rec(subject)) !== 'resolved');
 
   // a refusal is undone, card and highlight alike — the same rule resolve follows
   await botAnswers(subject, '@claude and the date in the caption?');
@@ -12942,7 +12951,7 @@ async function selftestReady() {
   check('…and the highlight is green, not amber',
     !!markFor(subject) && markFor(subject).classList.contains('bfp-done')
     && !markFor(subject).classList.contains('bfp-ready'));
-  check('filing spends the claim rather than remembering it', !rec(subject).addressed);
+  check('filing spends the claim rather than remembering it', stageOf(rec(subject)) !== 'ready');
   check('the tab count drops to what is left', tabCount() === '2');
 
   // reopening is "not done" one rung up: back to OPEN, not back to ready —
@@ -12970,7 +12979,7 @@ async function selftestReady() {
   check('the reader writing in a ready thread makes it open again: their question is live',
     !!await until(() => openList().length === 3 && !S.querySelector('.ready-sec'), 8000));
   check('…and the companion agrees, rather than the drawer guessing alone',
-    !!rec(subject) && !rec(subject).addressed);
+    !!rec(subject) && stageOf(rec(subject)) !== 'ready');
 
   // ---- before → after, where the change rewrote the passage ---------------
   // A change that rewrites the quoted passage orphans the highlight: the
@@ -13012,7 +13021,7 @@ async function selftestReady() {
   rec(other).msgs.push({ author: 'claude', ts: now(), text: 'Fixed the units, nothing else changed.' });
   d.setPage(RECORD); await sleep(80);
   check('a reply that quotes no new wording draws no diff at all', !wn());
-  delete rec(other).addressed; delete rec(other).addressed_by;
+  stageTo(rec(other), 'open');
 
   // ---- TRACK CHANGES ON THE PAGE ------------------------------------------
   //
@@ -13601,7 +13610,7 @@ async function selftestColledit() {
   check('…so nothing re-anchored: the thread was born on the new wording',
     reanchorPosts.length === reanchors);
   check('…and the extension needed no new field to draw any of it',
-    !!rec(COLL_ID).prior_quote && !!rec(COLL_ID).addressed);
+    !!rec(COLL_ID).prior_quote && stageOf(rec(COLL_ID)) === 'ready');
 
   // ---- the rail ----------------------------------------------------------
   check('the thread sits in "Ready for review" with the rest of the bots’ work',
@@ -13699,8 +13708,8 @@ async function selftestCollInsert() {
   ok.click();
   check('✓ files it: the passage turns sage',
     !!await until(() => markFor(COLLINS_ID) && markFor(COLLINS_ID).classList.contains('bfp-done'), 6000));
-  check('…and the record agrees', !!(RECORD.threads.find(t => t.id === COLLINS_ID) || {}).resolved
-    || !!(window.__bfp.page && (window.__bfp.page.threads || []).find(t => t.id === COLLINS_ID && t.resolved)));
+  check('…and the record agrees', stageOf(RECORD.threads.find(t => t.id === COLLINS_ID)) === 'resolved'
+    || !!(window.__bfp.page && (window.__bfp.page.threads || []).find(t => t.id === COLLINS_ID && stageOf(t) === 'resolved')));
   check('…and the bubble offers the undo, ↺',
     !!await until(() => bub(COLLINS_ID) && bub(COLLINS_ID).querySelector('.bres [data-act="reopen"]'), 3000));
   d.setBubbles('panel');
@@ -14198,7 +14207,7 @@ async function selftestWorkspace() {
     d.setPage(RECORD); await sleep(40);
     check('…and with every thread ready there is nothing left to send',
       !!sendBtn() && sendBtn().disabled);
-    RECORD.threads.forEach(t => { if (t.status === 'ready' || t.addressed) stageTo(t, 'open'); });
+    RECORD.threads.forEach(t => { if (stageOf(t) === 'ready') stageTo(t, 'open'); });
     d.setPage(RECORD); await sleep(40);
     check('putting them back makes them sendable again',
       /^send review \(3\)$/.test((sendBtn() || {}).textContent || ''));
@@ -14247,7 +14256,7 @@ async function selftestWorkspace() {
     check('…including that it is one turn each, answered in the threads',
       /one turn each, answered in the threads/.test(S.textContent || ''));
     check('and nothing was resolved on their behalf',
-      RECORD.threads.every(t => !t.resolved));
+      RECORD.threads.every(t => stageOf(t) !== 'resolved'));
 
     // Spinner sanity. N queued turns must read as N waiting THREADS, not as N
     // spinners stacked on the page chat: every thread with a turn coming says
@@ -14278,7 +14287,7 @@ async function selftestWorkspace() {
     check('…and the page chat holds the preamble and its answer, not the review',
       (RECORD.page_chat || []).filter(m => /--- comment/.test(m.text || '')).length === 0
       && (RECORD.page_chat || []).some(m => /Review round/.test(m.text || '')));
-    const ready = await until(() => RECORD.threads.every(t => t.addressed), 8000);
+    const ready = await until(() => RECORD.threads.every(t => stageOf(t) === 'ready'), 8000);
     check('a reply in a thread flips it to ready for review — the choke point, untouched', !!ready);
     await until(() => !!S.querySelector('.ready-sec'), 4000);
     check('…so the drawer grows a "Ready for review" section for the round',
@@ -14287,9 +14296,9 @@ async function selftestWorkspace() {
     check('…and every queued marker has been cleared by the turn that answered it',
       queuedCards() === 0);
     check('nothing was filed on the reader’s behalf, then or now',
-      RECORD.threads.every(t => !t.resolved));
+      RECORD.threads.every(t => stageOf(t) !== 'resolved'));
     // put the page back the way the rest of the selftest expects it
-    RECORD.threads.forEach(t => { if (t.status === 'ready' || t.addressed) stageTo(t, 'open'); });
+    RECORD.threads.forEach(t => { if (stageOf(t) === 'ready') stageTo(t, 'open'); });
     d.setPage(RECORD); await sleep(40);
   }
 
