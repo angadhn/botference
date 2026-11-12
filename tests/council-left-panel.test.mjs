@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HOME = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -857,6 +857,7 @@ async function startServer(t, { hosted = false, env = {} } = {}) {
     ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : []);
   return {
     base: `http://127.0.0.1:${port}`,
+    dir,
     typed: () => lines(rx),
     panel: () => lines(`${rx}.panel`).map(l => JSON.parse(l)),
   };
@@ -958,4 +959,285 @@ test('POST /panel is behind the password like every other request', async t => {
   const r = await ask(s.base, { action: 'delete', sid: 'abc12345' });
   assert.equal(r.status, 401);
   assert.deepEqual(s.panel(), [], 'nothing reached the controller');
+});
+
+// ── web-page chats (the browser plugin's), in the Chats pill ────────────────
+const PID = c => c.repeat(40);
+const PAGES = (over = {}) => ({
+  ok: true, total: 2, base: 'http://pages.example.test',
+  pages: [
+    { id: PID('a'), title: 'A page about kettles', url: 'https://example.com/kettles', updated_at: ago(4) },
+    { id: PID('b'), title: '', url: 'https://example.org/seed-catalogue', updated_at: ago(40) },
+    { id: 'not-a-page-id', title: 'Dropped', url: 'https://example.net/', updated_at: ago(1) },
+  ],
+  ...over,
+});
+const pageRows = list => [...list.querySelectorAll('.lp-row.page .t')].map(a => a.textContent.trim());
+
+test('web-page chats: where their read stands is one named list with a pure rule', dom, async t => {
+  const { C } = await mkPanel(t);
+  assert.deepEqual([...C.PAGE_CHATS_LOADS], ['idle', 'loading', 'ready', 'failed']);
+  assert.ok(Object.isFrozen(C.PAGE_CHATS_LOADS));
+  for (const [from, to, ok] of [
+    ['idle', 'loading', true], ['loading', 'ready', true], ['loading', 'failed', true],
+    ['ready', 'loading', true], ['failed', 'loading', true],
+    ['loading', 'loading', false],                    // one read at a time
+    ['idle', 'ready', false], ['ready', 'failed', false], ['failed', 'ready', false],
+    ['ready', 'idle', false], ['idle', 'sleeping', false], [null, 'loading', false],
+  ]) assert.equal(C.pageChatsMove(from, to), ok, `${from} > ${to}`);
+  assert.equal(C.state.pageChats.load, 'idle');
+  assert.equal(C.setPageChatsLoad('ready', { rows: [], total: 0, base: '' }), false, 'not asked yet');
+  assert.ok(Object.isFrozen(C.state.pageChats));
+});
+
+test('web-page chats sit in Chats under their own label and open where they live', dom, async t => {
+  const { C, list, $, click, gets, posts, tick } = await mkPanel(t, {
+    fetchJson: url => (url === '/page-chats' ? PAGES() : null),
+  });
+  C.handle(SNAP());
+  await tick();
+  assert.ok(gets.includes('/page-chats'), 'the list is asked for once the chats arrive');
+  assert.equal(C.state.pageChats.load, 'ready');
+  const labels = [...list.querySelectorAll('.lp-label')].map(l => l.textContent.trim());
+  assert.deepEqual(labels, ['On web pages']);
+  assert.deepEqual(pageRows(list), ['A page about kettles', 'https://example.org/seed-catalogue'],
+    'a page with no name shows its address; a malformed id is dropped');
+  // the label comes after the council's own loose chats
+  const all = [...list.querySelectorAll('.lp-row, .lp-label')];
+  assert.ok(all.indexOf(list.querySelector('.lp-label')) > all.indexOf(list.querySelector('[data-sid="loose004"]').closest('.lp-row')));
+  const link = list.querySelector('.lp-row.page a.t');
+  assert.equal(link.getAttribute('href'), `http://pages.example.test/p/${PID('a')}`);
+  assert.equal(link.getAttribute('target'), '_blank');
+  assert.match(link.getAttribute('rel'), /noopener/);
+  assert.equal(link.hasAttribute('data-act'), false, 'a plain link: the panel does not catch it');
+  // they are not the council's chats: no web-page row under Projects
+  click('#panel-pills [data-pill="projects"]');
+  assert.equal(list.querySelectorAll('.lp-row.page').length, 0);
+  // a tap on Chats asks again
+  const before = gets.filter(u => u === '/page-chats').length;
+  click('#panel-pills [data-pill="chats"]');
+  await tick();
+  assert.equal(gets.filter(u => u === '/page-chats').length, before + 1);
+  assert.equal(pageRows(list).length, 2);
+  assert.deepEqual(asked(posts), [], 'nothing was asked of the controller');
+  assert.equal($('#panel-note').hasAttribute('hidden'), true);
+});
+
+test('a web-page chat read that fails keeps the rows already shown', dom, async t => {
+  let answer = PAGES();
+  const { C, list, click, tick } = await mkPanel(t, { fetchJson: url => (url === '/page-chats' ? answer : null) });
+  C.handle(SNAP());
+  await tick();
+  assert.equal(pageRows(list).length, 2);
+  answer = { ok: false, error: 'no' };
+  click('#panel-pills [data-pill="projects"]');
+  click('#panel-pills [data-pill="chats"]');
+  await tick();
+  assert.equal(C.state.pageChats.load, 'failed');
+  assert.equal(pageRows(list).length, 2, 'still on screen');
+  // more than are listed: says so, and where to look
+  answer = PAGES({ total: 45 });
+  click('#panel-pills [data-pill="projects"]');
+  click('#panel-pills [data-pill="chats"]');
+  await tick();
+  assert.equal(C.state.pageChats.load, 'ready');
+  assert.match(list.textContent, /43 more\. Search finds them by name\./);
+});
+
+test('a web-page chat’s menu has one thing: Copy into the council', dom, async t => {
+  let copy = { ok: true, sid: 'cpy00001', project: '', reused: false };
+  const { C, list, $, click, posts, wsUrls, tick } = await mkPanel(t, {
+    fetchJson: url => (url === '/page-chats' ? PAGES() : url === '/page-chats/copy' ? copy : null),
+  });
+  C.handle(SNAP());
+  await tick();
+  C.setSlideOut('open');
+  click(`.more[data-key="page:${PID('a')}"]`);
+  assert.deepEqual({ ...C.state.row }, { mode: 'menu', key: `page:${PID('a')}` });
+  const items = [...list.querySelectorAll('.lp-menu [role="menuitem"]')].map(b => b.textContent.trim());
+  assert.deepEqual(items, ['Copy into the council']);
+  click('.lp-menu [data-act="page-copy"]');
+  await tick();
+  assert.deepEqual(posts.filter(p => p.url === '/page-chats/copy').map(p => p.body), [{ id: PID('a'), bridge: 'b1' }],
+    'the page and this tab, by id only');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.deepEqual(asked(posts), [], 'not on the controller’s /panel path');
+  const note = $('#panel-note');
+  assert.match(note.textContent, /Copied into Chats\./);
+  assert.equal(note.querySelector('[data-act="undo"]'), null);
+  click('#panel-note [data-act="note-open"]');
+  await tick();
+  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=cpy00001$/, 'Open moves the tab to the copy');
+  assert.equal(note.hasAttribute('hidden'), true);
+
+  // filed in a project: the note names it; a second copy with nothing new is the same chat
+  copy = { ok: true, sid: 'cpy00002', project: 'garden', reused: true };
+  click(`.more[data-key="page:${PID('b')}"]`);
+  click('.lp-menu [data-act="page-copy"]');
+  await tick();
+  assert.match(note.textContent, /Already in Garden plan\./);
+  assert.ok(note.querySelector('[data-act="note-open"][data-sid="cpy00002"]'));
+
+  // a refusal is said in plain words, with nothing to open
+  copy = { ok: false, error: 'That page has no chat to copy yet.' };
+  click(`.more[data-key="page:${PID('b')}"]`);
+  click('.lp-menu [data-act="page-copy"]');
+  await tick();
+  assert.match(note.textContent, /That page has no chat to copy yet\./);
+  assert.equal(note.querySelector('[data-act="note-open"]'), null);
+  assert.equal(sent(posts).length, 0, 'nothing was typed into the open chat');
+});
+
+test('search finds a web-page chat by name or address once something is typed', dom, async t => {
+  const { C, list, $, type, tick } = await mkPanel(t, {
+    fetchJson: url => (url === '/page-chats' ? PAGES() : null),
+  });
+  C.handle(SNAP());
+  await tick();
+  const box = $('#panel-search');
+  type(box, '');
+  C.setPanelView('search', { query: '' });
+  assert.equal(list.querySelectorAll('.lp-row.page').length, 0, 'the latest list is the council’s own');
+  type(box, 'seed');
+  assert.deepEqual(rowsOf(list).slice(0, 1), ['Seed order']);
+  assert.deepEqual(pageRows(list), ['https://example.org/seed-catalogue']);
+  assert.deepEqual(C.searchPages('KETTLES').map(r => r.id), [PID('a')]);
+  type(box, 'example.com');
+  assert.deepEqual(pageRows(list), ['A page about kettles']);
+  assert.match(list.textContent, /On web pages/);
+});
+
+// ── the server side: a read-only listing, and the copy ──────────────────────
+// A made-up plugin workspace, written by the plugin's own store so the
+// records are in its real shape.
+function seedPluginWorkspace(dir, pages) {
+  const script = `
+    const store = await import(${JSON.stringify(path.join(HOME, 'frontends', 'plugin', 'store.mjs'))});
+    for (const p of JSON.parse(process.argv[1])) {
+      const now = new Date().toISOString();
+      store.savePage({ version: 1, url: store.normUrl(p.url), title: p.title, site: 'example', kind: 'article',
+        created_at: now, updated_at: now, session_id: p.session ? 'made-up-session' : null,
+        threads: [], page_chat: p.chat || [] });
+    }
+    process.stdout.write(JSON.stringify(pages_keys()));
+    function pages_keys() { return JSON.parse(process.argv[1]).map(p => store.pageKey(store.normUrl(p.url))); }
+  `;
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script, JSON.stringify(pages)], {
+    env: { ...process.env, BOTFERENCE_PROJECT_ROOT: dir, BOTFERENCE_HOME: HOME }, encoding: 'utf8',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+}
+const SECRET_LINE = 'made-up words that must never leave the page record';
+
+test('GET /page-chats: names, addresses and dates only, from the plugin’s workspace', async t => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'council-plugin-ws-'));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const [kA, , kC] = seedPluginWorkspace(ws, [
+    { url: 'https://example.com/kettles', title: 'Kettles', session: true,
+      chat: [{ author: 'reader', text: SECRET_LINE }] },
+    { url: 'https://example.com/no-chat', title: 'Only comments', session: false },
+    { url: 'https://example.org/later', title: 'Later page', session: true },
+  ]);
+  fs.writeFileSync(path.join(ws, '.botference', 'plugin', 'config.json'),
+    JSON.stringify({ discuss_web: 'https://pages.example.test/' }));
+  const s = await startServer(t, { env: { COUNCIL_PLUGIN_WORKSPACE: ws } });
+  const r = await fetch(s.base + '/page-chats');
+  const raw = await r.text();
+  assert.equal(r.status, 200);
+  assert.doesNotMatch(raw, new RegExp(SECRET_LINE), 'no chat text');
+  const body = JSON.parse(raw);
+  assert.equal(body.ok, true);
+  assert.equal(body.total, 2, 'only pages the bots have a chat about');
+  assert.equal(body.base, 'https://pages.example.test');
+  assert.deepEqual(body.pages.map(p => p.id), [kC, kA], 'newest first');
+  for (const p of body.pages) assert.deepEqual(Object.keys(p).sort(), ['id', 'title', 'updated_at', 'url']);
+  assert.equal(body.pages[1].title, 'Kettles');
+  // nowhere to read from: an empty list, not an error page
+  const s2 = await startServer(t, { env: { COUNCIL_PLUGIN_WORKSPACE: path.join(ws, 'nothing-here') } });
+  assert.deepEqual({ ...(await (await fetch(s2.base + '/page-chats')).json()), base: '' },
+    { ok: true, total: 0, pages: [], base: '' });
+});
+
+test('POST /page-chats/copy: the plugin’s own copy, into this council; the list is sent again', async t => {
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'council-plugin-ws-'));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const [key, bare] = seedPluginWorkspace(ws, [
+    { url: 'https://example.com/kettles', title: 'Kettles', session: true,
+      chat: [{ author: 'reader', text: 'Made-up question about kettles?' },
+        { author: 'claude', text: 'Made-up answer about kettles.' }] },
+    { url: 'https://example.com/empty', title: 'Nothing said', session: true },
+  ]);
+  const s = await startServer(t, { env: { COUNCIL_PLUGIN_WORKSPACE: ws } });
+  await replay(s.base);
+  const copy = id => fetch(s.base + '/page-chats/copy', {
+    method: 'POST', body: JSON.stringify({ id }), headers: { 'content-type': 'application/json' },
+  }).then(r => r.json());
+  // this folder is not a council yet
+  assert.deepEqual(await copy(key), { ok: false, error: 'This council’s folder is not set up to take copies.' });
+  fs.writeFileSync(path.join(s.dir, 'project.json'), '{}');
+  fs.mkdirSync(path.join(s.dir, 'work'), { recursive: true });
+  fs.mkdirSync(path.join(s.dir, 'projects'), { recursive: true });
+  const r = await copy(key);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.match(r.sid, /^\S+$/);
+  assert.equal(r.project, '');
+  assert.equal(r.reused, false);
+  // (where the council keeps its chats is the council's own business: found by name)
+  const file = fs.readdirSync(s.dir, { recursive: true }).map(f => path.join(s.dir, f))
+    .find(f => path.basename(f) === `${r.sid}.json`);
+  assert.ok(file, 'the chat is a file in the council');
+  assert.match(fs.readFileSync(file, 'utf8'), /Made-up answer about kettles/);
+  assert.ok(s.panel().some(m => m.action === 'refresh'), 'the controller is asked to send the list again');
+  // a second copy with nothing new is the same chat
+  const again = await copy(key);
+  assert.equal(again.ok, true);
+  assert.equal(again.sid, r.sid);
+  assert.equal(again.reused, true);
+  // refusals in plain words
+  assert.deepEqual(await copy(bare), { ok: false, error: 'That page has no chat to copy yet.' });
+  assert.deepEqual(await copy(PID('f')), { ok: false, error: 'That page chat is not in the list any more.' });
+  assert.deepEqual(await copy('../../etc'), { ok: false, error: 'That page chat is not in the list any more.' });
+});
+
+test('the copy is run with the plugin’s workspace, and the council’s own settings left out', async t => {
+  const { copyPageChat } = await import(path.join(HOME, 'frontends', 'council', 'page-chats.mjs'));
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'council-plugin-ws-'));
+  t.after(() => fs.rmSync(ws, { recursive: true, force: true }));
+  const [key] = seedPluginWorkspace(ws, [{ url: 'https://example.com/a', title: 'A', session: true }]);
+  const seen = path.join(ws, 'seen.json');
+  const fake = path.join(ws, 'fake-copy.mjs');
+  fs.writeFileSync(fake, `
+    import fs from 'node:fs';
+    fs.writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ argv: process.argv.slice(2),
+      root: process.env.BOTFERENCE_PROJECT_ROOT, secrets: process.env.BOTFERENCE_SECRETS_DIR || '' }));
+    const how = process.env.FAKE_COPY;
+    if (how === 'refuse') { process.stderr.write('Error: this page’s chat already lives in your council\\n'); process.exit(2); }
+    if (how === 'hang') setTimeout(() => {}, 60000);
+    else process.stdout.write('Copied into the council: A\\n  chat:    abc12345  (project garden)\\n  open:    x\\n');
+  `);
+  const run = (extra = {}) => copyPageChat({
+    workspace: ws, id: key, councilRoot: '/made/up/council', home: HOME,
+    env: { ...process.env, BOTFERENCE_SECRETS_DIR: '/made/up/secrets', ...extra },
+    command: [process.execPath, fake], waitMs: 3000,
+  });
+  assert.deepEqual(await run(), { ok: true, sid: 'abc12345', project: 'garden', reused: false });
+  const got = JSON.parse(fs.readFileSync(seen, 'utf8'));
+  assert.deepEqual(got.argv, ['https://example.com/a', '--council', '/made/up/council']);
+  assert.equal(got.root, ws);
+  assert.equal(got.secrets, '', 'the council’s BOTFERENCE_* settings stay behind');
+  assert.deepEqual(await run({ FAKE_COPY: 'refuse' }), { ok: false, error: 'That page’s chat is already in the council.' });
+  const slow = await copyPageChat({
+    workspace: ws, id: key, councilRoot: '/made/up/council', home: HOME,
+    env: { ...process.env, FAKE_COPY: 'hang' }, command: [process.execPath, fake], waitMs: 300,
+  });
+  assert.deepEqual(slow, { ok: false, error: 'Could not copy that chat. Try again.' });
+});
+
+test('the web-page chat paths are behind the password like every other request', async t => {
+  const s = await startServer(t, { hosted: true });
+  assert.equal((await fetch(s.base + '/page-chats')).status, 401);
+  const r = await fetch(s.base + '/page-chats/copy', { method: 'POST', body: JSON.stringify({ id: PID('a') }),
+    headers: { 'content-type': 'application/json' } });
+  assert.equal(r.status, 401);
 });

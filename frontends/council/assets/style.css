@@ -142,7 +142,9 @@ a.t { display: flex; align-items: center; text-decoration: none }
 .lp-row .when, .lp-proj .when, .lp-file .when { flex: none; color: var(--muted);
   font-size: var(--lp-small); font-weight: 400 }
 .lp-row .when { padding-right: .45rem }
-.lp-row .lp-out { flex: none; color: var(--muted) }
+.lp-row .lp-out { flex: none; display: inline-flex; margin-left: .3rem; color: var(--muted) }
+/* a web-page chat: a link out, so its name cuts short before the arrow */
+.lp-row.page a.t > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis }
 #side.lp .lp-out svg { width: 14px; height: 14px }
 .lp-row.active { background: color-mix(in srgb, var(--accent) 11%, transparent);
   color: var(--heading); font-weight: 600 }

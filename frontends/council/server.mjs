@@ -36,6 +36,7 @@ import { isLocalDirect } from '../shared/local.mjs';
 import { transcribeRequest, whisperStatus } from '../shared/transcribe.mjs';
 import * as projectNetwork from '../shared/project-network.mjs';
 import { Presence } from './presence.mjs';
+import * as pageChats from './page-chats.mjs';
 
 const COUNCIL = path.dirname(new URL(import.meta.url).pathname);
 const ASSETS = path.join(COUNCIL, 'assets');
@@ -1019,6 +1020,38 @@ async function panelRequest(data) {
   }
 }
 
+// --- web-page chats in the left panel --------------------------------------
+// The browser plugin's chats about a web page live in the plugin's own
+// records, not the council's (see page-chats.mjs). The panel lists them (name,
+// address, date) and can copy one into the council as a chat of its own.
+const pluginRoot = () => pageChats.pluginWorkspace({ fallback: HOME });
+function pageChatList() {
+  try {
+    const ws = pluginRoot();
+    return { ok: true, ...pageChats.listPageChats(ws), base: pageChats.discussBase([ws, HOME]) };
+  } catch (e) {
+    console.error('[council] page chats:', e.message);
+    return { ok: false, pages: [], total: 0 };
+  }
+}
+async function pageChatCopy(data) {
+  try {
+    const r = await pageChats.copyPageChat({
+      workspace: pluginRoot(), id: String(data.id || ''), councilRoot: ROOT, home: HOME,
+    });
+    if (r.ok) {
+      // the copy is a new file on disk: one bot process re-reads the folder
+      // and the fresh list goes to every tab
+      const pick = panelBridge({ bridge: data.bridge });
+      if (pick.bridge) await askBridge(pick.bridge, { action: 'refresh' });
+    }
+    return r;
+  } catch (e) {
+    console.error('[council] copy a page chat:', e.message);
+    return { ok: false, error: 'Could not copy that chat. Try again.' };
+  }
+}
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
   if (req.method === 'POST' && rateLimited(req)) {
@@ -1197,6 +1230,17 @@ export function handler(req, res) {
       const text = String(data.text || '').slice(0, 1000);
       const ok = text && bridge && bridge.send({ type: 'tick', text, checked: !!data.checked });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
+    });
+    return;
+  }
+  // the left panel's web-page chats: the list, and "Copy into the council"
+  if (req.method === 'GET' && url === '/page-chats') {
+    res.writeHead(200, JSON_HEAD).end(JSON.stringify(pageChatList()));
+    return;
+  }
+  if (req.method === 'POST' && url === '/page-chats/copy') {
+    readBody(req, res, 1000, data => {
+      pageChatCopy(data).then(r => res.writeHead(200, JSON_HEAD).end(JSON.stringify(r)));
     });
     return;
   }

@@ -301,3 +301,26 @@ def test_set_title_stamps_only_the_name(tmp_path):
     assert payload["updated_at"] == "2026-07-02T00:00:00Z"
     assert _titles(c)["s1"] == "A better name"
     assert c.session_store.set_title("nobody", "x") is False
+
+
+def test_refresh_sends_the_list_again_and_changes_nothing(tmp_path):
+    """A chat written to disk by something else (a web-page chat copied in)
+    shows up when the list is sent again; nothing is said or changed."""
+    c, _, _, ui = _make_botference(tmp_path=tmp_path)
+    c.session_store.save("copied1", {
+        "session_id": "copied1", "created_at": "2026-07-01T00:00:00Z",
+        "updated_at": "2026-07-02T00:00:00Z", "title": "From a web page",
+        "project_id": "", "transcript": [{"speaker": "user", "text": "made-up words"}],
+    })
+    said = len(ui.room_entries)
+    sent = len(ui.project_states)
+    before = _on_disk(tmp_path, "copied1")
+
+    assert c.panel_action({"action": "refresh"}, ui) == {"ok": True}
+    assert c.panel_action({"action": "refresh"}, ui, busy=True) == {"ok": True}
+
+    assert len(ui.project_states) == sent + 2, "the list is sent each time"
+    latest = ui.project_states[-1]
+    assert any(s.session_id == "copied1" for s in latest.inbox_sessions)
+    assert len(ui.room_entries) == said, "nothing is said in the open chat"
+    assert _on_disk(tmp_path, "copied1") == before

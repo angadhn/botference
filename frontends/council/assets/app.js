@@ -342,11 +342,14 @@
     panel: Object.freeze({ view: 'chats' }),            // what the list shows: one of PANEL_VIEWS — setPanelView
     row: Object.freeze({ mode: 'resting', key: '' }),   // what ONE row is doing: one of ROW_MODES — setRowMode
     slideOut: 'closed',                                 // the panel itself: one of SLIDE_MODES — setSlideOut
-    panelNote: null,           // "Moved to X. Undo": null or {text, undo} — setPanelNote
+    panelNote: null,           // "Moved to X. Undo": null or {text, undo, open} — setPanelNote
     homedSid: null,            // the chat the panel last opened itself onto
     // a project's file list, read once per tab: pid -> {load, files}, where
     // load is one of CONTENTS_LOADS — setContentsLoad
     contents: {},
+    // the web-page chats (the browser plugin's): load is one of
+    // PAGE_CHATS_LOADS — setPageChatsLoad
+    pageChats: Object.freeze({ load: 'idle', rows: [], total: 0, base: '' }),
     // what the transcript pane is doing: one of TRANSCRIPT_MODES, moved only
     // by setTranscriptMode. A page boots catching up on the server's replay.
     transcriptMode: 'catching_up',
@@ -2673,7 +2676,53 @@
     if (key === 'settings' || key === 'new-project') return true;
     if (key.startsWith('chat:')) return !!findChat(key.slice(5));
     if (key.startsWith('project:')) return !!projectById(key.slice(8));
+    if (key.startsWith('page:')) return state.pageChats.rows.some(r => r.id === key.slice(5));
     return false;
+  }
+
+  // ---- web-page chats (the browser plugin's), read-only --------------------
+  // A chat about a web page lives in the plugin's records, not the council's,
+  // so it does not come with the list from the controller: the page asks the
+  // server (name, address and date only). Where that read stands is one of
+  // PAGE_CHATS_LOADS. The rows last read stay on screen while it is read
+  // again, and after a read that failed.
+  //   idle     not asked yet
+  //   loading  asked, no answer yet
+  //   ready    the rows are the server's last answer
+  //   failed   the last ask got no answer
+  const PAGE_CHATS_LOADS = Object.freeze(['idle', 'loading', 'ready', 'failed']);
+  function pageChatsMove(from, to) {
+    if (!PAGE_CHATS_LOADS.includes(from) || !PAGE_CHATS_LOADS.includes(to)) return false;
+    if (to === 'loading') return from !== 'loading';
+    return (to === 'ready' || to === 'failed') && from === 'loading';
+  }
+  function setPageChatsLoad(to, got = null) {
+    const cur = state.pageChats;
+    if (!pageChatsMove(cur.load, to)) return false;
+    state.pageChats = Object.freeze(to === 'ready' && got
+      ? { load: to, rows: got.rows, total: got.total, base: got.base }
+      : { ...cur, load: to });
+    return true;
+  }
+  const PAGE_ID = /^[0-9a-f]{40}$/;
+  async function loadPageChats() {
+    if (!setPageChatsLoad('loading')) return;
+    let got = null;
+    try {
+      const r = await fetch('/page-chats', { credentials: 'same-origin' });
+      const d = r.ok ? await r.json() : null;
+      if (d && d.ok !== false) {
+        const rows = (Array.isArray(d.pages) ? d.pages : [])
+          .filter(p => p && PAGE_ID.test(String(p.id)))
+          .map(p => Object.freeze({ id: p.id, title: String(p.title || p.url || ''), url: String(p.url || ''),
+            updated_at: String(p.updated_at || '') }));
+        got = { rows, total: Math.max(Number(d.total) || 0, rows.length),
+          base: /^https?:\/\//.test(String(d.base || '')) ? String(d.base) : '' };
+      }
+    } catch { /* drawn as before; asked again the next time the list is opened */ }
+    setPageChatsLoad(got ? 'ready' : 'failed', got);
+    if (state.row.mode !== 'resting' && !rowKeyExists(state.row.key)) setRowMode('resting');
+    renderPanel();
   }
 
   // ---- the panel itself: shown or tucked away -----------------------------
@@ -2704,7 +2753,7 @@
     }
     if (to === 'closed' && state.row.mode !== 'resting') setRowMode('resting');
     // on a phone the panel always opens where the open chat lives
-    if (to === 'open' && narrow()) goHome();
+    if (to === 'open' && narrow()) { goHome(); loadPageChats(); }
     applySlide();
     return true;
   }
@@ -2725,15 +2774,16 @@
   if (!narrow() && sidePref() === 'open') setSlideOut('open'); else applySlide();
 
   // ---- the note that says what just happened, with a way back -------------
-  // null, or { text, undo } where undo is { action, args } for panelAct. The
-  // timer only schedules the note's own move back to null.
+  // null, or { text, undo, open } where undo is { action, args } for panelAct
+  // and open is the id of a chat the note offers to open. The timer only
+  // schedules the note's own move back to null.
   const NOTE_MS = 7000;
   let noteTimer = null;
   function setPanelNote(note) {
     clearTimeout(noteTimer);
     noteTimer = null;
     state.panelNote = note && note.text
-      ? Object.freeze({ text: String(note.text), undo: note.undo || null }) : null;
+      ? Object.freeze({ text: String(note.text), undo: note.undo || null, open: note.open || '' }) : null;
     if (state.panelNote) noteTimer = setTimeout(() => setPanelNote(null), NOTE_MS);
     drawNote();
   }
@@ -2741,7 +2791,8 @@
     const n = state.panelNote;
     els.note.hidden = !n;
     els.note.innerHTML = !n ? '' : `<span>${esc(n.text)}</span>${
-      n.undo ? '<button type="button" data-act="undo">Undo</button>' : ''}`;
+      n.undo ? '<button type="button" data-act="undo">Undo</button>' : ''}${
+      n.open ? `<button type="button" data-act="note-open" data-sid="${esc(n.open)}">Open</button>` : ''}`;
   }
 
   // ---- a project's files, read-only ---------------------------------------
@@ -2860,13 +2911,44 @@
   }
   const olderNote = (total, shown) => (total > shown
     ? `<div class="lp-empty">${plural(total - shown, 'older chat')} not shown.</div>` : '');
+  // one web-page chat. It is a link, not a chat of the council's: it opens
+  // where it lives (the plugin's own page for it), in a new tab. Its menu has
+  // the one thing the council can do with it.
+  function pageRow(r) {
+    const key = 'page:' + r.id;
+    const mode = rowModeOf(key);
+    const title = r.title || r.url;
+    const base = state.pageChats.base;
+    let html = `<div class="lp-row page${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
+      <a class="t" ${base ? `href="${esc(base)}/p/${esc(r.id)}" ` : ''}target="_blank" rel="noopener" title="${esc(title)}\n${esc(r.url)}"><span>${esc(title)}</span><span class="lp-out">${LP_ICON.out}</span></a>
+      <span class="when">${relTime(r.updated_at)}</span>
+      <button class="more" type="button" data-act="more" data-key="${esc(key)}" aria-haspopup="true"
+        aria-expanded="${mode !== 'resting'}" aria-label="more for the web page ${esc(title)}">${LP_ICON.more}</button>`;
+    if (mode === 'menu') {
+      html += `<div class="row-menu lp-menu" role="menu">
+      <button type="button" role="menuitem" data-act="page-copy" data-id="${esc(r.id)}">Copy into the council</button>
+    </div>`;
+    }
+    return html + '</div>';
+  }
+  // under the loose chats, under their own label: there can be many, and they
+  // behave differently, so they are not mixed in by date
+  const PAGE_CHATS_SHOWN = 20;
+  function pageChatsHtml() {
+    const pc = state.pageChats;
+    if (!pc.rows.length) return '';
+    const shown = pc.rows.slice(0, PAGE_CHATS_SHOWN);
+    const more = pc.total - shown.length;
+    return '<div class="lp-label">On web pages</div>' + shown.map(pageRow).join('')
+      + (more > 0 ? `<div class="lp-empty">${more} more. Search finds them by name.</div>` : '');
+  }
   function chatsHtml(p) {
     const rows = p.inbox_sessions || [];
     let html = rows.length
       ? rows.map(s => chatRow(s, '')).join('')
       : '<div class="lp-empty">No chats here yet. Chats in a project are under Projects.</div>';
     html += olderNote(p.inbox_session_count || 0, rows.length);
-    return html;
+    return html + pageChatsHtml();
   }
   function projRow(pr) {
     const n = pr.session_count ?? (pr.sessions || []).length;
@@ -2933,14 +3015,25 @@
     if (!needle) return rows.slice(0, SEARCH_LATEST);
     return rows.filter(c => chatTitle(c.s).toLowerCase().includes(needle)).slice(0, SEARCH_MOST);
   }
+  // web-page chats are found by name or by address, once something is typed
+  function searchPages(query) {
+    const needle = String(query || '').trim().toLowerCase();
+    if (!needle) return [];
+    return state.pageChats.rows.filter(r => `${r.title} ${r.url}`.toLowerCase().includes(needle))
+      .slice(0, SEARCH_MOST);
+  }
   function searchHtml(query) {
     const rows = searchRows(query);
+    const pages = searchPages(query);
     const typed = String(query || '').trim();
-    if (!rows.length) {
+    if (!rows.length && !pages.length) {
       return `<div class="lp-empty">${typed ? `No chat is called anything like “${esc(typed)}”.` : 'No chats yet.'}</div>`;
     }
-    return `<div class="lp-label">${typed ? plural(rows.length, 'chat') + ' found' : 'Latest chats'}</div>`
-      + rows.map(c => chatRow(c.s, c.pid, { tag: c.project })).join('');
+    let html = !rows.length ? ''
+      : `<div class="lp-label">${typed ? plural(rows.length, 'chat') + ' found' : 'Latest chats'}</div>`
+        + rows.map(c => chatRow(c.s, c.pid, { tag: c.project })).join('');
+    if (pages.length) html += '<div class="lp-label">On web pages</div>' + pages.map(pageRow).join('');
+    return html;
   }
   function renderPanel() {
     const p = state.projects;
@@ -2990,6 +3083,7 @@
   function panelOnSnapshot() {
     if (state.panel.view === 'inside-project' && !projectById(state.panel.pid)) setPanelView('projects');
     if (state.row.mode !== 'resting' && !rowKeyExists(state.row.key)) setRowMode('resting');
+    if (state.pageChats.load === 'idle') loadPageChats();
     // the panel opens where the open chat lives — once per chat, so browsing
     // the lists afterwards is never undone by the next list that arrives
     if (state.currentSid && state.currentSid !== state.homedSid) {
@@ -3067,6 +3161,21 @@
       setPanelNote({ text: `Deleted ${name}.` });
     }
   }
+  // "Copy into the council" on a web-page chat: the council gets a chat of
+  // its own with the page's conversation in it; the page keeps its chat
+  async function copyPageChat(id) {
+    setRowMode('resting');
+    setPanelNote({ text: 'Copying…' });
+    const r = await post('/page-chats/copy', { id });
+    if (!r || !r.ok) {
+      setPanelNote({ text: (r && r.error) || 'Could not reach the council. Try again.' });
+      return;
+    }
+    const pr = r.project ? projectById(r.project) : null;
+    const where = pr ? (pr.title || pr.id) : r.project ? 'its project' : 'Chats';
+    setPanelNote({ text: r.reused ? `Already in ${where}.` : `Copied into ${where}.`, open: r.sid || '' });
+    loadPageChats();
+  }
   async function undoNote() {
     const u = state.panelNote && state.panelNote.undo;
     setPanelNote(null);
@@ -3138,10 +3247,14 @@
     if (act === 'proj-archive') return projectAct('project-archive', d.pid);
     if (act === 'proj-unarchive') return projectAct('project-unarchive', d.pid);
     if (act === 'undo') return undoNote();
+    if (act === 'page-copy') return copyPageChat(d.id);
+    if (act === 'note-open') { setPanelNote(null); return openChat(d.sid); }
     // the rest move between lists, so a busy row rests first
     restRow();
     if (act === 'pill') {
       if (state.panel.view === 'search' && typeof els.search.blur === 'function') els.search.blur();
+      // a tap on Chats also asks for the web-page chats again
+      if (d.pill !== 'projects') loadPageChats();
       return setPanelView(d.pill === 'projects' ? 'projects' : 'chats');
     }
     if (act === 'enter') return setPanelView('inside-project', { pid: d.pid });
@@ -4403,6 +4516,7 @@
     PANEL_VIEWS, panelViewMove, setPanelView, ROW_MODES, rowMove, setRowMode,
     SLIDE_MODES, slideMove, setSlideOut, CONTENTS_LOADS, contentsMove, setContentsLoad,
     setPanelNote, homeView, searchRows, relTime, renderPanel, panelAct, PANEL_ACTIONS,
+    PAGE_CHATS_LOADS, pageChatsMove, setPageChatsLoad, loadPageChats, searchPages,
     // the room's turn and the pre-send guard: each list and its one setter
     ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
     // what the stream waits on: the pure move rule, the one setter, the target

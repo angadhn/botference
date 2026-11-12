@@ -8580,9 +8580,13 @@ class Botference:
     # are standing in, so those are refused while a turn runs (busy=True), and
     # archiving or deleting it starts a fresh chat here ("fresh": True in the
     # answer). Every other chat is only a file on disk.
+    #
+    # "refresh" changes nothing: it sends the list of chats again, for when a
+    # chat was written to disk by something else (a web-page chat copied in).
     PANEL_ACTIONS = (
         "rename", "move", "archive", "unarchive", "delete",
         "new-project", "project-archive", "project-unarchive", "project-delete",
+        "refresh",
     )
     _PANEL_BUSY = (
         "The bots are still working in that chat. Try again when they finish."
@@ -8595,6 +8599,9 @@ class Botference:
         if action not in self.PANEL_ACTIONS:
             return {"ok": False, "error": "The panel cannot do that."}
         try:
+            if action == "refresh":
+                self._sync_project_ui(ui)
+                return {"ok": True}
             if action == "new-project" or action.startswith("project-"):
                 return self._panel_project(action, request, ui, busy)
             return self._panel_chat(action, request, ui, busy)
