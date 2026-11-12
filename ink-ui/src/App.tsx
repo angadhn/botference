@@ -39,6 +39,7 @@ import {
   activityFor,
   keepsActivity,
   moveTurnMode,
+  queueNote,
   restoreUnanswered,
   showsSpinner,
   type TurnMode,
@@ -51,6 +52,27 @@ import {
   type MouseMode,
 } from "./mouseMode.js";
 import {
+  canMoveScrollGlide,
+  moveScrollGlide,
+  targetFollowsPane,
+  type ScrollGlideMode,
+} from "./scrollGlide.js";
+import {
+  focusedPaneFor,
+  moveProjectsPanel,
+  projectsListVisible,
+  tabbedProjectsPanel,
+  toggledProjectsPanel,
+  type ProjectsPanelMode,
+} from "./projectsPanel.js";
+import {
+  NO_STREAMS,
+  dropsFinalEntry,
+  moveStreamStages,
+  type StreamStageEvent,
+  type StreamStages,
+} from "./streamStages.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -59,7 +81,6 @@ import {
   placeAgentEntry,
   type AgentMeta,
   createStreamSegmentState,
-  isFinalEntryForSegmentedStream,
   stripFooterFromStreamEntries,
   nextPacedChunkEnd,
   replaceOrInsertStreamEntryBefore,
@@ -73,10 +94,14 @@ import {
   PACED_MESSAGE_INTERVAL_MS,
 } from "./v2/messages.js";
 import {
+  NO_SELECTION,
   hitTestPane,
+  moveSelection,
   selectedTextFromLines,
+  selectionRange,
   type PaneHit,
-  type PaneSelection,
+  type SelectionEvent,
+  type SelectionState,
 } from "./v2/selection.js";
 import { BusyLine, Pane, THEME } from "./panes.js";
 import {
@@ -95,6 +120,7 @@ import {
   moveQuestions,
   permissionAnswer,
   permissionQuestionFrom,
+  questionOnScreen,
   waitingNote,
   type PermissionQuestion,
   type QuestionEvent,
@@ -521,13 +547,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     codex_window: null,
     observe: true,
   });
-  const [focusedPane, setFocusedPane] = useState<"room" | "projects">("room");
+  // The one field for "is the project list showing, and does it have the
+  // keys?" (named modes in projectsPanel.ts); changed only through
+  // moveProjects() below. Which pane has focus is read off it.
+  const [projectsPanel, setProjectsPanelState] = useState<ProjectsPanelMode>("shown");
+  const projectsPanelRef = useRef<ProjectsPanelMode>("shown");
+  const projectsVisible = projectsListVisible(projectsPanel);
   const [projectState, setProjectState] = useState<ProjectPanelStateData>({
     active_project_id: "",
     inbox_session_count: 0,
     projects: [],
   });
-  const [projectsVisible, setProjectsVisible] = useState(true);
   const [projectCursor, setProjectCursor] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const [inputText, setInputTextState] = useState("");
@@ -541,6 +571,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // to the typing box if the engine stops before answering.
   const unansweredRef = useRef<string[]>([]);
   const ready = turnMode === "idle";
+  // How many messages wait in the engine's queue. One source: the engine's
+  // "queue" event (reset when it says ready or stops). The status line text
+  // is derived from it (queueHint), never stored.
   const [queuedCount, setQueuedCount] = useState(0);
   // Who is busy, doing what — a detail of the turn, not a second mode: it
   // exists only while the turn mode runs the spinner (activityFor in
@@ -553,7 +586,22 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [mouseMode, setMouseModeState] = useState<MouseMode>("app_scroll");
   const mouseModeRef = useRef<MouseMode>("app_scroll");
   const mouseSelectionMode = mouseMode === "terminal_select";
-  const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
+  // The one field for "is text selected in the pane?" (named modes in
+  // v2/selection.ts); changed only through moveSelectionTo() below.
+  const [selection, setSelectionState] = useState<SelectionState>(NO_SELECTION);
+  const selectionRef = useRef<SelectionState>(NO_SELECTION);
+  /** Returns the new state when the move changed it, else null. */
+  const moveSelectionTo = useCallback((event: SelectionEvent): SelectionState | null => {
+    const move = moveSelection(selectionRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`selection_move_refused:${event.type}:${move.reason}`);
+      return null;
+    }
+    if (!move.changed) return null;
+    selectionRef.current = move.state;
+    setSelectionState(move.state);
+    return move.state;
+  }, []);
   const [roomScroll, setRoomScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
 
@@ -637,6 +685,23 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
     return move.changed;
   }, []);
+  const moveProjects = useCallback((to: ProjectsPanelMode): boolean => {
+    const from = projectsPanelRef.current;
+    const move = moveProjectsPanel(from, to);
+    if (!move.ok) {
+      flightRecorder.note(`projects_move_refused:${from}->${to}`);
+      return false;
+    }
+    if (move.changed) {
+      projectsPanelRef.current = move.mode;
+      setProjectsPanelState(move.mode);
+    }
+    return move.changed;
+  }, []);
+  /** The room takes the keys back (the list stays as it is). */
+  const focusRoom = useCallback(() => {
+    if (projectsPanelRef.current === "focused") moveProjects("shown");
+  }, [moveProjects]);
   const setImageAttachments = useCallback((update: StateUpdate<Map<number, string>>) => {
     const next = typeof update === "function"
       ? (update as (prev: Map<number, string>) => Map<number, string>)(imageAttachmentsRef.current)
@@ -649,12 +714,44 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const roomScrollRef = useRef(0);
   const roomScrollTargetRef = useRef(0);
   const roomMaxScrollRef = useRef(0);
-  const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The one field for "is the pane gliding to a scroll position?" (named
+  // modes in scrollGlide.ts), with the tick's timer as a detail of gliding;
+  // changed only through moveGlide() below.
+  const scrollGlideRef = useRef<{
+    mode: ScrollGlideMode;
+    timer: ReturnType<typeof setInterval> | null;
+  }>({ mode: "still", timer: null });
+  const moveGlide = useCallback((
+    to: ScrollGlideMode,
+    timer: ReturnType<typeof setInterval> | null = null,
+  ): boolean => {
+    const from = scrollGlideRef.current;
+    const move = moveScrollGlide(from.mode, to);
+    if (!move.ok) {
+      flightRecorder.note(`glide_move_refused:${from.mode}->${to}`);
+      return false;
+    }
+    if (!move.changed) return false;
+    // Leaving gliding stops its tick; only gliding keeps a timer.
+    if (from.timer) clearInterval(from.timer);
+    scrollGlideRef.current = { mode: move.mode, timer: move.mode === "gliding" ? timer : null };
+    return true;
+  }, []);
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
   const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
   const streamSegmentsRef = useRef<Map<string, StreamSegmentState>>(new Map());
-  const handledSegmentedStreamsRef = useRef<Set<string>>(new Set());
-  const completedSegmentedStreamsRef = useRef<Set<string>>(new Set());
+  // The one field for "how far along is each streamed reply?" (named stages
+  // in streamStages.ts); changed only through moveStream() below.
+  const streamStagesRef = useRef<StreamStages>(NO_STREAMS);
+  const moveStream = useCallback((event: StreamStageEvent): boolean => {
+    const move = moveStreamStages(streamStagesRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`stream_move_refused:${event.type}:${move.reason}`);
+      return false;
+    }
+    streamStagesRef.current = move.stages;
+    return move.changed;
+  }, []);
 
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
@@ -705,6 +802,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // it as hidden for behavior purposes too — otherwise focus could get stuck
   // on an invisible pane.
   const projectsPaneRendered = projectsVisible && projectsPaneWidth > 0;
+  const focusedPane = focusedPaneFor(projectsPanel, projectsPaneRendered);
   const projectRows = useMemo(
     () => buildProjectRows(projectState, { filter: projectFilter }),
     [projectState, projectFilter],
@@ -746,8 +844,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   roomScrollRef.current = roomScroll;
 
   const startScrollDrain = useCallback(() => {
-    if (scrollTimerRef.current) return;
-    scrollTimerRef.current = setInterval(() => {
+    if (!canMoveScrollGlide(scrollGlideRef.current.mode, "gliding")) return;
+    const timer = setInterval(() => {
       const roomTarget = clampScrollOffset(roomScrollTargetRef.current, roomMaxScrollRef.current);
       roomScrollTargetRef.current = roomTarget;
 
@@ -755,12 +853,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       roomScrollRef.current = nextRoomScroll;
       setRoomScroll(nextRoomScroll);
 
-      if (nextRoomScroll === roomTarget && scrollTimerRef.current) {
-        clearInterval(scrollTimerRef.current);
-        scrollTimerRef.current = null;
-      }
+      if (nextRoomScroll === roomTarget) moveGlide("still");
     }, 16);
-  }, []);
+    if (!moveGlide("gliding", timer)) clearInterval(timer);
+  }, [moveGlide]);
 
   const nextPacedEntryIdRef = useRef(1);
 
@@ -776,14 +872,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     if (entry.streamId) {
-      for (const baseStreamId of completedSegmentedStreamsRef.current) {
-        if (
-          handledSegmentedStreamsRef.current.has(baseStreamId)
-          && isFinalEntryForSegmentedStream(entry.streamId, baseStreamId)
-        ) {
-          return;
-        }
-      }
+      if (dropsFinalEntry(streamStagesRef.current, entry.streamId)) return;
       setEntries((prev) => capDisplayEntries(replaceOrAppendStreamEntry(prev, entry)));
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
@@ -941,47 +1030,25 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return onMouseEvent((event) => {
       const hit = hitTestPaneForEvent(event);
       if (event.kind === "press") {
-        if (!hit) {
-          setPaneSelection(null);
-          return;
-        }
-        setFocusedPane(hit.pane);
-        setPaneSelection({
-          pane: hit.pane,
-          anchorLine: hit.lineIndex,
-          anchorCol: hit.col,
-          focusLine: hit.lineIndex,
-          focusCol: hit.col,
-          dragging: true,
-        });
+        if (hit) focusRoom();
+        moveSelectionTo({ type: "press", hit });
         return;
       }
 
       if (event.kind === "drag") {
-        if (!hit) return;
-        setPaneSelection((prev) => {
-          if (!prev || !prev.dragging || prev.pane !== hit.pane) return prev;
-          return {
-            ...prev,
-            focusLine: hit.lineIndex,
-            focusCol: hit.col,
-          };
-        });
+        moveSelectionTo({ type: "drag", hit });
         return;
       }
 
       if (event.kind === "release") {
-        setPaneSelection((prev) => {
-          if (!prev) return prev;
-          const finalSelection = hit && hit.pane === prev.pane
-            ? { ...prev, focusLine: hit.lineIndex, focusCol: hit.col, dragging: false }
-            : { ...prev, dragging: false };
-          void copyToClipboard(selectedTextFromLines(roomFlatLines, finalSelection));
-          return finalSelection;
-        });
+        // Copied once, on the way into "selected".
+        const state = moveSelectionTo({ type: "release", hit });
+        if (state?.mode === "selected") {
+          void copyToClipboard(selectedTextFromLines(roomFlatLines, state.range));
+        }
       }
     });
-  }, [hitTestPaneForEvent, roomFlatLines]);
+  }, [hitTestPaneForEvent, moveSelectionTo, roomFlatLines]);
 
   useEffect(() => {
     setMouseTrackingEnabled(wantsMouseTracking(mouseMode));
@@ -990,7 +1057,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   useEffect(() => {
     return () => {
-      if (scrollTimerRef.current) clearInterval(scrollTimerRef.current);
+      moveGlide("closed");
       for (const timer of pacedTimersRef.current) clearInterval(timer);
       pacedTimersRef.current.clear();
     };
@@ -1002,7 +1069,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [roomMaxScroll]);
 
   useEffect(() => {
-    if (!scrollTimerRef.current) roomScrollTargetRef.current = roomScroll;
+    if (targetFollowsPane(scrollGlideRef.current.mode)) roomScrollTargetRef.current = roomScroll;
   }, [roomScroll]);
 
   // ── Shift+Enter — insert newline (intercepted at stdin filter level) ──
@@ -1236,8 +1303,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
           if (msg.kind === "start") {
             streamSegmentsRef.current.set(streamId, createStreamSegmentState());
-            completedSegmentedStreamsRef.current.delete(streamId);
-            handledSegmentedStreamsRef.current.delete(streamId);
+            moveStream({ type: "start", streamId });
             break;
           }
 
@@ -1247,7 +1313,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             const segmentState = streamSegmentsRef.current.get(streamId) ?? createStreamSegmentState();
             streamSegmentsRef.current.set(streamId, segmentState);
             const textStreamId = textSegmentStreamId(streamId, segmentState);
-            handledSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "segment", streamId });
             updateStreamEntry(textStreamId, speaker, (entry) => ({
               speaker,
               text: `${entry?.text ?? ""}${delta}`,
@@ -1270,7 +1336,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             const stack = toolStacksRef.current.get(toolStackStreamId) ?? new Map<string, string>();
             stack.set(toolId, toolPreviewLine(msg));
             toolStacksRef.current.set(toolStackStreamId, stack);
-            handledSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "segment", streamId });
             updateStreamEntry(toolStackStreamId, speaker, () => ({
               speaker,
               text: buildToolStackText(Array.from(stack.values())),
@@ -1281,7 +1347,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
 
           if (msg.kind === "done") {
-            completedSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "done", streamId });
             // The streamed text stays in the pane (the controller's stripped
             // final entry is dropped for segmented streams), so remove any
             // trailing routing footer from the last text segment here.
@@ -1294,8 +1360,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setRoomScroll(0);
           streamSegmentsRef.current.clear();
           toolStacksRef.current.clear();
-          handledSegmentedStreamsRef.current.clear();
-          completedSegmentedStreamsRef.current.clear();
+          moveStream({ type: "clear_all" });
           break;
         case "projects": {
           const projectsArr = Array.isArray(msg.projects)
@@ -1329,7 +1394,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "mode":
           setStatus((prev) => ({ ...prev, mode: msg.mode as string }));
-          setFocusedPane("room");
+          focusRoom();
           break;
         case "ready":
           moveTurn("idle");
@@ -1340,9 +1405,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         case "queue": {
           const pending = typeof msg.pending === "number" ? msg.pending : 0;
           setQueuedCount(pending);
-          if (pending > 0) {
-            setHint(`${pending} queued message${pending === 1 ? "" : "s"}.`);
-          }
+          // The status line reads the count off queuedCount (queueHint
+          // below); clear the "Queued message." hint so it shows through, and
+          // so it goes away by itself when the engine takes the message.
+          if (pending > 0) setHint("");
           break;
         }
         case "completion_context":
@@ -1455,6 +1521,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Answer the pending question first (Up/Down + Enter, Esc dismisses).");
       return;
     }
+    if (questionsRef.current.mode === "answered") return;
     const stripped = inputTextRef.current.trim();
     if (!stripped) {
       setHint("Enter a message or command.");
@@ -1476,7 +1543,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setActivity(startV2ActivityFromInput(stripped, status.route));
       setHint("");
     } else {
-      setQueuedCount((prev) => prev + 1);
+      // The count itself comes from the engine's "queue" event.
       setHint("Queued message.");
     }
     setInputText("");
@@ -1509,6 +1576,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (state.mode !== "permission" || !proc?.stdin?.writable) {
       return;
     }
+    // One answer per question: a second key press is refused here.
+    if (!moveQuestion({ type: "answered" })) return;
     proc.stdin.write(JSON.stringify(permissionAnswer(state.onScreen, choice)) + "\n");
     setHint(
       choice === "deny" ? "Denying protected write..."
@@ -1523,6 +1592,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (state.mode !== "choice" || !proc?.stdin?.writable) {
       return;
     }
+    if (!moveQuestion({ type: "answered" })) return;
     proc.stdin.write(JSON.stringify(choiceAnswer(state.onScreen, index)) + "\n");
   }, []);
 
@@ -1590,6 +1660,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     const question = questionsRef.current;
+    // Answered, waiting for the engine to clear it: keys do nothing here.
+    if (question.mode === "answered") return;
     if (question.mode === "permission") {
       const highlighted = question.onScreen.highlighted;
       if (key.leftArrow) {
@@ -1638,30 +1710,23 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Tab / Shift+Tab — toggle pane focus
     if (input === "p" && key.ctrl) {
-      setProjectsVisible((prev) => {
-        const next = !prev;
-        if (!next) {
-          setProjectFilter("");
-          if (focusedPane === "projects") setFocusedPane("room");
-        }
-        setHint(next ? "" : "Projects panel hidden (Ctrl+P to show)");
-        return next;
-      });
+      const next = toggledProjectsPanel(projectsPanelRef.current);
+      if (moveProjects(next)) {
+        if (next === "hidden") setProjectFilter("");
+        setHint(next === "hidden" ? "Projects panel hidden (Ctrl+P to show)" : "");
+      }
       return;
     }
 
     if (key.tab) {
       if (!projectsPaneRendered) return;
       setProjectFilter("");
-      setFocusedPane((prev) => {
-        const next = prev === "room" ? "projects" : "room";
-        if (next === "projects") {
-          setHint("Projects focused \u2014 \u2191/\u2193 to navigate, type to filter, Enter to open, Tab to leave");
-        } else {
-          setHint("");
-        }
-        return next;
-      });
+      const next = tabbedProjectsPanel(projectsPanelRef.current);
+      if (moveProjects(next)) {
+        setHint(next === "focused"
+          ? "Projects focused \u2014 \u2191/\u2193 to navigate, type to filter, Enter to open, Tab to leave"
+          : "");
+      }
       return;
     }
 
@@ -1689,7 +1754,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             moveTurn("working");
             setActivity(createV2Activity("system", "system"));
           } else {
-            setQueuedCount((prev) => prev + 1);
             setHint("Queued project command.");
           }
           proc.stdin.write(JSON.stringify({ type: "input", text: command }) + "\n");
@@ -1872,10 +1936,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const busyText = formatV2ActivityText(activity ?? UNKNOWN_ACTIVITY);
   const selectionHint = MOUSE_SELECTION_HINT;
-  const queueHint = queuedCount > 0
-    ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
-    : "";
+  const queueHint = queueNote(queuedCount);
   const engineDown = turnMode === "engine_stopped";
+  const shownQuestion = questionOnScreen(questions);
   const statusText = mouseSelectionMode
     ? selectionHint
     : hint || (engineDown ? ENGINE_STOPPED_STATUS : queueHint || (showsSpinner(turnMode) ? busyText : " "));
@@ -1907,24 +1970,25 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           textWidth={councilTextWidth}
           scrollOffset={roomScroll}
           hasNewMessages={roomHasNew}
-          selection={paneSelection}
+          selection={selectionRange(selection)}
         />
       </Box>
 
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
-        {questions.mode === "permission" ? (
+        {/* An answered question stays drawn until the engine clears it. */}
+        {shownQuestion?.kind === "permission" ? (
           <PermissionPrompt
-            request={questions.onScreen}
-            choice={questions.onScreen.highlighted}
+            request={shownQuestion}
+            choice={shownQuestion.highlighted}
             waiting={waitingNote(questions)}
           />
-        ) : questions.mode === "choice" ? (
+        ) : shownQuestion?.kind === "choice" ? (
           <ChoicePrompt
-            prompt={questions.onScreen.prompt}
-            options={questions.onScreen.options}
-            index={questions.onScreen.highlighted}
+            prompt={shownQuestion.prompt}
+            options={shownQuestion.options}
+            index={shownQuestion.highlighted}
             waiting={waitingNote(questions)}
           />
         ) : (

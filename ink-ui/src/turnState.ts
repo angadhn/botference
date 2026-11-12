@@ -100,3 +100,10 @@ export function restoreUnanswered(unanswered: readonly string[], current: string
   if (current.trim() !== "") parts.push(current);
   return parts.join("\n\n");
 }
+
+/** The status line for messages waiting in the engine's queue, or "" when
+ *  none wait. Derived from the one count (the engine's "queue" event). */
+export function queueNote(queuedCount: number): string {
+  if (queuedCount <= 0) return "";
+  return `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`;
+}

@@ -3,19 +3,105 @@ import { computeViewportSlice, type FlatLine, type LineSegment } from "../layout
 
 export type PaneName = "room";
 
+/** The stretch of text a selection covers: from where the press landed
+ *  (anchor) to where the pointer is or was let go (focus). */
 export interface PaneSelection {
   pane: PaneName;
   anchorLine: number;
   anchorCol: number;
   focusLine: number;
   focusCol: number;
-  dragging: boolean;
 }
 
 export interface PaneHit {
   pane: PaneName;
   lineIndex: number;
   col: number;
+}
+
+// "Is text selected in the pane?" — one named mode. Same pattern as
+// questions.ts.
+//
+// The modes, in one list. The current state lives in one field in App.tsx
+// and changes only through moveSelection(), which refuses an illegal move.
+//
+//   none      nothing is selected
+//   dragging  the mouse button is down; the selection follows the pointer
+//   selected  the button was let go; the selection stays highlighted and its
+//             text was copied once, on the way in
+export const SELECTION_MODES = ["none", "dragging", "selected"] as const;
+export type SelectionMode = (typeof SELECTION_MODES)[number];
+
+export type SelectionState =
+  | { mode: "none" }
+  | { mode: "dragging"; range: PaneSelection }
+  | { mode: "selected"; range: PaneSelection };
+
+export const NO_SELECTION: SelectionState = { mode: "none" };
+
+export type SelectionEvent =
+  /** The mouse button went down — on text (hit) or off it (null). */
+  | { type: "press"; hit: PaneHit | null }
+  /** The pointer moved with the button down. */
+  | { type: "drag"; hit: PaneHit | null }
+  /** The button was let go. */
+  | { type: "release"; hit: PaneHit | null };
+
+export type SelectionMove =
+  | { ok: true; state: SelectionState; changed: boolean }
+  | { ok: false; state: SelectionState; reason: string };
+
+function withFocus(range: PaneSelection, hit: PaneHit | null): PaneSelection {
+  if (!hit || hit.pane !== range.pane) return range;
+  if (range.focusLine === hit.lineIndex && range.focusCol === hit.col) return range;
+  return { ...range, focusLine: hit.lineIndex, focusCol: hit.col };
+}
+
+/** The one setter's rule: the new state, or a refusal that keeps `from`. */
+export function moveSelection(from: SelectionState, event: SelectionEvent): SelectionMove {
+  switch (event.type) {
+    case "press": {
+      const hit = event.hit;
+      if (!hit) {
+        return from.mode === "none"
+          ? { ok: true, state: from, changed: false }
+          : { ok: true, state: NO_SELECTION, changed: true };
+      }
+      return {
+        ok: true,
+        state: {
+          mode: "dragging",
+          range: {
+            pane: hit.pane,
+            anchorLine: hit.lineIndex,
+            anchorCol: hit.col,
+            focusLine: hit.lineIndex,
+            focusCol: hit.col,
+          },
+        },
+        changed: true,
+      };
+    }
+    case "drag": {
+      if (from.mode !== "dragging") return { ok: false, state: from, reason: "not dragging" };
+      const range = withFocus(from.range, event.hit);
+      if (range === from.range) return { ok: true, state: from, changed: false };
+      return { ok: true, state: { mode: "dragging", range }, changed: true };
+    }
+    case "release": {
+      if (from.mode !== "dragging") return { ok: false, state: from, reason: "not dragging" };
+      return {
+        ok: true,
+        state: { mode: "selected", range: withFocus(from.range, event.hit) },
+        changed: true,
+      };
+    }
+  }
+}
+
+/** The stretch to highlight, or null when nothing is selected. */
+export function selectionRange(state: SelectionState): PaneSelection | null {
+  return state.mode === "none" ? null : state.range;
 }
 
 export interface PaneHitTestInput {
