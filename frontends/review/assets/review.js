@@ -68,7 +68,34 @@
     }
   }
   let HOSTED_MODE = false, IS_OWNER = true, OWNER_HANDLE = null, APPLY = { cards: {}, round: null }, PENDING_M = [];
-  let SRC_DIRTY = null, lastCommit = null; // null = server predates the source_dirty field
+  let SRC_DIRTY = null; // null = server predates the source_dirty field
+  // ---- the "✓ committed" note in the Changes box: ONE mode, changed only through setCommitNote() ----
+  //   none      — no note (the box says "none pending" when nothing waits)
+  //   committed — a commit just went through; the note names its sha for a
+  //               few seconds, then a timer asks for the move back to none
+  // (While a commit request is out its button is greyed; a failed commit is
+  // a message at the bottom of the screen. Neither is a note mode.)
+  const COMMIT_NOTE_MODES = ['none', 'committed'];
+  const COMMIT_NOTE_MOVES = { none: ['committed'], committed: ['committed', 'none'] }; // committed -> committed: a newer commit replaces the note
+  const COMMIT_NOTE_SHOWN_MS = 8000;
+  const COMMIT_NOTE = { mode: 'none', sha: '', seq: 0, timer: null };
+  // the one setter: refuses a move the table does not allow (returns false).
+  // Each move into committed starts its own timer and stops the one before,
+  // and a timer only clears the note it was started for, so an earlier
+  // commit's timer can never clear a newer note. Redraws on every move.
+  function setCommitNote(next, sha = '') {
+    if (!COMMIT_NOTE_MODES.includes(next) || !COMMIT_NOTE_MOVES[COMMIT_NOTE.mode].includes(next)) return false;
+    clearTimeout(COMMIT_NOTE.timer);
+    COMMIT_NOTE.timer = null;
+    COMMIT_NOTE.mode = next;
+    COMMIT_NOTE.sha = next === 'committed' ? String(sha || '') : '';
+    if (next === 'committed') {
+      const seq = ++COMMIT_NOTE.seq;
+      COMMIT_NOTE.timer = setTimeout(() => { if (COMMIT_NOTE.seq === seq) setCommitNote('none'); }, COMMIT_NOTE_SHOWN_MS);
+    }
+    rerender();
+    return true;
+  }
   const idHeaders = () => {
     const h = {};
     if (localStorage.getItem(HKEY)) h['x-review-handle'] = localStorage.getItem(HKEY);
@@ -1447,8 +1474,8 @@
     bar.classList.toggle('attention', !!(applyable.length || round));
     let html = APPLY.error ? `<div class="status-chip err">${esc(APPLY.error)}</div>` : '';
     if (!round && !applyable.length) {
-      html += lastCommit && Date.now() - lastCommit.t < 8000
-        ? `<div class="chg-state ok fade">✓ committed ${esc(lastCommit.sha)}</div>`
+      html += COMMIT_NOTE.mode === 'committed'
+        ? `<div class="chg-state ok fade">✓ committed ${esc(COMMIT_NOTE.sha)}</div>`
         : `<div class="chg-state muted">none pending</div>
            <div class="chg-legend">accept → ⚡ apply → read → ✓ commit (or ↩ revert)</div>`;
     }
@@ -1477,9 +1504,8 @@
     busy('#commit-round', () =>
       api('/commit', { method: 'POST', body: '{}' }).then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
-        if (j.ok) { lastCommit = { sha: j.sha, t: Date.now() }; setTimeout(rerender, 8500); }
         toast(j.ok ? `Committed ${j.sha}: ${j.ids.join(', ')}` : j.reason, !j.ok);
-        rerender();
+        if (!j.ok || !setCommitNote('committed', j.sha)) rerender();
       }));
     busy('#revert-round', () =>
       api('/revert', { method: 'POST', body: '{}' }).then(r => r.json()).then(j => {
@@ -1492,12 +1518,9 @@
     busy('#commit-oob', () =>
       api('/commit', { method: 'POST', body: JSON.stringify({ files: outOfBand }) }).then(r => r.json()).then(j => {
         if (j.apply) APPLY = j.apply;
-        if (j.ok) {
-          lastCommit = { sha: j.sha, t: Date.now() }; setTimeout(rerender, 8500);
-          SRC_DIRTY = (SRC_DIRTY || []).filter(f => !(j.files || outOfBand).includes(f));
-        }
+        if (j.ok) SRC_DIRTY = (SRC_DIRTY || []).filter(f => !(j.files || outOfBand).includes(f));
         toast(j.ok ? `Committed ${j.sha} (out-of-band): ${(j.files || outOfBand).join(', ')}` : (j.reason || 'commit failed'), !j.ok);
-        rerender();
+        if (!j.ok || !setCommitNote('committed', j.sha)) rerender();
       }));
     // release: each waiting request is offered to the agents; only the ones
     // they take leave the queue, and the message counts both
@@ -2575,5 +2598,6 @@
     openComposer, setSync, SYNC_MODES, get sync() { return SYNC.mode; }, setChatMode, CHAT_MODES, setAgentWork, AGENT_WORK, PRESENCE, MODELS,
     setCardMode, cardMode, doApply, activityOf, setChip, chipMode, CHIP_MODES,
     get link() { return LINK.mode; },
+    setCommitNote, COMMIT_NOTE_MODES, get commitNote() { return COMMIT_NOTE.mode; },
   };
 })();

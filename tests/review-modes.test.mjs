@@ -676,7 +676,9 @@ function buildPage() {
 
 // review.js running LIVE in happy-dom against a stubbed server: `data` is
 // merged into /data; `routes` answer POSTs (a throw = the server unreachable)
-async function page(t, { data = {}, routes = {} }) {
+// `shrink` maps a timer length the page uses to a shorter one, so a test
+// need not sit through the real seconds (e.g. { 8000: 150 })
+async function page(t, { data = {}, routes = {}, shrink = {} }) {
   const { html, js } = buildPage();
   const { GlobalWindow } = await import('happy-dom');
   const vm = await import('node:vm');
@@ -712,6 +714,8 @@ async function page(t, { data = {}, routes = {} }) {
     message(data) { this.onmessage && this.onmessage({ data }); }
     close() { this.closed = true; }
   };
+  const realSetTimeout = w.setTimeout.bind(w);
+  w.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, shrink[ms] ?? ms, ...rest);
   vm.createContext(w);
   for (const src of js) vm.runInContext(src, w);
   const tick = () => new Promise(r => setTimeout(r, 30));
@@ -910,4 +914,50 @@ test('link and turn: the turn in flight is set only by moving to busy, and clear
   chat.handle({ type: 'ready' });
   assert.equal(events.filter(e => e.kind === 'turn-end').length, 1, 'a late ready after gone ends nothing');
   assert.deepEqual(sent.map(s => s.type), ['input', 'input']);
+});
+
+// ============================== the "✓ committed" note (commit note mode)
+// The note used to be a time stamp read against an eight-second window, with
+// a bare timer to redraw: the timer was the mode. Now it is one named mode
+// changed through setCommitNote(), and a timer from an earlier commit cannot
+// clear a newer note.
+test('commit note: none → committed → none, and an earlier commit\'s timer never clears a newer note (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {
+    data: { apply: { cards: { s1: { mode: 'applied' } }, round: { ids: ['s1'], files: ['main.tex'] } } },
+    routes: { '/commit': () => ({ ok: true, sha: 'aaa1111', ids: ['s1'], apply: { cards: {}, round: null } }) },
+    shrink: { 8000: 200 },
+  });
+  const R = pg.R;
+  const bar = () => pg.doc.getElementById('apply-bar').textContent;
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  assert.deepEqual([...R.COMMIT_NOTE_MODES], ['none', 'committed']);
+  assert.equal(R.commitNote, 'none');
+  assert.equal(R.setCommitNote('none'), false, 'none -> none is not a move');
+  assert.equal(R.setCommitNote('committing'), false, 'not a mode');
+  pg.openConsole();
+  pg.doc.getElementById('commit-round').click();
+  await pg.tick();
+  assert.equal(R.commitNote, 'committed');
+  assert.match(bar(), /✓ committed aaa1111/);
+  await wait(120);
+  assert.equal(R.setCommitNote('committed', 'bbb2222'), true, 'a newer commit replaces the note');
+  await wait(130);                    // the first commit's timer would have fired by now
+  assert.equal(R.commitNote, 'committed', 'the older timer did not clear the newer note');
+  assert.match(bar(), /✓ committed bbb2222/);
+  await wait(150);
+  assert.equal(R.commitNote, 'none');
+  assert.doesNotMatch(bar(), /✓ committed/);
+  assert.match(bar(), /none pending/);
+});
+
+test('commit note: a commit the server refused leaves no note (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {
+    data: { apply: { cards: { s1: { mode: 'applied' } }, round: { ids: ['s1'], files: ['main.tex'] } } },
+    routes: { '/commit': () => ({ ok: false, reason: 'nothing to commit' }) },
+  });
+  pg.openConsole();
+  pg.doc.getElementById('commit-round').click();
+  await pg.tick();
+  assert.equal(pg.R.commitNote, 'none');
+  assert.match(pg.toasts(), /nothing to commit/);
 });
