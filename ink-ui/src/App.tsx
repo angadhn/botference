@@ -51,6 +51,12 @@ import {
   type MouseMode,
 } from "./mouseMode.js";
 import {
+  canMoveScrollGlide,
+  moveScrollGlide,
+  targetFollowsPane,
+  type ScrollGlideMode,
+} from "./scrollGlide.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -649,7 +655,29 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const roomScrollRef = useRef(0);
   const roomScrollTargetRef = useRef(0);
   const roomMaxScrollRef = useRef(0);
-  const scrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The one field for "is the pane gliding to a scroll position?" (named
+  // modes in scrollGlide.ts), with the tick's timer as a detail of gliding;
+  // changed only through moveGlide() below.
+  const scrollGlideRef = useRef<{
+    mode: ScrollGlideMode;
+    timer: ReturnType<typeof setInterval> | null;
+  }>({ mode: "still", timer: null });
+  const moveGlide = useCallback((
+    to: ScrollGlideMode,
+    timer: ReturnType<typeof setInterval> | null = null,
+  ): boolean => {
+    const from = scrollGlideRef.current;
+    const move = moveScrollGlide(from.mode, to);
+    if (!move.ok) {
+      flightRecorder.note(`glide_move_refused:${from.mode}->${to}`);
+      return false;
+    }
+    if (!move.changed) return false;
+    // Leaving gliding stops its tick; only gliding keeps a timer.
+    if (from.timer) clearInterval(from.timer);
+    scrollGlideRef.current = { mode: move.mode, timer: move.mode === "gliding" ? timer : null };
+    return true;
+  }, []);
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
   const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
   const streamSegmentsRef = useRef<Map<string, StreamSegmentState>>(new Map());
@@ -746,8 +774,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   roomScrollRef.current = roomScroll;
 
   const startScrollDrain = useCallback(() => {
-    if (scrollTimerRef.current) return;
-    scrollTimerRef.current = setInterval(() => {
+    if (!canMoveScrollGlide(scrollGlideRef.current.mode, "gliding")) return;
+    const timer = setInterval(() => {
       const roomTarget = clampScrollOffset(roomScrollTargetRef.current, roomMaxScrollRef.current);
       roomScrollTargetRef.current = roomTarget;
 
@@ -755,12 +783,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       roomScrollRef.current = nextRoomScroll;
       setRoomScroll(nextRoomScroll);
 
-      if (nextRoomScroll === roomTarget && scrollTimerRef.current) {
-        clearInterval(scrollTimerRef.current);
-        scrollTimerRef.current = null;
-      }
+      if (nextRoomScroll === roomTarget) moveGlide("still");
     }, 16);
-  }, []);
+    if (!moveGlide("gliding", timer)) clearInterval(timer);
+  }, [moveGlide]);
 
   const nextPacedEntryIdRef = useRef(1);
 
@@ -990,7 +1016,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
   useEffect(() => {
     return () => {
-      if (scrollTimerRef.current) clearInterval(scrollTimerRef.current);
+      moveGlide("closed");
       for (const timer of pacedTimersRef.current) clearInterval(timer);
       pacedTimersRef.current.clear();
     };
@@ -1002,7 +1028,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   }, [roomMaxScroll]);
 
   useEffect(() => {
-    if (!scrollTimerRef.current) roomScrollTargetRef.current = roomScroll;
+    if (targetFollowsPane(scrollGlideRef.current.mode)) roomScrollTargetRef.current = roomScroll;
   }, [roomScroll]);
 
   // ── Shift+Enter — insert newline (intercepted at stdin filter level) ──
