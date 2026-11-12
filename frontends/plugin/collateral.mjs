@@ -441,7 +441,7 @@ export function coveredBy(region, threads) {
 //   · `!t.auto` — an auto-thread from an earlier turn is the machine's note,
 //     not a reader's comment, and a second change to that passage is news to
 //     report (a fresh thread) rather than a rewrite of the note.
-//   · `!t.resolved` — a filed thread is closed. Re-anchoring it would drag it
+//   · `!isResolved(t)` — a filed thread is closed. Re-anchoring it would drag it
 //     back onto the page under a green highlight nobody asked to move.
 //   · the region must have OLD text, and the thread's quote must be covered by
 //     it. Coverage either way, like everywhere else here: a comment on one

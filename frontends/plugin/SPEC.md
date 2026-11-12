@@ -12523,3 +12523,21 @@ where noted.
   none (nothing left to send). Exposed on `FigureTextEditorCore` for
   `test/pagemodes.test.mjs`. (The editor's own `sending` yes/no beside it is
   not touched — see the open list.)
+- **The comment status's shadow flags are gone** (replaces "the old flags are
+  kept as a shadow" in "comment status, one field"). Nothing writes
+  `resolved` / `addressed` any more: `store.setThreadStatus` and the
+  drawer's `setThreadStage` strip them; `normalizeThreadStatus` converts a
+  record that has flags and no `status` (resolved outranks ready outranks
+  open) and strips the flags, on read (`readPage`) and again on every
+  `savePage`. `threadStage` (store, drawer) reads the flags only when
+  `status` is missing; `isFiled` in reader.js and the PDF viewer's copy of it
+  do the same. The `_at` / `_by` stamps stay. Everything else reads
+  `threadStage` / `isResolved` / `isAddressed`, or `status`: the library
+  prompt (chat.mjs `libraryPrompt`) now describes `status` and how to read an
+  old file's flags; the PDF viewer's "filed threads are not written out" rule;
+  the harness's fake companion (`stageOf` / `normalizeStatus`, stripped as
+  the real one does). An older drawer or phone page that reads only the flags
+  will see every thread as open until it is reloaded. `test/status.test.mjs`
+  holds a source check that only the conversion path reads `.resolved` /
+  `.addressed` (and server.mjs's mirrored review comment, which is not a
+  thread).

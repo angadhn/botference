@@ -709,16 +709,16 @@ async function main() {
   // on the next machine, months later.
   await test('POST /resolve files a thread, and the state is in the record', async () => {
     const before = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
-    assert.equal(before.threads[0].resolved, undefined, 'nothing is resolved until somebody says so');
+    assert.notEqual(before.threads[0].status, 'resolved', 'nothing is resolved until somebody says so');
 
     const r = await POST(base, '/resolve', { url: PAGE1, thread_id: t1.id, resolved: true });
     assert.equal(r.status, 200);
-    assert.equal(r.json.thread.resolved, true);
+    assert.equal(r.json.thread.status, 'resolved');
     assert.ok(r.json.thread.resolved_at, 'stamped');
     assert.ok(r.json.thread.resolved_by, 'and attributed — a reopen cannot recover who filed it');
 
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
-    assert.equal(page.threads[0].resolved, true, 'it survives the round trip, which is the whole feature');
+    assert.equal(page.threads[0].status, 'resolved', 'it survives the round trip, which is the whole feature');
     assert.ok(page.threads[0].summary, 'and it is filed with a summary, written in the same request');
   });
 
@@ -741,7 +741,7 @@ async function main() {
     // The one thing that must never happen: a summary landing as a reply would
     // append a message, and appending a message REOPENS the thread — so the
     // feature would silently undo itself on every use.
-    assert.equal(t.resolved, true, 'summarizing a filed thread does not reopen it');
+    assert.equal(t.status, 'resolved', 'summarizing a filed thread does not reopen it');
     assert.ok(!(t.msgs || []).some(m => /file a resolved comment thread/i.test(m.text || '')),
       'and nothing about the summary turn is in the thread');
   });
@@ -762,11 +762,11 @@ async function main() {
   await test('POST /resolve reopens, and a reopened thread keeps no resolved fields', async () => {
     const r = await POST(base, '/resolve', { url: PAGE1, thread_id: t1.id, resolved: false });
     assert.equal(r.status, 200);
-    assert.equal(r.json.thread.resolved, undefined);
+    assert.notEqual(r.json.thread.status, 'resolved');
     assert.equal(r.json.thread.resolved_at, undefined);
     assert.equal(r.json.thread.resolved_by, undefined);
     const page = (await GET(base, `/page?url=${encodeURIComponent(PAGE1)}`)).json;
-    assert.equal(page.threads[0].resolved, undefined, 'open again, and indistinguishable from never-resolved');
+    assert.notEqual(page.threads[0].status, 'resolved', 'open again, and indistinguishable from never-resolved');
     assert.ok(page.threads[0].summary, 'the summary survives — it is still true, and a re-resolve reuses it');
   });
 
@@ -780,10 +780,10 @@ async function main() {
       msg: { text: 'is this still true?' },
     })).json.thread;
     await POST(base, '/resolve', { url: REOPEN_URL, thread_id: t.id, resolved: true });
-    assert.equal((await GET(base, `/page?url=${encodeURIComponent(REOPEN_URL)}`)).json.threads[0].resolved, true);
+    assert.equal((await GET(base, `/page?url=${encodeURIComponent(REOPEN_URL)}`)).json.threads[0].status, 'resolved');
     await POST(base, '/reply', { url: REOPEN_URL, thread_id: t.id, text: 'actually, one more thing.' });
     const page = (await GET(base, `/page?url=${encodeURIComponent(REOPEN_URL)}`)).json;
-    assert.equal(page.threads[0].resolved, undefined, 'writing into it makes it live again');
+    assert.notEqual(page.threads[0].status, 'resolved', 'writing into it makes it live again');
     assert.ok(page.threads[0].summary, '…and the paragraph it was filed with is still there, unused');
   });
 
@@ -798,7 +798,7 @@ async function main() {
     await waitFor(() => stream.events.slice(before).some(e => e.kind === 'turn-end'), 'the turn');
     const page = await waitFor(async () => {
       const p = (await GET(base, `/page?url=${encodeURIComponent(REOPEN_URL)}`)).json;
-      return p.threads[0].resolved === undefined ? p : null;
+      return p.threads[0].status !== 'resolved' ? p : null;
     }, 'the bot reply to reopen it');
     assert.ok(page.threads[0].msgs.some(m => /MOCK claude reply/.test(m.text)), 'the answer is in the thread');
   });
@@ -818,19 +818,19 @@ async function main() {
     })).json.thread;
     const page = await waitFor(async () => {
       const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
-      return p.threads[0].addressed ? p : null;
+      return p.threads[0].status === 'ready' ? p : null;
     }, 'the bot answer to mark it');
     assert.equal(page.threads[0].id, t.id);
     assert.ok(page.threads[0].addressed_at, 'stamped');
     assert.match(String(page.threads[0].addressed_by), /^claude/, 'and the bot is named as the claimant');
-    assert.equal(page.threads[0].resolved, undefined, 'the reader files it, and nothing else does');
+    assert.notEqual(page.threads[0].status, 'resolved', 'the reader files it, and nothing else does');
   });
 
   await test('the READER writing there makes it their open question again', async () => {
     const id = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json.threads[0].id;
     await POST(base, '/reply', { url: READY_URL, thread_id: id, text: 'not quite — the second half.' });
     const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
-    assert.equal(p.threads[0].addressed, undefined);
+    assert.notEqual(p.threads[0].status, 'ready');
     assert.equal(p.threads[0].addressed_at, undefined);
     assert.equal(p.threads[0].addressed_by, undefined, 'no addressed fields left behind: state, not history');
   });
@@ -841,19 +841,19 @@ async function main() {
     // second reader can hand a thread over without replying into it
     const on = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: true });
     assert.equal(on.status, 200);
-    assert.equal(on.json.thread.addressed, true);
+    assert.equal(on.json.thread.status, 'ready');
 
     const off = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: false });
     assert.equal(off.status, 200);
-    assert.equal(off.json.thread.addressed, undefined);
+    assert.notEqual(off.json.thread.status, 'ready');
     const p = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json;
-    assert.equal(p.threads[0].addressed, undefined, 'it survives the round trip');
-    assert.equal(p.threads[0].resolved, undefined, '…and nothing was filed on the reader\'s behalf');
+    assert.notEqual(p.threads[0].status, 'ready', 'it survives the round trip');
+    assert.notEqual(p.threads[0].status, 'resolved', '…and nothing was filed on the reader\'s behalf');
 
     // a form has no booleans, and the reading room's button posts one
     const bare = await POST(base, '/addressed', { url: READY_URL, thread_id: id });
     assert.equal(bare.status, 200);
-    assert.equal(bare.json.thread.addressed, undefined, 'an absent flag means "not done"');
+    assert.notEqual(bare.json.thread.status, 'ready', 'an absent flag means "not done"');
     assert.equal((await POST(base, '/addressed', { url: READY_URL, thread_id: 'no-such' })).status, 404);
   });
 
@@ -861,8 +861,8 @@ async function main() {
     const id = (await GET(base, `/page?url=${encodeURIComponent(READY_URL)}`)).json.threads[0].id;
     await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: true });
     const filed = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: true });
-    assert.equal(filed.json.thread.resolved, true);
-    assert.equal(filed.json.thread.addressed, undefined, 'the reader looked; the claim has done its job');
+    assert.equal(filed.json.thread.status, 'resolved');
+    assert.notEqual(filed.json.thread.status, 'ready', 'the reader looked; the claim has done its job');
     assert.equal(filed.json.thread.status, 'resolved', 'the one stored status says the same');
     // a filed thread cannot be handed back as "ready" without reopening it
     // first — that jump is what used to store both flags at once
@@ -873,8 +873,8 @@ async function main() {
     const notDone = await POST(base, '/addressed', { url: READY_URL, thread_id: id, addressed: false });
     assert.equal(notDone.json.thread.status, 'resolved');
     const back = await POST(base, '/resolve', { url: READY_URL, thread_id: id, resolved: false });
-    assert.equal(back.json.thread.resolved, undefined);
-    assert.equal(back.json.thread.addressed, undefined,
+    assert.notEqual(back.json.thread.status, 'resolved');
+    assert.notEqual(back.json.thread.status, 'ready',
       '"not done" is what a reopen means — it must not land back in Ready for review');
     // …and let the filing turn that /resolve queued drain before anything else
     // snapshots the bridge's inputs: a straggler would land in someone's slice
@@ -911,7 +911,7 @@ async function main() {
     });
     const ready = await waitFor(async () => {
       const p = (await GET(base, `/page?url=${encodeURIComponent(MOVED_URL)}`)).json;
-      return p.threads[0].addressed ? p : null;
+      return p.threads[0].status === 'ready' ? p : null;
     }, 'the thread to go ready');
     assert.equal(ready.threads[0].quote, WAS, 'the anchor is still the old wording until a page proves otherwise');
 
@@ -1216,7 +1216,7 @@ async function main() {
     assert.equal(report.parent_ts, msgs[1].ts);
     assert.equal(msgs[1].stream_id, summoner.stream_id, 'the parent is findable by its stream id');
     assert.equal(msgs[4].text, 'MOCK claude after the build.', 'and the summoner was woken');
-    assert.equal(page.threads[0].addressed, true, 'the wake-up reply marks the thread, not the card');
+    assert.equal(page.threads[0].status, 'ready', 'the wake-up reply marks the thread, not the card');
   });
 
   // --- export -----------------------------------------------------------
@@ -2114,9 +2114,9 @@ async function main() {
       'the archive is named absolutely — the CLIs run with a different cwd');
     assert.ok(turn.includes('pages/*.json') && turn.includes('snapshots/<key>.html'),
       'both halves of the archive');
-    assert.ok(/threads:\[\{quote, msgs:\[\{author, ts, text\}\], resolved, summary\}\]/.test(turn),
+    assert.ok(/threads:\[\{quote, msgs:\[\{author, ts, text\}\], status, summary\}\]/.test(turn),
       'and the shape of what is inside them');
-    assert.ok(/resolved` set is one the reader\s+has marked handled/.test(turn),
+    assert.ok(/"resolved" \(the reader has\s+marked it handled and filed it/.test(turn),
       '…including what a resolved thread means, so the archive is not read as all-open');
     assert.ok(/Never write, create or edit a file here/.test(turn), 'reads only, said in the turn itself');
     assert.ok(!turn.includes('[web page:'), 'no page context, because there is no page');
@@ -4466,11 +4466,11 @@ async function main() {
     await mirror([c]);
     const id = (await rcPage()).threads.find(t => t.origin.id === RC2).id;
     await mirror([{ ...c, resolved: true }]);
-    assert.equal((await rcPage()).threads.find(t => t.origin.id === RC2).resolved, true);
+    assert.equal((await rcPage()).threads.find(t => t.origin.id === RC2).status, 'resolved');
     // the reader disagrees, here, with a click
     await POST(base, '/resolve', { url: REVIEW_URL, thread_id: id, resolved: false });
     await mirror([{ ...c, resolved: true }]);
-    assert.equal((await rcPage()).threads.find(t => t.origin.id === RC2).resolved, undefined,
+    assert.notEqual((await rcPage()).threads.find(t => t.origin.id === RC2).status, 'resolved',
       'resolving travels one way: a stale review record must not close a thread the reader reopened');
   });
 

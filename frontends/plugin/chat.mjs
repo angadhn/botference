@@ -227,13 +227,16 @@ The archive is on this machine, at ${dir} :
 
   pages/*.json — one file per annotated page:
     {url, title, custom_title, kind, tags, site, updated_at,
-     threads:[{quote, msgs:[{author, ts, text}], resolved, summary}],
+     threads:[{quote, msgs:[{author, ts, text}], status, summary}],
      page_chat:[{author, ts, text}]}
     where \`quote\` is the passage the reader highlighted and the msgs beneath it
     are their comment on it and any replies; \`page_chat\` is their conversation
-    about the page as a whole. A thread with \`resolved\` set is one the reader
-    has marked handled and filed — \`summary\` is the record of what it settled,
-    and a resolved thread is closed business, not an open question. An author
+    about the page as a whole. A thread's \`status\` is "open", "ready" (a bot
+    has answered and it waits on the reader) or "resolved" (the reader has
+    marked it handled and filed it — \`summary\` is the record of what it
+    settled, and a resolved thread is closed business, not an open question).
+    A few old files have no \`status\`, only \`resolved: true\` (filed) or
+    \`addressed: true\` (ready); read those the same way. An author
     of "claude" or "codex" is one of you;
     anything else is a person. \`tags\` are labels the reader put on the page
     themselves and \`custom_title\` is their own name for it, so both are worth

@@ -2060,14 +2060,14 @@ console.log('\ncompanion — POST /send-review');
     await waitFor(async () => {
       const page = (await GET(base, '/page?url=' + enc(a.url))).json;
       const t = (page.threads || []).find(x => x.id === t2.id);
-      return t && t.addressed;
+      return t && t.status === 'ready';
     }, 'codex answering the tagged thread');
     // the reader says "not done" — the one clearing that summons nobody, so the
     // thread is open again with the reader's own "@codex" still its last word
     await POST(base, '/addressed', { url: a.url, thread_id: t2.id, addressed: false });
     await waitFor(async () => {
       const page = (await GET(base, '/page?url=' + enc(a.url))).json;
-      return !(page.threads || []).some(t => t.addressed);
+      return !(page.threads || []).some(t => t.status === 'ready');
     }, 'both threads open again');
     ids = [t1.id, t2.id];
     fs.writeFileSync(logFile, '');
@@ -2158,7 +2158,7 @@ console.log('\ncompanion — POST /send-review');
   await test('…so every thread flips to ready for review, through the SAME choke point', async () => {
     await waitFor(async () => {
       const page = (await GET(base, '/page?url=' + enc(a.url))).json;
-      return ids.every(id => ((page.threads || []).find(x => x.id === id) || {}).addressed);
+      return ids.every(id => ((page.threads || []).find(x => x.id === id) || {}).status === 'ready');
     }, 'addressed on both threads');
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     for (const id of ids) {
@@ -2213,7 +2213,7 @@ console.log('\ncompanion — POST /send-review');
   await test('the threads are left OPEN — resolution stays the reader\'s click', async () => {
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     assert.equal(page.threads.length, 2);
-    assert.ok(page.threads.every(t => !t.resolved), 'nothing was filed on the reader\'s behalf');
+    assert.ok(page.threads.every(t => t.status !== 'resolved'), 'nothing was filed on the reader\'s behalf');
   });
 
   await test('a second round after the first sends nothing: every thread is ready', async () => {
@@ -2375,7 +2375,7 @@ console.log('\ncompanion — POST /send-review on a page with no draft');
     const page = (await GET(base, '/page?url=' + enc(a.url))).json;
     assert.ok((page.page_chat || []).some(m => /Review round:/.test(m.text)),
       'a refusal loses the review nowhere');
-    assert.ok((page.threads || []).every(t => !t.addressed), 'and claims nothing about any thread');
+    assert.ok((page.threads || []).every(t => t.status !== 'ready'), 'and claims nothing about any thread');
   });
 
   await test('a second click within seconds sends nothing twice', async () => {

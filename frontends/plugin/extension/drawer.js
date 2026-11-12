@@ -283,9 +283,10 @@
   // the same three names, the same move table, the same refusal, held to the
   // companion's by test/status.test.mjs. A record from before `status` (only
   // the old `resolved` / `addressed` flags) reads by the old rule: resolved
-  // outranks ready outranks open. The companion still writes those flags as a
-  // shadow of the status, for older readers; nothing here reads or writes them
-  // except to keep that shadow true on our local copy.
+  // outranks ready outranks open. Nothing writes those flags any more: the
+  // setter strips them from our local copy, as the companion strips them from
+  // the record. threadStage is their only reader, and only when `status` is
+  // missing.
   const THREAD_STAGES = Object.freeze(['open', 'ready', 'resolved']);
   const THREAD_MOVES = Object.freeze({
     open: Object.freeze(['open', 'ready', 'resolved']),
@@ -298,7 +299,8 @@
     : THREAD_STAGES.indexOf(t.status) >= 0 ? t.status
     : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
   // the stage's own fields: what an optimistic move changes, and what a
-  // refused one puts back (threadStatusFields / restoreThreadStatus)
+  // refused one puts back exactly (threadStatusFields / restoreThreadStatus) —
+  // an old record's flags included, so it is put back as it came
   const STATUS_FIELDS = ['status', 'resolved', 'resolved_at', 'resolved_by', 'addressed', 'addressed_at', 'addressed_by'];
   // THE ONE SETTER on this side — the local copy only; the companion's answer
   // replaces it. Same answers as store.setThreadStatus: { changed } or
@@ -313,8 +315,7 @@
     if (next === 'ready' && by) t.addressed_by = String(by);
     if (next === 'resolved' && by) t.resolved_by = String(by);
     t.status = next;
-    if (next === 'resolved') t.resolved = true; else delete t.resolved;
-    if (next === 'ready') t.addressed = true; else delete t.addressed;
+    delete t.resolved; delete t.addressed;   // the old flags: `status` is the truth
     return { changed: from !== next };
   }
   // An optimistic move the companion then refused is UNDONE, not moved back:

@@ -308,7 +308,7 @@ console.log('\nthe thread the companion writes');
 // The server writes these through store.addThread + store.setThreadStatus and
 // nothing else — no new persistence, no new endpoint. This composes that here,
 // exactly as server.reportCollateral does, and checks the result is the triple
-// content.js paints from: `t.addressed && !t.resolved && t.prior_quote`.
+// content.js paints from: a thread ready for review (store.isAddressed) with a `prior_quote`.
 console.log('\nthe record content.js paints from');
 {
   const page = { url: 'file:///x/index.html', threads: [], page_chat: [] };
@@ -323,7 +323,7 @@ console.log('\nthe record content.js paints from');
   }
   const t = page.threads[0];
   eq('the thread is on the page', page.threads.length, 1);
-  check('addressed — the amber middle state', !!t.addressed && !t.resolved);
+  check('addressed — the amber middle state', store.isAddressed(t) && !store.isResolved(t));
   check('…and attributed to the bot that did it', /^claude/.test(t.addressed_by || ''));
   check('prior_quote is the struck half', !!t.prior_quote);
   check('auto is set, which is what a LATER turn\'s dedupe reads', t.auto === true);
@@ -456,9 +456,9 @@ const reader = (over = {}) => ({
   eq('the anchor is the new wording', t.quote, 'The report called it a failure of oversight by the board.');
   eq('prior_quote is the reader\'s original passage', t.prior_quote, QUOTE);
   check('no longer orphaned', t.orphaned === false);
-  check('addressed — the amber middle state, from the appended note', !!t.addressed && !t.resolved);
+  check('addressed — the amber middle state, from the appended note', store.isAddressed(t) && !store.isResolved(t));
   check('the paint contract content.js reads is satisfied',
-    !!(t.addressed && !t.resolved && t.prior_quote));
+    !!(store.isAddressed(t) && t.prior_quote));
   check('healed_at is stamped', typeof t.healed_at === 'string' && t.healed_at.length > 0);
   check('it is still the READER\'S thread, never marked auto', t.auto === undefined);
   // …and prior_quote is written ONCE: a passage rewritten twice still has one
