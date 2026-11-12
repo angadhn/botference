@@ -13,9 +13,9 @@
   const $ = id => document.getElementById(id);
   const els = {
     side: $('side'), backdrop: $('backdrop'), burger: $('burger'), sideClose: $('side-close'),
-    newChat: $('new-chat'), newProject: $('new-project'),
-    newChatMenu: $('new-chat-menu'),
-    newProjForm: $('new-project-form'), newProjTitle: $('new-project-title'),
+    newChat: $('new-chat'), newChatLabel: $('new-chat-label'),
+    search: $('panel-search'), searchX: $('panel-search-x'), pills: $('panel-pills'),
+    note: $('panel-note'), settings: $('panel-settings'), settingsPop: $('settings-pop'),
     projects: $('projects'), theme: $('theme-toggle'), typing: $('typing-toggle'),
     conn: $('st-conn'), stCtx: $('st-ctx'), stTitle: $('st-title'),
     agentCards: $('agent-cards'), agentsBody: $('agents-body'),
@@ -337,21 +337,22 @@
     routeSticky: '',                           // derived from the transcript
     presend: 'guarded',                        // one of PRESEND_MODES; moved only by setPresend
     projects: null,
-    openProjects: new Set(),   // expanded projects (any project, active or not)
-    // Which projects have their read-only contents panel open, and what the
-    // folder listing came back as. Per tab, never persisted, and fetched once
-    // — the panel payload carries the chats, and the FOLDER is deliberately
-    // not in it (see /project-contents in server.mjs).
-    openContents: new Set(),
-    contents: {},              // pid -> {loading, err, files:[…]}
-    lastActivePid: null,       // active project at the last 'projects' event
-    menuKey: null,         // '<place>:<sid>' of the chat row whose ⋯ menu is open
-                           // (a chat shows in Recent AND its project: one opens)
-    archOpen: false,       // "Archived" projects section expanded?
-    // has this chat already been asked where it should be filed? Set by the
-    // new-chat dropdown (the user answered up front) and by the first-send
-    // picker, cleared when we land in a different chat.
-    filingAsked: false,
+    // The left panel. Three named modes, each moved only by its own setter
+    // (the lists and the rules are at "left panel" below):
+    panel: Object.freeze({ view: 'chats' }),            // what the list shows: one of PANEL_VIEWS — setPanelView
+    row: Object.freeze({ mode: 'resting', key: '' }),   // what ONE row is doing: one of ROW_MODES — setRowMode
+    slideOut: 'closed',                                 // the panel itself: one of SLIDE_MODES — setSlideOut
+    panelNote: null,           // "Moved to X. Undo": null or {text, undo, open} — setPanelNote
+    homedSid: null,            // the chat the panel last opened itself onto
+    // a project's file list, read once per tab: pid -> {load, files}, where
+    // load is one of CONTENTS_LOADS — setContentsLoad
+    contents: {},
+    // the web-page chats (the browser plugin's): load is one of
+    // PAGE_CHATS_LOADS — setPageChatsLoad
+    pageChats: Object.freeze({ load: 'idle', rows: [], total: 0, base: '' }),
+    // "Copy into the council" on one web-page chat: state is one of
+    // PAGE_COPY_STATES — setPageCopy
+    pageCopy: Object.freeze({ state: 'idle', id: '', sid: '', project: '', reused: false, error: '' }),
     // what the transcript pane is doing: one of TRANSCRIPT_MODES, moved only
     // by setTranscriptMode. A page boots catching up on the server's replay.
     transcriptMode: 'catching_up',
@@ -2537,80 +2538,336 @@
     if (!offscreen()) { updateEmpty(); follow(wasPinned); }
   }
 
-  // ── sidebar ──
+  // ── left panel: two pills (Chats / Projects), flat lists, one "more" per row ──
+  //
+  // Three things can be "open" here and each is ONE named mode in ONE field,
+  // moved by ONE setter that refuses a move its pure rule does not allow:
+  //
+  //   what the list shows      PANEL_VIEWS   state.panel     setPanelView
+  //   what one row is doing    ROW_MODES     state.row       setRowMode
+  //   the panel itself         SLIDE_MODES   state.slideOut  setSlideOut
+  //
+  // state.row is one field for the WHOLE panel, so only one row can ever be
+  // busy: opening a second menu is a move, not a second flag.
   const relTime = iso => {
     const t = Date.parse(iso || '');
     if (!t) return '';
     const d = (Date.now() - t) / 1000;
     if (d < 3600) return `${Math.max(1, Math.round(d / 60))}m`;
     if (d < 86400) return `${Math.round(d / 3600)}h`;
-    return `${Math.round(d / 86400)}d`;
+    if (d < 7 * 86400) return `${Math.round(d / 86400)}d`;
+    if (d < 30 * 86400) return `${Math.round(d / (7 * 86400))}w`;
+    if (d < 365 * 86400) return `${Math.max(1, Math.round(d / (30 * 86400)))}mo`;
+    return `${Math.max(1, Math.round(d / (365 * 86400)))}y`;
   };
-  // Every project expands on tap and lists its own chats — opening a chat IS
-  // how you enter a project (the controller makes the chat's project active
-  // on resume), so there is no "make active project" step to click first.
-  function autoOpenActiveProject(p) {
-    // Expand the project you just landed in (first load, or when opening a
-    // chat moves you into another project). A manual collapse sticks until
-    // the active project changes again. Archived projects stay tucked away.
-    const pid = (p && p.active_project_id) || '';
-    const pr = (p && p.projects || []).find(x => x.id === pid);
-    if (pid && pid !== state.lastActivePid && (!pr || (pr.status || 'active') === 'active')) {
-      state.openProjects.add(pid);
+  const lpSvg = (body, w = 1.8) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+  const LP_ICON = {
+    more: '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5.5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="18.5" cy="12" r="1.6"/></svg>',
+    go: lpSvg('<path d="M9.5 5.5L16 12l-6.5 6.5"/>'),
+    back: lpSvg('<path d="M14.5 5.5L8 12l6.5 6.5"/>'),
+    out: lpSvg('<path d="M8 16L16.5 7.5M9.5 7.5h7v7"/>'),
+    plus: lpSvg('<path d="M12 5v14M5 12h14"/>', 2),
+  };
+
+  // ---- what the page knows about chats and projects ----------------------
+  const allProjects = () => (state.projects && state.projects.projects) || [];
+  const isLive = pr => (pr.status || 'active') === 'active';
+  const projectById = pid => allProjects().find(pr => pr.id === pid) || null;
+  const chatTitle = s => s.title || String(s.session_id).slice(0, 8);
+  // every chat in the last list from the controller, with where it is filed
+  function allChats() {
+    const p = state.projects;
+    const out = [];
+    if (!p) return out;
+    for (const s of p.inbox_sessions || []) out.push({ s, pid: '', project: '' });
+    for (const pr of p.projects || []) {
+      for (const s of pr.sessions || []) out.push({ s, pid: pr.id, project: pr.title || pr.id });
     }
-    state.lastActivePid = pid;
+    return out;
   }
-  // one chat row: the row itself resumes; ⋯ opens the row menu, all of whose
-  // items are plain slash commands (the controller owns any confirm step).
-  //
-  // THREE WAYS TO GET A CHAT OUT OF A LIST, and they are deliberately not one
-  // thing behind one word. In order of how much they cost you:
-  //
-  //   Remove from project  the chat is untouched; only its FILING goes, so it
-  //                        lands in Inbox and /file puts it wherever you meant.
-  //                        No confirm: it is reversible in one click.
-  //   Archive              the chat drops out of every list; every byte of it
-  //                        survives under archive/sessions/. /unarchive undoes
-  //                        it. No confirm, for the same reason.
-  //   Delete…              the chat ceases to exist. The controller answers
-  //                        with a confirm card in the transcript.
-  //
-  // The safe one is offered first and the destructive one last, because the
-  // commonest reason to want a chat out of a project's list is that it was
-  // filed in the wrong project — and deleting a chat over that is a loss with
-  // no cause.
-  //
-  // *place* names where the row is drawn ('recent', or 'p:<project id>'): the
-  // same chat appears in Recent and in its project block, and the open menu is
-  // keyed by place + id so only the row that was tapped opens. *chip* is the
-  // Recent list's project label; *pid* is the project the chat is filed in
-  // (empty for Inbox), which is what offers "Remove from project".
-  const menuKeyOf = (place, sid) => `${place}:${sid}`;
-  function chatRow(s, pid, { place = 'p:' + (pid || ''), chip = '' } = {}) {
-    const sid = esc(s.session_id);
-    const key = menuKeyOf(place, s.session_id);
-    const open = state.menuKey === key;
-    const recent = place === 'recent';
-    return `<div class="sess-row${open ? ' menu-open' : ''}">
-      <button class="sess${recent ? ' recent' : ''}${s.active ? ' active' : ''}" data-act="resume" data-sid="${sid}">
-        ${esc(s.title || s.session_id.slice(0, 8))}${
-          chip ? `<span class="chip">${esc(chip)}</span> ` : ''}<span class="when">${relTime(s.updated_at)}</span></button>
-      <button class="row-more" data-act="menu" data-sid="${sid}" data-menu="${esc(key)}" aria-haspopup="true"
-        aria-expanded="${open}" aria-label="actions for ${esc(s.title || s.session_id.slice(0, 8))}">⋯</button>
-      ${open ? `<div class="row-menu" role="menu">
-        ${pid ? `<button role="menuitem" data-act="unfile" data-sid="${sid}">Remove from project</button>` : ''}
-        <button role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
-        <button role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
-      </div>` : ''}
-    </div>`;
+  const findChat = sid => allChats().find(c => c.s.session_id === sid) || null;
+  // where the panel should open for a chat: inside its project, else Chats
+  function homeView(snapshot, sid) {
+    if (sid) {
+      for (const pr of (snapshot && snapshot.projects) || []) {
+        if ((pr.sessions || []).some(s => s.session_id === sid)) return { view: 'inside-project', pid: pr.id };
+      }
+    }
+    return { view: 'chats' };
   }
 
-  // ---- what is actually in a project ------------------------------------
-  // The chats are already in the panel payload; the FILES are not, and must
-  // not be — that payload is recomputed after every turn and pushed to every
-  // tab. So the folder is fetched once, when somebody opens the panel, and
-  // kept until the tab is reloaded. Read-only: nothing here opens, edits or
-  // deletes a file.
+  // ---- what the list shows ------------------------------------------------
+  //   chats           the chats filed nowhere (and, below them, web-page chats)
+  //   projects        the list of projects
+  //   inside-project  one project's chats (which one: state.panel.pid)
+  //   search          chat titles from everywhere (state.panel.query); `back`
+  //                   is the view to return to when the search is closed
+  const PANEL_VIEWS = Object.freeze(['chats', 'projects', 'inside-project', 'search']);
+  function panelViewMove(from, to) {
+    if (!from || !to || !PANEL_VIEWS.includes(from.view) || !PANEL_VIEWS.includes(to.view)) return false;
+    if (to.view === 'inside-project') {
+      return !!to.pid && (from.view !== 'inside-project' || from.pid !== to.pid);
+    }
+    if (to.view === 'search') {
+      return typeof to.query === 'string' && (from.view !== 'search' || from.query !== to.query);
+    }
+    return from.view !== to.view;
+  }
+  function setPanelView(view, detail = {}) {
+    const from = state.panel;
+    let to = { view };
+    if (view === 'inside-project') to = { view, pid: detail.pid || '' };
+    if (view === 'search') {
+      to = { view, query: typeof detail.query === 'string' ? detail.query : '',
+        back: from.view === 'search' ? from.back : from };
+    }
+    if (!panelViewMove(from, to)) return false;
+    if (view === 'inside-project' && !projectById(to.pid)) return false;
+    state.panel = Object.freeze(to);
+    if (state.row.mode !== 'resting') setRowMode('resting');
+    if (view === 'inside-project') loadContents(to.pid);
+    renderPanel();
+    return true;
+  }
+  function goHome() {
+    const h = homeView(state.projects, state.currentSid);
+    return setPanelView(h.view, h);
+  }
+  function leaveSearch() {
+    if (state.panel.view !== 'search') return;
+    const back = state.panel.back || { view: 'chats' };
+    if (!setPanelView(back.view, back)) setPanelView('chats');
+    if (typeof els.search.blur === 'function') els.search.blur();
+  }
+
+  // ---- what one row is doing ----------------------------------------------
+  //   resting             nothing is open
+  //   menu                the row's "more" menu is open (Settings is a row too)
+  //   moving              the row shows the list of projects to move into
+  //   renaming            the row's title is a text box
+  //   confirming-delete   the row asks "delete?" in place
+  //   naming-new-project  a text box for a new project's name: in the Projects
+  //                       list (key 'new-project'), or in a chat's move list
+  //                       (the chat's own key — the chat goes into it)
+  // `key` says whose row: 'chat:<id>', 'project:<id>', 'page:<id>',
+  // 'new-project' or 'settings'.
+  const ROW_MODES = Object.freeze(['resting', 'menu', 'moving', 'renaming', 'confirming-delete', 'naming-new-project']);
+  const ROW_MOVES = new Set([
+    'resting>menu', 'resting>naming-new-project',
+    'menu>menu', 'menu>moving', 'menu>renaming', 'menu>confirming-delete',
+    'moving>naming-new-project',
+    ...ROW_MODES.filter(m => m !== 'resting').map(m => m + '>resting'),
+  ]);
+  function rowMove(from, to) {
+    if (!from || !to || !ROW_MODES.includes(from.mode) || !ROW_MODES.includes(to.mode)) return false;
+    if (!ROW_MOVES.has(from.mode + '>' + to.mode)) return false;
+    if (to.mode === 'resting') return !to.key;          // nobody's row
+    if (!to.key) return false;                           // a busy row is somebody's
+    if (from.mode === 'resting') return true;
+    // another row's menu may open over this one; a step ON from a menu or a
+    // move list stays with the row it was opened on
+    return from.mode === 'menu' && to.mode === 'menu' ? from.key !== to.key : from.key === to.key;
+  }
+  function setRowMode(mode, key = '') {
+    const to = Object.freeze({ mode, key: mode === 'resting' ? '' : String(key || '') });
+    if (!rowMove(state.row, to)) return false;
+    state.row = to;
+    renderPanel();
+    return true;
+  }
+  function rowKeyExists(key) {
+    if (key === 'settings' || key === 'new-project') return true;
+    if (key.startsWith('chat:')) return !!findChat(key.slice(5));
+    if (key.startsWith('project:')) return !!projectById(key.slice(8));
+    if (key.startsWith('page:')) return state.pageChats.rows.some(r => r.id === key.slice(5));
+    return false;
+  }
+
+  // ---- web-page chats (the browser plugin's), read-only --------------------
+  // A chat about a web page lives in the plugin's records, not the council's,
+  // so it does not come with the list from the controller: the page asks the
+  // server (name, address and date only). Where that read stands is one of
+  // PAGE_CHATS_LOADS. The rows last read stay on screen while it is read
+  // again, and after a read that failed.
+  //   idle           not asked yet
+  //   loading        asked, no answer yet
+  //   reload-wanted  asked, no answer yet, and asked AGAIN meanwhile (after a
+  //                  copy, say): that answer may be stale, so it is read once
+  //                  more when it comes
+  //   ready          the rows are the server's last answer
+  //   failed         the last ask got no answer
+  const PAGE_CHATS_LOADS = Object.freeze(['idle', 'loading', 'reload-wanted', 'ready', 'failed']);
+  function pageChatsMove(from, to) {
+    if (!PAGE_CHATS_LOADS.includes(from) || !PAGE_CHATS_LOADS.includes(to)) return false;
+    if (to === 'reload-wanted') return from === 'loading';
+    // the read in flight came back and another is wanted: go again
+    if (to === 'loading') return from !== 'loading';
+    return (to === 'ready' || to === 'failed') && from === 'loading';
+  }
+  // got: the rows of the answer that just came, kept whatever the move
+  function setPageChatsLoad(to, got = null) {
+    const cur = state.pageChats;
+    if (!pageChatsMove(cur.load, to)) return false;
+    state.pageChats = Object.freeze(got
+      ? { load: to, rows: got.rows, total: got.total, base: got.base }
+      : { ...cur, load: to });
+    return true;
+  }
+  const PAGE_ID = /^[0-9a-f]{40}$/;
+  async function loadPageChats() {
+    // a read already in flight: the wish is kept, not dropped
+    if (state.pageChats.load === 'loading' || state.pageChats.load === 'reload-wanted') {
+      setPageChatsLoad('reload-wanted');
+      return;
+    }
+    if (!setPageChatsLoad('loading')) return;
+    await readPageChats();
+  }
+  async function readPageChats() {
+    let got = null;
+    try {
+      const r = await fetch('/page-chats', { credentials: 'same-origin' });
+      const d = r.ok ? await r.json() : null;
+      if (d && d.ok !== false) {
+        const rows = (Array.isArray(d.pages) ? d.pages : [])
+          .filter(p => p && PAGE_ID.test(String(p.id)))
+          .map(p => Object.freeze({ id: p.id, title: String(p.title || p.url || ''), url: String(p.url || ''),
+            updated_at: String(p.updated_at || '') }));
+        got = { rows, total: Math.max(Number(d.total) || 0, rows.length),
+          base: /^https?:\/\//.test(String(d.base || '')) ? String(d.base) : '' };
+      }
+    } catch { /* drawn as before; asked again the next time the list is opened */ }
+    if (state.pageChats.load === 'reload-wanted') {
+      setPageChatsLoad('loading', got);
+      renderPanel();
+      return readPageChats();
+    }
+    setPageChatsLoad(got ? 'ready' : 'failed', got);
+    if (state.row.mode !== 'resting' && !rowKeyExists(state.row.key)) setRowMode('resting');
+    renderPanel();
+  }
+
+  // ---- "Copy into the council": one copy at a time ------------------------
+  //   idle     nothing asked
+  //   copying  asked, no answer yet (Copy is shown disabled meanwhile)
+  //   done     copied, or it was already there: {sid, project, reused}
+  //   failed   refused or unreachable: {error}
+  // The note under the list says what the state is; it is drawn from it.
+  const PAGE_COPY_STATES = Object.freeze(['idle', 'copying', 'done', 'failed']);
+  function pageCopyMove(from, to) {
+    if (!PAGE_COPY_STATES.includes(from) || !PAGE_COPY_STATES.includes(to)) return false;
+    if (to === 'copying') return from !== 'copying';
+    if (to === 'done' || to === 'failed') return from === 'copying';
+    return to === 'idle' && from !== 'idle' && from !== 'copying';
+  }
+  function setPageCopy(to, info = {}) {
+    const cur = state.pageCopy;
+    if (!pageCopyMove(cur.state, to)) return false;
+    state.pageCopy = Object.freeze({
+      state: to,
+      id: to === 'copying' ? String(info.id || '') : to === 'idle' ? '' : cur.id,
+      sid: to === 'done' ? String(info.sid || '') : '',
+      project: to === 'done' ? String(info.project || '') : '',
+      reused: to === 'done' && !!info.reused,
+      error: to === 'failed' ? String(info.error || 'Could not reach the council. Try again.') : '',
+    });
+    const c = state.pageCopy;
+    if (to === 'copying') setPanelNote({ text: 'Copying…' });
+    else if (to === 'done') {
+      const pr = c.project ? projectById(c.project) : null;
+      const where = pr ? (pr.title || pr.id) : c.project ? 'its project' : 'Chats';
+      setPanelNote({ text: c.reused ? `Already in ${where}.` : `Copied into ${where}.`, open: c.sid });
+    } else if (to === 'failed') setPanelNote({ text: c.error });
+    if (state.row.mode === 'menu' && state.row.key.startsWith('page:')) renderPanel();
+    return true;
+  }
+
+  // ---- the panel itself: shown or tucked away -----------------------------
+  // One field for both widths: on a phone 'open' slides the panel over the
+  // chat; on a wide screen 'closed' folds it away (and that choice is kept).
+  const SLIDE_MODES = Object.freeze(['open', 'closed']);
+  function slideMove(from, to) {
+    return SLIDE_MODES.includes(from) && SLIDE_MODES.includes(to) && from !== to;
+  }
+  const narrow = () => window.matchMedia('(max-width: 900px)').matches;
+  const SIDE_KEY = 'council-side';
+  function sidePref() {
+    try { return localStorage.getItem(SIDE_KEY) === 'collapsed' ? 'closed' : 'open'; } catch { return 'open'; }
+  }
+  function applySlide() {
+    const open = state.slideOut === 'open';
+    const n = narrow();
+    document.body.classList.toggle('side-open', n && open);
+    document.body.classList.toggle('side-collapsed', !n && !open);
+    els.backdrop.hidden = !((n && open) || document.body.classList.contains('agents-open'));
+    els.burger.setAttribute('aria-expanded', String(open));
+  }
+  function setSlideOut(to) {
+    if (!slideMove(state.slideOut, to)) return false;
+    state.slideOut = to;
+    if (!narrow()) {
+      try { localStorage.setItem(SIDE_KEY, to === 'closed' ? 'collapsed' : ''); } catch { /* this visit only */ }
+    }
+    if (to === 'closed' && state.row.mode !== 'resting') setRowMode('resting');
+    // on a phone the panel always opens where the open chat lives
+    if (to === 'open' && narrow()) { goHome(); loadPageChats(); }
+    applySlide();
+    return true;
+  }
+  // only a phone's slide-out is closed by picking something
+  function closeSide() { if (narrow()) setSlideOut('closed'); }
+  els.burger.addEventListener('click', () => setSlideOut(state.slideOut === 'open' ? 'closed' : 'open'));
+  els.sideClose.addEventListener('click', closeSide);
+  els.backdrop.addEventListener('click', closeSide);
+  {
+    const mq = window.matchMedia('(max-width: 900px)');
+    // crossing between phone and wide: a phone starts tucked away, a wide
+    // screen goes back to what was last chosen there
+    if (mq && typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', () => { setSlideOut(narrow() ? 'closed' : sidePref()); applySlide(); });
+    }
+  }
+  // a wide screen starts with the panel shown, unless it was folded away
+  if (!narrow() && sidePref() === 'open') setSlideOut('open'); else applySlide();
+
+  // ---- the note that says what just happened, with a way back -------------
+  // null, or { text, undo, open } where undo is { action, args } for panelAct
+  // and open is the id of a chat the note offers to open. The timer only
+  // schedules the note's own move back to null.
+  const NOTE_MS = 7000;
+  let noteTimer = null;
+  function setPanelNote(note) {
+    clearTimeout(noteTimer);
+    noteTimer = null;
+    state.panelNote = note && note.text
+      ? Object.freeze({ text: String(note.text), undo: note.undo || null, open: note.open || '' }) : null;
+    if (state.panelNote) noteTimer = setTimeout(() => setPanelNote(null), NOTE_MS);
+    drawNote();
+  }
+  function drawNote() {
+    const n = state.panelNote;
+    els.note.hidden = !n;
+    els.note.innerHTML = !n ? '' : `<span>${esc(n.text)}</span>${
+      n.undo ? '<button type="button" data-act="undo">Undo</button>' : ''}${
+      n.open ? `<button type="button" data-act="note-open" data-sid="${esc(n.open)}">Open</button>` : ''}`;
+  }
+
+  // ---- a project's files, read-only ---------------------------------------
+  // The chats come with every list from the controller; the FILES do not (that
+  // list is rebuilt after every turn and pushed to every tab). So the folder
+  // is read once per tab, the first time the project is opened in the panel.
+  // Where that read stands is one of CONTENTS_LOADS per project.
+  const CONTENTS_LOADS = Object.freeze(['loading', 'ready', 'failed']);
+  function contentsMove(from, to) {
+    if (to === 'loading') return from == null || from === 'failed';
+    return (to === 'ready' || to === 'failed') && from === 'loading';
+  }
+  function setContentsLoad(pid, to, files = []) {
+    const cur = state.contents[pid];
+    if (!CONTENTS_LOADS.includes(to) || !contentsMove(cur ? cur.load : null, to)) return false;
+    state.contents[pid] = Object.freeze({ load: to, files: to === 'ready' ? files : [] });
+    return true;
+  }
   const KB = 1024;
   function humanBytes(n) {
     const v = Number(n) || 0;
@@ -2620,296 +2877,485 @@
     return `${(v / (KB * KB * KB)).toFixed(1)} GB`;
   }
   async function loadContents(pid) {
-    const c = state.contents[pid] || (state.contents[pid] = {});
-    if (c.loading || c.files) return;
-    c.loading = true;
-    c.err = '';
-    renderProjects();
+    if (!setContentsLoad(pid, 'loading')) return;
+    let files = null;
     try {
       const r = await fetch('/project-contents?id=' + encodeURIComponent(pid),
         { credentials: 'same-origin' });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const d = await r.json();
-      c.files = Array.isArray(d.files) ? d.files : [];
-    } catch (e) {
-      c.err = (e && e.message) || 'could not read the folder';
-    }
-    c.loading = false;
-    renderProjects();
+      if (r.ok) {
+        const d = await r.json();
+        files = Array.isArray(d.files) ? d.files : [];
+      }
+    } catch { /* shown as "could not read" below */ }
+    setContentsLoad(pid, files ? 'ready' : 'failed', files || []);
+    renderPanel();
   }
-  function contentsHtml(pr) {
-    const c = state.contents[pr.id] || {};
-    const chats = pr.sessions || [];
-    const total = pr.session_count ?? chats.length;
-    let html = `<div class="pcon">
-      <div class="pcon-head">Chats<span class="count">${total}</span></div>`;
-    html += chats.length
-      ? chats.map(s => `<div class="pcon-row"><span class="pcon-name">${
-          esc(s.title || s.session_id.slice(0, 8))}</span><span class="when">${
-          relTime(s.updated_at)}</span></div>`).join('')
-      : '<div class="empty-note">no chats yet</div>';
-    if (total > chats.length) {
-      html += `<div class="empty-note">…and ${total - chats.length} more</div>`;
-    }
-    html += `<div class="pcon-head">Files<span class="count">${
-      c.files ? c.files.length : ''}</span></div>`;
-    if (c.loading) html += '<div class="empty-note">reading the folder…</div>';
-    else if (c.err) html += `<div class="empty-note err">${esc(c.err)}</div>`;
-    else if (c.files && !c.files.length) html += '<div class="empty-note">empty</div>';
-    else if (c.files) {
-      html += c.files.map(f => `<div class="pcon-row" style="--d:${Number(f.depth) || 0}">
-        <span class="pcon-name${f.dir ? ' dir' : ''}">${esc(f.name)}${
-          f.dir ? (f.truncated ? '/…' : '/') : ''}</span>
+  function filesHtml(pr) {
+    const c = state.contents[pr.id];
+    let html = '<div class="lp-label">Files</div>';
+    if (!c || c.load === 'loading') html += '<div class="lp-empty">Reading the folder…</div>';
+    else if (c.load === 'failed') html += '<div class="lp-empty">Could not read the folder.</div>';
+    else if (!c.files.length) html += '<div class="lp-empty">No files yet.</div>';
+    else {
+      html += c.files.map(f => `<div class="lp-file" style="--d:${Number(f.depth) || 0}">
+        <span class="fn${f.dir ? ' dir' : ''}">${esc(f.name)}${f.dir ? (f.truncated ? '/…' : '/') : ''}</span>
         <span class="when">${f.dir ? '' : humanBytes(f.size)}</span></div>`).join('');
     }
     if (pr.github) {
-      html += `<div class="pcon-head">GitHub</div>
-        <div class="pcon-row"><a class="pcon-name link" href="${esc(pr.github)}"
-          target="_blank" rel="noopener">${esc(pr.github)}</a></div>`;
+      html += `<div class="lp-label">On GitHub</div>
+        <div class="lp-file"><a class="fn link" href="${esc(pr.github)}" target="_blank" rel="noopener">${esc(pr.github)}</a></div>`;
+    }
+    return html;
+  }
+
+  // ---- drawing -------------------------------------------------------------
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const rowModeOf = key => (state.row.key === key ? state.row.mode : 'resting');
+  function chatMenu(s) {
+    const sid = esc(s.session_id);
+    return `<div class="row-menu lp-menu" role="menu">
+      <button type="button" role="menuitem" data-act="rename" data-sid="${sid}">Rename</button>
+      <button type="button" role="menuitem" data-act="move" data-sid="${sid}">Move to project…</button>
+      <button type="button" role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
+      <button type="button" role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
+    </div>`;
+  }
+  function moveMenu(s, pid) {
+    const sid = esc(s.session_id);
+    const rows = allProjects().filter(isLive).map(pr =>
+      `<button type="button" role="menuitem"${pr.id === pid ? ' class="here"' : ''} data-act="move-to" data-sid="${sid}" data-pid="${esc(pr.id)}">${esc(pr.title || pr.id)}</button>`
+    ).join('');
+    return `<div class="row-menu lp-menu" role="menu">
+      <div class="lp-menu-label">Move to</div>${rows}
+      <button type="button" role="menuitem" class="plain${pid ? '' : ' here'}" data-act="move-to" data-sid="${sid}" data-pid="">No project</button>
+      <button type="button" role="menuitem" class="quiet" data-act="move-new" data-sid="${sid}">${LP_ICON.plus}New project…</button>
+    </div>`;
+  }
+  // "are you sure", asked in the row itself: what goes, a red Delete, a Keep
+  const askHtml = (cls, key, question, yes) => `<div class="${cls} asking" data-key="${esc(key)}" role="group">
+      <span class="t" title="${esc(question)}"><span>${esc(question)}</span></span>
+      <button class="lp-btn danger" type="button" ${yes}>Delete</button>
+      <button class="lp-btn" type="button" data-act="cancel">Keep</button></div>`;
+  // one chat row. *pid* is the project it is filed in ('' for none); *tag* is
+  // the project's name, shown only where chats from everywhere are mixed.
+  function chatRow(s, pid, { tag = '' } = {}) {
+    const sid = esc(s.session_id);
+    const key = 'chat:' + s.session_id;
+    const title = chatTitle(s);
+    const mode = rowModeOf(key);
+    if (mode === 'renaming') {
+      return `<div class="lp-row editing" data-key="${esc(key)}">
+        <input class="lp-input" type="text" data-key="${esc(key)}" data-commit="rename" value="${esc(title)}"
+          maxlength="120" autocomplete="off" enterkeyhint="done" aria-label="new name for this chat"></div>`;
+    }
+    if (mode === 'naming-new-project') {
+      return `<div class="lp-row editing" data-key="${esc(key)}">
+        <input class="lp-input" type="text" data-key="${esc(key)}" data-commit="new-project-for-chat" value=""
+          maxlength="80" autocomplete="off" enterkeyhint="done" placeholder="New project for “${esc(title)}”"
+          aria-label="name for the new project this chat goes into"></div>`;
+    }
+    if (mode === 'confirming-delete') {
+      return askHtml('lp-row', key, `Delete “${title}”?`, `data-act="delete-yes" data-sid="${sid}"`);
+    }
+    let html = `<div class="lp-row${s.active ? ' active' : ''}${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
+      <button class="t" type="button" data-act="open" data-sid="${sid}" title="${esc(title)}">${esc(title)}</button>${
+        tag ? `<span class="lp-tag">${esc(tag)}</span>` : ''}<span class="when">${relTime(s.updated_at)}</span>
+      <button class="more" type="button" data-act="more" data-key="${esc(key)}" aria-haspopup="true"
+        aria-expanded="${mode !== 'resting'}" aria-label="more for ${esc(title)}">${LP_ICON.more}</button>`;
+    if (mode === 'menu') html += chatMenu(s);
+    if (mode === 'moving') html += moveMenu(s, pid);
+    return html + '</div>';
+  }
+  const olderNote = (total, shown) => (total > shown
+    ? `<div class="lp-empty">${plural(total - shown, 'older chat')} not shown.</div>` : '');
+  // one web-page chat. It is a link, not a chat of the council's: it opens
+  // where it lives (the plugin's own page for it), in a new tab. Its menu has
+  // the one thing the council can do with it.
+  function pageRow(r) {
+    const key = 'page:' + r.id;
+    const mode = rowModeOf(key);
+    // a page with no name of its own shows its address, without the "https://"
+    const title = r.title && r.title !== r.url ? r.title : r.url.replace(/^https?:\/\/(www\.)?/, '');
+    const base = state.pageChats.base;
+    let html = `<div class="lp-row page${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
+      <a class="t" ${base ? `href="${esc(base)}/p/${esc(r.id)}" ` : ''}target="_blank" rel="noopener" title="${esc(title)}\n${esc(r.url)}"><span>${esc(title)}</span><span class="lp-out">${LP_ICON.out}</span></a>
+      <span class="when">${relTime(r.updated_at)}</span>
+      <button class="more" type="button" data-act="more" data-key="${esc(key)}" aria-haspopup="true"
+        aria-expanded="${mode !== 'resting'}" aria-label="more for the web page ${esc(title)}">${LP_ICON.more}</button>`;
+    if (mode === 'menu') {
+      html += `<div class="row-menu lp-menu" role="menu">
+      ${state.pageCopy.state === 'copying'
+    ? '<button type="button" role="menuitem" disabled aria-disabled="true">Copying…</button>'
+    : `<button type="button" role="menuitem" data-act="page-copy" data-id="${esc(r.id)}">Copy into the council</button>`}
+    </div>`;
     }
     return html + '</div>';
   }
-  function projectBlock(pr, { archived = false } = {}) {
-    // Purely user-driven: autoOpenActiveProject() seeds openProjects when you
-    // land in a project, so the active one can still be collapsed by hand.
-    const open = state.openProjects.has(pr.id);
+  // under the loose chats, under their own label: there can be many, and they
+  // behave differently, so they are not mixed in by date
+  const PAGE_CHATS_SHOWN = 20;
+  function pageChatsHtml() {
+    const pc = state.pageChats;
+    if (!pc.rows.length) return '';
+    const shown = pc.rows.slice(0, PAGE_CHATS_SHOWN);
+    const more = pc.total - shown.length;
+    return '<div class="lp-label">On web pages</div>' + shown.map(pageRow).join('')
+      + (more > 0 ? `<div class="lp-empty">${more} more. Search finds them by name.</div>` : '');
+  }
+  function chatsHtml(p) {
+    const rows = p.inbox_sessions || [];
+    let html = rows.length
+      ? rows.map(s => chatRow(s, '')).join('')
+      : '<div class="lp-empty">No chats here yet. Chats in a project are under Projects.</div>';
+    html += olderNote(p.inbox_session_count || 0, rows.length);
+    return html + pageChatsHtml();
+  }
+  function projRow(pr) {
+    const n = pr.session_count ?? (pr.sessions || []).length;
+    const last = (pr.sessions || [])[0];
+    const when = last ? relTime(last.updated_at) : '';
+    return `<button class="lp-proj${isLive(pr) ? '' : ' muted'}" type="button" data-act="enter" data-pid="${esc(pr.id)}">
+      <span class="pn"><b>${esc(pr.title || pr.id)}</b><i>${plural(n, 'chat')}${when ? ` · ${when} ago` : ''}</i></span>${LP_ICON.go}</button>`;
+  }
+  function projectsHtml() {
+    const all = allProjects();
+    const live = all.filter(isLive);
+    const archived = all.filter(pr => !isLive(pr));
+    let html = live.map(projRow).join('');
+    if (!live.length) html += '<div class="lp-empty">No projects yet.</div>';
+    html += rowModeOf('new-project') === 'naming-new-project'
+      ? `<div class="lp-row editing" data-key="new-project">
+          <input class="lp-input" type="text" data-key="new-project" data-commit="new-project" value=""
+            maxlength="80" autocomplete="off" enterkeyhint="done" placeholder="Project name" aria-label="name for the new project"></div>`
+      : `<button class="lp-quiet" type="button" data-act="new-project">${LP_ICON.plus}New project</button>`;
+    if (archived.length) html += '<div class="lp-label">Archived</div>' + archived.map(projRow).join('');
+    return html;
+  }
+  function projMenu(pr) {
     const pid = esc(pr.id);
-    let html = `<div class="proj${open ? ' open' : ''}" data-pid="${pid}">
-      <button class="proj-head${pr.active ? ' active' : ''}" data-act="toggle" data-pid="${pid}" aria-expanded="${open}">
-        <span class="chev">▶</span><span class="name">${esc(pr.title || pr.id)}</span>
-        <span class="count">${pr.session_count ?? (pr.sessions || []).length}</span></button>
-      <div class="proj-sessions">`;
-    // No "make active project" row: opening any chat here does that for you.
-    // The CHATS scroll in their own box; the project's own verbs sit below it,
-    // where a long chat list can never push them off the bottom of the panel.
-    // A scroll box CLIPS what overflows it, and the ⋯ row menu is an absolutely
-    // positioned popover inside one of these rows: with the box scrolling, the
-    // menu's last item ("Delete…") was cut in half. So while a menu is open in
-    // THIS project, the box stops scrolling and shows everything. The list
-    // re-renders on every menu toggle anyway, so there is nothing to preserve.
-    const menuHere = (pr.sessions || []).some(
-      x => state.menuKey === menuKeyOf('p:' + pr.id, x.session_id));
-    html += `<div class="proj-chats${menuHere ? ' menu-open' : ''}">`;
-    for (const s of pr.sessions || []) html += chatRow(s, pr.id);
-    if (!archived && !(pr.sessions || []).length) html += '<div class="empty-note">no chats yet</div>';
-    html += '</div>';
-    // "+ new chat" lives INSIDE the project, because that is the only place
-    // the intent is unambiguous: the chat is filed here from birth and opens
-    // with this project's files and plan already in context. Expanding a
-    // project used to be purely visual — this is the row's one real verb.
-    if (!archived) {
-      html += `<button class="sess sess-cmd sess-new" data-act="proj-new-chat" data-pid="${pid}">＋ new chat</button>`;
-    }
-    // What is in here — chats and the folder itself, read-only. Its own row
-    // rather than always-on, because the folder costs a request to read and
-    // most of the time the reader wants a chat, not an inventory.
-    const conOpen = state.openContents.has(pr.id);
-    html += `<button class="sess sess-cmd" data-act="proj-contents" data-pid="${pid}"
-      aria-expanded="${conOpen}">${conOpen ? '▾' : '▸'} contents</button>`;
-    if (conOpen) html += contentsHtml(pr);
-    // Publishing the folder to a NEW PRIVATE GitHub repo. Never one click: the
-    // controller answers with a confirm card in the transcript naming the repo
-    // it is about to create, exactly as Delete… does — creating a repo under
-    // somebody's account is not undoable from here.
-    if (!archived) {
-      html += `<button class="sess sess-cmd" data-act="proj-github" data-pid="${pid}">${
-        pr.github ? '⇪ push to GitHub' : '⇪ publish to GitHub…'}</button>`;
-    }
-    html += archived
-      ? `<button class="sess sess-cmd" data-act="proj-unarchive" data-pid="${pid}">↩ unarchive project</button>`
-      : `<button class="sess sess-cmd" data-act="proj-archive" data-pid="${pid}">⊘ archive project</button>`;
-    // The irreversible one, last and in red. One click only sends the
-    // command: the controller answers with a confirm card naming the folder
-    // and how many chats go with it, the same way Delete… on a chat does.
-    html += `<button class="sess sess-cmd danger" data-act="proj-delete" data-pid="${pid}">🗑 delete project…</button>`;
-    return html + '</div></div>';
-  }
-  // Flat newest-first shortlist across Inbox + every project, so finding a
-  // chat never requires remembering which project it lives in. Rows carry a
-  // small project chip and the same ⋯ menu as the project block's rows, so a
-  // recent chat can be archived or deleted without hunting for its project.
-  function recentRows(p) {
-    const rows = [];
-    for (const s of p.inbox_sessions || []) rows.push({ s, chip: 'Inbox', pid: '' });
-    for (const pr of p.projects || []) {
-      if ((pr.status || 'active') !== 'active') continue;
-      for (const s of pr.sessions || []) rows.push({ s, chip: pr.title || pr.id, pid: pr.id });
-    }
-    rows.sort((a, b) => String(b.s.updated_at || '').localeCompare(String(a.s.updated_at || '')));
-    return rows.slice(0, 8)
-      .map(({ s, chip, pid }) => chatRow(s, pid, { place: 'recent', chip })).join('');
-  }
-  function renderProjects() {
-    const p = state.projects;
-    if (!p) { els.projects.innerHTML = '<div class="empty-note">loading…</div>'; return; }
-    const all = p.projects || [];
-    const live = all.filter(pr => (pr.status || 'active') === 'active');
-    const archived = all.filter(pr => (pr.status || 'active') !== 'active');
-    let html = '';
-    const recent = recentRows(p);
-    if (recent) html += '<h2>Recent</h2>' + recent;
-    html += '<h2>Chats</h2>';
-    html += `<div class="proj"><button class="proj-head" data-act="inbox">
-      <span class="chev">•</span><span class="name">Inbox</span>
-      <span class="count">${p.inbox_session_count || 0}</span></button></div>`;
-    if (live.length) {
-      html += '<h2>Projects</h2>';
-      for (const pr of live) html += projectBlock(pr);
-    }
-    // archived projects live at the bottom, collapsed — present, out of the way
-    if (archived.length) {
-      html += `<div class="arch${state.archOpen ? ' open' : ''}">
-        <button class="arch-head" data-act="toggle-arch" aria-expanded="${state.archOpen}">
-          <span class="chev">▶</span>Archived<span class="count">${archived.length}</span></button>
-        <div class="arch-body">`;
-      for (const pr of archived) html += projectBlock(pr, { archived: true });
-      html += '</div></div>';
-    }
-    els.projects.innerHTML = html;
-  }
-  els.projects.addEventListener('click', e => {
-    const b = e.target.closest('[data-act]');
-    if (!b) return;
-    const act = b.dataset.act;
-    if (act !== 'menu' && state.menuKey) { state.menuKey = null; renderProjects(); }
-    if (act === 'toggle') {
-      const pid = b.dataset.pid;
-      if (state.openProjects.has(pid)) state.openProjects.delete(pid);
-      else state.openProjects.add(pid);
-      renderProjects();
-      return;
-    }
-    if (act === 'toggle-arch') { state.archOpen = !state.archOpen; renderProjects(); return; }
-    if (act === 'proj-contents') {
-      const pid = b.dataset.pid;
-      if (state.openContents.has(pid)) state.openContents.delete(pid);
-      else { state.openContents.add(pid); loadContents(pid); }
-      renderProjects();
-      return;
-    }
-    if (act === 'menu') {
-      const key = b.dataset.menu || b.dataset.sid;
-      state.menuKey = state.menuKey === key ? null : key;
-      renderProjects();
-      return;
-    }
-    // sidebar affordances send the equivalent slash command — one code path
-    if (act === 'inbox') sendInput('/resume');
-    if (act === 'resume') switchTo(b.dataset.sid);
-    if (act === 'proj-new-chat') {
-      // the same path as the + new chat menu: choosing the project here IS
-      // the answer to "where should this go?", so the card must not ask again
-      startNewChat('/new --project ' + b.dataset.pid);
-    }
-    if (act === 'proj-github') {
-      // the controller preflights gh, then asks — the sidebar gets out of the
-      // way instead of confirming twice (same rule as Delete…)
-      sendInput('/project github ' + b.dataset.pid);
-      toast('confirm the repo name in the chat');
-    }
-    if (act === 'proj-archive') sendInput('/project archive ' + b.dataset.pid);
-    if (act === 'proj-unarchive') sendInput('/project unarchive ' + b.dataset.pid);
-    if (act === 'proj-delete') {
-      // the controller's confirm card does the asking (folder + chat count)
-      sendInput('/project delete ' + b.dataset.pid);
-      toast('confirm the delete in the chat');
-    }
-    if (act === 'unfile') {
-      // the chat itself is untouched — only its filing goes, and /file puts it
-      // back, so there is nothing here to confirm
-      sendInput('/project unfile ' + b.dataset.sid);
-      toast('moved to Inbox — /file puts it in a project');
-    }
-    if (act === 'archive') {
-      sendInput('/archive ' + b.dataset.sid);
-      toast('archiving — /unarchive brings it back');
-    }
-    if (act === 'delete') {
-      // the controller answers with a confirm card in the transcript, so the
-      // sidebar gets out of the way instead of confirming twice
-      sendInput('/delete ' + b.dataset.sid);
-      toast('confirm the delete in the chat');
-    }
-    closeSide();
-  });
-  // a tap anywhere else dismisses an open row menu
-  document.addEventListener('click', e => {
-    if (state.menuKey && !e.target.closest('.sess-row')) { state.menuKey = null; renderProjects(); }
-  });
-  // New chat, up front: "file in <project> / just a chat". Asking BEFORE the
-  // chat exists is the whole point — a chat's project used to be decided by
-  // whatever the sidebar happened to be pointing at, which is exactly how
-  // chats ended up in the wrong place. With no projects to choose from there
-  // is nothing to ask, so the button stays a plain /new.
-  function newChatMenu() {
-    const live = ((state.projects && state.projects.projects) || [])
-      .filter(pr => (pr.status || 'active') === 'active');
-    if (!live.length) return '';
-    const rows = live.map(pr =>
-      `<button role="menuitem" data-act="new-in" data-pid="${esc(pr.id)}">${esc(pr.title || pr.id)}</button>`
-    ).join('');
-    return `<div class="new-menu" role="menu">
-      <div class="new-menu-lede">File in:</div>${rows}
-      <button role="menuitem" class="plain" data-act="new-inbox">just a chat</button>
+    const live = isLive(pr);
+    return `<div class="row-menu lp-menu" role="menu">
+      ${live ? `<button type="button" role="menuitem" data-act="proj-github" data-pid="${pid}">${
+        pr.github ? 'Push to GitHub' : 'Publish to GitHub…'}</button>` : ''}
+      <button type="button" role="menuitem" data-act="${live ? 'proj-archive' : 'proj-unarchive'}" data-pid="${pid}">${
+        live ? 'Archive project' : 'Unarchive project'}</button>
+      <button type="button" role="menuitem" class="danger" data-act="proj-delete" data-pid="${pid}">Delete project…</button>
     </div>`;
   }
-  function showNewChatMenu(on) {
-    els.newChatMenu.innerHTML = on ? newChatMenu() : '';
-    els.newChatMenu.hidden = !on || !els.newChatMenu.innerHTML;
-    els.newChat.setAttribute('aria-expanded', String(!els.newChatMenu.hidden));
+  function insideHtml(pr) {
+    const key = 'project:' + pr.id;
+    const mode = rowModeOf(key);
+    const title = pr.title || pr.id;
+    const rows = pr.sessions || [];
+    const n = pr.session_count ?? rows.length;
+    let html = `<div class="lp-crumb"><button class="lp-back" type="button" data-act="pill" data-pill="projects">${LP_ICON.back}Projects</button></div>`;
+    html += mode === 'confirming-delete'
+      // a project takes its chats and its folder with it, so the question says so
+      ? askHtml('lp-ptitle', key, `Delete “${title}”, its ${plural(n, 'chat')} and its files?`,
+        `data-act="proj-delete-yes" data-pid="${esc(pr.id)}"`)
+      : `<div class="lp-ptitle${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
+        <b title="${esc(title)}">${esc(title)}</b>${isLive(pr) ? '' : '<span class="lp-tag">archived</span>'}
+        <button class="more" type="button" data-act="more" data-key="${esc(key)}" aria-haspopup="true"
+          aria-expanded="${mode !== 'resting'}" aria-label="more for the project ${esc(title)}">${LP_ICON.more}</button>${
+          mode === 'menu' ? projMenu(pr) : ''}</div>`;
+    html += rows.length
+      ? rows.map(s => chatRow(s, pr.id)).join('')
+      : '<div class="lp-empty">No chats yet.</div>';
+    html += olderNote(pr.session_count ?? rows.length, rows.length);
+    return html + filesHtml(pr);
   }
-  function startNewChat(command) {
-    showNewChatMenu(false);
-    // The user just answered "where does this go?" — don't ask again at
-    // first send. That applies to "just a chat" too: choosing Inbox is an
-    // answer, not an absence of one.
-    state.filingAsked = true;
-    snapshotCurrent();
-    sendInput(command);
-    closeSide();
+  // Search looks at chat TITLES, from everywhere. Before anything is typed it
+  // shows the latest chats, so "the one from this morning" is two taps away.
+  const SEARCH_LATEST = 12;
+  const SEARCH_MOST = 60;
+  function searchRows(query) {
+    const needle = String(query || '').trim().toLowerCase();
+    const rows = allChats().sort((a, b) =>
+      String(b.s.updated_at || '').localeCompare(String(a.s.updated_at || '')));
+    if (!needle) return rows.slice(0, SEARCH_LATEST);
+    return rows.filter(c => chatTitle(c.s).toLowerCase().includes(needle)).slice(0, SEARCH_MOST);
   }
-  els.newChat.addEventListener('click', () => {
-    if (!els.newChatMenu.hidden) { showNewChatMenu(false); return; }
-    showNewChatMenu(true);
-    // no projects yet → nothing to file into, so don't make the user click
-    // through an empty menu to get the chat they asked for
-    if (els.newChatMenu.hidden) startNewChat('/new');
-  });
-  els.newChatMenu.addEventListener('click', e => {
-    const b = e.target.closest('[data-act]');
-    if (!b) return;
-    if (b.dataset.act === 'new-in') startNewChat('/new --project ' + b.dataset.pid);
-    if (b.dataset.act === 'new-inbox') startNewChat('/new --inbox');
-  });
-  // a tap anywhere else closes it, like the row menus above
-  document.addEventListener('click', e => {
-    if (!els.newChatMenu.hidden && !e.target.closest('.new-split, #new-chat-menu')) showNewChatMenu(false);
-  });
-
-  // new project: an inline title field (no modal, no prompt()) that sends
-  // the same /project create the TUI takes
-  function showNewProject(on) {
-    // never silently eat a typed title: dismissing with text still in the
-    // field says so, instead of pretending the form was never opened
-    if (!on && !els.newProjForm.hidden && els.newProjTitle.value.trim()) {
-      toast('project name discarded');
+  // web-page chats are found by name or by address, once something is typed
+  function searchPages(query) {
+    const needle = String(query || '').trim().toLowerCase();
+    if (!needle) return [];
+    return state.pageChats.rows.filter(r => `${r.title} ${r.url}`.toLowerCase().includes(needle))
+      .slice(0, SEARCH_MOST);
+  }
+  function searchHtml(query) {
+    const rows = searchRows(query);
+    const pages = searchPages(query);
+    const typed = String(query || '').trim();
+    if (!rows.length && !pages.length) {
+      return `<div class="lp-empty">${typed ? `No chat is called anything like “${esc(typed)}”.` : 'No chats yet.'}</div>`;
     }
-    els.newProjForm.hidden = !on;
-    if (on) { els.newProjTitle.value = ''; els.newProjTitle.focus(); }
+    let html = !rows.length ? ''
+      : `<div class="lp-label">${typed ? plural(rows.length, 'chat') + ' found' : 'Latest chats'}</div>`
+        + rows.map(c => chatRow(c.s, c.pid, { tag: c.project })).join('');
+    if (pages.length) html += '<div class="lp-label">On web pages</div>' + pages.map(pageRow).join('');
+    return html;
   }
-  function submitNewProject() {
-    const title = els.newProjTitle.value.trim();
-    if (!title) { showNewProject(false); return; }
-    sendInput('/project create ' + title);
-    els.newProjTitle.value = '';
-    showNewProject(false);
+  function renderPanel() {
+    const p = state.projects;
+    const v = state.panel;
+    const here = v.view === 'inside-project' ? projectById(v.pid) : null;
+    // the one way to start a chat says where the chat will go
+    const label = here && isLive(here) ? `New chat in ${here.title || here.id}` : 'New chat';
+    els.newChatLabel.textContent = label;
+    els.newChat.title = label;
+    for (const b of els.pills.querySelectorAll('[data-pill]')) {
+      const on = v.view !== 'search' && (b.dataset.pill === 'chats') === (v.view === 'chats');
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', String(on));
+    }
+    els.searchX.hidden = v.view !== 'search';
+    if (v.view !== 'search' && els.search.value) els.search.value = '';
+    const settingsOpen = state.row.mode === 'menu' && state.row.key === 'settings';
+    els.settingsPop.hidden = !settingsOpen;
+    els.settings.setAttribute('aria-expanded', String(settingsOpen));
+    drawNote();
+    // a text box being typed in survives the redraw: lists arrive at any time
+    const old = els.projects.querySelector('.lp-input');
+    const kept = old ? { key: old.dataset.key, value: old.value, focused: document.activeElement === old,
+      a: old.selectionStart, b: old.selectionEnd } : null;
+    els.projects.innerHTML = !p ? '<div class="lp-empty">Loading…</div>'
+      : v.view === 'chats' ? chatsHtml(p)
+      : v.view === 'projects' ? projectsHtml()
+      : v.view === 'search' ? searchHtml(v.query)
+      : here ? insideHtml(here) : '';
+    const inp = els.projects.querySelector('.lp-input');
+    if (inp) {
+      if (kept && kept.key === inp.dataset.key) {
+        inp.value = kept.value;
+        if (kept.focused) {
+          inp.focus();
+          try { inp.setSelectionRange(kept.a, kept.b); } catch { /* not a text box */ }
+        }
+      } else {
+        inp.focus();
+        if (typeof inp.select === 'function') inp.select();
+      }
+    }
+    const popup = els.projects.querySelector('.lp-menu');
+    if (popup && typeof popup.scrollIntoView === 'function') popup.scrollIntoView({ block: 'nearest' });
+  }
+  // a list from the controller just landed (state.projects, state.currentSid)
+  function panelOnSnapshot() {
+    if (state.panel.view === 'inside-project' && !projectById(state.panel.pid)) setPanelView('projects');
+    if (state.row.mode !== 'resting' && !rowKeyExists(state.row.key)) setRowMode('resting');
+    if (state.pageChats.load === 'idle') loadPageChats();
+    // the panel opens where the open chat lives — once per chat, so browsing
+    // the lists afterwards is never undone by the next list that arrives
+    if (state.currentSid && state.currentSid !== state.homedSid) {
+      state.homedSid = state.currentSid;
+      if (state.panel.view !== 'search') goHome();
+    }
+    renderPanel();
+  }
+
+  // ---- doing things --------------------------------------------------------
+  // A row action is not a message: it must not add a line to the chat that is
+  // open, and it must not wait behind a bot turn. So it does not go in as a
+  // typed command. Every one goes through panelAct to the server's /panel,
+  // which answers { ok: true } or { ok: false, error: <plain words> }.
+  // panelAct resolves with the answer when it worked and with null when it
+  // did not (the note at the foot of the list then says why).
+  const PANEL_ACTIONS = Object.freeze(['rename', 'move', 'archive', 'unarchive', 'delete',
+    'new-project', 'project-archive', 'project-unarchive', 'project-delete']);
+  async function panelAct(action, args = {}) {
+    if (!PANEL_ACTIONS.includes(action)) return null;
+    const r = await post('/panel', { action, sid: args.sid, title: args.title, project: args.pid });
+    if (r && r.ok) return r;
+    setPanelNote({ text: (r && r.error) || 'Could not reach the council. Try again.' });
+    return null;
+  }
+  async function moveChat(sid, pid) {
+    const c = findChat(sid);
+    setRowMode('resting');
+    if (!c || c.pid === pid) return;
+    const to = pid ? projectById(pid) : null;
+    if (pid && !to) return;
+    if (!await panelAct('move', { sid, pid })) return;
+    setPanelNote({ text: to ? `Moved to ${to.title || to.id}.` : 'Moved to Chats.',
+      undo: { action: 'move', args: { sid, pid: c.pid } } });
+  }
+  // "New project…" at the end of a chat's move list: make it, then file the chat
+  async function moveToNewProject(c, name) {
+    const sid = c.s.session_id;
+    const made = await panelAct('new-project', { title: name });
+    if (!made || !made.project) return;
+    if (!await panelAct('move', { sid, pid: made.project })) return;
+    setPanelNote({ text: `Moved to ${name}.`, undo: { action: 'move', args: { sid, pid: c.pid } } });
+  }
+  async function archiveChat(sid) {
+    setRowMode('resting');
+    if (!await panelAct('archive', { sid })) return;
+    setPanelNote({ text: 'Archived.', undo: { action: 'unarchive', args: { sid } } });
+  }
+  // the row has already asked "delete?" (row mode 'confirming-delete')
+  async function deleteChat(sid) {
+    setRowMode('resting');
+    if (!await panelAct('delete', { sid })) return;
+    sessionCache.delete(sid);
+    setPanelNote({ text: 'Deleted.' });
+  }
+  async function projectAct(action, pid) {
+    const pr = projectById(pid);
+    setRowMode('resting');
+    if (!pr) return;
+    const name = pr.title || pr.id;
+    if (action === 'project-github') {
+      // publishing is work for the bots: it is asked for in the chat, and the
+      // bots ask "sure?" there before anything leaves this machine
+      if (!await sendInput('/project github ' + pid)) return;
+      setPanelNote({ text: 'Say yes in the chat to go ahead.' });
+      closeSide();
+      return;
+    }
+    if (!await panelAct(action, { pid })) return;
+    if (action === 'project-archive') {
+      setPanelNote({ text: `Archived ${name}.`, undo: { action: 'project-unarchive', args: { pid } } });
+    } else if (action === 'project-unarchive') {
+      setPanelNote({ text: `${name} is back.` });
+    } else {
+      setPanelNote({ text: `Deleted ${name}.` });
+    }
+  }
+  // "Copy into the council" on a web-page chat: the council gets a chat of
+  // its own with the page's conversation in it; the page keeps its chat
+  async function copyPageChat(id) {
+    if (!setPageCopy('copying', { id })) return;   // one copy at a time
+    setRowMode('resting');
+    const r = await post('/page-chats/copy', { id });
+    if (!r || !r.ok) setPageCopy('failed', { error: r && r.error });
+    else setPageCopy('done', { sid: r.sid, project: r.project, reused: r.reused });
+    loadPageChats();
+  }
+  async function undoNote() {
+    const u = state.panelNote && state.panelNote.undo;
+    setPanelNote(null);
+    if (u && await panelAct(u.action, u.args)) setPanelNote({ text: 'Undone.' });
+  }
+  // Enter in a row's text box: a new name for a chat, or a new project
+  function commitInput(inp) {
+    const text = inp.value.trim().replace(/\s+/g, ' ');
+    const what = inp.dataset.commit;
+    const key = state.row.key;
+    setRowMode('resting');
+    if (!text) return;
+    if (what === 'new-project') {
+      panelAct('new-project', { title: text }).then(r => { if (r) setPanelNote({ text: `Made the project ${text}.` }); });
+    } else if (what === 'new-project-for-chat') {
+      const c = findChat(key.slice(5));
+      if (c) moveToNewProject(c, text);
+    } else if (what === 'rename') {
+      const c = findChat(key.slice(5));
+      if (!c || text === chatTitle(c.s)) return;
+      const sid = c.s.session_id;
+      const before = chatTitle(c.s);
+      panelAct('rename', { sid, title: text }).then(r => {
+        if (r) setPanelNote({ text: 'Renamed.', undo: { action: 'rename', args: { sid, title: before } } });
+      });
+    }
+  }
+  // a tap somewhere else puts the busy row to rest; words typed into a text
+  // box are kept (as if Enter had been pressed), never thrown away
+  function restRow() {
+    if (state.row.mode === 'resting') return;
+    const inp = els.projects.querySelector('.lp-input');
+    if (inp && inp.value.trim() && inp.value !== inp.defaultValue) { commitInput(inp); return; }
+    setRowMode('resting');
+  }
+  function toggleMenu(key) {
+    if (state.row.key === key) { setRowMode('resting'); return; }
+    if (state.row.mode !== 'resting' && state.row.mode !== 'menu') restRow();
+    setRowMode('menu', key);
+  }
+  function openChat(sid) {
+    if (state.row.mode !== 'resting') setRowMode('resting');
+    if (state.panel.view === 'search') {
+      const h = homeView(state.projects, sid);
+      if (!setPanelView(h.view, h)) setPanelView('chats');
+    }
+    switchTo(sid);
     closeSide();
   }
-  els.newProject.addEventListener('click', () => showNewProject(els.newProjForm.hidden));
-  els.newProjForm.addEventListener('submit', e => { e.preventDefault(); submitNewProject(); });
-  els.newProjTitle.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { e.stopPropagation(); showNewProject(false); }
-    if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); submitNewProject(); }
+  function panelClick(act, b) {
+    const d = b.dataset;
+    if (act === 'more') return toggleMenu(d.key);
+    if (act === 'settings') return toggleMenu('settings');
+    if (act === 'rename') return setRowMode('renaming', state.row.key);
+    if (act === 'move') return setRowMode('moving', state.row.key);
+    if (act === 'cancel') return setRowMode('resting');
+    if (act === 'new-project') {
+      restRow();
+      return setRowMode('naming-new-project', 'new-project');
+    }
+    if (act === 'move-to') return moveChat(d.sid, d.pid || '');
+    if (act === 'move-new') return setRowMode('naming-new-project', state.row.key);
+    if (act === 'archive') return archiveChat(d.sid);
+    // Delete asks first, in the row; only its red button deletes
+    if (act === 'delete' || act === 'proj-delete') return setRowMode('confirming-delete', state.row.key);
+    if (act === 'delete-yes') return deleteChat(d.sid);
+    if (act === 'proj-delete-yes') return projectAct('project-delete', d.pid);
+    if (act === 'proj-github') return projectAct('project-github', d.pid);
+    if (act === 'proj-archive') return projectAct('project-archive', d.pid);
+    if (act === 'proj-unarchive') return projectAct('project-unarchive', d.pid);
+    if (act === 'undo') return undoNote();
+    if (act === 'page-copy') return copyPageChat(d.id);
+    if (act === 'note-open') { setPanelNote(null); return openChat(d.sid); }
+    // the rest move between lists, so a busy row rests first
+    restRow();
+    if (act === 'pill') {
+      if (state.panel.view === 'search' && typeof els.search.blur === 'function') els.search.blur();
+      // a tap on Chats also asks for the web-page chats again
+      if (d.pill !== 'projects') loadPageChats();
+      return setPanelView(d.pill === 'projects' ? 'projects' : 'chats');
+    }
+    if (act === 'enter') return setPanelView('inside-project', { pid: d.pid });
+    if (act === 'search-x') return leaveSearch();
+    if (act === 'open') return openChat(d.sid);
+    return false;
+  }
+  // ONE click handler for the whole panel. The list is redrawn by most
+  // clicks, so the page-wide "tap elsewhere" handler below cannot ask the
+  // clicked node where it was; it asks whether the panel already saw it.
+  const panelSaw = new WeakSet();
+  els.side.addEventListener('click', e => {
+    panelSaw.add(e);
+    const b = e.target.closest('[data-act]');
+    if (b) { panelClick(b.dataset.act, b); return; }
+    // inside the open menu, text box or Settings box: leave it be
+    if (e.target.closest('.lp-menu, .lp-input, .asking, .lp-settings-pop, .seg, .chip-label')) return;
+    restRow();
+  });
+  document.addEventListener('click', e => { if (!panelSaw.has(e)) restRow(); });
+  document.addEventListener('keydown', e => {
+    const inp = e.target && typeof e.target.closest === 'function' ? e.target.closest('.lp-input') : null;
+    if (inp && e.key === 'Enter') {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      commitInput(inp);
+      return;
+    }
+    if (e.key !== 'Escape') return;
+    // Escape closes the innermost thing first: a busy row, then the search
+    if (state.row.mode !== 'resting') { e.stopImmediatePropagation(); setRowMode('resting'); return; }
+    if (state.panel.view === 'search' && document.activeElement === els.search) {
+      e.stopImmediatePropagation();
+      leaveSearch();
+    }
+  });
+  els.search.addEventListener('focus', () => setPanelView('search', { query: els.search.value }));
+  els.search.addEventListener('input', () => setPanelView('search', { query: els.search.value }));
+  els.newChat.addEventListener('click', () => {
+    const v = state.panel;
+    const here = v.view === 'inside-project' ? projectById(v.pid) : null;
+    restRow();
+    leaveSearch();
+    snapshotCurrent();
+    sendInput(here && isLive(here) ? '/new --project ' + here.id : '/new --inbox');
+    closeSide();
   });
 
   // ── chat switching: optimistic render from cache, reconcile on replay ──
@@ -2932,7 +3378,6 @@
     if (!sid) return;
     if (sid === state.currentSid && !switchTarget()) return; // already live: nothing to do
     snapshotCurrent();
-    state.filingAsked = false;   // a different chat, a different question
     showQueued(0);               // the old chat's waiting messages stay with it
     setAttachMode('switching', sid);
     // …and a different conversation: the pill belongs to the chat it was
@@ -3028,29 +3473,6 @@
     }
     switchTo(sid);
   }
-
-  // mobile slide-over / desktop collapse
-  const narrow = () => window.matchMedia('(max-width: 900px)').matches;
-  function openSide() {
-    if (narrow()) { document.body.classList.add('side-open'); els.backdrop.hidden = false; }
-    else document.body.classList.remove('side-collapsed');
-    els.burger.setAttribute('aria-expanded', 'true');
-  }
-  function closeSide() {
-    if (narrow()) { document.body.classList.remove('side-open'); els.backdrop.hidden = true; }
-    els.burger.setAttribute('aria-expanded', 'false');
-  }
-  els.burger.addEventListener('click', () => {
-    if (narrow()) {
-      document.body.classList.contains('side-open') ? closeSide() : openSide();
-    } else {
-      const collapsed = document.body.classList.toggle('side-collapsed');
-      localStorage.setItem('council-side', collapsed ? 'collapsed' : '');
-    }
-  });
-  els.sideClose.addEventListener('click', closeSide);
-  els.backdrop.addEventListener('click', closeSide);
-  if (localStorage.getItem('council-side') === 'collapsed') document.body.classList.add('side-collapsed');
 
   // ── slash-command autocomplete (driven by the bridge's completion_context:
   // global entries prefix-match the whole input; scoped entries kick in when
@@ -3421,85 +3843,6 @@
       ? 'Enter to send · Shift+Enter for a new line'
       : 'Enter for a new line · Shift+Enter or ⌘Enter to send';
   }
-  // ── "where should this go?", asked before the first message ──
-  // The controller asks the same question, but only AFTER the first message
-  // has landed, which reads as an interruption of work already underway.
-  // Asking at the moment of sending — with the message still sitting in the
-  // composer — makes it a decision about the chat you are about to start.
-  function chatIsFiled() {
-    const p = state.projects;
-    if (!p || !state.currentSid) return false;
-    return (p.projects || []).some(pr =>
-      (pr.sessions || []).some(s => s.session_id === state.currentSid));
-  }
-  function needsFilingChoice() {
-    if (state.filingAsked || chatIsFiled()) return false;
-    // nothing to file into, nothing to ask
-    const live = ((state.projects && state.projects.projects) || [])
-      .filter(pr => (pr.status || 'active') === 'active');
-    if (!live.length) return false;
-    // only on the FIRST message: mid-conversation the question is noise, and
-    // /file is still there for anyone who changes their mind
-    return !els.transcript.querySelector('.msg.user');
-  }
-  function filingCard() {
-    const live = ((state.projects && state.projects.projects) || [])
-      .filter(pr => (pr.status || 'active') === 'active');
-    settleCard();
-    const wasPinned = pinned();
-    const div = document.createElement('div');
-    div.className = 'msg card filing';
-    div.innerHTML = `<div class="card-title">where should this go?</div>
-      <div class="card-prompt">Your message is still in the box — pick a home for this chat and it goes out right after.</div>
-      <div class="opts">${live.map(pr =>
-        `<button data-pid="${esc(pr.id)}">File under ${esc(pr.title || pr.id)}</button>`
-      ).join('')}
-      <button data-act="new-proj">New project…</button>
-      <button data-pid="">Just a chat (Inbox)</button></div>
-      <form class="newproj" hidden><input type="text" maxlength="80" placeholder="project name" aria-label="project name">
-        <button type="submit">Create and file</button></form>`;
-    // "New project…" swaps the option for an inline title field — the same
-    // /project create the sidebar sends, which also files THIS chat in the
-    // project it made (the controller's own picker offers the same choice)
-    const form = div.querySelector('form.newproj');
-    const field = form.querySelector('input');
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
-      const title = field.value.trim();
-      if (!title || div.classList.contains('answered')) return;
-      state.filingAsked = true;
-      liveCard = div;
-      settleCard(`new project “${title}”`);
-      await sendInput('/project create ' + title);
-      submit();
-    });
-    field.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { e.stopPropagation(); form.hidden = true; els.input.focus(); }
-      if (e.key === 'Enter') { e.stopPropagation(); }
-    });
-    div.addEventListener('click', async e => {
-      if (e.target.closest('button[data-act="new-proj"]')) {
-        if (div.classList.contains('answered')) return;
-        form.hidden = false; field.focus();
-        return;
-      }
-      const b = e.target.closest('button[data-pid]');
-      if (!b || div.classList.contains('answered')) return;
-      const pid = b.dataset.pid;
-      state.filingAsked = true;
-      liveCard = div;
-      settleCard(pid ? `filed under ${b.textContent.replace(/^File under /, '')}`
-                     : 'staying in Inbox');
-      // /project clear on an already-unfiled chat is a no-op filing-wise, but
-      // it is how the room hears "Inbox is deliberate" and stops asking.
-      await sendInput(pid ? '/file ' + pid : '/project clear');
-      submit();
-    });
-    container().appendChild(div);
-    liveCard = div;
-    if (!offscreen()) { updateEmpty(); follow(wasPinned); }
-  }
-
   function submit() {
     const text = els.input.value.trim();
     // "/help" is for the reader, not the bots: it opens the popup and is
@@ -3515,12 +3858,6 @@
     const ready = state.atts.filter(a => a.status === 'ok');
     if (!text && !ready.length) return;
     if (state.atts.some(a => a.status === 'up')) { toast('still uploading…'); return; }
-    // slash commands are control traffic — never gated on filing
-    if (!text.startsWith('/') && needsFilingChoice()) {
-      state.filingAsked = true;   // ask once, whatever happens next
-      filingCard();
-      return;
-    }
     // never send into a void: if this turn targets an out-of-credits agent,
     // surface the warning + switch affordance and hold the message (a slash
     // command like /model is control traffic, never gated)
@@ -3550,9 +3887,6 @@
     // exact bridge attachment schema — what the Ink TUI sends: {id, path, type:'image'}
     // the original filename rides along so the echoed message can name the
     // file the way the reader knows it, not by the stored id
-    // a typed /new starts a chat nobody has said where to file — unless the
-    // command itself says (--inbox / --project), which is an answer
-    if (/^\/new\b/.test(text)) state.filingAsked = /\s--(inbox|project)\b/.test(text);
     // the files leave the strip now, but are only let go once the server has
     // the message: a send that fails puts the words AND the files back
     const sent = state.atts.filter(a => a.status === 'ok');
@@ -3927,8 +4261,7 @@
         for (const s of ev.inbox_sessions || []) if (s.active) active = s.session_id;
         state.currentSid = active;
         noteProjectTasks(ev);
-        autoOpenActiveProject(ev);
-        renderProjects();
+        panelOnSnapshot();
         // honor a deep-linked #/chat/<id> once, when the session list first
         // arrives; after that the hash mirrors the active chat instead
         if (!hashRestored) { hashRestored = true; routeHash(); }
@@ -4220,7 +4553,7 @@
 
   updateEmpty();
   syncSend();
-  renderProjects();
+  renderPanel();
   openStream();
 
   // exposed for the DOM test harness
@@ -4234,6 +4567,12 @@
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
     // the transcript pane's modes: the pure move rule and the one setter
     TRANSCRIPT_MODES, transcriptMove, setTranscriptMode,
+    // the left panel: each list, its pure move rule and its one setter
+    PANEL_VIEWS, panelViewMove, setPanelView, ROW_MODES, rowMove, setRowMode,
+    SLIDE_MODES, slideMove, setSlideOut, CONTENTS_LOADS, contentsMove, setContentsLoad,
+    setPanelNote, homeView, searchRows, relTime, renderPanel, panelAct, PANEL_ACTIONS,
+    PAGE_CHATS_LOADS, pageChatsMove, setPageChatsLoad, loadPageChats, searchPages,
+    PAGE_COPY_STATES, pageCopyMove, setPageCopy,
     // the room's turn and the pre-send guard: each list and its one setter
     ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
     // what the stream waits on: the pure move rule, the one setter, the target

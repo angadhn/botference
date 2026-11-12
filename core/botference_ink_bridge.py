@@ -1001,6 +1001,20 @@ async def main() -> None:
             botference.record_tick(str(msg.get("text", "")), bool(msg.get("checked")), bridge)
             continue
 
+        if msg.get("type") == "panel":
+            # one thing asked for from the frontend's list of chats (rename,
+            # move, archive, delete): done here and now, never queued behind a
+            # turn and never said in the room (Botference.panel_action)
+            result = botference.panel_action(
+                msg, bridge, busy=turn_queue.is_running,
+            )
+            emit({"type": "panel_result", "id": msg.get("id"), **result})
+            if result.get("fresh"):
+                # the chat on screen was replaced by a fresh one: the frontend
+                # waits for this to know the new chat is all there
+                emit({"type": "ready"})
+            continue
+
         if msg.get("type") == "permission_response":
             rid = msg.get("request_id")
             bridge.resolve_permission_request(

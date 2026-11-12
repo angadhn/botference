@@ -9,38 +9,50 @@
 <body>
 <div id="backdrop" hidden></div>
 
-<aside id="side" aria-label="chats and projects">
+<aside id="side" class="lp" aria-label="chats and projects">
   <div class="side-head">
     <span class="brand">botference <em>council</em></span>
-    <button id="side-close" aria-label="close sidebar">✕</button>
+    <button id="side-close" aria-label="close the panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
   </div>
-  <!-- split "New" control: one block, two targets — chat (primary) / project -->
-  <div class="new-split" role="group" aria-label="create">
-    <span class="new-lede" aria-hidden="true">＋<b>New</b></span>
-    <div class="new-opts">
-      <button id="new-chat" aria-label="new chat" aria-haspopup="true" aria-expanded="false">chat</button>
-      <button id="new-project" aria-label="new project">project</button>
+  <!-- the one way to start a chat: loose from the lists, "in <project>" from inside one -->
+  <button id="new-chat" class="lp-new" type="button">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    <span id="new-chat-label">New chat</span>
+  </button>
+  <div class="lp-search">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+    <input id="panel-search" type="text" autocomplete="off" spellcheck="false"
+      enterkeyhint="search" placeholder="Search all chats" aria-label="search all chats by title">
+    <button id="panel-search-x" type="button" data-act="search-x" aria-label="close search" hidden>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div id="panel-pills" class="seg lp-pills" role="tablist" aria-label="which list">
+    <button class="seg-btn" type="button" role="tab" data-act="pill" data-pill="chats">Chats</button>
+    <button class="seg-btn" type="button" role="tab" data-act="pill" data-pill="projects">Projects</button>
+  </div>
+  <nav id="projects" class="lp-list" aria-label="chats and projects"></nav>
+  <!-- what just happened, with a way back: "Moved to <project>. Undo" -->
+  <div id="panel-note" class="lp-note" role="status" hidden></div>
+  <div class="lp-foot">
+    <!-- theme, typing and project connections live in here -->
+    <div id="settings-pop" class="lp-settings-pop" hidden>
+      <div id="theme-toggle"></div>
+      <div id="typing-toggle"></div>
+      <a class="network-nav" href="/project-network/view">Project connections</a>
     </div>
-  </div>
-  <!-- "File in: <project> / just a chat" — asked up front, before the chat
-       exists, so nothing has to guess where it belongs later -->
-  <div id="new-chat-menu" hidden></div>
-  <form id="new-project-form" hidden>
-    <input id="new-project-title" type="text" autocomplete="off"
-      enterkeyhint="done" placeholder="Project title…" aria-label="new project title">
-    <button type="submit" id="new-project-create">Create</button>
-  </form>
-  <nav id="projects" aria-label="projects and chats"></nav>
-  <a class="network-nav" href="/project-network/view">Project connections ↗</a>
-  <div class="side-foot">
-    <div id="theme-toggle"></div>
-    <div id="typing-toggle"></div>
+    <button id="panel-settings" class="lp-settings" type="button" data-act="settings" aria-haspopup="true" aria-expanded="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+      <span>Settings</span>
+    </button>
   </div>
 </aside>
 
 <main>
   <header id="top">
-    <button id="burger" aria-label="open sidebar" aria-expanded="false">
+    <button id="burger" aria-label="chats and projects" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
     </button>
     <div id="statusbar" aria-live="polite">

@@ -5004,7 +5004,14 @@ class Botference:
 
         Gated on the chat's own filing, not the lens: a chat you never filed
         is an Inbox chat even if you happen to be browsing a project.
+
+        A frontend with its own way to file a chat (the web council: "Move
+        to project" on every row of its left panel) turns the question off
+        with BOTFERENCE_FILING_PROMPT=0, so nothing stands between a person
+        and their first message.
         """
+        if os.environ.get("BOTFERENCE_FILING_PROMPT", "").strip() == "0":
+            return
         if self.session_project_id or self._inbox_by_choice:
             return
         user_turns = sum(1 for e in self.transcript.entries
@@ -8557,6 +8564,236 @@ class Botference:
             self._relay_boundary[model] = self.transcript.entries[-1].turn_index
         else:
             self._relay_boundary[model] = -1
+
+    # ── the panel: one thing asked for from a list of chats ──
+    #
+    # A frontend that lists chats and projects (the web council's left panel)
+    # lets a person rename, move, archive or delete a row. Those are not
+    # messages to the room: they must not add a line to whatever chat is open,
+    # and they must not wait behind a bot turn that is running. So they do not
+    # come in as typed commands. The frontend sends one request, this answers
+    # it at once with {"ok": True, ...} or {"ok": False, "error": <plain
+    # words>}, and nothing is said in the room.
+    #
+    # The chat this process has open is special in two ways. Renaming it is
+    # fine at any time. Moving, archiving or deleting it changes what the bots
+    # are standing in, so those are refused while a turn runs (busy=True), and
+    # archiving or deleting it starts a fresh chat here ("fresh": True in the
+    # answer). Every other chat is only a file on disk.
+    #
+    # "refresh" changes nothing: it sends the list of chats again, for when a
+    # chat was written to disk by something else (a web-page chat copied in).
+    PANEL_ACTIONS = (
+        "rename", "move", "archive", "unarchive", "delete",
+        "new-project", "project-archive", "project-unarchive", "project-delete",
+        "refresh",
+    )
+    _PANEL_BUSY = (
+        "The bots are still working in that chat. Try again when they finish."
+    )
+
+    def panel_action(
+        self, request: dict, ui: UIPort, *, busy: bool = False,
+    ) -> dict:
+        action = str(request.get("action", "") or "")
+        if action not in self.PANEL_ACTIONS:
+            return {"ok": False, "error": "The panel cannot do that."}
+        try:
+            if action == "refresh":
+                self._sync_project_ui(ui)
+                return {"ok": True}
+            if action == "new-project" or action.startswith("project-"):
+                return self._panel_project(action, request, ui, busy)
+            return self._panel_chat(action, request, ui, busy)
+        except Exception:  # a list action must never take the room down
+            log.exception("panel action %s failed", action)
+            return {"ok": False, "error": "That did not work."}
+
+    def _panel_chat(
+        self, action: str, request: dict, ui: UIPort, busy: bool,
+    ) -> dict:
+        def fail(why: str) -> dict:
+            return {"ok": False, "error": why}
+
+        sid = str(request.get("sid", "") or "").strip()
+        if not sid:
+            return fail("Which chat?")
+        if action == "unarchive":
+            if not self.session_store.unarchive(sid):
+                return fail("Could not bring that chat back.")
+            self._sync_project_ui(ui)
+            return {"ok": True}
+
+        own = sid == self.session_id
+        saved = None
+        if not own:
+            saved = next(
+                (s for s in self.session_store.list_summaries(limit=100000)
+                 if s.session_id == sid),
+                None,
+            )
+            if saved is None:
+                return fail("That chat is no longer there.")
+        path = Path(saved.source_path) if saved and saved.source_path else None
+
+        if action == "rename":
+            title = _clean_session_title(str(request.get("title", "") or ""))
+            if not title:
+                return fail("A chat needs a name.")
+            if own:
+                self.custom_title = title
+                self._persist_session()
+            elif not self.session_store.set_title(sid, title, path=path):
+                return fail("Could not rename that chat.")
+            self._sync_project_ui(ui)
+            return {"ok": True}
+
+        if action == "move":
+            pid = str(request.get("project", "") or "").strip()
+            project = self.project_store.get(pid) if pid else None
+            if pid and (project is None or project.id != pid):
+                return fail("That project is no longer there.")
+            if own:
+                if busy:
+                    return fail(self._PANEL_BUSY)
+                if project:
+                    self._activate_project(project, ui)
+                else:
+                    # the same as /project unfile, without the line in the chat
+                    self.session_project_id = ""
+                    self.active_project_id = ""
+                    self._inbox_by_choice = True
+                    self._persist_session()
+                    self.project_store.dissociate_session(self.session_id)
+                    self._sync_project_ui(ui)
+                return {"ok": True}
+            if project:
+                self.project_store.associate_session(project.id, sid)
+            else:
+                self.project_store.dissociate_session(sid)
+            # the saved chat's own record wins over the index, so it is
+            # re-stamped too (see SessionStore.set_project)
+            stamped = self.session_store.set_project(
+                sid, project.id if project else "", path=path,
+            )
+            self._sync_project_ui(ui)
+            return {"ok": True} if stamped else fail("Could not move that chat.")
+
+        if action == "archive":
+            if own:
+                if busy:
+                    return fail(self._PANEL_BUSY)
+                if not self.transcript.entries:
+                    return fail("This chat is empty, so there is nothing to archive.")
+                # save this chat and step into a fresh one first, so nothing
+                # writes the file again after it has moved
+                self._start_new_chat("", ui)
+            if not self.session_store.archive(sid):
+                self._sync_project_ui(ui)
+                return {"ok": False, "fresh": own,
+                        "error": "That chat is no longer there."}
+            self._sync_project_ui(ui)
+            return {"ok": True, "fresh": own}
+
+        # delete
+        if own and busy:
+            return fail(self._PANEL_BUSY)
+        label = self._session_title() if own else (saved.title or sid[:8])
+        self.session_store.delete(sid)
+        self.project_store.dissociate_session(sid)
+        if own:
+            # the chat on screen is gone: a fresh one takes its place, and the
+            # old one is not saved back (persist_old=False)
+            self._start_new_chat(
+                "", ui, persist_old=False,
+                lead_note=f"Deleted this chat ({label}).",
+            )
+        else:
+            self._sync_project_ui(ui)
+        return {"ok": True, "fresh": own}
+
+    def _panel_project(
+        self, action: str, request: dict, ui: UIPort, busy: bool,
+    ) -> dict:
+        def fail(why: str) -> dict:
+            return {"ok": False, "error": why}
+
+        if action == "new-project":
+            title = " ".join(str(request.get("title", "") or "").split())
+            if not title:
+                return fail("A project needs a name.")
+            try:
+                project = self.project_store.create_project(title)
+            except FileExistsError:
+                return fail("There is already a project with that name.")
+            except ValueError as exc:
+                return fail(str(exc) or "Could not make that project.")
+            self._sync_project_ui(ui)
+            return {"ok": True, "project": project.id}
+
+        pid = str(request.get("project", "") or "").strip()
+        project = self.project_store.get(pid) if pid else None
+        if project is None or project.id != pid:
+            return fail("That project is no longer there.")
+        still_working = (
+            "The bots are still working in a chat in this project. "
+            "Try again when they finish."
+        )
+
+        if action in ("project-archive", "project-unarchive"):
+            status = "archived" if action == "project-archive" else "active"
+            if project.status != status:
+                looking_at_it = self.active_project_id == project.id
+                if status != "active" and looking_at_it and busy:
+                    return fail(still_working)
+                self.project_store.set_status(
+                    project.id, status, title=project.title,
+                )
+                if status != "active" and looking_at_it:
+                    # only the lens moves; the chats stay filed where they
+                    # are (see _set_project_status)
+                    self.active_project_id = ""
+            self._sync_project_ui(ui)
+            return {"ok": True}
+
+        # project-delete: the folder and every chat filed in it
+        chat_ids = [
+            s.session_id
+            for s in self._project_tagged_summaries(project, limit=100000)
+        ]
+        current_filed_here = (
+            self.session_id in chat_ids or self.session_project_id == project.id
+        )
+        if current_filed_here and busy:
+            return fail(still_working)
+        for sid in chat_ids:
+            self.session_store.delete(sid)
+            self.project_store.dissociate_session(sid)
+        if current_filed_here:
+            self.session_store.delete(self.session_id)
+            self.project_store.dissociate_session(self.session_id)
+        try:
+            self.project_store.delete_project(project.id)
+        except (OSError, ValueError):
+            self._sync_project_ui(ui)
+            return fail(
+                f"The chats in {project.title} were deleted, but its folder "
+                "could not be removed."
+            )
+        n = len(chat_ids)
+        if self.active_project_id == project.id:
+            self.active_project_id = ""
+        if current_filed_here:
+            # the chat on screen went with the project: start over, unfiled
+            self.session_project_id = ""
+            noun = "chat" if n == 1 else "chats"
+            self._start_new_chat(
+                "", ui, filing="", persist_old=False,
+                lead_note=f"Deleted project “{project.title}” and {n} {noun}.",
+            )
+        else:
+            self._sync_project_ui(ui)
+        return {"ok": True, "fresh": current_filed_here, "chats": n}
 
     _TASK_LINE_RE = re.compile(r"^(\s*(?:[-*+]|\d+[.)])\s+)\[([ xX])\]\s+(.*?)\s*$")
 
