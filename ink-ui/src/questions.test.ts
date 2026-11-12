@@ -10,6 +10,7 @@ import {
   moveQuestions,
   permissionAnswer,
   permissionQuestionFrom,
+  questionOnScreen,
   waitingNote,
   type QuestionState,
 } from "./questions.js";
@@ -26,7 +27,40 @@ function apply(state: QuestionState, ...events: Parameters<typeof moveQuestions>
 
 describe("questions (which pop-up is on screen)", () => {
   it("names every mode in one list", () => {
-    assert.deepEqual([...QUESTION_MODES], ["none", "permission", "choice"]);
+    assert.deepEqual([...QUESTION_MODES], ["none", "permission", "choice", "answered"]);
+  });
+
+  it("an answered question waits for the engine and cannot be answered twice", () => {
+    const up = apply(NO_QUESTION, { type: "arrived", question: perm("p1") });
+    const answered = moveQuestions(up, { type: "answered" });
+    assert.equal(answered.ok, true);
+    assert.equal(answered.state.mode, "answered");
+    assert.equal(questionOnScreen(answered.state)?.request_id, "p1");
+    // A second key press: refused, nothing changes.
+    const again = moveQuestions(answered.state, { type: "answered" });
+    assert.equal(again.ok, false);
+    assert.equal(again.state, answered.state);
+    assert.equal(canMoveQuestionMode("answered", "answered"), false);
+    // Moving the cursor is refused too.
+    assert.equal(moveQuestions(answered.state, { type: "highlight_permission", choice: "deny" }).ok, false);
+    // The engine clears it.
+    const down = moveQuestions(answered.state, { type: "cleared", kind: "permission", request_id: "p1" });
+    assert.equal(down.state.mode, "none");
+  });
+
+  it("an answered choice gives way to the next waiting question when cleared", () => {
+    const s = apply(
+      NO_QUESTION,
+      { type: "arrived", question: choice("c1") },
+      { type: "arrived", question: perm("p1") },
+      { type: "answered" },
+    );
+    assert.equal(s.mode, "answered");
+    assert.equal(s.waiting.length, 1);
+    const next = apply(s, { type: "cleared", kind: "choice", request_id: "c1" });
+    assert.equal(next.mode, "permission");
+    assert.equal(apply(s, { type: "engine_stopped" }).mode, "none");
+    assert.equal(moveQuestions(NO_QUESTION, { type: "answered" }).ok, false);
   });
 
   it("legal moves: a question comes up, then clears", () => {

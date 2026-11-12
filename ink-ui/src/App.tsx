@@ -119,6 +119,7 @@ import {
   moveQuestions,
   permissionAnswer,
   permissionQuestionFrom,
+  questionOnScreen,
   waitingNote,
   type PermissionQuestion,
   type QuestionEvent,
@@ -1515,6 +1516,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setHint("Answer the pending question first (Up/Down + Enter, Esc dismisses).");
       return;
     }
+    if (questionsRef.current.mode === "answered") return;
     const stripped = inputTextRef.current.trim();
     if (!stripped) {
       setHint("Enter a message or command.");
@@ -1569,6 +1571,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (state.mode !== "permission" || !proc?.stdin?.writable) {
       return;
     }
+    // One answer per question: a second key press is refused here.
+    if (!moveQuestion({ type: "answered" })) return;
     proc.stdin.write(JSON.stringify(permissionAnswer(state.onScreen, choice)) + "\n");
     setHint(
       choice === "deny" ? "Denying protected write..."
@@ -1583,6 +1587,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     if (state.mode !== "choice" || !proc?.stdin?.writable) {
       return;
     }
+    if (!moveQuestion({ type: "answered" })) return;
     proc.stdin.write(JSON.stringify(choiceAnswer(state.onScreen, index)) + "\n");
   }, []);
 
@@ -1650,6 +1655,8 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     const question = questionsRef.current;
+    // Answered, waiting for the engine to clear it: keys do nothing here.
+    if (question.mode === "answered") return;
     if (question.mode === "permission") {
       const highlighted = question.onScreen.highlighted;
       if (key.leftArrow) {
@@ -1929,6 +1936,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
     : "";
   const engineDown = turnMode === "engine_stopped";
+  const shownQuestion = questionOnScreen(questions);
   const statusText = mouseSelectionMode
     ? selectionHint
     : hint || (engineDown ? ENGINE_STOPPED_STATUS : queueHint || (showsSpinner(turnMode) ? busyText : " "));
@@ -1967,17 +1975,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       {/* Input area */}
       <Box flexDirection="column" marginBottom={1} width="100%">
         <Text color={THEME.chromeMuted}>{"─".repeat(Math.max(1, cols - 2))}</Text>
-        {questions.mode === "permission" ? (
+        {/* An answered question stays drawn until the engine clears it. */}
+        {shownQuestion?.kind === "permission" ? (
           <PermissionPrompt
-            request={questions.onScreen}
-            choice={questions.onScreen.highlighted}
+            request={shownQuestion}
+            choice={shownQuestion.highlighted}
             waiting={waitingNote(questions)}
           />
-        ) : questions.mode === "choice" ? (
+        ) : shownQuestion?.kind === "choice" ? (
           <ChoicePrompt
-            prompt={questions.onScreen.prompt}
-            options={questions.onScreen.options}
-            index={questions.onScreen.highlighted}
+            prompt={shownQuestion.prompt}
+            options={shownQuestion.options}
+            index={shownQuestion.highlighted}
             waiting={waitingNote(questions)}
           />
         ) : (

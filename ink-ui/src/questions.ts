@@ -7,6 +7,8 @@
 //   none        no question; the typing box is shown
 //   permission  a bot asks to write a protected file (Allow once / always / Deny)
 //   choice      the engine asks the user to pick one option from a list
+//   answered    the user answered the question on screen; it stays on screen
+//               until the engine clears it, and no key can answer it again
 //
 // Only one question is on screen at a time. A question that arrives while
 // another is up waits its turn, in arrival order, and comes up when the one on
@@ -19,7 +21,7 @@
 
 import { permissionResponse, type PermissionChoice } from "./permission.js";
 
-export const QUESTION_MODES = ["none", "permission", "choice"] as const;
+export const QUESTION_MODES = ["none", "permission", "choice", "answered"] as const;
 export type QuestionMode = (typeof QUESTION_MODES)[number];
 
 export interface PermissionQuestion {
@@ -46,16 +48,20 @@ export type Question = PermissionQuestion | ChoiceQuestion;
 export type QuestionState =
   | { mode: "none"; waiting: readonly [] }
   | { mode: "permission"; onScreen: PermissionQuestion; waiting: readonly Question[] }
-  | { mode: "choice"; onScreen: ChoiceQuestion; waiting: readonly Question[] };
+  | { mode: "choice"; onScreen: ChoiceQuestion; waiting: readonly Question[] }
+  | { mode: "answered"; onScreen: Question; waiting: readonly Question[] };
 
 export const NO_QUESTION: QuestionState = { mode: "none", waiting: [] };
 
 const ALLOWED_MOVES: Record<QuestionMode, readonly QuestionMode[]> = {
   none: ["permission", "choice"],
   // permission -> permission / choice -> choice: the next waiting question of
-  // the same kind comes up after the one on screen is cleared.
-  permission: ["none", "permission", "choice"],
-  choice: ["none", "choice", "permission"],
+  // the same kind comes up after the one on screen is cleared (a question the
+  // engine drops before the user answers).
+  permission: ["none", "permission", "choice", "answered"],
+  choice: ["none", "choice", "permission", "answered"],
+  // answered -> answered is missing on purpose: one answer per question.
+  answered: ["none", "permission", "choice"],
 };
 
 /** True when the mode may go from `from` to `to`. */
@@ -73,6 +79,8 @@ export type QuestionEvent =
   /** The user moves the cursor on the question on screen. */
   | { type: "highlight_permission"; choice: PermissionChoice }
   | { type: "highlight_choice"; index: number }
+  /** The user answered the question on screen (the answer is on its way). */
+  | { type: "answered" }
   /** The engine stopped: every question is gone. */
   | { type: "engine_stopped" };
 
@@ -143,10 +151,19 @@ export function moveQuestions(from: QuestionState, event: QuestionEvent): Questi
         changed: true,
       };
     }
+    case "answered": {
+      if (from.mode === "none") return { ok: false, state: from, reason: "no question to answer" };
+      return settle(from, { mode: "answered", onScreen: from.onScreen, waiting: from.waiting });
+    }
     case "engine_stopped":
       if (from.mode === "none") return { ok: true, state: from, changed: false };
       return settle(from, NO_QUESTION);
   }
+}
+
+/** The question on screen (answered or not), or null when there is none. */
+export function questionOnScreen(state: QuestionState): Question | null {
+  return state.mode === "none" ? null : state.onScreen;
 }
 
 /** A request_id from a bridge event, or undefined (older bridge). */
