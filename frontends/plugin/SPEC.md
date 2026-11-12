@@ -12493,3 +12493,13 @@ where noted.
   pending → ready, `data` = the preview) and fail (queued | pending | ready →
   failed, `why`; ready → failed when the page could not place it). Failed is
   final for the page load, as before. Tests: `test/pagemodes.test.mjs`.
+- **A thread's request out** (the card head's ✓ / ↺ reopen, "not done",
+  highlight ⇄ strike) — was three per-thread yes/no maps, `D.resolving`,
+  `D.addressing`, `D.marking`, so a resolve and a "not done" on the same
+  thread could be in flight together. Now ONE value per thread,
+  `D.threadReq[id]`, one of `THREAD_REQS` = none / resolving / addressing /
+  marking (none is not stored), changed only by `setThreadReq` → the pure
+  `threadReqMove`: none → one of the others (a click), back to none (the
+  answer); anything else throws. A click on a thread whose request is out
+  does nothing, whichever verb it is. The busy ◌ shows on the same button as
+  before. Tests: `test/drawermodes.test.mjs`.

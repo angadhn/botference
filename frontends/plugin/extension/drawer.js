@@ -337,6 +337,28 @@
     t.orphaned = !!on;
     return true;
   }
+  // A THREAD'S REQUEST OUT — the card head's one-click verbs (✓ / ↺ reopen,
+  // "not done", highlight ⇄ strike) each wait on one round trip to the
+  // companion. At most ONE is out per thread, so which one is a single named
+  // value, one of THREAD_REQS, kept in D.threadReq[id] and changed only by
+  // setThreadReq → the pure threadReqMove. (It was three yes/no maps,
+  // D.resolving / D.addressing / D.marking, and a resolve and a "not done" on
+  // the same thread could be in flight together.)
+  //   'none'       — nothing out (the default; never stored)
+  //   'resolving'  — ✓ or ↺ reopen          (POST /resolve)
+  //   'addressing' — "not done"             (POST /addressed)
+  //   'marking'    — highlight ⇄ strike     (POST /mark)
+  // Moves: none → any other (a click), any other → none (the answer). A
+  // second click on a thread whose request is out is refused (throws; the
+  // verbs ask threadReq first and do nothing).
+  const THREAD_REQS = Object.freeze(['none', 'resolving', 'addressing', 'marking']);
+  const threadReqOf = v => (THREAD_REQS.indexOf(v) > 0 ? v : 'none');
+  function threadReqMove(cur, next) {
+    if (THREAD_REQS.indexOf(next) === -1) throw new Error('thread request: no such one ' + next);
+    const from = threadReqOf(cur);
+    if ((from === 'none') === (next === 'none')) throw new Error('thread request: cannot go ' + from + ' → ' + next);
+    return next;
+  }
   // …the MARK, its two names (THREAD_MARKS): what was done to the passage
   const THREAD_MARKS = ['highlight', 'strike'];
   const threadMark = t => (t && t.mark === 'strike' ? 'strike' : 'highlight');
@@ -2543,11 +2565,11 @@
       // a page that person has never been near. setPage clears it for exactly
       // that reason.
       commenter: '',
-      addressing: {},        // threadId -> a "not done" round trip is in flight
       resolvedCards: {},     // threadId -> the full thread under its digest is open
-      resolving: {},         // threadId -> a resolve/reopen is in flight
+      // threadId -> the ONE request out on it (THREAD_REQS: resolving /
+      // addressing / marking), changed only by setThreadReq; absent = none
+      threadReq: {},
       // ---- the strikeout, arrived at rather than chosen ------------------
-      // `marking` is a highlight⇄strike conversion in flight, per thread.
       // `strikes` is the OTHER path — a bot's `strike:` suggestion:
       //   busy      the ts of the reply whose chip is mid-flight
       //   declined  the ts of any suggestion the reader said no to. Per tab and
@@ -2561,7 +2583,6 @@
       //   updated   ts -> true where that chip did not MINT the strike but
       //             rewrote the note on one already there, so the chip can say
       //             which of the two things the reader's click actually did
-      marking: {},
       strikes: { busy: '', declined: [], made: {}, arrived: {}, updated: {} },
       // ---- the question vault -------------------------------------------
       // "This is interesting — make a question of it." One click; a bot writes
@@ -4480,17 +4501,17 @@ ${bubbleShellHtml()}`;
     // showing on hover like every other per-row control, because a control
     // that shouted would add its own clutter to the very rows it exists to
     // clear away.
-    const resolveBtn = t => (D.resolving[t.id]
+    const resolveBtn = t => (threadReq(t.id) === 'resolving'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-res" data-act="resolve" data-target="${esc(t.id)}" type="button" title="resolve — it files itself below and the highlight turns green" aria-label="resolve this thread">✓</button>`);
-    const reopenBtn = t => (D.resolving[t.id]
+    const reopenBtn = t => (threadReq(t.id) === 'resolving'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-reopen" data-act="reopen" data-target="${esc(t.id)}" type="button" title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`);
     // …and the same undo one rung lower: "not done" takes a thread OUT of
     // Ready for review and back into the open list. It sits beside the ✓ and
     // not instead of it — the reader may agree (✓, which files it) or disagree
     // (↺, which puts it back in the queue), and both are one click.
-    const notDoneBtn = t => (D.addressing[t.id]
+    const notDoneBtn = t => (threadReq(t.id) === 'addressing'
       ? `<span class="rebtn thr-res busy" aria-hidden="true">◌</span>`
       : `<button class="rebtn thr-notdone" data-act="not-done" data-target="${esc(t.id)}" type="button" title="not done — back to the open list, highlight back to yellow" aria-label="put this thread back in the open list">↺</button>`);
 
@@ -4522,7 +4543,7 @@ ${bubbleShellHtml()}`;
     const canMark = t => CAPS.strike && D.owner && !isResolved(t);
     const markBtn = t => {
       if (!canMark(t)) return '';
-      if (D.marking[t.id]) return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
+      if (threadReq(t.id) === 'marking') return `<span class="rebtn thr-mark busy" aria-hidden="true">◌</span>`;
       return isStruck(t)
         ? `<button class="rebtn thr-mark back" data-act="set-mark" data-target="${esc(t.id)}" data-mark="highlight" type="button" title="back to an ordinary highlight — the line comes off the passage" aria-label="back to a highlight">S</button>`
         // the line through the glyph is CSS and not a combining character:
@@ -8624,6 +8645,16 @@ ${bubbleShellHtml()}`;
       render();
     }
 
+    // ---- a thread's request out (THREAD_REQS) -------------------------------
+    // THE one function that changes D.threadReq (threadReqMove refuses a
+    // second request while one is out, and an answer with none out).
+    function threadReq(id) { return threadReqOf(D.threadReq[id]); }
+    function setThreadReq(id, next) {
+      const to = threadReqMove(D.threadReq[id], next);
+      if (to === 'none') delete D.threadReq[id]; else D.threadReq[id] = to;
+      return to;
+    }
+
     // ---- a chat's turn (TURN_MODES) ----------------------------------------
     // THE one function that changes D.turns (turnMove refuses the illegal
     // moves). A turn that is over takes its half-typed streams with it; a wait
@@ -9849,7 +9880,7 @@ ${bubbleShellHtml()}`;
     // is never blank for the frame before the answer comes back.
     async function doResolve(target, on) {
       const t = threadById(target);
-      if (!t || D.resolving[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const was = threadStatusFields(t);
       const wasSummary = t.summary;
       // Either direction ends "ready for review" — the companion's move does
@@ -9867,12 +9898,12 @@ ${bubbleShellHtml()}`;
         // it is still a true account of what the thread said last time, and
         // keeping it is what lets a late summary job land harmlessly.
       }
-      D.resolving[target] = true;
+      setThreadReq(target, 'resolving');
       render();
       let r;
       try { r = await cb('onResolve')(target, !!on); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.resolving[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         // put it back exactly as it was — including a summary we invented
         const now = threadById(target);
@@ -9897,16 +9928,16 @@ ${bubbleShellHtml()}`;
     // both the card and the line on the page back.
     async function doSetMark(target, mark) {
       const t = threadById(target);
-      if (!t || D.marking[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const want = mark === 'strike';
       const was = t.mark;
       if (want) t.mark = 'strike'; else delete t.mark;
-      D.marking[target] = true;
+      setThreadReq(target, 'marking');
       render();
       let r;
       try { r = await cb('onSetMark')(target, want ? 'strike' : 'highlight'); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.marking[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         const now = threadById(target);
         if (now) { if (was) now.mark = was; else delete now.mark; }
@@ -9927,16 +9958,16 @@ ${bubbleShellHtml()}`;
     // with reply-or-resolve as the two ways back out of it.
     async function doNotDone(target) {
       const t = threadById(target);
-      if (!t || D.addressing[target]) return;
+      if (!t || threadReq(target) !== 'none') return;
       const was = threadStatusFields(t);
       // "not done" moves a READY thread back to open; on any other it is a no-op
       if (threadStage(t) === 'ready') setThreadStage(t, 'open');
-      D.addressing[target] = true;
+      setThreadReq(target, 'addressing');
       render();
       let r;
       try { r = await cb('onNotDone')(target); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      delete D.addressing[target];
+      setThreadReq(target, 'none');
       if (!r || r.ok === false) {
         const now = threadById(target);
         if (now) restoreThreadStatus(now, was);
@@ -12283,7 +12314,7 @@ ${bubbleShellHtml()}`;
       const res = box.querySelector('.bres');
       if (res) {
         const html = id === NEW_ID ? ''
-          : D.resolving[id] ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
+          : threadReq(id) === 'resolving' ? '<span class="brebtn busy" aria-hidden="true">◌</span>'
           : isResolved(t)
             ? `<button class="brebtn breopen" type="button" data-act="reopen" data-target="${esc(id)}"
                 title="reopen — back to the list, highlight back to yellow" aria-label="reopen this thread">↺</button>`
@@ -13405,6 +13436,7 @@ ${bubbleShellHtml()}`;
     POPOVERS, ACT_MODES, ACT_MOVES, actMove, canActMove,    // test/drawermodes.test.mjs
     LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
     OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
+    THREAD_REQS, threadReqMove,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX

@@ -4,6 +4,9 @@
 //
 //   1. the pop-overs (help, models, export, projects) — were four flags, and
 //      two could be up at once; now D.popover (POPOVERS) via setPopover.
+//   5. a thread's request out (✓ / ↺, "not done", highlight ⇄ strike) — were
+//      three maps, D.resolving / D.addressing / D.marking, so two could be out
+//      on one thread; now D.threadReq[id] (THREAD_REQS) via setThreadReq.
 //
 // Made-up data only.
 import { createRequire } from 'node:module';
@@ -219,6 +222,56 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
       eq('delivered: it leaves the outbox', (d4.outbox.q1 || []).length, 0);
     } else ok('a retry button is offered on a failed send', false);
   } else ok('the thread has a reply box', false);
+}
+
+// ---- 5. a thread's request out: one at a time ---------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the requests, named', D.THREAD_REQS, ['none', 'resolving', 'addressing', 'marking']);
+  ok('…frozen', Object.isFrozen(D.THREAD_REQS));
+  for (const k of ['resolving', 'addressing', 'marking']) {
+    eq(`none → ${k}`, D.threadReqMove(undefined, k), k);
+    eq(`${k} → none (the answer)`, D.threadReqMove(k, 'none'), 'none');
+    for (const k2 of ['resolving', 'addressing', 'marking']) {
+      ok(`${k} → ${k2}: refused (one out at a time)`, throws(() => D.threadReqMove(k, k2)));
+    }
+  }
+  ok('an answer with nothing out is refused', throws(() => D.threadReqMove(undefined, 'none')));
+  ok('a request that is not one throws', throws(() => D.threadReqMove(undefined, 'deleting')));
+
+  const calls = [];
+  const held = {};
+  const d5 = D.create({
+    cssText: '.panel{}',
+    onResolve: (id, on) => { calls.push('resolve'); return new Promise(r => { held.resolve = r; }); },
+    onNotDone: id => { calls.push('not-done'); return new Promise(r => { held.notDone = r; }); },
+  });
+  d5.setConn(true); d5.setAuthor('reader'); d5.open('comments');
+  d5.setPage({ url: URL_, title: 'Article', page_chat: [],
+    threads: [{ id: 'r1', quote: 'a made-up passage', status: 'ready', addressed_by: 'claude',
+      msgs: [{ author: 'reader', ts: '1', text: 'made up' }, { author: 'claude', ts: '2', text: 'made up too' }] }] });
+  await tick(20);
+  const S = d5.shadow;
+  const btn = act => S.querySelector(`.card[data-thread="r1"] [data-act="${act}"]`);
+  const nd = btn('not-done');
+  ok('a ready thread offers "not done"', !!nd);
+  if (nd) {
+    nd.click(); await tick(5);
+    eq('"not done" is out', d5.threadReq.r1, 'addressing');
+    ok('…the card has gone back to open at once', !S.querySelector('.card[data-thread="r1"]').classList.contains('ready'));
+    const rs = btn('resolve');
+    if (rs) { rs.click(); await tick(5); }
+    eq('a ✓ while "not done" is out is refused: nothing sent', calls, ['not-done']);
+    eq('…and the request out is still the first', d5.threadReq.r1, 'addressing');
+    held.notDone({ ok: true }); await tick(10);
+    ok('answered: nothing out', !('r1' in d5.threadReq));
+    const rs2 = btn('resolve');
+    if (rs2) { rs2.click(); await tick(5); }
+    eq('now a ✓ goes', calls, ['not-done', 'resolve']);
+    eq('…resolving', d5.threadReq.r1, 'resolving');
+    held.resolve({ ok: true }); await tick(10);
+    ok('…answered: nothing out', !('r1' in d5.threadReq));
+  }
 }
 
 console.log(`drawermodes: ${pass} passed, ${fail} failed`);
