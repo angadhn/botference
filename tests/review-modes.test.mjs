@@ -676,7 +676,9 @@ function buildPage() {
 
 // review.js running LIVE in happy-dom against a stubbed server: `data` is
 // merged into /data; `routes` answer POSTs (a throw = the server unreachable)
-async function page(t, { data = {}, routes = {} }) {
+// `shrink` maps a timer length the page uses to a shorter one, so a test
+// need not sit through the real seconds (e.g. { 8000: 150 })
+async function page(t, { data = {}, routes = {}, shrink = {} }) {
   const { html, js } = buildPage();
   const { GlobalWindow } = await import('happy-dom');
   const vm = await import('node:vm');
@@ -712,6 +714,8 @@ async function page(t, { data = {}, routes = {} }) {
     message(data) { this.onmessage && this.onmessage({ data }); }
     close() { this.closed = true; }
   };
+  const realSetTimeout = w.setTimeout.bind(w);
+  w.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, shrink[ms] ?? ms, ...rest);
   vm.createContext(w);
   for (const src of js) vm.runInContext(src, w);
   const tick = () => new Promise(r => setTimeout(r, 30));
@@ -871,4 +875,156 @@ test('sync mode: unsent → saved/failed, saved ↔ failed, shown in the sidebar
   fail = false;
   assert.equal(R.setSync('saved'), true);
   assert.doesNotMatch(conn(), /sync failed/);
+});
+
+// ============================== the turn in flight belongs to the busy link mode
+// `current` (the turn in flight) used to be a field of its own beside `link`,
+// so the two could disagree. Now only setLink('busy', turn) sets it, and any
+// move out of busy clears it.
+test('link and turn: the turn in flight is set only by moving to busy, and cleared on leaving it', async t => {
+  const { BridgeChat } = await import(path.join(ENGINE, 'chat.mjs'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-modes-turn-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'project.json'), '{}');
+  const rd = path.join(root, 'review');
+  fs.mkdirSync(path.join(rd, 'state'), { recursive: true });
+  const events = [], sent = [];
+  const chat = new BridgeChat({ reviewDir: rd, cfg: {}, onEvent: ev => events.push(ev) });
+  chat.proc = { stdin: { write: line => sent.push(JSON.parse(line)) } };
+  assert.equal(chat.current, null);
+  assert.throws(() => { chat.current = { target_id: 'x' }; }, TypeError, 'no way to write it from outside');
+  assert.equal(chat.current, null);
+  assert.equal(chat.setLink('starting'), true);
+  assert.equal(chat.setLink('idle'), true);
+  assert.equal(chat.setLink('busy'), false, 'busy without a turn is refused');
+  assert.equal(chat.link, 'idle');
+  chat.submit({ mention_id: 'm1', target_id: 'c1', author: 'ada', text: '@claude hi' });
+  assert.equal(chat.link, 'busy');
+  assert.equal(chat.current.mention_id, 'm1');
+  assert.equal(chat.setLink('busy', { target_id: 'other' }), false, 'a second turn cannot replace the one in flight');
+  assert.equal(chat.current.mention_id, 'm1');
+  chat.submit({ mention_id: 'm2', target_id: 'c2', author: 'ada', text: '@codex hi' });
+  assert.equal(chat.current.mention_id, 'm1', 'the queued turn waits');
+  chat.handle({ type: 'ready' });
+  assert.deepEqual(events.filter(e => e.kind === 'turn-end').map(e => e.mention_id), ['m1']);
+  assert.equal(chat.link, 'busy', 'the next queued turn went straight out');
+  assert.equal(chat.current.mention_id, 'm2');
+  assert.equal(chat.setLink('gone'), true);
+  assert.equal(chat.current, null, 'gone holds no turn');
+  chat.handle({ type: 'ready' });
+  assert.equal(events.filter(e => e.kind === 'turn-end').length, 1, 'a late ready after gone ends nothing');
+  assert.deepEqual(sent.map(s => s.type), ['input', 'input']);
+});
+
+// ============================== the "✓ committed" note (commit note mode)
+// The note used to be a time stamp read against an eight-second window, with
+// a bare timer to redraw: the timer was the mode. Now it is one named mode
+// changed through setCommitNote(), and a timer from an earlier commit cannot
+// clear a newer note.
+test('commit note: none → committed → none, and an earlier commit\'s timer never clears a newer note (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {
+    data: { apply: { cards: { s1: { mode: 'applied' } }, round: { ids: ['s1'], files: ['main.tex'] } } },
+    routes: { '/commit': () => ({ ok: true, sha: 'aaa1111', ids: ['s1'], apply: { cards: {}, round: null } }) },
+    shrink: { 8000: 200 },
+  });
+  const R = pg.R;
+  const bar = () => pg.doc.getElementById('apply-bar').textContent;
+  const wait = ms => new Promise(r => setTimeout(r, ms));
+  assert.deepEqual([...R.COMMIT_NOTE_MODES], ['none', 'committed']);
+  assert.equal(R.commitNote, 'none');
+  assert.equal(R.setCommitNote('none'), false, 'none -> none is not a move');
+  assert.equal(R.setCommitNote('committing'), false, 'not a mode');
+  pg.openConsole();
+  pg.doc.getElementById('commit-round').click();
+  await pg.tick();
+  assert.equal(R.commitNote, 'committed');
+  assert.match(bar(), /✓ committed aaa1111/);
+  await wait(120);
+  assert.equal(R.setCommitNote('committed', 'bbb2222'), true, 'a newer commit replaces the note');
+  await wait(130);                    // the first commit's timer would have fired by now
+  assert.equal(R.commitNote, 'committed', 'the older timer did not clear the newer note');
+  assert.match(bar(), /✓ committed bbb2222/);
+  await wait(150);
+  assert.equal(R.commitNote, 'none');
+  assert.doesNotMatch(bar(), /✓ committed/);
+  assert.match(bar(), /none pending/);
+});
+
+test('commit note: a commit the server refused leaves no note (happy-dom)', needsHappy, async t => {
+  const pg = await page(t, {
+    data: { apply: { cards: { s1: { mode: 'applied' } }, round: { ids: ['s1'], files: ['main.tex'] } } },
+    routes: { '/commit': () => ({ ok: false, reason: 'nothing to commit' }) },
+  });
+  pg.openConsole();
+  pg.doc.getElementById('commit-round').click();
+  await pg.tick();
+  assert.equal(pg.R.commitNote, 'none');
+  assert.match(pg.toasts(), /nothing to commit/);
+});
+
+// ============================== re-reading /data on a "state" announcement (reload mode)
+// A `refetching` flag used to drop an announcement that arrived while a
+// re-read was out, so the page could miss the last change. Now RELOAD_MODES
+// remember it: exactly one more re-read follows, never none, never a loop.
+test('reload: an announcement mid re-read causes exactly one more re-read, then idle (happy-dom)', needsHappy, async t => {
+  let reads = 0, gen = 0;
+  const gates = [];
+  const pg = await page(t, {
+    routes: { '/data': () => {
+      reads++;
+      const body = { me: 'ada', hosted: false, owner: true, owner_handle: 'ada', users: { ada: {} },
+        threads: { s1: [{ author: 'claude', text: 'reply ' + (++gen), ts: '2026-01-01T00:00:00Z' }] },
+        suggestions: [], apply: { cards: {}, round: null }, chat: true };
+      return reads === 1 ? body : new Promise(r => gates.push(() => r(body)));  // the boot read answers at once
+    } },
+  });
+  const R = pg.R;
+  const say = () => pg.sockets[0].onmessage({ data: '{"type":"state"}' });
+  assert.deepEqual([...R.RELOAD_MODES], ['idle', 'loading', 'loading-and-stale']);
+  assert.equal(R.reload, 'idle');
+  assert.equal(R.setReload('loading-and-stale'), false, 'idle cannot be stale');
+  assert.equal(R.setReload('busy'), false, 'not a mode');
+  assert.equal(reads, 1);
+  say();
+  assert.equal(R.reload, 'loading');
+  assert.equal(reads, 2);
+  say(); say(); say();                     // three more while the first is out
+  assert.equal(R.reload, 'loading-and-stale');
+  assert.equal(reads, 2, 'no second read while one is out');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(reads, 3, 'exactly one more read for all three announcements');
+  assert.equal(R.reload, 'loading');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(R.reload, 'idle');
+  assert.equal(reads, 3, 'and then it stops');
+  assert.equal(gates.length, 0);
+  // a later announcement starts a fresh read
+  say();
+  assert.equal(reads, 4);
+  gates.shift()();
+  await pg.tick();
+  assert.equal(R.reload, 'idle');
+});
+
+test('reload: a failed re-read still ends, and a remembered announcement still gets its read (happy-dom)', needsHappy, async t => {
+  let reads = 0;
+  const gates = [];
+  const pg = await page(t, {
+    routes: { '/data': () => {
+      reads++;
+      if (reads === 1) return { me: 'ada', users: { ada: {} }, threads: {}, suggestions: [], apply: { cards: {}, round: null }, chat: true };
+      return new Promise((_, no) => gates.push(() => no(new TypeError('Failed to fetch'))));
+    } },
+  });
+  const say = () => pg.sockets[0].onmessage({ data: '{"type":"state"}' });
+  say(); say();
+  assert.equal(pg.R.reload, 'loading-and-stale');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(reads, 3);
+  gates.shift()();
+  await pg.tick();
+  assert.equal(pg.R.reload, 'idle');
 });
