@@ -4,6 +4,8 @@
 //
 //   1. a figure-edit batch (config.js FTE_STATES / fteBatchMove) — content.js
 //      fteSend and the worker's ledger (background.js fteLedger)
+//   2. one card's rendered preview on a book page (blockdiff.js
+//      RP_CARD_STATES / rpCardMove) — content.js RP.byCard
 //
 // content.js cannot be loaded in node (a content script that wants a document,
 // a `chrome` and a live page), so the machines live in files that can, and
@@ -20,6 +22,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const ext = f => path.join(here, '..', 'extension', f);
 const C = require(ext('config.js'));
+const BD = require(ext('blockdiff.js'));
 const CONTENT = fs.readFileSync(ext('content.js'), 'utf8');
 const BG = fs.readFileSync(ext('background.js'), 'utf8');
 
@@ -64,6 +67,37 @@ const throws = (name, fn) => { try { fn(); ok(name, false, 'did not throw'); } c
   ok('…every change is a fteBatchMove', (fte.match(/CFG\.fteBatchMove\(/g) || []).length === 5);
   ok('the worker keeps only the named states', /CFG\.FTE_STATES\.includes\(e\.state\)/.test(BG)
     && !/\['inflight', 'acked', 'failed'\]/.test(BG));
+}
+
+// ---- 2. a rendered preview's card --------------------------------------------
+{
+  eq('the card states, named', BD.RP_CARD_STATES, ['queued', 'pending', 'ready', 'failed']);
+  ok('…frozen', Object.isFrozen(BD.RP_CARD_STATES) && Object.isFrozen(BD.RP_CARD_MOVES));
+  eq('no entry reads as none', BD.rpCardState(undefined), 'none');
+  const q = BD.rpCardMove(undefined, 'queue');
+  eq('queue: none → queued', q, { state: 'queued' });
+  throws('a queued card is not queued twice', () => BD.rpCardMove(q, 'queue'));
+  const p = BD.rpCardMove(q, 'wait');
+  eq('wait: queued → pending', p.state, 'pending');
+  eq('wait again: still building', BD.rpCardMove(p, 'wait').state, 'pending');
+  const pv = { ok: true, base: '<p>a</p>', card: '<p>b</p>' };
+  const r = BD.rpCardMove(p, 'got', pv);
+  eq('got: pending → ready, with the preview', [r.state, r.data === pv], ['ready', true]);
+  eq('got straight from queued', BD.rpCardMove(q, 'got', pv).state, 'ready');
+  throws('a ready card is not waited on', () => BD.rpCardMove(r, 'wait'));
+  throws('…nor got twice', () => BD.rpCardMove(r, 'got', pv));
+  const f = BD.rpCardMove(r, 'fail');
+  eq('fail: ready → failed (the page could not place it)', [f.state, f.why], ['failed', '']);
+  eq('fail from queued keeps why', BD.rpCardMove(q, 'fail', 'no build').why, 'no build');
+  for (const m of ['queue', 'wait', 'got', 'fail']) throws('failed is final: no ' + m, () => BD.rpCardMove(f, m, pv));
+  throws('an unknown move throws', () => BD.rpCardMove(q, 'skip'));
+
+  const a = CONTENT.indexOf('async function rpPump(');
+  const rp = CONTENT.slice(a, CONTENT.indexOf('function answerRendered(', a));
+  ok('the preview pump is where we think it is', a > 0 && rp.length > 800);
+  eq('content.js never writes a card state by hand', rp.match(/state\s*[:=]\s*'/g), null);
+  eq('…nor reads one by hand', rp.match(/\.state\s*[!=]==\s*'(queued|pending|ready|failed)'/g), null);
+  ok('…every change is an rpCardMove', (rp.match(/BD\.rpCardMove\(/g) || []).length === 5);
 }
 
 console.log(`pagemodes: ${pass} passed, ${fail} failed`);

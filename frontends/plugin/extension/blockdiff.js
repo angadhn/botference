@@ -15,7 +15,8 @@
 //      typeset the live page's formulas and learn mode has added buttons to
 //      its check cards — so each changed block can be found on screen.
 //
-// PURE CORE (no DOM): lcsPairs, planHunks — tested in node (test/blockdiff.test.mjs).
+// PURE CORE (no DOM): lcsPairs, planHunks — tested in node (test/blockdiff.test.mjs);
+//                     RP_CARD_STATES / rpCardMove — test/pagemodes.test.mjs.
 // DOM HALF (thin):    blocksOf, fullKey, looseKey.
 (function (root) {
   'use strict';
@@ -109,6 +110,39 @@
     return { hunks, unplaced };
   }
 
+  // ---- one card's rendered preview: where it stands ----------------------
+  // content.js keeps one per open card (RP.byCard[id]). Its `state` is one of
+  // RP_CARD_STATES, changed only by rpCardMove:
+  //   'queued'  — seen, waiting its turn to be asked for
+  //   'pending' — the companion is still building it; asked again shortly
+  //   'ready'   — built (`data` = the preview); painted over the page
+  //   'failed'  — the book could not build it, or the page could not place it
+  //               (`why`); the text preview stays. Final for this page load.
+  // …and every way it changes ('none' = no entry yet):
+  //   queue — none → queued
+  //   wait  — queued | pending → pending
+  //   got   — queued | pending → ready, `arg` = the preview
+  //   fail  — queued | pending | ready → failed, `arg` = why
+  const RP_CARD_STATES = Object.freeze(['queued', 'pending', 'ready', 'failed']);
+  const RP_CARD_MOVES = Object.freeze({
+    queue: Object.freeze(['none']),
+    wait: Object.freeze(['queued', 'pending']),
+    got: Object.freeze(['queued', 'pending']),
+    fail: Object.freeze(['queued', 'pending', 'ready']),
+  });
+  const RP_CARD_TO = { queue: 'queued', wait: 'pending', got: 'ready', fail: 'failed' };
+  const rpCardState = c => (c && RP_CARD_STATES.indexOf(c.state) !== -1 ? c.state : 'none');
+  const canRpCardMove = (c, move) => !!RP_CARD_MOVES[move] && RP_CARD_MOVES[move].indexOf(rpCardState(c)) !== -1;
+  // Pure: (card, move, arg) → the card's new value. An unknown move, or one
+  // from the wrong state, throws.
+  function rpCardMove(c, move, arg) {
+    if (!RP_CARD_MOVES[move]) throw new Error('rendered preview: no such move ' + move);
+    if (!canRpCardMove(c, move)) throw new Error('rendered preview: cannot ' + move + ' while ' + rpCardState(c));
+    if (move === 'got') return { state: 'ready', data: arg };
+    if (move === 'fail') return { state: 'failed', why: String(arg || '') };
+    return { state: RP_CARD_TO[move] };
+  }
+
   // ---- dom ----------------------------------------------------------------
 
   const NOT_BLOCKS = /^(SCRIPT|STYLE|LINK|META|TEMPLATE|NOSCRIPT)$/;
@@ -151,7 +185,8 @@
     + '.headerlink, .sdb-ui, .lm-ctl, .admonition-title, button, textarea, .copybtn';
   function looseKey(el) { return keyOf(el, LOOSE); }
 
-  const api = { lcsPairs, planHunks, blocksOf, fullKey, looseKey };
+  const api = { lcsPairs, planHunks, blocksOf, fullKey, looseKey,
+                RP_CARD_STATES, RP_CARD_MOVES, rpCardState, rpCardMove, canRpCardMove };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPBlockDiff = api;
 })(typeof window !== 'undefined' ? window : globalThis);

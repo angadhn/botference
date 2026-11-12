@@ -12484,3 +12484,12 @@ where noted.
   entry from before has the same three words and reads as it did; an unknown
   word, or an acked entry with no ack, reads as failed (may be sent again).
   Tests: `test/pagemodes.test.mjs`.
+- **A suggestion card's rendered preview on a book page** (content.js
+  `RP.byCard[id]`) — its `state` was written by hand with no list. Now
+  `RP_CARD_STATES` = queued / pending / ready / failed in blockdiff.js (the
+  preview's pure core, testable in node), changed only by the pure
+  `rpCardMove(card, move, arg)`; moves queue (none → queued), wait (queued |
+  pending → pending: still building, asked again shortly), got (queued |
+  pending → ready, `data` = the preview) and fail (queued | pending | ready →
+  failed, `why`; ready → failed when the page could not place it). Failed is
+  final for the page load, as before. Tests: `test/pagemodes.test.mjs`.

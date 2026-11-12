@@ -1738,6 +1738,8 @@
   // elements under one attribute, which the snapshot strips.
   const RP_MAX = 8;               // cards rendered per page at once
   const RP_RETRY_MS = 3000;
+  // byCard: card id -> { state (blockdiff.js RP_CARD_STATES, changed only by
+  // rpCardMove), data | why }
   const RP = { byCard: Object.create(null), hidden: Object.create(null), none: false, busy: false, queue: [] };
   let propCards = Object.create(null);
   const rpOn = () => !!(BLOG_REC && BLOG_REC.rendered_preview && Drawer.rootAnswer(BLOG_REC) === 'yes' && !RP.none
@@ -1905,14 +1907,15 @@
     } catch { r = null; }
     RP.busy = false;
     const pv = r && r.ok && r.data && r.data.preview;
+    const BD = window.BFPBlockDiff;
     if (pv && pv.pending) {
-      RP.byCard[id] = { state: 'pending' };
+      RP.byCard[id] = BD.rpCardMove(RP.byCard[id], 'wait');
       setTimeout(() => { RP.queue.push(id); rpPump(); }, RP_RETRY_MS);
     } else if (pv && pv.ok) {
-      RP.byCard[id] = { state: 'ready', data: pv };
+      RP.byCard[id] = BD.rpCardMove(RP.byCard[id], 'got', pv);
     } else {
       if (pv && pv.none) RP.none = true;
-      RP.byCard[id] = { state: 'failed', why: (pv && pv.why) || (r && r.error) || '' };
+      RP.byCard[id] = BD.rpCardMove(RP.byCard[id], 'fail', (pv && pv.why) || (r && r.error) || '');
     }
     syncRendered();
     rpPump();
@@ -1928,14 +1931,15 @@
     for (const id of renderedIds()) if (open.indexOf(id) === -1) unpaintRendered(id);
     for (const id of open.slice(0, RP_MAX)) {
       const got = RP.byCard[id];
-      if (!got) {
-        RP.byCard[id] = { state: 'queued' };
+      const BD = window.BFPBlockDiff;
+      if (BD.rpCardState(got) === 'none') {
+        RP.byCard[id] = BD.rpCardMove(got, 'queue');
         RP.queue.push(id);
         continue;
       }
-      if (got.state !== 'ready') continue;
+      if (BD.rpCardState(got) !== 'ready') continue;
       const up = document.querySelector('.bfp-rp' + rpSel(id));
-      if (!up && !paintRendered(id, got.data)) { got.state = 'failed'; continue; }
+      if (!up && !paintRendered(id, got.data)) { RP.byCard[id] = BD.rpCardMove(got, 'fail'); continue; }
       Anchor.unpaintProposal(id);
     }
     rpPump();
