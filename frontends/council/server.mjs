@@ -928,6 +928,97 @@ function retireIdleBridges(why) {
   return kept ? 'next-bridge' : 'now';
 }
 
+// --- the left panel's own path -------------------------------------------
+// Rename, move, archive or delete from a row in the page's list of chats.
+// These are not messages: they must not add a line to the chat that is open
+// and must not wait behind a bot turn. So they do not go in as typed
+// commands. The page posts one request to /panel, one bot process does it
+// (Botference.panel_action) and answers with a 'panel_result' line, and that
+// answer is the reply to the POST. Nothing is said in any chat.
+const PANEL_ACTIONS = new Set([
+  'rename', 'move', 'archive', 'unarchive', 'delete',
+  'new-project', 'project-archive', 'project-unarchive', 'project-delete',
+]);
+const PANEL_WAIT_MS = Number(process.env.COUNCIL_PANEL_WAIT_MS) || 10000;
+let nextPanelSeq = 1;
+// Which process does it. A chat that is open in a process can only be changed
+// safely by that process (it holds the chat in memory and would write its own
+// copy back). Any other chat is a file on disk, and a project is a folder:
+// the asking tab's own process does those, or any process that can listen.
+function panelBridge(data) {
+  // a process still opening a saved chat throws away what it says (see
+  // Bridge.handle), so it could not answer
+  const usable = b => !!b && b.available && b.phase !== 'opening';
+  if (data.sid) {
+    const owner = findBySid(data.sid);
+    if (owner) return usable(owner) ? { bridge: owner } : { error: 'That chat is still opening. Try again in a moment.' };
+  }
+  const own = bridgeForPost(data);
+  if (usable(own)) return { bridge: own };
+  for (const b of bridges.values()) if (usable(b)) return { bridge: b };
+  return { error: 'The council is still starting. Try again in a moment.' };
+}
+// One request to one process; resolves with its answer. The answer is read
+// off the process's own stream by a listener attached for just that long.
+function askBridge(bridge, request) {
+  return new Promise(resolve => {
+    const id = 'p' + nextPanelSeq++;
+    let timer = null;
+    const listener = {
+      send(json) {
+        if (!json.includes('"panel_result"')) return;
+        let ev; try { ev = JSON.parse(json); } catch { return; }
+        if (ev.type === 'panel_result' && ev.id === id) done(ev);
+      },
+    };
+    const done = ev => {
+      clearTimeout(timer);
+      (listener.councilBridge || bridge).detach(listener);
+      // the answer to one request is not part of the chat: a reload must not
+      // be sent it again
+      const at = bridge.history.findLastIndex(e => e.type === 'panel_result' && e.id === id);
+      if (at >= 0) bridge.history.splice(at, 1);
+      resolve(ev);
+    };
+    bridge.attach(listener, 'ws');
+    timer = setTimeout(() => done({ ok: false, error: 'No answer from the council. Try again.' }), PANEL_WAIT_MS);
+    if (!bridge.send({ type: 'panel', id, ...request })) done({ ok: false, error: 'The council is not running.' });
+  });
+}
+async function panelRequest(data) {
+  try {
+    const action = typeof data.action === 'string' ? data.action : '';
+    if (!PANEL_ACTIONS.has(action)) return { ok: false, error: 'The panel cannot do that.' };
+    const request = { action };
+    for (const [key, cap] of [['sid', 200], ['title', 300], ['project', 200]]) {
+      if (typeof data[key] === 'string') request[key] = data[key].slice(0, cap);
+    }
+    const pick = panelBridge({ ...data, sid: request.sid || '' });
+    if (pick.error) return { ok: false, error: pick.error };
+    if (action === 'project-delete') {
+      // every chat in the project goes with it. A chat of it that is open in
+      // a bot process would be written straight back by that process, so each
+      // such process lets go of its chat first; none may be mid-answer.
+      const inside = [...bridges.values()].filter(b => b.available && b.networkProject === request.project);
+      if (inside.some(b => b.midTurn())) {
+        return { ok: false, error: 'The bots are still working in a chat in this project. Try again when they finish.' };
+      }
+      for (const b of inside) {
+        if (b !== pick.bridge && b.sid) await askBridge(b, { action: 'delete', sid: b.sid });
+      }
+    }
+    const answer = await askBridge(pick.bridge, request);
+    const out = { ok: !!answer.ok };
+    if (!out.ok) out.error = String(answer.error || 'That did not work.');
+    if (answer.project) out.project = String(answer.project);
+    if (answer.fresh) out.fresh = true;
+    return out;
+  } catch (e) {
+    console.error('[council] panel:', e.message);
+    return { ok: false, error: 'That did not work.' };
+  }
+}
+
 export function handler(req, res) {
   const url = req.url.split('?')[0];
   if (req.method === 'POST' && rateLimited(req)) {
@@ -1106,6 +1197,13 @@ export function handler(req, res) {
       const text = String(data.text || '').slice(0, 1000);
       const ok = text && bridge && bridge.send({ type: 'tick', text, checked: !!data.checked });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: !!ok }));
+    });
+    return;
+  }
+  // the left panel: rename, move, archive or delete a row (see panelRequest)
+  if (req.method === 'POST' && url === '/panel') {
+    readBody(req, res, 4000, data => {
+      panelRequest(data).then(r => res.writeHead(200, JSON_HEAD).end(JSON.stringify(r)));
     });
     return;
   }

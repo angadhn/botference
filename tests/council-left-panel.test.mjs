@@ -8,7 +8,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const HOME = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,6 +54,11 @@ async function mkPanel(t, { width = 390, fetchJson = null } = {}) {
 }
 // only what was typed for the reader: the harness records every POST
 const sent = posts => posts.filter(p => p.url === '/input').map(p => p.body.text);
+// what the panel asked for on its own path (the tab's bridge id left out)
+const asked = posts => posts.filter(p => p.url === '/panel').map(p => {
+  const { bridge, ...rest } = p.body;
+  return rest;
+});
 const rowsOf = list => [...list.querySelectorAll('.lp-row .t')].map(b => b.textContent.trim());
 
 const NOW = Date.now();
@@ -334,7 +342,7 @@ test('only one row is ever busy; a tap elsewhere puts it to rest', dom, async t 
   assert.deepEqual({ ...C.state.row }, { mode: 'menu', key: 'chat:loose001' });
   assert.equal(list.querySelectorAll('.lp-menu').length, 1);
   assert.deepEqual([...list.querySelectorAll('.lp-menu [role="menuitem"]')].map(b => b.textContent.trim()),
-    ['Move to project…', 'Archive', 'Delete…']);
+    ['Rename', 'Move to project…', 'Archive', 'Delete…'], 'every chat, open or not, has the same four');
   click('.more[data-key="chat:loose002"]');
   assert.deepEqual({ ...C.state.row }, { mode: 'menu', key: 'chat:loose002' });
   assert.equal(list.querySelectorAll('.lp-menu').length, 1, 'the first menu closed');
@@ -374,9 +382,11 @@ test('Move to project: pick from the list; the note says where it went and offer
   assert.deepEqual(choices.map(b => b.textContent.trim()), ['Orbit notes book', 'Garden plan', 'No project'],
     'live projects only, then "No project"');
   assert.ok(choices[2].classList.contains('here'), 'where it is now is ticked');
+  assert.match(list.querySelector('.lp-menu [data-act="move-new"]').textContent, /New project…/);
   choices[1].click();
   await tick();
-  assert.deepEqual(sent(posts), ['/project assign loose002 garden']);
+  assert.deepEqual(asked(posts), [{ action: 'move', sid: 'loose002', project: 'garden' }]);
+  assert.equal(posts[0].body.bridge, 'b1', 'the request names this tab');
   assert.equal(C.state.row.mode, 'resting');
   assert.equal(C.state.slideOut, 'open', 'the panel stays, so the note can be read');
   const note = $('#panel-note');
@@ -385,7 +395,7 @@ test('Move to project: pick from the list; the note says where it went and offer
   assert.doesNotMatch(note.textContent, /\//, 'a note never names a command');
   click('#panel-note [data-act="undo"]');
   await tick();
-  assert.deepEqual(sent(posts), ['/project assign loose002 garden', '/project unfile loose002']);
+  assert.deepEqual(asked(posts)[1], { action: 'move', sid: 'loose002', project: '' });
   assert.match(note.textContent, /Undone\./);
   assert.equal(note.querySelector('[data-act="undo"]'), null);
 
@@ -397,13 +407,14 @@ test('Move to project: pick from the list; the note says where it went and offer
   // picking where it already is does nothing
   click('.lp-menu [data-pid="orbit"]');
   await tick();
-  assert.equal(sent(posts).length, 2);
+  assert.equal(asked(posts).length, 2);
   click('.more[data-key="chat:orb00002"]');
   click('.lp-menu [data-act="move"]');
   click('.lp-menu [data-act="move-to"][data-pid=""]');
   await tick();
-  assert.equal(sent(posts)[2], '/project unfile orb00002');
+  assert.deepEqual(asked(posts)[2], { action: 'move', sid: 'orb00002', project: '' });
   assert.match(note.textContent, /Moved to Chats\./);
+  assert.equal(sent(posts).length, 0, 'nothing was typed into the open chat');
 });
 
 test('the note is one field with one setter; its timer only clears it', dom, async t => {
@@ -426,11 +437,12 @@ test('Archive from the row, with Undo', dom, async t => {
   click('.more[data-key="chat:loose004"]');
   click('.lp-menu [data-act="archive"]');
   await tick();
-  assert.deepEqual(sent(posts), ['/archive loose004']);
+  assert.deepEqual(asked(posts), [{ action: 'archive', sid: 'loose004' }]);
   assert.match($('#panel-note').textContent, /Archived\./);
   click('#panel-note [data-act="undo"]');
   await tick();
-  assert.equal(sent(posts)[1], '/unarchive loose004');
+  assert.deepEqual(asked(posts)[1], { action: 'unarchive', sid: 'loose004' });
+  assert.equal(sent(posts).length, 0);
 });
 
 test('New project: a text box in the list; typed words survive a redraw', dom, async t => {
@@ -448,26 +460,27 @@ test('New project: a text box in the list; typed words survive a redraw', dom, a
   // Escape throws the box away without sending anything
   key(box, 'Escape');
   assert.equal(C.state.row.mode, 'resting');
-  assert.equal(sent(posts).length, 0);
+  assert.equal(posts.length, 0);
   // Enter makes the project
   click('.lp-quiet[data-act="new-project"]');
   box = list.querySelector('.lp-input');
   box.value = '  Shed   rebuild ';
   key(box, 'Enter');
   await tick();
-  assert.deepEqual(sent(posts), ['/project create Shed rebuild']);
+  assert.deepEqual(asked(posts), [{ action: 'new-project', title: 'Shed rebuild' }]);
   assert.equal(C.state.row.mode, 'resting');
   // an empty name makes nothing
   click('.lp-quiet[data-act="new-project"]');
   key(list.querySelector('.lp-input'), 'Enter');
   await tick();
-  assert.equal(sent(posts).length, 1);
+  assert.equal(asked(posts).length, 1);
   // a tap elsewhere keeps what was typed, as if Enter had been pressed
   click('.lp-quiet[data-act="new-project"]');
   list.querySelector('.lp-input').value = 'Loft';
   click('#panel-pills [data-pill="chats"]');
   await tick();
-  assert.equal(sent(posts)[1], '/project create Loft');
+  assert.deepEqual(asked(posts)[1], { action: 'new-project', title: 'Loft' });
+  assert.equal(sent(posts).length, 0);
 });
 
 test('a project keeps its own actions in its one "more" menu', dom, async t => {
@@ -482,18 +495,18 @@ test('a project keeps its own actions in its one "more" menu', dom, async t => {
     ['Publish to GitHub…', 'Archive project', 'Delete project…']);
   click('.lp-menu [data-act="proj-archive"]');
   await tick();
-  assert.deepEqual(sent(posts), ['/project archive orbit']);
+  assert.deepEqual(asked(posts), [{ action: 'project-archive', project: 'orbit' }]);
   assert.match($('#panel-note').textContent, /Archived Orbit notes book\./);
   click('#panel-note [data-act="undo"]');
   await tick();
-  assert.equal(sent(posts)[1], '/project unarchive orbit');
+  assert.deepEqual(asked(posts)[1], { action: 'project-unarchive', project: 'orbit' });
   // a project already on GitHub offers a push; publishing is confirmed by the bots, in the chat
   C.setPanelView('inside-project', { pid: 'garden' });
   click('.more[data-key="project:garden"]');
   assert.match(list.querySelector('.lp-menu [data-act="proj-github"]').textContent, /Push to GitHub/);
   click('.lp-menu [data-act="proj-github"]');
   await tick();
-  assert.equal(sent(posts)[2], '/project github garden');
+  assert.deepEqual(sent(posts), ['/project github garden'], 'the one job that is the bots’ own goes to the chat');
   // an archived project: bring it back, or delete it
   C.setPanelView('inside-project', { pid: 'attic' });
   assert.match(list.querySelector('.lp-ptitle .lp-tag').textContent, /archived/);
@@ -502,7 +515,176 @@ test('a project keeps its own actions in its one "more" menu', dom, async t => {
     ['Unarchive project', 'Delete project…']);
   click('.lp-menu [data-act="proj-unarchive"]');
   await tick();
-  assert.equal(sent(posts)[3], '/project unarchive attic');
+  assert.deepEqual(asked(posts)[2], { action: 'project-unarchive', project: 'attic' });
+});
+
+test('Rename from the row: any chat, open or not', dom, async t => {
+  const { C, list, $, click, key, posts, tick } = await mkPanel(t);
+  C.handle(SNAP('loose001'));
+  // a chat that is NOT the open one
+  click('.more[data-key="chat:loose002"]');
+  click('.lp-menu [data-act="rename"]');
+  assert.deepEqual({ ...C.state.row }, { mode: 'renaming', key: 'chat:loose002' });
+  let box = list.querySelector('.lp-input');
+  assert.equal(box.value, 'Packing list', 'the box starts with the name it has');
+  // Escape leaves the name alone
+  key(box, 'Escape');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.equal(posts.length, 0);
+  // the same name again is no rename
+  click('.more[data-key="chat:loose002"]');
+  click('.lp-menu [data-act="rename"]');
+  key(list.querySelector('.lp-input'), 'Enter');
+  await tick();
+  assert.equal(posts.length, 0);
+  // a new name
+  click('.more[data-key="chat:loose002"]');
+  click('.lp-menu [data-act="rename"]');
+  box = list.querySelector('.lp-input');
+  box.value = '  Packing   for the coast ';
+  key(box, 'Enter');
+  await tick();
+  assert.deepEqual(asked(posts), [{ action: 'rename', sid: 'loose002', title: 'Packing for the coast' }]);
+  assert.equal(sent(posts).length, 0, 'the open chat is not told anything');
+  assert.match($('#panel-note').textContent, /Renamed\./);
+  click('#panel-note [data-act="undo"]');
+  await tick();
+  assert.deepEqual(asked(posts)[1], { action: 'rename', sid: 'loose002', title: 'Packing list' });
+  // and the open chat the same way
+  click('.more[data-key="chat:loose001"]');
+  click('.lp-menu [data-act="rename"]');
+  box = list.querySelector('.lp-input');
+  box.value = 'Kettle';
+  key(box, 'Enter');
+  await tick();
+  assert.deepEqual(asked(posts)[2], { action: 'rename', sid: 'loose001', title: 'Kettle' });
+});
+
+test('Delete asks in the row itself: Keep or Delete', dom, async t => {
+  const { C, list, $, click, posts, tick } = await mkPanel(t);
+  C.handle(SNAP());
+  C.setSlideOut('open');
+  click('.more[data-key="chat:loose004"]');
+  click('.lp-menu [data-act="delete"]');
+  assert.deepEqual({ ...C.state.row }, { mode: 'confirming-delete', key: 'chat:loose004' });
+  assert.equal(posts.length, 0, 'asking deletes nothing');
+  const row = list.querySelector('.lp-row[data-key="chat:loose004"]');
+  assert.ok(row.classList.contains('asking'));
+  assert.match(row.textContent, /Delete “Bread timings”\?/);
+  assert.deepEqual([...row.querySelectorAll('button')].map(b => b.textContent.trim()), ['Delete', 'Keep']);
+  assert.equal(list.querySelectorAll('.asking').length, 1, 'in that row and nowhere else');
+  // a tap on the question itself does not answer it
+  row.querySelector('.t').click();
+  assert.equal(C.state.row.mode, 'confirming-delete');
+  // Keep
+  click('.lp-row.asking [data-act="cancel"]');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.equal(posts.length, 0);
+  assert.equal(list.querySelector('.asking'), null);
+  // a tap elsewhere is a Keep too
+  click('.more[data-key="chat:loose004"]');
+  click('.lp-menu [data-act="delete"]');
+  click('#panel-pills [data-pill="projects"]');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.equal(posts.length, 0);
+  click('#panel-pills [data-pill="chats"]');
+  // Delete
+  click('.more[data-key="chat:loose004"]');
+  click('.lp-menu [data-act="delete"]');
+  click('.lp-row.asking [data-act="delete-yes"]');
+  await tick();
+  assert.deepEqual(asked(posts), [{ action: 'delete', sid: 'loose004' }]);
+  assert.equal(sent(posts).length, 0, 'no "are you sure" in the chat');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.equal(C.state.slideOut, 'open', 'the panel stays where it was');
+  const note = $('#panel-note');
+  assert.match(note.textContent, /Deleted\./);
+  assert.equal(note.querySelector('[data-act="undo"]'), null, 'a delete cannot be undone, so no Undo is offered');
+});
+
+test('a refusal is said in plain words in the note, with no Undo', dom, async t => {
+  const why = 'The bots are still working in that chat. Try again when they finish.';
+  const { C, $, click, posts, tick } = await mkPanel(t, {
+    fetchJson: url => (url === '/panel' ? { ok: false, error: why } : null),
+  });
+  C.handle(SNAP('loose001'));
+  click('.more[data-key="chat:loose001"]');
+  click('.lp-menu [data-act="archive"]');
+  await tick();
+  assert.equal(asked(posts).length, 1);
+  const note = $('#panel-note');
+  assert.equal(note.textContent.trim(), why);
+  assert.equal(note.querySelector('[data-act="undo"]'), null);
+  assert.equal(sent(posts).length, 0);
+  // only the nine named things can be asked for
+  assert.deepEqual([...C.PANEL_ACTIONS], ['rename', 'move', 'archive', 'unarchive', 'delete',
+    'new-project', 'project-archive', 'project-unarchive', 'project-delete']);
+  assert.equal(await C.panelAct('reformat-disk', { sid: 'loose001' }), null);
+  assert.equal(asked(posts).length, 1, 'anything else is not even sent');
+});
+
+test('a server that cannot be reached says so in the note', dom, async t => {
+  const { C, $, click, tick } = await mkPanel(t, {
+    fetchJson: url => { if (url === '/panel') throw new Error('offline'); return null; },
+  });
+  C.handle(SNAP());
+  click('.more[data-key="chat:loose002"]');
+  click('.lp-menu [data-act="archive"]');
+  await tick();
+  assert.match($('#panel-note').textContent, /Could not reach the council\. Try again\./);
+});
+
+test('Move to project: "New project…" makes one and files the chat in it', dom, async t => {
+  const { C, list, $, click, key, posts, tick } = await mkPanel(t, {
+    fetchJson: (url, body) => (url === '/panel' && body.action === 'new-project' ? { ok: true, project: 'loft' } : null),
+  });
+  C.handle(SNAP());
+  click('.more[data-key="chat:loose002"]');
+  click('.lp-menu [data-act="move"]');
+  click('.lp-menu [data-act="move-new"]');
+  assert.deepEqual({ ...C.state.row }, { mode: 'naming-new-project', key: 'chat:loose002' });
+  const box = list.querySelector('.lp-row[data-key="chat:loose002"] .lp-input');
+  assert.ok(box, 'the chat’s own row became the text box');
+  assert.match(box.getAttribute('placeholder'), /Packing list/, 'and still says which chat it is');
+  box.value = 'Loft';
+  key(box, 'Enter');
+  await tick(30);
+  assert.deepEqual(asked(posts), [
+    { action: 'new-project', title: 'Loft' },
+    { action: 'move', sid: 'loose002', project: 'loft' },
+  ]);
+  assert.match($('#panel-note').textContent, /Moved to Loft\./);
+  click('#panel-note [data-act="undo"]');
+  await tick();
+  assert.deepEqual(asked(posts)[2], { action: 'move', sid: 'loose002', project: '' });
+});
+
+test('Delete project asks in place, and says what goes with it', dom, async t => {
+  const { C, list, $, click, posts, tick } = await mkPanel(t);
+  C.handle(SNAP());
+  C.setPanelView('inside-project', { pid: 'orbit' });
+  click('.more[data-key="project:orbit"]');
+  click('.lp-menu [data-act="proj-delete"]');
+  assert.deepEqual({ ...C.state.row }, { mode: 'confirming-delete', key: 'project:orbit' });
+  const ask = list.querySelector('.lp-ptitle.asking');
+  assert.match(ask.textContent, /Delete “Orbit notes book”, its 2 chats and its files\?/);
+  assert.deepEqual([...ask.querySelectorAll('button')].map(b => b.textContent.trim()), ['Delete', 'Keep']);
+  assert.equal(posts.length, 0);
+  click('.lp-ptitle.asking [data-act="cancel"]');
+  assert.equal(C.state.row.mode, 'resting');
+  assert.equal(posts.length, 0);
+  click('.more[data-key="project:orbit"]');
+  click('.lp-menu [data-act="proj-delete"]');
+  click('.lp-ptitle.asking [data-act="proj-delete-yes"]');
+  await tick();
+  assert.deepEqual(asked(posts), [{ action: 'project-delete', project: 'orbit' }]);
+  assert.equal(sent(posts).length, 0);
+  assert.match($('#panel-note').textContent, /Deleted Orbit notes book\./);
+  // the list that comes back no longer has it: the panel steps out to Projects
+  const without = SNAP();
+  without.projects = without.projects.filter(pr => pr.id !== 'orbit');
+  C.handle(without);
+  assert.equal(C.state.panel.view, 'projects');
 });
 
 test('a project’s files are read once, when the project is opened in the panel', dom, async t => {
@@ -621,4 +803,159 @@ test('times read short: minutes to years', dom, async t => {
   assert.equal(C.relTime(at(100 * 86400)), '3mo');
   assert.equal(C.relTime(at(800 * 86400)), '2y');
   assert.equal(C.relTime(''), '');
+});
+
+// ── the server's /panel path, with a stand-in for the controller ────────────
+// (tests/fixtures/fake-council-bridge.mjs: it writes every panel request it
+// is sent to <rx>.panel and every typed message to <rx>)
+const SERVER = path.join(HOME, 'frontends', 'council', 'server.mjs');
+const FAKE = path.join(HOME, 'tests', 'fixtures', 'fake-council-bridge.mjs');
+// a developer's real keys never reach a test server
+const KEY_VARS = /^(ANTHROPIC_|OPENAI_|CODEX_|AWS_BEARER_TOKEN|CLAUDE_CODE_USE_)/;
+function freePort() {
+  return new Promise(resolve => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const port = srv.address().port;
+      srv.close(() => ([4177, 4180, 4187, 4189].includes(port) ? resolve(freePort()) : resolve(port)));
+    });
+  });
+}
+async function startServer(t, { hosted = false, env = {} } = {}) {
+  const port = await freePort();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'council-panel-'));
+  const rx = path.join(dir, 'rx.txt');
+  const base = Object.fromEntries(Object.entries(process.env).filter(([k]) => !KEY_VARS.test(k)));
+  const proc = spawn(process.execPath, hosted ? [SERVER, '--hosted'] : [SERVER], {
+    env: {
+      ...base,
+      PORT: String(port),
+      BOTFERENCE_PROJECT_ROOT: dir,
+      BOTFERENCE_HOME: HOME,
+      BOTFERENCE_SECRETS_DIR: path.join(dir, 'secrets'),
+      COUNCIL_BRIDGE_CMD: JSON.stringify([process.execPath, FAKE, rx]),
+      COUNCIL_PASSWORD: hosted ? 'made-up-pw' : '',
+      BOTFERENCE_GDOC_WATCH: '0',
+      ...env,
+    },
+  });
+  t.after(() => {
+    proc.kill();
+    for (let i = 0; i < 3; i++) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); return; } catch { /* a child still writing */ }
+    }
+  });
+  let out = '';
+  proc.stdout.on('data', c => { out += c; });
+  proc.stderr.on('data', c => { out += c; });
+  const deadline = Date.now() + 15000;
+  while (!/Council live at/.test(out)) {
+    if (Date.now() > deadline) throw new Error(`server did not start:\n${out}`);
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const lines = file => (fs.existsSync(file)
+    ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) : []);
+  return {
+    base: `http://127.0.0.1:${port}`,
+    typed: () => lines(rx),
+    panel: () => lines(`${rx}.panel`).map(l => JSON.parse(l)),
+  };
+}
+// everything a tab that connects NOW is sent, up to the end of the replay
+async function replay(base) {
+  const ac = new AbortController();
+  const r = await fetch(`${base}/events`, { signal: ac.signal });
+  const reader = r.body.getReader();
+  const events = [];
+  let buf = '';
+  const deadline = Date.now() + 8000;
+  try {
+    while (Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += Buffer.from(value).toString('utf8');
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const m = /^data: (.*)$/m.exec(buf.slice(0, i));
+        buf = buf.slice(i + 2);
+        if (m) { try { events.push(JSON.parse(m[1])); } catch { /* a comment line */ } }
+      }
+      if (events.some(e => e.type === 'replay_done') && events.some(e => e.type === 'ready')) return events;
+    }
+  } finally { ac.abort(); }
+  throw new Error(`the replay did not finish; got: ${events.map(e => e.type).join(',')}`);
+}
+const ask = async (base, body, headers = {}) => {
+  const r = await fetch(base + '/panel', {
+    method: 'POST', body: JSON.stringify(body),
+    headers: { 'content-type': 'application/json', ...headers },
+  });
+  return { status: r.status, body: await r.json().catch(() => null) };
+};
+
+test('POST /panel: the controller does it and answers; nothing is said in the chat', async t => {
+  const s = await startServer(t);
+  const before = await replay(s.base);
+  const r = await ask(s.base, { action: 'rename', sid: 'abc12345', title: 'Seed order, second try' });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { ok: true });
+  const got = s.panel();
+  assert.equal(got.length, 1);
+  assert.equal(got[0].type, 'panel');
+  assert.match(got[0].id, /^p\d+$/);
+  assert.deepEqual({ action: got[0].action, sid: got[0].sid, title: got[0].title },
+    { action: 'rename', sid: 'abc12345', title: 'Seed order, second try' });
+  assert.deepEqual(s.typed(), [], 'no command was typed into the chat on the reader’s behalf');
+  // a tab that connects afterwards: the list has the new name, the chat is as it was
+  const after = await replay(s.base);
+  const list = after.filter(e => e.type === 'projects').pop();
+  assert.equal(list.projects[0].sessions[0].title, 'Seed order, second try');
+  assert.equal(after.some(e => e.type === 'panel_result'), false, 'the answer to one request is not replayed');
+  const said = evs => evs.filter(e => e.type === 'room' || e.type === 'user_echo').map(e => e.text);
+  assert.deepEqual(said(after), said(before), 'not a line was added to the chat');
+});
+
+test('POST /panel: a new project comes back with its id; a refusal comes back in plain words', async t => {
+  const s = await startServer(t);
+  await replay(s.base);
+  const made = await ask(s.base, { action: 'new-project', title: 'Loft' });
+  assert.deepEqual(made.body, { ok: true, project: 'p-new' });
+  const no = await ask(s.base, { action: 'archive', sid: 'refuse01' });
+  assert.equal(no.status, 200);
+  assert.deepEqual(no.body, { ok: false, error: 'The bots are still working in that chat. Try again when they finish.' });
+  // only the named actions get as far as the controller
+  for (const bad of [{ action: 'reformat-disk' }, { action: '' }, {}, { action: ['rename'] }]) {
+    const r = await ask(s.base, bad);
+    assert.deepEqual(r.body, { ok: false, error: 'The panel cannot do that.' });
+  }
+  assert.deepEqual(s.panel().map(m => m.action), ['new-project', 'archive']);
+  // odd fields are dropped, long ones cut
+  await ask(s.base, { action: 'rename', sid: 'abc12345', title: 'x'.repeat(5000).slice(0, 3000), extra: { deep: 1 }, project: 7 });
+  const last = s.panel().pop();
+  assert.equal(last.title.length, 300);
+  assert.equal('extra' in last, false);
+  assert.equal('project' in last, false);
+  // the chat still takes a message afterwards
+  const r = await fetch(s.base + '/input', {
+    method: 'POST', body: JSON.stringify({ text: 'hello' }), headers: { 'content-type': 'application/json' },
+  });
+  assert.deepEqual(await r.json(), { ok: true });
+});
+
+test('POST /panel: a controller that never answers is not waited on for ever', async t => {
+  const s = await startServer(t, { env: { COUNCIL_PANEL_WAIT_MS: '300' } });
+  await replay(s.base);
+  const started = Date.now();
+  const r = await ask(s.base, { action: 'delete', sid: 'silent01' });
+  assert.deepEqual(r.body, { ok: false, error: 'No answer from the council. Try again.' });
+  assert.ok(Date.now() - started < 5000);
+  // and the next request is answered as usual
+  assert.deepEqual((await ask(s.base, { action: 'unarchive', sid: 'abc12345' })).body, { ok: true });
+});
+
+test('POST /panel is behind the password like every other request', async t => {
+  const s = await startServer(t, { hosted: true });
+  const r = await ask(s.base, { action: 'delete', sid: 'abc12345' });
+  assert.equal(r.status, 401);
+  assert.deepEqual(s.panel(), [], 'nothing reached the controller');
 });

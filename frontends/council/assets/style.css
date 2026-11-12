@@ -204,6 +204,14 @@ a.t { display: flex; align-items: center; text-decoration: none }
 .lp-btn { flex: none; min-height: 28px; padding: 0 .6rem; border: 1px solid var(--card-line); border-radius: 7px;
   background: var(--card); color: var(--fg); font: 600 var(--lp-small) var(--sans) }
 .lp-btn.danger { border-color: var(--bad); background: var(--bad); color: #fff }
+/* the same question on a project's own row: the words may take two lines */
+.lp-ptitle.asking { flex-wrap: wrap; justify-content: flex-end; gap: .4rem; margin-bottom: .35rem;
+  padding: .5rem .5rem .5rem .55rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--bad) 10%, transparent) }
+.lp-ptitle.asking .t { flex: 1 0 100%; color: var(--fg); font: var(--lp-text)/1.4 var(--sans) }
+/* "New project…" at the foot of a move list */
+.lp-menu button.quiet { display: flex; align-items: center; gap: .4rem; color: var(--muted) }
+#side.lp .lp-menu button.quiet svg { width: 14px; height: 14px; flex: none }
 
 /* a project in the Projects list: name, small print under it, an arrow */
 .lp-proj { display: flex; align-items: center; gap: .5rem; width: 100%; min-height: 52px;

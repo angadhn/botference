@@ -98,6 +98,31 @@ rl.on('line', line => {
     emit({ type: 'room', speaker: 'claude', text: `echo: ${msg.text}`, stream_id: 's1' });
     emit({ type: 'ready' });
   }
+  if (msg.type === 'panel') {
+    // one thing asked for from the page's list of chats (rename, move,
+    // archive, delete). Recorded verbatim, one JSON line each, in <rx>.panel.
+    // The answer is one 'panel_result' line and, like the real controller,
+    // not a word in the room. Made-up names steer it: one starting "refuse"
+    // is turned down, one starting "silent" is never answered.
+    if (rxFile) fs.appendFileSync(`${rxFile}.panel`, JSON.stringify(msg) + '\n');
+    const words = String(msg.title || msg.sid || msg.project || '');
+    if (words.startsWith('silent')) return;
+    if (words.startsWith('refuse')) {
+      emit({ type: 'panel_result', id: msg.id, ok: false, error: 'The bots are still working in that chat. Try again when they finish.' });
+      return;
+    }
+    if (msg.action === 'rename') {
+      // the real controller sends the list again, with the new name in it
+      emit({
+        type: 'projects', active_project_id: 'p1', inbox_session_count: 0, inbox_sessions: [],
+        projects: [{
+          id: 'p1', title: 'Demo project', status: 'active', next_action: '', active: true, session_count: 1,
+          sessions: [{ session_id: 'abc12345', title: msg.title, updated_at: new Date().toISOString(), active: true }],
+        }],
+      });
+    }
+    emit({ type: 'panel_result', id: msg.id, ok: true, ...(msg.action === 'new-project' ? { project: 'p-new' } : {}) });
+  }
   if (msg.type === 'choice_response') {
     emit({ type: 'choice_cleared' });
     emit({ type: 'room', speaker: 'system', text: `choice answered: ${msg.index}${msg.request_id ? ` for ${msg.request_id}` : ''}` });

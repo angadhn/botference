@@ -2803,12 +2803,10 @@
   // ---- drawing -------------------------------------------------------------
   const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
   const rowModeOf = key => (state.row.key === key ? state.row.mode : 'resting');
-  // Rename works on the open chat only (the controller's own /rename).
-  const canRename = s => s.session_id === state.currentSid;
   function chatMenu(s) {
     const sid = esc(s.session_id);
     return `<div class="row-menu lp-menu" role="menu">
-      ${canRename(s) ? `<button type="button" role="menuitem" data-act="rename" data-sid="${sid}">Rename</button>` : ''}
+      <button type="button" role="menuitem" data-act="rename" data-sid="${sid}">Rename</button>
       <button type="button" role="menuitem" data-act="move" data-sid="${sid}">Move to project…</button>
       <button type="button" role="menuitem" data-act="archive" data-sid="${sid}">Archive</button>
       <button type="button" role="menuitem" class="danger" data-act="delete" data-sid="${sid}">Delete…</button>
@@ -2822,8 +2820,14 @@
     return `<div class="row-menu lp-menu" role="menu">
       <div class="lp-menu-label">Move to</div>${rows}
       <button type="button" role="menuitem" class="plain${pid ? '' : ' here'}" data-act="move-to" data-sid="${sid}" data-pid="">No project</button>
+      <button type="button" role="menuitem" class="quiet" data-act="move-new" data-sid="${sid}">${LP_ICON.plus}New project…</button>
     </div>`;
   }
+  // "are you sure", asked in the row itself: what goes, a red Delete, a Keep
+  const askHtml = (cls, key, question, yes) => `<div class="${cls} asking" data-key="${esc(key)}" role="group">
+      <span class="t" title="${esc(question)}"><span>${esc(question)}</span></span>
+      <button class="lp-btn danger" type="button" ${yes}>Delete</button>
+      <button class="lp-btn" type="button" data-act="cancel">Keep</button></div>`;
   // one chat row. *pid* is the project it is filed in ('' for none); *tag* is
   // the project's name, shown only where chats from everywhere are mixed.
   function chatRow(s, pid, { tag = '' } = {}) {
@@ -2835,6 +2839,15 @@
       return `<div class="lp-row editing" data-key="${esc(key)}">
         <input class="lp-input" type="text" data-key="${esc(key)}" data-commit="rename" value="${esc(title)}"
           maxlength="120" autocomplete="off" enterkeyhint="done" aria-label="new name for this chat"></div>`;
+    }
+    if (mode === 'naming-new-project') {
+      return `<div class="lp-row editing" data-key="${esc(key)}">
+        <input class="lp-input" type="text" data-key="${esc(key)}" data-commit="new-project-for-chat" value=""
+          maxlength="80" autocomplete="off" enterkeyhint="done" placeholder="New project for “${esc(title)}”"
+          aria-label="name for the new project this chat goes into"></div>`;
+    }
+    if (mode === 'confirming-delete') {
+      return askHtml('lp-row', key, `Delete “${title}”?`, `data-act="delete-yes" data-sid="${sid}"`);
     }
     let html = `<div class="lp-row${s.active ? ' active' : ''}${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
       <button class="t" type="button" data-act="open" data-sid="${sid}" title="${esc(title)}">${esc(title)}</button>${
@@ -2892,8 +2905,13 @@
     const mode = rowModeOf(key);
     const title = pr.title || pr.id;
     const rows = pr.sessions || [];
-    let html = `<div class="lp-crumb"><button class="lp-back" type="button" data-act="pill" data-pill="projects">${LP_ICON.back}Projects</button></div>
-      <div class="lp-ptitle${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
+    const n = pr.session_count ?? rows.length;
+    let html = `<div class="lp-crumb"><button class="lp-back" type="button" data-act="pill" data-pill="projects">${LP_ICON.back}Projects</button></div>`;
+    html += mode === 'confirming-delete'
+      // a project takes its chats and its folder with it, so the question says so
+      ? askHtml('lp-ptitle', key, `Delete “${title}”, its ${plural(n, 'chat')} and its files?`,
+        `data-act="proj-delete-yes" data-pid="${esc(pr.id)}"`)
+      : `<div class="lp-ptitle${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
         <b title="${esc(title)}">${esc(title)}</b>${isLive(pr) ? '' : '<span class="lp-tag">archived</span>'}
         <button class="more" type="button" data-act="more" data-key="${esc(key)}" aria-haspopup="true"
           aria-expanded="${mode !== 'resting'}" aria-label="more for the project ${esc(title)}">${LP_ICON.more}</button>${
@@ -2982,24 +3000,20 @@
   }
 
   // ---- doing things --------------------------------------------------------
-  // Every row action goes through panelAct. Each one is a command the
-  // controller already takes; the reader never has to know its name.
-  const PANEL_COMMANDS = {
-    move: a => (a.pid ? `/project assign ${a.sid} ${a.pid}` : `/project unfile ${a.sid}`),
-    archive: a => `/archive ${a.sid}`,
-    unarchive: a => `/unarchive ${a.sid}`,
-    delete: a => `/delete ${a.sid}`,
-    rename: a => `/rename ${a.title}`,
-    'new-project': a => `/project create ${a.title}`,
-    'project-archive': a => `/project archive ${a.pid}`,
-    'project-unarchive': a => `/project unarchive ${a.pid}`,
-    'project-delete': a => `/project delete ${a.pid}`,
-    'project-github': a => `/project github ${a.pid}`,
-  };
-  function panelAct(action, args = {}) {
-    const make = PANEL_COMMANDS[action];
-    if (!make) return Promise.resolve(false);
-    return sendInput(make(args));
+  // A row action is not a message: it must not add a line to the chat that is
+  // open, and it must not wait behind a bot turn. So it does not go in as a
+  // typed command. Every one goes through panelAct to the server's /panel,
+  // which answers { ok: true } or { ok: false, error: <plain words> }.
+  // panelAct resolves with the answer when it worked and with null when it
+  // did not (the note at the foot of the list then says why).
+  const PANEL_ACTIONS = Object.freeze(['rename', 'move', 'archive', 'unarchive', 'delete',
+    'new-project', 'project-archive', 'project-unarchive', 'project-delete']);
+  async function panelAct(action, args = {}) {
+    if (!PANEL_ACTIONS.includes(action)) return null;
+    const r = await post('/panel', { action, sid: args.sid, title: args.title, project: args.pid });
+    if (r && r.ok) return r;
+    setPanelNote({ text: (r && r.error) || 'Could not reach the council. Try again.' });
+    return null;
   }
   async function moveChat(sid, pid) {
     const c = findChat(sid);
@@ -3011,30 +3025,46 @@
     setPanelNote({ text: to ? `Moved to ${to.title || to.id}.` : 'Moved to Chats.',
       undo: { action: 'move', args: { sid, pid: c.pid } } });
   }
+  // "New project…" at the end of a chat's move list: make it, then file the chat
+  async function moveToNewProject(c, name) {
+    const sid = c.s.session_id;
+    const made = await panelAct('new-project', { title: name });
+    if (!made || !made.project) return;
+    if (!await panelAct('move', { sid, pid: made.project })) return;
+    setPanelNote({ text: `Moved to ${name}.`, undo: { action: 'move', args: { sid, pid: c.pid } } });
+  }
   async function archiveChat(sid) {
     setRowMode('resting');
     if (!await panelAct('archive', { sid })) return;
     setPanelNote({ text: 'Archived.', undo: { action: 'unarchive', args: { sid } } });
   }
+  // the row has already asked "delete?" (row mode 'confirming-delete')
   async function deleteChat(sid) {
     setRowMode('resting');
     if (!await panelAct('delete', { sid })) return;
-    setPanelNote({ text: 'Say yes in the chat to delete it.' });
-    closeSide();
+    sessionCache.delete(sid);
+    setPanelNote({ text: 'Deleted.' });
   }
   async function projectAct(action, pid) {
     const pr = projectById(pid);
     setRowMode('resting');
-    if (!pr || !await panelAct(action, { pid })) return;
+    if (!pr) return;
     const name = pr.title || pr.id;
+    if (action === 'project-github') {
+      // publishing is work for the bots: it is asked for in the chat, and the
+      // bots ask "sure?" there before anything leaves this machine
+      if (!await sendInput('/project github ' + pid)) return;
+      setPanelNote({ text: 'Say yes in the chat to go ahead.' });
+      closeSide();
+      return;
+    }
+    if (!await panelAct(action, { pid })) return;
     if (action === 'project-archive') {
       setPanelNote({ text: `Archived ${name}.`, undo: { action: 'project-unarchive', args: { pid } } });
     } else if (action === 'project-unarchive') {
       setPanelNote({ text: `${name} is back.` });
     } else {
-      // deleting, or publishing to GitHub: the bots ask first, in the chat
-      setPanelNote({ text: 'Say yes in the chat to go ahead.' });
-      closeSide();
+      setPanelNote({ text: `Deleted ${name}.` });
     }
   }
   async function undoNote() {
@@ -3050,13 +3080,17 @@
     setRowMode('resting');
     if (!text) return;
     if (what === 'new-project') {
-      panelAct('new-project', { title: text }).then(ok => { if (ok) setPanelNote({ text: `Made the project ${text}.` }); });
+      panelAct('new-project', { title: text }).then(r => { if (r) setPanelNote({ text: `Made the project ${text}.` }); });
+    } else if (what === 'new-project-for-chat') {
+      const c = findChat(key.slice(5));
+      if (c) moveToNewProject(c, text);
     } else if (what === 'rename') {
       const c = findChat(key.slice(5));
       if (!c || text === chatTitle(c.s)) return;
       const sid = c.s.session_id;
-      panelAct('rename', { sid, title: text }).then(ok => {
-        if (ok) setPanelNote({ text: 'Renamed.', undo: { action: 'rename', args: { sid, title: chatTitle(c.s) } } });
+      const before = chatTitle(c.s);
+      panelAct('rename', { sid, title: text }).then(r => {
+        if (r) setPanelNote({ text: 'Renamed.', undo: { action: 'rename', args: { sid, title: before } } });
       });
     }
   }
@@ -3094,12 +3128,15 @@
       return setRowMode('naming-new-project', 'new-project');
     }
     if (act === 'move-to') return moveChat(d.sid, d.pid || '');
+    if (act === 'move-new') return setRowMode('naming-new-project', state.row.key);
     if (act === 'archive') return archiveChat(d.sid);
-    if (act === 'delete') return deleteChat(d.sid);
+    // Delete asks first, in the row; only its red button deletes
+    if (act === 'delete' || act === 'proj-delete') return setRowMode('confirming-delete', state.row.key);
+    if (act === 'delete-yes') return deleteChat(d.sid);
+    if (act === 'proj-delete-yes') return projectAct('project-delete', d.pid);
     if (act === 'proj-github') return projectAct('project-github', d.pid);
     if (act === 'proj-archive') return projectAct('project-archive', d.pid);
     if (act === 'proj-unarchive') return projectAct('project-unarchive', d.pid);
-    if (act === 'proj-delete') return projectAct('project-delete', d.pid);
     if (act === 'undo') return undoNote();
     // the rest move between lists, so a busy row rests first
     restRow();
@@ -3121,7 +3158,7 @@
     const b = e.target.closest('[data-act]');
     if (b) { panelClick(b.dataset.act, b); return; }
     // inside the open menu, text box or Settings box: leave it be
-    if (e.target.closest('.lp-menu, .lp-input, .lp-settings-pop, .seg, .chip-label')) return;
+    if (e.target.closest('.lp-menu, .lp-input, .asking, .lp-settings-pop, .seg, .chip-label')) return;
     restRow();
   });
   document.addEventListener('click', e => { if (!panelSaw.has(e)) restRow(); });
@@ -4365,7 +4402,7 @@
     // the left panel: each list, its pure move rule and its one setter
     PANEL_VIEWS, panelViewMove, setPanelView, ROW_MODES, rowMove, setRowMode,
     SLIDE_MODES, slideMove, setSlideOut, CONTENTS_LOADS, contentsMove, setContentsLoad,
-    setPanelNote, homeView, searchRows, relTime, renderPanel, panelAct,
+    setPanelNote, homeView, searchRows, relTime, renderPanel, panelAct, PANEL_ACTIONS,
     // the room's turn and the pre-send guard: each list and its one setter
     ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
     // what the stream waits on: the pure move rule, the one setter, the target

@@ -272,6 +272,32 @@ class SessionStore:
         active project. Cross-process signalling is deliberately out of
         scope; close the chat there (or /project open inside it) instead.
         """
+        return self._restamp(session_id, {"project_id": project_id}, path=path)
+
+    def set_title(
+        self,
+        session_id: str,
+        title: str,
+        *,
+        path: Path | None = None,
+    ) -> bool:
+        """Stamp a name into a saved chat's payload on disk.
+
+        Renaming a chat you are NOT currently sitting in (a row in a list of
+        chats). The name is the user's own, so it goes in ``custom_title``,
+        which every listing prefers over the model-written title. The date of
+        the chat's last activity is left alone: a rename from a list should
+        not send the row to the top.
+        """
+        return self._restamp(session_id, {"custom_title": title}, path=path)
+
+    def _restamp(
+        self,
+        session_id: str,
+        changes: dict[str, Any],
+        *,
+        path: Path | None = None,
+    ) -> bool:
         target = path or self.paths.session_state_file(session_id)
         try:
             payload = json.loads(target.read_text(encoding="utf-8"))
@@ -279,7 +305,7 @@ class SessionStore:
             return False
         if not isinstance(payload, dict):
             return False
-        payload["project_id"] = project_id
+        payload.update(changes)
         try:
             mtime = atomic_write_json(target, payload)
         except OSError:
