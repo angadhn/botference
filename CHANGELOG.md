@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## 2026-11-12
+
+- **Terminal: a second Enter after answering a question no longer sends a second answer.** A question on screen that you have answered is now "answered": it stays drawn until the engine clears it, and no key can answer it again.
+- **Terminal: you can send from a narrow window when the project list had the keys.** Whether the project list is hidden, shown or focused is one named state, and which pane has the keys is read off it, so the keys can never sit on a list that is not drawn.
+- **Terminal: the status line goes back to the spinner once the engine takes a queued message.** The count of waiting messages now comes only from the engine; the app no longer keeps its own guess, and "Queued message." no longer lingers.
+- **Terminal: scroll glide, streamed replies and text selection are each one named state.** The scroll animation is still, gliding or closed; each streamed reply is started, streaming, done-unshown or done-shown (this decides whether the final copy is dropped); a selection is none, dragging or selected, and its text is copied once. Nothing visible changes.
+- **Council and terminal: a second write-permission question waits for the first.** In the engine a second question used to fail outright while one was open. Permission questions now wait in a queue, in order, like "choose one" questions, and the "cleared" notice names the question it clears.
+- **Council: more named states, nothing visible.** The server's link to a chat's bot process gained a final "closed" phase. On the page, what the live stream is waiting on (open, switching chat, resuming, both), whether the room is idle or working, and whether the pre-send check is on guard are each one named state changed in one place. The engine's turn queue is idle, running or interrupted.
+- **Paper review: an update that arrives while the page is reloading is no longer dropped.** The page's reload is idle, loading, or "loading and already out of date"; in the last case it loads once more when the first load ends. The "committed" note keeps its full eight seconds when two commits land close together. The link to the bots only counts as busy when it names the turn in flight.
+
 ## 2026-11-11
 
 - **Paper review: a bot's question that ran out of time says so.** A permission or "choose one" question from a bot is now one named state (none, asked, answered, timed out, withdrawn). After two minutes with no answer it is turned down, its buttons go away, and a late click gets a line saying why ("Too late: nobody answered within two minutes, so it was turned down automatically."). A question is also withdrawn when the bots stop. Whether your comments are saved (unsent, saved, failed), whether chat is on, and whether each bot is working are each one named state too.
