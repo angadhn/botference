@@ -8,6 +8,7 @@ import {
   engineAccepts,
   engineStoppedNotice,
   moveTurnMode,
+  queueNote,
   restoreUnanswered,
   showsSpinner,
 } from "./turnState.js";
@@ -87,5 +88,11 @@ describe("who is busy (the turn's activity detail)", () => {
     assert.equal(activityFor("working", busy), busy);
     assert.equal(activityFor("stopping", busy), busy);
     assert.equal(activityFor("working", null), null);
+  });
+
+  it("the queue line is derived from the one count", () => {
+    assert.equal(queueNote(0), "");
+    assert.equal(queueNote(1), "1 queued message.");
+    assert.equal(queueNote(3), "3 queued messages.");
   });
 });

@@ -39,6 +39,7 @@ import {
   activityFor,
   keepsActivity,
   moveTurnMode,
+  queueNote,
   restoreUnanswered,
   showsSpinner,
   type TurnMode,
@@ -570,6 +571,9 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // to the typing box if the engine stops before answering.
   const unansweredRef = useRef<string[]>([]);
   const ready = turnMode === "idle";
+  // How many messages wait in the engine's queue. One source: the engine's
+  // "queue" event (reset when it says ready or stops). The status line text
+  // is derived from it (queueHint), never stored.
   const [queuedCount, setQueuedCount] = useState(0);
   // Who is busy, doing what — a detail of the turn, not a second mode: it
   // exists only while the turn mode runs the spinner (activityFor in
@@ -1401,9 +1405,10 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
         case "queue": {
           const pending = typeof msg.pending === "number" ? msg.pending : 0;
           setQueuedCount(pending);
-          if (pending > 0) {
-            setHint(`${pending} queued message${pending === 1 ? "" : "s"}.`);
-          }
+          // The status line reads the count off queuedCount (queueHint
+          // below); clear the "Queued message." hint so it shows through, and
+          // so it goes away by itself when the engine takes the message.
+          if (pending > 0) setHint("");
           break;
         }
         case "completion_context":
@@ -1538,7 +1543,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
       setActivity(startV2ActivityFromInput(stripped, status.route));
       setHint("");
     } else {
-      setQueuedCount((prev) => prev + 1);
+      // The count itself comes from the engine's "queue" event.
       setHint("Queued message.");
     }
     setInputText("");
@@ -1749,7 +1754,6 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             moveTurn("working");
             setActivity(createV2Activity("system", "system"));
           } else {
-            setQueuedCount((prev) => prev + 1);
             setHint("Queued project command.");
           }
           proc.stdin.write(JSON.stringify({ type: "input", text: command }) + "\n");
@@ -1932,9 +1936,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const cursorColor = ready ? THEME.ready : THEME.warning;
   const busyText = formatV2ActivityText(activity ?? UNKNOWN_ACTIVITY);
   const selectionHint = MOUSE_SELECTION_HINT;
-  const queueHint = queuedCount > 0
-    ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
-    : "";
+  const queueHint = queueNote(queuedCount);
   const engineDown = turnMode === "engine_stopped";
   const shownQuestion = questionOnScreen(questions);
   const statusText = mouseSelectionMode
