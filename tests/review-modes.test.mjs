@@ -872,3 +872,42 @@ test('sync mode: unsent → saved/failed, saved ↔ failed, shown in the sidebar
   assert.equal(R.setSync('saved'), true);
   assert.doesNotMatch(conn(), /sync failed/);
 });
+
+// ============================== the turn in flight belongs to the busy link mode
+// `current` (the turn in flight) used to be a field of its own beside `link`,
+// so the two could disagree. Now only setLink('busy', turn) sets it, and any
+// move out of busy clears it.
+test('link and turn: the turn in flight is set only by moving to busy, and cleared on leaving it', async t => {
+  const { BridgeChat } = await import(path.join(ENGINE, 'chat.mjs'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'review-modes-turn-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, 'project.json'), '{}');
+  const rd = path.join(root, 'review');
+  fs.mkdirSync(path.join(rd, 'state'), { recursive: true });
+  const events = [], sent = [];
+  const chat = new BridgeChat({ reviewDir: rd, cfg: {}, onEvent: ev => events.push(ev) });
+  chat.proc = { stdin: { write: line => sent.push(JSON.parse(line)) } };
+  assert.equal(chat.current, null);
+  assert.throws(() => { chat.current = { target_id: 'x' }; }, TypeError, 'no way to write it from outside');
+  assert.equal(chat.current, null);
+  assert.equal(chat.setLink('starting'), true);
+  assert.equal(chat.setLink('idle'), true);
+  assert.equal(chat.setLink('busy'), false, 'busy without a turn is refused');
+  assert.equal(chat.link, 'idle');
+  chat.submit({ mention_id: 'm1', target_id: 'c1', author: 'ada', text: '@claude hi' });
+  assert.equal(chat.link, 'busy');
+  assert.equal(chat.current.mention_id, 'm1');
+  assert.equal(chat.setLink('busy', { target_id: 'other' }), false, 'a second turn cannot replace the one in flight');
+  assert.equal(chat.current.mention_id, 'm1');
+  chat.submit({ mention_id: 'm2', target_id: 'c2', author: 'ada', text: '@codex hi' });
+  assert.equal(chat.current.mention_id, 'm1', 'the queued turn waits');
+  chat.handle({ type: 'ready' });
+  assert.deepEqual(events.filter(e => e.kind === 'turn-end').map(e => e.mention_id), ['m1']);
+  assert.equal(chat.link, 'busy', 'the next queued turn went straight out');
+  assert.equal(chat.current.mention_id, 'm2');
+  assert.equal(chat.setLink('gone'), true);
+  assert.equal(chat.current, null, 'gone holds no turn');
+  chat.handle({ type: 'ready' });
+  assert.equal(events.filter(e => e.kind === 'turn-end').length, 1, 'a late ready after gone ends nothing');
+  assert.deepEqual(sent.map(s => s.type), ['input', 'input']);
+});

@@ -11,6 +11,9 @@ import path from 'node:path';
 //   idle      — ready for the next turn
 //   busy      — a turn is in flight
 //   gone      — the bot process exited or could not start (final)
+// The turn in flight belongs to the busy mode: setLink('busy', turn) is the
+// only way to set it, and leaving busy clears it, so "busy" and "a turn in
+// flight" can never disagree. Read it through `current` (read-only).
 export const LINK_STATES = ['off', 'starting', 'idle', 'busy', 'gone'];
 const LINK_MOVES = {
   off: ['starting', 'gone'],
@@ -58,14 +61,15 @@ const ASK_CLOSED = {
 };
 
 export class BridgeChat {
+  #turn;
   constructor({ reviewDir, cfg, onEvent, askTimeoutMs = ASK_TIMEOUT_MS }) {
     this.review = reviewDir;
     this.cfg = cfg;
     this.onEvent = onEvent;         // (obj) => broadcast as SSE 'chat'
     this.queue = [];                // pending turns, one in flight
-    this.current = null;            // {target_id, mention_id}
     this.seen = new Set();          // mention_id dedupe across debounce/reload
     this.link = 'off';              // one of LINK_STATES; change it only via setLink()
+    this.#turn = null;              // the turn in flight; set only by setLink('busy', turn)
     // the open question of each kind: { status (one of ASK_STATES), seq, timer };
     // change it only via setAsk()
     this.asks = { permission: { status: 'none', seq: 0, timer: null }, choice: { status: 'none', seq: 0, timer: null } };
@@ -106,13 +110,19 @@ export class BridgeChat {
     this.prices = { claude: 5.0, codex: 1.25 };
   }
 
-  // the one setter for the link mode: refuses a move the table does not allow
-  setLink(next) {
-    if (next === this.link) return true;
+  // the one setter for the link mode: refuses a move the table does not allow.
+  // Moving to busy needs the turn being sent ({target_id, mention_id, ...});
+  // any move out of busy lets go of it.
+  setLink(next, turn = null) {
+    if (next === this.link) return next !== 'busy' || !turn; // busy -> busy would swap the turn: refused
     if (!LINK_STATES.includes(next) || !LINK_MOVES[this.link].includes(next)) return false;
+    if (next === 'busy' && (!turn || typeof turn !== 'object')) return false;
     this.link = next;
+    this.#turn = next === 'busy' ? turn : null;
     return true;
   }
+  // the turn in flight (null unless busy); read-only, set only through setLink
+  get current() { return this.#turn; }
   // the one setter for a question's status: refuses a move the table does not
   // allow. Moving to 'asked' opens a fresh question and starts its time limit;
   // leaving 'asked' stops it. Returns true when the move was made.
@@ -305,15 +315,15 @@ export class BridgeChat {
 
   handle(ev) {
     if (ev.type === 'ready') {
+      const done = this.current;         // leaving busy lets go of the turn
       if (!this.setLink('idle')) return; // a late "ready" after the process is gone
-      if (this.current) {
-        if (this.current.mention_id) {
-          this.completed = [...this.completed, this.current.mention_id].slice(-500);
+      if (done) {
+        if (done.mention_id) {
+          this.completed = [...this.completed, done.mention_id].slice(-500);
           try { fs.writeFileSync(this.seenFile, JSON.stringify(this.completed)); } catch { }
         }
-        this.noteTurnUsage(this.current);
-        this.onEvent({ kind: 'turn-end', target_id: this.current.target_id, mention_id: this.current.mention_id });
-        this.current = null;
+        this.noteTurnUsage(done);
+        this.onEvent({ kind: 'turn-end', target_id: done.target_id, mention_id: done.mention_id });
         this.scanBotTags(); // a bot's fresh thread reply may @-tag its counterpart
       }
       this.pump();
@@ -463,12 +473,11 @@ This is an instruction about the document as a whole, not a reply to a comment. 
   }
 
   pump() {
-    if (this.link !== 'idle' || this.current || !this.queue.length) return;
+    if (this.link !== 'idle' || !this.queue.length) return;
     const t = this.queue.shift();
     // author/routed ride along for usage attribution at turn-end; only
     // target_id/mention_id are echoed to clients (as before)
-    this.current = { target_id: t.target_id, mention_id: t.mention_id, author: t.author || null, routed: t.routed || null };
-    this.setLink('busy');
+    this.setLink('busy', { target_id: t.target_id, mention_id: t.mention_id, author: t.author || null, routed: t.routed || null });
     this.onEvent({ kind: 'turn-start', target_id: t.target_id, mention_id: t.mention_id,
       author: t.author || null, user_text: t.user_text || null });
     this.send({ type: 'input', text: t.text, attachments: [] });
