@@ -350,6 +350,9 @@
     // the web-page chats (the browser plugin's): load is one of
     // PAGE_CHATS_LOADS — setPageChatsLoad
     pageChats: Object.freeze({ load: 'idle', rows: [], total: 0, base: '' }),
+    // "Copy into the council" on one web-page chat: state is one of
+    // PAGE_COPY_STATES — setPageCopy
+    pageCopy: Object.freeze({ state: 'idle', id: '', sid: '', project: '', reused: false, error: '' }),
     // what the transcript pane is doing: one of TRANSCRIPT_MODES, moved only
     // by setTranscriptMode. A page boots catching up on the server's replay.
     transcriptMode: 'catching_up',
@@ -2686,27 +2689,41 @@
   // server (name, address and date only). Where that read stands is one of
   // PAGE_CHATS_LOADS. The rows last read stay on screen while it is read
   // again, and after a read that failed.
-  //   idle     not asked yet
-  //   loading  asked, no answer yet
-  //   ready    the rows are the server's last answer
-  //   failed   the last ask got no answer
-  const PAGE_CHATS_LOADS = Object.freeze(['idle', 'loading', 'ready', 'failed']);
+  //   idle           not asked yet
+  //   loading        asked, no answer yet
+  //   reload-wanted  asked, no answer yet, and asked AGAIN meanwhile (after a
+  //                  copy, say): that answer may be stale, so it is read once
+  //                  more when it comes
+  //   ready          the rows are the server's last answer
+  //   failed         the last ask got no answer
+  const PAGE_CHATS_LOADS = Object.freeze(['idle', 'loading', 'reload-wanted', 'ready', 'failed']);
   function pageChatsMove(from, to) {
     if (!PAGE_CHATS_LOADS.includes(from) || !PAGE_CHATS_LOADS.includes(to)) return false;
+    if (to === 'reload-wanted') return from === 'loading';
+    // the read in flight came back and another is wanted: go again
     if (to === 'loading') return from !== 'loading';
     return (to === 'ready' || to === 'failed') && from === 'loading';
   }
+  // got: the rows of the answer that just came, kept whatever the move
   function setPageChatsLoad(to, got = null) {
     const cur = state.pageChats;
     if (!pageChatsMove(cur.load, to)) return false;
-    state.pageChats = Object.freeze(to === 'ready' && got
+    state.pageChats = Object.freeze(got
       ? { load: to, rows: got.rows, total: got.total, base: got.base }
       : { ...cur, load: to });
     return true;
   }
   const PAGE_ID = /^[0-9a-f]{40}$/;
   async function loadPageChats() {
+    // a read already in flight: the wish is kept, not dropped
+    if (state.pageChats.load === 'loading' || state.pageChats.load === 'reload-wanted') {
+      setPageChatsLoad('reload-wanted');
+      return;
+    }
     if (!setPageChatsLoad('loading')) return;
+    await readPageChats();
+  }
+  async function readPageChats() {
     let got = null;
     try {
       const r = await fetch('/page-chats', { credentials: 'same-origin' });
@@ -2720,9 +2737,49 @@
           base: /^https?:\/\//.test(String(d.base || '')) ? String(d.base) : '' };
       }
     } catch { /* drawn as before; asked again the next time the list is opened */ }
+    if (state.pageChats.load === 'reload-wanted') {
+      setPageChatsLoad('loading', got);
+      renderPanel();
+      return readPageChats();
+    }
     setPageChatsLoad(got ? 'ready' : 'failed', got);
     if (state.row.mode !== 'resting' && !rowKeyExists(state.row.key)) setRowMode('resting');
     renderPanel();
+  }
+
+  // ---- "Copy into the council": one copy at a time ------------------------
+  //   idle     nothing asked
+  //   copying  asked, no answer yet (Copy is shown disabled meanwhile)
+  //   done     copied, or it was already there: {sid, project, reused}
+  //   failed   refused or unreachable: {error}
+  // The note under the list says what the state is; it is drawn from it.
+  const PAGE_COPY_STATES = Object.freeze(['idle', 'copying', 'done', 'failed']);
+  function pageCopyMove(from, to) {
+    if (!PAGE_COPY_STATES.includes(from) || !PAGE_COPY_STATES.includes(to)) return false;
+    if (to === 'copying') return from !== 'copying';
+    if (to === 'done' || to === 'failed') return from === 'copying';
+    return to === 'idle' && from !== 'idle' && from !== 'copying';
+  }
+  function setPageCopy(to, info = {}) {
+    const cur = state.pageCopy;
+    if (!pageCopyMove(cur.state, to)) return false;
+    state.pageCopy = Object.freeze({
+      state: to,
+      id: to === 'copying' ? String(info.id || '') : to === 'idle' ? '' : cur.id,
+      sid: to === 'done' ? String(info.sid || '') : '',
+      project: to === 'done' ? String(info.project || '') : '',
+      reused: to === 'done' && !!info.reused,
+      error: to === 'failed' ? String(info.error || 'Could not reach the council. Try again.') : '',
+    });
+    const c = state.pageCopy;
+    if (to === 'copying') setPanelNote({ text: 'Copying…' });
+    else if (to === 'done') {
+      const pr = c.project ? projectById(c.project) : null;
+      const where = pr ? (pr.title || pr.id) : c.project ? 'its project' : 'Chats';
+      setPanelNote({ text: c.reused ? `Already in ${where}.` : `Copied into ${where}.`, open: c.sid });
+    } else if (to === 'failed') setPanelNote({ text: c.error });
+    if (state.row.mode === 'menu' && state.row.key.startsWith('page:')) renderPanel();
+    return true;
   }
 
   // ---- the panel itself: shown or tucked away -----------------------------
@@ -2927,7 +2984,9 @@
         aria-expanded="${mode !== 'resting'}" aria-label="more for the web page ${esc(title)}">${LP_ICON.more}</button>`;
     if (mode === 'menu') {
       html += `<div class="row-menu lp-menu" role="menu">
-      <button type="button" role="menuitem" data-act="page-copy" data-id="${esc(r.id)}">Copy into the council</button>
+      ${state.pageCopy.state === 'copying'
+    ? '<button type="button" role="menuitem" disabled aria-disabled="true">Copying…</button>'
+    : `<button type="button" role="menuitem" data-act="page-copy" data-id="${esc(r.id)}">Copy into the council</button>`}
     </div>`;
     }
     return html + '</div>';
@@ -3165,16 +3224,11 @@
   // "Copy into the council" on a web-page chat: the council gets a chat of
   // its own with the page's conversation in it; the page keeps its chat
   async function copyPageChat(id) {
+    if (!setPageCopy('copying', { id })) return;   // one copy at a time
     setRowMode('resting');
-    setPanelNote({ text: 'Copying…' });
     const r = await post('/page-chats/copy', { id });
-    if (!r || !r.ok) {
-      setPanelNote({ text: (r && r.error) || 'Could not reach the council. Try again.' });
-      return;
-    }
-    const pr = r.project ? projectById(r.project) : null;
-    const where = pr ? (pr.title || pr.id) : r.project ? 'its project' : 'Chats';
-    setPanelNote({ text: r.reused ? `Already in ${where}.` : `Copied into ${where}.`, open: r.sid || '' });
+    if (!r || !r.ok) setPageCopy('failed', { error: r && r.error });
+    else setPageCopy('done', { sid: r.sid, project: r.project, reused: r.reused });
     loadPageChats();
   }
   async function undoNote() {
@@ -4518,6 +4572,7 @@
     SLIDE_MODES, slideMove, setSlideOut, CONTENTS_LOADS, contentsMove, setContentsLoad,
     setPanelNote, homeView, searchRows, relTime, renderPanel, panelAct, PANEL_ACTIONS,
     PAGE_CHATS_LOADS, pageChatsMove, setPageChatsLoad, loadPageChats, searchPages,
+    PAGE_COPY_STATES, pageCopyMove, setPageCopy,
     // the room's turn and the pre-send guard: each list and its one setter
     ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
     // what the stream waits on: the pure move rule, the one setter, the target

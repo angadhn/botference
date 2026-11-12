@@ -976,12 +976,17 @@ const pageRows = list => [...list.querySelectorAll('.lp-row.page .t')].map(a => 
 
 test('web-page chats: where their read stands is one named list with a pure rule', dom, async t => {
   const { C } = await mkPanel(t);
-  assert.deepEqual([...C.PAGE_CHATS_LOADS], ['idle', 'loading', 'ready', 'failed']);
+  assert.deepEqual([...C.PAGE_CHATS_LOADS], ['idle', 'loading', 'reload-wanted', 'ready', 'failed']);
   assert.ok(Object.isFrozen(C.PAGE_CHATS_LOADS));
   for (const [from, to, ok] of [
     ['idle', 'loading', true], ['loading', 'ready', true], ['loading', 'failed', true],
     ['ready', 'loading', true], ['failed', 'loading', true],
     ['loading', 'loading', false],                    // one read at a time
+    ['loading', 'reload-wanted', true],               // asked again meanwhile
+    ['reload-wanted', 'reload-wanted', false],        // already wanted
+    ['reload-wanted', 'loading', true],               // the answer came: read again
+    ['reload-wanted', 'ready', false], ['reload-wanted', 'failed', false],
+    ['idle', 'reload-wanted', false], ['ready', 'reload-wanted', false],
     ['idle', 'ready', false], ['ready', 'failed', false], ['failed', 'ready', false],
     ['ready', 'idle', false], ['idle', 'sleeping', false], [null, 'loading', false],
   ]) assert.equal(C.pageChatsMove(from, to), ok, `${from} > ${to}`);
@@ -1240,4 +1245,90 @@ test('the web-page chat paths are behind the password like every other request',
   const r = await fetch(s.base + '/page-chats/copy', { method: 'POST', body: JSON.stringify({ id: PID('a') }),
     headers: { 'content-type': 'application/json' } });
   assert.equal(r.status, 401);
+});
+
+test('a list read asked for while one is in flight is read again after it, not dropped', dom, async t => {
+  const answers = [];
+  let calls = 0;
+  const { C, list, tick, w } = await mkPanel(t);
+  // each read waits until the test lets it go
+  w.fetch = async url => {
+    if (String(url) !== '/page-chats') return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    calls++;
+    const n = calls;
+    await new Promise(r => answers.push(r));
+    const pages = n === 1 ? PAGES().pages.slice(0, 1) : PAGES().pages;
+    return { ok: true, status: 200, json: async () => ({ ...PAGES(), total: pages.length, pages }) };
+  };
+  C.handle(SNAP());
+  await tick();
+  assert.equal(C.state.pageChats.load, 'loading');
+  assert.equal(calls, 1);
+  C.loadPageChats();                                   // e.g. a copy just finished
+  assert.equal(C.state.pageChats.load, 'reload-wanted');
+  C.loadPageChats();                                   // asked twice: still one more read
+  assert.equal(C.state.pageChats.load, 'reload-wanted');
+  answers.shift()();
+  await tick();
+  assert.equal(C.state.pageChats.load, 'loading', 'the stale answer is drawn, and read again');
+  assert.equal(calls, 2);
+  assert.deepEqual(pageRows(list), ['A page about kettles']);
+  answers.shift()();
+  await tick();
+  assert.equal(C.state.pageChats.load, 'ready');
+  assert.equal(calls, 2, 'once more, not once per ask');
+  assert.deepEqual(pageRows(list), ['A page about kettles', 'example.org/seed-catalogue']);
+});
+
+test('a copy in flight is one named state: Copy is disabled meanwhile, the note follows the state', dom, async t => {
+  const { C, list, $, click, posts, tick, w } = await mkPanel(t, {
+    fetchJson: url => (url === '/page-chats' ? PAGES() : null),
+  });
+  C.handle(SNAP());
+  await tick();
+  assert.deepEqual([...C.PAGE_COPY_STATES], ['idle', 'copying', 'done', 'failed']);
+  assert.ok(Object.isFrozen(C.PAGE_COPY_STATES));
+  for (const [from, to, ok] of [
+    ['idle', 'copying', true], ['copying', 'done', true], ['copying', 'failed', true],
+    ['done', 'copying', true], ['failed', 'copying', true],
+    ['copying', 'copying', false],                     // one copy at a time
+    ['idle', 'done', false], ['idle', 'failed', false], ['done', 'failed', false],
+    ['copying', 'idle', false], ['done', 'idle', true], ['idle', 'idle', false],
+    ['idle', 'pasting', false], [null, 'copying', false],
+  ]) assert.equal(C.pageCopyMove(from, to), ok, `${from} > ${to}`);
+  assert.equal(C.setPageCopy('done', { sid: 'x' }), false, 'nothing was copying');
+  assert.equal(C.state.pageCopy.state, 'idle');
+
+  // hold the copy's answer until the test lets it go
+  let release;
+  const plain = w.fetch;
+  w.fetch = async (url, opts) => {
+    if (String(url) !== '/page-chats/copy') return plain(url, opts);
+    posts.push({ url, body: JSON.parse(opts.body) });
+    await new Promise(r => { release = r; });
+    return { ok: true, status: 200, json: async () => ({ ok: true, sid: 'cpy00009', project: 'orbit', reused: false }) };
+  };
+  C.setSlideOut('open');
+  click(`.more[data-key="page:${PID('a')}"]`);
+  click('.lp-menu [data-act="page-copy"]');
+  await tick();
+  assert.equal(C.state.pageCopy.state, 'copying');
+  assert.equal(C.state.pageCopy.id, PID('a'));
+  assert.match($('#panel-note').textContent, /Copying…/);
+  // the menu again, on another page: Copy cannot be pressed meanwhile
+  click(`.more[data-key="page:${PID('b')}"]`);
+  const item = list.querySelector('.lp-menu [role="menuitem"]');
+  assert.equal(item.disabled, true);
+  assert.equal(item.hasAttribute('data-act'), false);
+  assert.match(item.textContent, /Copying…/);
+  assert.equal(C.setPageCopy('copying', { id: PID('b') }), false);
+  assert.equal(posts.filter(p => p.url === '/page-chats/copy').length, 1);
+  release();
+  await tick();
+  assert.equal(C.state.pageCopy.state, 'done');
+  assert.equal(C.state.pageCopy.sid, 'cpy00009');
+  assert.match($('#panel-note').textContent, /Copied into Orbit notes book\./);
+  // the menu that stayed open is drawn again, and Copy can be pressed again
+  assert.equal(C.state.row.key, `page:${PID('b')}`);
+  assert.ok(list.querySelector('.lp-menu [data-act="page-copy"]'));
 });
