@@ -10,7 +10,8 @@
 //
 // Loaded by background.js (importScripts), by options.html (a plain script
 // tag), and as a content script ahead of drawer.js and content.js (for the
-// connection's one list of modes and words, CONN_MODES). Nothing in here touches the network or the DOM, and nothing in here
+// connection's one list of modes and words, CONN_MODES, and the figure-edit
+// batch's, FTE_STATES). Nothing in here touches the network or the DOM, and nothing in here
 // reads chrome.* except the two explicit storage helpers at the bottom — so
 // the whole file runs in node, which is where test/adapters.test.mjs unit-tests
 // it (normalizeBase · wsUrlFor · authHeaders · sanitizeHandle · isLocal).
@@ -81,6 +82,49 @@
     if (!CONN_MOVES[move]) throw new Error('connection: no such move ' + move);
     if (!canConnMove(mode, move)) throw new Error('connection: cannot ' + move + ' while ' + mode);
     return CONN_TO[move];
+  }
+
+  // ── a figure-edit batch on its way into the chat ──────────────────────────
+  // The blog's figure-text editor hands content.js a batch of edits
+  // (content.js fteSend). Each batch keeps ONE value, `state`, one of
+  // FTE_STATES, changed only by fteBatchMove; the worker's ledger
+  // (background.js fteLedger) stores the same word, so a batch survives this
+  // script being reloaded. Shared here because both of them keep it.
+  //   'inflight' — being routed / posted now
+  //   'acked'    — it became a chat message (or was all written into the
+  //                post); `ack` is what the editor was told. Final.
+  //   'failed'   — the companion refused it or did not answer; may be sent again
+  // …and every way it changes ('none' = no batch yet; never stored):
+  //   send — none | failed | inflight → inflight  (inflight: a send whose
+  //          script was reloaded mid-way; the one still running in THIS
+  //          script is joined, never sent twice — content.js checks `mine`)
+  //   ack  — inflight → acked, `arg` = the ack
+  //   fail — inflight → failed
+  // A ledger entry from before this list was named used these same three
+  // words; anything else reads as 'failed' (fteState), which may be resent.
+  const FTE_STATES = Object.freeze(['inflight', 'acked', 'failed']);
+  const FTE_MOVES = Object.freeze({
+    send: Object.freeze(['none', 'inflight', 'failed']),
+    ack: Object.freeze(['inflight']),
+    fail: Object.freeze(['inflight']),
+  });
+  const FTE_TO = { send: 'inflight', ack: 'acked', fail: 'failed' };
+  // (an 'acked' entry that lost its ack has nothing to answer with, so it too
+  // reads as 'failed' and may be sent again — fteFindPosted keeps that from
+  // posting the same text twice)
+  const fteState = e => (!e ? 'none'
+    : FTE_STATES.indexOf(e.state) === -1 || (e.state === 'acked' && !e.ack) ? 'failed' : e.state);
+  const canFteMove = (e, move) => !!FTE_MOVES[move] && FTE_MOVES[move].indexOf(fteState(e)) !== -1;
+  // The one way it changes. `send` makes the batch afresh from `arg` (its
+  // fields) and returns it; ack / fail change `e` in place and return it. An
+  // unknown move, or one from the wrong state, throws.
+  function fteBatchMove(e, move, arg) {
+    if (!FTE_MOVES[move]) throw new Error('figure-edit batch: no such move ' + move);
+    if (!canFteMove(e, move)) throw new Error('figure-edit batch: cannot ' + move + ' while ' + fteState(e));
+    if (move === 'send') return Object.assign({}, arg || {}, { state: FTE_TO.send, ack: null });
+    e.state = FTE_TO[move];
+    if (move === 'ack') e.ack = arg || null;
+    return e;
   }
 
   // ── how long a request to the companion may take ──────────────────────────
@@ -254,6 +298,7 @@
     readConfig, writeConfig,
     commandRoute, commandError,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
+    FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

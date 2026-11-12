@@ -12465,3 +12465,22 @@ yes/no. It still has one writer per side: `store.setOrphaned` (POST /orphan,
 re-anchoring, healing) and the drawer's `setThreadOrphaned` (content.js's
 local copy). **`mark`** (highlight / strike) was already one field with one
 setter (`store.setThreadMark`).
+
+## Amendment (2026-11-12): the last unnamed modes in the plugin
+
+More states that were loose words or piles of yes/no, each now ONE value
+with its modes named in one frozen list, changed through one function that
+refuses an illegal move (throws). Nothing the reader sees changes, except
+where noted.
+
+- **A figure-edit batch** (content.js `fteSend`, the blog editor's "Send
+  changes") — its `state` was written by hand in four places and saved to the
+  worker's ledger. Now `FTE_STATES` = inflight / acked / failed in config.js
+  (shared, because background.js `fteLedger` stores the same word), changed
+  only by `fteBatchMove(entry, move, arg)`; moves send (none | failed |
+  inflight → inflight; an inflight batch still running in THIS script is
+  joined, never resent — the `mine` check), ack (inflight → acked, keeping the
+  ack) and fail (inflight → failed). Read only through `fteState`: a ledger
+  entry from before has the same three words and reads as it did; an unknown
+  word, or an acked entry with no ack, reads as failed (may be sent again).
+  Tests: `test/pagemodes.test.mjs`.

@@ -4216,8 +4216,9 @@
   const FTE_MAX_FIELD = 2000;
   const FTE_GAP_MS = 2000;          // at most one /reply per page per 2s
   const LOOPBACK_ORIGIN = /^http:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i;
-  // batch_id -> {state:'inflight'|'acked'|'failed', authorised, request_ids,
-  // ack, url, text, at, mine}. Memory first; the worker's session storage
+  // batch_id -> {state, authorised, request_ids, ack, url, text, at, mine};
+  // `state` is one of config.js FTE_STATES, changed only by CFG.fteBatchMove
+  // and read only through CFG.fteState. Memory first; the worker's session storage
   // (background.js 'fte-ledger') is what survives this script being reloaded.
   const fteBatches = new Map();
   let fteLastReplyAt = 0;
@@ -4308,7 +4309,7 @@
     return (r && r.ok && r.entry) || null;
   }
   function fteSave(id, e) {
-    fteLedger('put', id, { state: e.state, authorised: !!e.authorised, ack: e.ack || null,
+    fteLedger('put', id, { state: CFG.fteState(e), authorised: !!e.authorised, ack: e.ack || null,
                            url: e.url, text_len: (e.text || '').length, at: e.at });
   }
   const fteErr = (rid, batchId, code, message, retryable) =>
@@ -4406,11 +4407,11 @@
       }
     }
     // delivered already: the same ack again, whoever asks
-    if (e && e.state === 'acked' && e.ack) {
+    if (CFG.fteState(e) === 'acked') {
       return ftePost({ ...e.ack, type: 'ack', request_id: rid, batch_id: id, deduped: true });
     }
     // in flight in THIS script: one more listener for the same answer
-    if (e && e.state === 'inflight' && e.mine) {
+    if (CFG.fteState(e) === 'inflight' && e.mine) {
       if (!e.request_ids.includes(rid)) e.request_ids.push(rid);
       return ftePost({ type: 'received', request_id: rid, batch_id: id });
     }
@@ -4424,7 +4425,7 @@
         'The Discuss chat for this page changed — check where it now sends, then send again.', true);
     }
     for (const [other, o] of fteBatches) {
-      if (other !== id && o.state === 'inflight' && o.mine) {
+      if (other !== id && CFG.fteState(o) === 'inflight' && o.mine) {
         return fteErr(rid, id, 'companion_error', 'busy — another batch is still being sent.', true);
       }
     }
@@ -4432,8 +4433,8 @@
       return fteErr(rid, id, 'companion_error', 'busy — try again in a moment.', true);
     }
     const retry = !!e;
-    e = { state: 'inflight', authorised: true, request_ids: [rid], ack: null, url: URL_NOW,
-          text: d.text, at: Date.now(), mine: true };
+    e = CFG.fteBatchMove(e, 'send', { authorised: true, request_ids: [rid], url: URL_NOW,
+                                      text: d.text, at: Date.now(), mine: true });
     fteBatches.set(id, e);
     fteSave(id, e);
     ftePost({ type: 'received', request_id: rid, batch_id: id });
@@ -4445,7 +4446,7 @@
       const reg = await ensureRegistered();
       const rr = reg && reg.ok ? await api('POST', '/fte-route', { url: URL_NOW, batch: d.batch }) : reg;
       if (!rr || !rr.ok) {
-        e.state = 'failed';
+        CFG.fteBatchMove(e, 'fail');
         fteSave(id, e);
         const why = (rr && (rr.error || (rr.data && rr.data.error))) || 'the companion did not answer';
         for (const r of e.request_ids) {
@@ -4466,7 +4467,7 @@
           destination: dest, deduped: !!routed.repeated, queued: false, reason: '',
           routes: routed.routes || [], wrote: routed.wrote || 0,
         };
-        e.state = 'acked'; e.ack = ack;
+        CFG.fteBatchMove(e, 'ack', ack);
         fteSave(id, e);
         for (const r of e.request_ids) ftePost({ ...ack, type: 'ack', request_id: r, batch_id: id });
         return;
@@ -4501,13 +4502,13 @@
         ...(routed ? { routes: routed.routes || [], wrote: routed.wrote || 0,
                        file: (routed.files && routed.files.md) || '' } : {}),
       };
-      e.state = 'acked'; e.ack = ack;
+      CFG.fteBatchMove(e, 'ack', ack);
       fteSave(id, e);
       if (after.ok) fteAdvertised = { session_id: String(dest.session_id || '') };
       for (const r of rids) ftePost({ ...ack, type: 'ack', request_id: r, batch_id: id });
       return;
     }
-    e.state = 'failed';
+    CFG.fteBatchMove(e, 'fail');
     fteSave(id, e);
     const notOwner = res && res.status === 403;
     const why = (res && res.error) || (res && res.ok ? 'The companion saved nothing it could point to.' : 'the companion did not answer');
