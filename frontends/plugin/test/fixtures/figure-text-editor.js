@@ -99,6 +99,28 @@
   }
   function splitWs(s) { var m = /^(\s*)([\s\S]*?)(\s*)$/.exec(s); return { lead: m[1], core: m[2], trail: m[3] }; }
 
+  // ----------------------------------------------------------------- outbox
+  // The batch being sent, kept so a retry or a resume reuses its id. ONE
+  // value, `state`, one of OUTBOX_STATES, changed only by moveOutbox, which
+  // throws on a move not listed in OUTBOX_MOVES ('none' = no outbox):
+  //   sending     — out to the extension now
+  //   failed      — it said no, or did not answer; Send retries (`error`)
+  //   interrupted — a reload cut a send short; resumed once connected
+  var OUTBOX_STATES = Object.freeze(['sending', 'failed', 'interrupted']);
+  var OUTBOX_MOVES = Object.freeze({ none: ['sending'], sending: ['failed', 'interrupted', 'none'],
+    failed: ['sending', 'none'], interrupted: ['sending', 'none'] });
+  function outboxState(ob) { return ob && OUTBOX_STATES.indexOf(ob.state) >= 0 ? ob.state : 'none'; }
+  // s = the store's state; `arg` = the new outbox's fields (sending) or the error (failed)
+  function moveOutbox(s, next, arg) {
+    var from = outboxState(s.outbox);
+    if (!OUTBOX_MOVES[next]) throw new Error('outbox: no such state ' + next);
+    if (OUTBOX_MOVES[from].indexOf(next) < 0) throw new Error('outbox: cannot go ' + from + ' → ' + next);
+    if (next === 'none') s.outbox = null;
+    else if (next === 'sending') { s.outbox = arg; s.outbox.state = 'sending'; s.outbox.error = null; }
+    else { s.outbox.state = next; s.outbox.error = next === 'failed' ? arg : null; }
+    return s.outbox;
+  }
+
   // ------------------------------------------------------------------ store
   // One record per (figure, element, context) and status. Drafts are the unsent
   // batch; delivered records wait for the bots to change the source; a record
@@ -114,10 +136,7 @@
     // extension answers, the editor sends again with the same id, and the
     // extension and the companion answer a repeat with what the first send
     // already did (Editor: resumeIfInterrupted)
-    if (s.outbox && s.outbox.state === 'sending') {
-      s.outbox.state = 'interrupted';
-      s.outbox.error = null;
-    }
+    if (outboxState(s.outbox) === 'sending') moveOutbox(s, 'interrupted');
     // a prose edit written into the post is done: nothing waits on it
     s.edits = (s.edits || []).filter(function (e) { return !(e.status === 'delivered' && e.delivery && e.delivery.to === 'source'); });
     this.state = s;
@@ -182,7 +201,7 @@
       }
     });
     this.state.undo = this.state.undo.filter(function (u) { return keys.indexOf(u.key) < 0; });
-    this.state.outbox = null;
+    if (outboxState(this.state.outbox) !== 'none') moveOutbox(this.state, 'none');
     // …and an edit the companion wrote straight into the post is finished:
     // the post says it now, so it is dropped rather than left waiting
     var done = this.state.edits.filter(function (e) {
@@ -202,7 +221,8 @@
     }
     // nothing left to send: a send that was cut short or failed has nothing
     // left to say either
-    if (!this.drafts().length && this.state.outbox && this.state.outbox.state !== 'sending') this.state.outbox = null;
+    var obs = outboxState(this.state.outbox);
+    if (!this.drafts().length && (obs === 'failed' || obs === 'interrupted')) moveOutbox(this.state, 'none');
     this.save();
   };
   Store.prototype.discardDrafts = function () {
@@ -396,7 +416,7 @@
     // the same id for a retry of the same edits — and for the resume of a send
     // a reload cut short, even if some of its edits have since been dropped as
     // applied: the extension knows that id and answers it without sending twice
-    var batchId = ob && (ob.print === print || ob.state === 'interrupted') ? ob.batch_id : 'fte-' + stamp(new Date()) + '-' + randomHex(4);
+    var batchId = ob && (ob.print === print || outboxState(ob) === 'interrupted') ? ob.batch_id : 'fte-' + stamp(new Date()) + '-' + randomHex(4);
     var batch = buildBatch(drafts, this.page(), batchId);
     if (ob && ob.batch_id === batchId && ob.created_at) batch.created_at = ob.created_at;
     // v2 sends the batch alone: the extension writes it to a file and posts a
@@ -408,8 +428,8 @@
     var prep = this.prepare();
     if (prep.error) { this.last = { kind: 'failed', error: prep.error }; return Promise.resolve(this.last); }
     var prev = st.state.outbox;
-    st.state.outbox = { batch_id: prep.batch.batch_id, print: prep.print, created_at: prep.batch.created_at,
-      attempts: (prev && prev.batch_id === prep.batch.batch_id ? prev.attempts : 0) + 1, state: 'sending', error: null };
+    moveOutbox(st.state, 'sending', { batch_id: prep.batch.batch_id, print: prep.print, created_at: prep.batch.created_at,
+      attempts: (prev && prev.batch_id === prep.batch.batch_id ? prev.attempts : 0) + 1 });
     st.save();
     return this.bridge.send(prep.batch, prep.text).then(function (ack) {
       if (ack.batch_id !== prep.batch.batch_id) throw { code: 'mismatch', message: 'An acknowledgement named a different batch.', retryable: true };
@@ -418,8 +438,8 @@
       return self.last;
     }).catch(function (err) {
       err = err && err.code ? err : { code: 'error', message: String((err && err.message) || err), retryable: true };
-      if (st.state.outbox && st.state.outbox.batch_id === prep.batch.batch_id) {
-        st.state.outbox.state = 'failed'; st.state.outbox.error = err; st.save();
+      if (outboxState(st.state.outbox) === 'sending' && st.state.outbox.batch_id === prep.batch.batch_id) {
+        moveOutbox(st.state, 'failed', err); st.save();
       }
       self.last = { kind: 'failed', error: err };
       return self.last;
@@ -451,7 +471,7 @@
   var Core = {
     VERSION: VERSION, CHANNEL: CHANNEL, PROTOCOL: PROTOCOL, SCHEMA: SCHEMA, CAPABILITY: CAPABILITY,
     isLoopbackHost: isLoopbackHost, validInbound: validInbound, Store: Store, Bridge: Bridge,
-    Sender: Sender, buildBatch: buildBatch, renderMessage: renderMessage,
+    Sender: Sender, buildBatch: buildBatch, OUTBOX_STATES: OUTBOX_STATES, moveOutbox: moveOutbox, renderMessage: renderMessage,
     summarizeRoutes: summarizeRoutes, routeText: routeText, ROUTE_CAPABILITY: ROUTE_CAPABILITY
   };
   global.FigureTextEditorCore = Core;
@@ -1675,8 +1695,8 @@
   // do it again.
   Editor.prototype.resumeIfInterrupted = function () {
     var ob = this.store.state.outbox;
-    if (!ob || ob.state !== 'interrupted' || this.sending || this.bridge.state !== 'ready') return;
-    if (!this.store.drafts().length) { this.store.state.outbox = null; this.store.save(); return; }
+    if (outboxState(ob) !== 'interrupted' || this.sending || this.bridge.state !== 'ready') return;
+    if (!this.store.drafts().length) { moveOutbox(this.store.state, 'none'); this.store.save(); return; }
     this.send();
   };
   Editor.prototype.send = function () {
@@ -1988,7 +2008,7 @@
     u.rev.textContent = 'Review' + (drafts.length + delivered.length ? ' (' + (drafts.length + delivered.length) + ')' : '');
     u.rev.setAttribute('aria-expanded', String(!!this.reviewOpen));
     var ob = st.state.outbox;
-    var retry = ob && ob.state === 'failed' && ob.print === contentPrint(drafts);
+    var retry = outboxState(ob) === 'failed' && ob.print === contentPrint(drafts);
     u.send.textContent = this.sending ? 'Sending…' : retry ? 'Send changes (retry)' : 'Send changes';
     u.send.disabled = this.sending || b.state !== 'ready' || !drafts.length;
     u.send.title = b.state !== 'ready' ? 'Unavailable until the Discuss extension confirms it can take text edits' :
@@ -1997,11 +2017,11 @@
     var res = '', kind = '';
     var last = this.sender.last;
     if (this.sending) { res = 'Sending ' + drafts.length + ' edit' + (drafts.length === 1 ? '' : 's') + ' (batch ' + (ob ? ob.batch_id : '') + ')…'; kind = 'sending'; }
-    else if (ob && ob.state === 'interrupted') {
+    else if (outboxState(ob) === 'interrupted') {
       res = 'The page reloaded during a send; checking with the Discuss extension what became of batch ' + ob.batch_id + '…';
       kind = 'sending';
     }
-    else if (ob && ob.state === 'failed') {
+    else if (outboxState(ob) === 'failed') {
       res = 'Not delivered: ' + (ob.error ? ob.error.message : 'unknown error') + ' All edits are kept' +
         (retry ? '; Send changes retries the same batch (' + ob.batch_id + ').' : '; the batch changed, so the next send is a new batch.');
       kind = 'failed';

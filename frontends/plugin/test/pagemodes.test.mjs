@@ -6,6 +6,8 @@
 //      fteSend and the worker's ledger (background.js fteLedger)
 //   2. one card's rendered preview on a book page (blockdiff.js
 //      RP_CARD_STATES / rpCardMove) — content.js RP.byCard
+//   3. the figure editor's tray outbox (test/fixtures/figure-text-editor.js,
+//      a copy of the blog's editor: OUTBOX_STATES / moveOutbox)
 //
 // content.js cannot be loaded in node (a content script that wants a document,
 // a `chrome` and a live page), so the machines live in files that can, and
@@ -23,6 +25,9 @@ const require = createRequire(import.meta.url);
 const ext = f => path.join(here, '..', 'extension', f);
 const C = require(ext('config.js'));
 const BD = require(ext('blockdiff.js'));
+const FTE_SRC = path.join(here, 'fixtures', 'figure-text-editor.js');
+require(FTE_SRC);                       // no document: only its core loads
+const FC = globalThis.FigureTextEditorCore;
 const CONTENT = fs.readFileSync(ext('content.js'), 'utf8');
 const BG = fs.readFileSync(ext('background.js'), 'utf8');
 
@@ -98,6 +103,47 @@ const throws = (name, fn) => { try { fn(); ok(name, false, 'did not throw'); } c
   eq('content.js never writes a card state by hand', rp.match(/state\s*[:=]\s*'/g), null);
   eq('…nor reads one by hand', rp.match(/\.state\s*[!=]==\s*'(queued|pending|ready|failed)'/g), null);
   ok('…every change is an rpCardMove', (rp.match(/BD\.rpCardMove\(/g) || []).length === 5);
+}
+
+// ---- 3. the figure editor's tray outbox --------------------------------------
+{
+  eq('the outbox states, named', FC.OUTBOX_STATES, ['sending', 'failed', 'interrupted']);
+  ok('…frozen', Object.isFrozen(FC.OUTBOX_STATES));
+  const legal = { none: ['sending'], sending: ['failed', 'interrupted', 'none'],
+    failed: ['sending', 'none'], interrupted: ['sending', 'none'] };
+  for (const from of Object.keys(legal)) for (const to of ['none', ...FC.OUTBOX_STATES]) {
+    const st = { outbox: from === 'none' ? null : { batch_id: 'b', state: from, error: null } };
+    const want = legal[from].includes(to);
+    let moved = true; try { FC.moveOutbox(st, to, to === 'sending' ? { batch_id: 'b2' } : { code: 'x' }); } catch { moved = false; }
+    eq(`${from} → ${to}: ${want ? 'allowed' : 'refused'}`, moved, want);
+  }
+  throws('a state that is not one throws', () => FC.moveOutbox({ outbox: null }, 'sent'));
+  const st = { outbox: null };
+  FC.moveOutbox(st, 'sending', { batch_id: 'b', attempts: 1 });
+  eq('sending: the new outbox, no error', st.outbox, { batch_id: 'b', attempts: 1, state: 'sending', error: null });
+  FC.moveOutbox(st, 'failed', { code: 'x', message: 'made up' });
+  eq('failed keeps why', [st.outbox.state, st.outbox.error.code], ['failed', 'x']);
+  FC.moveOutbox(st, 'none');
+  eq('none: no outbox', st.outbox, null);
+
+  // a reload mid-send: a stored 'sending' outbox reads back interrupted
+  const mem = {};
+  const storage = { getItem: k => mem[k] || null, setItem: (k, v) => { mem[k] = v; } };
+  mem.k = JSON.stringify({ v: 1, edits: [], undo: [], applied: [],
+    outbox: { batch_id: 'fte-20261112T1200-0000beef', print: 'p', state: 'sending', attempts: 1, error: null } });
+  const S = new FC.Store(storage, 'k');
+  eq('a stored send that a reload cut short is resumed, not failed', [S.state.outbox.state, S.state.outbox.error], ['interrupted', null]);
+  mem.k = JSON.stringify({ v: 1, edits: [], undo: [], applied: [], outbox: { batch_id: 'x', state: 'failed', error: { code: 'x' } } });
+  eq('a stored failed outbox reads as it was', new FC.Store(storage, 'k').state.outbox.state, 'failed');
+
+  // nothing in the editor writes an outbox state but moveOutbox
+  const src = fs.readFileSync(FTE_SRC, 'utf8');
+  const a = src.indexOf('function moveOutbox(');
+  const setter = src.slice(a, src.indexOf('\n  }\n', a));
+  const rest = src.slice(0, a) + src.slice(a + setter.length);
+  eq('the outbox state is written only in moveOutbox', rest.match(/outbox\.state\s*=[^=]/g), null);
+  eq('…and the outbox is cleared only there', rest.match(/\.outbox\s*=\s*null/g), null);
+  eq('…and read only through outboxState', rest.match(/\b(ob|outbox)\.state\s*[!=]==/g), null);
 }
 
 console.log(`pagemodes: ${pass} passed, ${fail} failed`);

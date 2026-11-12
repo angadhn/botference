@@ -12513,3 +12513,13 @@ where noted.
   own failure: `loadMove(…, null)`). Seen differently: after a failed read, a
   good one now clears the red line; before, the old failure text stayed up in
   grey.
+- **The figure editor's tray outbox** (`test/fixtures/figure-text-editor.js`,
+  the test copy of the blog's `assets/js/figure-text-editor.js`; the blog's
+  own file is ported by hand) — its `state` was written by hand in five
+  places. Now `OUTBOX_STATES` = sending / failed / interrupted, changed only
+  by `moveOutbox(storeState, next, arg)` (`'none'` = no outbox), read through
+  `outboxState`; moves in `OUTBOX_MOVES`: none → sending; sending → failed |
+  interrupted (a reload) | none (delivered); failed | interrupted → sending |
+  none (nothing left to send). Exposed on `FigureTextEditorCore` for
+  `test/pagemodes.test.mjs`. (The editor's own `sending` yes/no beside it is
+  not touched — see the open list.)
