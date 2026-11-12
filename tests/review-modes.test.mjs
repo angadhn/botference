@@ -961,3 +961,70 @@ test('commit note: a commit the server refused leaves no note (happy-dom)', need
   assert.equal(pg.R.commitNote, 'none');
   assert.match(pg.toasts(), /nothing to commit/);
 });
+
+// ============================== re-reading /data on a "state" announcement (reload mode)
+// A `refetching` flag used to drop an announcement that arrived while a
+// re-read was out, so the page could miss the last change. Now RELOAD_MODES
+// remember it: exactly one more re-read follows, never none, never a loop.
+test('reload: an announcement mid re-read causes exactly one more re-read, then idle (happy-dom)', needsHappy, async t => {
+  let reads = 0, gen = 0;
+  const gates = [];
+  const pg = await page(t, {
+    routes: { '/data': () => {
+      reads++;
+      const body = { me: 'ada', hosted: false, owner: true, owner_handle: 'ada', users: { ada: {} },
+        threads: { s1: [{ author: 'claude', text: 'reply ' + (++gen), ts: '2026-01-01T00:00:00Z' }] },
+        suggestions: [], apply: { cards: {}, round: null }, chat: true };
+      return reads === 1 ? body : new Promise(r => gates.push(() => r(body)));  // the boot read answers at once
+    } },
+  });
+  const R = pg.R;
+  const say = () => pg.sockets[0].onmessage({ data: '{"type":"state"}' });
+  assert.deepEqual([...R.RELOAD_MODES], ['idle', 'loading', 'loading-and-stale']);
+  assert.equal(R.reload, 'idle');
+  assert.equal(R.setReload('loading-and-stale'), false, 'idle cannot be stale');
+  assert.equal(R.setReload('busy'), false, 'not a mode');
+  assert.equal(reads, 1);
+  say();
+  assert.equal(R.reload, 'loading');
+  assert.equal(reads, 2);
+  say(); say(); say();                     // three more while the first is out
+  assert.equal(R.reload, 'loading-and-stale');
+  assert.equal(reads, 2, 'no second read while one is out');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(reads, 3, 'exactly one more read for all three announcements');
+  assert.equal(R.reload, 'loading');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(R.reload, 'idle');
+  assert.equal(reads, 3, 'and then it stops');
+  assert.equal(gates.length, 0);
+  // a later announcement starts a fresh read
+  say();
+  assert.equal(reads, 4);
+  gates.shift()();
+  await pg.tick();
+  assert.equal(R.reload, 'idle');
+});
+
+test('reload: a failed re-read still ends, and a remembered announcement still gets its read (happy-dom)', needsHappy, async t => {
+  let reads = 0;
+  const gates = [];
+  const pg = await page(t, {
+    routes: { '/data': () => {
+      reads++;
+      if (reads === 1) return { me: 'ada', users: { ada: {} }, threads: {}, suggestions: [], apply: { cards: {}, round: null }, chat: true };
+      return new Promise((_, no) => gates.push(() => no(new TypeError('Failed to fetch'))));
+    } },
+  });
+  const say = () => pg.sockets[0].onmessage({ data: '{"type":"state"}' });
+  say(); say();
+  assert.equal(pg.R.reload, 'loading-and-stale');
+  gates.shift()();
+  await pg.tick();
+  assert.equal(reads, 3);
+  gates.shift()();
+  await pg.tick();
+  assert.equal(pg.R.reload, 'idle');
+});
