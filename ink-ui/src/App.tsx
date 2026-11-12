@@ -57,6 +57,14 @@ import {
   type ScrollGlideMode,
 } from "./scrollGlide.js";
 import {
+  focusedPaneFor,
+  moveProjectsPanel,
+  projectsListVisible,
+  tabbedProjectsPanel,
+  toggledProjectsPanel,
+  type ProjectsPanelMode,
+} from "./projectsPanel.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -527,13 +535,17 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     codex_window: null,
     observe: true,
   });
-  const [focusedPane, setFocusedPane] = useState<"room" | "projects">("room");
+  // The one field for "is the project list showing, and does it have the
+  // keys?" (named modes in projectsPanel.ts); changed only through
+  // moveProjects() below. Which pane has focus is read off it.
+  const [projectsPanel, setProjectsPanelState] = useState<ProjectsPanelMode>("shown");
+  const projectsPanelRef = useRef<ProjectsPanelMode>("shown");
+  const projectsVisible = projectsListVisible(projectsPanel);
   const [projectState, setProjectState] = useState<ProjectPanelStateData>({
     active_project_id: "",
     inbox_session_count: 0,
     projects: [],
   });
-  const [projectsVisible, setProjectsVisible] = useState(true);
   const [projectCursor, setProjectCursor] = useState(0);
   const [projectFilter, setProjectFilter] = useState("");
   const [inputText, setInputTextState] = useState("");
@@ -643,6 +655,23 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
     return move.changed;
   }, []);
+  const moveProjects = useCallback((to: ProjectsPanelMode): boolean => {
+    const from = projectsPanelRef.current;
+    const move = moveProjectsPanel(from, to);
+    if (!move.ok) {
+      flightRecorder.note(`projects_move_refused:${from}->${to}`);
+      return false;
+    }
+    if (move.changed) {
+      projectsPanelRef.current = move.mode;
+      setProjectsPanelState(move.mode);
+    }
+    return move.changed;
+  }, []);
+  /** The room takes the keys back (the list stays as it is). */
+  const focusRoom = useCallback(() => {
+    if (projectsPanelRef.current === "focused") moveProjects("shown");
+  }, [moveProjects]);
   const setImageAttachments = useCallback((update: StateUpdate<Map<number, string>>) => {
     const next = typeof update === "function"
       ? (update as (prev: Map<number, string>) => Map<number, string>)(imageAttachmentsRef.current)
@@ -733,6 +762,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   // it as hidden for behavior purposes too — otherwise focus could get stuck
   // on an invisible pane.
   const projectsPaneRendered = projectsVisible && projectsPaneWidth > 0;
+  const focusedPane = focusedPaneFor(projectsPanel, projectsPaneRendered);
   const projectRows = useMemo(
     () => buildProjectRows(projectState, { filter: projectFilter }),
     [projectState, projectFilter],
@@ -971,7 +1001,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setPaneSelection(null);
           return;
         }
-        setFocusedPane(hit.pane);
+        focusRoom();
         setPaneSelection({
           pane: hit.pane,
           anchorLine: hit.lineIndex,
@@ -1355,7 +1385,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           break;
         case "mode":
           setStatus((prev) => ({ ...prev, mode: msg.mode as string }));
-          setFocusedPane("room");
+          focusRoom();
           break;
         case "ready":
           moveTurn("idle");
@@ -1664,30 +1694,23 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
     // Tab / Shift+Tab — toggle pane focus
     if (input === "p" && key.ctrl) {
-      setProjectsVisible((prev) => {
-        const next = !prev;
-        if (!next) {
-          setProjectFilter("");
-          if (focusedPane === "projects") setFocusedPane("room");
-        }
-        setHint(next ? "" : "Projects panel hidden (Ctrl+P to show)");
-        return next;
-      });
+      const next = toggledProjectsPanel(projectsPanelRef.current);
+      if (moveProjects(next)) {
+        if (next === "hidden") setProjectFilter("");
+        setHint(next === "hidden" ? "Projects panel hidden (Ctrl+P to show)" : "");
+      }
       return;
     }
 
     if (key.tab) {
       if (!projectsPaneRendered) return;
       setProjectFilter("");
-      setFocusedPane((prev) => {
-        const next = prev === "room" ? "projects" : "room";
-        if (next === "projects") {
-          setHint("Projects focused \u2014 \u2191/\u2193 to navigate, type to filter, Enter to open, Tab to leave");
-        } else {
-          setHint("");
-        }
-        return next;
-      });
+      const next = tabbedProjectsPanel(projectsPanelRef.current);
+      if (moveProjects(next)) {
+        setHint(next === "focused"
+          ? "Projects focused \u2014 \u2191/\u2193 to navigate, type to filter, Enter to open, Tab to leave"
+          : "");
+      }
       return;
     }
 
