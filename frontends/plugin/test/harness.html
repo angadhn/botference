@@ -2662,9 +2662,12 @@ function evictMathFonts() {
   return !!link;
 }
 
-// which pill the pose opens with, if any (`?commenters=1&by=mira`)
-let BOOT_COMMENTER = '';
-const COMMENTERS = Q.get('commenters') === '1';
+// ?pills=1 — the Comments tab's pill row, All · Notes · With bots (see the
+// fixture below). `&pill=notes|bots` opens with that pill pressed, `&moved=1`
+// then has a bot answer one of the notes while the reader looks at Notes.
+// ?pills=nobots — the same page with no bot discussion on it (the empty pill).
+const PILLS = Q.get('pills') || '';
+const BOOT_PILL = Q.get('pill') || '';
 // ?sendfocus=1 — a Send keeps its thread in view (see selftestSendFocus)
 const SENDFOCUS = Q.get('sendfocus') === '1';
 // ?longchat=1 — a long page chat read back from its newest message (see
@@ -2694,20 +2697,19 @@ if (LONGCHAT) {
   }
   RECORD.page_chat = chat;
 }
-// ?commenters=1 — the shape of a page several people have marked up: the
-// owner's three threads, plus two projected in from the review page's own
-// margin by visitors with no extension (store.mjs `origin`), plus a guest
-// replying in somebody else's thread and a filed thread of her own. That is
-// the page the commenter pills exist for — the row is derived from exactly
-// this, one pill per voice, and the archive is in the count.
-// `&by=<handle>` opens with that pill already pressed (the screenshot pose).
-if (COMMENTERS) {
+// ?pills=1 — a page with both kinds of thread on it. The article's own three
+// (a note, a discussion with claude, an orphaned note), plus two projected in
+// from the review page's margin by visitors with no extension (store.mjs
+// `origin`) — one answered by claude, one a plain note — a guest replying in
+// the owner's note (a reply from a PERSON leaves a note a note), and one filed
+// thread of each kind, so the archive can be seen under every pill.
+// Unresolved: Notes 3 (a1b2, e5f6, bb02), With bots 2 (c3d4, aa01), All 5.
+if (PILLS === '1') {
   RECORD.threads.push({
     id: 't-1754500300-aa01',
     quote: 'It is not an excuse. It is a description of the plan.',
     prefix: 'come to mean something specific here.', suffix: '',
     orphaned: false,
-    // a visitor's review-page comment, projected in
     origin: { system: 'review', id: 'user-01-match-blk-4-1756000000000' },
     msgs: [
       { author: 'mira', ts: iso(30), text: 'Is "description" right? The two sentences read as a defence, not a description.',
@@ -2724,22 +2726,30 @@ if (COMMENTERS) {
       { author: 'devraj', ts: iso(26), text: 'Nobody at the club, or nobody the reporter asked? Those are different claims.',
         origin: { system: 'review', id: 'user-01-match-blk-9-1756000009999' } },
     ] });
-  // a guest replying in the OWNER's thread: she belongs to that thread too,
-  // which is what "a thread is this person's if they said anything in it"
-  // means, and why the counts are thread counts and not message counts
   RECORD.threads[0].msgs.push({ author: 'mira', ts: iso(18), text: 'Agreed — it is the only line I would fight for.' });
-  // …and one of hers, filed: the archive is filtered by the same rule, so a
-  // pill's count is what pressing it will actually show
   RECORD.threads.push({
     id: 't-1754500500-cc03',
     quote: 'Nothing had gone wrong. Nothing had gone right either.',
     prefix: 'just unconvinced.', suffix: 'The manager said afterwards',
     orphaned: false, resolved: true, resolved_at: iso(12), resolved_by: 'angadh',
-    summary: 'Kept as written — the flatness is the point.',
+    summary: 'Kept as written — the flatness is the point.', summary_by: 'claude',
     msgs: [
       { author: 'mira', ts: iso(15), text: 'This is the best sentence in the piece.' },
     ] });
-  if (Q.get('by')) BOOT_COMMENTER = Q.get('by');
+  RECORD.threads.push({
+    id: 't-1754500600-dd04',
+    quote: 'The manager said afterwards',
+    prefix: 'Nothing had gone right either.', suffix: '',
+    orphaned: false, resolved: true, resolved_at: iso(10), resolved_by: 'angadh',
+    summary: 'Asked whether the quote was on the record; claude found the press-conference source.', summary_by: 'claude',
+    msgs: [
+      { author: 'angadh', ts: iso(14), text: '@claude was this said on the record?' },
+      { author: 'claude', ts: iso(13), text: 'Yes — it is from the post-match press conference.' },
+    ] });
+}
+// ?pills=nobots — only the article's notes: nothing has been asked of a bot
+if (PILLS === 'nobots') {
+  RECORD.threads = RECORD.threads.filter(t => !(t.msgs || []).some(m => /^(claude|codex)/i.test(m.author) || /@(claude|codex|all)\b/i.test(m.text || '')));
 }
 
 // ?pdfannot=1 — THE COMMENTS THE FILE ARRIVED WITH.
@@ -6260,7 +6270,9 @@ async function selftest() {
   // pose made, for the same reason.) The send-review row is no longer among
   // them: since 2026-09-02 it is pinned at the FOOT of the chat pane, inside
   // the chat card, so it is not a sibling of this one at all.
-  const CHROME = /\b(archbar|archlist|offline|warn|blogsrc|nohl)\b/;
+  // (2026-11-12: the Comments pill row — All · Notes · With bots — is the
+  // first child of the Comments pane on any page with comments: chrome too.)
+  const CHROME = /\b(archbar|archlist|kindbar|offline|warn|blogsrc|nohl)\b/;
   const topOfPane = p => {
     const kids = [...S.querySelector('.pane[data-pane="' + p + '"]').children];
     const i = kids.indexOf(card(p));
@@ -11864,128 +11876,167 @@ async function selftestPdfAnnot() {
   console.log(out.join('\n'));
 }
 
-// ?commenters=1&selftest=1 — WHO IS IN THIS MARGIN.
-// A page five voices have written on: the owner's three threads, two projected
-// in from the review page's own margin (mira and devraj), a guest replying in
-// somebody else's thread, one of hers filed, and claude answering. The pills
-// are derived from exactly that, and pressing one narrows the WHOLE pane —
-// open list, Ready for review and the archive alike — to threads that person
-// is in, without slicing a single conversation in half.
-async function selftestCommenters() {
+// ?pills=1&selftest=1 — NOTES AND BOT DISCUSSIONS.
+// The pill row under the tabs: All · Notes · With bots, each with its count of
+// unresolved threads; sticky while the list scrolls; only on Comments. Which
+// pill a thread is under is read off the thread every time (threadKind), so a
+// note a bot answers is a bot discussion by itself — and if that happens while
+// the reader is looking at Notes, the card is HELD in place with "Moved to
+// With bots" until the pill changes.
+async function selftestPills() {
   const out = [];
-  const check = (name, cond) => { out.push((cond ? "\u2713 " : "\u2717 ") + name); progress(out, name); };
-  const hit = hitter(check);   // a click on a missing control is ONE failed check, not the end of the run
+  const check = (name, cond) => { out.push((cond ? "✓ " : "✗ ") + name); progress(out, name); };
+  const hit = hitter(check);
   const d = window.__bfp.drawer, S = d.shadow;
-  const q = sel => S.querySelectorAll(sel);
   const pane = () => S.querySelector('.pane[data-pane="comments"]');
-  const cards = () => [...q('.pane[data-pane="comments"] .card')].map(c => c.dataset.thread);
-  const pill = by => S.querySelector('.cpill[data-by="' + by + '"]');
-  // idempotent: the archive fold is session state that survives a filter
-  // change, so a second "open it" must not toggle it shut
-  const openArchive = () => {
+  const cards = () => [...pane().querySelectorAll('.card[data-thread]')].map(c => c.dataset.thread);
+  const pill = p => S.querySelector('.kpill[data-pill="' + p + '"]');
+  const bar = () => S.querySelector('.kindbar');
+  const shown = el => !!el && el.getClientRects().length > 0;
+  const nums = () => [...S.querySelectorAll('.kpill .cn')].map(n => n.textContent).join(',');
+  const press = async p => { hit(pill(p), 'the ' + p + ' pill'); await sleep(80); };
+  const openArchive = async () => {
     if (S.querySelector('.resolved-sec.open')) return;
-    const t = S.querySelector('[data-act="resolved-toggle"]');
-    if (t) t.click();
+    hit(S.querySelector('[data-act="resolved-toggle"]'), 'the Resolved fold'); await sleep(60);
   };
+  try {
+    d.open('comments');
+    await until(() => bar(), 3000);
 
-  // ---- the row ----
-  const rail = S.querySelector('.pane[data-pane="comments"] .cfilter');
-  check('a commenter rail is drawn', !!rail);
-  const names = [...q('.cpill')].map(b => b.dataset.by);
-  check('All comes first, and every voice on the page has a pill',
-    names[0] === '' && ['angadh', 'mira', 'devraj', 'claude'].every(n => names.includes(n)));
-  check('a bot is a commenter like anybody else', names.includes('claude'));
-  check('the pills carry the speaker\u2019s own colour, not a second hash',
-    [...q('.cpill')].slice(1).every(b => /--author:/.test(b.getAttribute('style') || '')));
-  check('All is on by default', pill('').classList.contains('on') && d.commenterFilter() === '');
-  // counts are THREAD counts — what pressing the pill will actually show
-  const counted = Object.fromEntries(d.commenters().map(c => [c.key, c.count]));
-  check('a pill counts threads, not messages', counted.mira === 3 && counted.devraj === 1);
-  check('replying in somebody else\u2019s thread puts you in it',
-    d.commenters().find(c => c.key === 'mira').count === 3);
-  const liveBefore = S.querySelector('.tab[data-tab="comments"] .count').textContent;
+    // ---- the row ----
+    check('the pill row is drawn', !!bar());
+    check('…as the first thing in the Comments list, right under the tabs',
+      pane().firstElementChild === bar());
+    check('three pills: All, Notes, With bots',
+      [...S.querySelectorAll('.kpill')].map(b => b.firstChild.textContent.trim()).join('|') === 'All|Notes|With bots');
+    check('All is on by default', pill('all').classList.contains('on') && d.commentPillNow() === 'all');
+    check('the counts are unresolved threads per pill: 5 · 3 · 2', nums() === '5,3,2');
+    check('the Comments tab keeps its own count (every unresolved thread)',
+      S.querySelector('.tab[data-tab="comments"] .count').textContent === '5');
+    check('the old who-commented pills are gone',
+      !S.querySelector('.cfilter') && !S.querySelector('.cpill') && !S.querySelector('[data-act="filter-by"]')
+      && typeof d.pickCommenter === 'undefined' && typeof d.commenters === 'undefined');
 
-  // ---- pressing one ----
-  openArchive();
-  await sleep(60);
-  const everything = cards().length;
-  hit(pill('devraj'), 'the devraj pill');
-  await sleep(80);
-  check('pressing a pill narrows the pane to that person', cards().length === 1);
-  check('\u2026and it is their thread', cards()[0] === 't-1754500400-bb02');
-  check('the pill says it is on',
-    pill('devraj').classList.contains('on') && pill('devraj').getAttribute('aria-pressed') === 'true');
-  check('the tab badge does not move \u2014 it is a workload number, not a view number',
-    S.querySelector('.tab[data-tab="comments"] .count').textContent === liveBefore);
+    // ---- it fits a narrow panel ----
+    const panel = S.querySelector('.panel');
+    const wasW = panel.style.width;
+    panel.style.width = '320px';
+    await sleep(60);
+    const tops = [...S.querySelectorAll('.kpill')].map(b => Math.round(b.getBoundingClientRect().top));
+    check('at the narrowest panel (320px) the three pills sit on one line', tops.every(t => t === tops[0]));
+    check('…and nothing spills sideways', bar().scrollWidth <= bar().clientWidth + 1);
+    panel.style.width = wasW;
+    await sleep(60);
 
-  // ---- the archive and Ready for review are the same person's ----
-  hit(pill('mira'), 'the mira pill');
-  await sleep(80);
-  openArchive();
-  await sleep(60);
-  check('the archive is filtered by the same rule', cards().includes('t-1754500500-cc03'));
-  check('\u2026and the resolved count is the count under this filter',
-    /Resolved 1$/.test(S.querySelector('.resolved-head').textContent.replace(/\s+/g, ' ').trim()));
-  check('a thread nobody else is in is gone', !cards().includes('t-1754500400-bb02'));
-  check('a thread she only REPLIED in is kept whole',
-    cards().includes('t-1754500000-a1b2')
-      && S.querySelectorAll('.card[data-thread="t-1754500000-a1b2"] .reply').length === 2);
+    // ---- sticky ----
+    const pn = pane();
+    const pad = document.createElement('div');   // enough list to scroll, whatever the window height
+    pad.style.height = '2000px';
+    pn.appendChild(pad);
+    pn.scrollTop = 600;
+    await sleep(80);
+    const gap = Math.abs(bar().getBoundingClientRect().top - pn.getBoundingClientRect().top);
+    check('sticky: scrolled 600px down the list, the row is still at its top', pn.scrollTop > 100 && gap <= 1);
+    pad.remove();
+    pn.scrollTop = 0;
+    await sleep(40);
 
-  // ---- toggling off ----
-  hit(pill('mira'), 'the mira pill');
-  await sleep(80);
-  check('pressing the pill you are on clears the filter',
-    d.commenterFilter() === '' && cards().length === everything);
+    // ---- each pill ----
+    await press('notes');
+    check('Notes: only the notes', cards().sort().join() === ['t-1754500000-a1b2', 't-1754500200-e5f6', 't-1754500400-bb02'].sort().join());
+    check('…the pill says it is on', pill('notes').classList.contains('on') && pill('notes').getAttribute('aria-pressed') === 'true');
+    check('…a guest’s plain reply leaves the owner’s note a note', cards().includes('t-1754500000-a1b2'));
+    await openArchive();
+    check('Notes: the resolved note sits folded open at the bottom, and only it',
+      cards().includes('t-1754500500-cc03') && !cards().includes('t-1754500600-dd04'));
+    check('…and the archive counts under the pill',
+      /Resolved 1$/.test(S.querySelector('.resolved-head').textContent.replace(/\s+/g, ' ').trim()));
+    check('the tab count does not move with the pill', S.querySelector('.tab[data-tab="comments"] .count').textContent === '5');
+    check('the choice is remembered for this page', (store['bfp:commentPill'] || {})[PAGE_URL] === 'notes');
 
-  // ---- nothing to show ----
-  d.pickCommenter('nobody-at-all');
-  await sleep(80);
-  check('a filter that matches nothing says so rather than \u201cno comments yet\u201d',
-    /Nothing from nobody-at-all/.test(pane().textContent));
-  const back = pane().querySelector('.fclear[data-act="filter-by"]');
-  check('\u2026and offers the way back', !!back);
-  hit(back, 'back out of the archive');
-  await sleep(80);
-  check('\u201cshow everyone\u201d restores the page', d.commenterFilter() === '' && cards().length === everything);
+    await press('bots');
+    await openArchive();
+    check('With bots: the discussions, and the resolved one in the archive',
+      cards().sort().join() === ['t-1754500100-c3d4', 't-1754500300-aa01', 't-1754500600-dd04'].sort().join());
+    check('…a visitor’s comment that claude answered is a bot discussion', cards().includes('t-1754500300-aa01'));
+    await press('all');
+    await openArchive();
+    check('All: every thread, both resolved ones in the archive', cards().length === 7);
+    check('All is not stored (it is the default)', !(PAGE_URL in (store['bfp:commentPill'] || {})));
 
-  // ---- a highlight click always wins ----
-  hit(pill('devraj'), 'the devraj pill');
-  await sleep(80);
-  check('the filter is on and mira\u2019s thread is hidden', !cards().includes('t-1754500300-aa01'));
-  d.focus('t-1754500300-aa01');
-  await sleep(120);
-  check('clicking a hidden thread\u2019s highlight stands the filter aside rather than swallowing the click',
-    d.commenterFilter() === '' && cards().includes('t-1754500300-aa01'));
+    // ---- only on the Comments tab ----
+    hit(S.querySelector('.tab[data-tab="chat"]'), 'the Page chat tab');
+    await sleep(80);
+    check('on Page chat the pill row is not shown', !shown(bar()));
+    const mem = S.querySelector('.tab[data-tab="memory"]');
+    if (mem) { mem.hidden = false; }
+    hit(mem, 'the Memorize tab');
+    await sleep(80);
+    check('on Memorize the pill row is not shown', !shown(bar()));
+    if (mem) mem.hidden = true;
+    hit(S.querySelector('.tab[data-tab="comments"]'), 'the Comments tab');
+    await sleep(80);
+    check('back on Comments it is', shown(bar()));
 
-  // ---- it is a reading position, not a decision ----
-  hit(pill('mira'), 'the mira pill');
-  await sleep(60);
-  check('nothing about the filter is persisted', !('bfp:commenter' in store));
-  d.setPage(JSON.parse(JSON.stringify(RECORD)));
-  await sleep(60);
-  check('and a new page opens showing everyone', d.commenterFilter() === '');
+    // ---- a note turns into a bot discussion while the reader is on Notes ----
+    await press('notes');
+    const note = RECORD.threads.find(t => t.id === 't-1754500200-e5f6');
+    note.msgs.push({ author: 'claude', ts: new Date().toISOString(), text: 'The paragraph this was anchored to is gone; the point still stands.' });
+    RECORD.updated_at = new Date().toISOString();
+    toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+    const movedLine = await until(() => S.querySelector('.card[data-thread="t-1754500200-e5f6"] .moved'), 4000);
+    check('a bot answers a note: the card does not vanish from under the reader',
+      cards().includes('t-1754500200-e5f6'));
+    check('…it carries "Moved to With bots"', !!movedLine && movedLine.textContent.trim() === 'Moved to With bots');
+    check('…and only it', S.querySelectorAll('.moved').length === 1);
+    check('…the hold is named state, readable from outside', d.heldThreads().join() === 't-1754500200-e5f6');
+    check('…and the counts already follow the record: 5 · 2 · 3', nums() === '5,2,3');
+    // a second refresh keeps it held
+    toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+    await sleep(300);
+    check('another refresh keeps it held', cards().includes('t-1754500200-e5f6') && !!S.querySelector('.moved'));
+    await press('bots');
+    check('changing pill: it lives under With bots, without the line',
+      cards().includes('t-1754500200-e5f6') && !S.querySelector('.moved') && d.heldThreads().length === 0);
+    await press('notes');
+    check('…and back on Notes it is gone', !cards().includes('t-1754500200-e5f6'));
 
-  // focus() scrolled the article to a highlight (content.js scrolls the page to
-  // the mark, and that scroll lands after the click returns); the tally lives in
-  // the bar at the top of the page, and a screenshot is this file's only
-  // instrument — so the last thing this run does is go back up.
+    // …the same for an EDIT that calls a bot
+    const bb = RECORD.threads.find(t => t.id === 't-1754500400-bb02');
+    bb.msgs[0].text += ' @codex can you check the original interview?';
+    RECORD.updated_at = new Date().toISOString();
+    toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+    const m2 = await until(() => S.querySelector('.card[data-thread="t-1754500400-bb02"] .moved'), 4000);
+    check('a note edited to call @codex is held the same way', !!m2 && /With bots/.test(m2.textContent));
+
+    // ---- a highlight click wins over the pill ----
+    d.focus('t-1754500100-c3d4');
+    await sleep(150);
+    check('clicking a bot thread’s highlight while on Notes stands the pill aside',
+      d.commentPillNow() === 'all' && cards().includes('t-1754500100-c3d4'));
+
+    // ---- an empty pill ----
+    d.setPage({ ...JSON.parse(JSON.stringify(RECORD)), url: PAGE_URL + '#other',
+                threads: RECORD.threads.filter(t => t.id === 't-1754500100-c3d4') });
+    await sleep(80);
+    await press('notes');
+    const empty = pane().querySelector('.pillempty');
+    check('an empty pill says so in one plain line', !!empty && empty.textContent === 'No notes on this page yet.');
+    check('…not "No comments yet"', !/No comments yet/.test(pane().textContent));
+  } catch (e) {
+    check('(pose) threw: ' + (e && e.message), false);
+  }
+
   await sleep(200);
   window.scrollTo(0, 0);
   document.documentElement.scrollTop = 0;
   progress(out, 'done');
   window.__selftest = out;
-
-  // …and the tally, in the one place every other pose writes it. This pose
-  // used to publish its result ONLY as `window.__selftest` — invisible to
-  // --dump-dom and to any runner that greps #h-log for "SELFTEST", which made
-  // a clean pass indistinguishable from a run that never started. It is the
-  // same six lines as everywhere else, and now every pose can be read the
-  // same way.
   const bad = out.filter(l => l[0] === '✗');
   logQuiet = true;
   const el = document.getElementById('h-log');
   el.style.color = bad.length ? '#b3403a' : '#2ea043';
-  el.textContent = 'SELFTEST (commenters) ' + (out.length - bad.length) + '/' + out.length +
+  el.textContent = 'SELFTEST (pills) ' + (out.length - bad.length) + '/' + out.length +
     (bad.length ? '  —  ' + bad.join('  ') : '  all passed');
   el.dataset.detail = out.join(' | ') +
     (window.__bfpErrors.length ? '  ||  ERRORS: ' + window.__bfpErrors.join(' ;; ') : '');
@@ -14820,7 +14871,7 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         // page on for itself, so it must be tried before the blog pose
         : SUGGEST ? selftestSuggest
         : BLOG ? selftestBlog
-        : COMMENTERS ? selftestCommenters
+        : PILLS === '1' ? selftestPills
         : PDFANNOT ? selftestPdfAnnot
         : HYDRATE ? selftestHydration
         // ?tasks=1 / ?checklist=1 seed a list into the record, which is a
@@ -15255,8 +15306,17 @@ whenBfp(() => window.__bfp.activate(false).then(() => {
         }, 350);
       }, 300);
     }
-    // ?commenters=1&by=<handle> — the pose with that pill already pressed
-    if (BOOT_COMMENTER) setTimeout(() => d.pickCommenter(BOOT_COMMENTER), 250);
+    // ?pills=…&pill=notes|bots — the pose with that pill already pressed;
+    // &moved=1 then has claude answer a note while Notes is showing
+    if (BOOT_PILL) setTimeout(() => d.pickCommentPill(BOOT_PILL), 250);
+    if (Q.get('moved') === '1') setTimeout(() => {
+      const t = RECORD.threads.find(x => x.id === 't-1754500400-bb02');
+      if (!t) return;
+      t.msgs.push({ author: 'claude', ts: new Date().toISOString(),
+        text: 'Nobody the reporter asked, as far as the piece shows: no one at the club is quoted on it.' });
+      RECORD.updated_at = new Date().toISOString();
+      toContent({ t: 'ws', ev: { type: 'page', url: PAGE_URL } });
+    }, 700);
     if (demo === 'select') setTimeout(() => demoSelect(true), 250);
     else if (demo === 'compose') setTimeout(() => demoSelect(false, '@claude what would you cut from this section?'), 250);
     // on the chat tab, freeze the page-chat turn instead — that pane's chip is

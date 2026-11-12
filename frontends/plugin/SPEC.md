@@ -4306,6 +4306,10 @@ unbothered: `/review-comments` is a route nobody calls.
 
 #### Half two: commenter filter pills
 
+*(Removed 2026-11-12 from the drawer — replaced by the Notes / With bots pill
+row; see the amendment "the Comments tab separates notes from bot
+discussions". The reading room's `?by=` links in views.mjs are untouched.)*
+
 Once a margin holds the owner, several guests, the bots AND the visitors
 projected in from the review page, "what did mira say" is a question the drawer
 made you answer by scrolling. So the Comments pane grows **one pill per
@@ -5328,7 +5332,7 @@ drives a selftest, and every one of them is expected green:
 ?question=fail&selftest=1
 ?question=memorize&selftest=1
 ?question=revise&selftest=1
-?commenters=1&selftest=1
+?pills=1&selftest=1
 ?tasks=1&selftest=1
 ?checklist=1&selftest=1
 ?filein=new&selftest=1
@@ -12541,3 +12545,46 @@ where noted.
   holds a source check that only the conversion path reads `.resolved` /
   `.addressed` (and server.mjs's mirrored review comment, which is not a
   thread).
+
+## Amendment (2026-11-12): the Comments tab separates notes from bot discussions
+
+A sticky row of three pills sits right under the Comments / Page chat /
+Memorize tabs, and only in the Comments list: **All** (the default) ·
+**Notes** · **With bots**, each with its count of UNRESOLVED threads. The
+Comments tab's own count is unchanged (every unresolved thread). It replaces
+the drawer's who-commented pills (`D.commenter`, `commenters()`,
+`pickCommenter`, `?commenters=1`), which are gone.
+
+- **Which pill a thread is under is derived, never stored.** `threadKind(t)`
+  (drawer.js, pure, exported) answers `'bots'` if any message in the thread is
+  a bot's (`isBot`: claude / codex / gemini; or `kind: 'tools'` narration; or a
+  summoned agent's card, `isAgentCard`), or any person's message summons one —
+  an `@claude` / `@codex` / `@all` in its words (`routeWordOf`, the pill row's
+  own rule) or a bot `route` stamped on it. Otherwise `'note'`. Nothing is
+  filed by hand: a note edited to call a bot, or answered by one, is a bot
+  discussion on the next render.
+- **The chosen pill is one value.** `COMMENT_PILLS = ['all','notes','bots']`,
+  held in `D.commentPill`, changed only by `setCommentPill(pill, how)`, which
+  refuses anything else. `how` is `'choose'` (the reader pressed it:
+  remembered) or `'restore'` (read back, or reset by a change of page). It is
+  remembered **per page** in extension storage, one key `bfp:commentPill` =
+  `{pageUrl: pill}`, only for choices other than All, newest 400 pages.
+- **Refiling while the reader is looking.** A thread that stops fitting the
+  pill on screen (a bot answers a note while Notes is showing; a bot message
+  is deleted while With bots is showing) is HELD in place with one line,
+  "Moved to With bots" / "Moved to Notes", until the reader changes pill,
+  changes page or reloads. The hold is per thread, `HOLD_STATES =
+  ['free','held']` (free stored as absence), in `D.pillHolds`, changed only by
+  `moveHold`, whose rule `holdMove` refuses a hold under All and a hold on a
+  thread that fits the pill anyway. A render notices a thread leaving by
+  comparing with `D.pillShown`, the ids it drew under this pill last time (a
+  record of the screen, not a mode). A new comment written under a pill it
+  does not fit is held the same way, so it never silently goes missing.
+- Resolved threads keep their place, folded at the bottom, under whichever pill
+  is chosen; Ready for review likewise. A pill with nothing under it says one
+  plain line ("No notes on this page yet." / "No bot discussions on this page
+  yet."). A highlight clicked on the page whose thread the pill hides puts the
+  pill back to All (not remembered).
+- Tests: `test/commentpills.test.mjs`; harness `?pills=1&selftest=1`
+  (screenshot poses `?pills=1&pill=notes|bots`, `&moved=1`,
+  `?pills=nobots&pill=bots`).

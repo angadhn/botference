@@ -452,6 +452,51 @@
     return a.startsWith('claude') ? 'claude' : a.startsWith('codex') ? 'codex'
       : a.startsWith('gemini') ? 'gemini' : '';
   }
+
+  // ---- notes and bot discussions: the Comments tab's pill row --------------
+  // A comment thread is one of two things: a NOTE the reader left for
+  // themselves, or a DISCUSSION WITH THE BOTS. Which one is never stored — it
+  // is read off the thread every time, by threadKind and nothing else, so a
+  // note that is edited to call a bot, or that a bot answers, is a bot
+  // discussion the moment the record says so, and nobody files anything.
+  //
+  // 'bots' when any message in the thread is a bot's (its words, its tool
+  // narration, or a summoned agent's card), or any of the people's messages
+  // summons one — an @claude / @codex / @all in its words (routeWordOf, the
+  // same rule the pill row reads) or a bot `route` the companion stamped on it
+  // when a pill addressed it instead. 'note' otherwise.
+  const THREAD_KINDS = Object.freeze(['note', 'bots']);
+  const BOT_ROUTE = /^@?(claude|codex|gemini|all)$/i;
+  function threadKind(t) {
+    for (const m of (t && Array.isArray(t.msgs) ? t.msgs : [])) {
+      if (!m) continue;
+      if (m.kind === 'tools' || isBot(m.author) || isAgentCard(m)) return 'bots';
+      if (routeWordOf(m.text) || BOT_ROUTE.test(String(m.route || '').trim())) return 'bots';
+    }
+    return 'note';
+  }
+  // WHICH SLICE the Comments list is showing: ONE value, D.commentPill, one of
+  // COMMENT_PILLS, changed only by setCommentPill (which refuses anything
+  // else). 'all' is the default and the state a page opens in until the
+  // reader's own choice for that page is read back.
+  const COMMENT_PILLS = Object.freeze(['all', 'notes', 'bots']);
+  const PILL_LABEL = Object.freeze({ all: 'All', notes: 'Notes', bots: 'With bots' });
+  const PILL_OF_KIND = Object.freeze({ note: 'notes', bots: 'bots' });
+  const pillOk = p => COMMENT_PILLS.indexOf(p) >= 0;
+  // does this thread belong under this pill, by its own content alone
+  const pillFits = (pill, t) => pill === 'all' || PILL_OF_KIND[threadKind(t)] === pill;
+  // A thread that changes kind WHILE THE READER IS LOOKING at the pill it no
+  // longer fits is not whisked away: it is HELD where it is, with a line
+  // saying where it now lives, until the reader changes pill, changes page or
+  // reloads. Per thread, one of HOLD_STATES ('free' is stored as absence),
+  // changed only by moveHold, which refuses a hold under All (nothing can
+  // leave All) and a hold on a thread that fits the pill anyway.
+  const HOLD_STATES = Object.freeze(['free', 'held']);
+  function holdMove(pill, t, to) {
+    if (HOLD_STATES.indexOf(to) < 0) return false;
+    if (to === 'free') return true;
+    return !!t && pillOk(pill) && pill !== 'all' && !pillFits(pill, t);
+  }
   // per-author identity, same rule as the review UI: bots get theme colors,
   // humans a deterministic muted hue from their handle
   function authorColor(name) {
@@ -567,6 +612,10 @@
   // mode. A reader who filters to their PDFs is usually still after their PDFs
   // the next time they open the list.
   const FILTER_KEY = 'bfp:pageFilter';
+  // which Comments pill (COMMENT_PILLS) each page was last left on — one key,
+  // {pageUrl: pill}, only choices other than All, the newest PILL_PAGES_MAX
+  const PILL_KEY = 'bfp:commentPill';
+  const PILL_PAGES_MAX = 400;
   // The kinds of document a record can be, in the order the chips are drawn.
   // The companion decides a page's kind (its adapter declares it); the drawer
   // only names them.
@@ -2492,8 +2541,7 @@
       // picker lists. `filed` is the authority (it comes back from every
       // POST); `list` is fetched once per open and kept. `declined` holds the
       // ts of any bot suggestion the reader said no to — per tab, never
-      // persisted, exactly like the commenter filter: saying no to a
-      // suggestion is not a fact about the page.
+      // persisted: saying no to a suggestion is not a fact about the page.
       projects: { list: null, filed: [], load: 'idle', err: '', busy: '',
                   declined: [], roots: [], newOpen: false, started: [] },
       // ---- lasso (SPEC "lasso — bringing what you have read and said…") ---
@@ -2576,13 +2624,19 @@
       // archive, whose whole point is to be out of the way, this section is
       // the thing the reader came back to the page to look at
       readyOpen: true,
-      // WHICH COMMENTER the Comments pane is showing — '' is everyone, which
-      // is the default and the state a page opens in. Session-only and per
-      // tab, deliberately: this is a reading position, not a decision, and a
-      // filter that silently survived a navigation would show an empty pane on
-      // a page that person has never been near. setPage clears it for exactly
-      // that reason.
-      commenter: '',
+      // WHICH SLICE the Comments pane is showing (COMMENT_PILLS): 'all',
+      // 'notes' or 'bots'. Nothing but setCommentPill writes it. Remembered
+      // per page (PILL_KEY) and read back by setPage on a change of page.
+      commentPill: 'all',
+      // threadId -> 'held' (HOLD_STATES; absent = 'free'): a thread kept on
+      // screen under a pill it no longer fits, because it changed kind while
+      // the reader was looking. Nothing but moveHold writes it.
+      pillHolds: {},
+      // the ids the last Comments render drew under the current pill — a
+      // record of what was on screen, not a mode: it is how a render notices
+      // a thread LEAVING the pill, which is the one moment a hold is made.
+      // Emptied with the holds whenever the pill or the page changes.
+      pillShown: {},
       resolvedCards: {},     // threadId -> the full thread under its digest is open
       // threadId -> the ONE request out on it (THREAD_REQS: resolving /
       // addressing / marking), changed only by setThreadReq; absent = none
@@ -4839,6 +4893,7 @@ ${bubbleShellHtml()}`;
             + ' replied here since you last wrote — resolving is still your click')}">ready for review</span>`
         : '';
       return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
+        ${heldHtml(t)}
         <div class="chead">
           ${quoteHtml(t, orph, badge)}
           ${head}
@@ -4877,6 +4932,7 @@ ${bubbleShellHtml()}`;
       const by = t.resolved_by ? ` by ${esc(t.resolved_by)}` : '';
       const pending = !t.summary_by;   // still the companion's placeholder
       return `<div class="${cls}" data-thread="${esc(t.id)}" style="--author:${speakerColor(author)}">
+        ${heldHtml(t)}
         <div class="chead">
           ${quoteHtml(t, orph)}
           ${reopenBtn(t)}
@@ -5338,70 +5394,123 @@ ${bubbleShellHtml()}`;
       return true;
     }
 
-    // ---- who is in this margin ------------------------------------------
-    // A shared page collects comments from several people at once: the owner,
-    // the guests who came in through the reading room, the visitors whose
-    // review-page comments were projected in (store.mjs `origin`), and the
-    // bots. Reading down a long list looking for "what did mira say" is the
-    // one thing the drawer made you do by hand.
+    // ---- notes and bot discussions: the pill row ------------------------
+    // All · Notes · With bots, sticky at the top of the Comments list. Which
+    // pill a thread is under is threadKind's answer and nobody else's; the
+    // counts are UNRESOLVED threads, what pressing the pill leaves to do.
     //
-    // So: one pill per commenter present, All first, and clicking one shows
-    // that person's threads. It is a VIEW and nothing else — nothing is
-    // written, nothing is sent, and the answer lives on D for this tab only
-    // (the same rule the fold states follow: reading positions, not
-    // decisions). The roster is DERIVED from the page every render, so a
-    // person who has not spoken here has no pill and a person who just did
-    // gets one without anybody maintaining a list.
-    //
-    // A pill's colour is `speakerColor` — the same hash that colours that
-    // person's messages and that card's rail, so the pill and the comments it
-    // finds are visibly the same person. (Not `tagHue`: that is the TAG hash,
-    // and painting one handle two colours on one screen is exactly the bug
-    // this is meant to prevent.)
-    function commenters(threads) {
-      const seen = new Map();
-      for (const t of threads || []) {
-        for (const m of (t.msgs || [])) {
-          // a bot narrating what it ran is not a commenter, and neither is a
-          // message with no author to speak of
-          if (!m || m.kind === 'tools' || !m.author) continue;
-          const key = String(m.author).toLowerCase();
-          if (!seen.has(key)) seen.set(key, { key, name: String(m.author), threads: new Set() });
-          seen.get(key).threads.add(t.id);
-        }
+    // THE one function that changes D.commentPill. Refuses anything outside
+    // COMMENT_PILLS. `how` is 'choose' (the reader pressed it: remembered for
+    // this page) or 'restore' (read back from storage, or put back to the
+    // default by a change of page: nothing written). A real change lets go of
+    // every hold — "until the reader changes pill" — and of the record of what
+    // was on screen, which described the pill being left.
+    function setCommentPill(pill, how) {
+      if (!pillOk(pill)) return false;
+      if (pill !== D.commentPill) {
+        D.commentPill = pill;
+        releaseHolds();
       }
-      return [...seen.values()].map(c => ({ ...c, count: c.threads.size }));
+      if (how === 'choose') rememberPill();
+      return true;
     }
-    // a thread is this person's if they said anything in it — the filter hides
-    // whole cards and never slices inside one, because half a conversation is
-    // not a conversation
-    const inThread = (t, key) => (t.msgs || [])
-      .some(m => m && m.kind !== 'tools' && String(m.author || '').toLowerCase() === key);
-    function commenterRail(threads) {
-      const list = commenters(threads);
-      // one voice is not a choice — the same rule the archive's kind chips use
-      if (list.length < 2 && !D.commenter) return '';
-      const pill = (key, name, n, color) =>
-        `<button class="cpill${D.commenter === key ? ' on' : ''}" type="button"
-           data-act="filter-by" data-by="${esc(key)}" aria-pressed="${D.commenter === key}"
-           ${color ? `style="--author:${color}"` : ''}
-           title="${key ? `Only threads ${esc(name)} is in` : 'Every thread on this page'}"
-           >${esc(name)}<span class="cn">${n}</span></button>`;
-      return `<div class="cfilter" role="group" aria-label="Filter by commenter">`
-        + pill('', 'All', threads.length, '')
-        + list.map(c => pill(c.key, c.name, c.count, speakerColor(c.name))).join('')
+    // THE one function that changes D.pillHolds (holdMove refuses the illegal
+    // moves): 'held' keeps a thread on screen under a pill it no longer fits,
+    // 'free' lets it go
+    function moveHold(id, to) {
+      if (!holdMove(D.commentPill, threadById(id), to)) return false;
+      if (to === 'held') D.pillHolds[id] = 'held';
+      else delete D.pillHolds[id];
+      return true;
+    }
+    function releaseHolds() {
+      for (const id of Object.keys(D.pillHolds)) moveHold(id, 'free');
+      D.pillShown = {};
+    }
+    const isHeld = t => !!t && D.pillHolds[t.id] === 'held';
+    const inPill = t => pillFits(D.commentPill, t) || isHeld(t);
+    // Run by every Comments render, before the list is cut. A thread that was
+    // on screen under this pill last time and no longer fits it is held; a
+    // held one that fits again (a bot message deleted, an edit undone) is
+    // simply back where it belongs and the hold goes; a hold on a thread that
+    // is no longer on the page goes with it.
+    function syncHolds(all) {
+      const here = {};
+      for (const t of all) {
+        here[t.id] = true;
+        const fits = pillFits(D.commentPill, t);
+        if (fits && isHeld(t)) moveHold(t.id, 'free');
+        else if (!fits && !isHeld(t) && D.pillShown[t.id]) moveHold(t.id, 'held');
+      }
+      for (const id of Object.keys(D.pillHolds)) if (!here[id]) moveHold(id, 'free');
+    }
+    // unresolved threads per pill — the numbers on the pills
+    function pillCounts(all) {
+      const n = { all: 0, notes: 0, bots: 0 };
+      for (const t of all || []) {
+        if (isResolved(t)) continue;
+        n.all++;
+        n[PILL_OF_KIND[threadKind(t)]]++;
+      }
+      return n;
+    }
+    function pillBarHtml(all) {
+      const n = pillCounts(all);
+      return `<div class="kindbar" role="group" aria-label="Show notes or discussions with the bots">`
+        + COMMENT_PILLS.map(p => `<button class="kpill${D.commentPill === p ? ' on' : ''}" type="button"
+            data-act="comment-pill" data-pill="${p}" aria-pressed="${D.commentPill === p}"
+            >${PILL_LABEL[p]}<span class="cn">${n[p]}</span></button>`).join('')
         + `</div>`;
+    }
+    // the one line a held card carries: where the thread lives now
+    function heldHtml(t) {
+      if (!isHeld(t)) return '';
+      return `<div class="moved" role="note">Moved to ${PILL_LABEL[PILL_OF_KIND[threadKind(t)]]}</div>`;
+    }
+    // ---- the chosen pill, per page --------------------------------------
+    // One key holds every page's choice ({url: pill}), read-modify-write like
+    // the tab memory. Only a choice other than All is kept — All is what a page
+    // opens in anyway — and the oldest pages fall off past PILL_PAGES_MAX, so
+    // the key cannot grow without bound.
+    const pillPage = () => (D.page && D.page.url ? String(D.page.url) : '');
+    function rememberPill() {
+      const url = pillPage();
+      if (!url) return;
+      const pill = D.commentPill;
+      readKey(PILL_KEY, m => {
+        const next = { ...((m && typeof m === 'object') ? m : {}) };
+        delete next[url];
+        if (pill !== 'all') next[url] = pill;
+        const keys = Object.keys(next);
+        for (let i = 0; i < keys.length - PILL_PAGES_MAX; i++) delete next[keys[i]];
+        writeKey(PILL_KEY, next);
+      });
+    }
+    function restorePill() {
+      const url = pillPage();
+      if (!url) return;
+      readKey(PILL_KEY, m => {
+        const want = m && typeof m === 'object' ? m[url] : '';
+        // the reader may have moved on (or pressed a pill) in the meantime
+        if (pillPage() !== url || !pillOk(want) || D.commentPill === want) return;
+        setCommentPill(want, 'restore');
+        render();
+      });
     }
 
     function renderComments() {
       const all = (D.page && D.page.threads) || [];
-      const rail = commenterRail(all);
-      // The filter is applied ONCE, here, before the buckets are cut — so the
+      syncHolds(all);
+      // The pill is applied ONCE, here, before the buckets are cut — so the
       // open list, Ready for review and the Resolved archive are all the same
-      // person's, their counts are counts under this filter, and every fold
-      // state carries on untouched. Filtering inside the buckets instead would
-      // have meant three places to keep in step and a section header that lied.
-      const threads = D.commenter ? all.filter(t => inThread(t, D.commenter)) : all;
+      // slice, their counts are counts under this pill, and every fold state
+      // carries on untouched.
+      const threads = all.filter(inPill);
+      D.pillShown = {};
+      for (const t of threads) D.pillShown[t.id] = true;
+      // nothing to separate on a page with no comments at all — unless a pill
+      // is chosen, which must stay visible so it can be un-chosen
+      const bar = all.length || D.commentPill !== 'all' ? pillBarHtml(all) : '';
       // three buckets, in the order a thread travels through them: still
       // waiting on somebody → answered and waiting on the reader → filed
       const live = threads.filter(t => !isResolved(t));
@@ -5412,14 +5521,14 @@ ${bubbleShellHtml()}`;
       // answers the empty state below: "No comments yet" directly under "this
       // PDF carries 7 comments" is two sentences contradicting each other.
       const pdfOffer = pdfImportHtml();
-      let html = offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + qnoteHtml()
-        + pdfOffer + pdfSavedHtml() + projectTaskCardHtml() + taskCardHtml() + rail;
+      let html = bar + offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + qnoteHtml()
+        + pdfOffer + pdfSavedHtml() + projectTaskCardHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
-      // a filter that matches nothing must say so and offer the way back —
-      // "No comments yet" under a rail full of names would be a plain lie
-      if (D.commenter && !threads.length) {
-        html += `<div class="empty"><b>Nothing from ${esc(D.commenter)} here</b>`
-          + `<button class="fclear" type="button" data-act="filter-by" data-by="">show everyone</button></div>`;
+      // a pill with nothing under it says so in one plain line — "No comments
+      // yet" under a pill row with numbers on it would be a plain lie
+      if (D.commentPill !== 'all' && !threads.length && !D.pending) {
+        html += `<div class="empty pillempty">${D.commentPill === 'notes'
+          ? 'No notes on this page yet.' : 'No bot discussions on this page yet.'}</div>`;
       } else if (!threads.length && !D.pending && !pdfOffer && CAPS.highlights && !standDown()) {
         html += `<div class="empty"><b>No comments yet</b>Select any text on the page and hit 💬.</div>`;
       } else if (!live.length && !D.pending && CAPS.highlights && !standDown()) {
@@ -5427,7 +5536,8 @@ ${bubbleShellHtml()}`;
         // "no comments yet" line above a section full of them. (A thread that
         // is merely READY is not filed: it is exactly what the reader still
         // has to do, so "all clear" would be a lie while one is sitting there.)
-        html += `<div class="empty allclear"><b>All clear</b>Every comment on this page is resolved.</div>`;
+        const what = D.commentPill === 'notes' ? 'note' : D.commentPill === 'bots' ? 'bot discussion' : 'comment';
+        html += `<div class="empty allclear"><b>All clear</b>Every ${what} on this page is resolved.</div>`;
       }
       html += open.map(cardHtml).join('');
       // BETWEEN the open list and the archive, because that is where these
@@ -5465,8 +5575,8 @@ ${bubbleShellHtml()}`;
       // thread still wants them (that is what ready means), so it counts:
       // the number is every unresolved thread, exactly as it always was.
       // the tab badge is a WORKLOAD number, not a view number: it counts every
-      // unresolved thread on the page, filter or no filter. A reader narrowing
-      // the list to one person has not finished the others.
+      // unresolved thread on the page, whichever pill is chosen. A reader
+      // looking at their notes has not finished the bot discussions.
       D.el.cCount.textContent = String(((D.page && D.page.threads) || []).filter(t => !isResolved(t)).length);
     }
 
@@ -7858,7 +7968,7 @@ ${bubbleShellHtml()}`;
       'lib-clear-yes': () => doLibraryClear(),
       'page-open': (btn) => openPageRow(btn.dataset.url),
       'page-export': (btn) => doExportPage(btn.dataset.url),
-      'filter-by': (btn) => pickCommenter(btn.dataset.by || ''),
+      'comment-pill': (btn) => { if (setCommentPill(btn.dataset.pill || '', 'choose')) render(); },
       'filter-kind': (btn) => setKindFilter(btn.dataset.kind || ''),
       'filter-tag': (btn) => toggleTagFilter(btn.dataset.tag || ''),
       'filter-clear': () => setFilter('', ''),
@@ -8629,11 +8739,12 @@ ${bubbleShellHtml()}`;
       const t = id ? threadById(id) : null;
       if (!t) return false;
       let changed = false;
-      // "whatever it takes to make this thread visible" — and a commenter
-      // filter hiding it is one of the things in the way. A highlight clicked
-      // on the page must always open its card, so the filter stands aside
-      // rather than swallowing the click.
-      if (D.commenter && !inThread(t, D.commenter)) { D.commenter = ''; changed = true; }
+      // "whatever it takes to make this thread visible" — and a pill hiding
+      // it is one of the things in the way. A highlight clicked on the page
+      // must always open its card, so the pill stands aside (back to All, not
+      // remembered: the reader did not choose it) rather than swallowing the
+      // click.
+      if (!inPill(t)) { setCommentPill('all', 'restore'); changed = true; }
       if (!isResolved(t)) return changed;
       if (!D.resolvedOpen) { D.resolvedOpen = true; changed = true; }
       if (!D.resolvedCards[id]) { D.resolvedCards[id] = true; changed = true; }
@@ -9041,6 +9152,10 @@ ${bubbleShellHtml()}`;
         if (newId) rekeyBubble(NEW_ID, newId);
         // the spotlight follows the thread the composer just became
         if (D.focused === '__new__') D.focused = newId;
+        // …and the pill row counts it as on screen: the reader was looking at
+        // it as a composer, so a new comment that does not fit the pill it was
+        // written under is HELD there ("Moved to …"), never silently missing
+        if (newId) D.pillShown[newId] = true;
         // …and the Send's hold with it: the card the reader is watching is
         // about to be re-rendered under a real id, in page order
         if (D.hold === '__new__') D.hold = newId;
@@ -11289,18 +11404,6 @@ ${bubbleShellHtml()}`;
       rememberFilter();
       renderPages();
     }
-    // clicking the pill you are already on clears the filter, the same toggle
-    // the archive's chips have always had. Through render(), like pickRoute:
-    // it reads back every open draft first and puts the scroll, the drafts and
-    // the @-menu back afterwards, which is what keeps a filter click from
-    // costing somebody the sentence they were half way through.
-    function pickCommenter(by) {
-      const want = String(by || '').toLowerCase();
-      const next = want === D.commenter ? '' : want;
-      if (next === D.commenter) return;
-      D.commenter = next;
-      render();
-    }
     const setKindFilter = kind => setFilter(kind === D.pages.kind ? '' : kind, D.pages.tag);
     // clicking the tag you are already filtered to is how you stop filtering by
     // it — the chip is a toggle, in the rail and in a row alike
@@ -11600,13 +11703,17 @@ ${bubbleShellHtml()}`;
       const was = (D.page && D.page.url) ? String(D.page.url) : '';
       const wasSid = (D.page && D.page.session_id) || '';
       D.page = page || null;
-      // a handle that was in this page's margin is usually nowhere near the
-      // next one: the filter belongs to the page it was chosen on
-      D.commenter = '';
+      // the Comments pill belongs to the page it was chosen on: a new page opens
+      // on All, then on whatever the reader last chose for THAT page
+      if (was !== (page && page.url ? String(page.url) : '')) {
+        setCommentPill('all', 'restore');
+        releaseHolds();
+        restorePill();
+      }
       // The page record is the authority on where this page is filed, and it
       // arrives on every refresh — so the ticks in the picker and the "filed
       // in X" on a bot's chip stay right without a second request. `declined`
-      // is a view state and goes with the page, like the commenter filter.
+      // is a view state and goes with the page.
       D.projects.filed = (page && Array.isArray(page.projects)) ? page.projects : [];
       D.projects.declined = [];
       // What a search on the LAST page found is nothing to do with this one,
@@ -13207,12 +13314,12 @@ ${bubbleShellHtml()}`;
                           out: PDF.out ? { ...PDF.out } : null }),
       // observable for the harness: is Discuss's margin off on this page?
       standingDown: () => standDown(),
-      // …and the commenter filter: who has a pill on this page, and which of
-      // them (if any) the pane is narrowed to. View state, never persisted.
-      commenters: () => commenters((D.page && D.page.threads) || [])
-        .map(c => ({ key: c.key, name: c.name, count: c.count })),
-      commenterFilter: () => D.commenter,
-      pickCommenter,
+      // …and the Comments pill row: which pill is on, the counts on the pills,
+      // and which threads are held under a pill they no longer fit
+      commentPillNow: () => D.commentPill,
+      pickCommentPill: p => { const ok = setCommentPill(p, 'choose'); render(); return ok; },
+      commentPillCounts: () => pillCounts((D.page && D.page.threads) || []),
+      heldThreads: () => Object.keys(D.pillHolds).filter(id => D.pillHolds[id] === 'held'),
       // …and how a live answer lands: the reader's setting, and how much of
       // each live stream is actually on screen right now (the drain's own
       // state, which is the only way to see the effect from outside).
@@ -13436,6 +13543,7 @@ ${bubbleShellHtml()}`;
     LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
     OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
     THREAD_REQS, threadReqMove,
+    THREAD_KINDS, threadKind, COMMENT_PILLS, PILL_LABEL, pillFits, HOLD_STATES, holdMove, // test/drawermodes.test.mjs
     LINE_TONES, setLine,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
