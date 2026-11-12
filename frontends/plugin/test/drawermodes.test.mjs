@@ -7,6 +7,9 @@
 //   5. a thread's request out (✓ / ↺, "not done", highlight ⇄ strike) — were
 //      three maps, D.resolving / D.addressing / D.marking, so two could be out
 //      on one thread; now D.threadReq[id] (THREAD_REQS) via setThreadReq.
+//   6. the message line under the library and under the model picker — was a
+//      `note` beside an `err` that was sometimes the colour and sometimes the
+//      text; now one { text, tone } (LINE_TONES) via setLine.
 //
 // Made-up data only.
 import { createRequire } from 'node:module';
@@ -271,6 +274,63 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
     eq('…resolving', d5.threadReq.r1, 'resolving');
     held.resolve({ ok: true }); await tick(10);
     ok('…answered: nothing out', !('r1' in d5.threadReq));
+  }
+}
+
+// ---- 6. a message line: text and a named tone --------------------------------
+{
+  const throws = fn => { try { fn(); return false; } catch { return true; } };
+  eq('the tones, named', D.LINE_TONES, ['plain', 'bad']);
+  const h = {};
+  eq('plain by default', D.setLine(h, 'made-up news'), { text: 'made-up news', tone: 'plain' });
+  eq('bad', D.setLine(h, 'made-up failure', 'bad'), { text: 'made-up failure', tone: 'bad' });
+  eq('an empty line is plain, whatever was asked', D.setLine(h, '', 'bad'), { text: '', tone: 'plain' });
+  ok('a tone that is not one throws', throws(() => D.setLine(h, 'x', 'good')) && throws(() => D.setLine(h, 'x', true)));
+
+  // the model picker: a failed read says so in red; the next good one clears it
+  let answer = { ok: false, error: 'made-up: no companion' };
+  const d6 = D.create({ cssText: '.panel{}', onModels: async () => answer });
+  d6.setConn(true); d6.setAuthor('reader'); d6.open('comments');
+  d6.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
+  await tick(20);
+  const S = d6.shadow;
+  const hint = () => S.querySelector('.pop-hint');
+  const mb = S.querySelector('[data-act="models"]');
+  mb.hidden = false; mb.click(); await tick(10);
+  eq('models: the failure, on its one line', d6.models.line, { text: 'made-up: no companion', tone: 'bad' });
+  ok('…drawn in the failure colour', !!hint() && hint().classList.contains('err') && /no companion/.test(hint().textContent));
+  ok('…and no `note` / `err` beside it', !('note' in d6.models) && !('err' in d6.models));
+  mb.click(); await tick(5);                       // close
+  answer = { ok: true, current: { claude: 'x' }, options: { claude: ['x'] } };
+  mb.click(); await tick(10);
+  eq('a good read: the line is clear and plain', d6.models.line, { text: '', tone: 'plain' });
+  ok('…not drawn in the failure colour', !!hint() && !hint().classList.contains('err'));
+
+  // the library: a failed read in red; an export that worked, plain
+  let lib = { ok: false, error: 'made-up: library unreadable' };
+  const d7 = D.create({
+    cssText: '.panel{}',
+    onPages: async () => ({ ok: true, pages: [] }),
+    onLibrary: async () => lib,
+    onExportPage: async () => ({ ok: true, path: 'Made/Up.md' }),
+  });
+  d7.setConn(true); d7.setAuthor('reader'); d7.open('comments');
+  d7.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
+  await tick(20);
+  d7.showPages(); await tick(20);
+  const ln = () => d7.shadow.querySelector('.libpane .lib-note');
+  eq('library: the failure, on its one line', d7.library.line, { text: 'made-up: library unreadable', tone: 'bad' });
+  ok('…drawn in the failure colour', !!ln() && ln().classList.contains('err'));
+  ok('…and no `note` / `err` beside it', !('note' in d7.library) && !('err' in d7.library));
+  lib = { ok: true, page: { url: 'bfp://library', page_chat: [{ author: 'reader', ts: '1', text: 'made up' }] } };
+  d7.refreshLibrary(); await tick(20);
+  eq('a good read: the stale failure is gone', d7.library.line, { text: '', tone: 'plain' });
+  const x = d7.shadow.querySelector('[data-act="lib-export"]');
+  ok('the library offers export', !!x);
+  if (x) {
+    x.click(); await tick(20);
+    eq('export: plain news', d7.library.line, { text: 'exported → Made/Up.md', tone: 'plain' });
+    ok('…not in the failure colour', !!ln() && !ln().classList.contains('err'));
   }
 }
 

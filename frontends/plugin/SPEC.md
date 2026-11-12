@@ -12503,3 +12503,13 @@ where noted.
   answer); anything else throws. A click on a thread whose request is out
   does nothing, whichever verb it is. The busy ◌ shows on the same button as
   before. Tests: `test/drawermodes.test.mjs`.
+- **The message line under the library and under the model picker** —
+  `D.library` had a `note` beside an `err` that was sometimes the failure
+  text (from its read) and sometimes a true/false colour switch;
+  `D.models.note` / `err` the same. Now each has ONE `line` =
+  `{ text, tone }`, `tone` one of `LINE_TONES` = plain / bad, written only by
+  `setLine(holder, text, tone)` (an unknown tone throws; an empty line is
+  plain). The library's read failure goes onto its line (the list words its
+  own failure: `loadMove(…, null)`). Seen differently: after a failed read, a
+  good one now clears the red line; before, the old failure text stayed up in
+  grey.

@@ -1924,6 +1924,23 @@
     e.error = next === 'failed' ? String(error || '') : '';
     return e;
   }
+  // A MESSAGE LINE — the one line of small print under a control that says
+  // how the last thing went: the library's (D.library.line) and the model
+  // picker's (D.models.line). ONE shape, { text, tone }, `tone` one of
+  // LINE_TONES, written only by setLine. (Each was a `note` text beside an
+  // `err` that was sometimes the colour switch and sometimes the text.)
+  //   'plain' — news, or work under way
+  //   'bad'   — something went wrong; drawn in the failure colour
+  // An empty line is always plain.
+  const LINE_TONES = Object.freeze(['plain', 'bad']);
+  const noLine = () => ({ text: '', tone: 'plain' });
+  function setLine(holder, text, tone) {
+    const t = tone == null ? 'plain' : tone;
+    if (LINE_TONES.indexOf(t) === -1) throw new Error('message line: no such tone ' + tone);
+    const words = String(text || '');
+    holder.line = { text: words, tone: words ? t : 'plain' };
+    return holder.line;
+  }
   const LOAD_MODES = Object.freeze(['idle', 'loading', 'loaded', 'failed']);
   const LOAD_MOVES = Object.freeze({ ask: ['idle', 'loaded', 'failed'], got: ['loading'], lost: ['loading'] });
   const LOAD_TO = { ask: 'loading', got: 'loaded', lost: 'failed' };
@@ -2691,8 +2708,9 @@
       owner: false,
       // the library conversation, which lives under the pages list: `page` is
       // the companion's record for the reserved url (null = nothing said in it
-      // yet, which is a state and not an error)
-      library: { page: null, load: 'idle', err: '', confirm: false, note: '' },
+      // yet, which is a state and not an error). `line` is the one line under
+      // it, { text, tone } (LINE_TONES), written only by setLine.
+      library: { page: null, load: 'idle', confirm: false, line: noLine() },
       // is this tab in touch with the companion: ONE mode (config.js
       // CONN_MODES — connecting / connected / offline / reload). 'connecting'
       // until the first answer either way; 'reload' once the extension was
@@ -2705,7 +2723,9 @@
       foot: '',
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
-      models: { current: {}, options: null, status: null, bridge: '', note: '', load: 'idle',
+      // `line`: the one line under the pickers, { text, tone } (LINE_TONES),
+      // written only by setLine
+      models: { current: {}, options: null, status: null, bridge: '', line: noLine(), load: 'idle',
                 effort: null, verbosity: '',
                 // {claude:'set'|'unset', codex:…, modes:{…}} — status, never keys
                 keys: null,
@@ -6530,8 +6550,9 @@ ${bubbleShellHtml()}`;
         const msgs = (D.library.page && D.library.page.page_chat) || [];
         const body = msgsHtml(T, msgs) + outboxHtml(T) + streamsHtml(T);
         const has = !!(D.library.page && (msgs.length || (D.outbox[T] || []).length));
-        const note = D.library.note
-          ? `<div class="lib-note${D.library.err ? ' err' : ''}">${esc(D.library.note)}</div>` : '';
+        const ln = D.library.line;
+        const note = ln.text
+          ? `<div class="lib-note${ln.tone === 'bad' ? ' err' : ''}">${esc(ln.text)}</div>` : '';
         const acts = has
           ? `<button class="libact" data-act="lib-export" type="button" title="Write this conversation to Obsidian">Export</button>`
             + (D.library.confirm
@@ -6878,7 +6899,7 @@ ${bubbleShellHtml()}`;
       if (m.bridge === 'disabled') return 'off';
       // a companion that never answered is not the same as a sleeping bridge:
       // say nothing about the agents, the error line already speaks
-      if (m.err && !m.options) return 'unknown';
+      if (m.line.tone === 'bad' && !m.options) return 'unknown';
       if (m.bridge === 'stopped' || !m.options) return 'asleep';
       return 'live';
     }
@@ -7348,11 +7369,11 @@ ${bubbleShellHtml()}`;
       const el = D.el.pop && D.el.pop.querySelector('.pop-hint');
       if (!el) return;
       const m = D.models;
-      el.classList.toggle('err', !!m.err);
+      el.classList.toggle('err', m.line.tone === 'bad');
       // when the agents are asleep the sleep line has already said so; a second
       // line of small print under it would only repeat itself
       const text = isLoading(m) ? 'loading…'
-        : m.note ? m.note
+        : m.line.text ? m.line.text
         : popMode() === 'live' ? 'takes effect on the next turn'
         : '';
       el.textContent = text;
@@ -7364,8 +7385,7 @@ ${bubbleShellHtml()}`;
       setPopover('models');
       D.el.pop.hidden = false;
       if (canLoadMove(D.models, 'ask')) loadMove(D.models, 'ask');
-      D.models.note = '';
-      D.models.err = false;
+      setLine(D.models, '');
       paintModels();
       if (typeof document !== 'undefined') document.addEventListener('mousedown', onDocDown, true);
       let r;
@@ -7376,13 +7396,13 @@ ${bubbleShellHtml()}`;
       if (canLoadMove(D.models, settled)) loadMove(D.models, settled, '', null);
       if (r && r.ok !== false) {
         ingestModels(r);
-        D.models.err = false;
+        // the companion answered: a failure the line still shows no longer stands
+        if (D.models.line.tone === 'bad') setLine(D.models, '');
       } else {
         D.models.options = null;
         D.models.status = null;
         D.models.effort = null;
-        D.models.note = (r && r.error) || 'could not reach the companion';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not reach the companion', 'bad');
       }
       if (popIs('models')) paintModels();
     }
@@ -7493,17 +7513,14 @@ ${bubbleShellHtml()}`;
     const onDocDown = e => { if (!D.host || !D.host.contains(e.target)) closeModels(); };
 
     async function pickModel(agent, model) {
-      D.models.note = 'switching ' + agent + '…';
-      D.models.err = false;
+      setLine(D.models, 'switching ' + agent + '…', 'plain');
       paintModelHint();
       const r = await cb('onSetModel')(agent, model);
       if (r && r.ok === false) {
-        D.models.note = r.error || 'could not switch model';
-        D.models.err = true;
+        setLine(D.models, r.error || 'could not switch model', 'bad');
       } else {
         D.models.current = Object.assign({}, D.models.current, { [agent]: model });
-        D.models.note = agent + ' → ' + model + whenApplied(r);
-        D.models.err = false;
+        setLine(D.models, agent + ' → ' + model + whenApplied(r), 'plain');
       }
       paintModelHint();
     }
@@ -7518,20 +7535,17 @@ ${bubbleShellHtml()}`;
     // agent that has no effort levels, a bridge that died between the GET and
     // the POST) is the message.
     async function pickEffort(agent, level) {
-      D.models.note = agent + ' effort → ' + level + '…';
-      D.models.err = false;
+      setLine(D.models, agent + ' effort → ' + level + '…', 'plain');
       paintModelHint();
       let r;
       try { r = await cb('onSetEffort')(agent, level); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
-        D.models.note = (r && r.error) || 'could not change effort';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change effort', 'bad');
       } else {
         const eff = D.models.effort || (D.models.effort = { current: {}, options: null });
         eff.current = Object.assign({}, eff.current, { [agent]: level });
-        D.models.note = agent + ' effort → ' + level + whenApplied(r);
-        D.models.err = false;
+        setLine(D.models, agent + ' effort → ' + level + whenApplied(r), 'plain');
       }
       syncModels();
     }
@@ -7548,8 +7562,7 @@ ${bubbleShellHtml()}`;
       if (!agent || BILL_POS.indexOf(pos) === -1) return;
       if (pos === 'key' && keyStatus(agent) !== 'set') {
         D.models.keyPending = agent;
-        D.models.note = 'no ' + agent + ' key saved — opening settings…';
-        D.models.err = false;
+        setLine(D.models, 'no ' + agent + ' key saved — opening settings…', 'plain');
         syncModels();
         cb('onOpenOptions')(agent);
         return;
@@ -7561,20 +7574,17 @@ ${bubbleShellHtml()}`;
       // optimistic, like every other switch in here: it has to move under the
       // finger, and it goes back if the companion says no
       k.modes = Object.assign({}, k.modes, { [agent]: pos });
-      D.models.note = agent + ' billing → ' + BILL_LABEL[pos] + '…';
-      D.models.err = false;
+      setLine(D.models, agent + ' billing → ' + BILL_LABEL[pos] + '…', 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetKeyMode')(agent, pos); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         k.modes = Object.assign({}, k.modes, { [agent]: prev });
-        D.models.note = (r && r.error) || 'could not change billing';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change billing', 'bad');
       } else {
-        D.models.note = agent + ' billing → ' + BILL_LABEL[pos]
-          + (r.applies === 'next-restart' ? ' (from the next turn)' : '');
-        D.models.err = false;
+        setLine(D.models, agent + ' billing → ' + BILL_LABEL[pos]
+          + (r.applies === 'next-restart' ? ' (from the next turn)' : ''), 'plain');
       }
       syncModels();
     }
@@ -7591,8 +7601,7 @@ ${bubbleShellHtml()}`;
       if (!pending) return;
       D.models.keyPending = null;
       if (!(k && k[pending] === 'set')) {
-        D.models.note = 'no ' + pending + ' key saved — ' + pending + ' stays on the subscription';
-        D.models.err = false;
+        setLine(D.models, 'no ' + pending + ' key saved — ' + pending + ' stays on the subscription', 'plain');
       }
     }
 
@@ -7637,16 +7646,14 @@ ${bubbleShellHtml()}`;
       if (!level || D.models.verbosity === level) return;
       const prev = D.models.verbosity;
       D.models.verbosity = level;
-      D.models.note = 'replies: ' + level;
-      D.models.err = false;
+      setLine(D.models, 'replies: ' + level, 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetVerbosity')(level); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         D.models.verbosity = prev;
-        D.models.note = (r && r.error) || 'could not change how the bots talk';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change how the bots talk', 'bad');
       }
       syncModels();
     }
@@ -7656,16 +7663,14 @@ ${bubbleShellHtml()}`;
       if (!first || D.models.first_reply === first) return;
       const prev = D.models.first_reply;
       D.models.first_reply = first;
-      D.models.note = first === 'alternate' ? 'first to reply: they take turns' : 'first to reply: ' + (first === 'claude' ? 'Claude' : 'Codex');
-      D.models.err = false;
+      setLine(D.models, first === 'alternate' ? 'first to reply: they take turns' : 'first to reply: ' + (first === 'claude' ? 'Claude' : 'Codex'), 'plain');
       syncModels();
       let r;
       try { r = await cb('onSetFirstReply')(first); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       if (!r || r.ok === false) {
         D.models.first_reply = prev;
-        D.models.note = (r && r.error) || 'could not change who answers first';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not change who answers first', 'bad');
       }
       syncModels();
     }
@@ -7678,19 +7683,16 @@ ${bubbleShellHtml()}`;
       if (D.relaying) return;
       D.relaying = true;
       const verb = kind === 'fresh' ? 'restarting' : 'relaying';
-      D.models.note = agent === 'both' ? verb + ' both…' : verb + ' ' + agent + '…';
-      D.models.err = false;
+      setLine(D.models, agent === 'both' ? verb + ' both…' : verb + ' ' + agent + '…', 'plain');
       syncModels();                       // disables every relay button first
       let r;
       try { r = await cb(kind === 'fresh' ? 'onFresh' : 'onRelay')(agent); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
       D.relaying = false;
       if (!r || r.ok === false) {
-        D.models.note = (r && r.error) || 'could not reach the companion';
-        D.models.err = true;
+        setLine(D.models, (r && r.error) || 'could not reach the companion', 'bad');
       } else {
-        D.models.note = agent === 'both' ? 'both agents relayed' : agent + ' relayed';
-        D.models.err = false;
+        setLine(D.models, agent === 'both' ? 'both agents relayed' : agent + ' relayed', 'plain');
       }
       syncModels();
     }
@@ -7850,7 +7852,7 @@ ${bubbleShellHtml()}`;
       'pages': () => { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); },
       'pages-back': () => showThreads(),
       'lib-export': () => doLibraryExport(),
-      'lib-clear': () => { D.library.confirm = true; D.library.note = ''; renderLibrary(); },
+      'lib-clear': () => { D.library.confirm = true; setLine(D.library, ''); renderLibrary(); },
       'lib-clear-no': () => { D.library.confirm = false; renderLibrary(); },
       'lib-clear-yes': () => doLibraryClear(),
       'page-open': (btn) => openPageRow(btn.dataset.url),
@@ -11433,25 +11435,24 @@ ${bubbleShellHtml()}`;
       const r = await cb('onLibrary')();
       if (r && r.ok !== false) {
         D.library.page = (r.page && r.page.url) ? r.page : null;
-        D.library.err = '';
         loadMove(D.library, 'got');
+        // the companion answered: a failure the line still shows no longer stands
+        if (D.library.line.tone === 'bad') setLine(D.library, '');
         setTurns(r.turns, asked, 'library');
       } else {
-        loadMove(D.library, 'lost', (r && r.error) || 'could not reach the companion');
-        D.library.note = D.library.err;
+        // the list words its own failure, on its one line
+        loadMove(D.library, 'lost', '', null);
+        setLine(D.library, (r && r.error) || 'could not reach the companion', 'bad');
       }
       if (D.view === 'pages') renderLibrary();
     }
 
     async function doLibraryExport() {
-      D.library.note = 'writing the note…';
-      D.library.err = false;
+      setLine(D.library, 'writing the note…');
       renderLibrary();
       const r = await cb('onExportPage')(LIBRARY_URL, 'all');
-      D.library.err = !(r && r.ok !== false);
-      D.library.note = D.library.err
-        ? ((r && r.error) || 'export failed')
-        : 'exported → ' + ((r && r.path) || 'your vault');
+      if (r && r.ok !== false) setLine(D.library, 'exported → ' + ((r && r.path) || 'your vault'));
+      else setLine(D.library, (r && r.error) || 'export failed', 'bad');
       renderLibrary();
     }
 
@@ -11460,19 +11461,16 @@ ${bubbleShellHtml()}`;
     // uses. What comes back is an empty library, not a missing one.
     async function doLibraryClear() {
       D.library.confirm = false;
-      D.library.note = 'clearing…';
-      D.library.err = false;
+      setLine(D.library, 'clearing…');
       renderLibrary();
       const r = await cb('onDeletePage')(LIBRARY_URL);
       if (!r || r.ok === false) {
-        D.library.err = true;
-        D.library.note = (r && r.error) || 'could not clear the library';
+        setLine(D.library, (r && r.error) || 'could not clear the library', 'bad');
         renderLibrary();
         return;
       }
       D.library.page = null;
-      D.library.note = '';
-      D.library.err = false;
+      setLine(D.library, '');
       delete D.outbox[LIBRARY_TARGET];
       delete D.notes[LIBRARY_TARGET];
       moveTurn(LIBRARY_TARGET, 'end');
@@ -13437,6 +13435,7 @@ ${bubbleShellHtml()}`;
     LOAD_MODES, LOAD_MOVES, loadMove, canLoadMove,
     OUTBOX_STATES, OUTBOX_MOVES, moveOutbox, canOutboxMove,
     THREAD_REQS, threadReqMove,
+    LINE_TONES, setLine,
     renderMarkdown, clampWidth, W_DEFAULT, W_MIN, W_MAX,
     cssPlan, makeStyleGate, CSS_WAIT_MS,                     // test/styles.test.mjs
     // pure, for the node tests — no DOM, no KaTeX
