@@ -65,6 +65,13 @@ import {
   type ProjectsPanelMode,
 } from "./projectsPanel.js";
 import {
+  NO_STREAMS,
+  dropsFinalEntry,
+  moveStreamStages,
+  type StreamStageEvent,
+  type StreamStages,
+} from "./streamStages.js";
+import {
   agentCardStreamId,
   agentToolsStreamId,
   buildToolStackText,
@@ -73,7 +80,6 @@ import {
   placeAgentEntry,
   type AgentMeta,
   createStreamSegmentState,
-  isFinalEntryForSegmentedStream,
   stripFooterFromStreamEntries,
   nextPacedChunkEnd,
   replaceOrInsertStreamEntryBefore,
@@ -710,8 +716,18 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const pacedTimersRef = useRef<Set<ReturnType<typeof setInterval>>>(new Set());
   const toolStacksRef = useRef<Map<string, Map<string, string>>>(new Map());
   const streamSegmentsRef = useRef<Map<string, StreamSegmentState>>(new Map());
-  const handledSegmentedStreamsRef = useRef<Set<string>>(new Set());
-  const completedSegmentedStreamsRef = useRef<Set<string>>(new Set());
+  // The one field for "how far along is each streamed reply?" (named stages
+  // in streamStages.ts); changed only through moveStream() below.
+  const streamStagesRef = useRef<StreamStages>(NO_STREAMS);
+  const moveStream = useCallback((event: StreamStageEvent): boolean => {
+    const move = moveStreamStages(streamStagesRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`stream_move_refused:${event.type}:${move.reason}`);
+      return false;
+    }
+    streamStagesRef.current = move.stages;
+    return move.changed;
+  }, []);
 
   const bridgeRef = useRef<ChildProcess | null>(null);
   const { stdout } = useStdout();
@@ -832,14 +848,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     }
 
     if (entry.streamId) {
-      for (const baseStreamId of completedSegmentedStreamsRef.current) {
-        if (
-          handledSegmentedStreamsRef.current.has(baseStreamId)
-          && isFinalEntryForSegmentedStream(entry.streamId, baseStreamId)
-        ) {
-          return;
-        }
-      }
+      if (dropsFinalEntry(streamStagesRef.current, entry.streamId)) return;
       setEntries((prev) => capDisplayEntries(replaceOrAppendStreamEntry(prev, entry)));
       setScroll((prev) => shouldAutoScroll(prev) ? 0 : prev);
       return;
@@ -1292,8 +1301,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
 
           if (msg.kind === "start") {
             streamSegmentsRef.current.set(streamId, createStreamSegmentState());
-            completedSegmentedStreamsRef.current.delete(streamId);
-            handledSegmentedStreamsRef.current.delete(streamId);
+            moveStream({ type: "start", streamId });
             break;
           }
 
@@ -1303,7 +1311,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             const segmentState = streamSegmentsRef.current.get(streamId) ?? createStreamSegmentState();
             streamSegmentsRef.current.set(streamId, segmentState);
             const textStreamId = textSegmentStreamId(streamId, segmentState);
-            handledSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "segment", streamId });
             updateStreamEntry(textStreamId, speaker, (entry) => ({
               speaker,
               text: `${entry?.text ?? ""}${delta}`,
@@ -1326,7 +1334,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
             const stack = toolStacksRef.current.get(toolStackStreamId) ?? new Map<string, string>();
             stack.set(toolId, toolPreviewLine(msg));
             toolStacksRef.current.set(toolStackStreamId, stack);
-            handledSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "segment", streamId });
             updateStreamEntry(toolStackStreamId, speaker, () => ({
               speaker,
               text: buildToolStackText(Array.from(stack.values())),
@@ -1337,7 +1345,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           }
 
           if (msg.kind === "done") {
-            completedSegmentedStreamsRef.current.add(streamId);
+            moveStream({ type: "done", streamId });
             // The streamed text stays in the pane (the controller's stripped
             // final entry is dropped for segmented streams), so remove any
             // trailing routing footer from the last text segment here.
@@ -1350,8 +1358,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           setRoomScroll(0);
           streamSegmentsRef.current.clear();
           toolStacksRef.current.clear();
-          handledSegmentedStreamsRef.current.clear();
-          completedSegmentedStreamsRef.current.clear();
+          moveStream({ type: "clear_all" });
           break;
         case "projects": {
           const projectsArr = Array.isArray(msg.projects)
