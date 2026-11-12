@@ -6976,6 +6976,30 @@ class TestProjectSuggestion:
         assert len(notes) == 1
         assert "/project open spaceship-engineering" in notes[0]
 
+    async def test_frontend_that_files_chats_itself_turns_the_question_off(
+        self, tmp_path, monkeypatch,
+    ):
+        # the web council sets this for every controller it starts: its left
+        # panel has "Move to project" on each row, so nobody is asked up front
+        monkeypatch.setenv("BOTFERENCE_FILING_PROMPT", "0")
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude let's plan the spaceship engine bay", ui)
+
+        assert ui.choice_requests == []
+        assert not any("This chat is in Inbox" in t for _, t in ui.room_entries)
+        assert c.session_project_id == ""
+
+    async def test_any_other_value_leaves_the_question_on(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setenv("BOTFERENCE_FILING_PROMPT", "1")
+        _add_project(tmp_path, "spaceship-engineering", "Spaceship Engineering")
+        c, _, _, ui = _make_botference(tmp_path=tmp_path)
+        await c.handle_input("@claude let's plan the spaceship engine bay", ui)
+
+        assert len(ui.choice_requests) == 1
+
 
 # ── chat lifecycle: /new, /file, /delete + lazy persist ───
 

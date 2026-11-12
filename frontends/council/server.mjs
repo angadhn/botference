@@ -51,6 +51,11 @@ fs.mkdirSync(STATE, { recursive: true });
 const UPLOADS = path.join(ROOT, '.botference', 'uploads');
 const UPLOAD_MAX = 10 * 1024 * 1024; // per image
 const UPLOAD_MAX_PER_MSG = 4;
+// The page files a chat from its left panel ("Move to project" on every
+// row), so the controller's own "where should this chat live?" question is
+// turned off for every controller this server starts. Set the variable to 1
+// before starting the server to have the question back.
+process.env.BOTFERENCE_FILING_PROMPT ??= '0';
 
 // --- billing: which auth each agent's CLI runs on ------------------------
 // The KEYS are shared with Discuss (~/.botference/discuss-keys.json, 0600,

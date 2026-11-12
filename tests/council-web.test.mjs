@@ -624,9 +624,9 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
   // empty state shows before any content
   assert.equal(doc.getElementById('empty').hasAttribute('hidden'), false);
 
-  // projects event renders the sidebar (project + chat + inbox count), plus a
-  // flat Recent shortlist with a project chip per row (Inbox chats included,
-  // ordered by updated_at desc — the loose thought is older, so it lists second)
+  // a list of chats and projects draws the left panel: it opens on the Chats
+  // pill (the open chat is filed nowhere), which lists the loose chats; the
+  // project and its chat are one tap away under Projects
   C.handle({
     type: 'projects', active_project_id: 'p1', inbox_session_count: 3,
     inbox_sessions: [{ session_id: 'inb00001', title: 'Loose thought', updated_at: '2026-01-01T00:00:00Z', active: false }],
@@ -635,19 +635,16 @@ test('UI smoke: transcript, sidebar, completions, slash input verbatim (happy-do
       sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: new Date().toISOString(), active: false }],
     }],
   });
-  assert.match(doc.getElementById('projects').textContent, /Demo project/);
-  assert.match(doc.getElementById('projects').textContent, /First chat/);
-  assert.match(doc.getElementById('projects').textContent, /Inbox/);
-  assert.match(doc.getElementById('projects').textContent, /Recent/);
-  assert.match(doc.getElementById('projects').textContent, /Loose thought/);
-  const recentRows = [...doc.querySelectorAll('.sess.recent')];
-  assert.equal(recentRows.length, 2, 'recent lists both chats');
-  assert.equal(recentRows[0].dataset.sid, 'abc12345', 'newest first');
-  assert.match(recentRows[0].querySelector('.chip').textContent, /Demo project/);
-  assert.match(recentRows[1].querySelector('.chip').textContent, /Inbox/);
+  const panel = doc.getElementById('projects');
+  assert.match(panel.textContent, /Loose thought/);
+  assert.doesNotMatch(panel.textContent, /First chat|Inbox|Recent/, 'a filed chat lives only under Projects');
+  doc.querySelector('#panel-pills [data-pill="projects"]').click();
+  assert.match(panel.textContent, /Demo project/);
+  doc.querySelector('.lp-proj[data-pid="p1"]').click();
+  assert.match(panel.textContent, /First chat/);
 
   // clicking a chat re-attaches this tab's stream to that chat's bridge
-  doc.querySelector('.sess[data-act="resume"]').click();
+  doc.querySelector('.lp-row [data-act="open"][data-sid="abc12345"]').click();
   await new Promise(r => setTimeout(r, 10));
   assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=abc12345$/, 'switch reconnects to the target chat');
   // settle the in-flight switch (attach hello + replay boundary) for the rest
@@ -1523,79 +1520,6 @@ test('chat switch: reattach to the target bridge, optimistic cached render, offs
   assert.equal(wsUrls.length, n, 'no reconnect for the active chat');
 });
 
-test('sidebar: every project expands and opens its own chats — no "make active project" step',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, wsUrls } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'replay_done' });
-  const now = new Date().toISOString();
-  const projects = activePid => ({
-    type: 'projects', active_project_id: activePid, inbox_session_count: 2,
-    projects: [
-      {
-        id: 'p1', title: 'Active P', active: activePid === 'p1', session_count: 1,
-        sessions: [{ session_id: 'sidA', title: 'Chat A', updated_at: now, active: activePid === 'p1' }],
-      },
-      {
-        // the controller now ships chats for EVERY project, not just the active one
-        id: 'p2', title: 'Other P', active: activePid === 'p2', session_count: 2,
-        sessions: [
-          { session_id: 'sidB', title: 'Chat B', updated_at: now, active: false },
-          { session_id: 'sidC', title: 'Chat C', updated_at: now, active: activePid === 'p2' },
-        ],
-      },
-      // archived projects list their chats too — the Archived section is a
-      // place to find old work, not a place where it disappears
-      {
-        id: 'p3', title: 'Done P', status: 'archived', active: false, session_count: 1,
-        sessions: [{ session_id: 'sidD', title: 'Chat D', updated_at: now, active: false }],
-      },
-    ],
-  });
-  C.handle(projects('p1'));
-  const side = doc.getElementById('projects');
-  // the activation affordance is gone for good
-  assert.equal(side.querySelector('[data-act="activate"]'), null, 'no activate button');
-  assert.doesNotMatch(side.textContent, /make active project/);
-  // the active project auto-opens; the other is collapsed but fully populated
-  assert.ok(side.querySelector('.proj[data-pid="p1"]').classList.contains('open'));
-  assert.equal(side.querySelector('.proj[data-pid="p2"]').classList.contains('open'), false);
-  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat B/);
-  assert.match(side.querySelector('.proj[data-pid="p2"]').textContent, /Chat C/);
-  // any project header toggles — non-active opens…
-  doc.querySelector('.proj[data-pid="p2"] .proj-head').click();
-  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'), 'non-active project expands');
-  // …and the active one can be collapsed (auto-open never fights the user)
-  doc.querySelector('.proj[data-pid="p1"] .proj-head').click();
-  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false, 'active project collapses');
-  // per-chat ⋯ menus and the project-level commands survive in every block
-  assert.ok(doc.querySelector('.proj[data-pid="p2"] .row-more[data-sid="sidC"]'), 'chat rows keep their ⋯ menu');
-  assert.ok(doc.querySelector('.proj[data-pid="p2"] [data-act="proj-archive"]'), 'archive project stays');
-  // tapping a chat in the NON-active project just opens it — the tab
-  // re-attaches to that chat's bridge, no /resume through this one
-  doc.querySelector('.proj[data-pid="p2"] .sess[data-sid="sidC"]').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidC$/, 'opens the chat in its own bridge');
-  // the controller confirms: the chat's project is now the active one, and it
-  // auto-expands — while the project the user collapsed stays collapsed
-  C.setAttachMode('open');
-  C.handle(projects('p2'));
-  assert.equal(C.state.currentSid, 'sidC');
-  assert.ok(doc.querySelector('.proj[data-pid="p2"]').classList.contains('open'));
-  assert.equal(doc.querySelector('.proj[data-pid="p1"]').classList.contains('open'), false);
-  // the archived project keeps its chats, in the Archived section, collapsed
-  doc.querySelector('[data-act="toggle-arch"]').click();
-  const arch = doc.querySelector('.arch .proj[data-pid="p3"]');
-  assert.ok(arch, 'archived project renders in the Archived section');
-  assert.equal(arch.classList.contains('open'), false, 'archived projects start collapsed');
-  assert.match(arch.textContent, /Chat D/, 'archived project still lists its chats');
-  doc.querySelector('.arch .proj[data-pid="p3"] .proj-head').click();
-  assert.ok(doc.querySelector('.arch .proj[data-pid="p3"]').classList.contains('open'), 'and expands on tap');
-  doc.querySelector('.arch .proj[data-pid="p3"] .sess[data-sid="sidD"]').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidD$/, 'an archived project s chat opens too');
-});
-
 test('links are clickable, text stays selectable, passwords get a copy chip',
   { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
   const { w, doc, C } = await mkHarness(t);
@@ -2275,122 +2199,7 @@ test('hash routing: a server-side switch (/new, /delete) wins over the stale has
     'no not-found toast for a server-side switch');
 });
 
-// ------------------------------------------- sidebar: archive / delete / new
-
-test('sidebar chat row: ⋯ opens archive + delete, both send the plain slash command',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts, wsUrls } = await mkHarness(t);
-  C.handle({ type: 'replay_done' });
-  C.handle({
-    type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
-    projects: [{
-      id: 'p1', title: 'P', active: true, status: 'active', session_count: 2,
-      sessions: [
-        { session_id: 'sidA', title: 'Chat A', updated_at: new Date().toISOString(), active: true },
-        { session_id: 'sidB', title: 'Chat B', updated_at: new Date().toISOString(), active: false },
-      ],
-    }],
-  });
-  // the menu is closed until asked for — the row stays a plain chat row
-  assert.equal(doc.querySelector('.row-menu'), null);
-  doc.querySelector('.row-more[data-sid="sidB"]').click();
-  const menu = doc.querySelector('.sess-row.menu-open .row-menu');
-  assert.ok(menu, 'the ⋯ button opens the row menu');
-  assert.equal(doc.querySelectorAll('.row-menu').length, 1, 'only one row menu at a time');
-
-  // archive: one slash command, no client-side confirm (it is reversible)
-  menu.querySelector('[data-act="archive"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/archive sidB', attachments: [] } });
-  assert.equal(doc.querySelector('.row-menu'), null, 'acting closes the menu');
-
-  // delete: the same path, and the controller's confirm card does the asking
-  doc.querySelector('.row-more[data-sid="sidB"]').click();
-  doc.querySelector('.row-menu [data-act="delete"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/delete sidB', attachments: [] } });
-
-  // tapping the row itself still opens the chat (re-attach, not a POST)
-  doc.querySelector('.sess[data-sid="sidB"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.match(wsUrls[wsUrls.length - 1], /\/ws\?chat=sidB$/, 'row tap reattaches to that chat');
-});
-
-test('sidebar projects: archived ones collapse into their own section; archive/unarchive send /project commands',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'replay_done' });
-  C.handle({
-    type: 'projects', active_project_id: 'live', inbox_session_count: 0,
-    projects: [
-      { id: 'live', title: 'Live project', active: true, status: 'active', session_count: 0, sessions: [] },
-      { id: 'old', title: 'Old project', active: false, status: 'archived', session_count: 4, sessions: [] },
-    ],
-  });
-  const side = doc.getElementById('projects');
-  // the archived project is present but tucked away: collapsed, out of the
-  // active Projects list, and counted
-  const arch = side.querySelector('.arch');
-  assert.ok(arch, 'archived section exists');
-  assert.equal(arch.classList.contains('open'), false, 'collapsed by default');
-  assert.match(arch.querySelector('.arch-head').textContent, /Archived\s*1/,
-    'the header counts archived projects');
-  assert.ok(arch.textContent.includes('Old project'));
-  assert.equal(side.querySelector('.proj[data-pid="old"]').closest('.arch'), arch,
-    'the archived project renders only inside the archived section');
-
-  // expanding it offers unarchive
-  arch.querySelector('.arch-head').click();
-  assert.ok(doc.querySelector('.arch.open'), 'the section expands');
-  doc.querySelector('[data-act="proj-unarchive"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project unarchive old', attachments: [] } });
-
-  // and the live project can be archived from its own body
-  doc.querySelector('[data-act="proj-archive"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project archive live', attachments: [] } });
-
-  // both live and archived projects offer delete, in red; one click only
-  // sends the command and the controller's confirm card does the asking
-  const del = doc.querySelector('.proj[data-pid="old"] [data-act="proj-delete"]');
-  assert.ok(del && del.classList.contains('danger'), 'archived project: red delete');
-  assert.ok(doc.querySelector('.proj[data-pid="live"] [data-act="proj-delete"]'), 'live project: delete too');
-  del.click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/project delete old', attachments: [] } });
-});
-
-test('sidebar New split button: chat starts a chat, project takes a title inline',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'replay_done' });
-  const form = doc.getElementById('new-project-form');
-  const title = doc.getElementById('new-project-title');
-  assert.equal(form.hasAttribute('hidden'), true, 'the title field stays out of the way');
-
-  doc.getElementById('new-chat').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(), { url: '/input', body: { bridge: null, text: '/new', attachments: [] } });
-
-  doc.getElementById('new-project').click();
-  assert.equal(form.hasAttribute('hidden'), false, 'the title field opens');
-  title.value = '  Spaceship Engineering  ';
-  title.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(posts.pop(),
-    { url: '/input', body: { bridge: null, text: '/project create Spaceship Engineering', attachments: [] } });
-  assert.equal(form.hasAttribute('hidden'), true, 'the field closes after submitting');
-
-  // Escape backs out without sending anything
-  doc.getElementById('new-project').click();
-  title.value = 'nope';
-  const n = posts.length;
-  title.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-  await new Promise(r => setTimeout(r, 5));
-  assert.equal(form.hasAttribute('hidden'), true);
-  assert.equal(posts.length, n, 'nothing sent on escape');
-});
+// ------------------------------------------------------------ served files
 
 test('/files serves workspace artifacts auth-gated, refuses dot-segments and traversal', async () => {
   const s = await startServer();
@@ -3078,291 +2887,8 @@ test('project tasks: collapsing it is remembered, and the empty state knows abou
   assert.equal(none.hasAttribute('hidden'), false, 'nothing anywhere: the empty state');
 });
 
-// ------------------------------------------------- UI: filing a chat
-
-// A chat's project used to be decided by whatever the sidebar happened to be
-// pointing at when the chat next saved. Now every filing is something the
-// user said out loud, and these three affordances are where they say it.
-
-// only the room traffic: the harness records every fetch, and boot chatter
-// (heartbeats, attachment probes) is not what these tests are about
-const sent = posts => posts.filter(p => p.url === '/input').map(p => p.body.text);
-
-const FILING_PROJECTS = {
-  type: 'projects', active_project_id: 'p1', inbox_session_count: 0,
-  inbox_sessions: [],
-  projects: [
-    { id: 'p1', title: 'Demo project', active: true, session_count: 1,
-      sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: '2026-08-24T00:00:00Z', active: false }] },
-    { id: 'p2', title: 'Other project', active: false, session_count: 0, sessions: [] },
-  ],
-};
-
-test('filing: every project row carries its own "+ new chat", filed there from birth',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle(FILING_PROJECTS);
-  // p1 is the active project, so it is the one expanded on arrival
-  const row = doc.querySelector('.proj[data-pid="p1"] [data-act="proj-new-chat"]');
-  assert.ok(row, 'the expanded project offers a new chat of its own');
-  row.click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(sent(posts), ['/new --project p1'],
-    'the new chat names its project up front — no post-hoc filing');
-  // archived projects are a resting place, not somewhere you start work
-  C.handle({
-    ...FILING_PROJECTS,
-    projects: [{ id: 'p9', title: 'Done with', status: 'archived', sessions: [] }],
-  });
-  doc.querySelector('[data-act="toggle-arch"]').click();
-  doc.querySelector('.proj[data-pid="p9"] [data-act="toggle"]').click();
-  assert.equal(doc.querySelector('.proj[data-pid="p9"] [data-act="proj-new-chat"]'), null);
-});
-
-test('sidebar chat row: "remove from project" unfiles it — the safe way out of a list',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  // Three ways out of a project's chat list, and they cost different amounts:
-  // unfile (reversible in one click), archive (reversible), delete (a confirm
-  // card in the transcript). The commonest reason to want a chat out of a
-  // project is that it was filed in the wrong one, and that must not cost the
-  // chat — so the safe one is offered FIRST.
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle(FILING_PROJECTS);
-  doc.querySelector('.proj[data-pid="p1"] .row-more[data-sid="abc12345"]').click();
-  const items = [...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act);
-  assert.deepEqual(items, ['unfile', 'archive', 'delete'],
-    'safest first, destructive last');
-  // the chat list scrolls, and a scroll box clips a popover: while a menu is
-  // open the box stops scrolling, or the last item is cut in half
-  assert.ok(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'),
-    'the scroller stands down while a row menu is open');
-  doc.querySelector('.row-menu [data-act="unfile"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(sent(posts), ['/project unfile abc12345'],
-    'the filing goes; the chat does not');
-  assert.equal(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'), null,
-    'and starts scrolling again once it is closed');
-});
-
-test('sidebar: Recent rows carry the same ⋯ menu; only the tapped copy of a chat opens',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({
-    ...FILING_PROJECTS,
-    inbox_session_count: 1,
-    inbox_sessions: [{ session_id: 'inb00001', title: 'Loose thought', updated_at: '2026-01-01T00:00:00Z', active: false }],
-  });
-  const recent = doc.querySelectorAll('.sess-row .sess.recent');
-  assert.equal(recent.length, 2, 'Recent rows are chat rows now');
-  assert.match(recent[0].querySelector('.chip').textContent, /Demo project/, 'the chip stays');
-  // abc12345 is listed twice: in Recent and in p1's block (expanded)
-  const mores = doc.querySelectorAll('.row-more[data-sid="abc12345"]');
-  assert.equal(mores.length, 2);
-  mores[0].click();  // the Recent copy
-  assert.equal(doc.querySelectorAll('.row-menu').length, 1, 'one menu, not both copies');
-  assert.ok(doc.querySelector('.sess-row.menu-open .sess.recent'), 'and it is the Recent row that opened');
-  assert.equal(doc.querySelector('.proj[data-pid="p1"] .proj-chats.menu-open'), null,
-    "the project's scroller is not told a menu is open inside it");
-  assert.deepEqual([...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act),
-    ['unfile', 'archive', 'delete'], 'a filed chat offers Remove from project');
-  doc.querySelector('.row-menu [data-act="delete"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(sent(posts), ['/delete abc12345']);
-  // an Inbox chat in Recent has nothing to be removed from
-  doc.querySelector('.row-more[data-sid="inb00001"]').click();
-  assert.deepEqual([...doc.querySelectorAll('.row-menu button')].map(b => b.dataset.act),
-    ['archive', 'delete']);
-});
-
-test('sidebar: a project’s contents are a request, never part of the per-turn payload',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, w, posts } = await mkHarness(t);
-  const asked = [];
-  const realFetch = w.fetch;
-  w.fetch = async (url, init) => {
-    if (String(url).startsWith('/project-contents')) {
-      asked.push(String(url));
-      return {
-        ok: true, status: 200,
-        json: async () => ({ ok: true, id: 'p1', files: [
-          { path: 'figures', name: 'figures', dir: true, size: 0, depth: 0, truncated: false },
-          { path: 'figures/fig1.png', name: 'fig1.png', dir: false, size: 2048, depth: 1 },
-          { path: 'PROJECT.md', name: 'PROJECT.md', dir: false, size: 512, depth: 0 },
-        ] }),
-      };
-    }
-    return realFetch(url, init);
-  };
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({
-    ...FILING_PROJECTS,
-    projects: [{ ...FILING_PROJECTS.projects[0], github: 'https://github.com/me/demo' },
-               FILING_PROJECTS.projects[1]],
-  });
-  assert.equal(asked.length, 0, 'nothing is read until somebody opens the panel');
-  assert.equal(doc.querySelector('.proj[data-pid="p1"] .pcon'), null);
-
-  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
-  await new Promise(r => setTimeout(r, 20));
-  const pcon = doc.querySelector('.proj[data-pid="p1"] .pcon');
-  assert.ok(pcon, 'the panel opens');
-  assert.deepEqual(asked, ['/project-contents?id=p1']);
-  assert.match(pcon.textContent, /First chat/, 'the chats, off the panel payload');
-  assert.match(pcon.textContent, /figures\//, 'the folder, off the request');
-  assert.match(pcon.textContent, /fig1\.png/);
-  assert.match(pcon.textContent, /2\.0 KB/, 'with sizes a person can read');
-  assert.match(pcon.textContent, /github\.com\/me\/demo/, 'and where it was published');
-  assert.equal(doc.querySelector('.proj[data-pid="p1"] .pcon a').getAttribute('href'),
-    'https://github.com/me/demo');
-
-  // closing and re-opening does not ask twice — the listing is kept
-  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
-  await new Promise(r => setTimeout(r, 5));
-  doc.querySelector('.proj[data-pid="p1"] [data-act="proj-contents"]').click();
-  await new Promise(r => setTimeout(r, 20));
-  assert.equal(asked.length, 1);
-  assert.equal(sent(posts).length, 0, 'and none of it spends a turn');
-});
-
-test('sidebar: publishing a project to GitHub is confirmed in the transcript, never in the sidebar',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle(FILING_PROJECTS);
-  const b = doc.querySelector('.proj[data-pid="p1"] [data-act="proj-github"]');
-  assert.ok(b, 'an unpublished project offers to publish');
-  assert.match(b.textContent, /publish to GitHub…/, 'the ellipsis says it will ask');
-  b.click();
-  await new Promise(r => setTimeout(r, 5));
-  assert.deepEqual(sent(posts), ['/project github p1'],
-    'the controller preflights gh and asks — the sidebar confirms nothing itself');
-
-  // already published: the same button, saying the true thing
-  C.handle({
-    ...FILING_PROJECTS,
-    projects: [{ ...FILING_PROJECTS.projects[0], github: 'https://github.com/me/demo' }],
-  });
-  assert.match(doc.querySelector('.proj[data-pid="p1"] [data-act="proj-github"]').textContent,
-    /push to GitHub/);
-});
-
-test('filing: the top New/chat button asks "file in?" before the chat exists',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle(FILING_PROJECTS);
-  const menu = doc.getElementById('new-chat-menu');
-  assert.equal(menu.hasAttribute('hidden'), true, 'closed until asked for');
-
-  doc.getElementById('new-chat').click();
-  assert.equal(menu.hasAttribute('hidden'), false, 'one click opens the choice');
-  assert.deepEqual(sent(posts), [], 'and starts nothing yet');
-  assert.match(menu.textContent, /File in:/);
-  assert.match(menu.textContent, /Demo project/);
-  assert.match(menu.textContent, /Other project/);
-  assert.match(menu.textContent, /just a chat/);
-
-  menu.querySelector('[data-act="new-in"][data-pid="p2"]').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(sent(posts), ['/new --project p2']);
-  assert.equal(menu.hasAttribute('hidden'), true, 'the menu closes behind the choice');
-
-  // "just a chat" has to survive being clicked while a project is open —
-  // that is the case the old inherit-the-lens behaviour got wrong
-  doc.getElementById('new-chat').click();
-  menu.querySelector('[data-act="new-inbox"]').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.deepEqual(sent(posts), ['/new --project p2', '/new --inbox']);
-});
-
-test('filing: with no projects at all, New/chat is still just one click',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'projects', projects: [], inbox_sessions: [], inbox_session_count: 0 });
-  doc.getElementById('new-chat').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.equal(doc.getElementById('new-chat-menu').hasAttribute('hidden'), true);
-  assert.deepEqual(sent(posts), ['/new']);
-});
-
-test('filing: an unfiled chat is asked where it goes BEFORE the first message',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'replay_done', count: 0 });
-  C.handle({ ...FILING_PROJECTS, projects: FILING_PROJECTS.projects, inbox_sessions: [] });
-  const input = doc.getElementById('input');
-  input.value = 'plot me a rocket';
-  input.dispatchEvent(new w.Event('input'));
-  doc.getElementById('send').click();
-  await new Promise(r => setTimeout(r, 10));
-
-  const card = doc.querySelector('.msg.card.filing');
-  assert.ok(card, 'the question arrives with the message still unsent');
-  assert.deepEqual(sent(posts), [], 'nothing went out yet');
-  assert.equal(input.value, 'plot me a rocket', 'the message is held, not eaten');
-  assert.match(card.textContent, /Demo project/);
-  assert.match(card.textContent, /Just a chat/);
-
-  card.querySelector('button[data-pid="p1"]').click();
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(sent(posts), ['/file p1', 'plot me a rocket'],
-    'filed first, then the message it was holding');
-  assert.equal(input.value, '', 'and the composer is clear');
-});
-
-test('filing: "just a chat" sends the message and the room stops asking',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'replay_done', count: 0 });
-  C.handle(FILING_PROJECTS);
-  const input = doc.getElementById('input');
-  const send = text => {
-    input.value = text;
-    input.dispatchEvent(new w.Event('input'));
-    doc.getElementById('send').click();
-  };
-  send('a loose thought');
-  await new Promise(r => setTimeout(r, 10));
-  doc.querySelector('.msg.card.filing button[data-pid=""]').click();
-  await new Promise(r => setTimeout(r, 20));
-  assert.deepEqual(sent(posts), ['/project clear', 'a loose thought'],
-    'Inbox said out loud, so the controller does not ask again after the message');
-
-  // asked once per chat, never again mid-conversation
-  C.handle({ type: 'user_echo', text: 'a loose thought' });
-  posts.length = 0;
-  send('and another');
-  await new Promise(r => setTimeout(r, 10));
-  assert.equal(doc.querySelectorAll('.msg.card.filing').length, 1, 'no second interrogation');
-  assert.deepEqual(sent(posts), ['and another']);
-});
-
-test('filing: a chat that already lives in a project is never asked',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { w, doc, C, posts } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'replay_done', count: 0 });
-  C.handle({
-    ...FILING_PROJECTS,
-    projects: [{
-      id: 'p1', title: 'Demo project', active: true, session_count: 1,
-      sessions: [{ session_id: 'abc12345', title: 'First chat', updated_at: '2026-08-24T00:00:00Z', active: true }],
-    }],
-  });
-  const input = doc.getElementById('input');
-  input.value = 'carry on';
-  input.dispatchEvent(new w.Event('input'));
-  doc.getElementById('send').click();
-  await new Promise(r => setTimeout(r, 10));
-  assert.equal(doc.querySelector('.msg.card.filing'), null);
-  assert.deepEqual(sent(posts), ['carry on']);
-});
+// The left panel (pills, rows, moving, renaming, Settings) has its own file:
+// tests/council-left-panel.test.mjs.
 
 // ── the typewriter ───────────────────────────────────────────────────────
 // The claim is not that the chat is slower. It is that text already in hand
@@ -3637,21 +3163,6 @@ test('"N messages queued" belongs to the chat it was counted in (happy-dom)',
   C.switchTo('sidB');
   assert.equal(note.hasAttribute('hidden'), true);
   assert.equal(note.textContent, '');
-});
-
-test('a typed /new asks the filing question afresh; /new --inbox is itself the answer (happy-dom)',
-  { skip: HAPPY ? false : 'happy-dom not installed (cd tests && npm install)' }, async t => {
-  const { doc, C } = await mkHarness(t);
-  C.handle({ type: 'hello', bridge_id: 'b1' });
-  C.handle({ type: 'replay_done' });
-  const input = doc.getElementById('input');
-  C.state.filingAsked = true;
-  input.value = '/new';
-  C.submit();
-  assert.equal(C.state.filingAsked, false);
-  input.value = '/new --inbox scratch';
-  C.submit();
-  assert.equal(C.state.filingAsked, true);
 });
 
 test('connection: a retry left over from a drop is cancelled by a chat switch — one live socket, never two (happy-dom)',

@@ -5004,7 +5004,14 @@ class Botference:
 
         Gated on the chat's own filing, not the lens: a chat you never filed
         is an Inbox chat even if you happen to be browsing a project.
+
+        A frontend with its own way to file a chat (the web council: "Move
+        to project" on every row of its left panel) turns the question off
+        with BOTFERENCE_FILING_PROMPT=0, so nothing stands between a person
+        and their first message.
         """
+        if os.environ.get("BOTFERENCE_FILING_PROMPT", "").strip() == "0":
+            return
         if self.session_project_id or self._inbox_by_choice:
             return
         user_turns = sum(1 for e in self.transcript.entries
