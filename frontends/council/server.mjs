@@ -323,23 +323,27 @@ const helloEvent = b => ({
 //   resuming — start-up is over and the saved chat is being drawn;
 //   idle     — the chat is open and waiting for a message;
 //   working  — the chat is open and a message is being answered (between an
-//              input sent and the next ready).
+//              input sent and the next ready);
+//   closed   — the end: the process exited, its stream ended, or it was
+//              retired. Reached from every other phase (close), left never;
+//              anything a closed bridge's process still prints is ignored.
+// Whether a bridge can be written to (available) is read from the phase, not
+// kept beside it: a started process that is not closed.
 // A message sent while still 'starting' moves it straight to 'working'. The
 // spawn-time /resume is a turn in flight while 'opening', so an opening
 // bridge, like a working one, counts as mid-turn (midTurn) and is never
 // evicted; 'resuming' does not, as before.
-export const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'idle', 'working'];
+export const BRIDGE_PHASES = ['starting', 'opening', 'resuming', 'idle', 'working', 'closed'];
 export const BRIDGE_MOVES = new Set([
   'starting>idle', 'starting>working', 'opening>resuming', 'resuming>idle',
   'idle>working', 'working>idle',
+  ...['starting', 'opening', 'resuming', 'idle', 'working'].map(p => p + '>closed'),
 ]);
 
 export class Bridge {
   constructor(claimedSid = null) {
     this.id = 'b' + nextBridgeSeq++;
     this.proc = null;
-    this.available = false;
-    this.closed = false;
     this.permTimer = null;
     this.choiceTimer = null;
     // which chat this bridge drives: claimedSid is the attach target while a
@@ -404,6 +408,11 @@ export class Bridge {
     if (this.live()) this.claimedSid = null;
     return true;
   }
+  // the process is started and not closed: it can be written to
+  get available() { return !!this.proc && this.phase !== 'closed'; }
+  get closed() { return this.phase === 'closed'; }
+  // the end, from any phase; false when it was already closed
+  close() { return this.setPhase('closed'); }
   // the chat is open (answering or waiting)
   live() { return this.phase === 'idle' || this.phase === 'working'; }
   // a turn is in flight: never evicted or retired
@@ -483,7 +492,6 @@ export class Bridge {
         this.handle(ev);
       }
     });
-    this.available = true;
     this.proc.stderr.on('data', d => this.broadcast({ type: 'bridge_log', text: String(d).slice(0, 500) }));
     this.proc.on('error', err => {
       this.disconnect({ code: -1, error: err.message });
@@ -510,7 +518,7 @@ export class Bridge {
     });
   }
   disconnect(detail = {}) {
-    this.available = false;
+    this.close();
     this.dropHeld();
     this.broadcast({ type: 'bridge_exit', ...detail });
     despawnBridge(this);
@@ -590,7 +598,7 @@ export class Bridge {
       this.history.length = 0;
     }
     if (ev.type === 'exit') {
-      this.available = false;
+      this.close();
       this.dropHeld();
       this.broadcast(ev);
       despawnBridge(this);
@@ -636,8 +644,7 @@ function spawnBridge(claimedSid = null) {
   return b;
 }
 function despawnBridge(b) {
-  b.closed = true;
-  b.available = false;
+  b.close();
   presence.closeBridge(b.id);
   clearTimeout(b.permTimer);
   clearTimeout(b.choiceTimer);
