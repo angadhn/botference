@@ -1000,7 +1000,7 @@ test('web-page chats sit in Chats under their own label and open where they live
   assert.equal(C.state.pageChats.load, 'ready');
   const labels = [...list.querySelectorAll('.lp-label')].map(l => l.textContent.trim());
   assert.deepEqual(labels, ['On web pages']);
-  assert.deepEqual(pageRows(list), ['A page about kettles', 'https://example.org/seed-catalogue'],
+  assert.deepEqual(pageRows(list), ['A page about kettles', 'example.org/seed-catalogue'],
     'a page with no name shows its address; a malformed id is dropped');
   // the label comes after the council's own loose chats
   const all = [...list.querySelectorAll('.lp-row, .lp-label')];
@@ -1100,7 +1100,7 @@ test('search finds a web-page chat by name or address once something is typed', 
   assert.equal(list.querySelectorAll('.lp-row.page').length, 0, 'the latest list is the council’s own');
   type(box, 'seed');
   assert.deepEqual(rowsOf(list).slice(0, 1), ['Seed order']);
-  assert.deepEqual(pageRows(list), ['https://example.org/seed-catalogue']);
+  assert.deepEqual(pageRows(list), ['example.org/seed-catalogue']);
   assert.deepEqual(C.searchPages('KETTLES').map(r => r.id), [PID('a')]);
   type(box, 'example.com');
   assert.deepEqual(pageRows(list), ['A page about kettles']);

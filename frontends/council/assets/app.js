@@ -2917,7 +2917,8 @@
   function pageRow(r) {
     const key = 'page:' + r.id;
     const mode = rowModeOf(key);
-    const title = r.title || r.url;
+    // a page with no name of its own shows its address, without the "https://"
+    const title = r.title && r.title !== r.url ? r.title : r.url.replace(/^https?:\/\/(www\.)?/, '');
     const base = state.pageChats.base;
     let html = `<div class="lp-row page${mode !== 'resting' ? ' has-menu' : ''}" data-key="${esc(key)}">
       <a class="t" ${base ? `href="${esc(base)}/p/${esc(r.id)}" ` : ''}target="_blank" rel="noopener" title="${esc(title)}\n${esc(r.url)}"><span>${esc(title)}</span><span class="lp-out">${LP_ICON.out}</span></a>
