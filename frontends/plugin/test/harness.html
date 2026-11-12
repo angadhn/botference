@@ -2909,9 +2909,13 @@ function msgIn(threadId, ts) {
 // flags are never written: stageOf reads them only for a record with no
 // `status` (store.threadStage), and normalizeStatus strips them as the
 // companion's readPage does.
-const stageOf = t => (!t ? 'open'
-  : ['open', 'ready', 'resolved'].indexOf(t.status) >= 0 ? t.status
-  : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open');
+// (a function declaration, not a const: the seeding code above calls stageTo
+// before this line runs)
+function stageOf(t) {
+  return !t ? 'open'
+    : ['open', 'ready', 'resolved'].indexOf(t.status) >= 0 ? t.status
+    : t.resolved ? 'resolved' : t.addressed ? 'ready' : 'open';
+}
 function normalizeStatus(t) {
   if (!t) return;
   t.status = stageOf(t);
