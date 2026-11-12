@@ -2,6 +2,7 @@
 
 ## 2026-11-12
 
+- **Discuss side panel: Notes and With bots.** A sticky row of pills (All · Notes · With bots, with counts) under the tabs, on Comments only. A thread is "With bots" once a bot has replied or been called in; nothing is filed by hand, and a note that turns into a bot chat while you look says "Moved to With bots" until you change pill. The pill is remembered per page. The who-commented pills are gone.
 - **Council: the left panel lists newest first.** Chats are sorted by last activity, and projects by their newest chat, so a fresh chat lifts its whole project to the top.
 - **Council: a new left panel with two pills, Chats and Projects.** Chats lists chats not filed in a project, then your browser-plugin chats under "On web pages" (tap to open the page, or "Copy into the council" from the row menu). Projects lists projects, "+ New project" and archived ones. One "New chat" button and one search box above both. Each chat row has a menu: rename, move to project, archive, delete (asked in the row). What is open, the row being worked on, the list being read and a copy in progress are each one named state.
 - **Terminal: a second Enter after answering a question no longer sends a second answer.** A question on screen that you have answered is now "answered": it stays drawn until the engine clears it, and no key can answer it again.
