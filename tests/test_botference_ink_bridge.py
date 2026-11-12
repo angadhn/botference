@@ -518,6 +518,51 @@ class TestNotifyEmission:
         assert not any(e.get("type") == "notify" for e in emitted)
         assert any(e.get("type") == "ready" for e in emitted)
 
+    async def test_queue_moves_through_its_named_states(
+        self, tmp_path, monkeypatch
+    ):
+        # idle -> running -> interrupted -> idle, one field, illegal moves
+        # refused; a Stop while idle changes nothing
+        emitted: list[dict] = []
+        c = self._setup(tmp_path, monkeypatch, emitted)
+        monkeypatch.setattr(binkb, "_NOTIFY_MIN_TURN_SECONDS", 0.0)
+        assert binkb.QUEUE_STATES == ("idle", "running", "interrupted")
+        started = asyncio.Event()
+
+        async def handle_input(text, bridge, attachments=None):
+            started.set()
+            await asyncio.Event().wait()  # blocks until cancelled
+
+        c.handle_input = handle_input
+        queue = binkb.InputTurnQueue(c, _RecordingBridge(), c.paths)
+        assert not hasattr(queue, "_interrupted")
+        assert queue.state == "idle" and not queue.is_running
+        queue.interrupt()
+        assert queue.state == "idle", "a Stop with nothing running is no move"
+        assert queue._move("interrupted") is False
+        assert queue._move("bogus") is False
+        queue.submit("hello", [])
+        assert queue.state == "running" and queue.is_running
+        assert queue._move("running") is False
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        queue.interrupt()
+        assert queue.state == "interrupted"
+        assert queue.is_running, "an interrupted batch is still winding down"
+        queue.interrupt()
+        assert queue.state == "interrupted"
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert queue.state == "idle" and not queue.is_running
+        assert not any(e.get("type") == "notify" for e in emitted)
+        # the next batch starts fresh: it pings again when it finishes
+        async def quick(text, bridge, attachments=None):
+            pass
+
+        c.handle_input = quick
+        queue.submit("again", [])
+        await asyncio.wait_for(queue.wait_idle(), timeout=2.0)
+        assert queue.state == "idle"
+        assert any(e.get("type") == "notify" for e in emitted)
+
     async def test_permission_request_pings_when_enabled(
         self, tmp_path, monkeypatch
     ):
@@ -600,6 +645,78 @@ class TestNotifyEmission:
         # …and the answer naming r2 (or naming none, as older pages do) lands
         bridge.resolve_permission_request(True, request_id="r2")
         assert await asyncio.wait_for(task, timeout=2.0) is True
+
+    async def test_two_permission_questions_in_a_row_wait_their_turn(
+        self, tmp_path, monkeypatch
+    ):
+        # a second question does not replace the first (it used to raise),
+        # and one answer can never land on the wrong question
+        from botference import WritePermissionRequest
+
+        emitted: list[dict] = []
+        monkeypatch.setattr(binkb, "emit", lambda obj: emitted.append(dict(obj)))
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        assert not hasattr(bridge, "_pending_permission")
+        shown = lambda: [e for e in emitted if e["type"] == "permission_request"]
+        cleared = lambda: [e for e in emitted if e["type"] == "permission_cleared"]
+
+        # nothing asked: an answer is refused
+        assert bridge.resolve_permission_request(True) is False
+        first = asyncio.create_task(bridge.request_write_permission(
+            WritePermissionRequest(request_id="p1", model="claude", path="a", reason="r"),
+        ))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(bridge.request_write_permission(
+            WritePermissionRequest(request_id="p2", model="codex", path="b", reason="r"),
+        ))
+        await asyncio.sleep(0)
+        # only the first is on screen; the second waits behind it
+        assert [e["request_id"] for e in shown()] == ["p1"]
+        assert not first.done() and not second.done()
+        # an answer naming the waiting question is refused: it is not up yet
+        assert bridge.resolve_permission_request(True, request_id="p2") is False
+        await asyncio.sleep(0)
+        assert not first.done() and not second.done()
+        assert bridge.resolve_permission_request(False, request_id="p1") is True
+        assert await asyncio.wait_for(first, timeout=2.0) is False
+        await asyncio.sleep(0)
+        # the clear names the question it clears, then the next one comes up
+        assert [e["request_id"] for e in cleared()] == ["p1"]
+        assert [e["request_id"] for e in shown()] == ["p1", "p2"]
+        # a late answer to the first does not answer the second
+        assert bridge.resolve_permission_request(True, request_id="p1") is False
+        await asyncio.sleep(0)
+        assert not second.done()
+        assert bridge.resolve_permission_request(True, always=True, request_id="p2") is True
+        assert await asyncio.wait_for(second, timeout=2.0) == "always"
+        await asyncio.sleep(0)
+        assert [e["request_id"] for e in cleared()] == ["p1", "p2"]
+        assert bridge._permission_asks == []
+
+    async def test_a_waiting_permission_question_that_is_cancelled_leaves_quietly(
+        self, tmp_path, monkeypatch
+    ):
+        from botference import WritePermissionRequest
+
+        emitted: list[dict] = []
+        monkeypatch.setattr(binkb, "emit", lambda obj: emitted.append(dict(obj)))
+        bridge = binkb.InkBridge(BotferencePaths.resolve(work_dir=tmp_path))
+        first = asyncio.create_task(bridge.request_write_permission(
+            WritePermissionRequest(request_id="p1", model="claude", path="a", reason="r"),
+        ))
+        await asyncio.sleep(0)
+        second = asyncio.create_task(bridge.request_write_permission(
+            WritePermissionRequest(request_id="p2", model="codex", path="b", reason="r"),
+        ))
+        await asyncio.sleep(0)
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        # never shown, so never cleared; the first is still the one up
+        assert not any(e["type"] == "permission_cleared" for e in emitted)
+        assert bridge.resolve_permission_request(True, request_id="p1") is True
+        assert await asyncio.wait_for(first, timeout=2.0) is True
+        assert [e["request_id"] for e in emitted if e["type"] == "permission_request"] == ["p1"]
 
     async def test_two_choice_questions_in_a_row_wait_their_turn(
         self, tmp_path, monkeypatch

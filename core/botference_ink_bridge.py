@@ -176,13 +176,13 @@ class InkBridge:
     def __init__(self, paths: BotferencePaths) -> None:
         # Overridden in main() to read the controller's /notify preference.
         self.notify_enabled: "Callable[[], bool]" = lambda: False
-        # Resolves to True (allow once), False (deny) or "always" (allow and
-        # save the root to project.json). Once and deny stay bools so every
-        # caller written before "always" existed reads them as it did.
-        self._pending_permission: asyncio.Future[bool | str] | None = None
-        # the request_id of the question on screen: an answer naming another
-        # one (late, or from a second tab) must not answer this one
-        self._pending_permission_id = ""
+        # write-permission questions, in the order they were asked: only the
+        # head is ever on screen, the rest wait their turn (the same shape as
+        # the choice queue below). Each resolves to True (allow once), False
+        # (deny) or "always" (allow and save the root to project.json); once
+        # and deny stay bools so every caller written before "always" existed
+        # reads them as it did.
+        self._permission_asks: list[_PermissionAsk] = []
         # "choose one" questions, in the order they were asked: only the
         # head is ever on screen, the rest wait their turn (the same shape as
         # the write-permission queue in Botference._ask_write_permission)
@@ -437,12 +437,35 @@ class InkBridge:
         self,
         request: WritePermissionRequest,
     ) -> bool | str:
-        if self._pending_permission is not None and not self._pending_permission.done():
-            raise RuntimeError("Permission request already pending")
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool | str] = loop.create_future()
-        self._pending_permission = future
-        self._pending_permission_id = request.request_id
+        """Ask the reader for write access.
+
+        A question asked while another is on screen waits behind it (in
+        self._permission_asks) and is shown the moment the one ahead is done;
+        each carries its request_id out, and the answer names it back.
+        """
+        ask = _PermissionAsk(
+            request=request,
+            answer=asyncio.get_running_loop().create_future(),
+        )
+        self._permission_asks.append(ask)
+        if self._permission_asks[0] is ask:
+            self._show_permission(ask)
+        try:
+            return await ask.answer
+        finally:
+            was_head = self._permission_asks[0] is ask
+            self._permission_asks.remove(ask)
+            if was_head:
+                emit({
+                    "type": "permission_cleared",
+                    "request_id": request.request_id,
+                })
+                # the next question takes the screen the moment this one goes
+                if self._permission_asks:
+                    self._show_permission(self._permission_asks[0])
+
+    def _show_permission(self, ask: "_PermissionAsk") -> None:
+        request = ask.request
         emit({
             "type": "permission_request",
             "request_id": request.request_id,
@@ -457,20 +480,23 @@ class InkBridge:
                 f"@{request.model} is waiting for write permission: "
                 f"{request.path}"
             )
-        try:
-            return await future
-        finally:
-            self._pending_permission = None
-            emit({"type": "permission_cleared"})
 
     def resolve_permission_request(
         self, allow: bool, always: bool = False, request_id: str | None = None,
-    ) -> None:
-        if self._pending_permission is None or self._pending_permission.done():
-            return
-        if request_id and request_id != self._pending_permission_id:
-            return
-        self._pending_permission.set_result("always" if allow and always else bool(allow))
+    ) -> bool:
+        """Answer the question on screen (the head of the queue). Refused
+        (False) when none is up, it is already answered, or the answer names
+        another question (late, or from a second tab); an answer naming none
+        (older pages) answers the one on screen."""
+        if not self._permission_asks:
+            return False
+        head = self._permission_asks[0]
+        if head.answer.done():
+            return False
+        if request_id and request_id != head.request.request_id:
+            return False
+        head.answer.set_result("always" if allow and always else bool(allow))
+        return True
 
     async def request_choice(
         self, prompt: str, options: list[str],
@@ -527,6 +553,14 @@ class InkBridge:
         value = index if isinstance(index, int) and index >= 0 else None
         head.answer.set_result(value)
         return True
+
+
+@dataclass
+class _PermissionAsk:
+    """One write-permission question. The head of
+    InkBridge._permission_asks is the one on screen; the others wait."""
+    request: WritePermissionRequest
+    answer: asyncio.Future  # True, False, or "always"
 
 
 @dataclass
@@ -665,6 +699,24 @@ async def _wait_for_turn(
     return should_exit
 
 
+# What the turn queue is doing. One of QUEUE_STATES, kept in
+# InputTurnQueue._state and moved only by InputTurnQueue._move, which refuses
+# a move not in QUEUE_MOVES:
+#   idle        — no batch of turns is running; the next input starts one;
+#   running     — a batch is running (inputs sent meanwhile join it);
+#   interrupted — the batch was interrupted (Stop): what is queued is
+#                 cleared and the turn cancelled, and when the batch ends no
+#                 "the bots have finished" ping is sent — the reader is here.
+# A Stop while idle, or a second one, is no move.
+QUEUE_STATES = ("idle", "running", "interrupted")
+QUEUE_MOVES = frozenset({
+    ("idle", "running"),
+    ("running", "interrupted"),
+    ("running", "idle"),
+    ("interrupted", "idle"),
+})
+
+
 class InputTurnQueue:
     """Serialize user inputs so messages submitted during a turn run next."""
 
@@ -680,7 +732,17 @@ class InputTurnQueue:
         self._pending: deque[QueuedInput] = deque()
         self._runner: asyncio.Task | None = None
         self._current_turn: asyncio.Task | None = None
-        self._interrupted = False
+        self._state = "idle"
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def _move(self, to: str) -> bool:
+        if (self._state, to) not in QUEUE_MOVES:
+            return False
+        self._state = to
+        return True
 
     @property
     def pending_count(self) -> int:
@@ -688,10 +750,7 @@ class InputTurnQueue:
 
     @property
     def is_running(self) -> bool:
-        return (
-            (self._runner is not None and not self._runner.done())
-            or (self._current_turn is not None and not self._current_turn.done())
-        )
+        return self._state != "idle"
 
     def submit(
         self, text: str, attachments: list[dict], watch: str | None = None,
@@ -710,11 +769,11 @@ class InputTurnQueue:
         )
         if was_running:
             self._emit_queue_state()
-        if not self.is_running:
+        if self._move("running"):
             self._runner = asyncio.create_task(self._run())
 
     def interrupt(self) -> None:
-        self._interrupted = True
+        self._move("interrupted")
         cleared = len(self._pending)
         self._pending.clear()
         if self._current_turn is not None and not self._current_turn.done():
@@ -734,8 +793,14 @@ class InputTurnQueue:
         emit({"type": "queue", "pending": len(self._pending)})
 
     async def _run(self) -> None:
+        try:
+            await self._run_batch()
+        finally:
+            self._current_turn = None
+            self._move("idle")
+
+    async def _run_batch(self) -> None:
         batch_started = time.monotonic()
-        self._interrupted = False
         while self._pending:
             item = self._pending.popleft()
             self._emit_queue_state()
@@ -773,7 +838,7 @@ class InputTurnQueue:
         An interrupt means the user is at the keyboard; short batches mean
         they never had a reason to look away.
         """
-        if self._interrupted or elapsed < _NOTIFY_MIN_TURN_SECONDS:
+        if self._state == "interrupted" or elapsed < _NOTIFY_MIN_TURN_SECONDS:
             return
         if not getattr(self._botference, "notify", False):
             return

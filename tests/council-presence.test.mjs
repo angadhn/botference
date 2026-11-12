@@ -134,7 +134,7 @@ test('authenticated reconnect replaces runtime state; completion, reset, bridge 
 
 test('a bridge moves through its named phases only by the legal moves; mid-turn is read from the phase', async t => {
   const { Bridge, BRIDGE_PHASES, BRIDGE_MOVES } = await council(t);
-  assert.deepEqual(BRIDGE_PHASES, ['starting', 'opening', 'resuming', 'idle', 'working']);
+  assert.deepEqual(BRIDGE_PHASES, ['starting', 'opening', 'resuming', 'idle', 'working', 'closed']);
   // every pair not in the move table is refused and leaves the phase alone
   for (const from of BRIDGE_PHASES) for (const to of [...BRIDGE_PHASES, 'live', 'bogus']) {
     const b = new Bridge();
@@ -145,7 +145,7 @@ test('a bridge moves through its named phases only by the legal moves; mid-turn 
   }
   assert.ok(!BRIDGE_MOVES.has('idle>opening') && !BRIDGE_MOVES.has('working>starting'));
   const written = [];
-  const wire = b => { b.proc = { stdin: { write: l => written.push(JSON.parse(l)) } }; b.available = true; return b; };
+  const wire = b => { b.proc = { stdin: { write: l => written.push(JSON.parse(l)) } }; return b; };
   // a fresh chat: idle after start-up, working while a message is answered
   const a = wire(new Bridge());
   assert.equal(a.midTurn(), false);

@@ -309,7 +309,8 @@
 
   // ── state ──
   const state = {
-    busy: false, queued: 0,
+    roomTurn: 'idle',      // one of ROOM_TURNS; moved only by setRoomTurn
+    queued: 0,
     agentMode: { claude: 'idle', codex: 'idle' }, // one of AGENT_MODES per bot; moved only by setAgentMode
     streams: {},           // key "model:stream_id" -> {el, text}
     summonTimer: null,     // the live clock on summoned agents' working cards
@@ -334,7 +335,7 @@
     // on every attach, so a reload does not forget the conversation.
     routePick: new Map(),                      // sid -> 'claude'|'codex'|'all'
     routeSticky: '',                           // derived from the transcript
-    sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
+    presend: 'guarded',                        // one of PRESEND_MODES; moved only by setPresend
     projects: null,
     openProjects: new Set(),   // expanded projects (any project, active or not)
     // Which projects have their read-only contents panel open, and what the
@@ -354,11 +355,12 @@
     // what the transcript pane is doing: one of TRANSCRIPT_MODES, moved only
     // by setTranscriptMode. A page boots catching up on the server's replay.
     transcriptMode: 'catching_up',
-    pendingSwitch: null,   // session id of an in-flight sidebar chat switch
+    // what this tab's stream is waiting on: one of ATTACH_MODES, moved only
+    // by setAttachMode. The chat a switch is going to is switchTarget().
+    attachMode: 'open',
     currentSid: null,      // active session id (from 'projects' events)
     routeErrorSid: null,   // chat id the server just refused (route_error)
     bridgeId: null,        // this tab's bridge (from 'hello'); named in every POST
-    resuming: false,       // the attached bridge is still executing its spawn-time /resume
     atts: [],              // composer attachments: {id, path, url, thumb, status}
     // what has been LASSOED into this chat (controller-side; the strip
     // above the composer). Not the composer's own attachments: these are
@@ -396,6 +398,67 @@
   function transcriptMove(from, to, freshPane) {
     if (!TRANSCRIPT_MODES.includes(from) || !TRANSCRIPT_MODES.includes(to)) return false;
     return (freshPane ? TRANSCRIPT_MOVES_WITH_PANE : TRANSCRIPT_MOVES).has(from + '>' + to);
+  }
+  // What this tab's stream is waiting on. One of ATTACH_MODES, kept in
+  // state.attachMode and moved only by setAttachMode, which refuses a move
+  // attachMove does not allow:
+  //   open               — the chat on screen is the one the stream is on;
+  //                        nothing is waited for;
+  //   switching          — the reader picked another chat (switchTarget());
+  //                        the stream is moving to it;
+  //   resuming           — the attached bot process is still opening its
+  //                        saved chat (the server's hello said so); its live
+  //                        ready ends the wait;
+  //   switching_resuming — both: the picked chat's process is still opening.
+  // Two facts, one field: the switch is the reader's, the resuming is the
+  // server's, and every pairing of them happens, so each pairing is named.
+  // The switch target exists exactly in the switching modes; only
+  // setAttachMode sets or drops it.
+  const ATTACH_MODES = ['open', 'switching', 'resuming', 'switching_resuming'];
+  const SWITCHING_MODES = ['switching', 'switching_resuming'];
+  const ATTACH_MOVES = new Set([
+    // a chat is picked (another one, even mid-switch): the stream moves
+    ...ATTACH_MODES.map(m => m + '>switching'),
+    // the server says the process is (still) opening its saved chat…
+    'open>resuming', 'resuming>resuming',
+    'switching>switching_resuming', 'switching_resuming>switching_resuming',
+    // …or that it is open (switching_resuming>switching is above)
+    'resuming>open',
+    // the switch is let go while the process still opens
+    'switching_resuming>resuming',
+    // all settled: the switch landed, was refused, or the stream ended
+    ...ATTACH_MODES.map(m => m + '>open'),
+  ]);
+  // a move INTO switching names the chat it goes to; a move within the
+  // switching modes may keep the one it has
+  function attachMove(from, to, target) {
+    if (!ATTACH_MODES.includes(from) || !ATTACH_MODES.includes(to)) return false;
+    if (!ATTACH_MOVES.has(from + '>' + to)) return false;
+    if (SWITCHING_MODES.includes(to) && !SWITCHING_MODES.includes(from) && !target) return false;
+    return true;
+  }
+  let switchSid = null;
+  function setAttachMode(to, target = null) {
+    if (!attachMove(state.attachMode, to, target)) return false;
+    state.attachMode = to;
+    if (!SWITCHING_MODES.includes(to)) switchSid = null;
+    else if (target) switchSid = target;
+    return true;
+  }
+  // the chat a switch is going to, or null when none is under way
+  const switchTarget = () => switchSid;
+  // the attached process is still opening its saved chat
+  const bridgeResuming = () => state.attachMode === 'resuming' || state.attachMode === 'switching_resuming';
+  // what the server says about the process (hello, bots_stopped)
+  function noteResuming(on) {
+    const switching = SWITCHING_MODES.includes(state.attachMode);
+    return setAttachMode(on ? (switching ? 'switching_resuming' : 'resuming') : (switching ? 'switching' : 'open'));
+  }
+  // let the switch go, keeping what the server said about the process
+  function dropSwitch() {
+    if (state.attachMode === 'switching') return setAttachMode('open');
+    if (state.attachMode === 'switching_resuming') return setAttachMode('resuming');
+    return false;
   }
   // switching chats re-attaches this tab's stream to another bridge, and the
   // authoritative transcript arrives as that bridge's history replay. This is
@@ -816,7 +879,7 @@
   }
   function refreshPresendWarn() {
     if (!els.presendWarn) return;
-    if (state.sendOverride) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
+    if (state.presend === 'send_anyway') { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
     const flagged = presendExhausted(els.input.value);
     if (!flagged.length) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
     const a = flagged[0], o = other(a);
@@ -836,7 +899,7 @@
       autosize(); refreshPresendWarn(); syncSend(); els.input.focus();
     });
     els.presendWarn.querySelector('.pw-send').addEventListener('click', () => {
-      state.sendOverride = true; refreshPresendWarn(); submit();
+      setPresend('send_anyway'); refreshPresendWarn(); submit();
     });
   }
 
@@ -863,12 +926,37 @@
     renderAgentsPanel();
     return true;
   }
-  function setBusy(b) {
-    state.busy = b;
-    els.stop.hidden = !b;
-    if (!b) {
+  // Whose turn the ROOM is in. One of ROOM_TURNS, kept in state.roomTurn and
+  // moved only by setRoomTurn:
+  //   idle    — nothing is being answered; the stop button is hidden;
+  //   working — a message is being answered (from its echo or first stream
+  //             event to the next ready); the stop button shows.
+  // Either may follow either; saying the same again is no move, but going
+  // idle always settles every bot's own mode (a lost 'done' cannot leave a
+  // ring spinning past the room's ready).
+  const ROOM_TURNS = ['idle', 'working'];
+  function setRoomTurn(to) {
+    if (!ROOM_TURNS.includes(to)) return false;
+    const moved = state.roomTurn !== to;
+    state.roomTurn = to;
+    els.stop.hidden = to !== 'working';
+    if (to === 'idle') {
       for (const a of AGENTS) setAgentMode(a, 'idle');
     }
+    return moved;
+  }
+  // The pre-send guard (an out-of-credits bot would get this message). One of
+  // PRESEND_MODES, kept in state.presend and moved only by setPresend:
+  //   guarded     — a message that would reach only out-of-credits bots is
+  //                 held and the warning shows;
+  //   send_anyway — the reader pressed "send anyway": the next send goes
+  //                 through, once. Sending or editing the text guards again.
+  const PRESEND_MODES = ['guarded', 'send_anyway'];
+  const PRESEND_MOVES = new Set(['guarded>send_anyway', 'send_anyway>guarded']);
+  function setPresend(to) {
+    if (!PRESEND_MODES.includes(to) || !PRESEND_MOVES.has(state.presend + '>' + to)) return false;
+    state.presend = to;
+    return true;
   }
 
   // ── transcript ──
@@ -2842,11 +2930,11 @@
   function setSyncing(on) { if (els.sync) els.sync.hidden = !on; }
   function switchTo(sid) {
     if (!sid) return;
-    if (sid === state.currentSid && !state.pendingSwitch) return; // already live: nothing to do
+    if (sid === state.currentSid && !switchTarget()) return; // already live: nothing to do
     snapshotCurrent();
     state.filingAsked = false;   // a different chat, a different question
     showQueued(0);               // the old chat's waiting messages stay with it
-    state.pendingSwitch = sid;
+    setAttachMode('switching', sid);
     // …and a different conversation: the pill belongs to the chat it was
     // clicked in and the memory is rebuilt from the incoming replay, so
     // neither of them travels across the switch
@@ -2871,7 +2959,7 @@
   // user's place, anything else lands pinned at the bottom
   function flushReplayBuffer() {
     if (!offscreen()) return;
-    const sid = state.pendingSwitch;
+    const sid = switchTarget();
     const cached = sid ? sessionCache.get(sid) : null;
     const buf = replayBuffer;
     setTranscriptMode(SWAPS_TO[state.transcriptMode]);
@@ -2885,8 +2973,7 @@
   }
   function endSwitch() {
     flushReplayBuffer();
-    state.pendingSwitch = null;
-    state.resuming = false;
+    setAttachMode('open');
     setSyncing(false);
   }
 
@@ -2930,7 +3017,7 @@
   // toast shows, and the next 'projects' event corrects the URL.
   function routeHash() {
     const sid = hashSid();
-    if (!sid || sid === state.currentSid || sid === state.pendingSwitch) return;
+    if (!sid || sid === state.currentSid || sid === switchTarget()) return;
     if (!state.projects) return;
     // one-shot guard: the id the server just refused isn't re-asked in the
     // same breath, but a later deliberate navigation may retry it
@@ -3154,7 +3241,7 @@
   }
   // a pill choice belongs to the chat it was made in, and the chat being
   // switched TO is the one a click during a switch is about
-  const routeKey = () => state.pendingSwitch || state.currentSid || '';
+  const routeKey = () => switchTarget() || state.currentSid || '';
   // Where the next message goes: a tag actually typed in the box (that is the
   // sentence about to be sent, and the row must not claim otherwise while it
   // is being written), else the pill this chat clicked, else who this chat was
@@ -3290,7 +3377,7 @@
   }
 
   els.input.addEventListener('input', () => {
-    state.sendOverride = false; // editing invalidates a prior "send anyway"
+    setPresend('guarded'); // editing invalidates a prior "send anyway"
     autosize(); refreshCompletions(); syncSend(); refreshPresendWarn(); renderRoutes();
   });
   // the @-menu follows the caret, not just the text: moving into or out of a
@@ -3437,11 +3524,11 @@
     // never send into a void: if this turn targets an out-of-credits agent,
     // surface the warning + switch affordance and hold the message (a slash
     // command like /model is control traffic, never gated)
-    if (!state.sendOverride && !text.startsWith('/') && presendExhausted(text).length) {
+    if (state.presend !== 'send_anyway' && !text.startsWith('/') && presendExhausted(text).length) {
       refreshPresendWarn();
       return;
     }
-    state.sendOverride = false;
+    setPresend('guarded');
     // WHERE THIS ONE GOES. The row has been promising an address; this is
     // where the promise is kept. A slash command is control traffic and is
     // never touched, words that already name a bot are the reader's own last
@@ -3513,7 +3600,7 @@
     // a typed /resume of a chat already open elsewhere: the server refuses to
     // fork the session and asks this tab to re-attach to the live bridge
     if (r.switch) switchTo(r.switch);
-    else setBusy(true);
+    else setRoomTurn('working');
     return true;
   }
 
@@ -3696,7 +3783,7 @@
         // a freshly spawned bridge is still executing its /resume: its replay
         // shows the interstitial startup chat, so the offscreen buffer must
         // stay up past replay_done until the live 'ready' lands
-        state.resuming = !!ev.resuming;
+        noteResuming(!!ev.resuming);
         if (ev.noauth && !localStorage.getItem('council-noauth-dismissed')) els.banner.hidden = false;
         break;
       case 'route_error':
@@ -3704,14 +3791,13 @@
         // we are on the fallback bridge — say so and let
         // the next 'projects' event correct the URL. Remember the refused id
         // so routeHash doesn't immediately re-ask for it (toast loop).
-        state.routeErrorSid = state.pendingSwitch || hashSid() || null;
+        state.routeErrorSid = switchTarget() || hashSid() || null;
         // put the URL back now: switchTo already wrote the refused id into
         // it, and a hash naming one chat over a header and transcript of
         // another is exactly the mismatch this toast is apologising for
         if (state.currentSid) syncHash(state.currentSid);
         toast(ev.error || 'chat not found — showing the current chat');
-        state.pendingSwitch = null;
-        state.resuming = false;
+        setAttachMode('open');
         setSyncing(false);
         break;
       case 'room': {
@@ -3755,7 +3841,7 @@
         );
         break;
       case 'stream':
-        setBusy(true);
+        setRoomTurn('working');
         // a summoned build agent's live output goes into its nested card, not
         // the transcript proper (and never into the subagents lane)
         if (ev.agent && ev.agent.id && String(ev.model || '').toLowerCase() === 'agent') {
@@ -3790,7 +3876,7 @@
           renderRoutes();
         }
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
-        setBusy(true);
+        setRoomTurn('working');
         break;
       case 'status':
         state.facts = {
@@ -3848,7 +3934,7 @@
         if (!hashRestored) { hashRestored = true; routeHash(); }
         // reflect the actually-open chat — but never clobber a hash
         // routeHash is mid-way through opening
-        if (!state.pendingSwitch && active) syncHash(active);
+        if (!switchTarget() && active) syncHash(active);
         break;
       }
       case 'completion_context':
@@ -3863,14 +3949,14 @@
         // connect replay ends at replay_done instead)
         if (!serverReplay()) {
           if (offscreen()) endSwitch();
-          else if (state.pendingSwitch) { state.pendingSwitch = null; setSyncing(false); }
+          else if (switchTarget()) { dropSwitch(); setSyncing(false); }
           if (state.transcriptMode === 'redrawing') { setTranscriptMode('live'); settleBottom(); }
         }
         // a watch always ends inside the turn it started in; if its 'done'
         // was lost (history trimmed, tab joined mid-watch) the idle boundary
         // settles the mark rather than leaving it spinning forever
         if (state.gemini.phase === 'watching') geminiPhase(null);
-        setBusy(false);
+        setRoomTurn('idle');
         settleCard();
         freezeLanes();
         endWorkingAgentCards();
@@ -3886,7 +3972,7 @@
         resetLanes();
         // a restore replay follows: pin, no heuristics (redrawing). Inside
         // the server's own replay it is all one catch-up, ended by replay_done
-        if (state.pendingSwitch || state.resuming) {
+        if (state.attachMode !== 'open') {
           // in-flight switch: keep the optimistic (or outgoing) transcript on
           // screen and build the authoritative one offscreen — never blank.
           // A fresh buffer also drops a resuming bridge's interstitial
@@ -3906,7 +3992,7 @@
         // the catch-up (or redraw) is over; a hidden pane waits to swap in
         const over = offscreen() ? 'offscreen_waiting' : 'live';
         if (state.transcriptMode !== over) setTranscriptMode(over);
-        if (offscreen() && !state.resuming) {
+        if (offscreen() && !bridgeResuming()) {
           // attached to a live chat: its replayed history IS the transcript
           endSwitch();
           break;
@@ -3935,14 +4021,14 @@
         // bridge. The chat is redrawn offscreen (clear_panes, above) and
         // swapped in at its ready, so the reader sees no blank moment.
         state.bridgeId = ev.bridge_id || null;
-        state.resuming = !!ev.resuming;
+        noteResuming(!!ev.resuming);
         addMsg('system', ev.text || 'The bots were stopped. They start again with your next message.');
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       case 'not_sent': {
         // messages that waited for a chat that never opened: one line, and
         // the words back in the box (ahead of anything typed since)
-        if (offscreen() || state.pendingSwitch) endSwitch();
+        if (offscreen() || switchTarget()) endSwitch();
         addMsg('system', ev.text || 'Not sent: this chat could not be opened.');
         const back = (ev.texts || []).join('\n');
         if (back) {
@@ -3953,14 +4039,14 @@
         break;
       }
       case 'bridge_exit':
-        if (offscreen() || state.pendingSwitch) endSwitch(); // don't hang on a stale optimistic view
+        if (offscreen() || switchTarget()) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       case 'exit':
-        if (offscreen() || state.pendingSwitch) endSwitch();
+        if (offscreen() || switchTarget()) endSwitch();
         addMsg('system', 'session ended.');
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       // mode, notify, bridge_log, ping, permission/choice bookkeeping we
       // don't visualize: ignore quietly
@@ -4016,7 +4102,7 @@
   // which chat this tab wants its stream attached to: an in-flight switch
   // wins, then the open chat (reconnects stay on it), then a deep link
   function chatParam() {
-    const sid = state.pendingSwitch || state.currentSid || hashSid();
+    const sid = switchTarget() || state.currentSid || hashSid();
     return sid ? '?chat=' + encodeURIComponent(sid) : '';
   }
   function resetView() {
@@ -4025,7 +4111,7 @@
     els.transcript.innerHTML = '';
     state.streams = {};
     setTranscriptMode('catching_up');
-    state.pendingSwitch = null;
+    dropSwitch();
     resetLanes();
     setSyncing(false);
     updateEmpty();
@@ -4035,7 +4121,7 @@
   // transcript (cached paint or the outgoing chat) and builds the replayed
   // one offscreen; anything else starts clean
   function prepView() {
-    if (state.pendingSwitch) {
+    if (switchTarget()) {
       setTranscriptMode('offscreen_catching_up', document.createElement('div'));
       state.streams = {};
       liveCard = null;
@@ -4148,6 +4234,10 @@
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
     // the transcript pane's modes: the pure move rule and the one setter
     TRANSCRIPT_MODES, transcriptMove, setTranscriptMode,
+    // the room's turn and the pre-send guard: each list and its one setter
+    ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
+    // what the stream waits on: the pure move rule, the one setter, the target
+    ATTACH_MODES, attachMove, setAttachMode, switchTarget,
     renderRoutes, routeNow, routeWordOf, defaultRoute,
     projectTasks: () => ptasks,
     renderBilling, loadBilling, setKeyInfo: k => { keyInfo = k; renderBilling(); },
