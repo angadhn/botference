@@ -75,7 +75,7 @@ describe("links", () => {
   it("copies a link's address after its label", () => {
     const lines = preRenderLines([{ speaker: "claude", text: "See [docs](https://example.com) ok" }], 60);
     const selection: PaneSelection = {
-      pane: "room", anchorLine: 0, anchorCol: 0, focusLine: 0, focusCol: lines[0]!.text.length, dragging: false,
+      pane: "room", anchorLine: 0, anchorCol: 0, focusLine: 0, focusCol: lines[0]!.text.length,
     };
     assert.ok(selectedTextFromLines(lines, selection).endsWith("See docs (https://example.com) ok"));
   });
@@ -83,7 +83,7 @@ describe("links", () => {
   it("copies a bare URL once", () => {
     const lines = preRenderLines([{ speaker: "claude", text: "at http://localhost:3000 ok" }], 60);
     const selection: PaneSelection = {
-      pane: "room", anchorLine: 0, anchorCol: 0, focusLine: 0, focusCol: lines[0]!.text.length, dragging: false,
+      pane: "room", anchorLine: 0, anchorCol: 0, focusLine: 0, focusCol: lines[0]!.text.length,
     };
     assert.ok(selectedTextFromLines(lines, selection).endsWith("at http://localhost:3000 ok"));
   });

@@ -93,10 +93,14 @@ import {
   PACED_MESSAGE_INTERVAL_MS,
 } from "./v2/messages.js";
 import {
+  NO_SELECTION,
   hitTestPane,
+  moveSelection,
   selectedTextFromLines,
+  selectionRange,
   type PaneHit,
-  type PaneSelection,
+  type SelectionEvent,
+  type SelectionState,
 } from "./v2/selection.js";
 import { BusyLine, Pane, THEME } from "./panes.js";
 import {
@@ -577,7 +581,22 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
   const [mouseMode, setMouseModeState] = useState<MouseMode>("app_scroll");
   const mouseModeRef = useRef<MouseMode>("app_scroll");
   const mouseSelectionMode = mouseMode === "terminal_select";
-  const [paneSelection, setPaneSelection] = useState<PaneSelection | null>(null);
+  // The one field for "is text selected in the pane?" (named modes in
+  // v2/selection.ts); changed only through moveSelectionTo() below.
+  const [selection, setSelectionState] = useState<SelectionState>(NO_SELECTION);
+  const selectionRef = useRef<SelectionState>(NO_SELECTION);
+  /** Returns the new state when the move changed it, else null. */
+  const moveSelectionTo = useCallback((event: SelectionEvent): SelectionState | null => {
+    const move = moveSelection(selectionRef.current, event);
+    if (!move.ok) {
+      flightRecorder.note(`selection_move_refused:${event.type}:${move.reason}`);
+      return null;
+    }
+    if (!move.changed) return null;
+    selectionRef.current = move.state;
+    setSelectionState(move.state);
+    return move.state;
+  }, []);
   const [roomScroll, setRoomScroll] = useState(0);
   const [lastSeenRoomCount, setLastSeenRoomCount] = useState(0);
 
@@ -1006,47 +1025,25 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
     return onMouseEvent((event) => {
       const hit = hitTestPaneForEvent(event);
       if (event.kind === "press") {
-        if (!hit) {
-          setPaneSelection(null);
-          return;
-        }
-        focusRoom();
-        setPaneSelection({
-          pane: hit.pane,
-          anchorLine: hit.lineIndex,
-          anchorCol: hit.col,
-          focusLine: hit.lineIndex,
-          focusCol: hit.col,
-          dragging: true,
-        });
+        if (hit) focusRoom();
+        moveSelectionTo({ type: "press", hit });
         return;
       }
 
       if (event.kind === "drag") {
-        if (!hit) return;
-        setPaneSelection((prev) => {
-          if (!prev || !prev.dragging || prev.pane !== hit.pane) return prev;
-          return {
-            ...prev,
-            focusLine: hit.lineIndex,
-            focusCol: hit.col,
-          };
-        });
+        moveSelectionTo({ type: "drag", hit });
         return;
       }
 
       if (event.kind === "release") {
-        setPaneSelection((prev) => {
-          if (!prev) return prev;
-          const finalSelection = hit && hit.pane === prev.pane
-            ? { ...prev, focusLine: hit.lineIndex, focusCol: hit.col, dragging: false }
-            : { ...prev, dragging: false };
-          void copyToClipboard(selectedTextFromLines(roomFlatLines, finalSelection));
-          return finalSelection;
-        });
+        // Copied once, on the way into "selected".
+        const state = moveSelectionTo({ type: "release", hit });
+        if (state?.mode === "selected") {
+          void copyToClipboard(selectedTextFromLines(roomFlatLines, state.range));
+        }
       }
     });
-  }, [hitTestPaneForEvent, roomFlatLines]);
+  }, [hitTestPaneForEvent, moveSelectionTo, roomFlatLines]);
 
   useEffect(() => {
     setMouseTrackingEnabled(wantsMouseTracking(mouseMode));
@@ -1963,7 +1960,7 @@ export default function App({ bridgeArgs }: { bridgeArgs: BridgeArgs }) {
           textWidth={councilTextWidth}
           scrollOffset={roomScroll}
           hasNewMessages={roomHasNew}
-          selection={paneSelection}
+          selection={selectionRange(selection)}
         />
       </Box>
 
