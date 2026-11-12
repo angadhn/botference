@@ -309,7 +309,8 @@
 
   // ── state ──
   const state = {
-    busy: false, queued: 0,
+    roomTurn: 'idle',      // one of ROOM_TURNS; moved only by setRoomTurn
+    queued: 0,
     agentMode: { claude: 'idle', codex: 'idle' }, // one of AGENT_MODES per bot; moved only by setAgentMode
     streams: {},           // key "model:stream_id" -> {el, text}
     summonTimer: null,     // the live clock on summoned agents' working cards
@@ -334,7 +335,7 @@
     // on every attach, so a reload does not forget the conversation.
     routePick: new Map(),                      // sid -> 'claude'|'codex'|'all'
     routeSticky: '',                           // derived from the transcript
-    sendOverride: false,                       // one-shot "send anyway" past the pre-send warning
+    presend: 'guarded',                        // one of PRESEND_MODES; moved only by setPresend
     projects: null,
     openProjects: new Set(),   // expanded projects (any project, active or not)
     // Which projects have their read-only contents panel open, and what the
@@ -878,7 +879,7 @@
   }
   function refreshPresendWarn() {
     if (!els.presendWarn) return;
-    if (state.sendOverride) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
+    if (state.presend === 'send_anyway') { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
     const flagged = presendExhausted(els.input.value);
     if (!flagged.length) { els.presendWarn.hidden = true; els.presendWarn.innerHTML = ''; return; }
     const a = flagged[0], o = other(a);
@@ -898,7 +899,7 @@
       autosize(); refreshPresendWarn(); syncSend(); els.input.focus();
     });
     els.presendWarn.querySelector('.pw-send').addEventListener('click', () => {
-      state.sendOverride = true; refreshPresendWarn(); submit();
+      setPresend('send_anyway'); refreshPresendWarn(); submit();
     });
   }
 
@@ -925,12 +926,37 @@
     renderAgentsPanel();
     return true;
   }
-  function setBusy(b) {
-    state.busy = b;
-    els.stop.hidden = !b;
-    if (!b) {
+  // Whose turn the ROOM is in. One of ROOM_TURNS, kept in state.roomTurn and
+  // moved only by setRoomTurn:
+  //   idle    — nothing is being answered; the stop button is hidden;
+  //   working — a message is being answered (from its echo or first stream
+  //             event to the next ready); the stop button shows.
+  // Either may follow either; saying the same again is no move, but going
+  // idle always settles every bot's own mode (a lost 'done' cannot leave a
+  // ring spinning past the room's ready).
+  const ROOM_TURNS = ['idle', 'working'];
+  function setRoomTurn(to) {
+    if (!ROOM_TURNS.includes(to)) return false;
+    const moved = state.roomTurn !== to;
+    state.roomTurn = to;
+    els.stop.hidden = to !== 'working';
+    if (to === 'idle') {
       for (const a of AGENTS) setAgentMode(a, 'idle');
     }
+    return moved;
+  }
+  // The pre-send guard (an out-of-credits bot would get this message). One of
+  // PRESEND_MODES, kept in state.presend and moved only by setPresend:
+  //   guarded     — a message that would reach only out-of-credits bots is
+  //                 held and the warning shows;
+  //   send_anyway — the reader pressed "send anyway": the next send goes
+  //                 through, once. Sending or editing the text guards again.
+  const PRESEND_MODES = ['guarded', 'send_anyway'];
+  const PRESEND_MOVES = new Set(['guarded>send_anyway', 'send_anyway>guarded']);
+  function setPresend(to) {
+    if (!PRESEND_MODES.includes(to) || !PRESEND_MOVES.has(state.presend + '>' + to)) return false;
+    state.presend = to;
+    return true;
   }
 
   // ── transcript ──
@@ -3351,7 +3377,7 @@
   }
 
   els.input.addEventListener('input', () => {
-    state.sendOverride = false; // editing invalidates a prior "send anyway"
+    setPresend('guarded'); // editing invalidates a prior "send anyway"
     autosize(); refreshCompletions(); syncSend(); refreshPresendWarn(); renderRoutes();
   });
   // the @-menu follows the caret, not just the text: moving into or out of a
@@ -3498,11 +3524,11 @@
     // never send into a void: if this turn targets an out-of-credits agent,
     // surface the warning + switch affordance and hold the message (a slash
     // command like /model is control traffic, never gated)
-    if (!state.sendOverride && !text.startsWith('/') && presendExhausted(text).length) {
+    if (state.presend !== 'send_anyway' && !text.startsWith('/') && presendExhausted(text).length) {
       refreshPresendWarn();
       return;
     }
-    state.sendOverride = false;
+    setPresend('guarded');
     // WHERE THIS ONE GOES. The row has been promising an address; this is
     // where the promise is kept. A slash command is control traffic and is
     // never touched, words that already name a bot are the reader's own last
@@ -3574,7 +3600,7 @@
     // a typed /resume of a chat already open elsewhere: the server refuses to
     // fork the session and asks this tab to re-attach to the live bridge
     if (r.switch) switchTo(r.switch);
-    else setBusy(true);
+    else setRoomTurn('working');
     return true;
   }
 
@@ -3815,7 +3841,7 @@
         );
         break;
       case 'stream':
-        setBusy(true);
+        setRoomTurn('working');
         // a summoned build agent's live output goes into its nested card, not
         // the transcript proper (and never into the subagents lane)
         if (ev.agent && ev.agent.id && String(ev.model || '').toLowerCase() === 'agent') {
@@ -3850,7 +3876,7 @@
           renderRoutes();
         }
         addMsg('user', ev.text, { attachments: ev.attachments || [] });
-        setBusy(true);
+        setRoomTurn('working');
         break;
       case 'status':
         state.facts = {
@@ -3930,7 +3956,7 @@
         // was lost (history trimmed, tab joined mid-watch) the idle boundary
         // settles the mark rather than leaving it spinning forever
         if (state.gemini.phase === 'watching') geminiPhase(null);
-        setBusy(false);
+        setRoomTurn('idle');
         settleCard();
         freezeLanes();
         endWorkingAgentCards();
@@ -3997,7 +4023,7 @@
         state.bridgeId = ev.bridge_id || null;
         noteResuming(!!ev.resuming);
         addMsg('system', ev.text || 'The bots were stopped. They start again with your next message.');
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       case 'not_sent': {
         // messages that waited for a chat that never opened: one line, and
@@ -4015,12 +4041,12 @@
       case 'bridge_exit':
         if (offscreen() || switchTarget()) endSwitch(); // don't hang on a stale optimistic view
         addMsg('system', `agent bridge exited (code ${ev.code})${ev.error ? ` — ${ev.error}` : ''}. Restart the server to continue.`);
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       case 'exit':
         if (offscreen() || switchTarget()) endSwitch();
         addMsg('system', 'session ended.');
-        setBusy(false);
+        setRoomTurn('idle');
         break;
       // mode, notify, bridge_log, ping, permission/choice bookkeeping we
       // don't visualize: ignore quietly
@@ -4208,6 +4234,8 @@
     renderTasks, rescanTasks, taskSrc: () => taskSrc,
     // the transcript pane's modes: the pure move rule and the one setter
     TRANSCRIPT_MODES, transcriptMove, setTranscriptMode,
+    // the room's turn and the pre-send guard: each list and its one setter
+    ROOM_TURNS, setRoomTurn, PRESEND_MODES, setPresend,
     // what the stream waits on: the pure move rule, the one setter, the target
     ATTACH_MODES, attachMove, setAttachMode, switchTarget,
     renderRoutes, routeNow, routeWordOf, defaultRoute,

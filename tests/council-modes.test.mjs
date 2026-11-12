@@ -161,3 +161,55 @@ test('attach modes through a real switch: picked, the process still opening, the
   assert.equal(C.state.attachMode, 'open');
   assert.equal(C.switchTarget(), null);
 });
+
+// ── 3. the room's turn and the pre-send guard: two named modes, not two flags ──
+test('room turn: one of ROOM_TURNS, moved only by setRoomTurn; the stop button follows it', needsDom, async t => {
+  const { C, doc } = await page(t);
+  assert.deepEqual([...C.ROOM_TURNS], ['idle', 'working']);
+  assert.equal('busy' in C.state, false, 'the old busy flag is gone');
+  assert.equal(C.state.roomTurn, 'idle');
+  const stop = doc.getElementById('stop');
+  assert.equal(C.setRoomTurn('bogus'), false);
+  assert.equal(C.state.roomTurn, 'idle');
+  C.handle({ type: 'user_echo', text: 'hi' });
+  assert.equal(C.state.roomTurn, 'working');
+  assert.equal(stop.hidden, false);
+  assert.equal(C.setRoomTurn('working'), false, 'saying it again is no move');
+  C.handle({ type: 'stream', model: 'claude', kind: 'start', stream_id: 's1' });
+  assert.equal(C.state.agentMode.claude, 'working');
+  C.handle({ type: 'ready' });
+  assert.equal(C.state.roomTurn, 'idle');
+  assert.equal(stop.hidden, true);
+  assert.equal(C.state.agentMode.claude, 'idle', 'the room going idle settles every bot');
+});
+
+test('pre-send guard: send anyway lets ONE message through, then guards again; editing guards too', needsDom, async t => {
+  const { C, posts } = await page(t);
+  assert.deepEqual([...C.PRESEND_MODES], ['guarded', 'send_anyway']);
+  assert.equal('sendOverride' in C.state, false, 'the old override flag is gone');
+  assert.equal(C.setPresend('guarded'), false, 'already guarded: no move');
+  assert.equal(C.setPresend('bogus'), false);
+  C.state.exhausted.claude = 'out of credits';
+  C.state.exhausted.codex = 'out of credits';
+  const inputs = () => posts.filter(p => p.url === '/input');
+  C.els.input.value = 'anyone there?';
+  C.submit();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(inputs().length, 0, 'held: every bot it would reach is out of credits');
+  assert.equal(C.els.presendWarn.hidden, false);
+  // "send anyway" then an edit: the edit takes the permission back
+  assert.equal(C.state.presend, 'guarded');
+  assert.equal(C.setPresend('send_anyway'), true);
+  C.els.input.dispatchEvent(new C.els.input.ownerDocument.defaultView.Event('input'));
+  assert.equal(C.state.presend, 'guarded');
+  // the button: one message through, and guarded again after it
+  C.els.presendWarn.querySelector('.pw-send').click();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(inputs().length, 1);
+  assert.equal(inputs()[0].body.text, 'anyone there?');
+  assert.equal(C.state.presend, 'guarded');
+  C.els.input.value = 'and again?';
+  C.submit();
+  await new Promise(r => setTimeout(r, 5));
+  assert.equal(inputs().length, 1, 'the next message is held again');
+});

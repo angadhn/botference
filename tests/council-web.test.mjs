@@ -3620,7 +3620,7 @@ test('a message the server never got comes back to the box; nothing is marked bu
   C.submit();
   await new Promise(r => setTimeout(r, 20));
   assert.equal(input.value, 'my carefully typed thought', 'the words are put back');
-  assert.equal(C.state.busy, false);
+  assert.equal(C.state.roomTurn, 'idle');
   assert.equal(doc.getElementById('stop').hasAttribute('hidden'), true, 'no stuck stop button');
   const sys = [...doc.querySelectorAll('.msg.system')].pop();
   assert.match(sys.textContent, /not sent/);
@@ -3749,13 +3749,13 @@ test('whose turn: the working light passes from Claude to Codex as the turn does
   assert.equal(working(), 'codex', 'only the bot whose turn it is spins');
   assert.equal(card('claude'), 'idle');
   assert.equal(card('codex'), 'working…', 'the panel shows Codex at work before it calls any tool');
-  assert.equal(C.state.busy, true, 'the room is still mid-turn');
+  assert.equal(C.state.roomTurn, 'working', 'the room is still mid-turn');
   // a bridge that sends no 'done' still ends the turn with the bot's message
   C.handle({ type: 'room', speaker: 'codex', text: 'and mine', stream_id: 's2' });
   assert.equal(working(), '');
   assert.equal(card('codex'), 'idle');
   C.handle({ type: 'ready' });
-  assert.equal(C.state.busy, false);
+  assert.equal(C.state.roomTurn, 'idle');
   // only the two named modes exist, and a bot that is not one is refused
   assert.equal(C.setAgentMode('claude', 'thinking'), false);
   assert.equal(C.setAgentMode('gemini', 'working'), false);
