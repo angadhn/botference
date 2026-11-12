@@ -220,6 +220,28 @@ test('Chats lists the chats filed nowhere; a filed chat lives only under Project
   assert.deepEqual({ ...C.state.panel }, { view: 'chats' });
 });
 
+test('newest first: chats by last activity; a project rises with its newest chat', dom, async t => {
+  const { C, list, click } = await mkPanel(t);
+  const snap = SNAP();
+  // the list arrives in no particular order
+  snap.inbox_sessions = [snap.inbox_sessions[2], snap.inbox_sessions[0], snap.inbox_sessions[3], snap.inbox_sessions[1]];
+  snap.projects[0].sessions.reverse();
+  // a fresh chat in Garden plan lifts the whole project above Orbit notes book
+  snap.projects[1].sessions.push({ session_id: 'gar00002', title: 'Fence quote', updated_at: ago(0.5), active: false });
+  snap.projects[1].session_count = 2;
+  C.handle(snap);
+  assert.deepEqual(rowsOf(list), ['Tea kettle notes', 'Packing list',
+    'A very long title about choosing a name for the garden shed door', 'Bread timings']);
+  click('#panel-pills [data-pill="projects"]');
+  const projs = [...list.querySelectorAll('.lp-proj')];
+  assert.deepEqual(projs.map(p => p.querySelector('b').textContent), ['Garden plan', 'Orbit notes book', 'Attic clear-out']);
+  assert.match(projs[0].textContent, /2 chats · 30m ago/);
+  click('.lp-proj[data-pid="orbit"]');
+  assert.deepEqual(rowsOf(list), ['Chapter two outline', 'Kettle of fish']);
+  click('.lp-back');
+  click('.lp-proj[data-pid="garden"]');
+  assert.deepEqual(rowsOf(list), ['Fence quote', 'Seed order']);
+});
 test('an older-chats note says how many are not listed', dom, async t => {
   const { C, list } = await mkPanel(t);
   C.handle({ ...SNAP(), inbox_session_count: 130 });

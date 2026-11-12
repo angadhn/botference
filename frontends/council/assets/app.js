@@ -2574,6 +2574,14 @@
   const isLive = pr => (pr.status || 'active') === 'active';
   const projectById = pid => allProjects().find(pr => pr.id === pid) || null;
   const chatTitle = s => s.title || String(s.session_id).slice(0, 8);
+  // newest first, by last activity; the page sorts for itself rather than
+  // trusting the order the list arrived in
+  const byNewest = (a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || ''));
+  const newestChats = list => [...(list || [])].sort(byNewest);
+  // a project's last activity is its newest chat's, so a fresh chat lifts the
+  // whole project to the top
+  const projectLatest = pr => newestChats(pr.sessions)[0]?.updated_at || '';
+  const projectsByNewest = list => [...list].sort((a, b) => projectLatest(b).localeCompare(projectLatest(a)));
   // every chat in the last list from the controller, with where it is filed
   function allChats() {
     const p = state.projects;
@@ -3003,7 +3011,7 @@
       + (more > 0 ? `<div class="lp-empty">${more} more. Search finds them by name.</div>` : '');
   }
   function chatsHtml(p) {
-    const rows = p.inbox_sessions || [];
+    const rows = newestChats(p.inbox_sessions);
     let html = rows.length
       ? rows.map(s => chatRow(s, '')).join('')
       : '<div class="lp-empty">No chats here yet. Chats in a project are under Projects.</div>';
@@ -3012,15 +3020,15 @@
   }
   function projRow(pr) {
     const n = pr.session_count ?? (pr.sessions || []).length;
-    const last = (pr.sessions || [])[0];
-    const when = last ? relTime(last.updated_at) : '';
+    const latest = projectLatest(pr);
+    const when = latest ? relTime(latest) : '';
     return `<button class="lp-proj${isLive(pr) ? '' : ' muted'}" type="button" data-act="enter" data-pid="${esc(pr.id)}">
       <span class="pn"><b>${esc(pr.title || pr.id)}</b><i>${plural(n, 'chat')}${when ? ` · ${when} ago` : ''}</i></span>${LP_ICON.go}</button>`;
   }
   function projectsHtml() {
     const all = allProjects();
-    const live = all.filter(isLive);
-    const archived = all.filter(pr => !isLive(pr));
+    const live = projectsByNewest(all.filter(isLive));
+    const archived = projectsByNewest(all.filter(pr => !isLive(pr)));
     let html = live.map(projRow).join('');
     if (!live.length) html += '<div class="lp-empty">No projects yet.</div>';
     html += rowModeOf('new-project') === 'naming-new-project'
@@ -3046,7 +3054,7 @@
     const key = 'project:' + pr.id;
     const mode = rowModeOf(key);
     const title = pr.title || pr.id;
-    const rows = pr.sessions || [];
+    const rows = newestChats(pr.sessions);
     const n = pr.session_count ?? rows.length;
     let html = `<div class="lp-crumb"><button class="lp-back" type="button" data-act="pill" data-pill="projects">${LP_ICON.back}Projects</button></div>`;
     html += mode === 'confirming-delete'

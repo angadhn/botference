@@ -2,6 +2,7 @@
 
 ## 2026-11-12
 
+- **Council: the left panel lists newest first.** Chats are sorted by last activity, and projects by their newest chat, so a fresh chat lifts its whole project to the top.
 - **Council: a new left panel with two pills, Chats and Projects.** Chats lists chats not filed in a project, then your browser-plugin chats under "On web pages" (tap to open the page, or "Copy into the council" from the row menu). Projects lists projects, "+ New project" and archived ones. One "New chat" button and one search box above both. Each chat row has a menu: rename, move to project, archive, delete (asked in the row). What is open, the row being worked on, the list being read and a copy in progress are each one named state.
 - **Terminal: a second Enter after answering a question no longer sends a second answer.** A question on screen that you have answered is now "answered": it stays drawn until the engine clears it, and no key can answer it again.
 - **Terminal: you can send from a narrow window when the project list had the keys.** Whether the project list is hidden, shown or focused is one named state, and which pane has the keys is read off it, so the keys can never sit on a list that is not drawn.
