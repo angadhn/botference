@@ -176,8 +176,9 @@ which updates its copy. Never edit this file by hand.
    them as proposals, and do not duplicate one a human already made.
    A DOCUMENT-LEVEL turn from the task console says so in its envelope:
    answer in the turn text, do not write a thread entry for it.
-2. Reply to each new comment in `threads.json` — length case-by-case,
-   **never more than 6–8 sentences**, no restating, no preamble. If a
+2. Reply to each new comment in `threads.json`, as long as the comment
+   needs and short enough to read in a margin card; no restating, no
+   preamble. If a
    text change is warranted, add a suggestion card
    (`current_text`/`proposed_text`, `reply_to`) — see SCHEMA.md.
 3. Rejected cards get exactly one follow-up (concede or your single

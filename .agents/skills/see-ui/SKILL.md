@@ -29,13 +29,11 @@ botference see <target> [label] [--viewport WxH]... [--basic-auth U:P] [--out DI
   Any width under 500 px is shot as an emulated phone screen of exactly
   that size: the page sees `innerWidth` 390, a device pixel ratio of 3,
   a mobile user agent and touch input, and the PNG is 390 by 844
-  pixels. (Before 2026-10-30 this was not true: headless Chrome will
-  not make a window narrower than 500 px, so "phone" shots were a
-  500 px layout with the right edge cut off. Do not trust overflow
-  findings from older phone shots.) A page with no
+  pixels. A page with no
   `<meta name="viewport">` lays out 980 px wide and is zoomed out to
   fit, as on a real phone. If `see` prints "NOT a real phone layout",
-  the emulation failed and that shot is the old cut-off kind.
+  the emulation failed: the shot is a 500 px layout with the right edge
+  cut off, so do not trust overflow findings from it.
 - It prints `wrote: <path>.png` lines. **Read those images.** That is
   the entire point — do not run the command and skip looking.
 - Output defaults to `.botference/shots/` (gitignored by convention).

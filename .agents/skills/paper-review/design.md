@@ -11,11 +11,11 @@ botference chat required:
 botference review <dir-or-file>   # detect, confirm in chat, build, serve, open
 ```
 
-- **Conversational scaffold, not flags.** On first run the page opens
-  with a bot message in the chat panel: "I found `paper.tex`
-  — it has `\documentclass` and inputs 7 sections, so I think it's the
-  master file. Render these for review?" You approve (or correct it) in
-  the chat, then it builds. Detection first, your confirmation always.
+- **Detection first, your confirmation always.** On first run the
+  launcher echoes what it detected ("`paper.tex` has `\documentclass`
+  and inputs 7 sections, so it looks like the master file") and builds
+  only after you confirm or correct it. Discussion of the text happens
+  in anchored margin threads; there is no chat panel.
 - The **source** (LaTeX now; Markdown and other pandoc-able formats next)
   renders as commentable HTML. The HTML is a pure build product — never
   edited directly; every change goes source-first, then re-render.
@@ -150,7 +150,7 @@ frontend is replaceable — a web frontend is that same observation.)
 |---|---|
 | P1 | Generic engine (config + renderers) + per-user comment files & merged rendering (git collab from day one) |
 | P2 | Bot replies + live SSE margin + resolved tab; `submit.mjs` for botless collaborators |
-| P3 | Bridge frontend: conversational scaffold, tagged comments → turns, session resume/fresh, chat panel |
+| P3 | Bridge frontend: tagged comments → turns, session resume/fresh |
 | P4 | Apply / Commit / Revert + per-agent-colored inline tracked changes with Finalize |
 | V1.5 | `server.mjs --hosted` (password + handle picker) shared via tunnel; optional free-tier deploy + `review-round.yml` CI round (reply-and-suggest only) |
 | V2 | Cloud deployment: GitHub login, server-synced comments, bring-your-own-sub agents + shared project agent |

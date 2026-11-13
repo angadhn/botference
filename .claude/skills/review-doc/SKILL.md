@@ -1,6 +1,6 @@
 ---
 name: review-doc
-description: Render any document the user needs to review (design docs, plans, story bibles, proposals, reports) as a self-contained HTML page with Google-Docs-style commenting — highlight text, attach notes, export feedback. Use whenever producing or updating a document whose primary purpose is for the user to READ AND REACT TO, whenever the user asks for "a review doc", or when they hand back a *.feedback.md file. The user has standing instructions that all review documents get this treatment.
+description: Render a document as a self-contained HTML page with Google-Docs-style margin comments (highlight text, attach notes, export feedback). Use when the user asks for a review doc or a commentable version of a document, or hands back a *.feedback.md file.
 ---
 
 # review-doc — reviewable HTML documents with margin comments
