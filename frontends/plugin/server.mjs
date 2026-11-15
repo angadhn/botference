@@ -27,6 +27,9 @@
 //         PLUGIN_EXTENSION_IDS (optional, comma list: pin which chrome-extension
 //           ids may call; unset = any extension), PLUGIN_PUBLIC_HOSTNAMES
 //           (optional, comma list: extra public names whose pages may call)
+// the active profile's dirs, before any other module reads process.env
+import { PROFILE } from './profile-env.mjs';
+import * as profiles from '../shared/profiles.mjs';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -96,7 +99,8 @@ if (HOSTED && !process.env.PLUGIN_PASSWORD) {
 // identity, auth and the guest-agent budget all live in one place
 const hosted = createHosted({
   hosted: HOSTED,
-  dir: store.DIR,
+  // guests' grants are a machine setting: the companion's own folder, not the profile's history
+  dir: store.BASE_DIR,
   ownerHandle: () => store.readConfig().author,
   password: process.env.PLUGIN_PASSWORD || '',
   ownerPassword: process.env.PLUGIN_OWNER_PASSWORD || '',
@@ -4360,6 +4364,40 @@ export function handler(req, res) {
   // typed into a phone would cross the tunnel, and there is no reason for it
   // ever to: keys are configured where the CLIs they pay for actually run.
   // isLocalDirect is the same three-part test the whole owner model rests on.
+  // Profiles: which accounts and history the bots run under, machine-wide.
+  // This machine only, like the keys below: a switch changes whose
+  // subscription every bot spends and whose history every tab shows.
+  if (url === '/profiles' || url === '/profile') {
+    if (!isLocalDirect(req)) {
+      req.resume();
+      return fail(res, 403, 'profiles can only be viewed or switched from this machine');
+    }
+    if (req.method === 'GET' && url === '/profiles') {
+      try {
+        return ok(res, { active: PROFILE ? PROFILE.name : null, profiles: profiles.profilesWithAccounts() });
+      } catch (e) { return fail(res, 500, String(e.message || e)); }
+    }
+    if (req.method === 'POST' && url === '/profile') {
+      return readBody(req, res, data => {
+        if (!NO_AGENTS && chat && totalQueue() > 0) {
+          return fail(res, 409, 'a bot turn is running or queued; switch when it has finished');
+        }
+        let r;
+        try { r = profiles.setActive(String((data || {}).name || '')); } catch (e) { return fail(res, 500, String(e.message || e)); }
+        if (!r.ok) return fail(res, 400, r.error);
+        if (!r.changed) return ok(res, { active: r.name, changed: false });
+        const me = profiles.ownLabel();
+        const restarted = profiles.restartServices({ except: me });
+        const self = profiles.SERVICE_LABELS.includes(me);
+        ok(res, { active: r.name, changed: true, restarted, companion: self ? 'restarting' : 'restart it to apply' });
+        // launchd brings a non-zero exit straight back, now under the new profile
+        if (self) setTimeout(() => process.exit(75), 300);
+        return undefined;
+      });
+    }
+    req.resume();
+    return fail(res, 405, 'GET /profiles or POST /profile');
+  }
   if (url === '/keys' || url === '/keys/remove' || url === '/key-mode') {
     if (!isLocalDirect(req)) {
       req.resume();

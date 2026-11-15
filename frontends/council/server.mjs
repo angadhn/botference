@@ -21,6 +21,9 @@
 //         COUNCIL_MAX_CHATS (open chats kept before idle ones are parked,
 //                            default 4 — never a limit on how many you open),
 //         COUNCIL_BRIDGE_CMD (tests: JSON argv array replacing the python bridge)
+// the active profile's dirs, before any other module reads process.env
+import { PROFILE } from './profile-env.mjs';
+import * as profiles from '../shared/profiles.mjs';
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1184,6 +1187,33 @@ export function handler(req, res) {
       if (attachments === null) { res.writeHead(400, JSON_HEAD).end('{"ok":false,"error":"bad attachments"}'); return; }
       if (!text.trim() && !attachments.length) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"empty"}'); return; }
       if (text.length > 16000) { res.writeHead(200, JSON_HEAD).end('{"ok":false,"error":"too long"}'); return; }
+      // /profile [name]: which accounts and history the bots run under. Handled
+      // here, not by the bots: a switch restarts this server under the new one.
+      const pm = /^\/profile(?:\s+(\S+))?\s*$/.exec(text.trim());
+      if (pm) {
+        const say = msg => {
+          const b = bridgeForPost(data);
+          if (b) b.broadcast({ type: 'room', speaker: 'system', text: msg });
+          res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, profile: msg }));
+        };
+        let list;
+        try { list = profiles.listProfiles(); } catch (e) { say(`profiles: ${e.message || e}`); return; }
+        if (!list.length) { say('No profiles are set up on this machine. `botference profile init <name>` adopts the current accounts and history as the first one.'); return; }
+        if (!pm[1]) {
+          say(`Profile: ${PROFILE ? PROFILE.name : '(none)'}. Available: ${list.map(p => p.name).join(', ')}. Switch with /profile <name>.`);
+          return;
+        }
+        let r;
+        try { r = profiles.setActive(pm[1]); } catch (e) { say(`profiles: ${e.message || e}`); return; }
+        if (!r.ok) { say(r.error); return; }
+        if (!r.changed) { say(`Already on profile ${r.name}.`); return; }
+        const me = profiles.ownLabel();
+        const restarted = profiles.restartServices({ except: me });
+        const self = profiles.SERVICE_LABELS.includes(me);
+        say(`Switched to profile ${r.name}. ${self ? 'The council restarts now; reload this page in a few seconds.' : 'Restart the council to apply it.'}${restarted.length ? ` Also restarted: ${restarted.join(', ')}.` : ''}`);
+        if (self) setTimeout(() => process.exit(75), 500);
+        return;
+      }
       const bridge = bridgeForPost(data);
       if (!bridge || !bridge.available) { res.writeHead(409, JSON_HEAD).end('{"ok":false,"error":"bridge is not running"}'); return; }
       // a typed /resume targeting a chat another bridge already drives must

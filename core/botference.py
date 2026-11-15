@@ -472,6 +472,8 @@ COMMAND_HELP: list[dict] = [
      "hint": "Only for allowlist mode: let the bots reach a site", "scope": _ALL},
     {"cmd": "/permissions", "args": "", "group": "Settings",
      "hint": "Where the bots may write files", "scope": _ALL},
+    {"cmd": "/profile", "args": "[name]", "group": "Settings",
+     "hint": "Whose accounts and history the bots use; switch", "scope": ("council",)},
 
     # Help
     {"cmd": "/help", "args": "", "group": "Help",

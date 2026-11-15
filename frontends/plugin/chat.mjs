@@ -1056,6 +1056,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // is what a workspace bridge changes — that is the council whose
       // sessions this child reads and writes
       env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: root,
+        // a profile with its own Discuss history: the main workspace's chats
+        // live in that profile's work dir (project lanes keep their own)
+        ...(process.env.BOTFERENCE_PROFILE && process.env.BOTFERENCE_WORK_DIR && root === ROOT
+          ? { BOTFERENCE_WORK_DIR: process.env.BOTFERENCE_WORK_DIR } : {}),
         BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic',
         // the start-up "new model on offer" line (core/model_catalog.py) is
         // dropped here (no turn is capturing yet), so this child must not

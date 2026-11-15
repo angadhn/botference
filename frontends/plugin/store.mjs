@@ -17,12 +17,16 @@ const PLUGIN = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(PLUGIN, '..', '..');
 export const HOME = process.env.BOTFERENCE_HOME || REPO;
 export const ROOT = process.env.BOTFERENCE_PROJECT_ROOT || REPO;
-export const DIR = path.join(ROOT, '.botference', 'plugin');
+// The companion's own folder. Machine settings (config.json, and the hosted
+// guests' grants) live here whatever the profile; a profile's history may
+// live elsewhere (BOTFERENCE_PLUGIN_DIR, set by profile-env.mjs).
+export const BASE_DIR = path.join(ROOT, '.botference', 'plugin');
+export const DIR = process.env.BOTFERENCE_PLUGIN_DIR || BASE_DIR;
 const PAGES = path.join(DIR, 'pages');
 const SNAPS = path.join(DIR, 'snapshots');
 const RUNS = path.join(DIR, 'runs');
 const INDEX_FILE = path.join(DIR, 'index.json');
-const CONFIG_FILE = path.join(DIR, 'config.json');
+const CONFIG_FILE = path.join(BASE_DIR, 'config.json');
 
 // Default vault: the nearest ancestor of the workspace that is an Obsidian
 // vault (has .obsidian/), else the home directory — the export folder is

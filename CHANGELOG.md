@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-15
+
+- **Profiles: whose accounts and history the bots use.** `botference profile init <name>` adopts this machine's current Claude and Codex logins, API keys, Discuss pages and chats and council chats as the first profile, without moving a file. `botference profile add <name>` makes another with its own Claude config dir, Codex home, key file and history, and signs both bots in. One profile is active for the whole machine: `botference profile use <name>`, `/profile <name>` in the council, or Switch on the extension's options page, which also lists each bot's signed-in email. A switch restarts the Discuss companion and the council under the new profile and is refused while a Discuss turn is running. Council projects, blog-site settings and hosted guests' grants are shared across profiles. With no profiles set up, nothing changes.
+
 ## 2026-11-12
 
 - **Discuss side panel: Notes and With bots.** A sticky row of pills (All · Notes · With bots, with counts) under the tabs, on Comments only. A thread is "With bots" once a bot has replied or been called in; nothing is filed by hand, and a note that turns into a bot chat while you look says "Moved to With bots" until you change pill. The pill is remembered per page. The who-commented pills are gone.

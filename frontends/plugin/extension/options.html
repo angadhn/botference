@@ -79,6 +79,14 @@
   #filehint.off { color: var(--bad) }
   #keystatus.ok { color: var(--good) }
   #keystatus.err { color: var(--bad) }
+  #profiles { width: 100%; border-collapse: collapse; font-size: 12px }
+  #profiles th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px }
+  #profiles td { padding: 6px; border-top: 1px solid var(--line); vertical-align: top }
+  #profiles .who { word-break: break-all }
+  #profiles .none { color: var(--muted) }
+  #profilestatus { font-size: 12px; color: var(--muted) }
+  #profilestatus.ok { color: var(--good) }
+  #profilestatus.err { color: var(--bad) }
   button {
     font: 13px/1.2 var(--sans); padding: 8px 14px; min-height: 32px;
     border: 1px solid var(--line); border-radius: 8px;
@@ -141,6 +149,20 @@
       machine the companion runs on, never over a tunnel. Each agent's billing switch lives in
       the drawer's ⚙ menu; with a key saved it starts on <em>API key</em>, and without one it
       cannot leave <em>subscription</em>.</p>
+  </div>
+
+  <h2 class="sub">Profiles</h2>
+  <p class="hint">Whose accounts the bots run under, and whose pages and chats you see. One
+    profile is active for the whole machine; switching restarts the companion and the council
+    under it. Add profiles with <code>botference profile add &lt;name&gt;</code>.</p>
+  <div class="card" id="profiles-card">
+    <table id="profiles">
+      <thead><tr><th>Profile</th><th>Claude</th><th>Codex</th><th></th></tr></thead>
+      <tbody id="profiles-body"><tr><td colspan="4" class="hint">loading…</td></tr></tbody>
+    </table>
+    <div class="row">
+      <span id="profilestatus" role="status"></span>
+    </div>
   </div>
 
   <h2 class="sub">PDFs</h2>
