@@ -131,7 +131,15 @@ botference profile               # list, with each bot's signed-in email
 botference profile use ada       # switch the machine; also `/profile ada` in the council
 botference profile login ada codex   # sign one bot in again
 botference profile remove ada    # forget it; files stay unless --delete-data
+botference profile account add codex work   # another Codex sign-in, then its login
+botference profile account use codex work   # that bot now signs in as it (history unchanged)
 ```
+
+Each bot's account can also be picked on its own: the Discuss model menu has
+an **account** row under billing for each bot, showing the email it is signed
+in with and, when this machine has more than one, a choice of the others
+(owner only). The choice reaches each bot at its next start; history stays
+with the profile.
 
 The extension's options page has a Profiles table (each bot's email, read on
 the companion's machine, and a Switch button); like API keys, it only works

@@ -477,12 +477,12 @@ export class Bridge {
       // variable rather than emptying it — including one this server inherited
       // from the shell or LaunchAgent that started it. The mode is the only
       // authority; nothing left over in our own environment gets a vote.
-      env: keys.applyEnv({
+      env: profiles.withBotDirs(keys.applyEnv({
         ...process.env,
         BOTFERENCE_HOME: HOME,
         BOTFERENCE_PROJECT_ROOT: ROOT,
         BOTFERENCE_CLAUDE_TRANSPORT: 'programmatic', // the web frontend has no tmux to mirror
-      }, COUNCIL_MODES),
+      }, COUNCIL_MODES)),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     // a write to a bot process that has just died fails with EPIPE, emitted

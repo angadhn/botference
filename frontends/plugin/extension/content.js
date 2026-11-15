@@ -3587,6 +3587,18 @@
       },
       // Which auth an agent bills. The companion applies it at the next bridge
       // spawn and tells us whether that is now or after the running turn.
+      // Which sign-in each bot uses (owner only; the companion refuses
+      // anyone else). Emails and opaque ids come back, never a path or token.
+      onAccounts: async () => {
+        const r = await api('GET', '/accounts');
+        if (!r.ok) return failure(r);
+        return { ok: true, accounts: (r.data && r.data.accounts) || null };
+      },
+      onSetAccount: async (agent, id) => {
+        const r = await api('POST', '/account', { agent, id });
+        if (!r.ok) return failure(r);
+        return { ok: true, applies: r.data && r.data.applies, accounts: r.data && r.data.accounts };
+      },
       onSetKeyMode: async (agent, mode) => {
         const r = await api('POST', '/key-mode', { agent, mode });
         if (!r.ok) return failure(r);

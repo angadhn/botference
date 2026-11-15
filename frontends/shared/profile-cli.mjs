@@ -103,8 +103,42 @@ try {
       out(r.deleted ? `Removed "${r.name}" and deleted ${r.deleted}.` : `Removed "${r.name}". Its files are still at ${r.kept}.`);
       break;
     }
+    case 'account': case 'accounts': {
+      // botference profile account [list]
+      // botference profile account add <claude|codex> <label>   (then signs it in)
+      // botference profile account use <claude|codex> <label-or-email>
+      const [sub = 'list', agent, which] = rest;
+      if (sub === 'list') {
+        for (const a of P.AGENTS) {
+          out(`${a}:`);
+          for (const x of P.accountsFor(a)) out(`  ${x.current ? '●' : '○'} ${x.label}  ${x.email || (x.signed_in ? 'signed in' : 'not signed in')}`);
+        }
+        break;
+      }
+      if (!P.AGENTS.includes(agent)) die('account add|use <claude|codex> <label>');
+      if (sub === 'add') {
+        const r = P.addAccount(agent, which);
+        if (!r.ok) die(r.error);
+        out(`Added a ${agent} account "${which}". Signing it in…`);
+        const env = { ...process.env, [agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME']: r.dir };
+        const s = spawnSync(agent, agent === 'claude' ? ['auth', 'login'] : ['login'], { stdio: 'inherit', env });
+        if (s.error) out(`  could not run ${agent}: ${s.error.message}`);
+        out(`\nPick it in the Discuss model menu, or: botference profile account use ${agent} ${which}`);
+        break;
+      }
+      if (sub === 'use') {
+        const x = P.accountsFor(agent).find(y => y.label === which || y.email === which || y.id === which);
+        if (!x) die(`no ${agent} account "${which}" (see: botference profile account)`);
+        const r = P.setAccount(agent, x.id);
+        if (!r.ok) die(r.error);
+        out(r.changed ? `${agent} now signs in as ${x.email || x.label}; bots pick it up at their next start.` : `${agent} is already on ${x.email || x.label}.`);
+        break;
+      }
+      die('account [list] | account add <claude|codex> <label> | account use <claude|codex> <label-or-email>');
+      break;
+    }
     case 'help': case '-h': case '--help':
-      out('botference profile [list|current|init <name>|add <name> [--no-login]|login <name> [claude|codex]|use <name>|remove <name> [--delete-data]]');
+      out('botference profile [list|current|init <name>|add <name> [--no-login]|login <name> [claude|codex]|use <name>|remove <name> [--delete-data]|account [list|add <bot> <label>|use <bot> <label>]]');
       break;
     default:
       die(`unknown profile command "${cmd}" (try: botference profile help)`, 2);

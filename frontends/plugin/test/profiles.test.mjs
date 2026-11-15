@@ -128,3 +128,30 @@ test('the companion\'s history follows the profile; its config does not', () => 
   assert.equal(own.dir, '/profile/plugin');
   assert.equal(own.base, path.join(root, '.botference', 'plugin'), 'config and grants stay in the companion\'s own folder');
 });
+
+test('accounts: each bot lists the machine\'s sign-ins by email and switches through setAccount', () => {
+  reset();
+  assert.deepEqual(P.accountsFor('claude').map(x => x.id), ['default'], 'no profiles: just the default');
+  assert.equal(P.setAccount('claude', 'default').ok, false, 'nothing to switch before profiles exist');
+  P.initRegistry('me'); const ada = P.addProfile('ada');
+  const extra = P.addAccount('codex', 'work');
+  assert.equal(extra.ok, true);
+  assert.equal(P.addAccount('codex', 'work').ok, false, 'duplicate label refused');
+  assert.equal(P.addAccount('gemini', 'x').ok, false);
+  const codex = P.accountsFor('codex');
+  assert.deepEqual(codex.map(x => x.label), ['default', 'ada', 'work']);
+  assert.equal(codex.find(x => x.current).id, 'default');
+  assert.ok(!JSON.stringify(codex).includes(SECRETS), 'no paths in the list');
+  assert.equal(P.setAccount('codex', 'a-nope').ok, false, 'unknown id refused');
+  const r = P.setAccount('codex', extra.id);
+  assert.equal(r.ok, true); assert.equal(r.changed, true);
+  assert.equal(P.accountsFor('codex').find(x => x.current).label, 'work');
+  assert.equal(P.accountsFor('claude').find(x => x.current).id, 'default', 'the other bot is untouched');
+  assert.equal(P.activeProfile().name, 'me', 'history stays with the profile');
+  // the next bot to start gets the chosen folder; a null one unsets it
+  const env = P.withBotDirs({ CLAUDE_CONFIG_DIR: '/stray', CODEX_HOME: '/old' });
+  assert.equal(env.CODEX_HOME, extra.dir);
+  assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(P.setAccount('claude', P.accountId(ada.record.claude_config_dir)).ok, true);
+  assert.equal(P.withBotDirs({}).CLAUDE_CONFIG_DIR, ada.record.claude_config_dir);
+});

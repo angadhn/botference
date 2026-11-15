@@ -2,6 +2,8 @@
 
 ## 2026-11-15
 
+- **Discuss: each bot's account in the model menu.** Under billing, every bot now shows the email it is signed in with, and a choice of the other accounts this machine has for it (owner only). Picking one reaches that bot at its next start, in the Discuss companion and the council alike; your history stays where it is. Add another sign-in with `botference profile account add <claude|codex> <label>`, which opens that bot's login.
+- **Council: `/profile` is in the /help popup again.** The page's built-in command list had missed it.
 - **Profiles: whose accounts and history the bots use.** `botference profile init <name>` adopts this machine's current Claude and Codex logins, API keys, Discuss pages and chats and council chats as the first profile, without moving a file. `botference profile add <name>` makes another with its own Claude config dir, Codex home, key file and history, and signs both bots in. One profile is active for the whole machine: `botference profile use <name>`, `/profile <name>` in the council, or Switch on the extension's options page, which also lists each bot's signed-in email. A switch restarts the Discuss companion and the council under the new profile and is refused while a Discuss turn is running. Council projects, blog-site settings and hosted guests' grants are shared across profiles. With no profiles set up, nothing changes.
 
 ## 2026-11-12

@@ -242,6 +242,7 @@
     {"cmd": "/notify", "args": "[on|off]", "hint": "Desktop notice when the bots finish", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/allow-host", "args": "[<domain>|remove <domain>]", "hint": "Only for allowlist mode: let the bots reach a site", "group": "Settings", "scope": ["tui", "council"]},
     {"cmd": "/permissions", "args": "", "hint": "Where the bots may write files", "group": "Settings", "scope": ["tui", "council"]},
+    {"cmd": "/profile", "args": "[name]", "hint": "Whose accounts and history the bots use; switch", "group": "Settings", "scope": ["council"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
   // fallback completion context: the bridge emits completion_context exactly

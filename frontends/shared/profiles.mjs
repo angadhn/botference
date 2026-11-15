@@ -21,6 +21,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { secretsDir } from './secrets.mjs';
 
 export const FORMAT = 1;
@@ -211,6 +212,86 @@ export function profilesWithAccounts() {
     claude: claudeAccount(p.claude_config_dir),
     codex: codexAccount(p.codex_home),
   }));
+}
+
+// --- accounts: which sign-in each bot uses, chosen per bot ------------------
+//
+// An account is one sign-in folder for one bot: a Claude config dir or a Codex
+// home. The active profile names one for each bot (claude_config_dir,
+// codex_home); setAccount() is the one way to change that choice, and it only
+// accepts an account this machine already knows. Known accounts are the CLI
+// default, every profile's own folder, and any added with addAccount(). The
+// drawer sees them by email and an opaque id, never by path.
+export const AGENTS = ['claude', 'codex'];
+const AGENT_FIELD = { claude: 'claude_config_dir', codex: 'codex_home' };
+const accountOf = { claude: d => claudeAccount(d), codex: d => codexAccount(d) };
+export const accountId = dir => (dir ? 'a-' + createHash('sha1').update(dir).digest('hex').slice(0, 12) : 'default');
+
+function knownDirs(agent, r) {
+  const dirs = [null];
+  for (const rec of Object.values((r && r.profiles) || {})) {
+    if (rec && rec[AGENT_FIELD[agent]]) dirs.push(rec[AGENT_FIELD[agent]]);
+  }
+  for (const d of Object.values(((r && r.accounts) || {})[agent] || {})) dirs.push(d);
+  return [...new Set(dirs)];
+}
+
+/** Every account this machine knows for one bot: [{id, label, email,
+ *  signed_in, current}]. Without profiles, just the default, current. */
+export function accountsFor(agent) {
+  if (!AGENTS.includes(agent)) throw new Error(`unknown bot ${agent}`);
+  const r = readRegistry();
+  const cur = r ? (r.profiles[r.active] || {})[AGENT_FIELD[agent]] || null : null;
+  const labels = Object.fromEntries(Object.entries(((r && r.accounts) || {})[agent] || {}).map(([k, d]) => [d, k]));
+  return knownDirs(agent, r).map(dir => {
+    const a = accountOf[agent](dir);
+    return { id: accountId(dir), label: dir ? (labels[dir] || path.basename(path.dirname(dir))) : 'default',
+      email: a.email, signed_in: a.signed_in, current: dir === cur };
+  });
+}
+
+/** The one way a bot's account changes, for the active profile. */
+export function setAccount(agent, id) {
+  if (!AGENTS.includes(agent)) return { ok: false, error: `unknown bot ${agent}` };
+  const r = readRegistry();
+  if (!r) return { ok: false, error: 'profiles are not set up yet: run `botference profile init <your name>` first' };
+  const dir = knownDirs(agent, r).find(d => accountId(d) === id);
+  if (dir === undefined) return { ok: false, error: `no ${agent} account ${id} on this machine` };
+  const rec = { ...r.profiles[r.active] };
+  if ((rec[AGENT_FIELD[agent]] || null) === dir) return { ok: true, changed: false };
+  rec[AGENT_FIELD[agent]] = dir;
+  writeRegistry({ ...r, profiles: { ...r.profiles, [r.active]: rec } });
+  return { ok: true, changed: true, account: accountOf[agent](dir) };
+}
+
+/** A new sign-in folder for one bot, under <secrets>/accounts/<bot>/<label>. */
+export function addAccount(agent, label) {
+  if (!AGENTS.includes(agent)) return { ok: false, error: `unknown bot ${agent}` };
+  if (!validName(label)) return { ok: false, error: `not a valid account label: ${JSON.stringify(label)}` };
+  const r = readRegistry();
+  if (!r) return { ok: false, error: 'profiles are not set up yet: run `botference profile init <your name>` first' };
+  const accounts = { ...(r.accounts || {}) };
+  const mine = { ...(accounts[agent] || {}) };
+  if (mine[label]) return { ok: false, error: `${agent} account "${label}" already exists` };
+  const dir = path.join(secretsDir(), 'accounts', agent, label);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  mine[label] = dir; accounts[agent] = mine;
+  writeRegistry({ ...r, accounts });
+  return { ok: true, id: accountId(dir), dir };
+}
+
+/** The bots' sign-in folders as the registry says NOW, for a bridge about to
+ *  start: a change made in the drawer reaches the next bot that starts, in
+ *  either server, without restarting it. Returns env, changed in place. */
+export function withBotDirs(env) {
+  let p = null;
+  try { p = activeProfile(); } catch { return env; } // unreadable: keep what start-up set
+  if (!p) return env;
+  for (const [agent, field] of Object.entries(AGENT_FIELD)) {
+    const name = agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME';
+    if (p[field]) env[name] = p[field]; else delete env[name];
+  }
+  return env;
 }
 
 // --- restarting the services after a switch ---------------------------------

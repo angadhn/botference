@@ -151,6 +151,8 @@
 //   onSetModel(agent, model)            → {ok, queued}                    (POST /model)
 //   onSetEffort(agent, level)           → {ok, queued} | {ok:false,error} (POST /effort)
 //   onSetKeyMode(agent, mode)           → {ok, applies} | {ok:false,error}  (POST /key-mode)
+//   onAccounts()                        → {ok, accounts:{claude:[…],codex:[…]}} (GET /accounts, owner only)
+//   onSetAccount(agent, id)             → {ok, applies, accounts}           (POST /account)
 //   onOpenOptions(agent|null)           → {ok}  open the extension's OWN options
 //                                         page, optionally asking it to focus one
 //                                         agent's key field. The only key
@@ -7297,6 +7299,18 @@ ${bubbleShellHtml()}`;
         auth.appendChild(authName);
         auth.appendChild(billSwitch(agent));
         line.appendChild(auth);
+
+        // and which account it is signed in as: one row per bot, a choice when
+        // this machine has more than one (the companion's /accounts, owner only)
+        const acct = mk('label', 'pop-row pop-account');
+        acct.hidden = true;                    // until the companion lists accounts
+        const acctName = mk('span', 'pop-sub');
+        acctName.textContent = 'account';
+        acct.appendChild(acctName);
+        const acctSel = mk('select');
+        acctSel.setAttribute('data-account', agent);
+        acct.appendChild(acctSel);
+        line.appendChild(acct);
         group.appendChild(line);
 
         const g = mk('div', 'gauge');
@@ -7352,6 +7366,7 @@ ${bubbleShellHtml()}`;
         syncPicker(group, agent, 'model');
         syncPicker(group, agent, 'effort');
         syncAuth(group, agent);
+        syncAccount(group, agent);
         paintGauge(group, agent, st[agent]);
       }
       syncVerbosity();
@@ -7505,6 +7520,7 @@ ${bubbleShellHtml()}`;
       // colour) is what every pick writes too, so it is set below as before
       const settled = r && r.ok !== false ? 'got' : 'lost';
       if (canLoadMove(D.models, settled)) loadMove(D.models, settled, '', null);
+      refreshAccounts();
       if (r && r.ok !== false) {
         ingestModels(r);
         // the companion answered: a failure the line still shows no longer stands
@@ -7718,6 +7734,63 @@ ${bubbleShellHtml()}`;
 
     // A switch with two positions and a third thing that is not a position:
     // "asked for a key, waiting to hear whether there is one".
+    // The account row: the bot's signed-in email, and a choice of the other
+    // accounts this machine has for it. Rebuilt only when the list changed,
+    // so an open <select> is never replaced under the finger.
+    const accountLabel = x => (x.email || x.label || x.id) + (x.signed_in ? '' : ' (not signed in)');
+    function syncAccount(group, agent) {
+      const row = group.querySelector('.pop-account');
+      const sel = group.querySelector('select[data-account]');
+      if (!row || !sel) return;
+      const list = D.models.accounts && D.models.accounts[agent];
+      row.hidden = !(list && list.length);
+      if (row.hidden) return;
+      const key = JSON.stringify(list.map(x => [x.id, accountLabel(x)]));
+      if (sel.getAttribute('data-key') !== key) {
+        sel.textContent = '';
+        for (const x of list) {
+          const o = mk('option');
+          o.value = x.id;
+          o.textContent = accountLabel(x);
+          sel.appendChild(o);
+        }
+        sel.setAttribute('data-key', key);
+      }
+      const cur = list.find(x => x.current) || list[0];
+      if (cur) sel.value = cur.id;
+      sel.disabled = list.length < 2 || D.models.accountPending === agent;
+      row.title = list.length < 2
+        ? 'the only ' + agent + ' account on this machine — add another with: botference profile account add ' + agent + ' <label>'
+        : 'which ' + agent + ' account the bot signs in with; applies from its next turn';
+    }
+    async function refreshAccounts() {
+      let r;
+      try { r = await cb('onAccounts')(); } catch { r = null; }
+      // an old companion, or a guest: no row at all rather than an empty one
+      D.models.accounts = r && r.ok !== false ? r.accounts : null;
+      if (popIs('models')) syncModels();
+    }
+    async function pickAccount(agent, id) {
+      const list = (D.models.accounts && D.models.accounts[agent]) || [];
+      const want = list.find(x => x.id === id);
+      if (!want || want.current) return;
+      D.models.accountPending = agent;
+      setLine(D.models, agent + ' account → ' + accountLabel(want) + '…', 'plain');
+      syncModels();
+      let r;
+      try { r = await cb('onSetAccount')(agent, id); }
+      catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+      D.models.accountPending = null;
+      if (!r || r.ok === false) {
+        setLine(D.models, (r && r.error) || 'could not change account', 'bad');
+      } else {
+        if (r.accounts) D.models.accounts = Object.assign({}, D.models.accounts, { [agent]: r.accounts });
+        setLine(D.models, agent + ' account → ' + accountLabel(want)
+          + (r.applies === 'next-restart' ? ' (from the next turn)' : ''), 'plain');
+      }
+      syncModels();
+    }
+
     function syncAuth(group, agent) {
       const seg = group.querySelector('.pop-bill');
       const row = group.querySelector('.pop-auth');
@@ -8186,6 +8259,8 @@ ${bubbleShellHtml()}`;
         if (sel.value === NOPICK) return;      // the placeholder is not a choice
         // two selects per agent, told apart by which attribute carries the name
         // (billing is a switch, not a select — it goes through the click path)
+        const acc = sel.getAttribute('data-account');
+        if (acc) { pickAccount(acc, sel.value); return; }
         const eff = sel.getAttribute('data-effort');
         if (eff) { pickEffort(eff, sel.value); return; }
         pickModel(sel.getAttribute('data-agent'), sel.value);

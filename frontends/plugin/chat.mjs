@@ -8,6 +8,7 @@
 //
 // The bridge is never sent /quit: the child outlives every page, so a second
 // annotated page costs a /new, not a process.
+import { withBotDirs } from '../shared/profiles.mjs';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1055,7 +1056,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       // BOTFERENCE_HOME is where the CODE is and never moves; the working root
       // is what a workspace bridge changes — that is the council whose
       // sessions this child reads and writes
-      env: applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: root,
+      // the bots' sign-in folders as chosen right now (shared/profiles.mjs)
+      env: withBotDirs(applyKeyEnv({ ...env, BOTFERENCE_HOME: HOME, BOTFERENCE_PROJECT_ROOT: root,
         // a profile with its own Discuss history: the main workspace's chats
         // live in that profile's work dir (project lanes keep their own)
         ...(process.env.BOTFERENCE_PROFILE && process.env.BOTFERENCE_WORK_DIR && root === ROOT
@@ -1092,7 +1094,7 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
           ? { BOTFERENCE_PLAN_ARTIFACTS_DIR: artifactsDir,
             ...(artifactsLink ? { BOTFERENCE_PLAN_ARTIFACTS_LINK: artifactsLink } : {}),
             ...(summonNote ? { BOTFERENCE_SUMMON_PLACEMENT: summonNote } : {}) }
-          : {}) }),
+          : {}) })),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     available = true;

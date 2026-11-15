@@ -4364,6 +4364,33 @@ export function handler(req, res) {
   // typed into a phone would cross the tunnel, and there is no reason for it
   // ever to: keys are configured where the CLIs they pay for actually run.
   // isLocalDirect is the same three-part test the whole owner model rests on.
+  // Accounts: which sign-in each bot uses, picked per bot from the drawer's
+  // model menu. Owner only — emails are personal and the choice decides whose
+  // subscription is spent. A change reaches the next bot that starts; idle
+  // ones are stopped now so that is the next turn (applyKeyChange's rule).
+  if (url === '/accounts' || url === '/account') {
+    if (!hosted.isOwner(req)) {
+      req.resume();
+      return fail(res, 403, 'accounts are the owner\'s to see and change');
+    }
+    if (req.method === 'GET' && url === '/accounts') {
+      try {
+        return ok(res, { accounts: Object.fromEntries(profiles.AGENTS.map(a => [a, profiles.accountsFor(a)])) });
+      } catch (e) { return fail(res, 500, String(e.message || e)); }
+    }
+    if (req.method === 'POST' && url === '/account') {
+      return readBody(req, res, data => {
+        const agent = String((data || {}).agent || ''); const id = String((data || {}).id || '');
+        let r;
+        try { r = profiles.setAccount(agent, id); } catch (e) { return fail(res, 500, String(e.message || e)); }
+        if (!r.ok) return fail(res, 400, r.error);
+        const applies = r.changed ? applyKeyChange().applies : 'now';
+        return ok(res, { changed: r.changed, applies, accounts: profiles.accountsFor(agent) });
+      });
+    }
+    req.resume();
+    return fail(res, 405, 'GET /accounts or POST /account');
+  }
   // Profiles: which accounts and history the bots run under, machine-wide.
   // This machine only, like the keys below: a switch changes whose
   // subscription every bot spends and whose history every tab shows.
