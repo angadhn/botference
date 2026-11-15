@@ -28,7 +28,10 @@ export const FORMAT = 1;
 export const SURFACES = ['discuss', 'council'];
 // The record's fields, all optional paths; null = the pre-profiles default.
 export const FIELDS = ['claude_config_dir', 'codex_home', 'keys_file',
-  'discuss_data_dir', 'discuss_work_dir', 'council_work_dir'];
+  'discuss_data_dir', 'discuss_work_dir', 'council_work_dir',
+  // where each bot's conversation history lives for this profile, whichever
+  // account it signs in with (null = the CLI's own home)
+  'claude_history_home', 'codex_history_home'];
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/i;
 // The launch agents a switch restarts, when they are loaded (macOS only).
 export const SERVICE_LABELS = ['com.botference.plugin-web', 'com.botference.council'];
@@ -101,6 +104,8 @@ export function addProfile(name) {
     discuss_data_dir: path.join(base, 'discuss', 'plugin'),
     discuss_work_dir: path.join(base, 'discuss', 'work'),
     council_work_dir: path.join(base, 'council', 'work'),
+    claude_history_home: path.join(base, 'claude'),
+    codex_history_home: path.join(base, 'codex'),
   };
   for (const k of ['claude_config_dir', 'codex_home', 'discuss_data_dir', 'discuss_work_dir', 'council_work_dir']) {
     fs.mkdirSync(rec[k], { recursive: true, mode: 0o700 });
@@ -290,8 +295,70 @@ export function withBotDirs(env) {
   for (const [agent, field] of Object.entries(AGENT_FIELD)) {
     const name = agent === 'claude' ? 'CLAUDE_CONFIG_DIR' : 'CODEX_HOME';
     if (p[field]) env[name] = p[field]; else delete env[name];
+    try { shareHistory(agent, p[field], p[HISTORY_FIELD[agent]]); } catch (e) {
+      process.stderr.write(`[profiles] ${agent} history not shared: ${e.message || e}\n`);
+    }
   }
   return env;
+}
+
+// --- one conversation history per profile, whichever account is signed in ---
+//
+// A bot keeps each chat's memory inside its sign-in folder (Claude: projects/,
+// Codex: sessions/), so switching a bot to another account would leave every
+// chat's memory behind. Instead, an account folder's history folder is a link
+// to the profile's own history home, made as the bot starts: a chat carries
+// on with its context whatever account pays for the next reply.
+export const HISTORY_FIELD = { claude: 'claude_history_home', codex: 'codex_history_home' };
+export const HISTORY_SUB = { claude: 'projects', codex: 'sessions' };
+const defaultHome = agent => path.join(os.homedir(), agent === 'claude' ? '.claude' : '.codex');
+
+// Move what a folder holds into another, never overwriting: same-named
+// folders merge, a same-named file stays where it was (returned).
+function mergeInto(from, to) {
+  const left = [];
+  fs.mkdirSync(to, { recursive: true });
+  for (const name of fs.readdirSync(from)) {
+    const a = path.join(from, name); const b = path.join(to, name);
+    const sa = fs.lstatSync(a);
+    if (!fs.existsSync(b)) { fs.renameSync(a, b); continue; }
+    if (sa.isDirectory() && fs.lstatSync(b).isDirectory()) left.push(...mergeInto(a, b));
+    else left.push(a);
+  }
+  return left;
+}
+
+/** Make <account>/<sub> the profile's <history home>/<sub>. Returns what it
+ *  did: 'same' (the account IS the history home), 'linked', 'relinked',
+ *  'merged' (an account's own history moved in first), or 'skipped' (the
+ *  CLI's own home cannot be pointed elsewhere without moving its history). */
+export function shareHistory(agent, accountDir, historyHome) {
+  const sub = HISTORY_SUB[agent];
+  const acct = accountDir || defaultHome(agent);
+  const home = historyHome || defaultHome(agent);
+  if (path.resolve(acct) === path.resolve(home)) return 'same';
+  if (!accountDir) return 'skipped';           // never re-point ~/.claude or ~/.codex
+  const target = path.join(home, sub);
+  const link = path.join(acct, sub);
+  fs.mkdirSync(target, { recursive: true });
+  fs.mkdirSync(acct, { recursive: true });
+  let st = null;
+  try { st = fs.lstatSync(link); } catch { /* none yet */ }
+  if (st && st.isSymbolicLink()) {
+    if (path.resolve(path.dirname(link), fs.readlinkSync(link)) === path.resolve(target)) return 'linked';
+    fs.unlinkSync(link); fs.symlinkSync(target, link); return 'relinked';
+  }
+  let result = 'linked';
+  if (st && st.isDirectory()) {
+    const left = mergeInto(link, target);
+    if (left.length) fs.renameSync(link, `${link}.pre-shared-${Date.now()}`);
+    else fs.rmSync(link, { recursive: true, force: true });
+    result = 'merged';
+  } else if (st) {
+    throw new Error(`${link} is a file, not a folder`);
+  }
+  fs.symlinkSync(target, link);
+  return result;
 }
 
 // --- restarting the services after a switch ---------------------------------

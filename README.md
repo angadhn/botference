@@ -140,6 +140,8 @@ an **account** row under billing for each bot, showing the email it is signed
 in with and, when this machine has more than one, a choice of the others
 (owner only). The choice reaches each bot at its next start; history stays
 with the profile.
+Switching a bot's account never loses a chat's memory: every account folder
+shares the profile's one conversation history for that bot.
 
 The extension's options page has a Profiles table (each bot's email, read on
 the companion's machine, and a Switch button); like API keys, it only works

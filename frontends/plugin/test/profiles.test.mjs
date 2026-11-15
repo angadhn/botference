@@ -155,3 +155,40 @@ test('accounts: each bot lists the machine\'s sign-ins by email and switches thr
   assert.equal(P.setAccount('claude', P.accountId(ada.record.claude_config_dir)).ok, true);
   assert.equal(P.withBotDirs({}).CLAUDE_CONFIG_DIR, ada.record.claude_config_dir);
 });
+
+test('switching a bot\'s account keeps every chat\'s memory: one history per profile', () => {
+  reset();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-home-'));
+  const prevHome = process.env.HOME; process.env.HOME = home;
+  try {
+    // the default homes already hold this profile's history
+    fs.mkdirSync(path.join(home, '.claude', 'projects', '-blog'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'projects', '-blog', 'chat-1.jsonl'), 'old claude memory');
+    fs.mkdirSync(path.join(home, '.codex', 'sessions', '2026'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.codex', 'sessions', '2026', 'rollout-x.jsonl'), 'old codex memory');
+    P.initRegistry('me');
+    const c = P.addAccount('claude', 'second');
+    const x = P.addAccount('codex', 'second');
+    // a login left a little history of its own in the new Codex folder: merged, not lost
+    fs.mkdirSync(path.join(x.dir, 'sessions', '2026'), { recursive: true });
+    fs.writeFileSync(path.join(x.dir, 'sessions', '2026', 'rollout-new.jsonl'), 'new');
+    P.setAccount('claude', c.id); P.setAccount('codex', x.id);
+    const env = P.withBotDirs({});
+    assert.equal(env.CLAUDE_CONFIG_DIR, c.dir);
+    assert.equal(fs.readFileSync(path.join(c.dir, 'projects', '-blog', 'chat-1.jsonl'), 'utf8'), 'old claude memory');
+    assert.equal(fs.readFileSync(path.join(x.dir, 'sessions', '2026', 'rollout-x.jsonl'), 'utf8'), 'old codex memory');
+    assert.ok(fs.existsSync(path.join(home, '.codex', 'sessions', '2026', 'rollout-new.jsonl')), 'merged into the shared history');
+    // a reply written under the new account lands in the one history
+    fs.writeFileSync(path.join(c.dir, 'projects', '-blog', 'chat-1b.jsonl'), 'next turn');
+    assert.ok(fs.existsSync(path.join(home, '.claude', 'projects', '-blog', 'chat-1b.jsonl')));
+    // switching back, then again, is idempotent
+    P.setAccount('claude', 'default'); P.withBotDirs({});
+    P.setAccount('claude', c.id);
+    assert.equal(P.shareHistory('claude', c.dir, null), 'linked');
+    // the CLI's own home is never re-pointed
+    assert.equal(P.shareHistory('claude', null, path.join(home, 'elsewhere')), 'skipped');
+    assert.ok(!fs.lstatSync(path.join(home, '.claude', 'projects')).isSymbolicLink());
+  } finally {
+    process.env.HOME = prevHome;
+  }
+});
