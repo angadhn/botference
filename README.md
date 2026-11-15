@@ -125,7 +125,7 @@ One profile is active for the whole machine; the Discuss companion and the
 council read it at start-up, and a switch restarts them under the new one.
 
 ```bash
-botference profile init angadh   # adopt today's accounts and history as the first profile, in place
+botference profile init me       # adopt today's accounts and history as the first profile, in place
 botference profile add ada       # new profile under ~/.botference/profiles/ada, then claude + codex login
 botference profile               # list, with each bot's signed-in email
 botference profile use ada       # switch the machine; also `/profile ada` in the council

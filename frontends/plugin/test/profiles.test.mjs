@@ -26,27 +26,27 @@ test('no registry: no profile, and the environment is left exactly as it was', (
 
 test('init adopts today\'s state: every dir null, active, file is 0600', () => {
   reset();
-  assert.equal(P.initRegistry('angadh').ok, true);
+  assert.equal(P.initRegistry('me').ok, true);
   assert.equal(P.initRegistry('again').ok, false, 'a second init is refused');
   const a = P.activeProfile();
-  assert.equal(a.name, 'angadh');
+  assert.equal(a.name, 'me');
   for (const f of P.FIELDS) assert.equal(a[f], null, f);
   assert.equal(fs.statSync(P.registryFile()).mode & 0o777, 0o600);
 });
 
 test('the default profile unsets the CLI dir variables and leaves the work dir alone', () => {
-  reset(); P.initRegistry('angadh');
+  reset(); P.initRegistry('me');
   const env = { CLAUDE_CONFIG_DIR: '/stray', CODEX_HOME: '/stray', BOTFERENCE_WORK_DIR: '/from-council-env' };
   P.applyActiveProfile('council', env);
   assert.equal(env.CLAUDE_CONFIG_DIR, undefined);
   assert.equal(env.CODEX_HOME, undefined);
   assert.equal(env.BOTFERENCE_KEYS_FILE, undefined);
   assert.equal(env.BOTFERENCE_WORK_DIR, '/from-council-env');
-  assert.equal(env.BOTFERENCE_PROFILE, 'angadh');
+  assert.equal(env.BOTFERENCE_PROFILE, 'me');
 });
 
 test('add gives a profile its own dirs, and each surface its own history', () => {
-  reset(); P.initRegistry('angadh');
+  reset(); P.initRegistry('me');
   const r = P.addProfile('ada');
   assert.equal(r.ok, true);
   for (const k of ['claude_config_dir', 'codex_home', 'discuss_data_dir', 'discuss_work_dir', 'council_work_dir']) {
@@ -67,23 +67,23 @@ test('add gives a profile its own dirs, and each surface its own history', () =>
 });
 
 test('setActive is the one switch, and refuses what it cannot honour', () => {
-  reset(); P.initRegistry('angadh'); P.addProfile('ada');
+  reset(); P.initRegistry('me'); P.addProfile('ada');
   assert.equal(P.setActive('nobody').ok, false);
-  assert.deepEqual(P.setActive('angadh'), { ok: true, name: 'angadh', changed: false });
+  assert.deepEqual(P.setActive('me'), { ok: true, name: 'me', changed: false });
   const r = P.setActive('ada');
-  assert.equal(r.changed, true); assert.equal(r.from, 'angadh');
+  assert.equal(r.changed, true); assert.equal(r.from, 'me');
   assert.equal(P.activeProfile().name, 'ada');
 });
 
 test('remove refuses the active profile and keeps data unless asked', () => {
-  reset(); P.initRegistry('angadh'); P.addProfile('ada'); P.addProfile('bo');
-  assert.equal(P.removeProfile('angadh').ok, false, 'active one refused');
+  reset(); P.initRegistry('me'); P.addProfile('ada'); P.addProfile('bo');
+  assert.equal(P.removeProfile('me').ok, false, 'active one refused');
   const kept = P.removeProfile('ada');
   assert.equal(kept.ok, true); assert.equal(kept.deleted, null);
   assert.ok(fs.existsSync(path.join(SECRETS, 'profiles', 'ada')));
   const gone = P.removeProfile('bo', { deleteData: true });
   assert.ok(gone.deleted && !fs.existsSync(gone.deleted));
-  assert.deepEqual(P.listProfiles().map(x => x.name), ['angadh']);
+  assert.deepEqual(P.listProfiles().map(x => x.name), ['me']);
 });
 
 test('bad names are refused everywhere', () => {
@@ -102,7 +102,7 @@ test('an unreadable registry stops everything rather than guessing', () => {
 });
 
 test('accounts are read locally and no token comes back', () => {
-  reset(); P.initRegistry('angadh'); const r = P.addProfile('ada');
+  reset(); P.initRegistry('me'); const r = P.addProfile('ada');
   const claims = Buffer.from(JSON.stringify({ email: 'ada@example.org' })).toString('base64url');
   fs.writeFileSync(path.join(r.record.codex_home, 'auth.json'),
     JSON.stringify({ tokens: { id_token: `h.${claims}.s`, access_token: 'SECRET-A', refresh_token: 'SECRET-R' } }));
