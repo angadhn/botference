@@ -20,6 +20,8 @@
 // companion is also writing the same page can lose the receipt (the list of
 // copies on the page) to the companion's next save. The council chat itself
 // is unaffected — it lives in the council, not in the record.
+// the active profile's dirs, before the store reads them
+import './profile-env.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

@@ -85,6 +85,13 @@ if [ "${1:-}" = "site" ] || [ "${1:-}" = "sites" ]; then
   exec node "${BOTFERENCE_HOME}/frontends/plugin/site-cli.mjs" "$@"
 fi
 
+# --- profile: whose accounts and history the bots run under (machine-wide).
+# All of it is frontends/shared/profile-cli.mjs. ---
+if [ "${1:-}" = "profile" ] || [ "${1:-}" = "profiles" ]; then
+  shift
+  exec node "${BOTFERENCE_HOME}/frontends/shared/profile-cli.mjs" "$@"
+fi
+
 # --- service mode: managed long-lived processes (servers, tunnels) ---
 # Also handled before the loop machinery: it only touches the per-workspace
 # ledger under .botference/ and returns immediately.

@@ -289,6 +289,79 @@
     });
   }
 
+  // ---- Profiles ----------------------------------------------------------
+  // Read from the companion, which reads each bot's signed-in email from files
+  // on its own machine; no token ever reaches this page. Switching is
+  // machine-wide and, like keys, only from that machine.
+  function sayProfiles(v) {
+    const s = el('profilestatus');
+    s.className = (v && v.cls) || '';
+    s.textContent = (v && v.text) || '';
+  }
+  function accountCell(a) {
+    const td = document.createElement('td');
+    td.className = 'who' + (a && a.signed_in ? '' : ' none');
+    td.textContent = !a || !a.signed_in ? 'not signed in'
+      : (a.email || (a.method === 'api-key' ? 'API key' : 'signed in'));
+    return td;
+  }
+  function paintProfiles(data) {
+    const body = el('profiles-body');
+    body.textContent = '';
+    const rows = (data && data.profiles) || [];
+    if (!rows.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 4; td.className = 'hint';
+      td.textContent = 'No profiles on this machine yet. `botference profile init <name>` adopts the current accounts as the first one.';
+      tr.appendChild(td); body.appendChild(tr);
+      return;
+    }
+    for (const p of rows) {
+      const tr = document.createElement('tr');
+      const name = document.createElement('td');
+      name.textContent = p.name;
+      if (p.active) {
+        const b = document.createElement('span');
+        b.className = 'badge set'; b.textContent = 'active';
+        name.appendChild(document.createTextNode(' ')); name.appendChild(b);
+      }
+      tr.appendChild(name);
+      tr.appendChild(accountCell(p.claude));
+      tr.appendChild(accountCell(p.codex));
+      const act = document.createElement('td');
+      if (!p.active) {
+        const btn = document.createElement('button');
+        btn.type = 'button'; btn.textContent = 'Switch';
+        btn.addEventListener('click', () => switchProfile(p.name, btn));
+        act.appendChild(btn);
+      }
+      tr.appendChild(act);
+      body.appendChild(tr);
+    }
+  }
+  async function loadProfiles() {
+    const r = await keysApi('GET', '/profiles');
+    if (!r.ok) {
+      paintProfiles(null);
+      const remote = r.status === 403;
+      sayProfiles({ cls: remote ? '' : 'err',
+        text: remote ? 'profiles are shown and switched on the companion\'s own machine, not from here'
+          : (r.status === 404 ? 'this companion is too old for profiles — restart it from this checkout' : r.error) });
+      return;
+    }
+    paintProfiles(r.data);
+    sayProfiles({ cls: '', text: '' });
+  }
+  async function switchProfile(name, btn) {
+    btn.disabled = true;
+    const r = await keysApi('POST', '/profile', { name });
+    if (!r.ok) { btn.disabled = false; sayProfiles({ cls: 'err', text: r.error }); return; }
+    sayProfiles({ cls: 'ok', text: 'Switched to ' + name + '. The companion and council are restarting under it…' });
+    // the companion comes back in a few seconds; then show the new state
+    setTimeout(loadProfiles, 4000);
+  }
+
   // ---- "the drawer sent me here" ----------------------------------------
   // The drawer's billing switch cannot take a key — it renders inside whatever
   // page you are reading — so it asks for this page instead and leaves the name
@@ -330,4 +403,5 @@
   // the hint is read only once the key status is on screen: loadKeys clears the
   // status line when it succeeds, and would wipe the pointer with it
   loadKeys().then(focusRequestedKey);
+  loadProfiles();
 })(typeof window !== 'undefined' ? window : globalThis);

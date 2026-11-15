@@ -115,6 +115,29 @@ Before the first planning run from a fresh clone:
 cd ink-ui && npm install
 ```
 
+### Profiles
+
+A profile is whose accounts and whose history the bots run under: its own
+Claude config dir (`CLAUDE_CONFIG_DIR`), Codex home (`CODEX_HOME`), API-key
+file, Discuss pages, threads and chats, and council chats. Council projects
+and the companion's settings (blog sites, hosted guests' grants) are shared.
+One profile is active for the whole machine; the Discuss companion and the
+council read it at start-up, and a switch restarts them under the new one.
+
+```bash
+botference profile init angadh   # adopt today's accounts and history as the first profile, in place
+botference profile add ada       # new profile under ~/.botference/profiles/ada, then claude + codex login
+botference profile               # list, with each bot's signed-in email
+botference profile use ada       # switch the machine; also `/profile ada` in the council
+botference profile login ada codex   # sign one bot in again
+botference profile remove ada    # forget it; files stay unless --delete-data
+```
+
+The extension's options page has a Profiles table (each bot's email, read on
+the companion's machine, and a Switch button); like API keys, it only works
+from that machine. Without `profile init`, nothing changes: no profiles means
+today's behaviour exactly. The review hub is not profile-aware yet.
+
 ### Using Botference In Another Project
 
 From a target project root:
@@ -122,6 +145,9 @@ From a target project root:
 ```bash
 botference init                            # Create project-local botference/ state (and register it with Discuss)
 botference site                            # Just the Discuss half, for a repo already initialised
+botference profile                         # Profiles: whose Claude/Codex accounts and history the bots use
+botference profile add ada                 # A new profile with its own logins and history; signs it in
+botference profile use ada                 # Switch the whole machine (restarts Discuss + council)
 botference init --project-dir=spaceship    # Or create botference-spaceship/ instead
 botference                                 # Council: you + Claude + Codex (Ink default)
 botference plan                            # The same room, spelled out

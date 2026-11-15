@@ -77,7 +77,8 @@ export const MANAGED_VARS = AGENTS.flatMap(a => [ENV_VAR[a], ...SIBLINGS[a]]);
 // UIs say as much rather than promising an override the CLI will not perform.
 export const KEY_OVERRIDES_LOGIN = { claude: true, codex: false };
 
-export const keysFile = () => path.join(secretsDir(), 'discuss-keys.json');
+// A profile may keep its own (BOTFERENCE_KEYS_FILE, set by profile-env.mjs).
+export const keysFile = () => process.env.BOTFERENCE_KEYS_FILE || path.join(secretsDir(), 'discuss-keys.json');
 
 // --- a tiny 0600 JSON file, read through an mtime cache ---------------------
 // mtime-watched like grants.json: edited by hand or by another process (the
