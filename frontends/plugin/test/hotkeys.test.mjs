@@ -74,15 +74,14 @@ ok('C: the microphone is on without a tap', await until(() => mic() && mic().cla
 ok('C: it asked for the microphone once', rec.gum === 1);
 ok('C: a note, not a bot', routeOn() !== 'all', routeOn());
 
-// Enter while recording: stops, does not send
+// Enter while recording: finishes — the words land and are sent, no second Enter
 box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
 ok('Enter stops the recording', await until(() => !mic().classList.contains('recording')));
 ok('…and the clip goes off', await until(() => calls.transcribe === 1));
-ok('…and nothing was sent', calls.saved.length === 0);
-ok('the words land in the box', await until(() => box() && box().value === 'spoken words'), box() && box().value);
-box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
-ok('Enter again sends them', await until(() => calls.saved.length === 1));
+ok('…and the words are sent', await until(() => calls.saved.length === 1));
 ok('…as a highlight with the words', calls.saved[0] && calls.saved[0].text === 'spoken words' && calls.saved[0].mark === 'highlight', JSON.stringify(calls.saved[0]));
+await tick(20);
+ok('…and the card is gone', !card());
 
 // ---- A: the same, routed to the agents ------------------------------------
 await tick(20);

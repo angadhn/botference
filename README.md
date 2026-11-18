@@ -726,13 +726,14 @@ your own, `S` strikes the passage through and opens the box for why
 (PDFs only, where strikeouts exist), `A` highlights and opens a note
 already routed to all the agents. `C` and `A` work on any page a passage
 can be highlighted on — a PDF, an article, your own blog drafts. Say your
-piece, then press the same letter again (any of the three will do): the
-words land, made terse (below), and the comment is sent. Said nothing?
-Then nothing is added: a strike is filed as it is, the red line having
-said its piece; a highlight that was only going to carry your words is
-let go. The mic button or Enter stops the microphone *without* sending,
-so you can read the words first and send them with Enter; Esc throws the
-recording away. The keys do nothing without a selection, nothing while
+piece, then press Enter, or the same letter again (any of the three will
+do): the words land, made terse (below), and the comment is sent — a
+note filed, a strike filed with its reason, a message to the agents
+sent. Said nothing? Then nothing is added: a strike is filed as it is,
+the red line having said its piece; a highlight that was only going to
+carry your words is let go. The mic button alone stops the microphone
+*without* sending, so you can read the words first (and swap the raw
+ones back) and then send them with Enter; Esc throws the recording away. The keys do nothing without a selection, nothing while
 you are typing in a box, and nothing with ⌘, Ctrl or Alt held. The
 microphone needs the companion to have whisper, as the mic button does.
 

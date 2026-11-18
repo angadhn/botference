@@ -89,7 +89,7 @@ mic().click();
 ok('recording', await until(() => mic().classList.contains('recording')));
 ok('getUserMedia once, with audio', rec.gum === 1);
 ok('the recorder asked for the first supported type', rec.mimes.join() === 'audio/mp4', rec.mimes.join());
-ok('hint says so', /recording… tap, Enter or C\/S\/A to stop/.test(composer.isConnected ? composer.textContent : root.textContent));
+ok('hint says so', /recording… Enter or C\/S\/A to send, tap to stop/.test(composer.isConnected ? composer.textContent : root.textContent));
 mic().click();
 ok('clip sent', await until(() => calls.transcribe.length === 1));
 const body = calls.transcribe[0] || {};

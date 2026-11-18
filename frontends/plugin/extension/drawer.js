@@ -4079,7 +4079,7 @@ ${bubbleShellHtml()}`;
     const MIC_STOPS = Object.freeze(['keep', 'drop', 'finish']);
     const MIC = { ok: false, target: null, mode: 'idle', rec: null, stream: null,
       chunks: [], timer: null, stop: 'keep', box: null, caret: null, asked: 0 };
-    const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… tap, Enter or C/S/A to stop',
+    const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… Enter or C/S/A to send, tap to stop',
       stopping: 'finishing the recording…', transcribing: 'transcribing…', tidying: 'making it terse…' };
     const TIDY_MIN_WORDS = 25;
     // What the last dictation into each box produced — the raw words and the
@@ -9062,13 +9062,14 @@ ${bubbleShellHtml()}`;
       // a brand-new thread must not be created twice while its id is in flight
       if (target === '__new__' && inFlight(target)) return;
       // THE MICROPHONE IS STILL WORKING FOR THIS BOX. Enter (or Send) while it
-      // records is the reader saying "that's all": the recording stops and the
-      // words are on their way; nothing is sent until they have landed, when
-      // Enter again sends them. Sending now would file the box without the
-      // words — for a strikeout, an empty note — and strand the transcript in
-      // a draft nobody sees. Asking, stopping and transcribing are the same
-      // wait, with nothing to stop.
-      if (MIC.target === target && MIC.mode !== 'idle') { micStop('keep'); return; }
+      // records is the reader saying "that's all, send it": the recording
+      // FINISHES — the words land, made terse where long, and are sent, or
+      // with nothing said nothing is added — exactly as the hotkey letter
+      // does. Sending now would file the box without the words — for a
+      // strikeout, an empty note — and strand the transcript in a draft
+      // nobody sees. Asking, stopping, transcribing and tidying are the same
+      // wait, with nothing to stop. The mic tap alone stops without sending.
+      if (MIC.target === target && MIC.mode !== 'idle') { micStop('finish'); return; }
       D.sendLock[target] = true;
       try {
         harvestDrafts();
