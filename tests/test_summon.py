@@ -57,6 +57,47 @@ class TestParseSummon:
 
 
 class TestBuilderSpec:
+    def test_several_lines_are_several_briefs_in_order(self):
+        text = ("Five students, five letters: running five agents in parallel.\n\n"
+                "summon: letter for Ada — sources in projects/letters/ada/, output ada.docx\n"
+                "summon: letter for Bo — sources in projects/letters/bo/, output bo.docx\n"
+                "  the second line of Bo's brief\n"
+                "summon: letter for Ada — sources in projects/letters/ada/, output ada.docx\n"
+                "summon:\n")
+        briefs = summon.parse_summon_requests(text)
+        assert briefs == [
+            "letter for Ada — sources in projects/letters/ada/, output ada.docx",
+            "letter for Bo — sources in projects/letters/bo/, output bo.docx the second line of Bo's brief",
+        ]
+        assert summon.parse_summon_request(text) == briefs[0]
+
+    def test_the_budget_is_six_unless_the_file_says_otherwise(self, tmp_path):
+        assert summon.summon_budget(None) == 6
+        assert summon.summon_budget(tmp_path) == 6
+        (tmp_path / "context-budgets.json").write_text(json.dumps({"builder": {"parallel": 3}}))
+        assert summon.summon_budget(tmp_path) == 3
+        (tmp_path / "context-budgets.json").write_text(json.dumps({"builder": {"parallel": "0"}}))
+        assert summon.summon_budget(tmp_path) == 1
+        # …and the key never reaches the builder's spec
+        assert "parallel" not in summon.builder_spec("claude", tmp_path)
+
+    def test_siblings_are_named_in_the_prompt_and_the_brief_itself_is_not(self):
+        p = summon.builder_prompt(
+            brief="letter for Ada", summoner="claude", history="",
+            artifacts_dir="projects/p/artifacts", project_root="/w",
+            siblings=["letter for Ada", "letter for Bo", "letter for Cy"],
+        )
+        assert "Others building beside you" in p
+        assert "2 other build agents are working at the same time" in p
+        assert "- letter for Bo" in p and "- letter for Cy" in p
+        assert "- letter for Ada" not in p
+        assert "Keep to your own brief and your own files" in p
+        alone = summon.builder_prompt(
+            brief="letter for Ada", summoner="claude", history="",
+            artifacts_dir="projects/p/artifacts", project_root="/w", siblings=["letter for Ada"],
+        )
+        assert "Others building beside you" not in alone
+
     def test_imagegen_is_an_explicit_capability_not_a_keyword_guess(self):
         assert summon.builder_task('[imagegen] Paint a botanical illustration') == 'imagegen'
         assert summon.builder_task('[IMAGEGEN] Create artwork') == 'imagegen'
@@ -375,7 +416,7 @@ class TestSummonInChat:
         saved = [r for r in c._room_history if r.meta]
         assert len(saved) == 1 and saved[0].meta["status"] == "done"
 
-    async def test_the_budget_is_one_summon_per_bot_per_turn(self, tmp_path):
+    async def test_the_wake_up_cannot_chain_another_build(self, tmp_path):
         builder = MockAdapter([_ok("built"), _ok("built again")])
         # the wake-up reply tries to summon again
         c, claude, codex, ui, made = _bot_with_summon(
@@ -386,6 +427,70 @@ class TestSummonInChat:
         assert len(builder.send_calls) == 1
         # the second is not run: the wake-up is depth 1
         assert not any("another one" in p for p in builder.send_calls)
+
+    async def test_several_summon_lines_run_at_once_and_wake_the_summoner_once(self, tmp_path):
+        import time as _time
+
+        class Slow(MockAdapter):
+            """Each build takes a moment, and notes when it ran: two that
+            overlap in time ran at the same time."""
+            spans: list[tuple[float, float]] = []
+
+            async def send(self, prompt):
+                self.send_calls.append(prompt)
+                t0 = _time.monotonic()
+                await asyncio.sleep(0.05)
+                Slow.spans.append((t0, _time.monotonic()))
+                n = len(Slow.spans)
+                return _ok(f"Built letter {n}.\nartifact: projects/p/artifacts/letter{n}.docx")
+        Slow.spans = []
+        builder = Slow()
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path,
+            summoner_reply=("Running three agents in parallel, one per student.\n\n"
+                            "summon: letter for Ada, output ada.docx\n"
+                            "summon: letter for Bo, output bo.docx\n"
+                            "summon: letter for Cy, output cy.docx\n"),
+            builder=builder,
+        )
+        await c.handle_input("@claude write the letters", ui)
+        # three builders, each told who is beside it
+        assert len(builder.send_calls) == 3
+        assert all("Others building beside you" in p for p in builder.send_calls)
+        beside = builder.send_calls[0].split("--- Others building beside you ---")[1].split("--- ")[0]
+        assert "letter for Bo" in beside and "letter for Cy" in beside and "letter for Ada" not in beside
+        # …and they overlapped: the three ran at the same time, not in turn
+        starts = sorted(s for s, _ in Slow.spans)
+        ends = sorted(e for _, e in Slow.spans)
+        assert starts[-1] < ends[0], Slow.spans
+        # three cards, three ids, one parent; each went working → done
+        cards = [e for e in ui.agent_entries if e[2]["card"] == "report"]
+        ids = {e[2]["id"] for e in cards}
+        assert len(ids) == 3
+        assert len({e[2]["parent_stream_id"] for e in cards}) == 1
+        for aid in ids:
+            assert [e[2]["status"] for e in cards if e[2]["id"] == aid] == ["working", "done"]
+        # the room was told it is parallel
+        assert any("running 3 build agents at the same time" in t for sp, t in ui.room_entries if sp == "system")
+        # three reports in the history, one wake-up naming all three
+        agent_turns = [e for e in c.transcript.entries if e.speaker == "agent"]
+        assert len(agent_turns) == 3
+        assert len(claude.resume_calls) == 1
+        assert "3 build agents" in claude.resume_calls[0] and "have finished" in claude.resume_calls[0]
+
+    async def test_past_the_budget_the_rest_are_named_not_run(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(summon, "SUMMON_BUDGET", 2)
+        builder = MockAdapter([_ok("built one"), _ok("built two"), _ok("built three")])
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path,
+            summoner_reply="summon: one\nsummon: two\nsummon: three\n",
+            builder=builder,
+        )
+        await c.handle_input("@claude go", ui)
+        assert len(builder.send_calls) == 2
+        notes = [t for sp, t in ui.room_entries if sp == "system"]
+        assert any("asked for 3 build agents" in t and "budget is 2" in t and "three" in t for t in notes)
+        assert len(claude.resume_calls) == 1
 
     async def test_a_failed_builder_is_a_report_not_a_crash(self, tmp_path):
         class Boom(MockAdapter):

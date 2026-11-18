@@ -4098,33 +4098,75 @@ class Botference:
     async def _maybe_summon_for_bot(
         self, resp: AdapterResponse, ui: UIPort, model: str, *, depth: int = 0,
     ) -> None:
-        """Honour a `summon:` brief a bot ended its reply with.
+        """Honour the `summon:` briefs a bot ended its reply with.
 
-        One per bot per user turn. The agent's card nests under the reply
-        that summoned it (parent_stream_id), the report goes into the shared
-        transcript as the agent's own words, and the summoner is woken once
-        with it. A summon inside that wake-up is not acted on (depth), so a
-        bot cannot chain builds without the reader.
+        One line per brief; several run AT THE SAME TIME, each its own agent
+        with its own card nested under the reply that summoned it
+        (parent_stream_id). Every report goes into the shared transcript as
+        the agent's own words, and the summoner is woken ONCE, after the last
+        of them, with all of them. The budget (summon.summon_budget) is agents
+        per bot per user turn; briefs past it are named, not run. A summon
+        inside the wake-up is not acted on (depth), so a bot cannot chain
+        builds without the reader.
         """
         if depth or model not in ("claude", "codex"):
             return
-        brief = summon.parse_summon_request(resp.text)
-        if not brief:
+        briefs = summon.parse_summon_requests(resp.text)
+        if not briefs:
             return
+        budget = summon.summon_budget(self.paths.botference_home)
         used = self._summons.get(model, 0)
-        if used >= summon.SUMMON_BUDGET:
-            note = (f"[{model.capitalize()} asked for another build agent this "
-                    f"turn; the budget is {summon.SUMMON_BUDGET} per turn. Ask "
-                    "for it yourself if you want it run.]")
+        room = max(0, budget - used)
+        run, left = briefs[:room], briefs[room:]
+        if left:
+            named = "; ".join(b[:80] for b in left)
+            note = (f"[{model.capitalize()} asked for {len(briefs)} build agents "
+                    f"this turn; the budget is {budget} per turn, so "
+                    f"{len(run)} run and {len(left)} do not: {named}. Ask for "
+                    "them yourself if you want them run.]")
             self._add_room_entry(ui, "system", note)
             self.transcript.add("system", note)
+        if not run:
             return
-        self._summons[model] = used + 1
-        await self._run_summon(brief, model, resp.stream_id, ui)
+        self._summons[model] = used + len(run)
+        if len(run) > 1:
+            note = (f"[{model.capitalize()} is running {len(run)} build agents "
+                    "at the same time, one per brief.]")
+            self._add_room_entry(ui, "system", note)
+            self.transcript.add("system", note)
+        # all at once; a cancel (Esc) reaches every one of them through gather
+        reports = await asyncio.gather(*[
+            self._run_summon(b, model, resp.stream_id, ui, siblings=run)
+            for b in run
+        ])
+        if self._build is not None:
+            # In a build thread the summoner does not judge its own builders:
+            # the thread hands the floor to the other bot to review them.
+            self._build.last_build_status = (
+                "done" if all(st == "done" for _, st in reports)
+                else next(st for _, st in reports if st != "done"))
+            self._build.review_due = model
+            reviewer = "Codex" if model == "claude" else "Claude"
+            what = "; ".join(f"{lb} {st}" for lb, st in reports)
+            self.transcript.add(
+                "system",
+                f"[The build agent{'s' if len(reports) > 1 else ''} "
+                f"{model.capitalize()} summoned ({what}) "
+                f"{'have' if len(reports) > 1 else 'has'} finished. "
+                f"{reviewer} reviews next: read the change with "
+                "`git diff`, run the tests, count the new tests against the "
+                "test rule, and report in at most ten lines what is wrong, "
+                "what is missing and what is good. Then summon a fix with the "
+                'same tag, or mark the task done. Footer "build": "reviewing".]',
+            )
+            return
+        await self._wake_after_summon(model, reports, ui)
 
     async def _run_summon(
         self, brief: str, summoner: str, parent_stream_id: str, ui: UIPort,
-    ) -> None:
+        *, siblings: Optional[list[str]] = None,
+    ) -> tuple[str, str]:
+        """One build agent, start to report. Returns (label, status)."""
         task = summon.builder_task(brief)
         spec = summon.builder_spec(summoner, self.paths.botference_home, task=task,
                                    codex_model=getattr(self.codex, "model", "gpt-6-astra"))
@@ -4179,6 +4221,7 @@ class Botference:
             if override else "",
             unsandboxed=spec.get("unsandboxed_commands") or [],
             task=task,
+            siblings=siblings,
         )
         adapter = self._make_builder(spec)
         started = time.monotonic()
@@ -4242,32 +4285,26 @@ class Botference:
             f"{status} after {elapsed}s:]\n{report}",
         )
         self._persist_session()
-        if self._build is not None:
-            # In a build thread the summoner does not judge its own builder:
-            # the thread hands the floor to the other bot to review it.
-            self._build.last_build_status = status
-            self._build.review_due = summoner
-            reviewer = "Codex" if summoner == "claude" else "Claude"
-            self.transcript.add(
-                "system",
-                f"[The build agent {summoner.capitalize()} summoned ({label}) has "
-                f"{status}. {reviewer} reviews it next: read the change with "
-                "`git diff`, run the tests, count the new tests against the "
-                "test rule, and report in at most ten lines what is wrong, "
-                "what is missing and what is good. Then summon a fix with the "
-                'same tag, or mark the task done. Footer "build": "reviewing".]',
-            )
-            return
-        await self._wake_after_summon(summoner, label, status, ui)
+        return label, status
 
     async def _wake_after_summon(
-        self, model: str, label: str, status: str, ui: UIPort,
+        self, model: str, reports: list[tuple[str, str]], ui: UIPort,
     ) -> None:
-        """Give the floor back to the bot whose agent just reported."""
-        nudge = (f"[The build agent {model.capitalize()} summoned ({label}) "
-                 f"has {status} — its report is above. {model.capitalize()}, "
-                 "look at what it made if you can, then tell the user what to "
-                 "open and what is still missing. Do not summon again this turn.]")
+        """Give the floor back to the bot whose agents just reported — once,
+        however many there were."""
+        if len(reports) == 1:
+            label, status = reports[0]
+            nudge = (f"[The build agent {model.capitalize()} summoned ({label}) "
+                     f"has {status} — its report is above. {model.capitalize()}, "
+                     "look at what it made if you can, then tell the user what to "
+                     "open and what is still missing. Do not summon again this turn.]")
+        else:
+            what = "; ".join(f"{lb} {st}" for lb, st in reports)
+            nudge = (f"[The {len(reports)} build agents {model.capitalize()} summoned "
+                     f"have finished ({what}) — their reports are above. "
+                     f"{model.capitalize()}, look at what each made if you can, "
+                     "then tell the user what to open, which pieces are done and "
+                     "which are not. Do not summon again this turn.]")
         self.transcript.add("system", nudge)
         resp = await self._send_to_model(model, "", ui)
         if resp is None:

@@ -49,9 +49,22 @@ DEFAULT_BUILDER = {
     "unsandboxed_commands": ["blender *"],
 }
 
-#: One summon per bot per user turn. A bot that wants more should say so and
-#: let the reader ask. Same shape as the Gemini question budget.
-SUMMON_BUDGET = 1
+#: Build agents per bot per user turn. A reply may carry several `summon:`
+#: lines — one per independent piece of work (a student, a chapter, a
+#: figure) — and they run AT THE SAME TIME, each with its own card under the
+#: message. Past the budget the rest are named, not run, and the reader
+#: decides. `builder.parallel` in context-budgets.json changes it.
+SUMMON_BUDGET = 6
+
+
+def summon_budget(botference_home: Path | None = None) -> int:
+    cfg = _load_budgets(botference_home).get("builder")
+    raw = cfg.get("parallel") if isinstance(cfg, dict) else None
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return SUMMON_BUDGET
+    return max(1, n)
 
 
 #: Kind tags a brief may open with, and the task each one names. The tag
@@ -78,15 +91,17 @@ def builder_task(brief: str) -> str:
     return m.group(1).lower() if m else "build"
 
 
-def parse_summon_request(text: str) -> Optional[str]:
-    """The brief a bot's reply asked to have built, or None.
+def parse_summon_requests(text: str) -> list[str]:
+    """Every brief a bot's reply asked to have built, in order.
 
-    The first ``summon:`` line wins (a reply is one decision, not several),
-    a line inside a code fence is code, and a brief that says nothing is no
-    brief.
+    One ``summon:`` line per brief; a brief may continue on the lines that
+    follow up to a blank line or the next marker. A line inside a code fence
+    is code, a brief that says nothing is no brief, and a brief repeated
+    word for word is one brief.
     """
     body = _FENCE_RE.sub(" ", text or "")
     lines = body.splitlines()
+    briefs: list[str] = []
     for i, raw in enumerate(lines):
         m = _SUMMON_LINE_RE.match(_unwrap_line(raw))
         if not m:
@@ -103,8 +118,15 @@ def parse_summon_request(text: str) -> Optional[str]:
                 break
             parts.append(stripped)
         brief = " ".join(p for p in parts if p).strip().strip("`*_")
-        return brief or None
-    return None
+        if brief and brief not in briefs:
+            briefs.append(brief)
+    return briefs
+
+
+def parse_summon_request(text: str) -> Optional[str]:
+    """The first brief a bot's reply asked to have built, or None."""
+    briefs = parse_summon_requests(text)
+    return briefs[0] if briefs else None
 
 
 def strip_summon_line(text: str) -> str:
@@ -179,7 +201,7 @@ def builder_spec(summoner: str, botference_home: Path | None = None, *,
             spec["timeout_s"] = 0
         return spec
     if isinstance(cfg, dict):
-        spec.update({k: v for k, v in cfg.items() if k not in ("for", "tasks") and v})
+        spec.update({k: v for k, v in cfg.items() if k not in ("for", "tasks", "parallel") and v})
         per = cfg.get("for")
         if isinstance(per, dict) and isinstance(per.get(summoner), dict):
             spec.update({k: v for k, v in per[summoner].items() if v})
@@ -217,7 +239,7 @@ def builder_label(spec: dict) -> str:
 def builder_prompt(
     *, brief: str, summoner: str, history: str, artifacts_dir: str,
     project_root: str, deliverables_note: str = "", unsandboxed: list[str] | None = None,
-    artifacts_link: str = "", task: str = "build",
+    artifacts_link: str = "", task: str = "build", siblings: list[str] | None = None,
 ) -> str:
     """The whole of what the build agent is told.
 
@@ -236,6 +258,20 @@ def builder_prompt(
                  else "<path relative to the workspace root>")
     link_line = (f" Link a file of `{artifacts_dir}/` in your report as "
                  f"`{artifacts_link}/<name>`." if absolute and artifacts_link else "")
+    # Others building beside this one, on sibling briefs, at the same time:
+    # named so the agent keeps to its own lane. It never sees their work and
+    # must never touch it — a shared file edited by two agents at once is
+    # the one way parallel builds break.
+    others = [s for s in (siblings or []) if s and s != brief]
+    beside = ("--- Others building beside you ---\n"
+              f"{len(others)} other build agent{'s' if len(others) != 1 else ''} "
+              f"{'are' if len(others) != 1 else 'is'} working at the same time, "
+              "each on its own brief:\n"
+              + "\n".join(f"- {s[:200]}" for s in others)
+              + "\n\nKeep to your own brief and your own files. Never edit, "
+              "rename or delete a file another brief would make, and never "
+              "wait for one: you do not share a turn with them, only a folder."
+              if others else "")
     return "\n\n".join(p for p in [
         "--- You are a build agent ---",
         f"You were summoned by {who}, one of two bots discussing a piece of "
@@ -243,6 +279,7 @@ def builder_prompt(
         "you build it. You have one turn and nobody will answer questions, so "
         "decide and proceed. Do not summon anyone yourself.",
         f"--- The brief (from {who}) ---\n{brief}",
+        beside,
         ("--- Generative image task ---\n"
          "Use $imagegen and the built-in image_gen tool to create or edit the "
          "requested raster artwork. Read the imagegen skill if available. "

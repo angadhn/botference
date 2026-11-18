@@ -1767,7 +1767,8 @@ caps above are lifted for it:
 - **Review in both directions.** The bot that summoned a builder never judges
   its report: the floor goes to the other bot, which reads `git diff`, runs
   the tests and reports in at most ten lines, then summons a fix or marks the
-  task done. One summon per bot per turn, reset every turn.
+  task done. Independent pieces may be summoned together — one `summon:` line
+  each, up to six per bot per turn — and run as several agents at once.
 - **Tests stay proportionate.** The room and every builder carry one rule:
   a test only for a stated contract or something just seen failing, one test
   per behaviour, no snapshot tests, and a reason for more than three.
@@ -2041,8 +2042,20 @@ This route does not widen filesystem or network permissions. From an external
 article, create the blog draft first and request its assets on the local
 preview. Faithful annotations of an existing scientific chart use the original
 image and the ordinary builder; generative artwork is not a replacement for a
-blocked image download. Image work still follows the existing one-builder-per-
-bot-per-turn limit; no new parallel orchestration is introduced.
+blocked image download.
+
+**Work that splits runs in parallel.** When the job is several independent
+pieces — one recommendation letter per student, one chapter each, one figure
+each — a bot writes one `summon:` line per piece in the same reply, and they
+run at the same time as separate agents, each in charge of its piece and each
+with its own card under the message. The bots are told to do this, and to
+say so ("running five agents in parallel, one per student"), rather than to
+suggest it. Each agent is told who is building beside it and to keep to its
+own files; they do not see each other's work. The summoner is woken once,
+after the last of them, with all the reports. Up to six per bot per turn
+(`builder.parallel` in `context-budgets.json`); past that the rest are named
+and left for you to ask for. Pieces that depend on one another still go one
+build at a time.
 
 What you see, in the council page, the browser plugin and the terminal: a card
 **indented under the message that summoned it**, in the style of a reply on a

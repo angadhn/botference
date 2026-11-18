@@ -98,7 +98,9 @@ then has no turn cap and runs until a footer says \fBconverged\fR with
 the \fB"test"\fR command in botference/project.json, if any, exits zero), a
 bot says \fBblocked\fR, you type, or the time budget (8 hours) runs out.
 \fBsummon: [ui]\fR runs Claude Code on Opus 5.5, \fBsummon: [logic]\fR runs
-Codex; the bot that summoned does not review its own builder.
+Codex; the bot that summoned does not review its own builder. Several
+\fBsummon:\fR lines in one reply run as several agents at the same time (up to
+six per bot per turn, \fBbuilder.parallel\fR in context-budgets.json).
 With \fB\-\-web\fR the council serves as a chat web app in the browser
 instead of the Ink TUI (sidebar where every project expands to its recent
 chats and tapping any chat opens it \- no "make active project" step \-
