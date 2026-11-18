@@ -493,11 +493,15 @@ def subagents_note(model: str) -> str:
         return ""
     return (
         "--- Subagents ---\n"
-        "You start WITHOUT the Task (subagent) tool. If a piece of work "
-        "would genuinely benefit from parallel subagents, say so and ask "
-        "the user to grant them with `/agents on` — never assume the "
-        "grant. Once granted, Task appears in your tools on your next "
-        "turn; the user can revoke it with `/agents off`."
+        "You start WITHOUT the Task (subagent) tool, and you do not need it "
+        "to work in parallel: independent pieces of a deliverable are built "
+        "by several summoned agents at once — one `summon:` line per piece "
+        "in the same reply (see Deliverables). Do that; do not ask. The Task "
+        "tool is only for parallel work inside your OWN turn (reading many "
+        "files at once, say); if that would genuinely help, ask the user to "
+        "grant it with `/agents on` — never assume the grant. Once granted, "
+        "Task appears in your tools on your next turn; the user can revoke "
+        "it with `/agents off`."
     )
 
 
