@@ -4070,8 +4070,15 @@ ${bubbleShellHtml()}`;
       transcribing: ['tidying', 'idle'],
       tidying: ['idle'],
     });
+    // How the recording was stopped, named, decided at the stop and read at
+    // the finish: 'keep' (the mic tap, Enter, the time limit — the words land
+    // in the box for the reader to send), 'drop' (Esc — the clip is thrown
+    // away), 'finish' (the hotkey letter again — the words land AND the
+    // comment is sent; nothing heard means nothing added: a strike is filed
+    // bare, a highlight that was only ever going to carry the words is let go).
+    const MIC_STOPS = Object.freeze(['keep', 'drop', 'finish']);
     const MIC = { ok: false, target: null, mode: 'idle', rec: null, stream: null,
-      chunks: [], timer: null, cancelled: false, box: null, caret: null, asked: 0 };
+      chunks: [], timer: null, stop: 'keep', box: null, caret: null, asked: 0 };
     const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… tap, Enter or C/S/A to stop',
       stopping: 'finishing the recording…', transcribing: 'transcribing…', tidying: 'making it terse…' };
     const TIDY_MIN_WORDS = 25;
@@ -4182,18 +4189,19 @@ ${bubbleShellHtml()}`;
         micSet('idle');
         note(target, 'this browser cannot record audio', true); return;
       }
-      Object.assign(MIC, { rec, stream, chunks: [], cancelled: false });
+      Object.assign(MIC, { rec, stream, chunks: [], stop: 'keep' });
       rec.addEventListener('dataavailable', e => { if (e.data && e.data.size) MIC.chunks.push(e.data); });
       rec.addEventListener('stop', () => micFinish(target, rec, mime));
       rec.start();
-      MIC.timer = setTimeout(() => micStop(), MIC_MAX_MS);
+      MIC.timer = setTimeout(() => micStop('keep'), MIC_MAX_MS);
       micSet('recording', target);
     }
-    // Stop the recording: keep the clip (a tap, the time limit) or throw it
-    // away (`cancel`: Esc). Only from recording.
-    function micStop(cancel) {
+    // Stop the recording, saying how (MIC_STOPS): keep the clip for the box,
+    // drop it, or finish — land the words and send. Only from recording.
+    function micStop(how = 'keep') {
+      if (MIC_STOPS.indexOf(how) < 0) return false;
       if (MIC.mode !== 'recording' || !MIC.rec) return false;
-      MIC.cancelled = !!cancel;
+      MIC.stop = how;
       micSet('stopping');
       try { MIC.rec.stop(); } catch (_) { micRelease(); micSet('idle'); }
       return true;
@@ -4202,7 +4210,7 @@ ${bubbleShellHtml()}`;
     // anything that can be thrown away. True when it acted.
     function micCancel() {
       if (MIC.mode === 'asking') return micSet('idle');
-      if (MIC.mode === 'recording') return micStop(true);
+      if (MIC.mode === 'recording') return micStop('drop');
       return false;
     }
     async function micFinish(target, rec, mime) {
@@ -4211,25 +4219,34 @@ ${bubbleShellHtml()}`;
       // that is a stop the reader did not ask for, and the clip is kept
       if (MIC.mode === 'recording') micSet('stopping');
       const chunks = MIC.chunks; MIC.chunks = [];
-      const cancelled = MIC.cancelled;
+      const how = MIC.stop;
       micRelease();
-      if (cancelled) { micSet('idle'); return; }
+      if (how === 'drop') { micSet('idle'); return; }
+      // nothing heard, or nothing that could be heard: a finish adds nothing
+      // (and says so by what it does), a keep says so in the note line
+      const heardNothing = why => {
+        micSet('idle');
+        if (how === 'finish') finishBare(target); else note(target, why, true);
+      };
       const type = (chunks[0] && chunks[0].type) || rec.mimeType || mime || 'audio/webm';
       const blob = new Blob(chunks, { type });
-      if (!blob.size) { micSet('idle'); note(target, 'nothing was recorded', true); return; }
+      if (!blob.size) { heardNothing('nothing was recorded'); return; }
       micSet('transcribing');
       let r;
       try { r = await cb('onTranscribe')({ audio_b64: await blobToBase64(blob), mime: blob.type || type }); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      if (!r || r.ok === false) { micSet('idle'); note(target, (r && r.error) || 'transcription failed', true); return; }
+      if (!r || r.ok === false) { heardNothing((r && r.error) || 'transcription failed'); return; }
       const text = String(r.text || '').trim();
-      if (!text) { micSet('idle'); note(target, 'no speech was heard', true); return; }
+      if (!text) { heardNothing('no speech was heard'); return; }
+      // the words have landed: a finish sends them, a keep leaves them to the
+      // reader (who may swap the raw ones back first)
+      const landed = () => { if (how === 'finish') doSend(target); };
       // A long dictation is handed to a bot to be made terse before it lands;
       // a short one is terse already. Whatever goes wrong on the way, the raw
       // words land: the reader never loses what they said.
       const words = text.split(/\s+/).length;
       if (words < TIDY_MIN_WORDS || !cb('onTidy') || !micSet('tidying', target)) {
-        micSet('idle'); dictSet(target, null); micInsert(target, text); return;
+        micSet('idle'); dictSet(target, null); micInsert(target, text); landed(); return;
       }
       let t;
       try { t = await cb('onTidy')({ target, text }); }
@@ -4240,11 +4257,23 @@ ${bubbleShellHtml()}`;
         dictSet(target, null);
         micInsert(target, text);
         if (!tidy && t && t.error) note(target, `kept your words as spoken (${t.error})`, false);
+        landed();
         return;
       }
       dictSet(target, { raw: text, tidy, shown: 'tidy' });
       micInsert(target, tidy);
       paintMic();   // the swap pill, beside the mic
+      landed();
+    }
+    // A hotkey finish with nothing said. A new strikeout is filed as it is —
+    // the red line has already said what it means. A new highlight that was
+    // only ever going to carry the words is let go: a highlight with no
+    // comment says nothing (the companion refuses one, and rightly). A reply
+    // with nothing said is no reply.
+    function finishBare(target) {
+      if (target !== '__new__' || !D.pending) return;
+      if (D.pending.mark === 'strike') { doSend(target); return; }
+      cancelNew();
     }
     // The swap pill: the other version of the last dictation replaces the one
     // in the box, in place, and the pill names what it would put back.
@@ -4319,7 +4348,7 @@ ${bubbleShellHtml()}`;
     // stopping and transcribing are already on their way somewhere.
     function micTap(target) {
       if (MIC.mode === 'idle') { micStart(target); return; }
-      if (MIC.mode === 'recording') micStop();
+      if (MIC.mode === 'recording') micStop('keep');
     }
 
     function composerHtml(target, label, extra, hint, pills) {
@@ -6862,6 +6891,9 @@ ${bubbleShellHtml()}`;
         const target = c.getAttribute('data-target');
         const ta = c.querySelector('textarea');
         if (!target || !ta || target === '__edit__') return;
+        // a cancelled new comment's box is still on screen until this render
+        // rebuilds: its words are not a draft, they are what was cancelled
+        if (target === '__new__' && !D.pending) return;
         // No in-flight exception is needed any more: a sent message leaves the
         // composer synchronously (queueSend) and lives in D.outbox until the
         // companion confirms it, so there is nothing here to read back.
@@ -8564,12 +8596,13 @@ ${bubbleShellHtml()}`;
         // Esc there drops the half-made character, it never closes anything.
         if (composingKey(e)) return;
         // WHILE THE MICROPHONE RECORDS FOR THIS BOX, the letter that opened it
-        // (C, S or A — any of the three) stops it, the same key as the one the
-        // reader just pressed on the page. A box being dictated into is not
-        // being typed into, so the letter is not lost prose.
+        // (C, S or A — any of the three) FINISHES it: the words land and the
+        // comment goes, or, with nothing said, nothing is added (micFinish).
+        // A box being dictated into is not being typed into, so the letter is
+        // not lost prose. The mic tap and Enter stop without sending.
         if (MIC.mode === 'recording' && !e.metaKey && !e.ctrlKey && !e.altKey && /^[csa]$/i.test(e.key || '')) {
           const c0 = e.target && e.target.closest && e.target.closest('.composer');
-          if (c0 && c0.getAttribute('data-target') === MIC.target) { e.preventDefault(); micStop(); return; }
+          if (c0 && c0.getAttribute('data-target') === MIC.target) { e.preventDefault(); micStop('finish'); return; }
         }
         // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
         // and nothing else. ⌘↩ still sends: finishing a mention is not a
@@ -9035,7 +9068,7 @@ ${bubbleShellHtml()}`;
       // words — for a strikeout, an empty note — and strand the transcript in
       // a draft nobody sees. Asking, stopping and transcribing are the same
       // wait, with nothing to stop.
-      if (MIC.target === target && MIC.mode !== 'idle') { micStop(); return; }
+      if (MIC.target === target && MIC.mode !== 'idle') { micStop('keep'); return; }
       D.sendLock[target] = true;
       try {
         harvestDrafts();
@@ -13533,7 +13566,7 @@ ${bubbleShellHtml()}`;
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
       // the page's own C/S/A while the microphone records (content.js): stop
       // it, wherever the focus went. True when there was a recording to stop.
-      stopDictation: () => micStop(),
+      stopDictation: () => micStop('finish'),
       dictation: () => ({ mode: MIC.mode, target: MIC.target }),
       // what the last dictation into a box produced, for the harness
       dictationOf: target => { const r = dictOf(target); return r ? { ...r } : null; },

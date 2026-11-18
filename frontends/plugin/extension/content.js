@@ -3827,9 +3827,10 @@
   // something is being typed into, and never without a selection — a bare
   // key on a page is still a bare key, and the page keeps it.
   //
-  // …and while the microphone is recording, the same three letters stop it,
-  // wherever the focus has gone: the drawer's composer handles the letter
-  // when the box has the focus, and this handles it when the page does.
+  // …and while the microphone is recording, the same three letters finish
+  // it — the words are sent, or with nothing said nothing is added — wherever
+  // the focus has gone: the drawer's composer handles the letter when the box
+  // has the focus, and this handles it when the page does.
   const HOTKEYS = { c: ['highlight', { dictate: true }],
                     s: ['strike', { dictate: true }],
                     a: ['highlight', { route: 'all', dictate: true }] };

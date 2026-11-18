@@ -120,7 +120,7 @@ ok('every stream was released', rec.stopped === 3, String(rec.stopped));
 ok('short dictations were never sent to be tidied', calls.tidy.length === 0, String(calls.tidy.length));
 drawer.cancelNew();
 
-// ---- a long dictation is made terse, and the raw words are one click away --
+// ---- the letter again FINISHES: the words land, made terse, and are sent --
 const RAMBLE = 'so um what I want to say here is that the claim about the trains running full is '
   + 'not really supported there is no source for the load factor and also maybe we should cite '
   + 'the 2024 Eurostat figures and yeah that is basically my point I think';
@@ -128,25 +128,32 @@ heard = RAMBLE;
 tidied = { ok: true, text: 'The full-trains claim has no source for the load factor; cite the 2024 Eurostat figures.' };
 await tick(20);
 drawer.beginNew({ ...anchor, mark: 'highlight' }, { dictate: true });
-ok('tidy: recording', await until(() => mic() && mic().classList.contains('recording')));
-// the letter that opened it stops it, typed into the box
+ok('finish: recording', await until(() => mic() && mic().classList.contains('recording')));
 box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'c', bubbles: true, composed: true }));
-ok('tidy: C in the box stops the recording', await until(() => !mic().classList.contains('recording')));
-ok('tidy: the bot is asked, with the words', await until(() => calls.tidy.length === 1) && calls.tidy[0].text === RAMBLE && calls.tidy[0].target === '__new__', JSON.stringify(calls.tidy[0]));
-ok('tidy: the terse version lands', await until(() => box() && box().value === tidied.text), box() && box().value);
-ok('tidy: no stray letter in the box', !/^c|c$/.test(box().value));
+ok('finish: C in the box stops the recording', await until(() => !mic().classList.contains('recording')));
+ok('finish: the bot is asked, with the words', await until(() => calls.tidy.length === 1) && calls.tidy[0].text === RAMBLE && calls.tidy[0].target === '__new__', JSON.stringify(calls.tidy[0]));
+ok('finish: the terse version is sent, no Enter needed', await until(() => calls.saved.length === 4) && calls.saved[3].text === tidied.text, JSON.stringify(calls.saved[3]));
+await tick(20);
+ok('finish: the card is gone', !card());
+
+// ---- the mic tap KEEPS: the words land, the raw ones are one click away --
+drawer.beginNew({ ...anchor, mark: 'highlight' }, { dictate: true });
+ok('keep: recording', await until(() => mic() && mic().classList.contains('recording')));
+mic().click();
+ok('keep: the terse version lands', await until(() => box() && box().value === tidied.text), box() && box().value);
 const swap = () => card() && card().querySelector('.dictswap');
-ok('tidy: a swap pill offers the words as spoken', await until(() => swap() && /as spoken/.test(swap().textContent)),
+ok('keep: a swap pill offers the words as spoken', await until(() => swap() && /as spoken/.test(swap().textContent)),
   card() && card().querySelector('.crow') && card().querySelector('.crow').innerHTML.slice(0, 400));
 if (swap()) swap().click();
 ok('swap: the raw words are back', await until(() => box() && box().value === RAMBLE), box() && box().value);
 ok('swap: …and the pill now offers the terse one', swap() && /terse/.test(swap().textContent));
 if (swap()) swap().click();
 ok('swap: and back again', await until(() => box() && box().value === tidied.text));
+ok('keep: nothing was sent on its own', calls.saved.length === 4);
 box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, composed: true }));
-ok('tidy: sent as shown', await until(() => calls.saved.length === 4) && calls.saved[3].text === tidied.text);
+ok('keep: Enter sends as shown', await until(() => calls.saved.length === 5) && calls.saved[4].text === tidied.text);
 await tick(20);
-ok('tidy: the pill is gone with the send', !swap());
+ok('keep: the pill is gone with the send', !swap());
 
 // a bot that fails leaves the raw words, with a quiet note
 tidied = { ok: false, error: 'the agent took too long' };
@@ -158,13 +165,36 @@ ok('tidy failed: no swap pill', !swap());
 ok('tidy failed: the note says so', /kept your words as spoken/.test(root().textContent));
 drawer.cancelNew();
 
-// the page's own stop: a recording with the focus elsewhere
-heard = 'spoken words';
+// the page's own finish (content.js, focus elsewhere): short words, sent
+heard = 'spoken words'; tidied = { ok: true, text: 'Terse.' };
 drawer.beginNew({ ...anchor, mark: 'highlight' }, { dictate: true });
 await until(() => mic() && mic().classList.contains('recording'));
-ok('stopDictation stops a recording', drawer.stopDictation() === true);
-ok('…and says so when there is none', await until(() => !mic().classList.contains('recording')) && drawer.stopDictation() === false);
-await until(() => box() && box().value === 'spoken words');
+ok('a cancelled comment\'s words do not come back in the next one', box() && box().value === '', box() && box().value);
+ok('stopDictation finishes a recording', drawer.stopDictation() === true);
+ok('…and the words are sent', await until(() => calls.saved.length === 6) && calls.saved[5].text === 'spoken words', JSON.stringify(calls.saved[5]));
+ok('…and says so when there is none', drawer.stopDictation() === false);
+
+// ---- nothing said: a finish adds nothing -----------------------------------
+heard = '';
+drawer.beginNew({ ...anchor, mark: 'strike' }, { dictate: true });
+await until(() => mic() && mic().classList.contains('recording'));
+box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 's', bubbles: true, composed: true }));
+ok('S, nothing said, S: the strike is filed bare', await until(() => calls.saved.length === 7) && calls.saved[6].mark === 'strike' && !calls.saved[6].text, JSON.stringify(calls.saved[6]));
+await tick(20);
+drawer.beginNew({ ...anchor, mark: 'highlight' }, { dictate: true });
+await until(() => mic() && mic().classList.contains('recording'));
+box().dispatchEvent(new w.KeyboardEvent('keydown', { key: 'c', bubbles: true, composed: true }));
+ok('C, nothing said, C: the highlight is let go', await until(() => !card()));
+ok('…and nothing was filed', calls.saved.length === 7);
+drawer.beginNew({ ...anchor, mark: 'highlight' }, { route: 'all', dictate: true });
+await until(() => mic() && mic().classList.contains('recording'));
+ok('A, nothing said, A on the page: let go', drawer.stopDictation() === true && await until(() => !card()));
+ok('…and no agent was called', calls.saved.length === 7);
+// …while the mic tap with nothing said keeps the box and says why
+drawer.beginNew({ ...anchor, mark: 'highlight' }, { dictate: true });
+await until(() => mic() && mic().classList.contains('recording'));
+mic().click();
+ok('tap, nothing said: the box stays, with the note', await until(() => /no speech was heard/.test(root().textContent)) && !!card());
 drawer.cancelNew();
 
 console.log(`hotkeys: ${pass} passed, ${fail} failed`);
