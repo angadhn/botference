@@ -489,25 +489,22 @@ def lasso_note() -> str:
 
 
 def subagents_note(model: str) -> str:
-    """Tell the Claude participant subagents exist but are user-gated.
+    """Tell the Claude participant it has subagents, and what they are for.
 
-    The Task tool is deliberately absent from Claude's default tool list;
-    the user grants it per-chat with /agents on. Codex has no subagent
-    facility, so it gets no note.
+    The Task tool is on by default (the user revokes it per chat with
+    /agents off). Codex has no subagent facility, so it gets no note.
     """
     if model.lower() != "claude":
         return ""
     return (
         "--- Subagents ---\n"
-        "You start WITHOUT the Task (subagent) tool, and you do not need it "
-        "to work in parallel: independent pieces of a deliverable are built "
-        "by several summoned agents at once — one `summon:` line per piece "
-        "in the same reply (see Deliverables). Do that; do not ask. The Task "
-        "tool is only for parallel work inside your OWN turn (reading many "
-        "files at once, say); if that would genuinely help, ask the user to "
-        "grant it with `/agents on` — never assume the grant. Once granted, "
-        "Task appears in your tools on your next turn; the user can revoke "
-        "it with `/agents off`."
+        "You have the Task (subagent) tool. Use it for parallel work inside "
+        "your OWN turn — reading many files or papers at once, checking "
+        "several things — whenever that is faster; nobody needs to be asked. "
+        "Deliverables are different: independent pieces of a deliverable are "
+        "built by summoned agents, one `summon:` line per piece in the same "
+        "reply (see Deliverables), so the user sees each one as its own card. "
+        "The user can revoke Task with `/agents off`."
     )
 
 
@@ -544,9 +541,13 @@ def deliverables_note(artifacts_dir: str = "", artifacts_link: str = "") -> str:
         "Each brief must stand on its own, naming its piece, its sources and "
         "its own output files: the agents do not see each other and must not "
         "write the same file. Pieces that depend on one another go one build "
-        "at a time, in turn. Up to six agents per reply; past that, say which "
-        "wait. Ordinary code edits in a repository under discussion are yours "
-        "to make; a deliverable the reader opens is not.\n"
+        "at a time, in turn. How many, and whether at once or in turn, is "
+        "your call — never the user's to approve. When the reports come back "
+        "and more is needed (a fix, the next piece, the next stage), summon "
+        "again in that same reply without asking; stop when the work is done "
+        "or you need something only the user has. Ordinary code edits in a "
+        "repository under discussion are yours to make; a deliverable the "
+        "reader opens is not.\n"
         "For generative raster artwork (illustrations, photos, textures, or "
         "creative image edits), use `summon: [imagegen] <brief>`. That task "
         "runs on a Codex builder with built-in image generation, whether "

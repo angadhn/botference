@@ -1768,8 +1768,9 @@ caps above are lifted for it:
 - **Review in both directions.** The bot that summoned a builder never judges
   its report: the floor goes to the other bot, which reads `git diff`, runs
   the tests and reports in at most ten lines, then summons a fix or marks the
-  task done. Independent pieces may be summoned together — one `summon:` line
-  each, up to six per bot per turn — and run as several agents at once.
+  task done. Independent pieces are summoned together — one `summon:` line
+  each — and run as several agents at once, six at a time; after the reports
+  a bot may summon again (a fix, the next stage) without asking.
 - **Tests stay proportionate.** The room and every builder carry one rule:
   a test only for a stated contract or something just seen failing, one test
   per behaviour, no snapshot tests, and a reason for more than three.
@@ -1811,7 +1812,7 @@ pick it up.
 | `/permissions` | Show the current planner write roots and any runtime grants approved for this session. |
 | `/status` | Show context usage, lead, mode, and session state. |
 | `/notify [on\|off]` | Toggle the desktop notification posted when the bots finish (see [Desktop notifications](#desktop-notifications)). No argument flips the current state; the preference is per-user (`~/.botference/settings.json`) and persists across chats and projects. |
-| `/agents [on\|off]` | Grant or revoke the Claude participant's **subagent** (Task) tool. Off by default in every chat: Claude is instructed to *suggest* subagents when a task would benefit and wait for your approval — and the gate is enforced at the tool level (the CLI is simply not given the Task tool until you grant it), not by prompt alone. The grant persists with the chat across `/resume` and resets on `/new`. Codex has no subagent facility; not available under `--claude-interactive`. |
+| `/agents [on\|off]` | Revoke or re-grant the Claude participant's **subagent** (Task) tool. On by default in every chat: the bots decide how to split their work. The gate is at the tool level (the CLI is not given the Task tool while revoked), not by prompt alone. A revoke persists with the chat across `/resume`; a new chat starts with the tool. Codex has no subagent facility; not available under `--claude-interactive`. |
 | `/verify [on\|off]` | When the bots mark the thread **converged**, run one more turn before the floor comes back to you: the bot that did *not* write the last claim is handed the claims and the sources the room has — and **not** the discussion — and reports each claim confirmed (with the supporting line), contradicted (with the contradicting line), or not checkable. On by default, per chat; skipped when the final message is too short to be a claim, when the room has no source, or when the other bot is not in the room. See [Adversarial review](#adversarial-review). |
 | `/allow-host [<domain>\|remove <domain>]` | Not needed by default: the bots can reach any website, and servers on this machine (127.0.0.1), just as in a plain Claude Code session. It only matters if you start botference with `BOTFERENCE_PLAN_NETWORK=allowlist`, which limits the bots' shell to a short list of sites (GitHub, Wikipedia and the public planetary-science archives: HiRISE, USGS Astrogeology, PDS imaging, NASA images). In that mode it grants a site, or takes one away with `remove`, defaults included. Grants are kept per workspace in `.botference/allowed-hosts.json` and apply from the bots' next turn, with no restart. Bare `/allow-host` lists current grants. `BOTFERENCE_PLAN_ALLOW_NETWORK=0` turns the bots' network off. |
 | `/watch <url> [question]` | Have **Gemini watch a YouTube video** and post what it saw into the chat, so Claude and Codex (who cannot take video) can read it on their next turn. See [YouTube videos](#youtube-videos). |
@@ -2056,9 +2057,12 @@ with its own card under the message. The bots are told to do this, and to
 say so ("running five agents in parallel, one per student"), rather than to
 suggest it. Each agent is told who is building beside it and to keep to its
 own files; they do not see each other's work. The summoner is woken once,
-after the last of them, with all the reports. Up to six per bot per turn
-(`builder.parallel` in `context-budgets.json`); past that the rest are named
-and left for you to ask for. Pieces that depend on one another still go one
+after the last of them, with all the reports — and may summon again from
+there, a fix or the next stage, without asking you. How many, and whether at
+once or in turn, is the bots' call: six run at a time (`builder.parallel` in
+`context-budgets.json`), the rest in waves. The only stops are runaway ones
+(four rounds or 24 agents in one turn), after which the floor comes back to
+you and "carry on" continues. Pieces that depend on one another still go one
 build at a time.
 
 What you see, in the council page, the browser plugin and the terminal: a card

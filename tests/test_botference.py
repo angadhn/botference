@@ -1083,44 +1083,45 @@ class TestVideoWatch:
 
 @pytest.mark.asyncio
 class TestAgentsCommand:
-    async def test_default_off_and_status(self, tmp_path):
+    async def test_default_on_and_status(self, tmp_path):
         c, claude, _, ui = _make_botference(tmp_path=tmp_path)
-        assert "Task" not in claude.tools
+        assert "Task" in claude.tools, "on from the start: the bots decide"
         await c.handle_input("/agents", ui)
         assert any(
-            "Subagents (Claude Task tool): off" in t
+            "Subagents (Claude Task tool): granted" in t
             for s, t in ui.room_entries if s == "system"
         )
 
     async def test_on_grants_task_tool_and_off_revokes(self, tmp_path):
         c, claude, codex, ui = _make_botference(tmp_path=tmp_path)
-        await c.handle_input("/agents on", ui)
-        assert "Task" in claude.tools
-        assert "Task" not in codex.tools
         await c.handle_input("/agents off", ui)
         assert "Task" not in claude.tools
+        assert "Task" not in codex.tools
+        await c.handle_input("/agents on", ui)
+        assert "Task" in claude.tools
 
-    async def test_grant_persists_across_resume_but_not_new_chat(
+    async def test_a_revoke_persists_across_resume_but_not_new_chat(
         self, tmp_path
     ):
         c, claude, _, ui = _make_botference(tmp_path=tmp_path)
         await c.handle_input("@all hello", ui)
-        await c.handle_input("/agents on", ui)
+        await c.handle_input("/agents off", ui)
         session = c.session_id
 
         c._start_new_chat("", ui)
-        assert "Task" not in claude.tools, "grants are per-chat"
+        assert "Task" in claude.tools, "a new chat starts with it"
 
         await c.handle_input(f"/resume {session}", ui)
-        assert "Task" in claude.tools, "grant restored with the chat"
+        assert "Task" not in claude.tools, "the revoke restored with the chat"
 
-    async def test_initial_prompt_tells_claude_to_ask_first(self, tmp_path):
+    async def test_initial_prompt_tells_claude_it_has_subagents(self, tmp_path):
         c, _, _, _ = _make_botference(tmp_path=tmp_path)
         claude_prompt = c._build_initial_prompt("claude")
         codex_prompt = c._build_initial_prompt("codex")
-        assert "/agents on" in claude_prompt
-        assert "WITHOUT the Task" in claude_prompt
-        assert "/agents on" not in codex_prompt
+        assert "You have the Task (subagent) tool" in claude_prompt
+        assert "nobody needs to be asked" in claude_prompt
+        assert "/agents off" in claude_prompt
+        assert "Task (subagent)" not in codex_prompt
 
     async def test_bad_arg_shows_usage(self, tmp_path):
         c, _, _, ui = _make_botference(tmp_path=tmp_path)

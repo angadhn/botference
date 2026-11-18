@@ -416,17 +416,22 @@ class TestSummonInChat:
         saved = [r for r in c._room_history if r.meta]
         assert len(saved) == 1 and saved[0].meta["status"] == "done"
 
-    async def test_the_wake_up_cannot_chain_another_build(self, tmp_path):
-        builder = MockAdapter([_ok("built"), _ok("built again")])
-        # the wake-up reply tries to summon again
+    async def test_the_wake_up_may_chain_another_build_and_the_rounds_run_out(self, tmp_path):
+        builder = MockAdapter([_ok("built %d" % i) for i in range(10)])
+        # the wake-up reply summons again, and again, and again…
         c, claude, codex, ui, made = _bot_with_summon(
             tmp_path, summoner_reply="summon: first build", builder=builder,
         )
-        claude._responses[1] = _ok("summon: and another one")
+        claude._responses = [_ok("summon: first build")] + [
+            _ok("summon: round %d fix" % i) for i in range(2, 10)]
         await c.handle_input("@claude go", ui)
-        assert len(builder.send_calls) == 1
-        # the second is not run: the wake-up is depth 1
-        assert not any("another one" in p for p in builder.send_calls)
+        # round 1 + three chained rounds, then the runaway stop
+        assert len(builder.send_calls) == summon.SUMMON_ROUNDS
+        assert any("round 2 fix" in p for p in builder.send_calls)
+        notes = [t for sp, t in ui.room_entries if sp == "system"]
+        assert any("Stopping here so the user can look" in t and "carry on" in t for t in notes)
+        # …and the floor came back: no further wake-up after the stop
+        assert len(claude.resume_calls) == summon.SUMMON_ROUNDS
 
     async def test_several_summon_lines_run_at_once_and_wake_the_summoner_once(self, tmp_path):
         import time as _time
@@ -478,19 +483,45 @@ class TestSummonInChat:
         assert len(claude.resume_calls) == 1
         assert "3 build agents" in claude.resume_calls[0] and "have finished" in claude.resume_calls[0]
 
-    async def test_past_the_budget_the_rest_are_named_not_run(self, tmp_path, monkeypatch):
+    async def test_more_than_the_width_run_in_waves_not_refused(self, tmp_path, monkeypatch):
         monkeypatch.setattr(summon, "SUMMON_BUDGET", 2)
-        builder = MockAdapter([_ok("built one"), _ok("built two"), _ok("built three")])
+        import time as _time
+
+        class Slow(MockAdapter):
+            live = 0
+            peak = 0
+
+            async def send(self, prompt):
+                self.send_calls.append(prompt)
+                Slow.live += 1
+                Slow.peak = max(Slow.peak, Slow.live)
+                await asyncio.sleep(0.03)
+                Slow.live -= 1
+                return _ok("built")
+        builder = Slow()
         c, claude, codex, ui, made = _bot_with_summon(
             tmp_path,
-            summoner_reply="summon: one\nsummon: two\nsummon: three\n",
+            summoner_reply="summon: one\nsummon: two\nsummon: three\nsummon: four\nsummon: five\n",
             builder=builder,
         )
         await c.handle_input("@claude go", ui)
-        assert len(builder.send_calls) == 2
+        assert len(builder.send_calls) == 5, "every brief ran"
+        assert Slow.peak == 2, Slow.peak
         notes = [t for sp, t in ui.room_entries if sp == "system"]
-        assert any("asked for 3 build agents" in t and "budget is 2" in t and "three" in t for t in notes)
+        assert any("5 build agents" in t and "2 at a time" in t for t in notes)
+        assert not any("Ask for them yourself" in t for t in notes)
         assert len(claude.resume_calls) == 1
+
+    async def test_the_turn_cap_stops_a_runaway(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(summon, "SUMMON_TURN_CAP", 3)
+        builder = MockAdapter([_ok("built")] * 6)
+        c, claude, codex, ui, made = _bot_with_summon(
+            tmp_path, summoner_reply="summon: a\nsummon: b\nsummon: c\nsummon: d\n", builder=builder,
+        )
+        await c.handle_input("@claude go", ui)
+        assert len(builder.send_calls) == 0, "four at once is over a cap of three: none run"
+        notes = [t for sp, t in ui.room_entries if sp == "system"]
+        assert any("Stopping here" in t for t in notes)
 
     async def test_a_failed_builder_is_a_report_not_a_crash(self, tmp_path):
         class Boom(MockAdapter):

@@ -99,8 +99,9 @@ the \fB"test"\fR command in botference/project.json, if any, exits zero), a
 bot says \fBblocked\fR, you type, or the time budget (8 hours) runs out.
 \fBsummon: [ui]\fR runs Claude Code on Opus 5.5, \fBsummon: [logic]\fR runs
 Codex; the bot that summoned does not review its own builder. Several
-\fBsummon:\fR lines in one reply run as several agents at the same time (up to
-six per bot per turn, \fBbuilder.parallel\fR in context-budgets.json).
+\fBsummon:\fR lines in one reply run as several agents at the same time, six at
+a time (\fBbuilder.parallel\fR in context-budgets.json), and a bot may summon
+again after their reports without asking.
 With \fB\-\-web\fR the council serves as a chat web app in the browser
 instead of the Ink TUI (sidebar where every project expands to its recent
 chats and tapping any chat opens it \- no "make active project" step \-
@@ -580,8 +581,8 @@ Desktop notification (via your terminal) when the bots finish a turn.
 Persists per-user.
 .TP
 .B /agents [on|off]
-Grant/revoke the Claude participant's subagent (Task) tool. Off by
-default per chat; Claude suggests it and waits for approval.
+Revoke/re-grant the Claude participant's subagent (Task) tool. On by
+default per chat; the bots decide how to split their work.
 .TP
 .B /verify [on|off]
 When the bots mark the thread

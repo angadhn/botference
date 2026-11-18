@@ -1788,6 +1788,10 @@ class Botference:
     ):
         self.claude = claude
         self.codex = codex
+        # Claude's subagent (Task) tool is on from the start: the bots decide
+        # how to split their work (2026-11-18, "let them decide"). /agents off
+        # revokes it for a chat.
+        self._set_claude_subagents(True)
         # Optional callback set by the UI layer: returns True when the user
         # has queued input, so a free-form thread yields the floor early.
         self.pending_input_check: Optional[Callable[[], bool]] = None
@@ -2862,7 +2866,7 @@ class Botference:
             self.active_project_id = self.session_project_id
             self._inbox_by_choice = False
             self.observe = bool(payload.get("observe", self.observe))
-            self._set_claude_subagents(bool(payload.get("claude_subagents")))
+            self._set_claude_subagents(bool(payload.get("claude_subagents", True)))
             self.router.current_route = str(payload.get("route", "@all"))
             self.router._had_first_turn = bool(payload.get("router_had_first_turn", False))
             saved_base_roots = payload.get("base_plan_write_roots")
@@ -4100,45 +4104,47 @@ class Botference:
     ) -> None:
         """Honour the `summon:` briefs a bot ended its reply with.
 
-        One line per brief; several run AT THE SAME TIME, each its own agent
-        with its own card nested under the reply that summoned it
-        (parent_stream_id). Every report goes into the shared transcript as
-        the agent's own words, and the summoner is woken ONCE, after the last
-        of them, with all of them. The budget (summon.summon_budget) is agents
-        per bot per user turn; briefs past it are named, not run. A summon
-        inside the wake-up is not acted on (depth), so a bot cannot chain
-        builds without the reader.
+        One line per brief; they run AT THE SAME TIME (in waves of
+        summon.summon_budget), each its own agent with its own card nested
+        under the reply that summoned it (parent_stream_id). Every report
+        goes into the shared transcript as the agent's own words, and the
+        summoner is woken ONCE, after the last of them, with all of them.
+        The woken bot may summon again — a fix, the next stage — and that
+        round runs too (`depth` counts the rounds): the bots decide how the
+        work splits and when it is done, not the reader. The only stops are
+        the runaway ones, SUMMON_ROUNDS and SUMMON_TURN_CAP per user turn.
         """
-        if depth or model not in ("claude", "codex"):
+        if model not in ("claude", "codex"):
             return
         briefs = summon.parse_summon_requests(resp.text)
         if not briefs:
             return
-        budget = summon.summon_budget(self.paths.botference_home)
         used = self._summons.get(model, 0)
-        room = max(0, budget - used)
-        run, left = briefs[:room], briefs[room:]
-        if left:
-            named = "; ".join(b[:80] for b in left)
-            note = (f"[{model.capitalize()} asked for {len(briefs)} build agents "
-                    f"this turn; the budget is {budget} per turn, so "
-                    f"{len(run)} run and {len(left)} do not: {named}. Ask for "
-                    "them yourself if you want them run.]")
+        if depth >= summon.SUMMON_ROUNDS or used + len(briefs) > summon.SUMMON_TURN_CAP:
+            note = (f"[{model.capitalize()} asked for {len(briefs)} more build "
+                    f"agent{'s' if len(briefs) != 1 else ''} — round {depth + 1}, "
+                    f"{used} agents already this turn. Stopping here so the "
+                    "user can look; say \"carry on\" to continue.]")
             self._add_room_entry(ui, "system", note)
             self.transcript.add("system", note)
-        if not run:
             return
+        run = briefs
         self._summons[model] = used + len(run)
+        width = summon.summon_budget(self.paths.botference_home)
         if len(run) > 1:
             note = (f"[{model.capitalize()} is running {len(run)} build agents "
-                    "at the same time, one per brief.]")
+                    + ("at the same time, one per brief.]" if len(run) <= width
+                       else f"one per brief, {width} at a time.]"))
             self._add_room_entry(ui, "system", note)
             self.transcript.add("system", note)
-        # all at once; a cancel (Esc) reaches every one of them through gather
-        reports = await asyncio.gather(*[
-            self._run_summon(b, model, resp.stream_id, ui, siblings=run)
-            for b in run
-        ])
+        # all at once, `width` at a time; a cancel (Esc) reaches every one of
+        # them through gather
+        gate = asyncio.Semaphore(max(1, width))
+
+        async def one(b: str) -> tuple[str, str]:
+            async with gate:
+                return await self._run_summon(b, model, resp.stream_id, ui, siblings=run)
+        reports = await asyncio.gather(*[one(b) for b in run])
         if self._build is not None:
             # In a build thread the summoner does not judge its own builders:
             # the thread hands the floor to the other bot to review them.
@@ -4160,7 +4166,7 @@ class Botference:
                 'same tag, or mark the task done. Footer "build": "reviewing".]',
             )
             return
-        await self._wake_after_summon(model, reports, ui)
+        await self._wake_after_summon(model, reports, ui, depth=depth + 1)
 
     async def _run_summon(
         self, brief: str, summoner: str, parent_stream_id: str, ui: UIPort,
@@ -4289,22 +4295,25 @@ class Botference:
 
     async def _wake_after_summon(
         self, model: str, reports: list[tuple[str, str]], ui: UIPort,
+        *, depth: int = 1,
     ) -> None:
         """Give the floor back to the bot whose agents just reported — once,
-        however many there were."""
+        however many there were. It may summon again from here."""
+        more = ("If the reports show more is needed — a fix, the next piece, "
+                "the next stage — summon it now, in this reply; you do not "
+                "need to ask. Otherwise tell the user what to open and what "
+                "is still missing.")
         if len(reports) == 1:
             label, status = reports[0]
             nudge = (f"[The build agent {model.capitalize()} summoned ({label}) "
                      f"has {status} — its report is above. {model.capitalize()}, "
-                     "look at what it made if you can, then tell the user what to "
-                     "open and what is still missing. Do not summon again this turn.]")
+                     f"look at what it made if you can. {more}]")
         else:
             what = "; ".join(f"{lb} {st}" for lb, st in reports)
             nudge = (f"[The {len(reports)} build agents {model.capitalize()} summoned "
                      f"have finished ({what}) — their reports are above. "
-                     f"{model.capitalize()}, look at what each made if you can, "
-                     "then tell the user what to open, which pieces are done and "
-                     "which are not. Do not summon again this turn.]")
+                     f"{model.capitalize()}, look at what each made if you can, and "
+                     f"say which pieces are done and which are not. {more}]")
         self.transcript.add("system", nudge)
         resp = await self._send_to_model(model, "", ui)
         if resp is None:
@@ -4315,7 +4324,7 @@ class Botference:
         ui.set_status(self.status_snapshot())
         self._persist_session()
         await self._maybe_watch_for_bot(resp.text, ui, model, depth=1)
-        await self._maybe_summon_for_bot(resp, ui, model, depth=1)
+        await self._maybe_summon_for_bot(resp, ui, model, depth=depth)
 
     # ── /parallel ─────────────────────────────────────────
 
@@ -7956,7 +7965,7 @@ class Botference:
         self._apply_planner_write_config()  # the old chat's write grants are gone
         self.claude.session_id = ""
         self.codex.thread_id = ""
-        self._set_claude_subagents(False)  # grants are per-chat
+        self._set_claude_subagents(True)  # per-chat; a new chat starts with it
 
         ui.clear_panes()
         ui.set_mode(self.mode)

@@ -49,12 +49,19 @@ DEFAULT_BUILDER = {
     "unsandboxed_commands": ["blender *"],
 }
 
-#: Build agents per bot per user turn. A reply may carry several `summon:`
-#: lines — one per independent piece of work (a student, a chapter, a
-#: figure) — and they run AT THE SAME TIME, each with its own card under the
-#: message. Past the budget the rest are named, not run, and the reader
-#: decides. `builder.parallel` in context-budgets.json changes it.
+#: How many build agents run AT THE SAME TIME. A reply may carry any number
+#: of `summon:` lines — one per independent piece of work (a student, a
+#: chapter, a figure) — each its own agent with its own card under the
+#: message; more than this many run in waves. The bots decide how many and
+#: whether at once or in turn; the reader is never asked.
+#: `builder.parallel` in context-budgets.json changes it.
 SUMMON_BUDGET = 6
+#: The runaway stops, per user turn: a bot may summon again after its
+#: builders report (a fix, the next stage) without the reader, up to this
+#: many rounds, and this many agents in all. Past either the room is told
+#: and the floor comes back to the reader; "carry on" starts afresh.
+SUMMON_ROUNDS = 4
+SUMMON_TURN_CAP = 24
 
 
 def summon_budget(botference_home: Path | None = None) -> int:
