@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-18
+
+- **Discuss: C, S and A on a PDF, with the microphone on.** With a passage selected, `C` highlights it and opens a note of your own, `S` strikes it through and opens the box for why, `A` highlights it and opens a note routed to all the agents; each turns the microphone on as it opens, so the note is spoken. Enter while recording stops the microphone (nothing is sent without its words); Enter again sends. Esc discards the recording. No modifier, no selection or a caret in a box, and the keys are plain letters. PDFs only; the pill's buttons are unchanged.
+
 ## 2026-11-15
 
 - **Switching a bot's account keeps the chat's memory.** Each profile now has one conversation history per bot, and every account folder links its history (Claude's `projects/`, Codex's `sessions/`) to it as the bot starts. A page or council chat carries on with its context whichever account pays for the next reply. History an account folder already had is merged in, never overwritten; the CLIs' own home folders are never re-pointed.

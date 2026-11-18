@@ -719,6 +719,18 @@ This is PDFs only, on purpose: a strikeout is a suggested edit to a
 draft, and a news article is not a draft. The pill on an ordinary page is
 the single comment button it has always been.
 
+**Three keys, and the microphone.** With a passage selected on a PDF,
+one key does what the pill's button does and then turns the microphone
+on, so the note is spoken rather than typed: `C` highlights and opens a
+note of your own, `S` strikes the passage through and opens the box for
+why, `A` highlights and opens a note already routed to all the agents.
+Say your piece, then press Enter — while the microphone is on, Enter
+stops it, and once the words are in the box Enter sends them (for a
+strike the box may stay empty). Esc throws the recording away. The keys
+do nothing without a selection, nothing while you are typing in a box,
+and nothing with ⌘, Ctrl or Alt held. The microphone needs the
+companion to have whisper, as the mic button does.
+
 **A discussion that ends in several changes.** Argue about a passage and
 the bots may end an answer with up to three proposals at once — three
 chips, three Strike it buttons, each one you can take or leave. Every one

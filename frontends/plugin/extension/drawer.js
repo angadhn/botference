@@ -3102,9 +3102,9 @@
       }
       return `<div class="selpill twin">
   <button class="selbtn icon" type="button" data-mark="highlight"
-    title="Highlight and comment" aria-label="Highlight this passage and comment on it">${COMMENT_SVG}</button>
+    title="Highlight and comment — or press C to dictate a note, A to dictate to the agents" aria-label="Highlight this passage and comment on it">${COMMENT_SVG}</button>
   <button class="selbtn icon strikebtn" type="button" data-mark="strike"
-    title="Strike through — suggest this comes out" aria-label="Strike this passage through as a suggested deletion">${STRIKE_SVG}</button>
+    title="Strike through — suggest this comes out (or press S to strike and dictate why)" aria-label="Strike this passage through as a suggested deletion">${STRIKE_SVG}</button>
   ${questionTool()}
 </div>`;
     }
@@ -4103,17 +4103,23 @@ ${bubbleShellHtml()}`;
     const micCapable = () => typeof navigator !== 'undefined' && !!navigator.mediaDevices
       && typeof navigator.mediaDevices.getUserMedia === 'function'
       && typeof MediaRecorder === 'function';
-    async function micStatus() {
-      // mount() and open() both ask, and the first opening does both at once
+    function micStatus() {
+      // mount() and open() both ask, and the first opening does both at once:
+      // the second asker shares the first one's answer rather than reading
+      // MIC.ok before it has arrived (a hotkey's dictate on a fresh page is
+      // exactly that second asker)
       const now = Date.now();
-      if (MIC.asked && now - MIC.asked < 2000) return MIC.ok;
+      if (MIC.query && now - MIC.asked < 2000) return MIC.query;
       MIC.asked = now;
-      let ok = false;
-      if (micCapable()) {
-        try { const r = await cb('onTranscribeStatus')(); ok = !!(r && r.ok); } catch (_) { ok = false; }
-      }
-      if (ok !== MIC.ok) { MIC.ok = ok; paintMic(); }
-      return ok;
+      MIC.query = (async () => {
+        let ok = false;
+        if (micCapable()) {
+          try { const r = await cb('onTranscribeStatus')(); ok = !!(r && r.ok); } catch (_) { ok = false; }
+        }
+        if (ok !== MIC.ok) { MIC.ok = ok; paintMic(); }
+        return ok;
+      })();
+      return MIC.query;
     }
     const stopTracks = stream => {
       if (stream) for (const tr of stream.getTracks()) { try { tr.stop(); } catch (_) { /* gone */ } }
@@ -8943,6 +8949,14 @@ ${bubbleShellHtml()}`;
       if (D.sendLock[target]) return;
       // a brand-new thread must not be created twice while its id is in flight
       if (target === '__new__' && inFlight(target)) return;
+      // THE MICROPHONE IS STILL WORKING FOR THIS BOX. Enter (or Send) while it
+      // records is the reader saying "that's all": the recording stops and the
+      // words are on their way; nothing is sent until they have landed, when
+      // Enter again sends them. Sending now would file the box without the
+      // words — for a strikeout, an empty note — and strand the transcript in
+      // a draft nobody sees. Asking, stopping and transcribing are the same
+      // wait, with nothing to stop.
+      if (MIC.target === target && MIC.mode !== 'idle') { micStop(); return; }
       D.sendLock[target] = true;
       try {
         harvestDrafts();
@@ -11738,11 +11752,29 @@ ${bubbleShellHtml()}`;
       render();
     }
 
-    function beginNew(anchor) {
+    // `opts` is how a KEY opens the composer rather than the pill (content.js,
+    // the PDF hotkeys): `route` picks the pill row's route before the card is
+    // drawn ('all' for "talk to the agents", nothing for a note), and
+    // `dictate` turns the microphone on once the box is there, so the reader
+    // speaks the note instead of typing it. Both are no-ops from the pill.
+    function beginNew(anchor, opts) {
       mount();
       if (!D.mounted) return D;   // mount() can refuse: no stylesheet, no drawer
       if (!CAPS.highlights) return D;   // nothing can be anchored here
       if (standDown()) return D;        // …and no new threads on a review page
+      const o = opts || {};
+      // the route is a field on the draft, read by render(): set before it
+      if (o.route) D.routes['__new__'] = chatRoute('__new__', o.route);
+      else delete D.routes['__new__'];
+      // …and the microphone is started after it, by the same tap that would
+      // have started it: idle only, and only when the companion can transcribe
+      const dictate = () => {
+        if (!o.dictate) return;
+        // still the same new comment by the time the answer is in: a second
+        // selection meanwhile has its own beginNew, and its own dictate
+        const go = ok => { if (ok && MIC.mode === 'idle' && D.pending === anchor) micStart('__new__'); };
+        if (MIC.ok) go(true); else Promise.resolve(micStatus()).then(go, () => {});
+      };
       // WHERE THE READER HAS ASKED FOR BUBBLES, a new comment starts in one
       // too — beside the passage it is about, with the panel left shut. The
       // reader's words: "I like the little popup… can we also START chats with
@@ -11759,6 +11791,7 @@ ${bubbleShellHtml()}`;
         delete B.off[NEW_ID]; moveBubbleHow(NEW_ID, 'forget');
         D.pending = anchor;
         showBubble(NEW_ID);
+        dictate();
         return D;
       }
       D.pending = anchor;
@@ -11771,6 +11804,7 @@ ${bubbleShellHtml()}`;
       render();
       const ta = D.shadow.querySelector('.card.pending textarea');
       if (ta) { ta.focus(); D.el.comments.scrollTop = 0; }
+      dictate();
       return D;
     }
 

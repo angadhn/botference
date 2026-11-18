@@ -3736,7 +3736,7 @@
   // composer. `kind` is which of the pill's tools was pressed — 'strike' on a
   // PDF's second button, 'highlight' everywhere else (and on every article,
   // where the pill has only ever had the one).
-  function commitSelection(kind) {
+  function commitSelection(kind, opts) {
     if (!CAPS.highlights) return;
     // THE THIRD TOOL, and the one that makes no mark. "Make a question of
     // this" is not an annotation: nothing is written onto the document, no
@@ -3798,8 +3798,43 @@
     Anchor.paintOffsets(index, start, end, '__new__', false, mark);
     sel.removeAllRanges();
     drawer.hideSel();
-    drawer.beginNew({ ...a, mark });
+    drawer.beginNew({ ...a, mark }, opts);
   }
+
+  // THE PDF HOTKEYS. With a passage selected, one key does what the pill's
+  // button does and then turns the microphone on, so the note is spoken:
+  //   C  highlight and comment — a note of the reader's own, no bot summoned
+  //   S  strike the passage through, and say why (or send the box empty)
+  //   A  highlight and comment, routed to all the agents
+  // PDFs only (the strike capability is the PDF viewer's; an article is not a
+  // draft and its page may want these letters for itself). Never with a
+  // modifier, never while something is being typed into, and never without a
+  // selection — a bare key on a page is still a bare key.
+  const HOTKEYS = { c: ['highlight', { dictate: true }],
+                    s: ['strike', { dictate: true }],
+                    a: ['highlight', { route: 'all', dictate: true }] };
+  document.addEventListener('keydown', e => {
+    if (!CAPS.highlights || !CAPS.strike) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
+    const hk = HOTKEYS[String(e.key || '').toLowerCase()];
+    if (!hk) return;
+    // the real target: a key typed into the drawer's composer arrives with
+    // e.target rewritten to the shadow host (see viewer.js's rotate key)
+    const t = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.nodeName || ''))) return;
+    if (t && inOurUI(t)) return;
+    if (standDown()) return;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !String(sel).trim()) return;
+    if (sel.anchorNode && inOurUI(sel.anchorNode)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const [kind, opts] = hk;
+    // the first key on a dormant page is its activation gesture, as the first
+    // selection is for the pill
+    const ready = active ? Promise.resolve(drawer) : activate(false);
+    ready.then(d => { if (d) commitSelection(kind, opts); });
+  }, true);
 
   // click a highlight → open the drawer at that thread
   document.addEventListener('click', e => {
