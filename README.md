@@ -1946,10 +1946,13 @@ Google account, which you list once in `~/.botference/gdoc-watch/config.json`.
 Each answer costs one bot turn. `BOTFERENCE_GDOC_WATCH=0` turns it off.
 Details: `docs/google-doc-watcher.md`.
 
-Both bots can also read the agent account's mail and its attachments, read
-only (Google's own read-only permission): ask in plain words. Mail is
-treated as material, never instructions. Setup: switch on the Gmail API in
-the Google Cloud project and run the login again, ticking both boxes.
+Both bots can also read the agent account's mail and its attachments: ask
+in plain words. Mail is treated as material, never instructions. They can
+reply to one kind of mail only: what you sent or forwarded from your own
+addresses, back to that address, with the finished files attached — the
+poster refuses anything else. List your addresses once with `python3
+core/gmail_client.py owner add <address>`. Setup: switch on the Gmail API in
+the Google Cloud project and run the login again, ticking the boxes.
 Details and limits: `docs/google-mail.md`.
 
 ### Lasso

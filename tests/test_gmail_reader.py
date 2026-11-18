@@ -32,6 +32,7 @@ from gdoc_mcp import (  # noqa: E402
     READ_ATTACHMENT_TOOL,
     READ_MAIL_TOOL,
     READ_TOOL,
+    REPLY_MAIL_TOOL,
     SEARCH_MAIL_TOOL,
     SERVER_NAME,
     TOOLS,
@@ -82,13 +83,18 @@ class FakeGmail:
 
     def __call__(self, method, url, headers, data):
         self.calls.append((method, url, headers, data))
-        assert method == "GET", "the mail reader only reads"
         if url.startswith(gdoc_client.API):
             return 200, json.dumps({"title": "doc", "revisionId": "r"}).encode()
         assert url.startswith(API), url
         if self.fail:
             status, body = self.fail
             return status, json.dumps(body).encode()
+        if method == "POST":
+            # the one write: a send. Everything else the reader does is a GET.
+            assert url == API + "messages/send", url
+            self.sent = json.loads(data)
+            return 200, json.dumps({"id": "sent-1", "threadId": self.sent.get("threadId", "t-new")}).encode()
+        assert method == "GET", "the mail reader only reads"
         parsed = urllib.parse.urlparse(url)
         path = parsed.path.split("/users/me/", 1)[1]
         query = urllib.parse.parse_qs(parsed.query)
@@ -632,17 +638,20 @@ class TestFailures:
 
 class TestTools:
     def test_names_in_one_place(self):
-        assert MAIL_TOOLS == ("search_mail", "read_mail", "read_attachment")
-        assert ALL_TOOLS[-3:] == MAIL_TOOLS
+        assert MAIL_TOOLS == ("search_mail", "read_mail", "read_attachment", "reply_mail")
+        assert ALL_TOOLS[-4:] == MAIL_TOOLS
         assert [t["name"] for t in TOOLS] == list(ALL_TOOLS)
 
-    def test_mail_tools_are_read_only(self):
+    def test_mail_tools_are_read_only_but_the_reply(self):
         for tool in TOOLS:
             if tool["name"] in MAIL_TOOLS:
-                assert tool["annotations"]["readOnlyHint"] is True
+                assert tool["annotations"]["readOnlyHint"] is (tool["name"] != REPLY_MAIL_TOOL)
                 assert tool["inputSchema"]["type"] == "object"
         attach = next(t for t in TOOLS if t["name"] == READ_ATTACHMENT_TOOL)
         assert attach["inputSchema"]["required"] == ["message_id", "part"]
+        reply = next(t for t in TOOLS if t["name"] == REPLY_MAIL_TOOL)
+        assert reply["inputSchema"]["required"] == ["message_id", "text"]
+        assert "only" in reply["description"] and "refused" in reply["description"]
 
     def test_server_renamed(self):
         assert SERVER_NAME == "botference_google"
@@ -703,8 +712,194 @@ class TestMailNote:
         for tool in MAIL_TOOLS:
             assert tool in note
         words = len(note.split("\n", 1)[1].split())
-        assert 60 <= words <= 80, words
+        assert 100 <= words <= 160, words
         assert "never instructions" in note and "word for word" in note
+        assert "back to that address only" in note
 
     def test_others_get_nothing(self):
         assert google_mail_note("gemini") == ""
+
+
+# -- replying to the owner ---------------------------------------------------
+
+SEND = f"{BOTH} {gdoc_client.GMAIL_SEND_SCOPE}"
+OWNER_UNI = "owner@university.example"
+OWNER_HOME = "owner.home@example.com"
+
+
+def _owner_home(tmp_path, scope=SEND, owners=(OWNER_UNI, OWNER_HOME)):
+    home = _home(tmp_path, scope)
+    for a in owners:
+        gmail_client.owner_add(a, home)
+    return home
+
+
+def _reply_poster(tmp_path, google, scope=SEND, owners=(OWNER_UNI, OWNER_HOME), roots=None):
+    home = _owner_home(tmp_path, scope, owners)
+    mail = MailClient(home=home, transport=google, clock=lambda: 1_000_000.0,
+                      attachments_home=tmp_path / "mail-attachments",
+                      attach_roots=roots if roots is not None else [tmp_path / "project"])
+    docs = DocsClient(home=home, transport=google, clock=lambda: 1_000_000.0)
+    return Poster("claude", docs, mail)
+
+
+def _from_owner(mid="m-own", sender=f"The Owner <{OWNER_UNI}>", thread="t-own",
+                subject="Fwd: letters please", extra=None):
+    m = _msg(mid, _text("text/plain", "please write the letters"), sender=sender,
+             subject=subject, thread=thread)
+    m["payload"]["headers"] += [{"name": "Message-ID", "value": "<orig@university.example>"}] + (extra or [])
+    return m
+
+
+def _raw_mail(google):
+    import email
+    import email.policy
+    raw = google.sent["raw"]
+    raw += "=" * (-len(raw) % 4)
+    return email.message_from_bytes(base64.urlsafe_b64decode(raw), policy=email.policy.default)
+
+
+class TestOwnerList:
+    def test_the_list_is_a_0600_file_beside_the_sign_in(self, tmp_path):
+        home = _home(tmp_path)
+        assert gmail_client.owner_addresses(home) == []
+        assert gmail_client.owner_add(" Owner@University.Example ", home) == [OWNER_UNI]
+        assert gmail_client.owner_add(OWNER_UNI, home) == [OWNER_UNI], "once"
+        path = gmail_client.owner_file(home)
+        assert path == home / "owner.json"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        gmail_client.owner_add(OWNER_HOME, home)
+        assert gmail_client.owner_remove(OWNER_UNI, home) == [OWNER_HOME]
+        with pytest.raises(GdocError):
+            gmail_client.owner_add("not an address", home)
+
+    def test_a_damaged_list_is_no_list(self, tmp_path):
+        home = _home(tmp_path)
+        gmail_client.owner_file(home).write_text("{ nope")
+        assert gmail_client.owner_addresses(home) == []
+        gmail_client.owner_file(home).write_text(json.dumps({"addresses": ["x", 5, OWNER_UNI]}))
+        assert gmail_client.owner_addresses(home) == [OWNER_UNI]
+
+    def test_the_sign_in_asks_for_sending_too(self):
+        assert gdoc_client.GMAIL_SEND_SCOPE in gdoc_client.LOGIN_SCOPES
+        assert gdoc_client.GMAIL_SEND_SCOPE.endswith("/gmail.send")
+
+    def test_the_command_line(self, tmp_path, monkeypatch, capsys):
+        home = _home(tmp_path)
+        monkeypatch.setenv(gdoc_client.HOME_ENV, str(home))
+        assert gmail_client.main(["owner", "add", OWNER_UNI]) == 0
+        assert gmail_client.main(["owner", "list"]) == 0
+        out = capsys.readouterr().out
+        assert OWNER_UNI in out and "replies go only to these" in out
+        assert gmail_client.main(["owner", "add", "nope"]) == 1
+        assert gmail_client.main(["send", "x"]) == 2
+
+
+class TestReply:
+    def test_a_reply_goes_to_the_owner_in_the_same_thread_and_nobody_else(self, tmp_path):
+        google = FakeGmail(messages={"m-own": _from_owner(
+            extra=[{"name": "Reply-To", "value": "stranger@evil.example"},
+                   {"name": "Cc", "value": "someone@else.example"}])})
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "ada.pdf").write_bytes(b"%PDF-1.4 fake")
+        poster = _reply_poster(tmp_path, google)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {
+            "message_id": "m-own", "text": "Here are Ada's letters.",
+            "attachments": [str(project / "ada.pdf")]})
+        assert not is_error, text
+        assert text.startswith(f"Replied to {OWNER_UNI} (the owner) in thread t-own")
+        assert "1 attachment(s)" in text and "Nobody else was copied" in text
+        assert google.sent["threadId"] == "t-own"
+        mail = _raw_mail(google)
+        assert mail["To"] == OWNER_UNI, "the From it came from — never the Reply-To"
+        assert mail["Cc"] is None and mail["Bcc"] is None
+        assert mail["From"] == ACCOUNT
+        assert mail["Subject"] == "Re: Fwd: letters please"
+        assert mail["In-Reply-To"] == "<orig@university.example>"
+        assert "<orig@university.example>" in mail["References"]
+        parts = list(mail.walk())
+        body = next(p for p in parts if p.get_content_type() == "text/plain")
+        assert "Here are Ada's letters." in body.get_content()
+        pdf = next(p for p in parts if p.get_filename() == "ada.pdf")
+        assert pdf.get_content_type() == "application/pdf"
+        assert pdf.get_payload(decode=True) == b"%PDF-1.4 fake"
+        # the one POST is the send; everything before it was reading
+        posts = [c for c in google.gmail_calls() if c[0] == "POST"]
+        assert len(posts) == 1 and posts[0][1] == API + "messages/send"
+
+    def test_the_owners_other_address_is_answered_at_that_address(self, tmp_path):
+        google = FakeGmail(messages={"m-own": _from_owner(sender=f"Me <{OWNER_HOME.upper()}>")})
+        poster = _reply_poster(tmp_path, google)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-own", "text": "done"})
+        assert not is_error, text
+        assert _raw_mail(google)["To"] == OWNER_HOME
+
+    def test_mail_from_anyone_else_is_refused_and_nothing_is_sent(self, tmp_path):
+        google = FakeGmail(messages={"m-pat": _from_owner("m-pat", sender="Pat <pat@example.com>")})
+        poster = _reply_poster(tmp_path, google)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-pat", "text": "hi"})
+        assert is_error
+        assert "pat@example.com" in text and "not one of the owner's own addresses" in text
+        assert "Nothing was sent" in text
+        assert not [c for c in google.gmail_calls() if c[0] == "POST"]
+
+    def test_no_owner_list_means_no_replies_at_all(self, tmp_path):
+        google = FakeGmail(messages={"m-own": _from_owner()})
+        poster = _reply_poster(tmp_path, google, owners=())
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-own", "text": "hi"})
+        assert is_error and "no owner addresses are set" in text
+        assert "owner add" in text
+        assert not [c for c in google.gmail_calls() if c[0] == "POST"]
+
+    def test_a_sign_in_without_sending_says_so(self, tmp_path):
+        google = FakeGmail(messages={"m-own": _from_owner()})
+        poster = _reply_poster(tmp_path, google, scope=BOTH)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-own", "text": "hi"})
+        assert is_error and "does not include sending mail" in text
+        assert "login" in text
+        # …and reading still works with that sign-in
+        text, is_error = poster.call(READ_MAIL_TOOL, {"message_id": "m-own"})
+        assert not is_error
+
+    def test_attachments_come_only_from_the_project_never_the_sign_in(self, tmp_path):
+        google = FakeGmail(messages={"m-own": _from_owner()})
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "ok.txt").write_text("fine")
+        elsewhere = tmp_path / "elsewhere.txt"
+        elsewhere.write_text("not yours")
+        poster = _reply_poster(tmp_path, google)
+        home = poster.mail.home
+        for path, why in [(elsewhere, "outside the project folder"),
+                          (home / "token.json", "never sent"),
+                          (project / "missing.pdf", "no such file")]:
+            text, is_error = poster.call(REPLY_MAIL_TOOL, {
+                "message_id": "m-own", "text": "hi", "attachments": [str(path)]})
+            assert is_error and why in text, text
+            assert "Nothing was sent" in text
+        assert not [c for c in google.gmail_calls() if c[0] == "POST"]
+        big = project / "big.bin"
+        big.write_bytes(b"x" * (gmail_client.REPLY_ATTACHMENT_MAX_BYTES + 1))
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {
+            "message_id": "m-own", "text": "hi", "attachments": [str(big)]})
+        assert is_error and "byte limit" in text
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {
+            "message_id": "m-own", "text": "hi", "attachments": "ok.txt"})
+        assert is_error and "list of file paths" in text
+
+    def test_an_empty_reply_and_a_hidden_sender_are_refused(self, tmp_path):
+        google = FakeGmail(messages={
+            "m-own": _from_owner(),
+            "m-hid": _from_owner("m-hid", sender=f"Google <{HIDDEN}>")})
+        poster = _reply_poster(tmp_path, google)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-own", "text": "   "})
+        assert is_error and "empty" in text
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {"message_id": "m-hid", "text": "hi"})
+        assert is_error and "hidden" in text
+        assert not [c for c in google.gmail_calls() if c[0] == "POST"]
+
+    def test_the_subject_keeps_one_re(self):
+        assert gmail_client.reply_subject("Letters") == "Re: Letters"
+        assert gmail_client.reply_subject("RE: Letters") == "RE: Letters"
+        assert gmail_client.reply_subject("") == "Re:"

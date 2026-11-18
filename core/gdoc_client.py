@@ -55,8 +55,13 @@ DOCS_SCOPE = "https://www.googleapis.com/auth/documents"
 #: nothing else (no sending, deleting, labelling or marking as read).
 #: Optional at sign-in: a sign-in without it still works for Docs.
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+#: Sending: Google's permission to send mail as the agent account, and
+#: nothing else (no reading, deleting, labelling). The only sending the
+#: poster does with it is a reply to the owner's own addresses
+#: (gmail_client.MailClient.reply). Optional at sign-in, as reading is.
+GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 #: `openid email` makes Google say which account signed in.
-LOGIN_SCOPES = ("openid", "email", DOCS_SCOPE, GMAIL_SCOPE)
+LOGIN_SCOPES = ("openid", "email", DOCS_SCOPE, GMAIL_SCOPE, GMAIL_SEND_SCOPE)
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 API = "https://docs.googleapis.com/v1/documents/"
@@ -165,6 +170,22 @@ class Problem(Enum):
     ATTACHMENT_NOT_SAVED = (
         "Gmail: could not save the attachment in {where} ({detail}). "
         "Nothing was saved.")
+    # -- replying to the owner (core/gmail_client.py, MailClient.reply) --
+    MAIL_SEND_NOT_GRANTED = (
+        "Gmail: botference's Google sign-in does not include sending mail. "
+        "The owner must run the login again and tick the box that lets "
+        "botference send Gmail: " + LOGIN_HOW)
+    MAIL_NO_OWNER_LIST = (
+        "Gmail: no owner addresses are set, so nothing can be replied to. "
+        "The owner lists their own addresses once with: python3 "
+        "core/gmail_client.py owner add <address>")
+    MAIL_NOT_OWNER = (
+        "Gmail: that message is from {detail}, which is not one of the "
+        "owner's own addresses. Replies go only to mail the owner sent or "
+        "forwarded to the agent account. Nothing was sent.")
+    MAIL_REPLY_ATTACHMENT = (
+        "Gmail: the attachment {detail} was refused ({why}). Nothing was "
+        "sent.")
 
 
 class GdocError(Exception):

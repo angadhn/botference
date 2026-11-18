@@ -28,16 +28,20 @@ import base64
 import codecs
 import html
 import json
+import mimetypes
 import os
 import re
 import shutil
+import sys
 import time
 import urllib.parse
+from email.message import EmailMessage
 from email.utils import getaddresses, parsedate_to_datetime
 from enum import Enum
 from html.parser import HTMLParser
 from pathlib import Path
 
+import gdoc_client
 from gdoc_client import (
     GMAIL_SCOPE,
     GdocError,
@@ -373,12 +377,188 @@ _MAIL_HINTS = {
 }
 
 
-class MailClient(GoogleSession):
-    """Reads the agent account's mail. Read only."""
+# -- the owner's own addresses ----------------------------------------------
+#
+# The ONE list a reply may go to. It lives beside the sign-in, in the folder
+# the bots cannot open (`<google home>/owner.json`, 0600), so no email and
+# no bot can add an address to it; only the owner, at the keyboard, with
+# `python3 core/gmail_client.py owner add <address>`. It is never in the
+# repository: these are the owner's personal addresses.
+OWNER_FILE = "owner.json"
+#: A reply's text at most this long; the letters go as attachments.
+REPLY_TEXT_LIMIT = 20_000
+#: Attachments on a reply, each and all together.
+REPLY_ATTACHMENT_MAX_BYTES = ATTACHMENT_MAX_BYTES
+_ADDRESS = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
 
-    def __init__(self, *args, attachments_home: Path | None = None, **kw):
+
+def owner_file(home: Path | None = None) -> Path:
+    return Path(home or gdoc_client.google_home()) / OWNER_FILE
+
+
+def owner_addresses(home: Path | None = None) -> list[str]:
+    """The owner's addresses, lower-cased, or [] when none are set. A
+    damaged file is no list: nothing is replied to until it is fixed."""
+    try:
+        data = json.loads(owner_file(home).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raw = data.get("addresses") if isinstance(data, dict) else None
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for a in raw:
+        a = str(a).strip().lower()
+        if _ADDRESS.fullmatch(a) and a not in out:
+            out.append(a)
+    return out
+
+
+def _write_owner(home: Path | None, addresses: list[str]) -> None:
+    path = owner_file(home)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump({"addresses": addresses}, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def owner_add(address: str, home: Path | None = None) -> list[str]:
+    a = str(address).strip().lower()
+    if not _ADDRESS.fullmatch(a):
+        raise GdocError(Problem.MAIL_BAD_REQUEST, detail=f"not an email address: {address!r}")
+    have = owner_addresses(home)
+    if a not in have:
+        have.append(a)
+        _write_owner(home, have)
+    return have
+
+
+def owner_remove(address: str, home: Path | None = None) -> list[str]:
+    a = str(address).strip().lower()
+    have = [x for x in owner_addresses(home) if x != a]
+    _write_owner(home, have)
+    return have
+
+
+def _attach_roots() -> list[Path]:
+    """Where a reply's attachments may come from: the project the bots
+    work in (the deliverables live there) and the saved mail attachments.
+    Never the sign-in folder, whatever is asked."""
+    roots = []
+    for raw in (os.environ.get("BOTFERENCE_PROJECT_ROOT", ""),
+                os.environ.get("BOTFERENCE_WORK_DIR", ""), os.getcwd()):
+        raw = str(raw).strip()
+        if raw:
+            try:
+                roots.append(Path(raw).resolve())
+            except OSError:
+                pass
+    roots.append(ATTACHMENTS_HOME.resolve())
+    return roots
+
+
+def reply_subject(subject: str) -> str:
+    s = " ".join(str(subject or "").split())
+    return s if re.match(r"^re\s*:", s, re.I) else f"Re: {s}".rstrip()
+
+
+class MailClient(GoogleSession):
+    """Reads the agent account's mail, and replies to the owner only."""
+
+    def __init__(self, *args, attachments_home: Path | None = None,
+                 attach_roots: list[Path] | None = None, **kw):
         super().__init__(*args, **kw)
         self.attachments_home = Path(attachments_home or ATTACHMENTS_HOME)
+        self.attach_roots = attach_roots
+
+    # -- reply --
+
+    def _attachment_bytes(self, given: object) -> list[tuple[str, str, bytes]]:
+        """(file name, mime type, bytes) for each path, each checked: a
+        regular file under one of the allowed roots, never under the
+        sign-in folder, within the size limit each and together."""
+        if given is None or given == []:
+            return []
+        if not isinstance(given, list) or not all(isinstance(p, str) for p in given):
+            raise GdocError(Problem.MAIL_BAD_REQUEST,
+                            detail="'attachments' must be a list of file paths.")
+        roots = self.attach_roots if self.attach_roots is not None else _attach_roots()
+        google = Path(self.home).resolve()
+        out: list[tuple[str, str, bytes]] = []
+        total = 0
+        for raw in given:
+            try:
+                path = Path(raw).expanduser().resolve()
+            except OSError:
+                raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
+                                why="not a usable path") from None
+            if _inside(path, google) or path == google:
+                raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
+                                why="the sign-in folder is never sent")
+            if not any(_inside(path, r) for r in roots):
+                raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
+                                why="outside the project folder")
+            if not path.is_file():
+                raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
+                                why="no such file")
+            size = path.stat().st_size
+            total += size
+            if size > REPLY_ATTACHMENT_MAX_BYTES or total > REPLY_ATTACHMENT_MAX_BYTES:
+                raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
+                                why=f"over the {REPLY_ATTACHMENT_MAX_BYTES} byte limit")
+            mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            out.append((path.name, mime, path.read_bytes()))
+        return out
+
+    def reply(self, message_id: str, text: str, attachments: object = None) -> str:
+        """Reply to one message — only if it came from the owner, and only
+        to that address. The hard locks, in order: the owner list exists;
+        the sign-in may send; the message's From is on the list (its
+        Reply-To is ignored: an email may set that to anyone); the reply
+        goes to that From address alone, no Cc, no Bcc, in the same thread.
+        """
+        if not isinstance(text, str) or not text.strip():
+            raise GdocError(Problem.MAIL_BAD_REQUEST, detail="'text' is the reply; it is empty.")
+        text = _cut(text.strip(), REPLY_TEXT_LIMIT, "reply")
+        owners = owner_addresses(self.home)
+        if not owners:
+            raise GdocError(Problem.MAIL_NO_OWNER_LIST)
+        if gdoc_client.GMAIL_SEND_SCOPE not in self.granted_scopes():
+            raise GdocError(Problem.MAIL_SEND_NOT_GRANTED)
+        msg = self._message(message_id, fmt="metadata")
+        h = _headers(msg.get("payload") or {})
+        sender = sender_address(h.get("from", "")).lower()
+        if sender not in owners:
+            raise GdocError(Problem.MAIL_NOT_OWNER, detail=sender or "nobody")
+        files = self._attachment_bytes(attachments)
+        account = str(gdoc_client._load_token(self.home).get("account", "")).strip()
+        mail = EmailMessage()
+        mail["From"] = account or "me"
+        mail["To"] = sender
+        mail["Subject"] = reply_subject(h.get("subject", ""))
+        original_id = h.get("message-id", "").strip()
+        if original_id:
+            mail["In-Reply-To"] = original_id
+            refs = " ".join(x for x in (h.get("references", "").strip(), original_id) if x)
+            mail["References"] = refs
+        mail.set_content(text)
+        for name, mime, data in files:
+            main, _, sub = mime.partition("/")
+            mail.add_attachment(data, maintype=main or "application",
+                                subtype=sub or "octet-stream", filename=name)
+        raw = base64.urlsafe_b64encode(mail.as_bytes()).decode().rstrip("=")
+        body = {"raw": raw}
+        if msg.get("threadId"):
+            body["threadId"] = msg["threadId"]
+        sent = self._call("POST", API + "messages/send", body)
+        return (f"Replied to {sender} (the owner) in thread "
+                f"{sent.get('threadId') or msg.get('threadId', '')}, message "
+                f"{sent.get('id', '')}, subject: {mail['Subject']}, "
+                f"{len(files)} attachment(s). Nobody else was copied.")
 
     # -- calls --
 
@@ -588,3 +768,37 @@ class MailClient(GoogleSession):
             except OSError:
                 continue
         return gone
+
+
+# -- the owner's command line -------------------------------------------------
+#
+#   python3 core/gmail_client.py owner list
+#   python3 core/gmail_client.py owner add <address>
+#   python3 core/gmail_client.py owner remove <address>
+
+def main(argv: list[str]) -> int:
+    usage = "usage: gmail_client.py owner list | owner add <address> | owner remove <address>"
+    if len(argv) < 2 or argv[0] != "owner" or argv[1] not in ("list", "add", "remove"):
+        print(usage, file=sys.stderr)
+        return 2
+    try:
+        if argv[1] == "list":
+            have = owner_addresses()
+        elif len(argv) != 3:
+            print(usage, file=sys.stderr)
+            return 2
+        elif argv[1] == "add":
+            have = owner_add(argv[2])
+        else:
+            have = owner_remove(argv[2])
+    except GdocError as e:
+        print(e.line, file=sys.stderr)
+        return 1
+    print("owner addresses (replies go only to these): "
+          + (", ".join(have) if have else "(none)"))
+    print(f"file: {owner_file()}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -8,8 +8,10 @@ account (the account botference signs in as for Google Docs review, see
 for example "what did the printer send about the proofs?". There is no
 command for it.
 
-They can only read. They cannot send, reply, delete, label, archive or mark
-anything as read.
+They can read, and they can do ONE kind of writing: reply to mail the
+owner sent or forwarded from one of the owner's own addresses, back to that
+address only (see "Replying to the owner" below). They cannot send to
+anyone else, delete, label, archive or mark anything as read.
 
 The poster (`core/gdoc_mcp.py`, server `botference_google`) gives each bot
 three tools for it:
@@ -78,6 +80,38 @@ whole emails into the chat.
   off in Google Cloud, the bot passes on a one-line message that says what
   to do.
 
+## Replying to the owner
+
+Forward an email to the agent address from one of your own accounts (your
+university one, your personal one) and ask for the result by email, and a
+bot can reply to it — with the finished letters attached, say. The tool is
+`reply_mail`.
+
+Hard locks (enforced by software, whatever a bot or an email says):
+
+- **Only to you.** The reply goes to the address the message came from
+  (its `From`), and that address must be on your owner list. Mail from
+  anyone else is refused with nothing sent. The email's `Reply-To` is
+  ignored, because any email can set that to a stranger. No Cc, no Bcc.
+- **The owner list is yours alone.** `~/.botference/google/owner.json`
+  (0600), beside the sign-in, in the folder the bots cannot open. Set it
+  once: `python3 core/gmail_client.py owner add <address>` for each of
+  your addresses (`owner list`, `owner remove` likewise). No list, no
+  replies.
+- **Sending needs its own permission.** The sign-in asks Google for
+  `gmail.send` as well as read-only; a sign-in without it can still read,
+  and the reply tool says the login must be run again.
+- **Attachments come only from the project.** File paths under the project
+  folder (`BOTFERENCE_PROJECT_ROOT` / `BOTFERENCE_WORK_DIR`) or the saved
+  mail attachments; never the sign-in folder; 25 MB in all.
+- The reply stays in the original thread (`In-Reply-To`, `References`,
+  Gmail's `threadId`), subject `Re: …`.
+
+Instruction only: the bots are told to reply when you asked for the result
+by email and to ask first otherwise, and to tell which of your accounts to
+answer from the `From` line. A spoofed `From` (someone forging your address)
+would make a bot reply to the real you, which is the worst it can do.
+
 ## One-time setup (the owner)
 
 1. In the Google Cloud project that holds botference's sign-in key, switch
@@ -88,9 +122,10 @@ whole emails into the chat.
    python3 core/gdoc_client.py login --account <agent account email>
    ```
 
-   In the browser, tick both boxes: Google Docs and reading Gmail. A
-   sign-in with only the Docs box ticked still works for Docs; the mail
-   tools then say the sign-in does not include mail.
+   In the browser, tick the boxes: Google Docs, reading Gmail, and sending
+   Gmail (for replies to you). A sign-in with only the Docs box ticked still
+   works for Docs; the mail tools then say the sign-in does not include mail,
+   and one without sending says so when a reply is tried.
 
 ## Where things live
 
@@ -98,6 +133,7 @@ whole emails into the chat.
   comes back is the `Delivery` list, decided by `delivery_for()`).
 - Shared sign-in and calls: `GoogleSession` in `core/gdoc_client.py`. The
   mail failures are `Problem` members starting `MAIL_` and `ATTACHMENT_`.
-- The tools: `core/gdoc_mcp.py` (`MAIL_TOOLS`).
+- The tools: `core/gdoc_mcp.py` (`MAIL_TOOLS`). The reply: `MailClient.reply`
+  and the owner list (`owner_addresses`, `owner_add`) in `core/gmail_client.py`.
 - Rule text: `google_mail_note()` in `core/room_prompts.py`.
 - Tests: `tests/test_gmail_reader.py`.

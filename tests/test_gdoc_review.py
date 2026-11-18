@@ -298,7 +298,7 @@ class TestProtocol:
         assert handle(poster, {"jsonrpc": "2.0", "method": "notifications/initialized"}) is None
         tools = handle(poster, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         assert [t["name"] for t in tools["result"]["tools"]] == [
-            READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment"]
+            READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment", "reply_mail"]
 
     def test_unknown_tool_and_method(self, tmp_path):
         poster = Poster("claude", DocsClient(home=tmp_path))
@@ -486,7 +486,8 @@ class TestSignIn:
                                  open_browser=browser, timeout=10) == ACCOUNT
         assert seen["login_hint"] == ACCOUNT and seen["code_challenge_method"] == "S256"
         assert set(seen["scope"].split()) == {
-            "openid", "email", gdoc_client.DOCS_SCOPE, gdoc_client.GMAIL_SCOPE}
+            "openid", "email", gdoc_client.DOCS_SCOPE, gdoc_client.GMAIL_SCOPE,
+            gdoc_client.GMAIL_SEND_SCOPE}
         form = dict(urllib.parse.parse_qsl(google.calls[0][3].decode()))
         assert form["code"] == "the-code" and form["code_verifier"]
         saved = json.loads((home / "token.json").read_text())
@@ -607,7 +608,7 @@ class TestClaudeLaunch:
         allow = self._settings()["permissions"]["allow"]
         assert [r for r in allow if r.startswith("mcp__")] == [
             f"mcp__{SERVER_NAME}__{tool}" for tool in (
-                READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment")]
+                READ_TOOL, WRITE_TOOL, "search_mail", "read_mail", "read_attachment", "reply_mail")]
         assert SERVER_NAME == "botference_google"
         assert list(CLAUDE_TOOL_RULES) == [r for r in allow if r.startswith("mcp__")]
 
