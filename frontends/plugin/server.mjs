@@ -2018,6 +2018,13 @@ function onChatEvent(ev) {
     }
     return;
   }
+  // A tidy job came back (chat.mjs): the terse version of a dictated comment,
+  // or the reason there is none. It goes to the one request waiting for it
+  // and nowhere else — never appended, never broadcast.
+  if (ev.type === 'tidy') {
+    settleTidy(ev);
+    return;
+  }
   if (ev.type === 'summary') {
     const page = store.readPage(ev.url);
     const thread = page && store.findThread(page, ev.target);
@@ -2058,6 +2065,56 @@ function summarizeThread(page, thread) {
     history: thread.msgs || [],
   });
   return true;
+}
+
+// ---- tidying a dictated comment ------------------------------------------
+//
+// The mic's words, made terse by a bot before the reader sends them (chat.mjs
+// tidyPrompt). The request WAITS for the answer: unlike a summary, nothing on
+// the page can show a placeholder for it, and the reader is sitting at the box.
+// One pending entry per request, settled exactly once — by the job's answer,
+// its failure, or the clock — and the answer is the request's alone.
+const TIDY_WAIT_MS = 150000;
+const tidies = new Map();   // tidy_id → { resolve, timer }
+let tidySeq = 0;
+function settleTidy(ev) {
+  const p = ev && tidies.get(ev.tidy_id);
+  if (!p) return;
+  tidies.delete(ev.tidy_id);
+  clearTimeout(p.timer);
+  const text = ev.msg && String(ev.msg.text || '').trim();
+  if (ev.error || !text) p.resolve({ ok: false, error: ev.error || 'the agent wrote nothing' });
+  else p.resolve({ ok: true, text, by: String(ev.msg.author || '') });
+}
+// Codex by default — the reader's choice (2026-11-18: "probably Codex is
+// better to summarize it into a slightly more terse comment") — and claude
+// when asked for by name. Resolves, never rejects: every failure is an
+// answer the box can act on by keeping the raw words.
+function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
+  const words = String(text || '').trim();
+  if (!words) return Promise.resolve({ ok: false, error: 'nothing to tidy' });
+  if (NO_AGENTS || !chat) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
+  const c = chatFor(page.url);
+  if (!c) return Promise.resolve({ ok: false, error: UNCONFIRMED_REASON });
+  const agent = String(model || '').toLowerCase() === 'claude' ? 'claude' : 'codex';
+  const tidy_id = `tidy-${Date.now()}-${++tidySeq}`;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      if (tidies.delete(tidy_id)) resolve({ ok: false, error: 'the agent took too long' });
+    }, TIDY_WAIT_MS);
+    tidies.set(tidy_id, { resolve, timer });
+    c.submit({
+      url: page.url, target: (thread && thread.id) || store.PAGE_CHAT, title: page.title,
+      // the whole of the routing, as a summary job does it: `text` is read for
+      // its @-mention and by nothing else; the envelope is tidyPrompt's
+      text: `@${agent} `,
+      tidy: words,
+      tidy_id,
+      quote: String(quote || (thread && thread.quote) || ''),
+      pageNumber: Number(page_number || (thread && thread.page) || 0) || 0,
+      mark: mark || (thread && thread.mark) || '',
+    });
+  });
 }
 
 // ---- the question vault ---------------------------------------------------
@@ -6047,6 +6104,24 @@ export function handler(req, res) {
   }
   if (req.method === 'GET' && url === '/transcribe') {
     return ok(res, whisperStatus());
+  }
+  // the mic's words, made terse by a bot before the reader sends them. The
+  // answer comes back to this request alone; nothing is posted or stored.
+  if (req.method === 'POST' && url === '/tidy') {
+    return readBody(req, res, async data => {
+      const me = authorOf(req, res);
+      if (!me) return;
+      const page = pageOf(res, data);
+      if (!page) return;
+      const thread = data.thread_id ? store.findThread(page, data.thread_id) : null;
+      if (data.thread_id && !thread) return fail(res, 404, 'unknown thread');
+      const r = await tidyComment(page, {
+        text: data.text, thread, quote: data.quote, page_number: data.page,
+        mark: data.mark, model: data.model,
+      });
+      if (!r.ok) return fail(res, 409, r.error);
+      ok(res, { text: r.text, by: r.by });
+    });
   }
   // the no-summary restart: a bot that has gone wrong (stuck refusing an
   // ordinary topic, say) comes back knowing only what is sent next

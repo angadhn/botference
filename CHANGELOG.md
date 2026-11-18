@@ -2,7 +2,8 @@
 
 ## 2026-11-18
 
-- **Discuss: C, S and A on a PDF, with the microphone on.** With a passage selected, `C` highlights it and opens a note of your own, `S` strikes it through and opens the box for why, `A` highlights it and opens a note routed to all the agents; each turns the microphone on as it opens, so the note is spoken. Enter while recording stops the microphone (nothing is sent without its words); Enter again sends. Esc discards the recording. No modifier, no selection or a caret in a box, and the keys are plain letters. PDFs only; the pill's buttons are unchanged.
+- **Discuss: C, S and A with the microphone on.** With a passage selected, `C` highlights it and opens a note of your own, `S` strikes it through and opens the box for why (PDFs only), `A` highlights it and opens a note routed to all the agents; each turns the microphone on as it opens, so the note is spoken. `C` and `A` work on any page that can be highlighted. The same letter again, any of the three, or Enter stops the microphone (nothing is sent without its words); Enter again sends. Esc discards the recording. No modifier, no selection or a caret in a box, and the keys are plain letters. The pill's buttons are unchanged.
+- **Discuss: a dictation is made terse before it lands.** Twenty-five words or more go to codex (`POST /tidy`, a silent turn on the page's lane: nothing posted, nothing stored) and come back as the terse comment the reader would have typed, every point kept. An *as spoken* pill beside the microphone swaps the raw words back in, *terse* swaps them out again; a send forgets both. A failure or a timeout leaves the words as spoken, with a note saying so. Short dictations go straight in.
 
 ## 2026-11-15
 

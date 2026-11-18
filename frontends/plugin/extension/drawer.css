@@ -2405,6 +2405,15 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   border: 2px solid transparent; border-top-color: currentColor; animation: bfp-spin .8s linear infinite }
 .composer.dictating .crow { display: flex }
 .bubble > .composer .mic { width: 26px; height: 26px }
+/* the swap pill after a tidied dictation: "as spoken" puts the raw words
+   back, "terse" the bot's version — the route pills' own shape, muted */
+.composer .dictswap {
+  font: 11px/1 var(--sans); letter-spacing: .01em;
+  padding: 4px 8px; border-radius: 999px; margin-right: 4px;
+  border: 1px dashed var(--card-line); background: transparent; color: var(--muted);
+  cursor: pointer; white-space: nowrap;
+}
+.composer .dictswap:hover { color: var(--fg); border-color: var(--line) }
 
 /* The pill row: who the next message in this thread is for. It folds with the
    Send row and for the same reason — a column of idle threads must not cost a

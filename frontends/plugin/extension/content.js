@@ -3645,6 +3645,21 @@
         if (!r.data || r.data.ok === false) return { ok: false, error: (r.data && r.data.error) || 'transcription failed' };
         return { ok: true, text: r.data.text || '', seconds: r.data.seconds };
       },
+      // …and the words made terse by a bot before they land (POST /tidy). A
+      // new comment carries the passage it is about from the pending
+      // selection; a reply names its thread and the companion knows the rest.
+      onTidy: async ({ target, text }) => {
+        const body = { url: URL_NOW, text };
+        if (target === '__new__' && pendingSel) {
+          body.quote = pendingSel.quote; body.page = pendingSel.page || 0; body.mark = pendingSel.mark || '';
+        } else if (target && target !== '__new__' && target !== '__page__' && target !== '__library__') {
+          body.thread_id = target;
+        }
+        const r = await api('POST', '/tidy', body);
+        if (!r.ok) return failure(r);
+        if (!r.data || r.data.ok === false) return { ok: false, error: (r.data && r.data.error) || 'could not tidy' };
+        return { ok: true, text: r.data.text || '', by: r.data.by };
+      },
       // Retry: the socket, and the page — whose answer is what moves the
       // drawer's 'connecting…' on to connected or back to offline
       onReconnect: () => { bg({ t: 'reconnect' }); return active ? loadPage() : null; },
@@ -3801,20 +3816,25 @@
     drawer.beginNew({ ...a, mark }, opts);
   }
 
-  // THE PDF HOTKEYS. With a passage selected, one key does what the pill's
-  // button does and then turns the microphone on, so the note is spoken:
+  // THE HOTKEYS. With a passage selected, one key does what the pill's button
+  // does and then turns the microphone on, so the note is spoken:
   //   C  highlight and comment — a note of the reader's own, no bot summoned
   //   S  strike the passage through, and say why (or send the box empty)
   //   A  highlight and comment, routed to all the agents
-  // PDFs only (the strike capability is the PDF viewer's; an article is not a
-  // draft and its page may want these letters for itself). Never with a
-  // modifier, never while something is being typed into, and never without a
-  // selection — a bare key on a page is still a bare key.
+  // C and A work wherever a passage can be highlighted — a PDF, an article,
+  // the reader's own blog drafts; S only where a strikeout exists (PDFs: a
+  // suggested deletion is for a draft). Never with a modifier, never while
+  // something is being typed into, and never without a selection — a bare
+  // key on a page is still a bare key, and the page keeps it.
+  //
+  // …and while the microphone is recording, the same three letters stop it,
+  // wherever the focus has gone: the drawer's composer handles the letter
+  // when the box has the focus, and this handles it when the page does.
   const HOTKEYS = { c: ['highlight', { dictate: true }],
                     s: ['strike', { dictate: true }],
                     a: ['highlight', { route: 'all', dictate: true }] };
   document.addEventListener('keydown', e => {
-    if (!CAPS.highlights || !CAPS.strike) return;
+    if (!CAPS.highlights) return;
     if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return;
     const hk = HOTKEYS[String(e.key || '').toLowerCase()];
     if (!hk) return;
@@ -3823,13 +3843,15 @@
     const t = (e.composedPath && e.composedPath()[0]) || e.target;
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.nodeName || ''))) return;
     if (t && inOurUI(t)) return;
+    if (drawer && drawer.stopDictation && drawer.stopDictation()) { e.preventDefault(); e.stopPropagation(); return; }
     if (standDown()) return;
+    const [kind, opts] = hk;
+    if (kind === 'strike' && !CAPS.strike) return;
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed || !String(sel).trim()) return;
     if (sel.anchorNode && inOurUI(sel.anchorNode)) return;
     e.preventDefault();
     e.stopPropagation();
-    const [kind, opts] = hk;
     // the first key on a dormant page is its activation gesture, as the first
     // selection is for the pill
     const ready = active ? Promise.resolve(drawer) : activate(false);

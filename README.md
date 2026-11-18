@@ -719,17 +719,32 @@ This is PDFs only, on purpose: a strikeout is a suggested edit to a
 draft, and a news article is not a draft. The pill on an ordinary page is
 the single comment button it has always been.
 
-**Three keys, and the microphone.** With a passage selected on a PDF,
-one key does what the pill's button does and then turns the microphone
-on, so the note is spoken rather than typed: `C` highlights and opens a
-note of your own, `S` strikes the passage through and opens the box for
-why, `A` highlights and opens a note already routed to all the agents.
-Say your piece, then press Enter — while the microphone is on, Enter
-stops it, and once the words are in the box Enter sends them (for a
-strike the box may stay empty). Esc throws the recording away. The keys
-do nothing without a selection, nothing while you are typing in a box,
-and nothing with ⌘, Ctrl or Alt held. The microphone needs the
+**Three keys, and the microphone.** With a passage selected, one key
+does what the pill's button does and then turns the microphone on, so
+the note is spoken rather than typed: `C` highlights and opens a note of
+your own, `S` strikes the passage through and opens the box for why
+(PDFs only, where strikeouts exist), `A` highlights and opens a note
+already routed to all the agents. `C` and `A` work on any page a passage
+can be highlighted on — a PDF, an article, your own blog drafts. Say your
+piece, then press the same letter again (or any of the three, or Enter)
+to stop the microphone; once the words are in the box Enter sends them
+(for a strike the box may stay empty). Esc throws the recording away.
+The keys do nothing without a selection, nothing while you are typing in
+a box, and nothing with ⌘, Ctrl or Alt held. The microphone needs the
 companion to have whisper, as the mic button does.
+
+**Made terse before it lands.** A dictation of 25 words or more is
+handed to a bot (codex) before it goes into the box, to be rewritten as
+the terse comment you would have typed: every point kept — each
+correction, question, reference and number — and the thinking-aloud
+dropped. This is for the person who will read the comment, usually the
+one editing the draft. Nothing is sent on its own: the terse version sits
+in your box, and a small *as spoken* pill beside the microphone puts
+back the words exactly as you said them (and *terse* puts the bot's
+version back). A short dictation is terse already and goes straight in;
+if the bot fails or takes too long, your words go in as spoken, with a
+line saying so. The turn is silent — no message, no thread, nothing in
+the page chat — and the companion answers the one request that asked.
 
 **A discussion that ends in several changes.** Argue about a passage and
 the bots may end an answer with up to three proposals at once — three

@@ -137,7 +137,7 @@
   // heartbeat instead (background.js SOCKET_SILENT_MS).
   const REQUEST_MS = 30000;
   const SLOW_REQUEST_MS = 180000;
-  const SLOW_ROUTES = ['/transcribe', '/publish', '/export', '/suggest-preview', '/suggest-accept',
+  const SLOW_ROUTES = ['/transcribe', '/tidy', '/publish', '/export', '/suggest-preview', '/suggest-accept',
     '/suggest-accept-all', '/lasso', '/summarize', '/project-create', '/project-chat',
     '/continue-in-council', '/pdf-annotations', '/page-image', '/snapshot', '/send-review',
     '/make-artifact', '/run', '/fte-route', '/blog-page', '/blog-image', '/files', '/relay',

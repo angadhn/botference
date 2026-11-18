@@ -2559,6 +2559,7 @@
                searching: '', declined: [], done: '' },
       warn: '',            // page-chat warning banner (setWarning), '' = none
       drafts: {},          // target -> composer text, preserved across renders
+      dict: {},            // target -> the last dictation's { raw, tidy, shown }
       // the message being edited and its draft (editMove): null, or
       // { target, ts, author, text, start, end }. Nothing but moveEdit writes it.
       edit: null,
@@ -4056,18 +4057,31 @@ ${bubbleShellHtml()}`;
     // no recorder yet — so a second tap while the permission prompt was up
     // started a second recording, overwrote the first stream, and left the
     // microphone on until the tab closed.
-    const MIC_MODES = Object.freeze(['idle', 'asking', 'recording', 'stopping', 'transcribing']);
+    // …and 'tidying': the words are back from whisper and off to a bot to be
+    // made terse (TIDY_MIN_WORDS and below skip it: a short note is terse
+    // already). The box fills in when the bot answers, or with the raw words
+    // when it does not.
+    const MIC_MODES = Object.freeze(['idle', 'asking', 'recording', 'stopping', 'transcribing', 'tidying']);
     const MIC_MOVES = Object.freeze({
       idle: ['asking'],
       asking: ['recording', 'idle'],
       recording: ['stopping', 'idle'],
       stopping: ['transcribing', 'idle'],
-      transcribing: ['idle'],
+      transcribing: ['tidying', 'idle'],
+      tidying: ['idle'],
     });
     const MIC = { ok: false, target: null, mode: 'idle', rec: null, stream: null,
       chunks: [], timer: null, cancelled: false, box: null, caret: null, asked: 0 };
-    const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… tap to stop',
-      stopping: 'finishing the recording…', transcribing: 'transcribing…' };
+    const MIC_HINT = { asking: 'allow the microphone…', recording: 'recording… tap, Enter or C/S/A to stop',
+      stopping: 'finishing the recording…', transcribing: 'transcribing…', tidying: 'making it terse…' };
+    const TIDY_MIN_WORDS = 25;
+    // What the last dictation into each box produced — the raw words and the
+    // terse ones — and which of the two is in the box (`shown`). The swap pill
+    // in the composer's row flips it; a send or a cancel forgets it.
+    const DICT_SHOWN = Object.freeze(['tidy', 'raw']);
+    const dictOf = target => D.dict[target] || null;
+    function dictSet(target, rec) { if (rec) D.dict[target] = rec; else delete D.dict[target]; }
+    const dictOther = rec => (rec.shown === 'tidy' ? 'raw' : 'tidy');
     const micHint = mode => MIC_HINT[mode] || '';
     // the mode as the composer of `target` sees it: '' everywhere but the one
     // composer the microphone is working for
@@ -4091,6 +4105,12 @@ ${bubbleShellHtml()}`;
         b.replaceWith(fresh);
         const mode = micModeOf(fresh.getAttribute('data-target'));
         c.classList.toggle('dictating', !!mode);
+        // the swap pill beside it, in place: a composer under a caret is not
+        // re-rendered (keepTyping), so the pill is painted the way the mic is
+        const old = c.querySelector('.crow > .dictswap');
+        if (old) old.remove();
+        const sw = dictSwapHtml(fresh.getAttribute('data-target'));
+        if (sw) { const t2 = document.createElement('div'); t2.innerHTML = sw; fresh.before(t2.firstChild); }
         const h = c.querySelector('.crow > .hint');
         if (h) {
           if (mode) { if (h.dataset.idle == null) h.dataset.idle = h.textContent; h.textContent = micHint(mode); }
@@ -4201,12 +4221,62 @@ ${bubbleShellHtml()}`;
       let r;
       try { r = await cb('onTranscribe')({ audio_b64: await blobToBase64(blob), mime: blob.type || type }); }
       catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
-      micSet('idle');
-      if (!r || r.ok === false) { note(target, (r && r.error) || 'transcription failed', true); return; }
+      if (!r || r.ok === false) { micSet('idle'); note(target, (r && r.error) || 'transcription failed', true); return; }
       const text = String(r.text || '').trim();
-      if (!text) { note(target, 'no speech was heard', true); return; }
-      micInsert(target, text);
+      if (!text) { micSet('idle'); note(target, 'no speech was heard', true); return; }
+      // A long dictation is handed to a bot to be made terse before it lands;
+      // a short one is terse already. Whatever goes wrong on the way, the raw
+      // words land: the reader never loses what they said.
+      const words = text.split(/\s+/).length;
+      if (words < TIDY_MIN_WORDS || !cb('onTidy') || !micSet('tidying', target)) {
+        micSet('idle'); dictSet(target, null); micInsert(target, text); return;
+      }
+      let t;
+      try { t = await cb('onTidy')({ target, text }); }
+      catch (e) { t = { ok: false, error: String((e && e.message) || e) }; }
+      micSet('idle');
+      const tidy = t && t.ok !== false ? String(t.text || '').trim() : '';
+      if (!tidy || tidy === text) {
+        dictSet(target, null);
+        micInsert(target, text);
+        if (!tidy && t && t.error) note(target, `kept your words as spoken (${t.error})`, false);
+        return;
+      }
+      dictSet(target, { raw: text, tidy, shown: 'tidy' });
+      micInsert(target, tidy);
+      paintMic();   // the swap pill, beside the mic
     }
+    // The swap pill: the other version of the last dictation replaces the one
+    // in the box, in place, and the pill names what it would put back.
+    function dictSwap(target) {
+      const rec = dictOf(target);
+      if (!rec) return;
+      harvestDrafts();
+      const cur = rec[rec.shown], other = rec[dictOther(rec)];
+      const draft = D.drafts[target] || '';
+      const at = draft.indexOf(cur);
+      // the shown version edited beyond recognition: the swap appends rather
+      // than guessing at what to replace
+      const next = at >= 0 ? draft.slice(0, at) + other + draft.slice(at + cur.length)
+        : spliceDictation(draft, null, null, other).value;
+      rec.shown = dictOther(rec);
+      D.drafts[target] = next;
+      const box = composerBox(target);
+      if (box) {
+        box.value = next;
+        box.dispatchEvent(new Event('input', { bubbles: true }));
+        box.focus(); try { box.setSelectionRange(next.length, next.length); } catch (_) { /* not a textarea */ }
+      }
+      paintMic();
+    }
+    const dictSwapHtml = target => {
+      const rec = dictOf(target);
+      if (!rec) return '';
+      const to = dictOther(rec);
+      const n = rec.raw.split(/\s+/).length;
+      return `<button class="dictswap" type="button" data-act="dict-swap" data-target="${esc(target)}"
+        title="${to === 'raw' ? `Put back the ${n} words as you spoke them` : 'Put back the terse version'}">${to === 'raw' ? 'as spoken' : 'terse'}</button>`;
+    };
     // Whether the focus is now somewhere other than this box's own composer
     // (its box, its mic, its Send) — in another box of the drawer, or on the
     // web page. Nothing focused at all is not moving on.
@@ -4260,7 +4330,7 @@ ${bubbleShellHtml()}`;
         ${pills ? routesHtml(target) : ''}
         <div class="mentions" role="listbox" aria-label="mentionable agents" hidden></div>
         <textarea rows="2" placeholder="${esc(label)}">${esc(draft)}</textarea>
-        <div class="crow"><span class="hint">${esc(dict ? micHint(dict) : (hint || HINT))}</span>${extra || ''}${micHtml(target)}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
+        <div class="crow"><span class="hint">${esc(dict ? micHint(dict) : (hint || HINT))}</span>${dictSwapHtml(target)}${extra || ''}${micHtml(target)}<button class="send" data-act="send" data-target="${esc(target)}" type="button"${busy}>Send</button></div>
       </div>`;
     }
 
@@ -7911,6 +7981,7 @@ ${bubbleShellHtml()}`;
       'help-close': () => closeHelp(),
       'relay': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent); },
       'mic': (btn, target) => micTap(target),
+      'dict-swap': (btn, target) => dictSwap(target),
       'fresh': (btn) => { if (!btn.disabled) doRelay(btn.dataset.agent, 'fresh'); },
       'verb': (btn) => setVerbosity(btn.dataset.level),
       'first': (btn) => setFirstReply(btn.dataset.first),
@@ -8492,6 +8563,14 @@ ${bubbleShellHtml()}`;
         // input method's: Enter there picks the character, it never sends, and
         // Esc there drops the half-made character, it never closes anything.
         if (composingKey(e)) return;
+        // WHILE THE MICROPHONE RECORDS FOR THIS BOX, the letter that opened it
+        // (C, S or A — any of the three) stops it, the same key as the one the
+        // reader just pressed on the page. A box being dictated into is not
+        // being typed into, so the letter is not lost prose.
+        if (MIC.mode === 'recording' && !e.metaKey && !e.ctrlKey && !e.altKey && /^[csa]$/i.test(e.key || '')) {
+          const c0 = e.target && e.target.closest && e.target.closest('.composer');
+          if (c0 && c0.getAttribute('data-target') === MIC.target) { e.preventDefault(); micStop(); return; }
+        }
         // While the @-menu is open it owns the arrows, Enter, Tab and Esc —
         // and nothing else. ⌘↩ still sends: finishing a mention is not a
         // reason to hold a finished message back.
@@ -8960,6 +9039,7 @@ ${bubbleShellHtml()}`;
       D.sendLock[target] = true;
       try {
         harvestDrafts();
+        dictSet(target, null);   // what is sent is what is in the box; no swap after
         const text = (D.drafts[target] || '').trim();
         // …except a strikeout being filed, whose quote IS the message. Every
         // other empty Send is a slip of the hand and does nothing, as before.
@@ -11745,6 +11825,7 @@ ${bubbleShellHtml()}`;
       if (D.focused === '__new__') D.focused = null;   // spotlight lifts with the card
       delete D.drafts['__new__'];
       delete D.notes['__new__'];
+      delete D.dict['__new__'];
       // a comment that failed to save goes with the card it was written on —
       // there is no anchor left to retry it against
       delete D.outbox['__new__'];
@@ -13450,6 +13531,12 @@ ${bubbleShellHtml()}`;
                               revised: { ...D.questions.revised },
                               threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
+      // the page's own C/S/A while the microphone records (content.js): stop
+      // it, wherever the focus went. True when there was a recording to stop.
+      stopDictation: () => micStop(),
+      dictation: () => ({ mode: MIC.mode, target: MIC.target }),
+      // what the last dictation into a box produced, for the harness
+      dictationOf: target => { const r = dictOf(target); return r ? { ...r } : null; },
       // a proposal's preview on the page, clicked: its card, scrolled to and
       // flashed
       focusSuggestion,
