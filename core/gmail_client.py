@@ -87,6 +87,8 @@ OUTSIDE_MATERIAL_LINE = (
 # Gmail ids are short letters and digits; checked before they go into a
 # web address or a folder name.
 _ID = re.compile(r"[A-Za-z0-9_-]{1,256}")
+# Attachment ids are the same alphabet but far longer (often 400+ chars).
+_ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,4096}")
 _PART = re.compile(r"[0-9]+(?:\.[0-9]+)*")
 
 _TEXT_TYPES = ("application/json", "application/xml", "text/xml",
@@ -141,10 +143,21 @@ def safe_file_name(name: object, number: int) -> str:
 
 
 def _inside(path: Path, folder: Path) -> bool:
+    """True when `path` sits directly in `folder` (a saved attachment)."""
     try:
         return path.resolve().parent == folder.resolve()
     except OSError:
         return False
+
+
+def _under(path: Path, folder: Path) -> bool:
+    """True when `path` is `folder` or anywhere below it, after links are
+    resolved (a reply attachment deep in the project's artifacts)."""
+    try:
+        p, f = path.resolve(), folder.resolve()
+    except OSError:
+        return False
+    return p == f or f in p.parents
 
 
 # -- reading Gmail's message format -------------------------------------------
@@ -335,8 +348,8 @@ def describe_message(msg: dict, body_limit: int | None = None) -> str:
 
 # -- the client ---------------------------------------------------------------
 
-def _check_id(value: object, what: str) -> str:
-    if not isinstance(value, str) or not _ID.fullmatch(value):
+def _check_id(value: object, what: str, pattern: re.Pattern = _ID) -> str:
+    if not isinstance(value, str) or not pattern.fullmatch(value):
         raise GdocError(Problem.MAIL_BAD_REQUEST,
                         detail=f"pass '{what}' as the id from a search_mail or "
                         "read_mail result.")
@@ -496,10 +509,10 @@ class MailClient(GoogleSession):
             except OSError:
                 raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
                                 why="not a usable path") from None
-            if _inside(path, google) or path == google:
+            if _under(path, google):
                 raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
                                 why="the sign-in folder is never sent")
-            if not any(_inside(path, r) for r in roots):
+            if not any(_under(path, r) for r in roots):
                 raise GdocError(Problem.MAIL_REPLY_ATTACHMENT, detail=raw,
                                 why="outside the project folder")
             if not path.is_file():
@@ -699,7 +712,8 @@ class MailClient(GoogleSession):
         if body.get("data"):
             raw = _b64(body["data"])
         else:
-            attachment_id = _check_id(body.get("attachmentId"), "attachment")
+            attachment_id = _check_id(body.get("attachmentId"), "attachment",
+                                      _ATTACHMENT_ID)
             got = self._get(f"messages/{message_id}/attachments/{attachment_id}")
             raw = _b64(str(got.get("data", "")))
         delivery = delivery_for(mime, name, len(raw))

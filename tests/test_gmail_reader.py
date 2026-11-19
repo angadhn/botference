@@ -492,6 +492,16 @@ class TestAttachments:
         assert stat.S_IMODE((root / "m3").stat().st_mode) == 0o700
         assert stat.S_IMODE(root.stat().st_mode) == 0o700
 
+    def test_long_gmail_attachment_id_is_fetched(self, tmp_path):
+        long_id = "A" * 600  # real Gmail attachment ids run past 256 chars
+        msg = _msg("m4", _file("1", "t.pdf", "application/pdf", 9,
+                               attachment_id=long_id))
+        google = self._google(msg, **{long_id: {"size": 9,
+                                                "data": b64(b"%PDF-1.7\n")}})
+        text, is_error = _poster(tmp_path, google).call(
+            READ_ATTACHMENT_TOOL, {"message_id": "m4", "part": "1"})
+        assert not is_error, text
+
     def test_small_attachment_carried_in_the_message(self, tmp_path):
         google = self._google()
         text, _ = _poster(tmp_path, google).call(
@@ -887,6 +897,18 @@ class TestReply:
         text, is_error = poster.call(REPLY_MAIL_TOOL, {
             "message_id": "m-own", "text": "hi", "attachments": "ok.txt"})
         assert is_error and "list of file paths" in text
+
+    def test_an_attachment_in_a_project_subfolder_is_sent(self, tmp_path):
+        # 2026-11-18: letters in projects/<id>/artifacts/<student>/ were
+        # refused as "outside the project folder"; only direct children passed.
+        google = FakeGmail(messages={"m-own": _from_owner()})
+        deep = tmp_path / "project" / "artifacts" / "Ada"
+        deep.mkdir(parents=True)
+        (deep / "ada.pdf").write_bytes(b"%PDF-1.4 fake")
+        poster = _reply_poster(tmp_path, google)
+        text, is_error = poster.call(REPLY_MAIL_TOOL, {
+            "message_id": "m-own", "text": "hi", "attachments": [str(deep / "ada.pdf")]})
+        assert not is_error, text
 
     def test_an_empty_reply_and_a_hidden_sender_are_refused(self, tmp_path):
         google = FakeGmail(messages={
