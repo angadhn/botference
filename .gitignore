@@ -1,4 +1,6 @@
 build/
+# …except the vendored PDF.js engine: without it the Discuss PDF viewer cannot start
+!frontends/plugin/extension/vendor/pdfjs/build/
 archive/
 tests/node_modules/
 tests/package-lock.json
