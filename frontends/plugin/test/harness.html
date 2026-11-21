@@ -28,6 +28,8 @@
                      switch held mid-flight, waiting on the companion
                      (screenshot state)
     ?export=1        open the export chooser on the Obsidian crystal (screenshot state)
+    ?tk=1            a page-chat message with /tk gaps, one per state (filled,
+                     writing, failed): the agent blocks (add &chat=1)
     ?blyg=1          the page is a Blygger post: the companion's /blyg answers
                      with a (made-up) post at version 2, two highlights carry
                      its stamp and the second is not word for word in it —
@@ -1425,6 +1427,18 @@ const RECORD = {
 if (Q.get('blyg') === '1') {
   RECORD.threads[0].blyg = blygStamp({ match: true });
   RECORD.threads[1].blyg = blygStamp({ match: false, nearest: 'a structural failure of oversight' });
+}
+// ?tk=1: a page-chat message of the reader's with /tk gaps in it, one in each
+// state the drawer draws (open with &chat=1 to see it)
+if (Q.get('tk') === '1') {
+  RECORD.page_chat.push({ author: 'angadh', ts: iso(2), provenance: 'owner-typed',
+    text: 'The report is careful about blame.\n/tk summarise in two sentences what the report concludes\nAnd the manager /tk(one word for his tone) says little; /tk(cite the match result).',
+    gaps: [
+      { id: 'g0', instruction: 'summarise in two sentences what the report concludes', mode: 'filled-by-agent', agent: 'claude', at: iso(2),
+        text: 'The report finds a **structural failure of oversight**, not one bad decision. It asks the club to change how it reviews results.' },
+      { id: 'g1', instruction: 'one word for his tone', mode: 'pending' },
+      { id: 'g2', instruction: 'cite the match result', mode: 'failed', reason: 'the agent took too long' },
+    ] });
 }
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
@@ -4405,6 +4419,7 @@ window.chrome = {
 <script src="../extension/blockdiff.js"></script>
 <script src="../extension/adapters.js"></script>
 <script src="../extension/config.js"></script>
+<script src="../extension/tkgrammar.js"></script>
 <script src="../extension/drawer.js"></script>
 <script src="../extension/content.js"></script>
 

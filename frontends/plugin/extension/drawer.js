@@ -593,6 +593,10 @@
   // content script ahead of this file, and required in node for the tests.
   const CFG = root.BFPConfig
     || (typeof module !== 'undefined' && typeof require === 'function' ? require('./config.js') : null);
+  // where a reader's message asks an agent for a passage (`/tk …`): the same
+  // grammar the companion fills and exports by (tkgrammar.js)
+  const TKG = root.BFPTkGrammar
+    || (typeof module !== 'undefined' && typeof require === 'function' ? require('./tkgrammar.js') : null);
   // The library — one conversation about everything the reader has annotated,
   // as opposed to one page. On the wire it is an ordinary page chat on a page
   // nobody visits (`bfp://library`, the companion's store.mjs owns the
@@ -2238,6 +2242,7 @@
     {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/draft-blog", "args": "[what to write]", "hint": "Create a blog draft and start its local preview", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tk", "args": "<instruction>", "hint": "An agent writes this passage when you send; /tk(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
   // the plugin's share of a table (live or fallback), in the table's order
@@ -2550,6 +2555,9 @@
       blyg: { mode: 'unknown', url: '', since: '', info: null },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
+      // which agent block (a /tk gap) is being edited by hand: its key, or
+      // null; changed only by setGapEdit
+      gapEdit: null,
       // The council projects this page is filed under, and the roster the
       // picker lists. `filed` is the authority (it comes back from every
       // POST); `list` is fetched once per open and kept. `declined` holds the
@@ -3447,6 +3455,88 @@ ${bubbleShellHtml()}`;
         `</div>`;
     }
 
+    // ---- agent blocks inside the reader's own message ------------------------
+    // A gap the reader asked for with `/tk` is drawn where they typed it: a
+    // small block, set apart from their words, with a robot mark, the word
+    // "agent" and the agent's name, what it wrote (or that it is writing, or
+    // why it could not), and the reader's instruction underneath in small
+    // grey type. Its modes are the companion's (tkgaps.GAP_MODES); the
+    // buttons are the moves that mode allows: fill again, edit by hand, "mine"
+    // (this is now my text: it becomes the reader's own words), remove.
+    // Which block is being edited by hand is ONE field, D.gapEdit (a key, or
+    // null), changed only by setGapEdit.
+    const ROBOT_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">'
+      + '<rect x="3" y="5" width="10" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>'
+      + '<circle cx="6.3" cy="9" r="1" fill="currentColor"/><circle cx="9.7" cy="9" r="1" fill="currentColor"/>'
+      + '<path d="M8 5V2.6M6.6 2.4h2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+    const GAP_ACTS = Object.freeze({
+      pending: [],
+      'filled-by-agent': ['refill', 'edit', 'adopt', 'remove'],
+      'edited-by-reader': ['refill', 'edit', 'adopt', 'remove'],
+      failed: ['refill', 'remove'],
+    });
+    const GAP_ACT_WORDS = { refill: 'fill again', edit: 'edit', adopt: 'mine', remove: 'remove' };
+    const GAP_ACT_TIPS = { refill: 'ask the agent to write it again', edit: 'change the words by hand (still shown as the agent\'s draft)',
+      adopt: 'this is now my text: it becomes part of my own words', remove: 'take this passage out' };
+    const gapKeyOf = (target, r, g) => target + '|' + r.ts + '|' + g.id;
+    function setGapEdit(key) { D.gapEdit = key || null; render(); return true; }
+    function gapBlockHtml(target, r, g) {
+      if (g.mode === 'removed') return '';
+      if (g.mode === 'adopted-by-reader') return `<div class="ctext md" data-md="${esc(mdSlot(String(g.text || '')))}"></div>`;
+      const key = gapKeyOf(target, r, g);
+      const who = g.agent ? g.agent.charAt(0).toUpperCase() + g.agent.slice(1) : 'agent';
+      const state = g.mode === 'pending' ? 'writing…' : g.mode === 'failed' ? 'not written'
+        : g.mode === 'edited-by-reader' ? 'edited by you' : '';
+      const editing = D.gapEdit === key;
+      const body = editing
+        ? `<textarea class="gapedit" data-gap-key="${esc(key)}" rows="4">${esc(String(g.text || ''))}</textarea>`
+          + `<div class="gapacts"><button class="rebtn" data-act="gap-save" data-gap-key="${esc(key)}" type="button">save</button>`
+          + `<button class="rebtn" data-act="gap-cancel" type="button">cancel</button></div>`
+        : g.mode === 'pending' ? '<div class="gaptext wait">the agent is writing this passage…</div>'
+        : g.mode === 'failed' ? `<div class="gaptext reason">${esc(String(g.reason || 'not written'))}</div>`
+        : `<div class="ctext md gaptext" data-md="${esc(mdSlot(String(g.text || '')))}"></div>`;
+      const acts = editing ? '' : (GAP_ACTS[g.mode] || []).map(a =>
+        `<button class="rebtn gapbtn" data-act="gap" data-op="${a}" data-gap-key="${esc(key)}" data-target="${esc(target)}" data-ts="${esc(r.ts)}" data-gap="${esc(g.id)}" type="button" title="${esc(GAP_ACT_TIPS[a])}">${GAP_ACT_WORDS[a]}</button>`).join('');
+      return `<div class="gapblock ${esc(g.mode)}" data-gap="${esc(g.id)}">`
+        + `<div class="gaphead"><span class="gaprobot">${ROBOT_SVG}</span><span class="gapword">agent</span>`
+        + `<span class="gapwho">${esc(who)}</span>${state ? `<span class="gapstate">${esc(state)}</span>` : ''}</div>`
+        + body
+        + `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`
+        + (acts ? `<div class="gapacts">${acts}</div>` : '')
+        + '</div>';
+    }
+    function gapBodyHtml(target, r) {
+      const text = String(r.text || '');
+      const found = TKG.parseGaps(text);
+      let out = '';
+      let at = 0;
+      found.forEach((f, i) => {
+        const g = r.gaps[i] && r.gaps[i].instruction === f.instruction ? r.gaps[i] : null;
+        const before = TKG.unescape(text.slice(at, f.start));
+        if (before.trim()) out += `<div class="ctext md" data-md="${esc(mdSlot(before))}"></div>`;
+        out += g ? gapBlockHtml(target, r, g) : `<div class="ctext md" data-md="${esc(mdSlot(text.slice(f.start, f.end)))}"></div>`;
+        at = f.end;
+      });
+      const after = TKG.unescape(text.slice(at));
+      if (after.trim()) out += `<div class="ctext md" data-md="${esc(mdSlot(after))}"></div>`;
+      return out;
+    }
+    async function gapAction(btn) {
+      const op = btn.dataset.op;
+      if (op === 'edit') { setGapEdit(btn.dataset.gapKey); return; }
+      const r = await cb('onGap')({ thread_id: btn.dataset.target === PAGE_TARGET ? '' : btn.dataset.target,
+        ts: btn.dataset.ts, gap_id: btn.dataset.gap, action: op });
+      if (!r || r.ok === false) setFootNote('error', (r && r.error) || 'could not change that passage');
+    }
+    async function gapSave(btn) {
+      const key = btn.dataset.gapKey;
+      const box = D.shadow && D.shadow.querySelector(`textarea.gapedit[data-gap-key="${key.replace(/"/g, '\\"')}"]`);
+      const [target, ts, id] = String(key).split('|');
+      const r = await cb('onGap')({ thread_id: target === PAGE_TARGET ? '' : target, ts, gap_id: id, action: 'edit', text: box ? box.value : '' });
+      if (!r || r.ok === false) { setFootNote('error', (r && r.error) || 'could not save that passage'); return; }
+      setGapEdit(null);
+    }
+
     function replyHtml(target, r, mine) {
       if (isAgentCard(r)) return agentCardHtml(target, r);
       const bot = isBot(r.author);
@@ -3479,6 +3569,9 @@ ${bubbleShellHtml()}`;
       const mkey = target + '|' + r.ts + '|more';
       const mopen = !!D.moreOpen[mkey];
       const body = isEditOf(D.edit, target, r) ? editBoxHtml(D.edit)
+        // a message of the reader's with /tk gaps in it: its words, with each
+        // gap drawn as an agent block inside the bubble (gapBodyHtml)
+        : (!bot && Array.isArray(r.gaps) && r.gaps.length && TKG) ? gapBodyHtml(target, r)
         : cut.more
         ? `<div class="ctext md" data-md="${esc(mdSlot(cut.head))}"></div>` +
           `<div class="more${mopen ? ' open' : ''}" data-more="${esc(mkey)}">` +
@@ -8192,6 +8285,9 @@ ${bubbleShellHtml()}`;
       },
       'export-run': (btn) => pickExport(btn.dataset.mode),
       'export-response': () => toggleResponse(),
+      'gap': (btn) => gapAction(btn),
+      'gap-save': (btn) => gapSave(btn),
+      'gap-cancel': () => setGapEdit(null),
       'pages': () => { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); },
       'pages-back': () => showThreads(),
       'lib-export': () => doLibraryExport(),

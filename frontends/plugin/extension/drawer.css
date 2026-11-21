@@ -1901,6 +1901,26 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   border-left: 2px solid color-mix(in srgb, var(--author, var(--muted)) 50%, transparent);
   font-size: 14px; line-height: 1.5;
 }
+/* An agent block: a /tk gap inside the reader's own message. Set apart from
+   their words by a thin rule and a faint tint, in the same register as a bot
+   reply; the robot mark, "agent" and the agent's name on one quiet line; the
+   reader's instruction underneath in small grey type. */
+.gapblock {
+  margin: 6px 0; padding: 6px 9px 7px; border-left: 2px solid var(--muted);
+  border-radius: 4px; background: color-mix(in srgb, var(--muted) 9%, transparent);
+  font-size: 12.5px;
+}
+.gapblock.failed { border-left-color: var(--bad) }
+.gaphead { display: flex; gap: 6px; align-items: center; color: var(--muted); font: 11px/1.4 var(--sans); margin-bottom: 3px; flex-wrap: wrap }
+.gaprobot { display: inline-flex }
+.gapword { text-transform: lowercase; letter-spacing: .02em }
+.gapwho { font-weight: 600 }
+.gapstate { font-style: italic }
+.gaptext.wait { color: var(--muted); font-style: italic }
+.gaptext.reason { color: var(--bad) }
+.gapask { margin-top: 3px; color: var(--muted); font: 11px/1.4 var(--sans); overflow-wrap: anywhere }
+.gapacts { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap }
+.gapedit { width: 100%; box-sizing: border-box; font: inherit; resize: vertical }
 .reply.bot { background: color-mix(in srgb, var(--author, var(--muted)) 11%, var(--card));
   border-left-color: var(--author, var(--muted)) }
 .reply.streaming { border-left-style: dashed }

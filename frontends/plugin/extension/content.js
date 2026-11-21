@@ -3540,6 +3540,11 @@
       // Is this page a Blygger post? Asked by the drawer once per page; the
       // companion fetches and verifies (blyg.mjs), this only passes the
       // page's two links along.
+      // a /tk gap's block: fill again, edit, adopt ("mine"), remove
+      onGap: async body => {
+        const r = await api('POST', '/gap', { url: URL_NOW, ...body });
+        return r.ok ? { ok: true, gap: r.data && r.data.gap } : failure(r);
+      },
       onExportResponse: async response => {
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
