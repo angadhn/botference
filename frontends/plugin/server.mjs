@@ -5110,8 +5110,14 @@ export function handler(req, res) {
       if (!text.trim()) return fail(res, 400, 'empty reply');
       const me = authorOf(req, res);
       if (!me) return;
+      // a message in the PAGE CHAT is about the page as a whole, so it says
+      // which Blygger post the page was when it was written — the first one
+      // included, which waits briefly for the page's answer exactly as the
+      // first highlight does (see /thread). Asked before the page is read.
+      const blygAnswer = data.thread_id ? undefined : await blygFor(data.url, data.blyg_hints);
       const page = pageOf(res, data);
       if (!page) return;
+      blygOnto(page, blygAnswer);
       const target = data.thread_id || store.PAGE_CHAT;
       if (projectNetwork.graph.parseLinkIntent(text)) {
         if (notOwner(req, res)) return;
@@ -5181,6 +5187,7 @@ export function handler(req, res) {
       }
       const msg = store.appendMsg(page, target, { author: me.handle, text, route });
       if (!msg) return fail(res, 404, 'unknown thread');
+      if (target === store.PAGE_CHAT) blygMark(msg, blygAnswer);
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });

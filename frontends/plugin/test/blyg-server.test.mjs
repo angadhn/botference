@@ -112,6 +112,13 @@ await test('a highlight that is not an exact passage says so, with the nearest e
   assert.deepEqual(r.json.thread.blyg.passage, { match: false, nearest: PASSAGE });
 });
 
+await test('the first page-chat message carries the post too', async () => {
+  const r = await POST(B, '/reply', { url: PAGE, text: 'what is this post about?', blyg_hints: HINTS });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual([r.json.msg.blyg.status, r.json.msg.blyg.id, r.json.msg.blyg.version], ['blyg', ID, 2]);
+  assert.ok(!('passage' in r.json.msg.blyg));
+});
+
 await test('an old highlight keeps the version it quoted after the post changes', async () => {
   version = 3;
   // the companion holds its answer for a while; a page record made now still
