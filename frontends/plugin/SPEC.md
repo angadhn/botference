@@ -12761,24 +12761,82 @@ this is the contract.
   as `> [!type] Name` + quoted lines, the reader's as prose, others named;
   `separateCallouts` puts `<!-- -->` between a callout (or a part ending in
   one) and a following `>` block. plain + quote-first + inline = old bytes.
-- TK gaps (`tkgaps.mjs`): `findGaps` (paired marks, any case, outside code,
-  no nesting; `[=]` text is the reader's own), `GAP_STATES = ['found',
-  'filling','filled','unfilled']` moved only by `gapMove`; `fillGaps` reads
-  only the reader's own messages, asks `gap_agent` through `askGap` (the tidy
-  job, `tidy_kind: 'gap'`, prompt verbatim) with `gapPrompt` (instruction
-  outside, everything from the page between `<<<BEGIN QUOTED DATA>>>` and
-  `<<<END QUOTED DATA>>>`, markers stripped from the data); caps in
-  `GAP_LIMITS`; results cached in `page.tk_fills` (byte-stable re-export);
-  `include` false ('comments' mode) → unfilled, no call. `GAP_STYLES =
-  ['callout','studio']` (config `gap_style`): callout = `<!-- TK: … -->` +
-  callout, unfilled `[!warning] Not filled`; studio = `[TK] i [=]text[/TK]`
-  (Studio's tk.ts setScopeOutput), inline gaps one paragraph, unfilled
-  `[TK] i [/TK]`, token-starting `[` and backticks as `&#91;`/`&#96;`,
-  `blyg_generated` one entry per filled scope in note order. `/export`
-  answers `gaps: {filled, unfilled}`; the footbar says so.
-- Response default: `responseOf` = the stored `export_response` if set, else
-  `response` when `page.blyg.status === 'blyg'`, else `not-a-response`;
+- TK gaps, filled at send (`extension/tkgrammar.js`, `tkgaps.mjs`,
+  `oneshot.mjs`). This replaces the export-time filling first written the
+  same day.
+  - Grammar (`tkgrammar.js`, UMD, shared by drawer and companion):
+    `parseGaps(text)` → `[{start, end, form, instruction}]`, forms `line`
+    (`/tk instr` alone on its line, up to 3 spaces of indent), `inline`
+    (`/tk(instr)`, balanced parens, one line, preceded by line start,
+    whitespace or `([{`), `studio` (`[TK] instr [/TK]`, any case, skipping an
+    empty one or one with `[=]`). Never in code; `\/tk` is not a gap and
+    `unescape` writes it as `/tk`. `MAX_GAPS` 8, `INSTRUCTION_MAX` 500.
+  - Provenance: `msg.provenance = 'owner-typed'` is set by the server
+    (`markTyped`) on `/thread`, `/reply` and `/edit` when `hosted.isOwner(req)`,
+    never taken from the body. `ownerTyped(m)` = that, and no `origin`. Only
+    such messages get `msg.gaps`; imported PDF annotations, review comments,
+    guests and older records never do.
+  - Modes: `GAP_MODES = ['pending','filled-by-agent','edited-by-reader',
+    'adopted-by-reader','failed','removed']` in `gap.mode`, moved only by
+    `gapMove`, which refuses a move not in `GAP_MOVES` (pending → filled |
+    failed | removed; filled → pending | edited | adopted | removed; edited →
+    pending | edited | adopted | removed; adopted → removed; failed → pending
+    | removed; removed → none).
+  - Send: `attachGaps` builds `msg.gaps` with `buildGaps(text, prior)` (a
+    gap keeps its stored fill when its instruction is unchanged; over 500
+    characters → failed); the message is saved, then `startGaps` asks each
+    pending gap in the background and saves each answer in place
+    (`fillGapsOf`, re-reading the record). Budget: `GAP_LIMITS.perPageHour`
+    30 asks per page per hour; past it a gap fails with the reason.
+  - Ask: `askForGap` → `runOneShot('claude', gapPrompt(...))`: `claude -p
+    --tools "" --strict-mcp-config --restricted --settings {deny all}
+    --output-format text`, prompt on stdin, fresh `mkdtemp` folder removed
+    after, SIGKILL after `perGapMs` (90 s), output cut at 64 KB then 4000
+    characters. Not the page's bridge session. `gapPrompt` puts the
+    instruction outside and one JSON object (comment with `[GAP]` marking the
+    spot, passage, title, url, post) between `DATA-<24 hex>-BEGIN/END` lines
+    made per call; `cleanData` strips control, zero-width and bidi
+    characters. `gap_agent: 'codex'` → failed, "codex cannot fill gaps (no
+    tool-less one-shot form for it)", nothing spawned (`ONESHOT_AGENTS`).
+    `PLUGIN_ONESHOT_CMD` replaces the command in tests.
+  - `POST /gap {url, thread_id, ts, gap_id, action, text?}`, owner only:
+    `refill` (→ pending, asked again), `edit` (→ edited-by-reader with
+    `text`), `adopt` (→ adopted-by-reader), `remove`; an unknown action 400,
+    an illegal move 409.
+  - Drawer: a message with `gaps` is drawn by `gapBodyHtml`: the reader's
+    words, and per gap a `.gapblock` (robot mark, "agent", name, text or
+    "writing…" or the reason, `asked: <instruction>`, buttons per mode from
+    `GAP_ACTS`: fill again, edit, mine, remove). Adopted is drawn as the
+    reader's words; removed draws nothing. The block being edited is one
+    field, `D.gapEdit`, set only by `setGapEdit`. `/tk` is a plugin row in
+    `COMMAND_HELP` and the drawer's fallback list. Harness: `?tk=1`.
+  - Export: `renderGaps(text, gaps, {style, calloutType, include,
+    onGenerated})` writes what is stored and makes no call; a gap the text
+    has and the store does not is written as not filled. `GAP_STYLES =
+    ['callout','studio']` (`gap_style`): callout = `<!-- TK: … -->` +
+    `> [!note] Claude` (edited: "Claude draft, edited by you"), no text →
+    `[!warning] Not filled` with the reason; studio = `[TK] i [=]text[/TK]`
+    (Studio's tk.ts setScopeOutput), a `line` gap its own paragraph, an
+    inline gap one paragraph, no text → `[TK] i [/TK]`, token-starting `[`
+    and backticks as `&#91;`/`&#96;`, `blyg_generated` one entry per
+    agent-written scope in note order. Adopted → the reader's prose;
+    removed → nothing. `GAP_EXPORTS = ['include','omit']` (`gap_export`):
+    whether "My notes only" writes agent text. `/export` answers `gaps:
+    {filled, unfilled}`; the footbar says so.
+- Response default: `responseOf` (in `extension/config.js`, re-exported by
+  `note-quotes.mjs`; the drawer calls the same function) = the stored
+  `export_response` if set, else `response` when `page.blyg.status ===
+  'blyg'` (or the drawer's live check says `blyg`), else `not-a-response`;
   `/export-response` stores either value.
+- Footbar note: `FOOT_NOTES` in `D.footNote`, changed only by
+  `footNoteMove(move)`, moves `say` | `clear` | `expire` (`FOOT_NOTE_MOVES`);
+  `expire` only from a timed mode (info 6 s, saved 12 s, warning 15 s) and
+  only for the note its timer was set for.
+- Fetching: `netguard.mjs` holds the address tables (`privateAddress`,
+  including SIIT `::ffff:0:a.b.c.d`) and `guardedGet` (resolve once, vet every
+  address, connect only to the vetted one, fresh agent, no proxy, redirects
+  by hand, `TOO_BIG = ['refuse','cut']`). `blyg.guardedGet` and
+  `lasso.webGet` (the default for `fetchWeb`) are both it.
 
 #### Drawer
 

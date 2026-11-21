@@ -947,10 +947,8 @@ when you export them, are each in a callout box of their own
 (`> [!note] Claude`; `"agent_style": "inline"` for the old lines). On a post's
 own page the note is marked as a response to it unless you untick that.
 
-In a comment of your own, `[TK] an instruction [/TK]` marks a gap for an agent
-to fill when you export with the agents' replies (`gap_style`: a callout, or
-Blygger Studio's own `[TK] … [=] … [/TK]` grammar for a Blygger-aware site).
-TK marks anywhere else, quoted passages included, are written as code. The front matter gains `blyg_sources:` (the posts the
+TK marks in the page's text, quoted passages included, are written as code.
+The front matter gains `blyg_sources:` (the posts the
 note quotes) and, if you mark the note as a response in the export chooser,
 `blyg_stub_of:`. Both keys are optional; delete them if your site does not
 use them. A highlight whose words are not word for word in the post (it ran
@@ -962,7 +960,8 @@ On any other web page, quotes in the note end with the page's URL as their
 last paragraph (`quote_style: "url-card"`, the default). Set
 `"quote_style": "plain"` in `.botference/plugin/config.json` for the old
 shape: the quote alone (with `"comment_order": "quote-first"` as well, the
-note is exactly what Discuss wrote before). PDFs on your computer, local files and the library
+note is what Discuss wrote before, apart from TK marks, which are now always
+written as code). PDFs on your computer, local files and the library
 always get the plain shape.
 
 The companion only reads: plain GETs to the page's site and to whatever host
@@ -1015,6 +1014,27 @@ leave the comment; repeat for each point. Press **Send review** to hand all open
 comments over together. In site-authoring mode the agents edit the source and
 reply in each comment's thread. The normal suggestion-card workflow remains
 available when site-authoring mode is off.
+
+**Let an agent write a passage of your message.** In a comment, reply or
+page-chat message, put `/tk` and an instruction on a line of its own, or
+`/tk(an instruction)` inside a sentence (Blygger Studio's `[TK] … [/TK]` works
+too):
+
+```text
+The checklist treats a model as one more tool to set up.
+/tk say in one sentence what a TK scope is, for a reader new to Blygger
+```
+
+When you send, Claude writes that passage, and it appears in your message as
+a block marked as the agent's, with your instruction under it. You can fill it
+again, edit it, keep it as your own words ("mine"), or remove it. Each gap is
+a separate `claude -p` run with no tools, no MCP servers and none of your
+settings files, given the page only as data; it is not your page's agent
+session. Codex cannot fill gaps. The export writes what is stored and asks no
+agent: a callout under an HTML comment with your instruction (default), or
+Blygger Studio's own `[TK] … [=] … [/TK]` with `"gap_style": "studio"`;
+`"gap_export": "omit"` leaves the agents' passages out of "My notes only".
+Details in [docs/blygger.md](docs/blygger.md).
 
 **Start a draft from an article you are reading.** In Discuss's page chat or
 a comment thread, type:

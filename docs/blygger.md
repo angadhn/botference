@@ -178,7 +178,8 @@ so no local path or internal address ever goes into a note's body:
 - `plain` writes the quote alone, as Discuss always did. The page's URL is in
   the note's front matter only. To switch back, set `"quote_style": "plain"`,
   and for the old order too, `"comment_order": "quote-first"`: the two together
-  write exactly what Discuss wrote before.
+  write what Discuss wrote before (with `"agent_style": "inline"` for agents'
+  replies; TK marks are the one exception, below).
 
 Any other value is refused: the note is written with `plain`, and the drawer
 says why.
@@ -199,8 +200,9 @@ for word. Bracket-directive text in a passage (`![[id]]`, `[[id]]`) keeps a
 backslash instead, because a receiving site's wikilink pass reads inside
 code spans. No part of a note (comments, replies, the page chat, a title, an
 ordinary page's quoted words) carries bare TK marks: outside code they are
-written as code spans. To write the letters `[TK]` yourself, put them in
-code formatting.
+written as code spans. A pair of TK marks you type in a message of your own
+is a gap (below); to write the letters `[TK]` yourself, put them in code
+formatting.
 
 ### The agents' words
 
@@ -221,42 +223,110 @@ companion's `config.json`: `callout_type` (default `note`, which Obsidian and
 the common static-site callout plugins draw) and `agent_style` (`callout`,
 the default, or `inline` for the old `**claude:** …` lines).
 
-### TK gaps in your own notes
+### TK gaps: an agent writes a passage of your message
 
-In a comment, reply or page-chat message of your own, `[TK] an instruction
-[/TK]` marks a gap for an agent to fill, as in Blygger Studio. When you export
-with the agents' replies, one agent (`gap_agent`: `claude` by default, or
-`codex`) is asked to write it; the answer goes where the gap was. Only your
-own words are read for gaps, never a page's text, a quoted passage or an
-agent's reply. The agent is given your instruction as an instruction, and the
-page's title and address, the post's identity, the highlighted passage and
-your surrounding words only as quoted data, which it is told not to obey.
-What it writes is kept with the page, so exporting again does not ask again
-and writes the same note. At most 8 gaps and three minutes per export; a gap
-that cannot be filled never stops the export, and the footbar says how many
-were filled and how many not. "My notes only" fills and shows no gap.
+While you write a comment, a reply or a page-chat message, you can leave a
+gap for an agent to write, as in Blygger Studio. The gap is filled when you
+send the message, and the agent's passage is shown in place, in your own
+message, as a small block marked as the agent's.
 
-How a gap is written is one setting, `gap_style`:
+How to write one:
+
+- `/tk an instruction` on a line of its own: the agent writes a paragraph
+  (or more) there.
+- `/tk(an instruction)` inside a sentence: the agent writes a few words
+  there, as part of the sentence. Parentheses inside the instruction are
+  fine as long as they are balanced, and it stays on one line. The `/tk` must
+  start the line or follow a space or an opening bracket: `a/tk(x)` is not a
+  gap.
+- `[TK] an instruction [/TK]`, Blygger Studio's own marks, works the same
+  way.
+
+Not a gap: anything in code (a code span or a code block), `\/tk` (written
+as the letters `/tk`), and `/tk` with nothing after it. At most 8 gaps per
+message and 500 characters per instruction; an instruction longer than that
+is not sent and its block says why. `/tk` is in the composer's autocomplete
+and in `/help`.
+
+**The agent block.** Each gap is drawn where you typed it, inside your
+message: a robot mark, the word "agent" and the agent's name, what it wrote,
+and your instruction underneath in small grey type. While it is being
+written the block says so. If it could not be written, the block says why
+(the agent took too long, wrote nothing, could not start) and offers to try
+again. A filled block has four actions:
+
+- **fill again**: ask the agent to write it again.
+- **edit**: change the words by hand. They stay marked as the agent's draft
+  ("Claude draft, edited by you"), because the agent wrote them first.
+- **mine**: this is now your text. The block becomes ordinary words of your
+  message, and the export writes them as yours, with no mark at all. A
+  passage you have made yours is not filled again.
+- **remove**: take the passage out. Nothing is written where it was.
+
+Editing the message keeps every filled passage whose instruction you did not
+change; only a gap that is new or whose instruction changed is sent again.
+
+**Which agent.** `gap_agent` in the companion's `config.json`, `claude` by
+default. Only Claude can fill gaps: the companion asks it through a one-time
+command with no tools at all (below). Codex has no such form here, so with
+`"gap_agent": "codex"` every gap's block says "codex cannot fill gaps (no
+tool-less one-shot form for it)" and nothing is sent.
+
+**What the agent is given, and what it can do.** Only gaps in a message you
+typed yourself in the drawer, as the owner, are ever sent. The companion
+marks a message as yours when it saves it, from the connection it came on,
+never from anything in the message. Nothing else is read for gaps: not a
+guest's message over a tunnel, not a page's text or a quoted passage, not an
+agent's reply, not PDF annotations or review comments that were imported,
+and not a message saved before this feature (until you edit and save it
+again). Each gap is one separate run of `claude -p` that the companion
+starts itself. It is not your page's agent session, so it has not seen the
+conversation, the page snapshot or anyone else's messages. It is given no
+tools (`--tools ""`), no MCP servers (`--strict-mcp-config`), none of your
+user, project or local settings files (`--restricted`), and settings that
+deny every tool. It runs in a new empty folder that is deleted afterwards,
+and it is stopped after 90 seconds. Your instruction is the instruction. Your
+surrounding words, the highlighted passage, the page's title and address and
+the post's identity are given as one block of JSON data between two marker
+lines made fresh for each run, and it is told to treat that block as data,
+not instructions. This keeps a page from steering it, but it is not a
+sandbox: it is the `claude` program running as you, with your Claude login.
+Text it writes is shown as text. HTML, Liquid and wikilink brackets in it are
+written so that they cannot run or link. At most 30 gaps are sent per page
+per hour.
+
+**The export.** It writes what is stored: it makes no agent calls, so
+exporting twice writes the same note. `gap_export` decides whether "My notes
+only" includes the agents' passages: `include` (the default) writes them,
+marked as the agent's; `omit` leaves them out and writes a "not filled" mark
+instead. "My notes and the agents' replies" always includes them.
+
+How a gap is written in the note is one setting, `gap_style`:
 
 - `callout` (the default): the text in a callout under an HTML comment that
-  keeps your instruction (you see it, readers do not). An unfilled gap is a
-  `[!warning] Not filled` callout with the reason. No TK marks reach the note,
-  so any markdown site can publish it.
+  keeps your instruction (you see it, readers do not). A gap with no text
+  (still being written, failed, or left out) is a `[!warning] Not filled`
+  callout with the reason. No TK marks reach the note, so any markdown site
+  can publish it.
 - `studio`: Blygger Studio's own draft grammar, exactly as Studio writes it
-  after its Generate button: `[TK] instruction [=]the text[/TK]` (a gap inside
-  a sentence stays one paragraph; one in a paragraph of its own may hold
-  several). An unfilled gap stays `[TK] instruction [/TK]`, which Studio shows
-  as ungenerated and refuses to publish. A Blygger-aware publisher keeps your
-  instruction out of the post and publishes the text disclosed as generated;
-  the note's front matter lists each filled gap, in order, under
-  `blyg_generated:` (the model when the companion knows it, and the time it
-  was written). Inside a scope, any `[` that would begin a TK token or a
-  bracket directive, and every backtick, is written as a character reference
-  (`&#91;`, `&#96;`): they render as the same characters and can never end the
-  scope early or hide its end in code; a bracket directive in your
-  instruction is therefore never Studio's TK-transclude source reference.
-  Choose this only for a site that is Blygger-aware: any other site would
-  publish the TK marks and your instruction as text.
+  after its Generate button: `[TK] instruction [=]the text[/TK]`. A gap you
+  typed on its own line is a paragraph of its own (and may hold several); a
+  gap inside a sentence stays one paragraph. A gap with no text stays
+  `[TK] instruction [/TK]`, which Studio shows as ungenerated and refuses to
+  publish. A Blygger-aware publisher keeps your instruction out of the post
+  and publishes the text disclosed as generated; the note's front matter
+  lists each agent-written gap, in order, under `blyg_generated:` (the model
+  when the companion knows it, and the time it was written). Inside a scope,
+  any `[` that would begin a TK token or a bracket directive, and every
+  backtick, is written as a character reference (`&#91;`, `&#96;`): they
+  render as the same characters and can never end the scope early or hide
+  its end in code; a bracket directive in your instruction is therefore
+  never Studio's TK-transclude source reference. Choose this only for a site
+  that is Blygger-aware: any other site would publish the TK marks and your
+  instruction as text.
+
+A passage you made yours ("mine") is written as your own words in both
+styles, with no mark; a removed one is not written at all.
 
 ### The response default
 
@@ -277,21 +347,33 @@ refused with a footbar warning when its value is unknown:
 | `agent_style` | `callout`, `inline` |
 | `callout_type` | `note`, or any callout name |
 | `gap_style` | `callout`, `studio` |
-| `gap_agent` | `claude`, `codex` |
+| `gap_agent` | `claude`, `codex` (Codex cannot fill gaps; see above) |
+| `gap_export` | `include`, `omit` |
 | `blyg_checks` | `on`, `off` |
 
 `quote_style: "plain"` with `comment_order: "quote-first"` and
 `agent_style: "inline"` writes an ordinary page's note exactly as Discuss
-did before any of this.
+did before any of this, with one exception: TK marks (`[TK]`, `[/TK]`) in any
+text are written as code, and a `/tk` or `[TK] … [/TK]` you type in a new
+message of your own is a gap. A note whose words contain them is therefore not
+byte for byte what it was. Blygger's grammar has no escape for a bare TK mark
+that a checker would accept, so this one cannot be switched back.
 
 ### A worked example
 
 The public post <https://venkateshrao.com/blyg/t/3vzq82afn6rmyvk6vsq8abnkqh/>
 ("Starter checklist", version 2, pinned), read by GET. One highlight of a
-line that contains TK marks, with an opening comment holding a TK gap, a
-later question and an agent's reply. Rendered by the export code with the
-default settings; the comments, the gap's filled text and the agent's reply
-are made up.
+line that contains TK marks, then a later question and an agent's reply. The
+comment made with the highlight was typed as:
+
+```text
+The checklist treats a model as one more tool to set up.
+/tk say in one sentence what a TK scope is, for a reader new to Blygger
+```
+
+and the agent's passage was filled when it was sent. Rendered by the export
+code with the default settings; the comments, the agent's passage and the
+agent's reply are made up.
 
 ```markdown
 ---
@@ -334,7 +416,7 @@ blyg_stub_of:
   id: 3vzq82afn6rmyvk6vsq8abnkqh
   version: 2
 blyg_generated:
-  - at: 2026-11-21T10:02:00Z
+  - at: 2026-11-21T10:00:20Z
 ---
 
 # Starter checklist
@@ -431,10 +513,10 @@ neither.
 - The export writes a file. Publishing it, and sending any mention the spec
   asks a publisher to send, is up to you and your own site.
 - Filling a TK gap sends the gap's instruction, your surrounding words, the
-  highlighted passage and the page's title and address to the agent you
-  already use for Discuss (gap_agent), on this machine's own agent session,
-  as any question to it would. Nothing is sent for a gap in "My notes only",
-  and nothing again for a gap already filled.
+  highlighted passage and the page's title and address to Claude, through a
+  separate `claude -p` run with no tools, when you send the message (see "TK
+  gaps" above). Nothing is sent again for a gap already filled unless you ask
+  for it again or change its instruction, and nothing is sent at export.
 
 ## Known limits
 
