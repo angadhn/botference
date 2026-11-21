@@ -155,6 +155,17 @@ await test('front matter: a template without a blyg key, on an ordinary page, is
   });
 });
 
+await test('Liquid in a page title or a passage is passed through as text, never run by Jekyll', () => {
+  const hostile = blygPage({ title: 'Title {{ site.secret }}' });
+  hostile.threads[1].quote = 'Run {% include evil.html %} please';
+  const set = draft.quoteSet(hostile, { quote_style: 'plain' });
+  const r = draft.placeQuotes('<!-- quote:1 -->\n\n<!-- quote:2 -->', set);
+  assert.equal(r.body, `{% raw %}\n\n![[${BLYG_ID} | Title {{ site.secret }}]]\n> ${P1}\n\n{% endraw %}\n\n`
+    + '{% raw %}\n\n> Run {% include evil.html %} please\n\n{% endraw %}');
+  assert.equal(draft.liquidSafe('no templates here'), 'no templates here');
+  assert.match(draft.liquidSafe('{% endraw %}{{ x }}'), /left out/);
+});
+
 await test('a draft from a PDF on this computer carries no local path or internal address', () => {
   for (const url of ['bfp-pdf://sha256/0123abcd', 'file:///home/someone/papers/paper.pdf']) {
     const pdf = { url, title: 'A paper', threads: [{ id: 'p', quote: P2, msgs: [] }], page_chat: [] };

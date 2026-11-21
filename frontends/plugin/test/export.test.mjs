@@ -507,7 +507,18 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   const Q = await import('../note-quotes.mjs');
   eq('passage text is escaped, not formatted', Q.blygQuote(stamp(), '', '*not* emphasis_ [x] <b> a\\b `c` ~~d~~ &amp;\n# not a heading\n1. not a list\n- nor this'),
     `![[${VR_ID}]]\n> \\*not\\* emphasis\\_ \\[x] \\<b> a\\\\b \\\`c\\\` \\~\\~d\\~\\~ \\&amp;\n>\n> \\# not a heading\n>\n> 1\\. not a list\n>\n> \\- nor this`);
-  eq('a label never closes the directive early', Q.wholePost(VR_ID, 'odd ]] title\nwith a line break'), `![[${VR_ID} | odd ] ] title with a line break]]`);
+  // §10.1: the label is everything after the pipe up to the first ']]', and
+  // there is no escape — so a label that would not read back the same is dropped
+  eq('a label containing ]] is dropped, not altered', Q.wholePost(VR_ID, 'odd ]] title'), `![[${VR_ID}]]`);
+  eq('a label ending in ] is dropped', Q.wholePost(VR_ID, 'Notes [draft]'), `![[${VR_ID}]]`);
+  eq('a label with brackets inside is kept', Q.wholePost(VR_ID, '[a] b'), `![[${VR_ID} | [a] b]]`);
+  eq('a label is one line', Q.wholePost(VR_ID, 'two\nlines'), `![[${VR_ID} | two lines]]`);
+  // read back by the grammar's own rule: id, then the label up to the first ]]
+  for (const t of ['Notes [draft]', 'odd ]] title', '[a] b', 'plain', 'x | y']) {
+    const line = Q.wholePost(VR_ID, t);
+    const m = /^!\[\[([0-9a-z]{26})(?:\s*\|\s*(.*?))?\]\]$/.exec(line);
+    ok(`"${t}": the line is a directive that reads back`, m && m[1] === VR_ID && (m[2] === undefined || m[2] === Q.labelOf(t)), line);
+  }
 
   const miss = renderNote(BLYG_PAGE([
     { quote: `Share this ${S1} 3`, blyg: stamp({ passage: { match: false, nearest: S1 } }), msgs: [me('Selected too much.')] },

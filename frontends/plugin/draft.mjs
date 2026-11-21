@@ -142,6 +142,23 @@ export function quotesPrompt(set) {
     + 'the companion puts the exact passage there in the site\'s quoting syntax. Never retype a highlighted passage yourself.\n';
 }
 
+// A draft is built by Jekyll, which runs Liquid over the post first, and
+// everything the companion inserts — the label (a page title) and the
+// passage (words off a web page) — is somebody else's text. A quote that
+// contains a Liquid delimiter ({{, }}, {%, %}) is therefore wrapped in
+// {% raw %} … {% endraw %} lines, so Liquid passes it through as written
+// (the markdown the site's Blygger build reads keeps the directive and its
+// quote adjacent; the raw lines stand apart, after and before blank lines).
+// Text that itself contains 'endraw' cannot be wrapped safely and is not
+// inserted: a line says so instead.
+const LIQUID = /\{[{%]|[}%]\}/;
+export function liquidSafe(block) {
+  const s = String(block);
+  if (!LIQUID.test(s)) return s;
+  if (/endraw/i.test(s)) return '*(a highlight here contains Liquid template text that cannot be written safely into this site, so it was left out)*';
+  return `{% raw %}\n\n${s}\n\n{% endraw %}`;
+}
+
 const PLACEHOLDER = /^\s*<!--\s*quote:(\d{1,4})\s*-->\s*$/;
 const DIRECTIVE = /^\s*!\[\[[0-9abcdefghjkmnpqrstvwxyz]{26}(?:\s*\|[^\n]*)?\]\]\s*$/;
 // words of a passage, for telling "the same passage" from "another one":
@@ -171,7 +188,7 @@ export function placeQuotes(body, set) {
     return { body: lines.filter(l => !PLACEHOLDER.test(l)).join('\n'), placed: 0, restored: 0,
       unknown: lines.filter(l => PLACEHOLDER.test(l)).length };
   }
-  const render = t => highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts.join('\n\n');
+  const render = t => liquidSafe(highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts.join('\n\n'));
   const out = [];
   let placed = 0, restored = 0, unknown = 0;
   for (let i = 0; i < lines.length; i++) {

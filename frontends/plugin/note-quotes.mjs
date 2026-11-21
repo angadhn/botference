@@ -93,10 +93,16 @@ export function escapePassageLine(line) {
     .replace(/^(\s*\d{1,9})([.)])/, '$1\\$2');
 }
 
-// A directive's label is the quoter's plain words (§10.1): one line, and it
-// cannot contain ']]'. Clipped so a long page title stays one readable line.
+// A directive's label is the quoter's plain words (§10.1): one line, read as
+// everything after the pipe up to the first ']]'. The grammar has no escape,
+// so a label that contains ']]', or ends in ']' (which would make the first
+// ']]' come one character early and leave a stray ']' on the line), cannot be
+// written so that it reads back the same: such a label is DROPPED and the
+// directive is written bare, which names the same post. Clipped so a long
+// page title stays one readable line.
 export function labelOf(text) {
-  return String(text || '').replace(/\s+/g, ' ').replace(/\]\]/g, '] ]').trim().slice(0, 120).trim();
+  const l = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120).trim();
+  return l.includes(']]') || l.endsWith(']') ? '' : l;
 }
 
 // ---- one function per output kind ------------------------------------------------
