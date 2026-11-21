@@ -697,6 +697,67 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
     renderNote(quoted, DEF, NOW), head + 'As he said:\n\n> something else\n\n> the mood was flat\n>\n> https://example.org/piece\n');
 }
 
+// ---- TK marks never reach a note as bare grammar ----------------------------------
+// CommonMark's reading of the two inline constructs the escaper writes: a code
+// span's contents are literal, and a backslash before ASCII punctuation is that
+// character. What a publisher's §10.2 check sees of a passage line is this.
+function mdInlineText(line) {
+  let out = '';
+  let i = 0;
+  while (i < line.length) {
+    const c = line[i];
+    if (c === '\\' && i + 1 < line.length && /[!-/:-@[-`{-~]/.test(line[i + 1])) { out += line[i + 1]; i += 2; continue; }
+    if (c === '`') {
+      const run = /^`+/.exec(line.slice(i))[0];
+      const close = line.indexOf(run, i + run.length);
+      if (close !== -1) {
+        let inner = line.slice(i + run.length, close);
+        if (/^ .* $/.test(inner)) inner = inner.slice(1, -1);
+        out += inner; i = close + run.length; continue;
+      }
+      out += run; i += run.length; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+// …and what a conformance checker sees: TK grammar outside code
+const bareTk = s => /\[\/?tk\]/i.test(String(s).replace(/`+[^`]*`+/g, ''));
+{
+  const Q = await import('../note-quotes.mjs');
+  const B = await import('../blyg.mjs');
+  const ID = '0123456789abcdefghjkmnpqrs';
+  const real = 'Do a [TK] prompt ![[id]] [/TK] TK-transclude to summarize another item (your own or somebody else\'s) with AI';
+  const lines = {
+    'TK marks': 'Add an AI for [TK] prompt [/TK] generation of the next step.',
+    'a bracket directive': 'Quote it with ![[id]] on a line of its own, or link with [[id]].',
+    'both (the real line)': real,
+    'lower case marks': 'a [tk]gap[/tk] here',
+  };
+  for (const [what, line] of Object.entries(lines)) {
+    const hay = B.textContent(`<p>Before.</p><p>${line.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</p><p>After.</p>`);
+    const quote = Q.blygQuote({ id: ID }, '', line);
+    const passage = quote.split('\n').slice(1).map(l => l.replace(/^> ?/, ''));
+    ok(`${what}: round trip, the rendered passage is word for word the post's text`,
+      hay.includes(passage.map(mdInlineText).join('\n')), passage.join('\n'));
+    ok(`${what}: no bare TK grammar in the note`, !bareTk(quote), quote);
+  }
+  const both = Q.blygQuote({ id: ID }, '', real);
+  ok('TK marks are code spans', both.includes('`[TK]` prompt') && both.includes('`[/TK]`'), both);
+  ok('a bracket directive keeps its backslash, never a code span', both.includes('!\\[\\[id]]') && !both.includes('`![[id]]`'), both);
+
+  // the reader's own words, a bot's, a page's quoted words and a title
+  eq('a literal [TK] in a comment becomes code', Q.tkSafe('I typed [TK] here and [/tk] there'),
+    'I typed `[TK]` here and `[/tk]` there');
+  eq('…already code stays as written', Q.tkSafe('as `[TK]` says'), 'as `[TK]` says');
+  eq('…a fenced block is left alone', Q.tkSafe('see:\n```\n[TK] x [/TK]\n```\nok [TK]'), 'see:\n```\n[TK] x [/TK]\n```\nok `[TK]`');
+  const page = { url: 'https://example.org/p', title: 'A [TK] title', site: 'example.org', page_chat: [me('chat [TK]')],
+    threads: [{ quote: 'page words [TK] here', msgs: [me('my [/TK] note', 'a'), bot('bot [TK] reply')] }] };
+  const note = renderNote(page, { author: 'angadh' }, NOW);
+  ok('a whole note with TK marks everywhere carries none bare', !bareTk(note), note);
+  eq('…and a label with a TK mark is dropped', Q.labelOf('A [TK] title'), '');
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

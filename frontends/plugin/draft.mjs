@@ -10,7 +10,7 @@ import { isWebUrl } from './blyg.mjs';
 // how a quote is written, and the two optional Blygger front-matter keys:
 // the same module the Obsidian export uses, so the rules exist once
 import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys,
-  commentOrderOf, splitOpening, arrangeThread } from './note-quotes.mjs';
+  commentOrderOf, splitOpening, arrangeThread, tkSafe } from './note-quotes.mjs';
 
 export function parseCommand(text) {
   const s = String(text || '').trim();
@@ -197,7 +197,7 @@ export function placeQuotes(body, set) {
   const render = t => {
     const msgs = (Array.isArray(t.msgs) ? t.msgs : []).filter(m => m && m.kind !== 'tools');
     const { opening } = splitOpening(msgs, { first: msgs[0] || null, reader: set.reader, order: set.order });
-    return liquidSafe(arrangeThread({ opening: opening ? String(opening.text) : '',
+    return liquidSafe(arrangeThread({ opening: opening ? tkSafe(String(opening.text)) : '',
       quote: highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts }).join('\n\n'));
   };
   const out = [];

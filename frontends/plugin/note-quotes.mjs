@@ -137,12 +137,67 @@ const struck = t => !!(t && t.mark === 'strike');
 // is that character, literally). Inline: * _ ` [ < \ ~ and an & that would
 // start an entity. At the start of a line: what would make it a heading, a
 // list item, a quote or a rule.
+//
+// …EXCEPT a TK mark. [TK] and [/TK] are Blygger Studio's authoring grammar
+// for a gap an agent fills (§5.7), and a conformance checker refuses a
+// published item whose content_md contains either outside code — testing the
+// raw text, so a backslash does not help. Inside a passage they are written
+// as code spans instead (`[TK]`), which the §10.2 text rule reads as the same
+// words (inline formatting is ignored). Bracket-directive text ([[id]],
+// ![[id]]) is NOT put in code spans — a receiving site's wikilink pass reads
+// inside them — and keeps its backslash.
+export const TK_MARK = /\[\/?tk\]/gi;
+const escapeInline = s => String(s)
+  .replace(/[\\*_`[<~]/g, '\\$&')
+  .replace(/&(?=#?[A-Za-z0-9]+;)/g, '\\&');
 export function escapePassageLine(line) {
-  return String(line)
-    .replace(/[\\*_`[<~]/g, '\\$&')
-    .replace(/&(?=#?[A-Za-z0-9]+;)/g, '\\&')
+  const s = String(line);
+  let out = '';
+  let at = 0;
+  for (const m of s.matchAll(TK_MARK)) {
+    out += escapeInline(s.slice(at, m.index)) + '`' + m[0] + '`';
+    at = m.index + m[0].length;
+  }
+  out += escapeInline(s.slice(at));
+  return out
     .replace(/^(\s*)([#>+=-])/, '$1\\$2')
     .replace(/^(\s*\d{1,9})([.)])/, '$1\\$2');
+}
+
+// The same rule for every other piece of text a note carries (a comment, a
+// reply, a page chat, a page's quoted words, a title): outside code, a TK mark
+// becomes a code span, so no bare TK grammar ever reaches a note. Code that
+// is already code — fenced blocks and inline code spans — is left as written.
+export function tkSafe(text) {
+  const src = String(text == null ? '' : text);
+  if (!/\[\/?tk\]/i.test(src)) return src;
+  const lines = src.split('\n');
+  let fence = '';
+  const wrapInline = line => {
+    let out = '';
+    let i = 0;
+    while (i < line.length) {
+      const tick = /`+/.exec(line.slice(i));
+      const end = tick ? i + tick.index : line.length;
+      out += line.slice(i, end).replace(TK_MARK, m => '`' + m + '`');
+      if (!tick) break;
+      const run = tick[0];
+      const close = line.indexOf(run, end + run.length);
+      if (close === -1) { out += line.slice(end); break; }
+      out += line.slice(end, close + run.length);
+      i = close + run.length;
+    }
+    return out;
+  };
+  return lines.map(line => {
+    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (f) {
+      if (!fence) fence = f[1][0];
+      else if (f[1][0] === fence) fence = '';
+      return line;
+    }
+    return fence ? line : wrapInline(line);
+  }).join('\n');
 }
 
 // A directive's label is the quoter's plain words (§10.1): one line, read as
@@ -154,7 +209,8 @@ export function escapePassageLine(line) {
 // page title stays one readable line.
 export function labelOf(text) {
   const l = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120).trim();
-  return l.includes(']]') || l.endsWith(']') ? '' : l;
+  // …nor TK grammar, which a label is plain text for and cannot hide
+  return l.includes(']]') || l.endsWith(']') || /\[\/?tk\]/i.test(l) ? '' : l;
 }
 
 // ---- one function per output kind ------------------------------------------------
@@ -185,7 +241,7 @@ export function webQuote(t, style, url) {
   // only a web page has an address worth closing a quote with: a PDF read off
   // this disk (bfp-pdf://…), a file: page or the library keeps the plain shape,
   // so no local path or internal address ever reaches a note's body
-  return style === 'url-card' && isWebUrl(url) ? `${body}\n>\n> ${url}` : body;
+  return tkSafe(style === 'url-card' && isWebUrl(url) ? `${body}\n>\n> ${url}` : body);
 }
 
 // YAML for a URL: bare when it is plainly a URL, quoted when anything in it

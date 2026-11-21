@@ -15,7 +15,7 @@ import { codeBlocks } from './run.mjs';
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
 import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond,
-  commentOrderOf, splitOpening, arrangeThread } from './note-quotes.mjs';
+  commentOrderOf, splitOpening, arrangeThread, tkSafe } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -95,7 +95,8 @@ export function withRuns(text, runs, attach) {
   return lines.join('\n');
 }
 
-const bodyOf = (m, attach) => withRuns(stripMore(m.text), m.runs, attach);
+// (and never bare TK grammar, whoever wrote it: note-quotes.tkSafe)
+const bodyOf = (m, attach) => tkSafe(withRuns(stripMore(m.text), m.runs, attach));
 const authored = (msgs, attach) =>
   msgs.map(m => `**${m.author}:** ${bodyOf(m, attach)}`).join('\n');
 // tool-activity summaries are process noise in a note: the drawer keeps them
@@ -186,7 +187,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
       '---'].join('\n'),
     // the reader's own name for the page if they gave it one — the same title
     // the file is named after
-    `# ${displayTitle(page)}`,
+    `# ${tkSafe(displayTitle(page))}`,
   ];
   // A highlight made on a Blygger post is quoted BY REFERENCE (note-quotes),
   // labelled with the reader's name for the page; everything else is quoted
