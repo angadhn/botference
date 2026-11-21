@@ -508,3 +508,147 @@ export function checkPassage(quote, text) {
   }
   return { match: false, nearest: best.length >= NEAREST_MIN_CHARS ? best : '' };
 }
+
+// ---- once per page ------------------------------------------------------------------
+// The companion asks about a page once and remembers the answer: the drawer
+// opening, the first highlight, the page chat and the export all ask the
+// same checker, and a second asker while the first is still waiting shares the
+// first one's request. An answer is kept for ANSWER_MS (a post can be edited,
+// so not for ever); a 'check-failed' only for FAILED_MS, so reopening the
+// drawer after the network comes back asks again.
+export const ANSWER_MS = 10 * 60 * 1000;
+export const FAILED_MS = 60 * 1000;
+const keyOf = url => String(url || '').split('#')[0];
+export function createChecker({ get = guardedGet, now = Date.now } = {}) {
+  const answers = new Map(); // key → { at, result }
+  const asking = new Map();  // key → Promise<result>
+  const fresh = key => {
+    const a = answers.get(key);
+    if (!a) return null;
+    const life = a.result.status === 'check-failed' ? FAILED_MS : ANSWER_MS;
+    return now() - a.at < life ? a.result : null;
+  };
+  return {
+    // the answer already held for this page, or null
+    peek: url => fresh(keyOf(url)),
+    // the answer, asking the site if nothing fresh is held
+    check(url, hints, { kind = '' } = {}) {
+      const key = keyOf(url);
+      const held = fresh(key);
+      if (held) return Promise.resolve(held);
+      if (asking.has(key)) return asking.get(key);
+      const run = detect(key, hints, { get, kind })
+        .catch(e => ({ status: 'check-failed', reason: String((e && e.message) || 'the check broke'), fetched: [] }))
+        .then(result => {
+          // the words are what passage checks read; worked out once per answer
+          if (result.status === 'blyg') result.text = textContent(result.html);
+          answers.set(key, { at: now(), result });
+          asking.delete(key);
+          return result;
+        });
+      asking.set(key, run);
+      return run;
+    },
+    forget: url => { answers.delete(keyOf(url)); },
+  };
+}
+
+// Wait for `promise` at most `ms`; null if it has not settled by then. (The
+// promise itself carries on, and whoever is listening to it gets the answer.)
+export function settleWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise(resolve => { timer = setTimeout(() => resolve(null), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// ---- what is stored -------------------------------------------------------------------
+// ON THE PAGE RECORD, `page.blyg`: the last answer, without the post's words.
+//   { status, checked, reason? , site?, item? }
+// Absent on every record made before this existed, which reads as 'unknown'.
+export function pageRecordOf(result, at = new Date()) {
+  const out = { status: result.status, checked: at.toISOString() };
+  if (result.reason) out.reason = clip(result.reason, 300);
+  if (result.site) out.site = { ...result.site };
+  if (result.item) out.item = { ...result.item };
+  return out;
+}
+
+// ON EACH HIGHLIGHT, COMMENT, STRIKE AND PAGE-CHAT MESSAGE, `.blyg`: a stamp.
+// Its status is one of BLYG_STAMPS, or the stamp is absent:
+//   absent         — not a blyg post when it was made, or made before Discuss
+//                    knew about Blygger (the page record tells the two apart)
+//   'checking'     — made while the first check of the page was still running
+//   'check-failed' — made while the page could not be checked
+//   'blyg'         — made on this post at this version: { origin, id, version,
+//                    pinned, page } and `as_of`, which says how honest the
+//                    version is: 'record' (it was current when this was made)
+//                    or 'check' (it was current when Discuss first checked the
+//                    page, which was after this was made). A highlight's stamp
+//                    also carries `passage`, the §10.2 verdict on its words.
+// A stamp moves only through restamp(), and only by STAMP_MOVES: a 'checking'
+// or 'check-failed' stamp is filled in once the answer arrives; a 'blyg'
+// stamp is final, so an old highlight goes on saying which version it quoted
+// after the post changes.
+export const BLYG_STAMPS = Object.freeze(['checking', 'blyg', 'check-failed']);
+for (const s of BLYG_STAMPS) if (!BLYG_MODES.includes(s)) throw new Error(`blyg stamp ${s} is not a blyg mode`);
+const STAMP_MOVES = Object.freeze({
+  none: Object.freeze(['checking', 'blyg', 'check-failed']),
+  checking: Object.freeze(['blyg', 'check-failed', 'none']),
+  'check-failed': Object.freeze(['blyg', 'none']),
+  blyg: Object.freeze([]),
+});
+export const stampStatus = rec => (rec && rec.blyg && BLYG_STAMPS.includes(rec.blyg.status) ? rec.blyg.status : 'none');
+
+/** The stamp an answer gives a record (null = no stamp). */
+export function stampFor(result, { asOf = 'record', quote = null } = {}) {
+  if (!result) return { status: 'checking' };
+  if (result.status === 'check-failed') return { status: 'check-failed' };
+  if (result.status !== 'blyg' || !result.item) return null;
+  const i = result.item;
+  const st = { status: 'blyg', origin: i.origin, id: i.id, version: i.version, pinned: !!i.pinned,
+    page: i.pinned_page || i.page, as_of: asOf === 'check' ? 'check' : 'record' };
+  if (quote !== null) st.passage = checkPassage(quote, result.text || textContent(result.html));
+  return st;
+}
+
+/** Move `rec`'s stamp to `next` (null = none). false, and nothing changed, for a move STAMP_MOVES does not allow. */
+export function restamp(rec, next) {
+  const from = stampStatus(rec);
+  const to = next ? next.status : 'none';
+  if (!STAMP_MOVES[from] || !STAMP_MOVES[from].includes(to)) return false;
+  if (next) rec.blyg = next; else delete rec.blyg;
+  return true;
+}
+
+/**
+ * An answer has arrived for `page`: record it, and fill in ONLY the stamps it
+ * is the answer to — once. Records stamped 'checking' were made while this very
+ * answer was on its way, so their version is as of the record; 'check-failed'
+ * ones, and (on the page's first ever answer) records made before Discuss
+ * knew about Blygger, get the version as of this check and say so.
+ * → true when anything on the page changed.
+ */
+export function applyAnswer(page, result, at = new Date()) {
+  if (!page || !result) return false;
+  const first = !page.blyg;
+  const before = JSON.stringify(page.blyg || null);
+  const rec = pageRecordOf(result, at);
+  // the moment of asking is not news: only a different answer is
+  const same = before !== 'null' && JSON.stringify({ ...JSON.parse(before), checked: rec.checked }) === JSON.stringify(rec);
+  let changed = false;
+  if (!same) { page.blyg = rec; changed = true; }
+  const fill = (r, quote) => {
+    const from = stampStatus(r);
+    if (from === 'blyg') return;
+    if (from === 'none' && !first) return;
+    const asOf = from === 'checking' ? 'record' : 'check';
+    if (restamp(r, stampFor(result, { asOf, quote }))) changed = true;
+  };
+  for (const t of page.threads || []) fill(t, String(t.quote || ''));
+  // page chat: only stamps that were waiting; an old conversation is the
+  // page's, and the page record already says what the page is
+  for (const m of page.page_chat || []) if (stampStatus(m) !== 'none') fill(m, null);
+  return changed;
+}

@@ -305,6 +305,101 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ok('passage: a very long selection is bounded', Date.now() - t0 < 2000, `${Date.now() - t0}ms`);
 }
 
+// ---- once per page -----------------------------------------------------------------
+{
+  const w = fakeWeb(VR_WEB);
+  let clock = 1000;
+  const checker = B.createChecker({ get: w.get, now: () => clock });
+  const [a, b2] = await Promise.all([checker.check(VR_PAGE, { json: VR_JSON }), checker.check(VR_PAGE + '#comments', { json: VR_JSON })]);
+  ok('two askers at once share one check', a === b2);
+  await checker.check(VR_PAGE, { json: VR_JSON });
+  eq('nothing is fetched twice for one page', w.calls, [`${VR_PAGE}blyg.json`, `${VR}blyg.json`, VR_JSON]);
+  ok('the post\'s words are worked out once, with the answer', a.text.startsWith('It’s the Liveness, Stupid\n'));
+  ok('peek holds the answer', checker.peek(VR_PAGE) === a);
+  clock += B.ANSWER_MS + 1;
+  ok('an answer is not kept for ever: a post can be edited', checker.peek(VR_PAGE) === null);
+  await checker.check(VR_PAGE, { json: VR_JSON });
+  eq('…and is asked for again after that', w.calls.length, 6);
+
+  const w2 = fakeWeb({ [`${VR}blyg.json`]: 'timeout' });
+  const c2 = B.createChecker({ get: w2.get, now: () => clock });
+  eq('a failed check', (await c2.check(VR_PAGE, { json: '' })).status, 'check-failed');
+  clock += B.FAILED_MS + 1;
+  ok('a failed check is forgotten soon, so it is asked again', c2.peek(VR_PAGE) === null);
+
+  let slow;
+  const c3 = B.createChecker({ get: () => new Promise(r => { slow = r; }) });
+  eq('a bounded wait gives up with null', await B.settleWithin(c3.check(VR_PAGE, { json: '' }), 30), null);
+  slow({ status: 404, url: '', text: '' });
+}
+
+// ---- what is stored ---------------------------------------------------------------
+{
+  const w = fakeWeb(VR_WEB);
+  const answer = await B.createChecker({ get: w.get }).check(VR_PAGE, { json: VR_JSON });
+  const AT = new Date('2026-11-21T12:00:00Z');
+  const S1 = 'The ChatGPT moment was ultimately a smooth extrapolation of existing trends.';
+
+  const pr = B.pageRecordOf(answer, AT);
+  eq('page record: the answer without the post\'s words', Object.keys(pr), ['status', 'checked', 'site', 'item']);
+  ok('page record: no html, no text', !('html' in pr) && !('text' in pr));
+
+  eq('stamp: a highlight made on the post', B.stampFor(answer, { quote: S1 }), {
+    status: 'blyg', origin: VR, id: VR_ID, version: 2, pinned: false, page: VR_PAGE, as_of: 'record', passage: { match: true } });
+  eq('stamp: a page-chat message carries no passage', 'passage' in B.stampFor(answer), false);
+  eq('stamp: while the check is still running', B.stampFor(null), { status: 'checking' });
+  eq('stamp: when the check failed', B.stampFor({ status: 'check-failed', reason: 'x' }), { status: 'check-failed' });
+  eq('stamp: none on an ordinary page', B.stampFor({ status: 'not-a-blyg' }), null);
+  eq('stamp: none on a blyg\'s front page', B.stampFor({ status: 'blyg-site', site: {} }), null);
+
+  const final = { quote: S1 };
+  ok('restamp: none → blyg', B.restamp(final, B.stampFor(answer, { quote: S1 })));
+  ok('restamp: a blyg stamp is final (refused)', !B.restamp(final, { status: 'checking' }) && final.blyg.status === 'blyg');
+  ok('restamp: …even by another version', !B.restamp(final, { ...final.blyg, version: 3 }) && final.blyg.version === 2);
+  ok('restamp: a status that is not a stamp is refused', !B.restamp({}, { status: 'blyg-site' }));
+
+  // records from before this feature, and on ordinary pages: untouched
+  const ordinary = { url: 'https://example.com/a', threads: [{ id: 't1', quote: 'x', msgs: [] }], page_chat: [{ author: 'me', text: 'hi' }] };
+  const snap = JSON.stringify(ordinary);
+  B.applyAnswer(ordinary, { status: 'not-a-blyg', reason: 'no manifest' }, AT);
+  eq('ordinary page: only the page record gains an answer', JSON.stringify({ ...ordinary, blyg: undefined }), snap);
+  eq('ordinary page: the answer', ordinary.blyg, { status: 'not-a-blyg', checked: AT.toISOString(), reason: 'no manifest' });
+
+  // a page with highlights from before Discuss knew about Blygger: its first
+  // answer labels them, with the version AT THE CHECK, and says so
+  const old = { url: VR_PAGE, threads: [{ id: 'old', quote: S1, msgs: [] }, { id: 'odd', quote: `Menu ${S1}`, msgs: [] }],
+    page_chat: [{ author: 'me', text: 'what is this?' }] };
+  ok('pre-feature page: the first answer changes it', B.applyAnswer(old, answer, AT));
+  eq('pre-feature highlight: labelled, as of the check', [old.threads[0].blyg.status, old.threads[0].blyg.as_of, old.threads[0].blyg.version],
+    ['blyg', 'check', 2]);
+  eq('pre-feature highlight that is not an exact passage: says so, with the nearest',
+    old.threads[1].blyg.passage, { match: false, nearest: S1 });
+  ok('pre-feature page chat: left as it was', !('blyg' in old.page_chat[0]));
+  // …once: a later answer (say the post moved to v3) changes no stamp
+  const v3answer = { ...answer, item: { ...answer.item, version: 3, latest: 3 } };
+  B.applyAnswer(old, v3answer, AT);
+  eq('a later answer does not relabel a stamped highlight', old.threads[0].blyg.version, 2);
+  eq('…but the page record follows the post', old.blyg.item.version, 3);
+  // a record made after the page's first answer and with no stamp stays so
+  const later = { url: VR_PAGE, blyg: B.pageRecordOf({ status: 'not-a-blyg' }, AT), threads: [{ id: 'n', quote: S1, msgs: [] }] };
+  B.applyAnswer(later, answer, AT);
+  ok('a record made when the page was not a blyg is not guessed at later', !('blyg' in later.threads[0]));
+
+  // records made while the first check was running: filled in when it lands
+  const racing = { url: VR_PAGE, threads: [{ id: 'r', quote: S1, msgs: [], blyg: { status: 'checking' } }],
+    page_chat: [{ author: 'me', text: 'first message', blyg: { status: 'checking' } }, { author: 'claude', text: 'reply' }] };
+  B.applyAnswer(racing, answer, AT);
+  eq('waiting highlight: filled in, as of the record', [racing.threads[0].blyg.status, racing.threads[0].blyg.as_of], ['blyg', 'record']);
+  eq('waiting page-chat message: filled in, no passage', [racing.page_chat[0].blyg.status, 'passage' in racing.page_chat[0].blyg], ['blyg', false]);
+  ok('a bot\'s reply is not stamped', !('blyg' in racing.page_chat[1]));
+  const failedFirst = { url: VR_PAGE, threads: [{ id: 'f', quote: S1, msgs: [], blyg: { status: 'check-failed' } }] };
+  B.applyAnswer(failedFirst, answer, AT);
+  eq('a highlight made while the check had failed: filled in, as of the check', failedFirst.threads[0].blyg.as_of, 'check');
+  const turnsOut = { url: 'https://example.com/b', threads: [{ id: 'w', quote: 'x', msgs: [], blyg: { status: 'checking' } }] };
+  B.applyAnswer(turnsOut, { status: 'not-a-blyg' }, AT);
+  ok('a waiting stamp on a page that turns out not to be a blyg is removed', !('blyg' in turnsOut.threads[0]));
+}
+
 // ---- report -----------------------------------------------------------------
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blyg: ${pass} passed, ${fail} failed`);
