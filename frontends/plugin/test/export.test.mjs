@@ -562,6 +562,24 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   eq('not a response: no stub_of at all', renderNote({ ...plainPage, export_response: undefined }, CFG, NOW).includes('blyg_'), false);
 }
 
+// ---- mixed: highlights by reference and ordinary quotes in one note -------------
+// One page can carry both: highlights stamped with the post, highlights from
+// before the page was ever checked (on a page whose first check found it was
+// not a post then), and one made while the check could not be made.
+{
+  const mixed = BLYG_PAGE([
+    { quote: S1, blyg: stamp(), msgs: [me('By reference.')] },
+    { quote: 'an older note with no stamp', msgs: [me('Ordinary.')] },
+    { quote: 'made while offline', blyg: { status: 'check-failed' }, msgs: [] },
+  ]);
+  eq('mixed note, default quote style: each highlight in its own form', renderNote(mixed, { author: 'angadh' }, NOW),
+    BLYG_HEAD
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n\nBy reference.\n\n`
+    + '> an older note with no stamp\n>\n> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\n\nOrdinary.\n\n'
+    + '> made while offline\n>\n> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\n\n'
+    + '*Discuss could not check whether this page is a Blygger post, so this is an ordinary quote.*\n');
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

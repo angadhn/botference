@@ -6087,9 +6087,19 @@ export function handler(req, res) {
   // never something a guest can trigger
   if (req.method === 'POST' && url === '/export') {
     if (notOwner(req, res)) return;
-    return readBody(req, res, data => {
+    return readBody(req, res, async data => {
+      // The export is the last chance to know whether this page is a Blygger
+      // post: a page never asked about (annotated before this existed, or
+      // exported from the pages list) is asked now, before the note is
+      // written, and its records labelled by the answer. The same answer says
+      // which version the post is NOW, which the note checks old highlights
+      // against. Asked before the page is read, as /thread does.
+      const blygAnswer = await blygFor(data.url, data.blyg_hints, BLYG_ASK_WAIT_MS);
       const page = pageOf(res, data);
       if (!page) return;
+      if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
+      const post = blygAnswer && blygAnswer.status === 'blyg'
+        ? { id: blygAnswer.item.id, version: blygAnswer.item.version, text: blygAnswer.text } : null;
       // `mode` decides what goes in the note: "comments" is the reading
       // without the conversation (see export.mjs). Anything unrecognised —
       // including an older extension that sends nothing — means everything,
@@ -6101,7 +6111,7 @@ export function handler(req, res) {
       const cfg = store.readConfig();
       const now = new Date();
       let file;
-      try { file = exportPage(page, cfg, now, mode); }
+      try { file = exportPage(page, cfg, now, mode, { post }); }
       catch (e) { return fail(res, 500, `export failed: ${e.message}`); }
       // …and a PDF is also logged: one row in the vault's reading log
       // (Clippings/read-links.md), tagged papers, linking the note just

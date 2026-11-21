@@ -312,7 +312,7 @@ function attacher(dir, page) {
 // entirely. So the note is written under its new name and the old file — found
 // by its url, whatever it was called and whichever " (2)" variant it was — is
 // removed. Renaming a page must not leave two copies of it in the vault.
-export function exportPage(page, cfg, now = new Date(), mode = 'all') {
+export function exportPage(page, cfg, now = new Date(), mode = 'all', opts = {}) {
   const dir = path.join(cfg.vault_path, cfg.export_folder);
   fs.mkdirSync(dir, { recursive: true });
   // every identity this page has answered to: a local PDF adopted onto its
@@ -321,7 +321,7 @@ export function exportPage(page, cfg, now = new Date(), mode = 'all') {
   const held = urls.flatMap(u => notesForUrl(dir, u));
   const file = targetFile(dir, displayTitle(page), urls);
   const tmp = `${file}.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, renderNote(page, cfg, now, mode, attacher(dir, page)));
+  fs.writeFileSync(tmp, renderNote(page, cfg, now, mode, attacher(dir, page), opts));
   fs.renameSync(tmp, file);
   for (const old of held) {
     if (old !== file) { try { fs.rmSync(old, { force: true }); } catch { /* leave it */ } }

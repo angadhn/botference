@@ -26,6 +26,7 @@ const { test, waitFor, tmp, startServer, cleanup, passed, failures } =
 const sha = s => 'sha256:' + crypto.createHash('sha256').update(s, 'utf8').digest('hex');
 const ID = '0123456789abcdefghjkmnpqrs';
 const SLOW_ID = 'zyxwvtsrqpnmkjhgfedcba9876';
+const ID2 = 'abcdefghjkmnpqrstvwxyz0123';
 const HOST = 'https://blyg.web.test';
 const ORIGIN = `${HOST}/notes/`;
 const PAGE = `${ORIGIN}t/${ID}/`;
@@ -50,6 +51,13 @@ const web = http.createServer((req, res) => {
   const p = req.url;
   if (p === '/notes/blyg.json') return json({ blyg: '0.4', title: 'Made-up Notes', author: { name: 'Test Author' }, updated: '2026-11-02T00:00:00Z' });
   if (p === `/notes/items/${ID}.json`) return json(item(ID, ORIGIN, version));
+  if (p === `/notes/items/${ID2}.json`) return json(item(ID2, ORIGIN, 1));
+  // a post's own page, for a companion that has to read the links itself
+  if (p === `/notes/t/${ID2}/`) {
+    return res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><head><title>A made-up post</title>'
+      + `<link rel="blyg" href="${ORIGIN}blyg.json"><link rel="alternate" type="application/json" href="${ORIGIN}items/${ID2}.json">`
+      + `</head><body><p>${PASSAGE}</p></body>`);
+  }
   if (p === '/slow/blyg.json') {
     // held until the test lets it go
     slowRelease = () => json({ blyg: '0.4', title: 'Slow Notes', updated: '2026-11-02T00:00:00Z' });
@@ -73,6 +81,15 @@ const OLD_PAGE = `${ORIGIN}t/${ID}/`;
 {
   const p = store.upsertPage({ url: OLD_PAGE, title: 'A made-up post' });
   store.addThread(p, { quote: PASSAGE, text: 'noted long ago', author: 'reader' });
+  store.savePage(p);
+}
+// …and one never opened again before it is exported (from the pages list,
+// say): one highlight and a page chat
+const EXPORT_PAGE = `${ORIGIN}t/${ID2}/`;
+{
+  const p = store.upsertPage({ url: EXPORT_PAGE, title: 'Another made-up post' });
+  store.addThread(p, { quote: PASSAGE, text: 'from before', author: 'reader' });
+  store.appendMsg(p, store.PAGE_CHAT, { author: 'reader', text: 'an old question' });
   store.savePage(p);
 }
 
@@ -158,6 +175,27 @@ await test('marking the note as a response: one named field, anything else refus
   assert.equal((await page(PLAIN)).export_response, 'response');
   await POST(B, '/export-response', { url: PLAIN, response: 'not-a-response' });
   assert.ok(!('export_response' in await page(PLAIN)));
+});
+
+await test('a page never checked is checked at export, before the note is written', async () => {
+  const r = await POST(B, '/export', { url: EXPORT_PAGE, mode: 'all' });
+  assert.equal(r.status, 200, r.body);
+  const note = fs.readFileSync(r.json.path, 'utf8');
+  assert.equal(note, '---\nurl: https://blyg.web.test/notes/t/abcdefghjkmnpqrstvwxyz0123\nsite: blyg.web.test\n'
+    + `saved: ${new Date().toISOString().slice(0, 10)}\ntags: [botference-discuss]\n`
+    + `blyg_sources:\n  - ${EXPORT_PAGE}\n---\n\n# Another made-up post\n\n`
+    + `![[${ID2} | Another made-up post]]\n> ${PASSAGE}\n\n`
+    + '*Version 1 is the version current when Discuss first checked this page, which was after this highlight was made.*\n\n'
+    + 'from before\n\n## Page chat\n\n**reader:** an old question\n');
+  const p = await page(EXPORT_PAGE);
+  assert.deepEqual([p.blyg.status, p.threads[0].blyg.as_of], ['blyg', 'check']);
+});
+
+await test('an ordinary page exports as before, its quote closed by its URL (url-card)', async () => {
+  const r = await POST(B, '/export', { url: PLAIN, mode: 'all' });
+  const note = fs.readFileSync(r.json.path, 'utf8');
+  assert.ok(note.includes(`> Anything at all\n>\n> ${PLAIN}\n\na note\n`), note);
+  assert.ok(!note.includes('blyg_sources'), note);
 });
 
 await test('the library and local files are never asked about', async () => {
