@@ -150,6 +150,16 @@ await test('a highlight made while the check is still running is stamped "checki
   assert.equal(p.blyg.status, 'blyg');
 });
 
+await test('marking the note as a response: one named field, anything else refused', async () => {
+  let r = await POST(B, '/export-response', { url: PLAIN, response: 'yes please' });
+  assert.equal(r.status, 400);
+  r = await POST(B, '/export-response', { url: PLAIN, response: 'response' });
+  assert.equal(r.status, 200, r.body);
+  assert.equal((await page(PLAIN)).export_response, 'response');
+  await POST(B, '/export-response', { url: PLAIN, response: 'not-a-response' });
+  assert.ok(!('export_response' in await page(PLAIN)));
+});
+
 await test('the library and local files are never asked about', async () => {
   const r = await POST(B, '/blyg', { url: 'bfp-pdf://sha256/abc' });
   assert.equal(r.json.status, 'not-a-blyg');

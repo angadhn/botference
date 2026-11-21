@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -218,12 +218,19 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // A note about a Blygger post that quotes none of it by reference — a page
   // chat with no highlights, or highlights that could not be — still names
   // the post: the whole-post reference line, directly under the title.
+  // …and so does a note the reader marked as a RESPONSE to the post, which
+  // starts with the post the way a Blygger stub does (spec §10.6).
   const item = page.blyg && page.blyg.status === 'blyg' && page.blyg.item ? page.blyg.item : null;
-  if (item && !sources.length) {
+  const response = responseOf(page) === 'response' && !isLibrary(page.url);
+  if (item && (response || !sources.length)) {
     parts.splice(2, 0, wholePost(item.id, label));
     sources.unshift(item.page);
   }
-  const keys = frontMatter({ sources });
+  // What it responds to, when it is a response: exactly one target, the post
+  // at the version the reader read, or (an ordinary page) the page's URL.
+  const stubOf = !response ? null
+    : item ? { origin: item.origin, id: item.id, version: item.version } : { url: page.url };
+  const keys = frontMatter({ sources, stubOf });
   if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
   return parts.join('\n\n') + '\n';
 }

@@ -540,6 +540,28 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
     onlyMiss.startsWith(BLYG_HEAD + `![[${VR_ID} | It’s the Liveness, Stupid]]\n\n> Menu\n\n*Not quoted by reference`), onlyMiss);
 }
 
+// ---- a note marked as a response: blyg_stub_of, one target ----------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  eq('response modes, in one list', Q.RESPONSE_MODES, ['not-a-response', 'response']);
+  eq('absent or unknown is not a response', [Q.responseOf({}), Q.responseOf({ export_response: 'maybe' })],
+    ['not-a-response', 'not-a-response']);
+  const answering = { ...BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [me('I disagree.')] }]), export_response: 'response' };
+  eq('response to a post: stub_of names origin, id and the version read; the body starts with the post',
+    renderNote(answering, CFG, NOW),
+    BLYG_HEAD.replace('---\n\n#', `blyg_stub_of:\n  origin: ${VR}\n  id: ${VR_ID}\n  version: 2\n---\n\n#`)
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n\n`
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n\nI disagree.\n`);
+  const plainPage = { ...PAGE(), threads: [PAGE().threads[0]], page_chat: [], export_response: 'response' };
+  eq('response to an ordinary page: stub_of names its URL only, and nothing else changes',
+    renderNote(plainPage, CFG, NOW),
+    '---\nurl: https://example.org/piece\nsite: example.org\nsaved: 2026-08-08\ntags: [botference-discuss]\n'
+    + 'blyg_stub_of:\n  url: https://example.org/piece\n---\n\n# The Quiet Machine\n\n'
+    + '> the mood in the stands was flat\n\nThis is the line the whole piece hangs on.\n');
+  ok('never both shapes', !renderNote(answering, CFG, NOW).includes('  url:'));
+  eq('not a response: no stub_of at all', renderNote({ ...plainPage, export_response: undefined }, CFG, NOW).includes('blyg_'), false);
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

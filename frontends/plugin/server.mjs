@@ -40,7 +40,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
-import { quoteStyleOf } from './note-quotes.mjs';
+import { quoteStyleOf, RESPONSE_MODES } from './note-quotes.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -4787,6 +4787,25 @@ export function handler(req, res) {
       if (data.blyg_hints !== undefined && !blygSkips(page.url)) blygAsk(page.url, data.blyg_hints);
       broadcast({ type: 'page', url: page.url });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify(page));
+    });
+  }
+  // Is the exported note a RESPONSE to this page (note-quotes.RESPONSE_MODES)?
+  // One field on the page record, export_response; the export writes
+  // blyg_stub_of from it. Absent means not a response, so it is removed
+  // rather than stored as the default.
+  if (req.method === 'POST' && url === '/export-response') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      if (!RESPONSE_MODES.includes(data.response)) {
+        return fail(res, 400, `response must be one of ${RESPONSE_MODES.join(', ')}`);
+      }
+      if (data.response === 'response') page.export_response = 'response';
+      else delete page.export_response;
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      ok(res, { response: data.response });
     });
   }
   // Is this page a Blygger post? The drawer asks once when it opens on a page;
