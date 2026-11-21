@@ -99,6 +99,50 @@ await test('a record made before this existed is labelled when the page is first
   assert.deepEqual([t.blyg.status, t.blyg.version, t.blyg.as_of, t.blyg.passage.match], ['blyg', 2, 'check', true]);
 });
 
+await test('the first highlight on a blyg post already carries the post and version', async () => {
+  const url = `${PAGE}?utm_source=x`;
+  const r = await POST(B, '/thread', { url, title: 'A made-up post', quote: PASSAGE, msg: { text: 'first!' }, blyg_hints: HINTS });
+  assert.equal(r.status, 200, r.body);
+  const b = r.json.thread.blyg;
+  assert.deepEqual([b.status, b.origin, b.id, b.version, b.as_of, b.passage.match], ['blyg', ORIGIN, ID, 2, 'record', true]);
+});
+
+await test('a highlight that is not an exact passage says so, with the nearest exact text', async () => {
+  const r = await POST(B, '/thread', { url: PAGE, quote: `Share ${PASSAGE} 4`, msg: { text: 'hm' }, blyg_hints: HINTS });
+  assert.deepEqual(r.json.thread.blyg.passage, { match: false, nearest: PASSAGE });
+});
+
+await test('an old highlight keeps the version it quoted after the post changes', async () => {
+  version = 3;
+  // the companion holds its answer for a while; a page record made now still
+  // says v2 until it asks again, and the stamp never changes either way
+  const p = await page(PAGE);
+  assert.ok(p.threads.every(t => t.blyg.version === 2));
+});
+
+await test('an ordinary page: no stamp on its records, and the page record says why', async () => {
+  const r = await POST(B, '/thread', { url: PLAIN, quote: 'Anything at all', msg: { text: 'a note' } });
+  assert.equal(r.status, 200, r.body);
+  assert.ok(!('blyg' in r.json.thread));
+  const p = await waitFor(async () => { const x = await page(PLAIN); return x.blyg ? x : null; }, 'the page record');
+  assert.equal(p.blyg.status, 'not-a-blyg');
+});
+
+await test('a highlight made while the check is still running is stamped "checking", then filled in once', async () => {
+  const hints = { blyg: `${SLOW_ORIGIN}blyg.json`, json: `${SLOW_ORIGIN}items/${SLOW_ID}.json` };
+  const r = await POST(B, '/thread', { url: SLOW_PAGE, quote: PASSAGE, msg: { text: 'quick' }, blyg_hints: hints });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(r.json.thread.blyg, { status: 'checking' });
+  await waitFor(() => slowRelease, 'the slow manifest request');
+  slowRelease();
+  const p = await waitFor(async () => {
+    const x = await page(SLOW_PAGE);
+    return x.threads[0].blyg && x.threads[0].blyg.status === 'blyg' ? x : null;
+  }, 'the stamp to be filled in');
+  assert.deepEqual([p.threads[0].blyg.id, p.threads[0].blyg.version, p.threads[0].blyg.as_of], [SLOW_ID, 1, 'record']);
+  assert.equal(p.blyg.status, 'blyg');
+});
+
 await test('the library and local files are never asked about', async () => {
   const r = await POST(B, '/blyg', { url: 'bfp-pdf://sha256/abc' });
   assert.equal(r.json.status, 'not-a-blyg');

@@ -4827,8 +4827,15 @@ export function handler(req, res) {
       let route = addressOf('new', text, data.route, []);
       const docxDigest = docxDigestOf(res, data, text, route);
       if (docxDigest === null) return; // 413: nothing is saved, nothing is queued
+      // Is the page a Blygger post? The FIRST highlight on a page already says
+      // which post and version it quoted: it waits (a few seconds at most) for
+      // the page's answer, and is stamped 'checking' — filled in when the
+      // answer lands — only if that is not enough. Asked before the page is
+      // read, so the record saved below is the one the answer was applied to.
+      const blygAnswer = await blygFor(data.url, data.blyg_hints);
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
+      blygOnto(page, blygAnswer);
       // same person, same words, same highlight, seconds apart: one comment
       // …and the mark is part of what makes it the same comment: striking a
       // passage you had already highlighted is a second, different act
@@ -4851,6 +4858,7 @@ export function handler(req, res) {
         // stamped so the next untagged reply here knows who is being talked to
         route,
       });
+      blygMark(thread, blygAnswer, data.quote);
       dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
