@@ -549,21 +549,70 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
 // are blocks to the implementation, so this follows the reference client
 // (blygger-studio's selectionText): the closing tags of p, h1–h6, li,
 // blockquote, pre, div, tr, section and article, and <br>, end a block;
-// script and style are dropped; a short list of entities is decoded after the
-// tags are gone, &amp; last. Anything a publisher might do differently is a
-// reason this check can only ever say "will pass the reference client".
+// script and style are dropped. Character references are decoded after the
+// tags are gone, in ONE pass (so &amp;lt; is the text "&lt;"), as HTML does:
+// every numeric reference (decimal and hex, with or without the semicolon;
+// 0, surrogates and out-of-range numbers become U+FFFD, and 0x80–0x9F are read
+// as windows-1252, as the HTML spec says), and the named references below
+// (HTML 4's full set, which is what published HTML uses in practice). The
+// reference client decodes only a handful of names; where a post's HTML uses
+// any other reference, a highlight this check passes may still fail that
+// client's own check, and the note cannot know which reading its site uses.
 const BLOCK_END = /<\/(?:p|h[1-6]|li|blockquote|pre|div|tr|section|article)\s*>|<br\s*\/?>/gi;
 const SEP = '\u0000'; // a C0 control, which content may not contain (§5.1)
-const ENTITIES = { lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…',
-  mdash: '—', ndash: '–', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”' };
+const LATIN1 = 'nbsp iexcl cent pound curren yen brvbar sect uml copy ordf laquo not shy reg macr deg plusmn sup2 sup3 '
+  + 'acute micro para middot cedil sup1 ordm raquo frac14 frac12 frac34 iquest Agrave Aacute Acirc Atilde Auml Aring '
+  + 'AElig Ccedil Egrave Eacute Ecirc Euml Igrave Iacute Icirc Iuml ETH Ntilde Ograve Oacute Ocirc Otilde Ouml times '
+  + 'Oslash Ugrave Uacute Ucirc Uuml Yacute THORN szlig agrave aacute acirc atilde auml aring aelig ccedil egrave '
+  + 'eacute ecirc euml igrave iacute icirc iuml eth ntilde ograve oacute ocirc otilde ouml divide oslash ugrave uacute '
+  + 'ucirc uuml yacute thorn yuml';
+const NAMED = Object.assign(Object.create(null),
+  Object.fromEntries(LATIN1.split(' ').map((n, i) => [n, String.fromCodePoint(160 + i)])),
+  { quot: '"', amp: '&', apos: "'", lt: '<', gt: '>', OElig: 'Œ', oelig: 'œ', Scaron: 'Š',
+    scaron: 'š', Yuml: 'Ÿ', circ: 'ˆ', tilde: '˜', ensp: ' ', emsp: ' ',
+    thinsp: ' ', zwnj: '‌', zwj: '‍', lrm: '‎', rlm: '‏', ndash: '–',
+    mdash: '—', lsquo: '‘', rsquo: '’', sbquo: '‚', ldquo: '“', rdquo: '”',
+    bdquo: '„', dagger: '†', Dagger: '‡', permil: '‰', lsaquo: '‹', rsaquo: '›',
+    euro: '€', fnof: 'ƒ', bull: '•', hellip: '…', prime: '′', Prime: '″',
+    oline: '‾', frasl: '⁄', weierp: '℘', image: 'ℑ', real: 'ℜ', trade: '™',
+    alefsym: 'ℵ', larr: '←', uarr: '↑', rarr: '→', darr: '↓', harr: '↔',
+    crarr: '↵', lArr: '⇐', uArr: '⇑', rArr: '⇒', dArr: '⇓', hArr: '⇔',
+    forall: '∀', part: '∂', exist: '∃', empty: '∅', nabla: '∇', isin: '∈',
+    notin: '∉', ni: '∋', prod: '∏', sum: '∑', minus: '−', lowast: '∗',
+    radic: '√', prop: '∝', infin: '∞', ang: '∠', and: '∧', or: '∨',
+    cap: '∩', cup: '∪', int: '∫', there4: '∴', sim: '∼', cong: '≅',
+    asymp: '≈', ne: '≠', equiv: '≡', le: '≤', ge: '≥', sub: '⊂', sup: '⊃',
+    nsub: '⊄', sube: '⊆', supe: '⊇', oplus: '⊕', otimes: '⊗', perp: '⊥',
+    sdot: '⋅', lceil: '⌈', rceil: '⌉', lfloor: '⌊', rfloor: '⌋', lang: '〈',
+    rang: '〉', loz: '◊', spades: '♠', clubs: '♣', hearts: '♥', diams: '♦' },
+  Object.fromEntries('Alpha Beta Gamma Delta Epsilon Zeta Eta Theta Iota Kappa Lambda Mu Nu Xi Omicron Pi Rho'
+    .split(' ').map((n, i) => [n, String.fromCodePoint(0x391 + i)])),
+  Object.fromEntries('Sigma Tau Upsilon Phi Chi Psi Omega'.split(' ').map((n, i) => [n, String.fromCodePoint(0x3a3 + i)])),
+  Object.fromEntries('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigmaf sigma tau upsilon phi chi psi omega'
+    .split(' ').map((n, i) => [n, String.fromCodePoint(0x3b1 + i)])),
+  { thetasym: 'ϑ', upsih: 'ϒ', piv: 'ϖ' });
+// the HTML spec's replacements for numeric references to 0x80–0x9F
+const C1 = { 0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026, 0x86: 0x2020, 0x87: 0x2021,
+  0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160, 0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019,
+  0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014, 0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161,
+  0x9b: 0x203a, 0x9c: 0x0153, 0x9e: 0x017e, 0x9f: 0x0178 };
+function numericRef(n) {
+  if (!Number.isFinite(n) || n === 0 || n > 0x10ffff || (n >= 0xd800 && n <= 0xdfff)) return '�';
+  return String.fromCodePoint(C1[n] || n);
+}
+export function decodeReferences(text) {
+  return String(text).replace(/&(?:#(\d{1,8});?|#[xX]([0-9a-fA-F]{1,7});?|([A-Za-z][A-Za-z0-9]{1,31});)/g,
+    (m, dec, hex, name) => {
+      if (dec !== undefined) return numericRef(parseInt(dec, 10));
+      if (hex !== undefined) return numericRef(parseInt(hex, 16));
+      return name in NAMED ? NAMED[name] : m;
+    });
+}
 export function textContent(html) {
-  const s = String(html || '')
+  const s = decodeReferences(String(html || '')
     .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
     .replace(BLOCK_END, SEP)
-    .replace(/<[^>]+>/g, '')
-    .replace(/&#39;/g, "'")
-    .replace(/&([a-z]+);/g, (m, n) => (Object.hasOwn(ENTITIES, n) ? ENTITIES[n] : m))
-    .replace(/&amp;/g, '&');
+    .replace(/<[^>]+>/g, ''));
   return s.split(SEP).map(b => b.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
 }
 

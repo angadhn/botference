@@ -343,9 +343,19 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   eq('text content: blocks are lines, whitespace collapsed within them',
     B.textContent('<h1>Title</h1>\n<p>One  two\n three</p><ul><li>a <em>b</em></li></ul><p>x<br>y</p>'),
     'Title\nOne two three\na b\nx\ny');
-  eq('text content: entities after tags, &amp; last, script and style gone',
+  eq('text content: references decoded after the tags, in one pass; script and style gone',
     B.textContent('<p>&lt;b&gt; &amp;lt; &rsquo;s&nbsp;x &copy;</p><script>evil()</script><style>p{}</style>'),
-    '<b> &lt; ’s x &copy;');
+    '<b> &lt; ’s x ©');
+  const d = B.decodeReferences;
+  eq('references: decimal and hex numeric', d('it&#8217;s &#x2014; &#X2014;'), 'it’s — —');
+  eq('references: numeric without the semicolon', d('it&#8217s'), 'it’s');
+  eq('references: 0x80–0x9F read as windows-1252', d('&#146;&#150;&#x80;'), '’–€');
+  eq('references: 0, surrogates and out of range become U+FFFD', d('&#0;&#xD800;&#x110000;'), '���');
+  eq('references: Latin-1 names, first to last', d('&nbsp;&iexcl;&times;&divide;&yuml;'), ' ¡×÷ÿ');
+  eq('references: Greek and symbols', d('&Alpha;&Rho;&Sigma;&Omega;&alpha;&sigmaf;&omega;&hellip;&trade;&rarr;'), 'ΑΡΣΩαςω…™→');
+  eq('references: an unknown name is left as written', d('&bogus; &copy'), '&bogus; &copy');
+  const curly = B.textContent('<p>It&#8217;s the Liveness&#x2014;Stupid</p>');
+  eq('a highlight on a post written with numeric references passes', B.checkPassage('It’s the Liveness—Stupid', curly), { match: true });
   const vr = B.textContent(JSON.parse(fx('venkat-item.json')).content_html);
   eq('text content of a real post starts with its heading line', vr.split('\n')[0], 'It’s the Liveness, Stupid');
   const S1 = 'The ChatGPT moment was ultimately a smooth extrapolation of existing trends.';
