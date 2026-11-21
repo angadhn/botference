@@ -41,7 +41,8 @@ import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyR
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
-import { fillGaps, gapAgentOf, gapStyleOf, OWNER_TYPED } from './tkgaps.mjs';
+import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, askForGap, gapMove, canGapMove,
+  GAP_LIMITS } from './tkgaps.mjs';
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
@@ -2949,6 +2950,79 @@ function markTyped(req, msg) {
   if (hosted.isOwner(req) && !msg.origin) msg.provenance = OWNER_TYPED;
   else delete msg.provenance;
 }
+// ---- gaps the owner asks an agent to write, at send ----------------------
+// A message the owner typed is read for gaps (`/tk …`, tkgrammar.js) when it
+// is written; each gap is stored pending on the message and asked for at
+// once, one at a time per message, in a fresh tool-less one-shot (askGap);
+// each answer lands in place, and the drawer hears a page broadcast. Nothing
+// here waits for an answer: the message is saved and answered first. At most
+// GAP_LIMITS.perPageHour fills per page in an hour.
+const gapSpend = new Map(); // page url → timestamps of fills asked in the last hour
+function gapBudget(url) {
+  const now = Date.now();
+  const list = (gapSpend.get(url) || []).filter(t => now - t < 3600 * 1000);
+  gapSpend.set(url, list);
+  return { left: GAP_LIMITS.perPageHour - list.length, spend: () => list.push(now) };
+}
+// what is stored on a message, from its text (an edit keeps unchanged fills)
+function attachGaps(req, msg) {
+  if (!msg || !ownerTyped(msg)) { if (msg) delete msg.gaps; return []; }
+  const { gaps, fresh } = buildGaps(msg.text, msg.gaps);
+  if (gaps.length) msg.gaps = gaps; else delete msg.gaps;
+  return fresh;
+}
+const findMsg = (page, target, ts) => {
+  const msgs = store.msgsOf(page, target || store.PAGE_CHAT);
+  return msgs ? msgs.find(m => m && m.ts === ts && ownerTyped(m)) : null;
+};
+async function fillGapsOf(url, target, ts, ids) {
+  for (const id of ids) {
+    const page = store.readPage(url);
+    const msg = page && findMsg(page, target, ts);
+    const gap = msg && (msg.gaps || []).find(g => g.id === id);
+    if (!gap || gap.mode !== 'pending') continue;
+    const cfg = store.readConfig();
+    const { agent } = gapAgentOf(cfg.gap_agent);
+    const budget = gapBudget(url);
+    let r;
+    if (budget.left <= 0) r = { mode: 'failed', reason: `the hourly limit of ${GAP_LIMITS.perPageHour} agent passages for this page is reached; try again later` };
+    else {
+      budget.spend();
+      const thread = target && target !== store.PAGE_CHAT ? store.findThread(page, target) : null;
+      const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
+      r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent,
+        post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
+        ask: (prompt, o) => askGap(page, prompt, o) });
+    }
+    // the record may have moved on meanwhile: write onto the latest, if the
+    // gap is still the one that was asked for
+    const latest = store.readPage(url);
+    const m2 = latest && findMsg(latest, target, ts);
+    const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
+    if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
+    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at });
+    else gapMove(g2, 'failed', { reason: r.reason });
+    store.savePage(latest);
+    broadcast({ type: 'page', url: latest.url });
+  }
+}
+// after a write: ask for what is pending (not awaited)
+function startGaps(page, target, msg, ids) {
+  if (!ids || !ids.length || !msg) return;
+  fillGapsOf(page.url, target, msg.ts, ids).catch(e => console.warn(`[gaps] ${e.message}`));
+}
+// the export's footbar line: how many gaps are written, and how many not
+function gapCounts(page) {
+  let filled = 0, unfilled = 0;
+  const each = m => { for (const g of (m && m.gaps) || []) {
+    if (g.mode === 'removed') continue;
+    if (['filled-by-agent', 'edited-by-reader', 'adopted-by-reader'].includes(g.mode)) filled++; else unfilled++;
+  } };
+  for (const t of page.threads || []) (t.msgs || []).forEach(each);
+  (page.page_chat || []).forEach(each);
+  return filled || unfilled ? { gaps: { filled, unfilled } } : {};
+}
+
 function blygMark(rec, answer, quote = null) {
   if (answer === undefined || !rec) return;
   blygMod.restamp(rec, blygMod.stampFor(answer, { quote }));
@@ -4873,6 +4947,35 @@ export function handler(req, res) {
       ok(res, { response: data.response });
     });
   }
+  // A gap's block in the drawer: the reader's actions on one agent-written
+  // passage inside their own message (tkgaps.GAP_MODES; gapMove refuses a
+  // move its table does not allow, and so does this route, with a 409).
+  //   refill  — ask again: pending, then a new fill (or a failure) in place
+  //   edit    — change the text by hand: still disclosed as the agent's draft
+  //   adopt   — "this is now my text": the reader's own prose, no disclosure
+  //   remove  — take the gap out
+  // The owner's only, on a message the owner typed.
+  if (req.method === 'POST' && url === '/gap') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      const target = data.thread_id || store.PAGE_CHAT;
+      const msg = findMsg(page, target, data.ts);
+      const gap = msg && (msg.gaps || []).find(g => g.id === data.gap_id);
+      if (!gap) return fail(res, 404, 'no such gap');
+      const to = { refill: 'pending', edit: 'edited-by-reader', adopt: 'adopted-by-reader', remove: 'removed' }[data.action];
+      if (!to) return fail(res, 400, 'action must be refill, edit, adopt or remove');
+      if (!canGapMove(gap, to)) return fail(res, 409, `a ${gap.mode} gap cannot be ${data.action === 'refill' ? 'filled again' : data.action + 'ed'}`);
+      const text = String(data.text == null ? '' : data.text).slice(0, GAP_LIMITS.outputChars);
+      if (to === 'edited-by-reader' && !text.trim()) return fail(res, 400, 'an edit needs text');
+      gapMove(gap, to, { text });
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+      if (to === 'pending') startGaps(page, target, msg, [gap.id]);
+      ok(res, { gap });
+    });
+  }
   // Is this page a Blygger post? The drawer asks once when it opens on a page;
   // the answer (blyg.detect's, without the post's words) also lands on the
   // page record if there is one. `status: 'checking'` means it is still being
@@ -4945,9 +5048,11 @@ export function handler(req, res) {
       });
       blygMark(thread, blygAnswer, data.quote);
       markTyped(req, thread.msgs && thread.msgs[0]);
+      const threadGaps = attachGaps(req, thread.msgs && thread.msgs[0]);
       dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      startGaps(page, thread.id, thread.msgs && thread.msgs[0], threadGaps);
       // a new mark on the document is a new line in the log — and the SECOND
       // one on a page is what brings the log into being at all
       noteDecisions(page);
@@ -5276,9 +5381,11 @@ export function handler(req, res) {
       if (!msg) return fail(res, 404, 'unknown thread');
       if (target === store.PAGE_CHAT) blygMark(msg, blygAnswer);
       markTyped(req, msg);
+      const msgGaps = attachGaps(req, msg);
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      startGaps(page, target, msg, msgGaps);
       const summoned = await summon(page, target, text,
         { ...contextExtras(data, docxDigest), routeHint: route, addressed: true }, me);
       // the reading room posted a form: back to the page, carrying any refusal
@@ -5308,6 +5415,9 @@ export function handler(req, res) {
       // re-saving a comment is also how an owner's comment written before
       // provenance existed comes to count as typed by them
       markTyped(req, msg);
+      // its gaps: a gap whose instruction did not change keeps its text; a
+      // new or changed one is asked for (after the save below)
+      const editGaps = attachGaps(req, msg);
       // The code has moved, so what it once printed is a claim about a message
       // that no longer exists. Results (and their directories) go with the
       // edit rather than hanging under a block they were never run from.
@@ -5327,6 +5437,7 @@ export function handler(req, res) {
       }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
+      startGaps(page, data.thread_id || store.PAGE_CHAT, msg, editGaps);
       if (!resend) {
         return ok(res, { msg, ...(found.ambiguous ? { ambiguous: true } : {}) });
       }
@@ -6171,29 +6282,6 @@ export function handler(req, res) {
       if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
       const post = blygAnswer && blygAnswer.status === 'blyg'
         ? { id: blygAnswer.item.id, version: blygAnswer.item.version, text: blygAnswer.text } : null;
-      // TK gaps in the reader's own words: filled now (only in the export that
-      // includes the agents' words), each at most once ever — what an agent
-      // wrote is kept on the page (tk_fills), so exporting again writes the
-      // same bytes. Bounded in count and time, and never fatal to the export.
-      const cfgNow = store.readConfig();
-      const gapAgent = gapAgentOf(cfgNow.gap_agent);
-      const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
-      let gaps = { fills: {}, filled: 0, unfilled: 0 };
-      try {
-        gaps = await fillGaps(page, { reader: cfgNow.author, include: exportMode(data.mode) === 'all',
-          ask: (prompt, o) => askGap(page, prompt, o), agent: gapAgent, cache: page.tk_fills || {},
-          post: item ? { id: item.id, version: item.version, origin: item.origin } : null });
-        const fresh = Object.entries(gaps.fills).filter(([, f]) => f.fresh);
-        if (fresh.length) {
-          const latest = store.readPage(page.url) || page;
-          latest.tk_fills = { ...(latest.tk_fills || {}) };
-          for (const [k, f] of fresh) {
-            latest.tk_fills[k] = { text: f.text, by: f.by, at: f.at, ...(f.model ? { model: f.model } : {}) };
-          }
-          store.savePage(latest);
-          page.tk_fills = latest.tk_fills;
-        }
-      } catch (e) { console.warn(`[gaps] ${e.message}`); }
       // `mode` decides what goes in the note: "comments" is the reading
       // without the conversation (see export.mjs). Anything unrecognised —
       // including an older extension that sends nothing — means everything,
@@ -6205,7 +6293,8 @@ export function handler(req, res) {
       const cfg = store.readConfig();
       const now = new Date();
       let file;
-      try { file = exportPage(page, cfg, now, mode, { post, gaps: gaps.fills }); }
+      // (a message's gaps were written when it was sent: the export asks no agent)
+      try { file = exportPage(page, cfg, now, mode, { post }); }
       catch (e) { return fail(res, 500, `export failed: ${e.message}`); }
       // …and a PDF is also logged: one row in the vault's reading log
       // (Clippings/read-links.md), tagged papers, linking the note just
@@ -6222,9 +6311,10 @@ export function handler(req, res) {
       // drawer says so beside the path rather than leaving the reader guessing
       const warning = [quoteStyleOf(cfg.quote_style).refused, commentOrderOf(cfg.comment_order).refused,
         agentStyleOf(cfg.agent_style).refused, calloutTypeOf(cfg.callout_type).refused,
-        gapStyleOf(cfg.gap_style).refused].filter(Boolean).join('; ');
+        gapStyleOf(cfg.gap_style).refused, gapAgentOf(cfg.gap_agent).refused,
+        gapExportOf(cfg.gap_export).refused].filter(Boolean).join('; ');
       ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(warning ? { warning } : {}),
-        ...(gaps.filled || gaps.unfilled ? { gaps: { filled: gaps.filled, unfilled: gaps.unfilled } } : {}) });
+        ...gapCounts(page) });
     });
   }
   // Model and effort are the reader's standing PREFERENCES, stored in

@@ -7,10 +7,10 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as blog from './blog.mjs';
 import { isWebUrl } from './blyg.mjs';
-// a TK gap in the reader's opening comment is written as the export writes it,
-// from what an export already filled (the page's tk_fills): a draft never
+// a gap in the reader's opening comment is written as the export writes it,
+// from what is stored on the message (filled when it was sent): a draft never
 // asks an agent itself
-import { renderGaps, gapStyleOf, gapAgentOf, fillFor, generatedLines, ownerTyped } from './tkgaps.mjs';
+import { renderGaps, gapStyleOf, generatedLines, ownerTyped } from './tkgaps.mjs';
 // how a quote is written, and the two optional Blygger front-matter keys:
 // the same module the Obsidian export uses, so the rules exist once
 import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys,
@@ -136,9 +136,7 @@ export function quoteSet(page, cfg = {}) {
   const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : null;
   return { items, style: quoteStyleOf(cfg.quote_style).style, url: isWebUrl(page && page.url) ? page.url : '', label,
     order: commentOrderOf(cfg.comment_order).order, reader: String(cfg.author || ''),
-    gapStyle: gapStyleOf(cfg.gap_style).style, gapAgent: gapAgentOf(cfg.gap_agent),
-    fills: Object.fromEntries(Object.entries((page && page.tk_fills) || {})
-      .map(([k, v]) => [k, { state: 'filled', ...v }])),
+    gapStyle: gapStyleOf(cfg.gap_style).style,
     generated: [],
     keys: item ? blygKeys({ sources, stubOf }) : [] };
 }
@@ -205,9 +203,9 @@ export function placeQuotes(body, set) {
   const render = t => {
     const msgs = (Array.isArray(t.msgs) ? t.msgs : []).filter(m => m && m.kind !== 'tools');
     const { opening } = splitOpening(msgs, { first: msgs[0] || null, reader: set.reader, order: set.order });
-    const openingText = !opening ? '' : !ownerTyped(opening) ? tkSafe(String(opening.text)) : renderGaps(String(opening.text), g => fillFor(set.fills, t.id, opening, g),
-      { style: set.gapStyle, agent: set.gapAgent,
-        onFilled: f => { if (set.gapStyle === 'studio') set.generated.push(f); } });
+    // its gaps as stored on it (filled when it was sent; nothing is asked here)
+    const openingText = !opening ? '' : !ownerTyped(opening) ? tkSafe(String(opening.text)) : renderGaps(String(opening.text), opening.gaps,
+      { style: set.gapStyle, onGenerated: g => { if (set.gapStyle === 'studio') set.generated.push(g); } });
     return liquidSafe(arrangeThread({ opening: openingText,
       quote: highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts }).join('\n\n'));
   };

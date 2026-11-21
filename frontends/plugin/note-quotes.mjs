@@ -120,6 +120,29 @@ export function calloutTypeOf(value) {
 }
 export const agentName = a => { const s = String(a || 'agent'); return s.charAt(0).toUpperCase() + s.slice(1); };
 
+// A model's words are written into a note as TEXT: a raw HTML tag (a <script>,
+// an <img onerror>, an unclosed <!-- that would hide the rest of the note)
+// and Liquid ({{ … }}, {% … %}, which a Jekyll build would run) are made inert
+// with character references, which render as the same characters. Any other
+// directive or link a model writes is defused too (no own-line ![[id]] in an
+// agent's words can become a quote in the reader's name).
+export function inert(text) {
+  return String(text == null ? '' : text)
+    .replace(/&(?=#?[A-Za-z0-9]+;)/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/\{(?=[{%])/g, '&#123;')
+    .replace(/([}%])\}/g, '$1&#125;')
+    .replace(/!?\[\[/g, m => m.replace(/\[/g, '\\['));
+}
+
+// Words that are not the reader's own (a guest's, an imported comment's even
+// under the reader's name, an agent's in the inline style) never carry a live
+// Blygger directive or link into the reader's note: `![[` and `[[` get a
+// backslash, wherever they are, and TK marks are code. The reader's own
+// directives, typed here, stay live.
+export const defuse = text => tkSafe(String(text == null ? '' : text)).replace(/!?\[\[/g, m => m.replace(/\[/g, '\\['));
+const ownWords = (m, reader) => !!m && m.author === reader && !m.origin;
+
 /** One agent message as a callout: `> [!type] Name`, then its lines, quoted. */
 export function agentCallout(name, text, type = DEFAULT_CALLOUT_TYPE) {
   const lines = String(text == null ? '' : text).replace(/\s+$/, '').split('\n');
@@ -133,18 +156,20 @@ export function agentCallout(name, text, type = DEFAULT_CALLOUT_TYPE) {
  * its own part — an agent's in a callout, the reader's as prose, anyone
  * else's with their name. `body(m)` writes one message's text.
  */
-export function messageParts(msgs, { reader = '', isBot = () => false, style = DEFAULT_AGENT_STYLE,
+export function messageParts(msgs, { reader = '', isBot = () => false, style = DEFAULT_AGENT_STYLE, named = false,
   type = DEFAULT_CALLOUT_TYPE, body = m => String(m.text || '') } = {}) {
   const list = Array.isArray(msgs) ? msgs : [];
   if (!list.length) return [];
   if (style !== 'callout') {
-    return [list.length === 1 && list[0].author === reader ? body(list[0])
-      : list.map(m => `**${m.author}:** ${body(m)}`).join('\n')];
+    return [list.length === 1 && !named && ownWords(list[0], reader) ? body(list[0])
+      : list.map(m => `**${m.author}:** ${ownWords(m, reader) ? body(m) : defuse(body(m))}`).join('\n')];
   }
   // (a message with nothing in it is written as nothing)
+  // An agent's words are made inert (inert); so is anyone's who is not the
+  // reader (a guest's bracket directive is never a quote in the owner's note).
   return list.filter(m => String(body(m) || '').trim())
-    .map(m => (isBot(m.author) ? agentCallout(agentName(m.author), body(m), type)
-      : m.author === reader ? body(m) : `**${m.author}:** ${body(m)}`));
+    .map(m => (isBot(m.author) ? agentCallout(agentName(m.author), inert(body(m)), type)
+      : ownWords(m, reader) ? body(m) : `**${m.author}:** ${defuse(body(m))}`));
 }
 
 // A callout is a blockquote, and two blockquotes that touch can be read as
