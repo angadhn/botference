@@ -127,6 +127,45 @@
     return e;
   }
 
+  // ── is this page a Blygger post? ──────────────────────────────────────────
+  // ONE list of what Discuss knows about the page's blyg status, shared by the
+  // drawer (D.blyg.mode, moved only by its blygSet) and the companion
+  // (blyg.mjs: a page record's status and a highlight's stamp use these same
+  // words). Nothing else names these states.
+  //   'unknown'      — nobody has asked yet (a fresh page, or a record made
+  //                    before Discuss knew about Blygger)
+  //   'checking'     — the companion is asking the page's site right now
+  //   'blyg'         — this page is one post of a blyg, identified and verified
+  //   'blyg-site'    — this page belongs to a blyg but is not one post (its
+  //                    front page, an index, a collection)
+  //   'not-a-blyg'   — the site answered, and it is not a blyg
+  //   'check-failed' — the question could not be answered (offline, refused,
+  //                    too slow, malformed, or did not verify); may be asked again
+  const BLYG_MODES = Object.freeze(['unknown', 'checking', 'blyg', 'blyg-site', 'not-a-blyg', 'check-failed']);
+  const BLYG_SETTLED = Object.freeze(['blyg', 'blyg-site', 'not-a-blyg', 'check-failed']);
+  // …and where each may go next. An answer arrives only while checking, or
+  // straight from 'unknown' when the companion already holds one for this
+  // page. A settled answer is replaced only by asking again (→ 'checking'),
+  // never by another answer out of nowhere. Any mode may go back to 'unknown':
+  // the tab moved to another page without reloading.
+  const BLYG_MOVES = Object.freeze({
+    unknown: Object.freeze(['checking'].concat(BLYG_SETTLED)),
+    checking: Object.freeze(['unknown'].concat(BLYG_SETTLED)),
+    blyg: Object.freeze(['unknown', 'checking']),
+    'blyg-site': Object.freeze(['unknown', 'checking']),
+    'not-a-blyg': Object.freeze(['unknown', 'checking']),
+    'check-failed': Object.freeze(['unknown', 'checking']),
+  });
+  const canBlygMove = (from, to) => !!BLYG_MOVES[from] && BLYG_MOVES[from].indexOf(to) !== -1;
+  // Pure: (mode, next) → next. A mode that is not named, or a move the table
+  // does not allow, throws; callers hearing from the outside world (a late
+  // answer for a page the tab has left) ask canBlygMove first and drop it.
+  function blygMove(from, to) {
+    if (BLYG_MODES.indexOf(to) === -1) throw new Error('blyg status: no such mode ' + to);
+    if (!canBlygMove(from, to)) throw new Error('blyg status: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
+
   // ── how long a request to the companion may take ──────────────────────────
   // Every one-shot request has a limit; none may wait for ever. Most are a
   // read or a small write on this machine and answer in milliseconds, so 30s
@@ -299,6 +338,7 @@
     commandRoute, commandError,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
+    BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
