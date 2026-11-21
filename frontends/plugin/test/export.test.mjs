@@ -33,7 +33,10 @@ const eq = (name, got, want) => ok(name, JSON.stringify(got) === JSON.stringify(
   'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
 
 const NOW = new Date('2026-08-08T00:00:00Z');
-const CFG = { author: 'angadh' };
+// quote_style 'plain' is the export as it always was, so every exact-text
+// assertion below holds that shape still; the default ('url-card') has its own
+// group further down
+const CFG = { author: 'angadh', quote_style: 'plain' };
 const me = (t, ts) => ({ author: 'angadh', ts: ts || t, text: t });
 const bot = (t, who) => ({ author: who || 'claude', ts: t, text: t });
 const tools = () => ({ author: 'claude', ts: 'tl', kind: 'tools', text: 'Explored\n└ Read' });
@@ -440,6 +443,35 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
   ok('…counting its words from the snapshot when the extension sent none',
     fs.readFileSync(path.join(vault, READ_LOG), 'utf8').includes(
       '| 2026-11-06 | 10.5555/abc | [A Web Paper](https://journal.test/paper.pdf) | 7 | | papers | [[A Web Paper]] |'));
+}
+
+// ---- quote_style: 'url-card' (the default) and 'plain' -----------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  eq('the styles, in one list', Q.QUOTE_STYLES, ['url-card', 'plain']);
+  const page = { url: 'https://example.org/piece', title: 'The Quiet Machine', site: 'example.org',
+    threads: [
+      { quote: 'the mood in the stands was flat', msgs: [me('This is the line the whole piece hangs on.')] },
+      { quote: 'a passage under a heading', section: 'Act two', msgs: [] },
+      { quote: 'cut this', mark: 'strike', msgs: [] },
+    ], page_chat: [] };
+  const head = '---\nurl: https://example.org/piece\nsite: example.org\nsaved: 2026-08-08\ntags: [botference-discuss]\n---\n\n# The Quiet Machine\n\n';
+  eq('url-card is the default: the page URL is the quote\'s last paragraph, attribution kept above it',
+    renderNote(page, { author: 'angadh' }, NOW),
+    head
+    + '> the mood in the stands was flat\n>\n> https://example.org/piece\n\nThis is the line the whole piece hangs on.\n\n'
+    + '> a passage under a heading\n> (§ Act two)\n>\n> https://example.org/piece\n\n'
+    + '> ~~cut this~~\n> *suggested deletion*\n>\n> https://example.org/piece\n');
+  eq('plain: the quote alone, as it always was',
+    renderNote(page, { author: 'angadh', quote_style: 'plain' }, NOW),
+    head
+    + '> the mood in the stands was flat\n\nThis is the line the whole piece hangs on.\n\n'
+    + '> a passage under a heading\n> (§ Act two)\n\n'
+    + '> ~~cut this~~\n> *suggested deletion*\n');
+  eq('an unknown style is refused, with a sentence, and plain is written', Q.quoteStyleOf('fancy'),
+    { style: 'plain', refused: 'quote_style "fancy" is not one of url-card, plain; wrote plain quotes' });
+  eq('…in the note too', renderNote(page, { author: 'angadh', quote_style: 'fancy' }, NOW),
+    renderNote(page, { author: 'angadh', quote_style: 'plain' }, NOW));
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);

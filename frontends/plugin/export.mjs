@@ -13,6 +13,8 @@ import { codeBlocks } from './run.mjs';
 // a bot's capped answer keeps its long half in the note: the vault is where
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
+// how every quote is written, in one place (export and blog draft alike)
+import { webQuote, quoteStyleOf } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -27,34 +29,10 @@ export function sanitizeTitle(title) {
   return s || 'Untitled';
 }
 
-const blockquote = q => String(q || '').split('\n')
-  .map(l => (l.trim() ? `> ${l}` : '>')).join('\n');
-// Where the passage came from, when the document has somewhere to come from.
-// A quote out of a PDF without its page number is a quote you cannot check, so
-// it rides inside the blockquote as its attribution line — the shape Obsidian
-// (and everyone else) already renders as one. Articles have no pages and get
-// nothing, which is why this is a suffix rather than a second renderer.
-// …and the same line for a document with no pages: the heading the passage sat
-// under, and which copy of the words it was where the words repeat. Articles
-// used to get nothing here, which is why two notes quoting the same sentence
-// from two places in one piece read as duplicates. A thread with neither still
-// gets nothing, so every note written before this is byte-for-byte the one it
-// always was.
-const attribution = t => {
-  if (t && Number(t.page) > 0) return `\n> — p. ${Number(t.page)}`;
-  const w = whereParts(t).join(', ');
-  return w ? `\n> (${w})` : '';
-};
-// …and WHAT WAS DONE to it. A struck passage is a suggested deletion, and the
-// note has to say so or a year later it reads as an ordinary highlight. The
-// quote itself is wrapped in `~~`, which is what every markdown renderer
-// Obsidian included draws as a line through the words — the same mark the
-// document, the drawer and the reading room all show.
-const struck = t => !!(t && t.mark === 'strike');
-const quoteBlock = t => (struck(t)
-  ? blockquote('~~' + String(t.quote || '').replace(/\n+/g, ' ').trim() + '~~')
-    + attribution(t) + '\n> *suggested deletion*'
-  : blockquote(t.quote) + attribution(t));
+// How a passage is written — its blockquote, its attribution line (a PDF's
+// page, or the heading it sat under), a strike's ~~ and "suggested deletion",
+// and the quote_style that decides whether the page's URL closes the quote —
+// lives in note-quotes.mjs, which the blog draft uses too.
 
 // ---- what a code block printed --------------------------------------------
 // A run's result belongs under the block it came from, in the note as on
@@ -178,6 +156,9 @@ export function tagsLine(page) {
 export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = null) {
   const author = (cfg && cfg.author) || 'angadh';
   const only = exportMode(mode);
+  // quote_style (note-quotes.QUOTE_STYLES): 'url-card' unless the config says
+  // otherwise; an unknown value writes 'plain' (exportPage reports the refusal)
+  const { style } = quoteStyleOf(cfg && cfg.quote_style);
   const parts = [
     ['---',
       `url: ${page.url}`,
@@ -198,7 +179,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     `# ${displayTitle(page)}`,
   ];
   for (const t of page.threads || []) {
-    parts.push(quoteBlock(t));
+    parts.push(webQuote(t, style, page.url));
     // A thread the reader filed says so, and says what it settled — the note
     // is the thing they will re-read in a year, and "we dealt with this, and
     // here is how" is most of what a resolved thread is worth by then. Plain

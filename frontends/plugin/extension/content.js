@@ -3198,7 +3198,7 @@
         const r = await api('POST', '/export', { url: URL_NOW, mode, ...facts });
         if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode,
-                 logged: !!(r.data && r.data.logged) };
+                 logged: !!(r.data && r.data.logged), warning: (r.data && r.data.warning) || '' };
       },
 
       // ---- the PDF's own comments, in ------------------------------------
@@ -3519,7 +3519,7 @@
         const r = await api('POST', '/export', { url, mode });
         if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode,
-                 logged: !!(r.data && r.data.logged) };
+                 logged: !!(r.data && r.data.logged), warning: (r.data && r.data.warning) || '' };
       },
       // Deleting a page takes its bot session with it (`delete_session`) — a
       // page's chat is the page, and leaving an orphaned botference session

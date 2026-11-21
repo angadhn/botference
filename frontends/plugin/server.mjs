@@ -40,6 +40,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
+import { quoteStyleOf } from './note-quotes.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -6094,7 +6095,10 @@ export function handler(req, res) {
         logged = logExportedPaper(page, file, cfg, now,
           { words: data.words, published: typeof data.published === 'string' ? data.published : '' });
       } catch (e) { console.warn(`[export] reading log not written: ${e.message}`); }
-      ok(res, { path: file, mode, logged: logged.logged, log: logged.log });
+      // a quote_style the config does not name was written as 'plain'; the
+      // drawer says so beside the path rather than leaving the reader guessing
+      const { refused } = quoteStyleOf(cfg.quote_style);
+      ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(refused ? { warning: refused } : {}) });
     });
   }
   // Model and effort are the reader's standing PREFERENCES, stored in
