@@ -52,10 +52,13 @@ const throws = fn => { try { fn(); return false; } catch { return true; } };
 }
 
 // ---- the fetch guard ----------------------------------------------------------
-// A loopback server stands in for misbehaving sites. The page "being read" is
-// on that same host, which is the one case where a private address may be
-// fetched at all; every other private address is refused.
+// A loopback server stands in for misbehaving sites. The guard never fetches a
+// loopback address, so the tests reach it the way a real site is reached: a
+// public NAME (example.test) whose resolver is injected, and a transport that
+// carries the request to the loopback server — after asking the request's own
+// lookup which address it would connect to, which is what is checked.
 const B = await import('../blyg.mjs');
+const PUBLIC = '93.184.216.34';
 {
   const http = await import('node:http');
   const srv = http.createServer((req, res) => {
@@ -71,34 +74,73 @@ const B = await import('../blyg.mjs');
     if (req.url === '/slow') return; // never answers
     if (req.url === '/to-file') return res.writeHead(302, { location: 'file:///etc/hosts' }).end();
     if (req.url === '/to-private') return res.writeHead(302, { location: 'http://10.1.2.3/blyg.json' }).end();
+    if (req.url === '/to-companion') return res.writeHead(302, { location: 'http://example.test:4189/pages' }).end();
+    if (req.url === '/to-other') return res.writeHead(302, { location: 'http://other.test/ok.json' }).end();
     if (req.url === '/loop') return res.writeHead(302, { location: '/loop' }).end();
     res.writeHead(404).end();
   });
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
-  const base = `http://127.0.0.1:${srv.address().port}`;
-  const page = `${base}/article`;
-  const kindOf = async (url, opts) => {
-    try { await B.guardedGet(url, { pageUrl: page, ...opts }); return 'fetched'; }
+  const port = srv.address().port;
+  const connectedTo = [];
+  const asked = [];
+  const viaLoopback = mod => ({ request(opts, cb) {
+    let addr = null;
+    opts.lookup(opts.hostname, {}, (err, a) => { addr = a; });
+    connectedTo.push(addr);
+    asked.push(opts.path);
+    return mod.request({ host: '127.0.0.1', port, path: opts.path, method: opts.method, headers: opts.headers, agent: false }, cb);
+  } });
+  const transport = { http: viaLoopback(http), https: viaLoopback(http) };
+  let resolverCalls = 0;
+  const publicResolver = async () => { resolverCalls++; return [{ address: PUBLIC, family: 4 }]; };
+  const kindOf = async (url, opts = {}) => {
+    try { await B.guardedGet(url, { resolve: publicResolver, transport, ...opts }); return 'fetched'; }
     catch (e) { return e.kind || ('threw ' + e.message); }
   };
 
-  ok('guard: the local page\'s own host may be fetched', await kindOf(`${base}/ok.json`) === 'fetched');
-  ok('guard: a public page may not reach this computer',
-    (await B.fetchRefusal(`${base}/ok.json`, 'https://example.com/post')) !== '');
-  ok('guard: …nor the private network', (await B.fetchRefusal('http://10.0.0.1/blyg.json', 'https://example.com/')) !== '');
-  ok('guard: …nor link-local', (await B.fetchRefusal('http://169.254.169.254/latest', 'https://example.com/')) !== '');
-  ok('guard: a local page reaches only its own host',
-    (await B.fetchRefusal('http://192.168.1.1/blyg.json', page)) !== '');
-  ok('guard: file: is not a web address', (await B.fetchRefusal('file:///etc/hosts', page)) !== '');
-  ok('guard: neither is ftp:', (await B.fetchRefusal('ftp://example.com/blyg.json', 'https://example.com/')) !== '');
-  eq('guard: a body that says it is too big is not read', await kindOf(`${base}/says-big`, { maxBytes: 1024 }), 'too-big');
-  eq('guard: a body that turns out too big is abandoned', await kindOf(`${base}/is-big`, { maxBytes: 256 * 1024 }), 'too-big');
+  eq('guard: a public name is fetched', await kindOf('http://example.test/ok.json'), 'fetched');
+  eq('guard: …connecting to exactly the address that was checked', connectedTo.slice(-1), [PUBLIC]);
+  ok('guard: this computer is refused, whatever the page', B.urlRefusal('http://127.0.0.1:8080/x') !== '');
+  ok('guard: …by name too', B.urlRefusal('http://localhost:3000/') !== '' && B.urlRefusal('http://printer.local/') !== '');
+  ok('guard: the private network is refused', B.urlRefusal('http://10.0.0.1/blyg.json') !== '');
+  ok('guard: link-local and the metadata address are refused', B.urlRefusal('http://169.254.169.254/latest') !== '');
+  ok('guard: the companion\'s own port is refused on any host', B.urlRefusal('http://example.test:4189/pages') !== '');
+  ok('guard: file: is not a web address', B.urlRefusal('file:///etc/hosts') !== '');
+  ok('guard: neither is ftp:', B.urlRefusal('ftp://example.com/blyg.json') !== '');
+  ok('guard: a public URL passes the URL check', B.urlRefusal('https://example.org/blyg/blyg.json') === '');
+
+  // DNS rebinding: the name answers a public address to the check and a
+  // loopback one to any later lookup; the later answer is never asked for
+  let calls = 0;
+  const rebinding = async () => (calls++ === 0 ? [{ address: PUBLIC, family: 4 }] : [{ address: '127.0.0.1', family: 4 }]);
+  connectedTo.length = 0;
+  eq('rebinding: fetched once', await kindOf('http://rebind.test/ok.json', { resolve: rebinding }), 'fetched');
+  eq('rebinding: the name was resolved exactly once', calls, 1);
+  eq('rebinding: the connection went to the checked address, not a second answer', connectedTo, [PUBLIC]);
+  // a name that answers one public and one private address is refused whole
+  asked.length = 0;
+  const mixed = async () => [{ address: PUBLIC, family: 4 }, { address: '192.168.1.10', family: 4 }];
+  eq('mixed answers: refused', await kindOf('http://mixed.test/ok.json', { resolve: mixed }), 'refused');
+  eq('…before any request', asked.length, 0);
+  const v6 = async () => [{ address: '::ffff:127.0.0.1', family: 6 }];
+  eq('a name answering loopback inside IPv6 is refused', await kindOf('http://v6.test/ok.json', { resolve: v6 }), 'refused');
+  const hang = () => new Promise(() => {});
+  eq('a name that never resolves times out', await kindOf('http://hang.test/ok.json', { resolve: hang, timeoutMs: 300 }), 'timeout');
+
+  eq('guard: a body that says it is too big is not read', await kindOf('http://example.test/says-big', { maxBytes: 1024 }), 'too-big');
+  eq('guard: a body that turns out too big is abandoned', await kindOf('http://example.test/is-big', { maxBytes: 256 * 1024 }), 'too-big');
   const t0 = Date.now();
-  eq('guard: a site that never answers times out', await kindOf(`${base}/slow`, { timeoutMs: 300 }), 'timeout');
+  eq('guard: a site that never answers times out', await kindOf('http://example.test/slow', { timeoutMs: 300 }), 'timeout');
   ok('guard: …and promptly', Date.now() - t0 < 3000, `${Date.now() - t0}ms`);
-  eq('guard: a redirect to file: is refused', await kindOf(`${base}/to-file`), 'refused');
-  eq('guard: a redirect to the private network is refused', await kindOf(`${base}/to-private`), 'refused');
-  eq('guard: a redirect loop ends', await kindOf(`${base}/loop`), 'network');
+  eq('guard: a redirect to file: is refused', await kindOf('http://example.test/to-file'), 'refused');
+  eq('guard: a redirect to the private network is refused', await kindOf('http://example.test/to-private'), 'refused');
+  eq('guard: a redirect to the companion\'s port is refused', await kindOf('http://example.test/to-companion'), 'refused');
+  resolverCalls = 0;
+  eq('guard: a redirect to another public name is followed', await kindOf('http://example.test/to-other'), 'fetched');
+  eq('…and that name is checked too', resolverCalls, 2);
+  eq('guard: a redirect loop ends', await kindOf('http://example.test/loop'), 'network');
+  ok('fetchRefusal: a name resolving into the private network', (await B.fetchRefusal('https://intranet.example/', async () => [{ address: '10.9.8.7', family: 4 }])) !== '');
+  eq('fetchRefusal: a public name', await B.fetchRefusal('https://example.org/', publicResolver), '');
   srv.closeAllConnections?.();
   srv.close();
 }
@@ -269,7 +311,7 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   // rel=blyg points into the private network gets nothing fetched from there
   const w = fakeWeb({});
   const guarded = async (url, o) => {
-    const why = await B.fetchRefusal(url, o.pageUrl);
+    const why = await B.fetchRefusal(url, async () => [{ address: PUBLIC, family: 4 }]);
     if (why) throw new B.FetchTrouble('refused', why);
     return w.get(url, o);
   };
