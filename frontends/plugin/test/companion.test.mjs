@@ -1255,11 +1255,16 @@ async function main() {
       '',
       '# Export Fixture',
       '',
+      // quote_style 'url-card', the default: the page's URL closes each quote
       '> Quote one goes here.',
+      '>',
+      `> ${url}`,
       '',
       'A neat point.',
       '',
       '> Quote two — with an em dash.',
+      '>',
+      `> ${url}`,
       '',
       '**angadh:** @claude is this right?',
       '**claude:** MOCK claude reply.',
@@ -1295,11 +1300,16 @@ async function main() {
       '',
       '# Export Fixture',
       '',
+      // quote_style 'url-card', the default: the page's URL closes each quote
       '> Quote one goes here.',
+      '>',
+      `> ${url}`,
       '',
       'A neat point.',
       '',
       '> Quote two — with an em dash.',
+      '>',
+      `> ${url}`,
       '',
     ].join('\n'));
     assert.ok(!note.includes('MOCK claude reply.'), 'no bot answers');
