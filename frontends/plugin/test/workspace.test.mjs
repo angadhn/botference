@@ -1294,7 +1294,7 @@ console.log('\ncompanion — the mirror stays level with the council');
       'a message newer than the file survives the refill');
     assert.ok(texts(page).some(t => /MOCK claude reply/.test(t)));
     const kept = page.page_chat.filter(m => !m.restored);
-    assert.ok(kept.length >= 2 && kept.every(m => Number(page.session_sync) < Date.parse(m.ts)),
+    assert.ok(kept.length >= 2 && kept.every(m => Number(page.session_sync) <= Date.parse(m.ts)),
       'and only the ones the session file cannot hold');
   });
 

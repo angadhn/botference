@@ -647,7 +647,9 @@ export function sessionFile(root, projectId, sid) {
 export function sessionMtime(root, projectId, sid) {
   const file = sessionPath(root, projectId, sid);
   if (!file) return 0;
-  try { return Math.round(fs.statSync(file).mtimeMs); } catch { return 0; }
+  // whole milliseconds, rounded DOWN so the mark is never later than the
+  // write it records (it is compared with message stamps, which are whole ms)
+  try { return Math.floor(fs.statSync(file).mtimeMs); } catch { return 0; }
 }
 
 // The envelope chat.mjs wraps a page-chat question in, taken back off. A chat

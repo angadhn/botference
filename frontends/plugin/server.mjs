@@ -1370,8 +1370,12 @@ function refillMirror(page, art) {
   // a half-written file parses as nothing; saying "no change" is the harmless
   // direction to fail in, and the next event or read will find it whole
   if (!session) return false;
+  // A tie counts as unseen: a message stamped in the same millisecond as the
+  // file's mtime arrived after that write (a turn's own saves are refused
+  // above while it is busy), and keeping a line twice is the harmless way to
+  // be wrong; dropping the reader's words is not.
   const unseen = (page.page_chat || [])
-    .filter(m => m && !m.restored && Date.parse(m.ts) > mtime)
+    .filter(m => m && !m.restored && Date.parse(m.ts) >= mtime)
     .slice(-MIRROR_KEEP);
   page.page_chat = unseen.length ? [...session.msgs, ...unseen] : session.msgs;
   page.session_total = session.total;
