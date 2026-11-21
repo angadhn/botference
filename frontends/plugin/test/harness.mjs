@@ -180,6 +180,9 @@ export function createHarness({ server, tag = 'bfp', waitMs = 10000, realpath = 
         // a test must not depend on the desk it runs at, so every
         // unjournalled write during a turn is the bots'
         PLUGIN_EDITOR_PROBE: 'none',
+        // and no page is asked whether it is a Blygger post (that would reach
+        // the real web); test/blyg-server.test.mjs turns it back on
+        PLUGIN_BLYG_CHECKS: 'off',
         ...baseEnv, ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],

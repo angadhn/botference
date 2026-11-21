@@ -65,6 +65,7 @@ import * as checks from './checks.mjs';
 import * as handoff from './council-handoff.mjs';
 import * as ownership from './ownership.mjs';
 import * as figedits from './figedits.mjs';
+import * as blygMod from './blyg.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
 const fteRouted = new Map();
 import * as turnwatch from './turnwatch.mjs';
@@ -2844,6 +2845,59 @@ function pageOf(res, data) {
   return page;
 }
 
+// ---- is this page a Blygger post? (blyg.mjs) --------------------------------
+// One checker for the whole companion, so a page is asked about once however
+// many routes want to know. Whoever asks first starts the check; when the
+// answer lands it is written onto the page record (if there is one by then),
+// with the stamps it is the answer to filled in (blyg.applyAnswer), and the
+// drawer hears a page broadcast. `hints` are the page's own two <link>s, as
+// the extension read them; an older extension sends none and the companion
+// reads the page itself.
+const blygChecker = blygMod.createChecker();
+const blygPersisted = new WeakSet();
+// how long a new highlight or message may wait for the page's FIRST answer
+// before it is written stamped 'checking' (and filled in when the answer lands)
+const BLYG_RECORD_WAIT_MS = Number(process.env.PLUGIN_BLYG_RECORD_WAIT_MS) || 4000;
+// …and how long the drawer's question and an export may wait
+const BLYG_ASK_WAIT_MS = 25000;
+// PLUGIN_BLYG_CHECKS=off asks about no page at all (the test harness sets it,
+// so a suite about something else never reaches the real web)
+const BLYG_CHECKS = process.env.PLUGIN_BLYG_CHECKS === 'off' ? 'off' : 'on';
+const blygSkips = url => BLYG_CHECKS === 'off' || !url || store.isLibrary(url) || !/^https?:\/\//i.test(String(url));
+function blygAsk(url, hints) {
+  const known = store.readPage(url);
+  const p = blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
+  p.then(result => {
+    if (blygPersisted.has(result)) return;
+    blygPersisted.add(result);
+    const page = store.readPage(url);
+    if (page && blygMod.applyAnswer(page, result)) {
+      store.savePage(page);
+      broadcast({ type: 'page', url: page.url });
+    }
+  }).catch(e => console.warn(`[blyg] ${e.message}`));
+  return p;
+}
+// The answer for a record about to be written, waiting at most `ms`; null if
+// it is not in yet (the record is then stamped 'checking'), undefined when
+// this page is never asked about (the library, a file).
+async function blygFor(url, hints, ms = BLYG_RECORD_WAIT_MS) {
+  if (blygSkips(url)) return undefined;
+  return blygMod.settleWithin(blygAsk(url, hints), ms);
+}
+// Two halves around the write of a new record, both synchronous so they run in
+// the same tick as the save that follows: the answer goes onto the page
+// BEFORE the record joins it (or the page's first answer would take the new
+// record for one made before Discuss knew about Blygger), and the new record
+// (a thread, or a page-chat message of the reader's) is stamped after.
+function blygOnto(page, answer) {
+  if (page && answer) blygMod.applyAnswer(page, answer);
+}
+function blygMark(rec, answer, quote = null) {
+  if (answer === undefined || !rec) return;
+  blygMod.restamp(rec, blygMod.stampFor(answer, { quote }));
+}
+
 // The library has no page to visit and nothing to POST /page it into being, so
 // it is created by the first message written into it — exactly when a real
 // page's session is created, and for the same reason: an empty record nobody
@@ -4727,8 +4781,27 @@ export function handler(req, res) {
       // the served title is what blog.blogPageFor checks a local site's page
       // against, so a visit that brought a new one answers afresh
       blogCache.delete(String(data.url)); blogCache.delete(page.url);
+      // an extension that reads a page's Blygger links sends them here: the
+      // check starts now, so the first highlight rarely has to wait for it
+      if (data.blyg_hints !== undefined && !blygSkips(page.url)) blygAsk(page.url, data.blyg_hints);
       broadcast({ type: 'page', url: page.url });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify(page));
+    });
+  }
+  // Is this page a Blygger post? The drawer asks once when it opens on a page;
+  // the answer (blyg.detect's, without the post's words) also lands on the
+  // page record if there is one. `status: 'checking'` means it is still being
+  // asked after BLYG_ASK_WAIT_MS; the page broadcast says when it lands.
+  // The owner's only: it makes the companion fetch from the web.
+  if (req.method === 'POST' && url === '/blyg') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, async data => {
+      if (!data.url) return fail(res, 400, 'url required');
+      if (blygSkips(data.url)) return ok(res, { status: 'not-a-blyg', reason: 'not a web page' });
+      const r = await blygMod.settleWithin(blygAsk(data.url, data.hints), BLYG_ASK_WAIT_MS);
+      if (!r) return ok(res, { status: 'checking' });
+      const { status, reason, site, item } = r;
+      ok(res, { status, ...(reason ? { reason } : {}), ...(site ? { site } : {}), ...(item ? { item } : {}) });
     });
   }
   if (req.method === 'POST' && url === '/thread') {

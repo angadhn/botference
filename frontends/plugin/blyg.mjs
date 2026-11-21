@@ -41,6 +41,9 @@ export const LIMITS = Object.freeze({
   // resolution at six; the item document and a pinned version add two)
   fetches: 8,
   timeoutMs: 8000,
+  // …and the whole check, however many requests it makes, stops asking after
+  // this long (an answer by then is 'check-failed', never a guess)
+  checkMs: 20000,
   redirects: 5,
   // a manifest is a few hundred bytes; an item document carries a whole post
   // twice (markdown and HTML); a page is read only for its <link> elements
@@ -170,7 +173,7 @@ export function parseJsonObject(text) {
 
 export function session(pageUrl, get = guardedGet) {
   const seen = new Map();
-  const s = { fetched: [], troubles: [] };
+  const s = { fetched: [], troubles: [], started: Date.now() };
   s.raw = async (url, { maxBytes = LIMITS.itemBytes, accept = 'application/json' } = {}) => {
     const key = String(url);
     if (seen.has(key)) return seen.get(key);
@@ -178,9 +181,11 @@ export function session(pageUrl, get = guardedGet) {
       if (s.fetched.length >= LIMITS.fetches) {
         return { status: 'trouble', kind: 'limit', message: `gave up after ${LIMITS.fetches} requests` };
       }
+      const left = LIMITS.checkMs - (Date.now() - s.started);
+      if (left <= 0) return { status: 'trouble', kind: 'timeout', message: `gave up after ${LIMITS.checkMs / 1000}s` };
       s.fetched.push(key);
       try {
-        const r = await get(key, { pageUrl, maxBytes, accept });
+        const r = await get(key, { pageUrl, maxBytes, accept, timeoutMs: Math.min(LIMITS.timeoutMs, left) });
         return { status: 'answered', code: Number(r.status) || 0, url: String(r.url || key), text: String(r.text ?? '') };
       } catch (e) {
         return { status: 'trouble', kind: (e && e.kind) || 'network', message: String((e && e.message) || 'could not fetch') };

@@ -29,6 +29,8 @@ Object.assign(process.env, {
   BOTFERENCE_SITES_REGISTRY: path.join(SECRETS, 'sites.json'), PLUGIN_EDITOR_PROBE: 'none',
   PLUGIN_BRIDGE_POOL: '1', PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, path.join(here, 'mock-bridge.mjs')]),
   MOCK_BRIDGE_LOG: path.join(ROOT, 'mock.jsonl'),
+  // no page is asked whether it is a Blygger post (harness.mjs, likewise)
+  PLUGIN_BLYG_CHECKS: 'off',
 });
 dns.promises.lookup = async () => [{ address: '93.184.216.34', family: 4 }];
 
