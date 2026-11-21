@@ -148,7 +148,7 @@ export function quoteNotes(stamp, { current = null } = {}) {
   const p = stamp.passage;
   if (p && p.match === false) {
     out.push(`*Not quoted by reference: these words are not word for word in version ${stamp.version} of the post`
-      + (p.nearest ? `. The nearest exact passage is: “${escapePassageLine(p.nearest.replace(/\n/g, ' '))}”.*` : '.*'));
+      + (p.nearest ? ` (nearest exact passage: “${escapePassageLine(p.nearest.replace(/\n/g, ' '))}”).*` : '.*'));
   } else if (current && current.match === false) {
     out.push(`*Not quoted by reference: this passage was in version ${stamp.version} of the post and is not in version ${current.version}, the current one.*`);
   } else if (stamp.as_of === 'check') {

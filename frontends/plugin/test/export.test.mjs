@@ -514,7 +514,7 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   ]), CFG, NOW);
   ok('mismatch: an ordinary quote, never a directive the publisher would reject', !miss.includes(`> Share this`) || !/!\[\[.*\]\]\n> Share/.test(miss), miss);
   ok('mismatch: says so, and offers the nearest exact passage', miss.includes(
-    `> Share this ${S1} 3\n\n*Not quoted by reference: these words are not word for word in version 2 of the post. The nearest exact passage is: “${S1}”.*\n\nSelected too much.`), miss);
+    `> Share this ${S1} 3\n\n*Not quoted by reference: these words are not word for word in version 2 of the post (nearest exact passage: “${S1}”).*\n\nSelected too much.`), miss);
 
   // the post has moved on: a highlight made on v2 whose words are gone from v3
   const moved = renderNote(BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [] }]), CFG, NOW, 'all', null,
