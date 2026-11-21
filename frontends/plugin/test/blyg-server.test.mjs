@@ -46,7 +46,10 @@ const item = (id, origin, version) => {
 };
 let version = 2;
 let slowRelease = null;
+// every request the pretend web receives, by path: what a guest must never cause
+const webSeen = [];
 const web = http.createServer((req, res) => {
+  webSeen.push(req.url);
   const json = v => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(v));
   const p = req.url;
   if (p === '/notes/blyg.json') return json({ blyg: '0.4', title: 'Made-up Notes', author: { name: 'Test Author' }, updated: '2026-11-02T00:00:00Z' });
@@ -197,6 +200,54 @@ await test('an ordinary page exports as before, its quote closed by its URL (url
   const note = fs.readFileSync(r.json.path, 'utf8');
   assert.ok(note.includes(`> Anything at all\n>\n> ${PLAIN}\n\na note\n`), note);
   assert.ok(!note.includes('blyg_sources'), note);
+});
+
+// ---- a guest over the tunnel never makes the companion fetch anything ------
+// A second companion in hosted mode on the same pretend web. Requests carry
+// the shared guest password and a tunnel Host, as a remote guest's do.
+const hostedRoot = tmp('hosted');
+const hostedSrv = await startServer({
+  root: hostedRoot, args: ['--hosted', '--no-agents'],
+  env: {
+    PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', PLUGIN_BLYG_CHECKS: 'on',
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import ${JSON.stringify(path.join(TEST, 'fake-web.mjs'))}`.trim(),
+    FAKE_WEB_PORT_FILE: portFile,
+  },
+});
+const HB = hostedSrv.base;
+const GUEST = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
+const OWNER = { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' };
+const GUEST_PAGE = `${ORIGIN}t/${ID}/`;
+
+await test('a guest\'s /page, /thread and page-chat /reply start no check and fetch nothing', async () => {
+  const before = webSeen.length;
+  const local = `http://127.0.0.1:${web.address().port}/x`;
+  let r = await POST(HB, '/page', { url: local, title: 'x',
+    blyg_hints: { blyg: `http://127.0.0.1:${web.address().port}/api/anything?do=1`, json: '' } }, GUEST);
+  assert.equal(r.status, 200, r.body);
+  r = await POST(HB, '/page', { url: GUEST_PAGE, title: 'A made-up post', blyg_hints: HINTS }, GUEST);
+  assert.equal(r.status, 200, r.body);
+  r = await POST(HB, '/thread', { url: GUEST_PAGE, quote: PASSAGE, msg: { text: 'a guest note' }, blyg_hints: HINTS }, GUEST);
+  assert.equal(r.status, 200, r.body);
+  assert.ok(!('blyg' in r.json.thread), 'a guest\'s highlight is not stamped');
+  r = await POST(HB, '/reply', { url: GUEST_PAGE, thread_id: '__page__', text: 'a guest question', blyg_hints: HINTS }, GUEST);
+  assert.equal(r.status, 200, r.body);
+  assert.ok(!('blyg' in r.json.msg), 'nor is a guest\'s page-chat message');
+  await new Promise(res => setTimeout(res, 300));
+  assert.deepEqual(webSeen.slice(before), [], 'the pretend web heard nothing at all');
+  const p = (await GET(HB, '/page?url=' + encodeURIComponent(GUEST_PAGE), GUEST)).json;
+  assert.ok(!p.blyg, 'and the page record learned nothing');
+  assert.equal((await POST(HB, '/blyg', { url: GUEST_PAGE, hints: HINTS }, GUEST)).status, 403, '/blyg stays owner-only');
+});
+
+await test('the owner over the tunnel still checks, and a local page is never fetched even for the owner', async () => {
+  const before = webSeen.length;
+  const r = await POST(HB, '/blyg', { url: GUEST_PAGE, hints: HINTS }, OWNER);
+  assert.equal(r.json.status, 'blyg', r.body);
+  const local = await POST(HB, '/blyg', { url: `http://127.0.0.1:${web.address().port}/x`,
+    hints: { blyg: `http://127.0.0.1:${web.address().port}/api/anything?do=1`, json: '' } }, OWNER);
+  assert.equal(local.json.status, 'not-a-blyg');
+  assert.ok(!webSeen.slice(before).some(u => u.startsWith('/api/') || u === '/x'), JSON.stringify(webSeen.slice(before)));
 });
 
 await test('the library and local files are never asked about', async () => {

@@ -2878,6 +2878,12 @@ const BLYG_ASK_WAIT_MS = 25000;
 // so a suite about something else never reaches the real web)
 const BLYG_CHECKS = process.env.PLUGIN_BLYG_CHECKS === 'off' ? 'off' : 'on';
 const blygSkips = url => BLYG_CHECKS === 'off' || !url || store.isLibrary(url) || !/^https?:\/\//i.test(String(url));
+// ONLY THE OWNER'S REQUESTS EVER START A CHECK. A check makes the companion
+// fetch from the web on a URL the request names; over the tunnel a guest
+// could otherwise point it anywhere. A guest's highlight or message is simply
+// not stamped (unknown), and a guest's /page starts nothing. Every route that
+// can start a check passes its `req` through here.
+const blygMay = req => hosted.isOwner(req);
 function blygAsk(url, hints) {
   const known = store.readPage(url);
   const p = blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
@@ -2895,8 +2901,8 @@ function blygAsk(url, hints) {
 // The answer for a record about to be written, waiting at most `ms`; null if
 // it is not in yet (the record is then stamped 'checking'), undefined when
 // this page is never asked about (the library, a file).
-async function blygFor(url, hints, ms = BLYG_RECORD_WAIT_MS) {
-  if (blygSkips(url)) return undefined;
+async function blygFor(req, url, hints, ms = BLYG_RECORD_WAIT_MS) {
+  if (!blygMay(req) || blygSkips(url)) return undefined;
   return blygMod.settleWithin(blygAsk(url, hints), ms);
 }
 // Two halves around the write of a new record, both synchronous so they run in
@@ -4797,7 +4803,7 @@ export function handler(req, res) {
       blogCache.delete(String(data.url)); blogCache.delete(page.url);
       // an extension that reads a page's Blygger links sends them here: the
       // check starts now, so the first highlight rarely has to wait for it
-      if (data.blyg_hints !== undefined && !blygSkips(page.url)) blygAsk(page.url, data.blyg_hints);
+      if (data.blyg_hints !== undefined && blygMay(req) && !blygSkips(page.url)) blygAsk(page.url, data.blyg_hints);
       broadcast({ type: 'page', url: page.url });
       res.writeHead(200, JSON_HEAD).end(JSON.stringify(page));
     });
@@ -4865,7 +4871,7 @@ export function handler(req, res) {
       // the page's answer, and is stamped 'checking' — filled in when the
       // answer lands — only if that is not enough. Asked before the page is
       // read, so the record saved below is the one the answer was applied to.
-      const blygAnswer = await blygFor(data.url, data.blyg_hints);
+      const blygAnswer = await blygFor(req, data.url, data.blyg_hints);
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
       blygOnto(page, blygAnswer);
@@ -5148,7 +5154,7 @@ export function handler(req, res) {
       // included, which waits briefly for the page's answer exactly as the
       // first highlight does (see /thread). Asked before the page is read.
       const blygAnswer = (data.thread_id || store.PAGE_CHAT) === store.PAGE_CHAT
-        ? await blygFor(data.url, data.blyg_hints) : undefined;
+        ? await blygFor(req, data.url, data.blyg_hints) : undefined;
       const page = pageOf(res, data);
       if (!page) return;
       blygOnto(page, blygAnswer);
@@ -6108,7 +6114,7 @@ export function handler(req, res) {
       // written, and its records labelled by the answer. The same answer says
       // which version the post is NOW, which the note checks old highlights
       // against. Asked before the page is read, as /thread does.
-      const blygAnswer = await blygFor(data.url, data.blyg_hints, BLYG_ASK_WAIT_MS);
+      const blygAnswer = await blygFor(req, data.url, data.blyg_hints, BLYG_ASK_WAIT_MS);
       const page = pageOf(res, data);
       if (!page) return;
       if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
