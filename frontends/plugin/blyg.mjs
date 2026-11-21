@@ -150,3 +150,142 @@ async function readCapped(res, maxBytes, signal, at, timeoutMs) {
   }
   return Buffer.concat(parts.map(p => Buffer.from(p))).toString('utf8');
 }
+
+// ---- one check's fetches --------------------------------------------------------
+// Every request one check makes goes through a session: it fetches each URL at
+// most once (a probe already made answers again from memory), stops at
+// LIMITS.fetches, and turns every answer into one of three words:
+//   ok      — a 2xx whose body parsed as a JSON object
+//   absent  — the site answered, and there is nothing usable there (404, a 2xx
+//             that is not a JSON object): evidence for "no"
+//   trouble — the question could not be asked (refused, timeout, too big,
+//             network, the fetch budget spent): evidence for nothing
+// `get` is the transport (guardedGet, or a test's stand-in with its shape).
+export function parseJsonObject(text) {
+  try {
+    const v = JSON.parse(String(text));
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null;
+  } catch { return null; }
+}
+
+export function session(pageUrl, get = guardedGet) {
+  const seen = new Map();
+  const s = { fetched: [], troubles: [] };
+  s.raw = async (url, { maxBytes = LIMITS.itemBytes, accept = 'application/json' } = {}) => {
+    const key = String(url);
+    if (seen.has(key)) return seen.get(key);
+    const run = (async () => {
+      if (s.fetched.length >= LIMITS.fetches) {
+        return { status: 'trouble', kind: 'limit', message: `gave up after ${LIMITS.fetches} requests` };
+      }
+      s.fetched.push(key);
+      try {
+        const r = await get(key, { pageUrl, maxBytes, accept });
+        return { status: 'answered', code: Number(r.status) || 0, url: String(r.url || key), text: String(r.text ?? '') };
+      } catch (e) {
+        return { status: 'trouble', kind: (e && e.kind) || 'network', message: String((e && e.message) || 'could not fetch') };
+      }
+    })();
+    seen.set(key, run);
+    return run;
+  };
+  s.json = async (url, opts) => {
+    const r = await s.raw(url, opts);
+    if (r.status === 'trouble') { s.troubles.push(r); return r; }
+    if (r.code < 200 || r.code >= 300) return { status: 'absent', code: r.code, url: r.url };
+    const json = parseJsonObject(r.text);
+    return json ? { status: 'ok', json, url: r.url } : { status: 'absent', code: r.code, url: r.url };
+  };
+  return s;
+}
+
+// ---- finding the manifest (§12.1) ----------------------------------------------
+// The spec's resolution order, minus the two steps that are about feeds and
+// subscriptions (step 3, the feed upgrade; step 6, the RSS fallback) and plus
+// nothing: the direct probe at the page's own path, the page's
+// <link rel="blyg">, then the two conventional mounts at the host root.
+
+// §12.1 step 1: strip query and fragment, end the path with '/'
+export function candidateBase(url) {
+  const u = new URL(String(url));
+  u.search = ''; u.hash = '';
+  if (!u.pathname.endsWith('/')) u.pathname += '/';
+  return u.href;
+}
+// §12.2: the identity origin is where the manifest actually came from, minus
+// its last path segment, after redirects; a WHATWG serialization is the one
+// spelling the spec asks for
+export function identityOf(manifestUrl) {
+  const u = new URL(String(manifestUrl));
+  u.search = ''; u.hash = '';
+  u.pathname = u.pathname.replace(/[^/]*$/, '');
+  return u.href;
+}
+// §12.1 step 2: "a JSON object with a blyg version key"; parse-success is the
+// test, Content-Type is not
+export const isManifest = j => !!j && typeof j.blyg === 'string' && j.blyg.length > 0 && j.blyg.length < 20;
+
+// The two <link> elements discovery reads, out of a page's HTML, resolved
+// against the page. Used only when the extension did not send them (an export
+// from the pages list of a page recorded before this existed). A regex is
+// enough: these are attributes of void elements in the <head>, and anything
+// odd simply yields nothing.
+export function pageLinks(html, baseUrl) {
+  const out = { blyg: '', json: '' };
+  const head = String(html || '').slice(0, LIMITS.pageBytes);
+  for (const m of head.matchAll(/<link\b([^>]*)>/gi)) {
+    const attrs = {};
+    for (const a of m[1].matchAll(/([a-zA-Z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)) {
+      attrs[a[1].toLowerCase()] = a[2] ?? a[3] ?? a[4] ?? '';
+    }
+    const rel = String(attrs.rel || '').toLowerCase().split(/\s+/);
+    let href = '';
+    try { href = attrs.href ? new URL(attrs.href.replace(/&amp;/g, '&'), baseUrl).href : ''; } catch { href = ''; }
+    if (!/^https?:/i.test(href)) continue;
+    if (rel.includes('blyg') && !out.blyg) out.blyg = href;
+    if (rel.includes('alternate') && String(attrs.type || '').toLowerCase() === 'application/json' && !out.json) out.json = href;
+  }
+  return out;
+}
+
+// Hints as the extension sends them: two absolute http(s) URLs or ''. Anything
+// else is dropped rather than believed.
+export function cleanHints(h) {
+  if (!h || typeof h !== 'object') return null;
+  const one = v => {
+    const s = String(v || '').trim().slice(0, 2000);
+    try { const u = new URL(s); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch { return ''; }
+  };
+  return { blyg: one(h.blyg), json: one(h.json) };
+}
+
+/**
+ * → { status: 'found', manifest, origin, url } | { status: 'none' } | { status: 'trouble' }
+ * `none` means every probe was answered and none was a manifest; `trouble`
+ * that at least one could not be asked, so "no" cannot honestly be said.
+ */
+export async function findManifest(s, pageUrl, hints) {
+  const tried = new Set();
+  const probe = async url => {
+    if (!url || tried.has(url)) return null;
+    tried.add(url);
+    const r = await s.json(url, { maxBytes: LIMITS.manifestBytes });
+    return r.status === 'ok' && isManifest(r.json)
+      ? { status: 'found', manifest: r.json, url: r.url, origin: identityOf(r.url) } : null;
+  };
+  const found = await probe(new URL('blyg.json', candidateBase(pageUrl)).href);
+  if (found) return found;
+  if (hints && hints.blyg) {
+    // the rel names the manifest itself, or (as at 0.3) an origin base URL
+    const named = await probe(hints.blyg);
+    if (named) return named;
+    const asBase = await probe(new URL('blyg.json', candidateBase(hints.blyg)).href);
+    if (asBase) return asBase;
+  }
+  const root = new URL('/', pageUrl).href;
+  for (const p of ['blyg/blyg.json', 'blyg.json']) {
+    const hit = await probe(new URL(p, root).href);
+    if (hit) return hit;
+  }
+  return { status: s.troubles.length ? 'trouble' : 'none' };
+}

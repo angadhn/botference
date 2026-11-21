@@ -103,6 +103,80 @@ const B = await import('../blyg.mjs');
   srv.close();
 }
 
+// ---- a pretend web made of the saved fixtures -------------------------------
+// `routes` maps an exact URL to a fixture file name, a { status, text } answer,
+// or a FetchTrouble kind ('timeout', 'refused', 'too-big'). Anything else is a
+// 404, as on a real site. Every request is written down in `calls`.
+const FIX = path.join(here, 'fixtures', 'blyg');
+const fx = name => fs.readFileSync(path.join(FIX, name), 'utf8');
+function fakeWeb(routes) {
+  const calls = [];
+  const get = async (url) => {
+    calls.push(url);
+    const r = routes[url];
+    if (r === undefined) return { status: 404, url, text: 'not found' };
+    if (typeof r === 'string' && ['timeout', 'refused', 'too-big', 'network'].includes(r)) {
+      throw new B.FetchTrouble(r, `${r}: ${url}`);
+    }
+    if (typeof r === 'string') return { status: 200, url, text: fx(r) };
+    return { status: r.status || 200, url: r.url || url, text: r.text };
+  };
+  return { get, calls };
+}
+const VR = 'https://venkateshrao.com/blyg/';
+const VR_ID = '27x0ewgc6yqq0h9e2n9g16me8n';
+const VR_PAGE = `${VR}t/${VR_ID}/`;
+const VR_JSON = `${VR}items/${VR_ID}.json`;
+const PIN_ID = '3vzq82afn6rmyvk6vsq8abnkqh';
+const AN = 'https://angadh.com/blyg/';
+const AN_ID = '2a1v0zsryykw9srnzt4xd5z0hj';
+const AN_PAGE = 'https://angadh.com/rockets-1';
+const AN_JSON = `${AN}items/${AN_ID}.json`;
+const BB = 'https://blyg.blygger.org/';
+
+// ---- finding the manifest (§12.1) ------------------------------------------------
+{
+  eq('links: an item page names its JSON and no rel=blyg', B.pageLinks(fx('venkat-item-page.html'), VR_PAGE),
+    { blyg: '', json: VR_JSON });
+  eq('links: a root-level article names both', B.pageLinks(fx('angadh-article-page.html'), AN_PAGE),
+    { blyg: `${AN}blyg.json`, json: AN_JSON });
+  eq('links: a front page names neither', B.pageLinks(fx('blygger-front-page.html'), BB), { blyg: '', json: '' });
+  eq('links: relative hrefs resolve, other schemes are dropped',
+    B.pageLinks('<link rel="blyg" href="/b/blyg.json"><link rel="alternate" type="application/json" href="javascript:alert(1)">', 'https://x.example/a/p'),
+    { blyg: 'https://x.example/b/blyg.json', json: '' });
+  eq('hints: only absolute http(s) survive', B.cleanHints({ blyg: 'file:///etc/hosts', json: 'https://a.example/i.json' }),
+    { blyg: '', json: 'https://a.example/i.json' });
+  eq('identity: the manifest\'s folder', B.identityOf('https://Example.COM/blyg/blyg.json?x=1'), 'https://example.com/blyg/');
+
+  const find = async (page, routes, hints = null) => {
+    const w = fakeWeb(routes);
+    const s = B.session(page, w.get);
+    const r = await B.findManifest(s, page, hints);
+    return { r, calls: w.calls };
+  };
+  let { r, calls } = await find(VR_PAGE, { [`${VR}blyg.json`]: 'venkat-manifest.json' });
+  eq('item page under /blyg/: found by the conventional mount', [r.status, r.origin], ['found', VR]);
+  eq('…after the direct probe at its own path', calls, [`${VR_PAGE}blyg.json`, `${VR}blyg.json`]);
+  ({ r, calls } = await find(AN_PAGE, { [`${AN}blyg.json`]: 'angadh-manifest.json' }, { blyg: `${AN}blyg.json`, json: AN_JSON }));
+  eq('root-level article: found through its rel=blyg', [r.status, r.origin], ['found', AN]);
+  eq('…in two requests', calls, ['https://angadh.com/rockets-1/blyg.json', `${AN}blyg.json`]);
+  ({ r } = await find(BB, { [`${BB}blyg.json`]: 'blygger-manifest.json' }));
+  eq('front page at a domain root: the direct probe', [r.status, r.origin], ['found', BB]);
+  ({ r, calls } = await find('https://example.com/2026/11/a-post', {}));
+  eq('not a blyg: every probe answered, none a manifest', r.status, 'none');
+  eq('…three requests and no more', calls.length, 3);
+  ({ r } = await find(VR_PAGE, { [`${VR}blyg.json`]: { text: '{"blyg": "0.4", ' } }));
+  eq('malformed manifest (not JSON) is not a manifest', r.status, 'none');
+  ({ r } = await find(VR_PAGE, { [`${VR}blyg.json`]: { text: '["blyg"]' } }));
+  eq('malformed manifest (not an object) is not a manifest', r.status, 'none');
+  ({ r } = await find(VR_PAGE, { [`${VR}blyg.json`]: { text: '{"title":"no version key"}' } }));
+  eq('malformed manifest (no blyg key) is not a manifest', r.status, 'none');
+  ({ r } = await find(VR_PAGE, { [`${VR}blyg.json`]: 'timeout' }));
+  eq('a probe that timed out makes "no" unsayable', r.status, 'trouble');
+  ({ r } = await find(VR_PAGE, { [`${VR}blyg.json`]: 'too-big' }));
+  eq('…so does an oversized answer', r.status, 'trouble');
+}
+
 // ---- report -----------------------------------------------------------------
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blyg: ${pass} passed, ${fail} failed`);
