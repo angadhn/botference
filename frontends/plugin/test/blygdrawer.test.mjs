@@ -168,6 +168,11 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   ok('not offered in the library', drawer.popover === 'export' && !row());
+  drawer.setPage({ url: 'bfp-pdf://sha256/0123abcd', title: 'A paper', threads: [], page_chat: [] });
+  await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  ok('not offered on a PDF read off this computer', drawer.popover === 'export' && !row());
 }
 
 for (const f of failures) console.log('  FAIL ' + f);

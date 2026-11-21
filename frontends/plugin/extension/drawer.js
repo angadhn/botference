@@ -10424,7 +10424,9 @@ ${bubbleShellHtml()}`;
     // Not offered in the library, which is no page.
     const isResponse = () => !!(D.page && D.page.export_response === 'response');
     function responseRowHtml() {
-      if (!D.page || !D.page.url || isLibraryUrl(D.page.url)) return '';
+      // only where a response can name its target: a web page (not a PDF on
+      // this computer, a file or the library)
+      if (!D.page || !/^https?:\/\//i.test(String(D.page.url || ''))) return '';
       const on = isResponse();
       const post = D.blyg.mode === 'blyg';
       return `<div class="pop-head second">The note is…</div>`

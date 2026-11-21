@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as blog from './blog.mjs';
+import { isWebUrl } from './blyg.mjs';
 // how a quote is written, and the two optional Blygger front-matter keys:
 // the same module the Obsidian export uses, so the rules exist once
 import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys } from './note-quotes.mjs';
@@ -61,7 +62,9 @@ export function frontMatterFor(d, title, source, now = new Date(), { preserveDat
     title: JSON.stringify(title), created: date('created'), released: date('released'),
     ...(Object.hasOwn(original, 'date') ? { date: date('date') } : {}),
     tags: JSON.stringify([...new Set(['essays', ...tags])]),
-    published: 'false', permalink: JSON.stringify(d.urlPath), source_url: JSON.stringify(source.url),
+    // a post a site will publish never carries a local path or an internal
+    // address (a PDF on this disk is bfp-pdf://…): only a web address is kept
+    published: 'false', permalink: JSON.stringify(d.urlPath), source_url: JSON.stringify(isWebUrl(source.url) ? source.url : ''),
   };
   const seen = new Set();
   const lines = [];
@@ -126,7 +129,7 @@ export function quoteSet(page, cfg = {}) {
   const sources = item ? [item.page] : [];
   for (const { t } of items) if (t.blyg && t.blyg.status === 'blyg' && t.blyg.page) sources.push(t.blyg.page);
   const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : null;
-  return { items, style: quoteStyleOf(cfg.quote_style).style, url: (page && page.url) || '', label,
+  return { items, style: quoteStyleOf(cfg.quote_style).style, url: isWebUrl(page && page.url) ? page.url : '', label,
     keys: item ? blygKeys({ sources, stubOf }) : [] };
 }
 

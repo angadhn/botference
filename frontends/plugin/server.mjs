@@ -40,7 +40,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
-import { quoteStyleOf, RESPONSE_MODES } from './note-quotes.mjs';
+import { quoteStyleOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -4819,6 +4819,9 @@ export function handler(req, res) {
       if (!page) return;
       if (!RESPONSE_MODES.includes(data.response)) {
         return fail(res, 400, `response must be one of ${RESPONSE_MODES.join(', ')}`);
+      }
+      if (data.response === 'response' && !canRespond(page)) {
+        return fail(res, 400, 'only a web page can be responded to (a PDF on this computer, a file or the library has no address to name)');
       }
       // …and, on a Blygger post, the version current as it is marked: the
       // version the response answers when the reader's own records name none

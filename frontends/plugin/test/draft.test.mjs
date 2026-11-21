@@ -155,6 +155,19 @@ await test('front matter: a template without a blyg key, on an ordinary page, is
   });
 });
 
+await test('a draft from a PDF on this computer carries no local path or internal address', () => {
+  for (const url of ['bfp-pdf://sha256/0123abcd', 'file:///home/someone/papers/paper.pdf']) {
+    const pdf = { url, title: 'A paper', threads: [{ id: 'p', quote: P2, msgs: [] }], page_chat: [] };
+    const d = dest(draft.parseCommand('/draft-blog'));
+    d.quotes = draft.quoteSet(pdf, {});
+    draft.saveDraft(d, `# From a paper ${url.length}\n\n<!-- quote:1 -->\n\nThoughts.`, { url });
+    const saved = fs.readFileSync(d.file, 'utf8');
+    assert.ok(saved.includes(`> ${P2}\n\nThoughts.`), saved);
+    assert.ok(!saved.includes(url) && !saved.includes('bfp-pdf') && !saved.includes('file:'), saved);
+    assert.match(saved, /source_url: ""/);
+  }
+});
+
 await test('front matter: a blyg_sources key already in the template is filled in place', () => {
   withTemplate('---\ntitle:\nblyg_sources:\n  - https://old.example/\nnotes: keep me\npublished: true\n---\n', () => {
     const d = dest(draft.parseCommand('/draft-blog'));

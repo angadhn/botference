@@ -578,6 +578,21 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   eq('neither: the record\'s version', Q.readVersion(BLYG_PAGE([]), item), 2);
 }
 
+// ---- no local path or internal address ever reaches a note ------------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  const local = url => ({ url, title: 'A paper', site: 'local pdf', file_name: 'paper.pdf', export_response: 'response',
+    threads: [{ quote: 'a sentence', msgs: [] }], page_chat: [] });
+  for (const url of ['bfp-pdf://sha256/0123abcd', 'file:///home/someone/papers/paper.pdf', 'bfp://library']) {
+    const note = renderNote(local(url), { author: 'angadh' }, NOW);
+    const body = note.slice(note.indexOf('\n---\n') + 5);
+    ok(`${url.split(':')[0]}: the quote keeps the plain shape (no address in the body)`, body.includes('> a sentence\n') && !body.includes(url), note);
+    ok(`${url.split(':')[0]}: no blyg_stub_of, even marked as a response`, !note.includes('blyg_stub_of'), note);
+    eq(`${url.split(':')[0]}: not offered as a response target`, Q.canRespond(local(url)), false);
+  }
+  eq('a web page can be responded to', Q.canRespond({ url: 'https://example.org/a' }), true);
+}
+
 // ---- mixed: highlights by reference and ordinary quotes in one note -------------
 // One page can carry both: highlights stamped with the post, highlights from
 // before the page was ever checked (on a page whose first check found it was

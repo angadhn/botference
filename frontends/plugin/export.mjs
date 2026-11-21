@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -221,7 +221,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // …and so does a note the reader marked as a RESPONSE to the post, which
   // starts with the post the way a Blygger stub does (spec §10.6).
   const item = page.blyg && page.blyg.status === 'blyg' && page.blyg.item ? page.blyg.item : null;
-  const response = responseOf(page) === 'response' && !isLibrary(page.url);
+  const response = responseOf(page) === 'response' && !isLibrary(page.url) && canRespond(page);
   if (item && (response || !sources.length)) {
     parts.splice(2, 0, wholePost(item.id, label));
     sources.unshift(item.page);

@@ -20,7 +20,7 @@
 // the two front-matter keys are only for a site whose build reads them, and
 // can be deleted by anyone who does not want them.
 import { whereParts } from './store.mjs';
-import { checkPassage } from './blyg.mjs';
+import { checkPassage, isWebUrl } from './blyg.mjs';
 
 // ---- the choices, named -------------------------------------------------------
 // How a passage from an ordinary (non-Blygger) page is written. One setting,
@@ -48,6 +48,9 @@ export function quoteStyleOf(value) {
 // note's only candidate is its page.
 export const RESPONSE_MODES = Object.freeze(['not-a-response', 'response']);
 export const responseOf = page => (page && page.export_response === 'response' ? 'response' : 'not-a-response');
+// …and a response needs a target the spec can name: a post, or a web page
+// (§10.6's {url}). A PDF on this disk, a file: page or the library has none.
+export const canRespond = page => !!(page && isWebUrl(page.url));
 
 // The version of the post the reader READ, for blyg_stub_of (§10.6: "at
 // creation, what the author saw"): the newest version stamped on the reader's
@@ -121,7 +124,10 @@ export function webQuote(t, style, url) {
     ? blockquote('~~' + String(t.quote || '').replace(/\n+/g, ' ').trim() + '~~')
       + attribution(t) + '\n> *suggested deletion*'
     : blockquote(t.quote) + attribution(t);
-  return style === 'url-card' && url ? `${body}\n>\n> ${url}` : body;
+  // only a web page has an address worth closing a quote with: a PDF read off
+  // this disk (bfp-pdf://…), a file: page or the library keeps the plain shape,
+  // so no local path or internal address ever reaches a note's body
+  return style === 'url-card' && isWebUrl(url) ? `${body}\n>\n> ${url}` : body;
 }
 
 // YAML for a URL: bare when it is plainly a URL, quoted when anything in it
@@ -139,7 +145,7 @@ export function frontMatter({ sources = [], stubOf = null } = {}) {
   if (list.length) out.push('blyg_sources:', ...list.map(u => `  - ${yamlUrl(u)}`));
   if (stubOf && stubOf.id) {
     out.push('blyg_stub_of:', `  origin: ${yamlUrl(stubOf.origin)}`, `  id: ${stubOf.id}`, `  version: ${Number(stubOf.version)}`);
-  } else if (stubOf && stubOf.url) {
+  } else if (stubOf && isWebUrl(stubOf.url)) {
     out.push('blyg_stub_of:', `  url: ${yamlUrl(stubOf.url)}`);
   }
   return out;
