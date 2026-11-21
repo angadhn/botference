@@ -597,6 +597,9 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 /* "+ new project", the row at the bottom of the picker that is not a project */
 .xrow.newproj { display: flex; gap: 6px; align-items: center; flex-wrap: wrap }
 .xrow.newproj.open { cursor: default }
+/* "blyg · v2 · Author" — the page is a Blygger post. Same slot and same
+   register as "made from": a fact about the page, not a control. */
+.hdr .blyg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default }
 /* "made from <page>" — the header line on an artifact that came from an
    annotated page. Same slot and same register as "part of project X". */
 .hdr .madefrom { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }

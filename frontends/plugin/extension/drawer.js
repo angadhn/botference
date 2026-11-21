@@ -130,6 +130,9 @@
 //                                         on, so the url travels instead of
 //                                         being assumed
 //   onExportPage(url, mode)             → {ok, path}   (POST /export {url, mode})
+//   onBlygCheck()                       → {ok, status, site?, item?, reason?}
+//                                         (POST /blyg) is this page a Blygger
+//                                         post? asked once per page
 //   onDeletePage(url)                   → {ok, session_deleted, current}
 //                                         (POST /delete-page) — `current` says
 //                                         the deleted page is the one we are on
@@ -2537,6 +2540,11 @@
       // 'all' | 'comments' — which export the crystal will run, remembered
       // across sessions by content.js (setExportMode) and changed by choosing
       exportMode: 'all',
+      // Is this page a Blygger post? `mode` is one of config.js BLYG_MODES and
+      // changes only through blygSet; `url` is the page it is about, `since`
+      // when the asking began, `info` the answer's site and post (blyg and
+      // blyg-site only). See askBlyg.
+      blyg: { mode: 'unknown', url: '', since: '', info: null },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // The council projects this page is filed under, and the roster the
@@ -3016,6 +3024,7 @@
         projpick: shadow.querySelector('.popover.projpick'),
         helppop: shadow.querySelector('.popover.helppop'),
         madefrom: shadow.querySelector('.hdr .madefrom'),
+        blyg: shadow.querySelector('.hdr .blyg'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
@@ -3126,7 +3135,7 @@ ${markPickHtml()}
   <div class="grip" title="Drag to resize · double-click to reset" role="separator" aria-orientation="vertical"></div>
   <div class="hdr">
     <div class="title">—</div>
-    <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="madefrom" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
+    <div class="meta"><span class="site"></span><span class="proj" hidden></span><span class="madefrom" hidden></span><span class="blyg" hidden></span><span class="conn" title="companion connection"><span class="dot"></span><span class="ctext">connecting…</span></span></div>
     <div class="acts">
       <button class="iconbtn pages" data-act="pages" type="button" title="All annotated pages" aria-label="All annotated pages" aria-pressed="false">${PAGES_SVG}</button>
       <button class="iconbtn filein" data-act="filein" type="button" title="File in a council project" aria-label="File in a council project" hidden>${FILEIN_SVG}</button>
@@ -11810,6 +11819,9 @@ ${bubbleShellHtml()}`;
       // list is otherwise refreshed only when a bot answers. (The model menu
       // asks again whenever it is opened — openModels.)
       if (!D.opened) refreshModels();
+      // …and whether this page is a Blygger post: once per page, the first
+      // time the drawer is opened on it (askBlyg does nothing after that)
+      askBlyg();
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
@@ -11974,6 +11986,8 @@ ${bubbleShellHtml()}`;
         paintSource();
         paintFiled();
       }
+      blygFromPage(page);
+      blygAskIfOpen();
       render();
       landPending();
       return D;
@@ -12030,6 +12044,80 @@ ${bubbleShellHtml()}`;
         ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(name)}</a>`
         : `<b>${esc(name)}</b>`);
       el.title = s.url;
+    }
+
+    // ---- is this page a Blygger post? ---------------------------------------
+    // The modes are config.js BLYG_MODES, shared with the companion; this
+    // drawer keeps the page's in ONE field, D.blyg.mode, and blygSet is the
+    // only thing that changes it — refusing (false) any move config.js's
+    // table does not allow, so a late answer for a page the tab has left
+    // cannot overwrite the page it is on now.
+    //
+    // It asks ONCE per page: the first opening of the drawer on a page finds
+    // 'unknown' and moves to 'checking'; every later opening finds something
+    // else and does nothing. The companion answers within its own time limit;
+    // if it is still asking when it replies, the answer arrives later on the
+    // page record (setPage → blygFromPage).
+    //
+    // What it shows is deliberately quiet: one grey line in the header, and
+    // only for a post (mode 'blyg'). Every other mode shows exactly what the
+    // drawer always showed.
+    function blygSet(next, info) {
+      if (!CFG || !CFG.canBlygMove(D.blyg.mode, next)) return false;
+      const url = (D.page && D.page.url) ? String(D.page.url) : '';
+      D.blyg = { mode: next, url: next === 'unknown' ? '' : (D.blyg.url || url),
+        since: next === 'checking' ? new Date().toISOString() : D.blyg.since,
+        info: (next === 'blyg' || next === 'blyg-site') ? (info || null) : null };
+      paintBlyg();
+      return true;
+    }
+    async function askBlyg() {
+      const url = (D.page && D.page.url) ? String(D.page.url) : '';
+      if (!url || isLibraryUrl(url) || D.blyg.mode !== 'unknown') return;
+      D.blyg.url = url;
+      if (!blygSet('checking')) return;
+      let r = null;
+      try { r = await cb('onBlygCheck')(); } catch (_) { r = null; }
+      // the tab moved to another page meanwhile: this answer is not for it
+      if (D.blyg.url !== url || D.blyg.mode !== 'checking') return;
+      if (!r || r.ok === false || CFG.BLYG_MODES.indexOf(r.status) === -1) { blygSet('check-failed'); return; }
+      if (r.status === 'checking') return;
+      blygSet(r.status, r);
+    }
+    // The page record carries the companion's last answer (page.blyg). It
+    // moves the mode only while this drawer is waiting for one, and only an
+    // answer given since the asking began; a different page starts over.
+    function blygFromPage(page) {
+      const url = (page && page.url) ? String(page.url) : '';
+      if (D.blyg.url && url !== D.blyg.url) { blygSet('unknown'); return; }
+      const b = page && page.blyg;
+      if (D.blyg.mode !== 'checking' || !b || CFG.BLYG_SETTLED.indexOf(b.status) === -1) return;
+      if (String(b.checked || '') < D.blyg.since) return;
+      blygSet(b.status, b);
+    }
+    // (a drawer already open when its page arrives, or moves to another page,
+    // asks then — still once per page)
+    function blygAskIfOpen() { if (D.opened && D.blyg.mode === 'unknown') askBlyg(); }
+    // the words for the header line, and its tooltip
+    function blygLine(info) {
+      const i = (info && info.item) || {};
+      const v = Number(i.version) > 0 ? 'v' + Number(i.version) : '';
+      return {
+        text: ['blyg', v + (i.pinned ? ' pinned' : ''), i.author || ''].filter(Boolean).join(' · '),
+        title: 'A Blygger post' + (i.source ? ' on “' + i.source + '”' : '')
+          + (i.author ? ' by ' + i.author : '') + (v ? ', version ' + i.version : '')
+          + (i.pinned ? ' (pinned: its author promises this version stays online)' : '')
+          + '. Highlights made here record this version, and the export quotes them by reference.',
+      };
+    }
+    function paintBlyg() {
+      const el = D.el && D.el.blyg;
+      if (!D.mounted || !el) return;
+      el.hidden = D.blyg.mode !== 'blyg';
+      if (el.hidden) { el.textContent = ''; el.removeAttribute('title'); return; }
+      const line = blygLine(D.blyg.info);
+      el.textContent = line.text;
+      el.title = line.title;
     }
 
     // content.js learned about the project after the drawer was made, or

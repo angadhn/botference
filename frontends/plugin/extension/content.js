@@ -3536,6 +3536,14 @@
         return { ok: true, queued: d.queued, position: d.position,
                  wait: d.wait, wait_detail: d.wait_detail, reason: d.reason, deduped: d.deduped };
       },
+      // Is this page a Blygger post? Asked by the drawer once per page; the
+      // companion fetches and verifies (blyg.mjs), this only passes the
+      // page's two links along.
+      onBlygCheck: async () => {
+        const r = await api('POST', '/blyg', { url: URL_NOW, hints: blygHints() });
+        if (!r.ok) return failure(r);
+        return { ok: true, ...(r.data || {}) };
+      },
       onExportPage: async (url, mode) => {
         const r = await api('POST', '/export', { url, mode });
         if (!r.ok) return failure(r);
