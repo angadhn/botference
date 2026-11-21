@@ -2272,10 +2272,29 @@
     const url = get('bfp-source');
     return url ? { source_url: url.slice(0, 2000), source_title: get('bfp-source-title').slice(0, 300) } : {};
   };
+  // WHICH BLYGGER POST THIS IS, if it is one: the page's own two <link>s, as
+  // absolute URLs (the companion does the fetching and the believing — see
+  // blyg.mjs for why there and not here). <link rel="blyg"> names the blyg's
+  // manifest; <link rel="alternate" type="application/json"> names the post's
+  // own document. Sent with every write about the page, so the companion can
+  // ask the page's site once and stamp the first record with the answer.
+  // Always an object, so the companion never has to read the page itself; a
+  // PDF in the viewer is never a blyg and sends nothing to go on.
+  function blygHints() {
+    const out = { blyg: '', json: '' };
+    if (PAGE_KIND === 'pdf') return out;
+    for (const el of document.querySelectorAll('head link[rel][href]')) {
+      const rel = String(el.getAttribute('rel') || '').toLowerCase().split(/\s+/);
+      const type = String(el.getAttribute('type') || '').toLowerCase();
+      if (!out.blyg && rel.includes('blyg')) out.blyg = el.href;
+      if (!out.json && rel.includes('alternate') && type === 'application/json') out.json = el.href;
+    }
+    return out;
+  }
   function postPage() {
     lastPostedTitle = headline();
     return api('POST', '/page', { url: URL_NOW, title: lastPostedTitle, site: HOSTNAME,
-      kind: PAGE_KIND, file_name: FILE_NAME, ...sourceMeta() });
+      kind: PAGE_KIND, file_name: FILE_NAME, ...sourceMeta(), blyg_hints: blygHints() });
   }
   // The record-earning gate. Every action that writes about this page — a
   // thread, a reply, an export — awaits this first, so the record exists (with
@@ -2718,7 +2737,8 @@
     // that page was never captured (this thread was made before the viewer
     // could, or on the phone), this is the moment it can be
     await capturePage(pageOfThread(threadId));
-    const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}) };
+    const body = { url: URL_NOW, thread_id: threadId, text, ...(route ? { route } : {}),
+      ...(threadId === PAGE_TARGET ? { blyg_hints: blygHints() } : {}) };
     const ctx = await mentionContext(text, route);
     applyContext(body, ctx);
     await snapshotBeforeSend(wasNew, text, route);
@@ -2850,6 +2870,7 @@
         // the snapshot AFTER the text is read and BEFORE the message: an
         // adapter that fetches (Docs) reuses the read it just made
         await snapshotBeforeSend(wasNew, text, route);
+        body.blyg_hints = blygHints();
         const r = await api('POST', '/thread', body);
         if (!r.ok) return failure(r);
         commitContext(ctx);
@@ -3195,7 +3216,7 @@
         let facts = {};
         try { facts = (SITE && typeof SITE.exportFacts === 'function' && SITE.exportFacts()) || {}; }
         catch (_) { facts = {}; }
-        const r = await api('POST', '/export', { url: URL_NOW, mode, ...facts });
+        const r = await api('POST', '/export', { url: URL_NOW, mode, ...facts, blyg_hints: blygHints() });
         if (!r.ok) return failure(r);
         return { ok: true, path: r.data && r.data.path, mode: r.data && r.data.mode,
                  logged: !!(r.data && r.data.logged), warning: (r.data && r.data.warning) || '' };
