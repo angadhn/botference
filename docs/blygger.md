@@ -35,14 +35,22 @@ page-chat message or export if nothing is known yet, the Discuss companion
 2. **Find the post.** The page's
    `<link rel="alternate" type="application/json">` names the item document
    (§5.8). Without one, an id in the page's own path (`t/{id}/`, `f/{id}/`) is
-   tried, and believed only if the document's `page` field says this is its
-   page.
+   tried.
 3. **Verify.** The item document is always read from where the origin's
    manifest says it lives (the `item` template, or `items/{id}.json`), never
    only from where the page pointed. Its `id` and `origin` must match byte for
    byte, and its `content_hash` must be the SHA-256 of its `content_md`
-   (§5.1).
-4. **Pinned versions.** On a pinned version's own page (`{page}v{n}/`, §8.4),
+   (§5.1). Its `page` and the template addresses must be http or https.
+4. **The page must be the post's own page.** The document's `page` field
+   (or, without one, the reference client's `t/{id}/` / `f/{id}/`) must name
+   the page you are on, apart from query, fragment and a trailing slash; or
+   you are on that page's `v{n}/` for a pinned version. A link proves nothing
+   about the page that carries it: any page can link a blyg's manifest or a
+   post's document. A page that links a post but is not its page is "part of
+   a blyg" when it is on the blyg's own host (a front page, a collection), and
+   "not a blyg" anywhere else, so a copy elsewhere is never credited to the
+   post's author and its words are never exported as the post's.
+5. **Pinned versions.** On a pinned version's own page (`{page}v{n}/`, §8.4),
    the version you are reading is that one, read from its pin document. The
    post's current version, and which versions are pinned, come from its
    changelog.

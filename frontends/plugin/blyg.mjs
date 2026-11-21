@@ -443,7 +443,13 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
   if (m.status === 'trouble') return failed(s.troubles[0] ? s.troubles[0].message : 'the site could not be asked');
   const origin = m.origin;
   const site = { origin, title: clip(m.manifest.title, 200), author: clip(m.manifest.author && m.manifest.author.name, 200) };
-  const notItem = reason => done({ status: 'blyg-site', site, reason });
+  // A page that is not one post is 'blyg-site' when it is on the blyg's own
+  // host (a front page, a collection), and 'not-a-blyg' when it is anywhere
+  // else: any page may LINK to a blyg's manifest or to a post's document
+  // (§12.1's rel probe exists for exactly that), and a link proves nothing
+  // about the page that carries it.
+  const onOriginHost = u.host === new URL(origin).host;
+  const notItem = reason => done({ status: onOriginHost ? 'blyg-site' : 'not-a-blyg', site, reason });
 
   // WHICH ITEM. The page's own <link rel="alternate" type="application/json">
   // first (§5.8: "the way back from a page to the document"); else an id in
@@ -478,7 +484,7 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
   if (r.status === 'trouble') return failed(r.message);
   if (malformed(r)) return failed(`${docUrl} is not a JSON document`);
   if (r.status !== 'ok') {
-    return fromLink ? failed(`the page names post ${id}, which its blyg does not serve`) : notItem('this page is not one post');
+    return fromLink && onOriginHost ? failed(`the page names post ${id}, which its blyg does not serve`) : notItem('this page is not one post');
   }
   const doc = r.json;
   const why = docRefusal(doc, { id, origin });
@@ -519,8 +525,12 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
       content = p.json; json = pinUrl;
     }
     version = n; pinnedPage = u.href;
-  } else if (!fromLink && !samePage(u.href, page)) {
-    return notItem('this page is not one post');
+  } else if (!samePage(u.href, page)) {
+    // THE PAGE MUST BE THE POST'S OWN PAGE. Its document's page field (§5.8)
+    // says where the post lives; a page anywhere else that links the document
+    // (a copy, a quotation, a page pretending to be the post) is not the post,
+    // and its words are not the post's words.
+    return notItem(fromLink ? `this page is not post ${id}'s own page (${page})` : 'this page is not one post');
   }
 
   const author = clip(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || site.author;

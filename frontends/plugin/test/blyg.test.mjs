@@ -307,6 +307,16 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: 'too-big' }, { json: VR_JSON }));
   eq('an oversized item document: could not check', r.status, 'check-failed');
 
+  // a page is the post only if it is the post's own page
+  const EVIL = 'https://evil.example/fake-article';
+  ({ r } = await detectOn(EVIL, VR_WEB, { blyg: `${VR}blyg.json`, json: VR_JSON }));
+  eq('a page elsewhere linking a real post\'s manifest and document: not a blyg', [r.status, /own page/.test(r.reason)], ['not-a-blyg', true]);
+  ok('…and it is credited to nobody', !r.item);
+  ({ r } = await detectOn(`${VR}t/6gd003w2dffqce5b53ehvn7kw2/`, VR_WEB, { blyg: '', json: VR_JSON }));
+  eq('another page on the blyg\'s own host linking this post: part of the blyg, not the post', r.status, 'blyg-site');
+  ({ r } = await detectOn(EVIL, VR_WEB, { blyg: `${VR}blyg.json`, json: '' }));
+  eq('a page elsewhere naming only the manifest: not a blyg', r.status, 'not-a-blyg');
+
   // every URL out of a remote document must be a web address
   for (const bad of ['javascript:alert(1)//', 'data:text/html,hi', 'file:///etc/hosts']) {
     ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: JSON.stringify({ ...item, page: bad }) } }, { json: VR_JSON }));
