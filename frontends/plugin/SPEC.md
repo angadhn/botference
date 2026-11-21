@@ -12616,7 +12616,12 @@ this is the contract.
   rel=blyg href (as a manifest, then as a base), `/blyg/blyg.json`,
   `/blyg.json`. Identity origin = the folder of the final manifest URL
   (§12.2). The post: the alternate JSON link, else an id-shaped segment of the
-  page path that the document's `page` confirms. The document is always read
+  page path. Either way the document's `page` (or the `t/{id}/`, `f/{id}/`
+  convention) must name the page being read, or the page must be its pinned
+  `v{n}/`; otherwise the answer is `blyg-site` on the origin's host and
+  `not-a-blyg` elsewhere (a link proves nothing about the page carrying it).
+  `page` and the item/pin template expansions must be http(s), or the answer
+  is `check-failed`. The document is always read
   from the manifest's `item` template (default `items/{id}.json`). `id` and
   `origin` must match byte for byte, and `content_hash` must equal
   sha256(content_md). On the `{page}v{n}/` page of a pinned version, that
@@ -12624,18 +12629,29 @@ this is the contract.
 - **Answers:** `blyg` | `blyg-site` | `not-a-blyg` | `check-failed`, plus
   `reason`. If a probe could not be asked (refused, timeout, too big,
   network, budget spent), "no" cannot be said: the answer is `check-failed`.
-  PDFs (`kind: 'pdf'`, `.pdf`) and non-http(s) URLs are `not-a-blyg`, with
-  no request.
-- **Guard:** http and https only. `lasso.webAddressRefusal` refuses
-  loopback, private and link-local addresses (every resolved address) and
-  the companion's own port; the one exception is the page's own host when
-  the page is itself local. Redirects are followed by hand, at most 5, each
-  hop guarded. Limits: 8 s per request, 20 s and 8 requests per check, 256 KB
-  per manifest, 4 MB per item document, 2 MB per page, enforced while
-  streaming.
-- **Once per page:** `createChecker` keeps one answer per page URL (10 min;
-  1 min for `check-failed`) and shares an in-flight check between askers.
-  `PLUGIN_BLYG_CHECKS=off` turns all checks off (the test harness default).
+  PDFs (`kind: 'pdf'`, `.pdf`), non-http(s) URLs and pages whose address is
+  on this computer or its private network (`urlRefusal`) are `not-a-blyg`,
+  with no request.
+- **Who:** only the owner's requests start a check (`blygMay` =
+  `hosted.isOwner`) on every route that can (`/page`, `/thread`, page-chat
+  `/reply`, `/export`, `/blyg`); a guest's records are not stamped.
+- **Guard:** http and https only (`urlRefusal`: no localhost names, no
+  special-purpose literal, never the companion's port on any host). Each
+  hop's name is resolved once (`vetHost`, 3 s), every address checked with
+  `lasso.privateAddress` (one table per family: loopback, private, shared
+  100.64/10, link-local, benchmarking, documentation, multicast, reserved;
+  mapped, v4-compatible, NAT64 and 6to4 unwrapped; Teredo refused), any
+  special address refuses the name, and node's http/https connects through a
+  lookup that can only answer that address, on a fresh agent with no proxy.
+  Redirects by hand, at most 5. Limits: 8 s per request, 20 s and 8 requests
+  per check, 256 KB per manifest, 4 MB per item document, 2 MB per page,
+  enforced while streaming.
+- **Once per page:** `createChecker` keeps one answer per page URL (10 min)
+  and shares an in-flight check between askers. A failed check backs off per
+  host (`BACKOFF`: 1 min, doubling, at most 6 h, forgotten on success); until
+  then the host's pages answer `check-failed` with no request.
+- **Off:** `blyg_checks` in config.json (`'on'` default, `'off'`);
+  `PLUGIN_BLYG_CHECKS=off` overrides (the test harness default).
 
 #### The modes, named once
 
@@ -12652,6 +12668,9 @@ this is the contract.
 
 #### Records
 
+- `page.blyg.status` moves only by `blyg.recordMove` under `RECORD_MOVES`:
+  a settled answer (blyg, blyg-site, not-a-blyg) is replaced only by another
+  settled answer, never by `check-failed`; `checked` = last confirmed.
 - `page.blyg = { status, checked, reason?, site?, item? }`, with
   `item = { origin, id, kind, version, latest, pinned, pinned_versions, page,
   pinned_page, json, source, author }`. Absent means never asked.

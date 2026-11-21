@@ -23,9 +23,10 @@ quote shape, which is a setting (below).
 
 ## Recognising a post
 
-When you first open Discuss on a page, and again before the first highlight,
-page-chat message or export if nothing is known yet, the Discuss companion
-(a small server on your own computer) asks the page's site:
+The Discuss companion (a small server on your own computer) asks the page's
+site when you first open Discuss on a page, before the first highlight or
+page-chat message on it, and before an export, unless it already holds an
+answer (see "What is fetched, and when" for how long one is kept):
 
 1. **Find the manifest**, in the spec's discovery order (§12.1, without the
    feed steps): `blyg.json` at the page's own path; the page's
@@ -59,8 +60,13 @@ The answer is one of: a post (with its origin, id, kind, version, whether that
 version is pinned, its page, the blyg's title and the author); part of a blyg
 but not one post (a front page, a collection); not a blyg; or could not check
 (offline, refused, too slow, too large, malformed, or did not verify). A page
-that could not be checked is asked again later; it is never guessed. PDFs and
-local files are never blygs and cost no request.
+that could not be checked is asked again later; it is never guessed. PDFs,
+local files, and pages on this computer or its private network are never
+checked and cost no request.
+
+Once a page is known to be a post, a later check that fails (you are offline,
+the site is slow) does not undo it: the page stays a post until a check that
+succeeds says otherwise.
 
 When the page is a post, the drawer's header gains one grey line beside the
 site name: `blyg · v2 · Author` (or `v2 pinned`). Nothing else in the drawer
@@ -143,7 +149,10 @@ blyg_stub_of:
 
 ### Quotes from ordinary pages: `quote_style`
 
-One setting in the companion's `config.json`, with two named styles:
+One setting in the companion's `config.json`, with two named styles. It
+applies to quotes from http and https pages that are not Blygger posts. A PDF
+on your computer, a local file or the library always gets the plain shape,
+so no local path or internal address ever goes into a note's body:
 
 - `url-card` (the default) closes each quote with an empty `>` line and the
   page's bare URL as its last paragraph. A heading or page line stays above
@@ -154,6 +163,11 @@ One setting in the companion's `config.json`, with two named styles:
 
 Any other value is refused: the note is written with `plain`, and the drawer
 says why.
+
+A directive's label is the page's title. Blygger's grammar has no escape, so a
+title that contains `]]` or ends in `]` cannot be written as a label that
+reads back the same; such a label is left out and the directive names the post
+bare.
 
 ### A worked example
 
@@ -210,8 +224,12 @@ other page the template is written exactly as before. The bot does not
 retype your highlights. It writes a placeholder line where a quote belongs,
 and the companion puts the highlight there in the same syntax as the export.
 A blockquote the bot wrote that is a near copy of one of your highlights is
-replaced by your highlight's exact words. The draft stays an unpublished
-draft. Nothing here publishes anything.
+replaced by your highlight's exact words. Jekyll runs Liquid over a post,
+and a page title or passage is somebody else's text: a quote containing
+`{{`, `}}`, `{%` or `%}` is wrapped in `{% raw %}` … `{% endraw %}` lines, so
+it is printed and never run. The draft's `source_url` is written only as a
+web address. The draft stays an unpublished draft. Nothing here publishes
+anything.
 
 ## What is fetched, and when
 
@@ -221,23 +239,41 @@ request is made for the page's origin, so it is subject to CORS and, on some
 browsers, to the page's own security policy. The companion is subject to
 neither.
 
+- **Who:** only you. When the companion is shared over a tunnel, a guest's
+  pages, highlights and messages never start a check (their records are simply
+  not stamped).
 - **When:** the first time Discuss is opened on a page, before the first
-  highlight or page-chat message on a page whose answer is not yet known, and
-  before an export. One answer per page is kept for ten minutes (one minute
-  if the check failed). Two askers at the same moment share one check.
+  highlight or page-chat message on a page, and before an export, unless an
+  answer is held. An answer is kept for ten minutes. A site that could not be
+  checked is not asked again for a while: one minute after the first failure,
+  doubling with each further failure up to six hours, and forgotten as soon
+  as it answers. Until then every page on that site answers "could not check"
+  at once, so nothing waits on it. Two askers at the same moment share one
+  check.
 - **What:** at most eight GET requests per check: the manifest probes above,
   the item document, and a pinned version's document when you are on its
-  page. The extension sends the companion the page's two `<link>` addresses.
-  The companion fetches the page itself (one more GET) only when it has no
-  addresses from the extension: an export from the pages list, or an older
-  extension.
-- **Limits:** http and https only. Never this computer or the private network,
-  unless the page you are reading is itself on this computer or network, and
-  then only that same host. Each address is resolved and checked, and each
-  redirect is checked the same way (at most five). There is a time limit of 8
-  seconds per request and 20 seconds per check. Size limits are 256 KB for a
-  manifest, 4 MB for an item document and 2 MB for a page, enforced while
-  reading.
+  page. A page's `<link rel="blyg">` and `<link rel="alternate"
+  type="application/json">` cause GETs to whatever host they name (that is
+  what discovery is), always under the limits below. The extension sends the
+  companion those two addresses. The companion fetches the page itself (one
+  more GET) only when it has no addresses from the extension: an export from
+  the pages list, or an older extension.
+- **Limits:** http and https only. Never an address on this computer, its
+  private network, or any other special-purpose range (loopback, private,
+  shared carrier space such as 100.64.0.0/10, link-local and cloud metadata,
+  multicast, reserved, documentation; IPv6 forms that carry such an IPv4
+  address), and never the companion's own port. A page on such an address is
+  not checked at all. Each name is resolved once (within 3 seconds); every
+  address it answers is checked, a name with any such address among its
+  answers is refused, and the connection is made to exactly the address that
+  was checked, with no proxy, so a name cannot answer one address to the check
+  and another to the connection. Each redirect is checked the same way (at
+  most five). There is a time limit of 8 seconds per request and 20 seconds
+  per check. Size limits are 256 KB for a manifest, 4 MB for an item document
+  and 2 MB for a page, enforced while reading.
+- **Turning it off:** set `"blyg_checks": "off"` in the companion's
+  `config.json` (`.botference/plugin/config.json`). No page is asked about
+  then, nothing is stamped, and quotes are written as ordinary quotes.
 - **What is believed:** only JSON that parses as an object, from the origin
   the manifest was fetched from, whose id, origin and hash check out. Every
   string kept from it is clipped, stripped of control characters, and escaped
@@ -251,15 +287,21 @@ neither.
   Discuss only reads.
 - Your highlights, comments and chat stay in the companion's store and in the
   notes it writes to your own disk. The checks send a blyg nothing but
-  ordinary GET requests for its public files, with a generic user agent.
+  ordinary GET requests for its public files. Their user agent names the
+  software, not you:
+  `Mozilla/5.0 (compatible; botference-discuss/1.0; +https://botference.com)`.
 - The export writes a file. Publishing it, and sending any mention the spec
   asks a publisher to send, is up to you and your own site.
 
 ## Known limits
 
-- The check is the reference client's reading of §10.2: which elements end a
-  block and which entities are decoded follow blygger-studio. A publisher
-  that reads the rule differently may disagree on an edge case.
+- The check is §10.2 as the reference client reads it for block boundaries
+  (which elements end a block follow blygger-studio). Character references
+  are decoded as HTML decodes them (every numeric reference, and HTML 4's
+  named ones), which is more than the reference client decodes; on a post
+  whose HTML spells characters as references, that client's own check may
+  disagree. A publisher that reads the rule differently may disagree on an
+  edge case.
 - A blyg's front page or collection page is "part of a blyg". Highlights made
   there are ordinary quotes, because Discuss cannot tell which post on the
   page a passage belongs to.
