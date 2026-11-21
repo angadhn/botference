@@ -42,6 +42,58 @@ export function quoteStyleOf(value) {
     refused: `quote_style ${JSON.stringify(String(value)).slice(0, 60)} is not one of ${QUOTE_STYLES.join(', ')}; wrote plain quotes` };
 }
 
+// Where the reader's own words go around a quote. One setting,
+// `comment_order` in the companion's config, beside quote_style:
+//   'comment-first' — the comment the reader wrote WHEN MAKING the highlight
+//                     (the thread's opening message, if it is theirs and has
+//                     words) comes first, then the quote, then everything else
+//                     in the thread. Blygger readers take position to mean
+//                     something: words above a quote are a quote post, words
+//                     below it a reply.
+//   'quote-first'   — the quote first and the whole thread under it, as
+//                     Discuss always wrote it.
+// An unknown value is refused, with a sentence, and the default is used.
+export const COMMENT_ORDERS = Object.freeze(['comment-first', 'quote-first']);
+export const DEFAULT_COMMENT_ORDER = 'comment-first';
+export function commentOrderOf(value) {
+  if (value === undefined || value === null || value === '') return { order: DEFAULT_COMMENT_ORDER, refused: '' };
+  if (COMMENT_ORDERS.includes(value)) return { order: value, refused: '' };
+  return { order: DEFAULT_COMMENT_ORDER,
+    refused: `comment_order ${JSON.stringify(String(value)).slice(0, 60)} is not one of ${COMMENT_ORDERS.join(', ')}; wrote ${DEFAULT_COMMENT_ORDER}` };
+}
+
+// THE RULE, once, for the export and the draft alike. `msgs` are the thread's
+// messages as the caller will write them (already filtered for the export's
+// mode); `first` is the thread's first readable message. The opening comment
+// is msgs[0] only when it IS that first message, is the reader's own and has
+// words; a thread a bot began, or begun with nothing said (a bare strike),
+// has none. → { opening: msg | null, rest: msgs }.
+export function splitOpening(msgs, { first = null, reader = '', order = DEFAULT_COMMENT_ORDER } = {}) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  const m = list[0];
+  if (order !== 'comment-first' || !m || m !== first || !reader || m.author !== reader || !String(m.text || '').trim()) {
+    return { opening: null, rest: list };
+  }
+  return { opening: m, rest: list.slice(1) };
+}
+
+// The reader's words never swallow the quote, nor are swallowed by it: blocks
+// are always separated by a blank line, and words that end in a list item or
+// an indented line get an empty HTML comment after them, so the directive
+// that follows can never be read as part of a list (the receiving grammar
+// refuses a directive under a list line). A comment ending in a blockquote
+// needs nothing more: a blank line ends a blockquote, so the two stay two.
+export function proseBlock(text) {
+  const s = String(text || '').replace(/\s+$/, '');
+  const last = s.split('\n').filter(l => l.trim()).pop() || '';
+  return /^(\s*([-*+]|\d{1,9}[.)])\s|\s{4}|\t)/.test(last) ? `${s}\n\n<!-- -->` : s;
+}
+
+/** One thread's parts, in order: [opening prose], quote parts, [the rest]. */
+export function arrangeThread({ opening = '', quote = [], after = [] } = {}) {
+  return [...(opening ? [proseBlock(opening)] : []), ...quote, ...after];
+}
+
 // Whether the note answers the page it is about (spec §10.6, a "stub"). One
 // field on the page record, `export_response`, one of these; absent or
 // anything else reads as the first. A note has at most one target, and a page

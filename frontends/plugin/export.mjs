@@ -14,7 +14,8 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond,
+  commentOrderOf, splitOpening, arrangeThread } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -163,6 +164,9 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // quote_style (note-quotes.QUOTE_STYLES): 'url-card' unless the config says
   // otherwise; an unknown value writes 'plain' (exportPage reports the refusal)
   const { style } = quoteStyleOf(cfg && cfg.quote_style);
+  // comment_order (note-quotes.COMMENT_ORDERS): the reader's opening comment
+  // above the quote unless the config says 'quote-first'
+  const { order } = commentOrderOf(cfg && cfg.comment_order);
   const parts = [
     ['---',
       `url: ${page.url}`,
@@ -191,23 +195,28 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   const sources = [];
   for (const t of page.threads || []) {
     const h = highlightParts(t, { style, url: page.url, label, post: opts.post || null });
-    parts.push(...h.parts);
     if (h.source) sources.push(h.source);
+    const after = [];
     // A thread the reader filed says so, and says what it settled — the note
     // is the thing they will re-read in a year, and "we dealt with this, and
     // here is how" is most of what a resolved thread is worth by then. Plain
     // italic prose so a note without any resolved threads is byte-identical
     // to the one this always wrote.
     if (isResolved(t)) {
-      parts.push(`*Resolved${t.resolved_by ? ` by ${t.resolved_by}` : ''}.*`
+      after.push(`*Resolved${t.resolved_by ? ` by ${t.resolved_by}` : ''}.*`
         + (t.summary ? ` ${t.summary}` : ''));
     }
-    const msgs = keptMsgs(t.msgs, only);
-    if (!msgs.length) continue;
+    // the comment written with the highlight goes above the quote
+    // (comment_order, note-quotes.splitOpening); what is left is the thread
+    const { opening, rest } = splitOpening(keptMsgs(t.msgs, only),
+      { first: readable(t.msgs)[0] || null, reader: author, order });
     // a lone comment of your own reads as prose under its quote; anything
     // with a second voice in it needs the speakers named
-    parts.push(msgs.length === 1 && msgs[0].author === author
-      ? bodyOf(msgs[0], attach) : authored(msgs, attach));
+    if (rest.length) {
+      after.push(rest.length === 1 && rest[0].author === author
+        ? bodyOf(rest[0], attach) : authored(rest, attach));
+    }
+    parts.push(...arrangeThread({ opening: opening ? bodyOf(opening, attach) : '', quote: h.parts, after }));
   }
   // the page chat is a conversation with the bots from end to end, so
   // "comments only" has nothing to take from it
@@ -222,7 +231,10 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // starts with the post the way a Blygger stub does (spec §10.6).
   const item = page.blyg && page.blyg.status === 'blyg' && page.blyg.item ? page.blyg.item : null;
   const response = responseOf(page) === 'response' && !isLibrary(page.url) && canRespond(page);
-  if (item && (response || !sources.length)) {
+  // (with the reader's words first, a response that quotes the post by
+  // reference starts with those words, and its quote is its reference; the
+  // whole-post line is then only for a note that references no passage)
+  if (item && (!sources.length || (response && order === 'quote-first'))) {
     parts.splice(2, 0, wholePost(item.id, label));
     sources.unshift(item.page);
   }

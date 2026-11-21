@@ -194,17 +194,17 @@ await test('a page never checked is checked at export, before the note is writte
   assert.equal(note, '---\nurl: https://blyg.web.test/notes/t/abcdefghjkmnpqrstvwxyz0123\nsite: blyg.web.test\n'
     + `saved: ${new Date().toISOString().slice(0, 10)}\ntags: [botference-discuss]\n`
     + `blyg_sources:\n  - ${EXPORT_PAGE}\n---\n\n# Another made-up post\n\n`
-    + `![[${ID2} | Another made-up post]]\n> ${PASSAGE}\n\n`
+    + `from before\n\n![[${ID2} | Another made-up post]]\n> ${PASSAGE}\n\n`
     + '*Version 1 is the version current when Discuss first checked this page, which was after this highlight was made.*\n\n'
-    + 'from before\n\n## Page chat\n\n**reader:** an old question\n');
+    + '## Page chat\n\n**reader:** an old question\n');
   const p = await page(EXPORT_PAGE);
   assert.deepEqual([p.blyg.status, p.threads[0].blyg.as_of], ['blyg', 'check']);
 });
 
-await test('an ordinary page exports as before, its quote closed by its URL (url-card)', async () => {
+await test('an ordinary page exports its comment, then its quote closed by its URL (the defaults)', async () => {
   const r = await POST(B, '/export', { url: PLAIN, mode: 'all' });
   const note = fs.readFileSync(r.json.path, 'utf8');
-  assert.ok(note.includes(`> Anything at all\n>\n> ${PLAIN}\n\na note\n`), note);
+  assert.ok(note.includes(`a note\n\n> Anything at all\n>\n> ${PLAIN}\n`), note);
   assert.ok(!note.includes('blyg_sources'), note);
 });
 

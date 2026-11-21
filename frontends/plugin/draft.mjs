@@ -9,7 +9,8 @@ import * as blog from './blog.mjs';
 import { isWebUrl } from './blyg.mjs';
 // how a quote is written, and the two optional Blygger front-matter keys:
 // the same module the Obsidian export uses, so the rules exist once
-import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys,
+  commentOrderOf, splitOpening, arrangeThread } from './note-quotes.mjs';
 
 export function parseCommand(text) {
   const s = String(text || '').trim();
@@ -130,6 +131,7 @@ export function quoteSet(page, cfg = {}) {
   for (const { t } of items) if (t.blyg && t.blyg.status === 'blyg' && t.blyg.page) sources.push(t.blyg.page);
   const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : null;
   return { items, style: quoteStyleOf(cfg.quote_style).style, url: isWebUrl(page && page.url) ? page.url : '', label,
+    order: commentOrderOf(cfg.comment_order).order, reader: String(cfg.author || ''),
     keys: item ? blygKeys({ sources, stubOf }) : [] };
 }
 
@@ -188,7 +190,16 @@ export function placeQuotes(body, set) {
     return { body: lines.filter(l => !PLACEHOLDER.test(l)).join('\n'), placed: 0, restored: 0,
       unknown: lines.filter(l => PLACEHOLDER.test(l)).length };
   }
-  const render = t => liquidSafe(highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts.join('\n\n'));
+  // a placeholder becomes the highlight as the export writes it, in the same
+  // order: the reader's opening comment (comment_order), then the quote. The
+  // thread's later replies are a conversation, not part of a post, and are
+  // left to the bot's prose.
+  const render = t => {
+    const msgs = (Array.isArray(t.msgs) ? t.msgs : []).filter(m => m && m.kind !== 'tools');
+    const { opening } = splitOpening(msgs, { first: msgs[0] || null, reader: set.reader, order: set.order });
+    return liquidSafe(arrangeThread({ opening: opening ? String(opening.text) : '',
+      quote: highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts }).join('\n\n'));
+  };
   const out = [];
   let placed = 0, restored = 0, unknown = 0;
   for (let i = 0; i < lines.length; i++) {

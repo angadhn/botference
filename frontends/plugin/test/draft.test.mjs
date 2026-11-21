@@ -155,6 +155,18 @@ await test('front matter: a template without a blyg key, on an ordinary page, is
   });
 });
 
+await test('quotes: the comment made with a highlight goes above it in a draft too; replies stay out', () => {
+  const withComments = blygPage();
+  withComments.threads[0].msgs = [{ author: 'reader', ts: '1', text: 'This is the claim.' },
+    { author: 'claude', ts: '2', text: 'A bot reply.' }];
+  withComments.threads[1].msgs = [{ author: 'claude', ts: '3', text: 'A bot began this one.' }];
+  const set = draft.quoteSet(withComments, { quote_style: 'plain', author: 'reader' });
+  const r = draft.placeQuotes('<!-- quote:1 -->\n\n<!-- quote:2 -->', set);
+  assert.equal(r.body, `This is the claim.\n\n![[${BLYG_ID} | A made-up post]]\n> ${P1}\n\n> ${P2}`);
+  const old = draft.placeQuotes('<!-- quote:1 -->', draft.quoteSet(withComments, { quote_style: 'plain', author: 'reader', comment_order: 'quote-first' }));
+  assert.equal(old.body, `![[${BLYG_ID} | A made-up post]]\n> ${P1}`, 'quote-first: the quote alone, as before');
+});
+
 await test('Liquid in a page title or a passage is passed through as text, never run by Jekyll', () => {
   const hostile = blygPage({ title: 'Title {{ site.secret }}' });
   hostile.threads[1].quote = 'Run {% include evil.html %} please';

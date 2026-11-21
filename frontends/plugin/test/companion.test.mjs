@@ -1173,7 +1173,8 @@ async function main() {
     const note = fs.readFileSync(vaultFile, 'utf8');
     assert.ok(!note.includes('Explored'), 'the note omits tool activity');
     assert.ok(note.includes('**claude:** MOCK claude reply.'), 'but keeps the answer');
-    assert.ok(note.includes('**angadh:** @claude verify this [mock:tools]'));
+    // the comment made with the highlight is written above its quote (comment-first)
+    assert.ok(/@claude verify this \[mock:tools\]\n\n> /.test(note), note);
     assert.equal(t.msgs.length, 1);
   });
 
@@ -1255,18 +1256,21 @@ async function main() {
       '',
       '# Export Fixture',
       '',
-      // quote_style 'url-card', the default: the page's URL closes each quote
+      // the defaults: comment_order 'comment-first' puts the comment made
+      // with each highlight above it; quote_style 'url-card' closes each quote
+      // with the page's URL; the rest of the thread follows the quote
+      'A neat point.',
+      '',
       '> Quote one goes here.',
       '>',
       `> ${url}`,
       '',
-      'A neat point.',
+      '@claude is this right?',
       '',
       '> Quote two — with an em dash.',
       '>',
       `> ${url}`,
       '',
-      '**angadh:** @claude is this right?',
       '**claude:** MOCK claude reply.',
       '',
       '## Page chat',
@@ -1300,12 +1304,13 @@ async function main() {
       '',
       '# Export Fixture',
       '',
-      // quote_style 'url-card', the default: the page's URL closes each quote
+      // the defaults (comment-first, url-card); the question to a bot is not
+      // part of the reading, so nothing goes above the second quote
+      'A neat point.',
+      '',
       '> Quote one goes here.',
       '>',
       `> ${url}`,
-      '',
-      'A neat point.',
       '',
       '> Quote two — with an em dash.',
       '>',

@@ -532,7 +532,7 @@ function rawOfViewer(pages) {
     page_chat: [],
   };
   // quote_style 'plain' is the shape these quotes always had
-  const note = renderNote(rec, { author: 'angadh', quote_style: 'plain' }, new Date('2026-08-10T00:00:00Z'));
+  const note = renderNote(rec, { author: 'angadh', quote_style: 'plain', comment_order: 'quote-first' }, new Date('2026-08-10T00:00:00Z'));
   ok('the export attributes the page inside the blockquote',
     note.includes('> the boredom is the strategy\n> — p. 12'), note);
   ok('…and a quote with no page is written exactly as it always was',
@@ -541,7 +541,7 @@ function rawOfViewer(pages) {
   // with the document's URL as its last paragraph
   const card = renderNote(rec, { author: 'angadh' }, new Date('2026-08-10T00:00:00Z'));
   ok('url-card: the page line stays above the URL',
-    card.includes('> the boredom is the strategy\n> — p. 12\n>\n> https://x.test/p.pdf\n\nthe whole argument'), card);
+    card.includes('the whole argument\n\n> the boredom is the strategy\n> — p. 12\n>\n> https://x.test/p.pdf\n'), card);
   const comments = renderNote(rec, { author: 'angadh' }, new Date('2026-08-10T00:00:00Z'), 'comments');
   ok('…in both modes', comments.includes('> — p. 12'));
 }

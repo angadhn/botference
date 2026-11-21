@@ -33,10 +33,10 @@ const eq = (name, got, want) => ok(name, JSON.stringify(got) === JSON.stringify(
   'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
 
 const NOW = new Date('2026-08-08T00:00:00Z');
-// quote_style 'plain' is the export as it always was, so every exact-text
-// assertion below holds that shape still; the default ('url-card') has its own
-// group further down
-const CFG = { author: 'angadh', quote_style: 'plain' };
+// quote_style 'plain' with comment_order 'quote-first' is the export as it
+// always was, so every exact-text assertion below holds that shape still; the
+// defaults ('url-card', 'comment-first') have their own groups further down
+const CFG = { author: 'angadh', quote_style: 'plain', comment_order: 'quote-first' };
 const me = (t, ts) => ({ author: 'angadh', ts: ts || t, text: t });
 const bot = (t, who) => ({ author: who || 'claude', ts: t, text: t });
 const tools = () => ({ author: 'claude', ts: 'tl', kind: 'tools', text: 'Explored\n└ Read' });
@@ -459,11 +459,17 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
   eq('url-card is the default: the page URL is the quote\'s last paragraph, attribution kept above it',
     renderNote(page, { author: 'angadh' }, NOW),
     head
-    + '> the mood in the stands was flat\n>\n> https://example.org/piece\n\nThis is the line the whole piece hangs on.\n\n'
+    + 'This is the line the whole piece hangs on.\n\n> the mood in the stands was flat\n>\n> https://example.org/piece\n\n'
     + '> a passage under a heading\n> (§ Act two)\n>\n> https://example.org/piece\n\n'
     + '> ~~cut this~~\n> *suggested deletion*\n>\n> https://example.org/piece\n');
-  eq('plain: the quote alone, as it always was',
+  eq('plain: the quote alone (the opening comment above it, the default order)',
     renderNote(page, { author: 'angadh', quote_style: 'plain' }, NOW),
+    head
+    + 'This is the line the whole piece hangs on.\n\n> the mood in the stands was flat\n\n'
+    + '> a passage under a heading\n> (§ Act two)\n\n'
+    + '> ~~cut this~~\n> *suggested deletion*\n');
+  eq('plain + quote-first: exactly the export as it always was',
+    renderNote(page, { author: 'angadh', quote_style: 'plain', comment_order: 'quote-first' }, NOW),
     head
     + '> the mood in the stands was flat\n\nThis is the line the whole piece hangs on.\n\n'
     + '> a passage under a heading\n> (§ Act two)\n\n'
@@ -610,16 +616,85 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
 // not a post then), and one made while the check could not be made.
 {
   const mixed = BLYG_PAGE([
-    { quote: S1, blyg: stamp(), msgs: [me('By reference.')] },
+    { quote: S1, blyg: stamp(), msgs: [me('By reference.', 'a'), me('And a later thought.', 'b')] },
     { quote: 'an older note with no stamp', msgs: [me('Ordinary.')] },
     { quote: 'made while offline', blyg: { status: 'check-failed' }, msgs: [] },
   ]);
-  eq('mixed note, default quote style: each highlight in its own form', renderNote(mixed, { author: 'angadh' }, NOW),
+  eq('mixed note, default settings: each highlight in its own form, its opening comment above it', renderNote(mixed, { author: 'angadh' }, NOW),
     BLYG_HEAD
-    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n\nBy reference.\n\n`
-    + '> an older note with no stamp\n>\n> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\n\nOrdinary.\n\n'
+    + `By reference.\n\n![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n\nAnd a later thought.\n\n`
+    + 'Ordinary.\n\n> an older note with no stamp\n>\n> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\n\n'
     + '> made while offline\n>\n> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\n\n'
     + '*Discuss could not check whether this page is a Blygger post, so this is an ordinary quote.*\n');
+}
+
+// ---- comment_order: the comment made with a highlight goes above its quote ------
+{
+  const Q = await import('../note-quotes.mjs');
+  const DEF = { author: 'angadh' };
+  const L = `![[${VR_ID} | It’s the Liveness, Stupid]]`;
+  eq('the orders, in one list', Q.COMMENT_ORDERS, ['comment-first', 'quote-first']);
+  eq('an unknown order is refused, with a sentence, and the default is used', Q.commentOrderOf('backwards'),
+    { order: 'comment-first', refused: 'comment_order "backwards" is not one of comment-first, quote-first; wrote comment-first' });
+
+  // a Blygger post: opening comment, the quote by reference, then the replies
+  const post = BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [me('Smooth? I doubt it.', 'a'),
+    me('@claude was it smooth?', 'b'), bot('Mostly, for the people watching.'), me('Fair.', 'c')] }]);
+  eq('post: opening comment, directive and passage, then the thread', renderNote(post, DEF, NOW),
+    BLYG_HEAD + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\n`
+    + '**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
+  eq('post, comments only: the questions to bots drop out, the opening comment stays above',
+    renderNote(post, DEF, NOW, 'comments'), BLYG_HEAD + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\nFair.\n`);
+  eq('post, quote-first: the old order', renderNote(post, { ...DEF, comment_order: 'quote-first' }, NOW),
+    BLYG_HEAD + `${L}\n> ${S1}\n\n`
+    + '**angadh:** Smooth? I doubt it.\n**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
+
+  // an ordinary page, both quote styles
+  const plainPage = { url: 'https://example.org/piece', title: 'The Quiet Machine', site: 'example.org', page_chat: [],
+    threads: [{ quote: 'the mood was flat', msgs: [me('The line it hangs on.', 'a'), me('Still true.', 'b')] }] };
+  const head = '---\nurl: https://example.org/piece\nsite: example.org\nsaved: 2026-08-08\ntags: [botference-discuss]\n---\n\n# The Quiet Machine\n\n';
+  eq('ordinary page, url-card', renderNote(plainPage, DEF, NOW),
+    head + 'The line it hangs on.\n\n> the mood was flat\n>\n> https://example.org/piece\n\nStill true.\n');
+  eq('ordinary page, plain', renderNote(plainPage, { ...DEF, quote_style: 'plain' }, NOW),
+    head + 'The line it hangs on.\n\n> the mood was flat\n\nStill true.\n');
+
+  // no opening comment; a thread a bot began; an empty first message
+  const noOpening = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [] }] };
+  eq('no opening comment: the quote alone, as before', renderNote(noOpening, DEF, NOW),
+    head + '> the mood was flat\n>\n> https://example.org/piece\n');
+  const botFirst = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [bot('An automatic note.'), me('My reply.', 'z')] }] };
+  eq('a thread a bot began: nothing above the quote', renderNote(botFirst, DEF, NOW),
+    head + '> the mood was flat\n>\n> https://example.org/piece\n\n**claude:** An automatic note.\n**angadh:** My reply.\n');
+  const emptyFirst = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [me('', 'a'), me('Later.', 'b')] }] };
+  eq('an empty first message: nothing above the quote', renderNote(emptyFirst, DEF, NOW),
+    head + '> the mood was flat\n>\n> https://example.org/piece\n\n**angadh:** \n**angadh:** Later.\n');
+
+  // a strike: the same rule — its note is the reason, written above it
+  const strike = BLYG_PAGE([{ quote: 'smooth extrapolation', mark: 'strike', blyg: stamp(), msgs: [me('Overstated.', 'a')] }]);
+  eq('a strike with a note: the note above, then the quote and "suggested deletion"', renderNote(strike, DEF, NOW),
+    BLYG_HEAD + `Overstated.\n\n${L}\n> smooth extrapolation\n\n*suggested deletion*\n`);
+  const bareStrike = BLYG_PAGE([{ quote: 'smooth extrapolation', mark: 'strike', blyg: stamp(), msgs: [] }]);
+  eq('a bare strike: as before', renderNote(bareStrike, DEF, NOW),
+    BLYG_HEAD + `${L}\n> smooth extrapolation\n\n*suggested deletion*\n`);
+
+  // a response: it starts with the reader's words, and its quote is its reference
+  const resp = { ...post, export_response: 'response' };
+  const respNote = renderNote(resp, DEF, NOW);
+  eq('response note: starts with the reader\'s words, then the quote', respNote,
+    BLYG_HEAD.replace('---\n\n#', `blyg_stub_of:\n  origin: ${VR}\n  id: ${VR_ID}\n  version: 2\n---\n\n#`)
+    + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\n`
+    + '**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
+  const respNoPassage = { ...BLYG_PAGE([], [me('@claude summarise?'), bot('Liveness.')]), export_response: 'response' };
+  ok('response with no passage: still the whole-post line, so it references the post',
+    renderNote(respNoPassage, DEF, NOW).includes(`# It’s the Liveness, Stupid\n\n${L}\n\n## Page chat`));
+
+  // the reader's words never swallow the quote
+  const listy = BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [me('Two points:\n\n- one\n- two', 'a')] }]);
+  eq('an opening comment ending in a list: an empty comment keeps the directive out of the list',
+    renderNote(listy, DEF, NOW), BLYG_HEAD + `Two points:\n\n- one\n- two\n\n<!-- -->\n\n${L}\n> ${S1}\n`);
+  const quoted = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [me('As he said:\n\n> something else', 'a')] }] };
+  eq('an opening comment ending in a blockquote: a blank line keeps the two quotes two',
+    renderNote(quoted, DEF, NOW), head + 'As he said:\n\n> something else\n\n> the mood was flat\n>\n> https://example.org/piece\n');
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
