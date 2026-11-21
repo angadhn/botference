@@ -28,6 +28,10 @@
                      switch held mid-flight, waiting on the companion
                      (screenshot state)
     ?export=1        open the export chooser on the Obsidian crystal (screenshot state)
+    ?blyg=1          the page is a Blygger post: the companion's /blyg answers
+                     with a (made-up) post at version 2, two highlights carry
+                     its stamp and the second is not word for word in it —
+                     the header line and the card's notice are on screen
     ?nobridge=1      …with the bridge not started: the sleeping state
     ?noagents=1      …with the companion started --no-agents ("agents are off")
     ?nostatus=1      …with a companion that reports no `status` at all: the
@@ -1372,6 +1376,13 @@ if (WHERE) {
     + '. The players say so themselves, and the manager does not contradict them.');
 }
 
+// a made-up Blygger post, for ?blyg=1 (the shape blyg.mjs detect answers with)
+const BLYG_ITEM = { origin: 'https://example.com/blyg/', id: '0123456789abcdefghjkmnpqrs', kind: 'thread',
+  version: 2, latest: 2, pinned: false, pinned_versions: [], page: 'https://example.com/blyg/t/0123456789abcdefghjkmnpqrs/',
+  pinned_page: '', source: 'The Quiet Blyg', author: 'A. Writer' };
+const BLYG_ANSWER = { status: 'blyg', site: { origin: BLYG_ITEM.origin, title: 'The Quiet Blyg', author: 'A. Writer' }, item: BLYG_ITEM };
+const blygStamp = passage => ({ status: 'blyg', origin: BLYG_ITEM.origin, id: BLYG_ITEM.id, version: 2, pinned: false,
+  page: BLYG_ITEM.page, as_of: 'record', passage });
 const RECORD = {
   version: 1,
   url: PAGE_URL,
@@ -1409,6 +1420,12 @@ const RECORD = {
     { author: 'claude', ts: iso(11), text: 'The team is deliberately unspectacular: it trades possession and early tempo for control late in games, and the results have improved every year while the underlying numbers stayed flat.' },
   ],
 };
+// ?blyg=1: the first two highlights were made on the post; the second ran
+// past the passage, so it is not word for word in it
+if (Q.get('blyg') === '1') {
+  RECORD.threads[0].blyg = blygStamp({ match: true });
+  RECORD.threads[1].blyg = blygStamp({ match: false, nearest: 'called it a structural failure of oversight' });
+}
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }
 // ?where=1 — the three threads on the repeated sentence. The two copies carry
@@ -3454,6 +3471,14 @@ function companion(method, path, body) {
     return freshKnown
       ? { ok: true, status: 200, data: { ...RECORD, turns } }
       : { ok: true, status: 200, data: { ok: true, page: null, turns } };
+  }
+  // ?blyg=1: the page is a made-up Blygger post (blyg.mjs detect's answer)
+  if (method === 'POST' && route === '/blyg') {
+    return { ok: true, status: 200, data: Q.get('blyg') === '1' ? BLYG_ANSWER : { status: 'not-a-blyg', reason: 'no Blygger manifest was found' } };
+  }
+  if (method === 'POST' && route === '/export-response') {
+    if (body && body.response === 'response') RECORD.export_response = 'response'; else delete RECORD.export_response;
+    return { ok: true, status: 200, data: { response: body && body.response } };
   }
   if (method === 'POST' && route === '/page') {
     freshKnown = true;                 // the upsert is what brings it into being
