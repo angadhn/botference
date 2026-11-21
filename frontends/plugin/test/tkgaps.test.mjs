@@ -253,6 +253,15 @@ function studioScopes(text) {
   eq('studio: a block gap, exactly as Studio writes it after Generate',
     G.renderGaps(block, stored(block, 'filled-by-agent', 'First paragraph.\n\nSecond paragraph.'), S),
     'My view.\n\n[TK] explain it [=]First paragraph.\n\nSecond paragraph.[/TK]\n\nAfter.');
+  const glued = 'My view.\n/tk explain it\nAfter.';
+  eq('studio: a gap typed on its own line, between two lines, is still a paragraph of its own',
+    G.renderGaps(glued, stored(glued, 'filled-by-agent', 'Done.'), S), 'My view.\n\n[TK] explain it [=]Done.[/TK]\n\nAfter.');
+  eq('…unfilled, likewise; and removed leaves the two paragraphs apart',
+    [G.renderGaps(glued, stored(glued, 'pending', ''), S), G.renderGaps(glued, stored(glued, 'removed', ''), S)],
+    ['My view.\n\n[TK] explain it [/TK]\n\nAfter.', 'My view.\n\nAfter.']);
+  ok('…and Studio\'s scanner reads it as one closed scope', (() => {
+    const r = studioScopes(G.renderGaps(glued, stored(glued, 'filled-by-agent', 'Done.'), S));
+    return r.scopes.length === 1 && !r.errors.length && r.scopes[0].output === 'Done.'; })());
   const inline = 'It is /tk(two words) really.';
   eq('studio: an inline gap keeps one paragraph',
     G.renderGaps(inline, stored(inline, 'filled-by-agent', 'quite\n\ngood  '), S),

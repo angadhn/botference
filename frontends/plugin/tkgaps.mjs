@@ -249,9 +249,10 @@ export function studioOutput(text, { inline = false } = {}) {
 }
 export const studioInstruction = i => refTokens(String(i).replace(/\s+/g, ' ').trim());
 
-// Where the reader put the gap decides its form (tk.ts ~89-96): alone in its
-// paragraph → block; inside a sentence → inline.
-export const isBlockGap = (text, g) => /(^\s*|\n[ \t]*\n)[ \t]*$/.test(text.slice(0, g.start))
+// Where the reader put the gap decides its form (tk.ts ~89-96): a block when
+// it was typed as one (`/tk …` on its own line) or stands alone in its
+// paragraph (a Studio-style alias between blank lines); otherwise inline.
+export const isBlockGap = (text, g) => g.form === 'line' || /(^\s*|\n[ \t]*\n)[ \t]*$/.test(text.slice(0, g.start))
   && /^[ \t]*(\n[ \t]*\n|\s*$)/.test(text.slice(g.end));
 
 /**
@@ -286,15 +287,23 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
     const reason = !include && (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader')
       ? 'agent text left out of this export' : g.mode === 'pending' ? 'still being written' : (g.reason || 'not written');
     if (style === 'studio') {
+      // a gap on a line of its own is a paragraph of its own (a scope glued
+      // to the line above would join that paragraph); one inside a sentence
+      // stays where it is
+      const block = isBlockGap(s, f);
       out += prose(s.slice(at, f.start));
-      if (g.mode === 'removed') { at = f.end; return; }
-      const instr = studioInstruction(f.instruction);
-      if (written) {
-        out += `[TK] ${instr} [=]${studioOutput(g.text, { inline: !isBlockGap(s, f) })}[/TK]`;
-        // still marked as the agent's (edited or not): listed as generated
-        if (onGenerated) onGenerated(g);
-      } else out += `[TK] ${instr} [/TK]`;
       at = f.end;
+      if (block) {
+        out = out.replace(/\s+$/, '');
+        const rest = s.slice(at);
+        at += rest.length - rest.replace(/^[ \t]*\n?/, '').length;
+      }
+      if (g.mode === 'removed') { if (block && out) out += '\n\n'; return; }
+      const instr = studioInstruction(f.instruction);
+      const scope = written ? `[TK] ${instr} [=]${studioOutput(g.text, { inline: !block })}[/TK]` : `[TK] ${instr} [/TK]`;
+      // still marked as the agent's (edited or not): listed as generated
+      if (written && onGenerated) onGenerated(g);
+      out += block ? `${out ? '\n\n' : ''}${scope}\n\n` : scope;
       return;
     }
     out += prose(s.slice(at, f.start)).replace(/[ \t]+$/, '');
@@ -309,7 +318,7 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
     out += `${out.trim() ? (out.endsWith('\n') ? '\n' : '\n\n') : ''}${commentLine(f.instruction)}\n${body}\n\n`;
   });
   out += prose(s.slice(at));
-  return style === 'studio' ? out : out.replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '');
+  return out.replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '');
 }
 
 /**
