@@ -660,3 +660,27 @@ export function applyAnswer(page, result, at = new Date()) {
   for (const m of page.page_chat || []) if (stampStatus(m) !== 'none') fill(m, null);
   return changed;
 }
+
+// ---- what the bots are told ---------------------------------------------------
+// One standing line on a turn about a page that is a Blygger post, so a reply
+// can name the post correctly: which post, which version, whose, and how a
+// Blygger author refers to it. `stamp` is the record the turn is about (a
+// highlight's), when it has one. Everything quoted from the post's site is
+// data in quotation marks; a page that is not a post gets nothing.
+export function blygContextBlock(page, stamp = null) {
+  const b = page && page.blyg;
+  if (!b || b.status !== 'blyg' || !b.item || !ID_RE.test(String(b.item.id || ''))) return '';
+  const i = b.item;
+  const q = v => JSON.stringify(clip(v, 200));
+  let out = `This page is a Blygger post (a versioned post on a blyg; spec https://blygger.org/spec/0.4/): `
+    + `post id ${i.id}, version ${Number(i.version)}${i.pinned ? ' (pinned)' : ''}, on the blyg at ${clip(i.origin, 300)}`
+    + (i.source ? ` titled ${q(i.source)}` : '') + (i.author ? `, by ${q(i.author)}` : '') + '. '
+    + `In Blygger markdown it is referred to as [[${i.id}]] inline or ![[${i.id}]] on a line of its own; `
+    + 'use that id and no other, and never put a version inside the brackets.';
+  if (stamp && stamp.status === 'blyg' && stamp.id === i.id) {
+    out += ` The passage under discussion was highlighted in version ${Number(stamp.version)}`
+      + (stamp.passage && stamp.passage.match === false ? ' and is not word for word in the post (it ran past the post\'s own text)' : '')
+      + '.';
+  }
+  return out + '\n';
+}

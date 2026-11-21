@@ -508,7 +508,7 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, tidy, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext, attachContext, webContext, edited, drafting }) {
+  blogContext, attachContext, webContext, edited, drafting, blygContext }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -641,6 +641,10 @@ export function envelope({ url, title, target, text, quote, history,
   // Deliberately NOT the same thing as `artifact`: a filed page is still an
   // ordinary page on its own lane with no write scope. Filing is a read.
   const filed = String(filedContext || '');
+  // …and, on a page that is a Blygger post, which post and version it is and
+  // how to refer to it (blyg.blygContextBlock), on every turn like the rest
+  // of the standing block: a resumed session's replayed history is uneven
+  const blygLine = String(blygContext || '');
   // …and its opposite. A page filed nowhere carries the roster instead, so a
   // bot can say where it thinks the page belongs. First turn only: it is a
   // suggestion, not a standing instruction, and a bot that has already
@@ -670,7 +674,7 @@ export function envelope({ url, title, target, text, quote, history,
   // `pasted` (computed at the top, because the library turn needs it too)
   // stands LAST in the block: everything above is true of the page, and this
   // is true of one message.
-  const standing =`${snap}${decisions}${figure}${writes}${draft}${filed}${lassoed}${pasted}`;
+  const standing =`${snap}${decisions}${figure}${writes}${draft}${filed}${blygLine}${lassoed}${pasted}`;
   const ctx = first
     ? (artifact
       ? `${artifact}${article}\n${standing}---\n`

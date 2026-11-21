@@ -2586,6 +2586,9 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
   // are: the server holds the record, a model never shown the convention
   // cannot use it, and a bot told nothing about its last suggestions assumes
   // they landed and says so.
+  // which Blygger post this page is, when it is one, and which version the
+  // highlight under discussion was made on (blyg.mjs)
+  const blygContext = blygMod.blygContextBlock(page, thread ? thread.blyg : null);
   const blogContext = writing ? authoring.context(writing, page, bg)
       + (ownedSource(bg) ? suggest.suggestBlock({ direct: true }) + suggestVerdict(page, target) : '')
     : (bg && bg.confirmed && bg.source_path)
@@ -2685,6 +2688,8 @@ async function summon(page, target, text, extras = {}, me = { owner: true }) {
     ...(filedContext ? { filedContext } : {}),
     ...(suggestContext ? { suggestContext } : {}),
     ...(blogContext ? { blogContext } : {}),
+    // which Blygger post this page is, when it is one (blyg.mjs)
+    ...(blygContext ? { blygContext } : {}),
     ...(strikeContext ? { strikeContext } : {}),
     ...(questionContext ? { questionContext } : {}),
     ...(nearbyContext ? { nearbyContext } : {}),
