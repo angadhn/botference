@@ -19,6 +19,7 @@
 // The Blygger body syntax is the spec's own and any Blygger editor accepts it;
 // the two front-matter keys are only for a site whose build reads them, and
 // can be deleted by anyone who does not want them.
+import { createRequire } from 'node:module';
 import { whereParts } from './store.mjs';
 import { checkPassage, isWebUrl } from './blyg.mjs';
 
@@ -198,13 +199,9 @@ export function separateCallouts(parts) {
 // field on the page record, `export_response`, one of these; absent or
 // anything else reads as the first. A note has at most one target, and a page
 // note's only candidate is its page.
-export const RESPONSE_MODES = Object.freeze(['not-a-response', 'response']);
-// The reader's explicit choice, once made on a page, is what counts. Until
-// then the default comes from the page: a note made from a Blygger post's own
-// page is nearly always a reply to it, so there it is 'response'; everywhere
-// else 'not-a-response'. (One field; the default is derived, never stored.)
-export const responseOf = page => (page && RESPONSE_MODES.includes(page.export_response) ? page.export_response
-  : page && page.blyg && page.blyg.status === 'blyg' ? 'response' : 'not-a-response');
+// RESPONSE_MODES and responseOf live in extension/config.js, shared with the
+// drawer, so the default is computed in one place.
+export const { RESPONSE_MODES, responseOf } = createRequire(import.meta.url)('./extension/config.js');
 // …and a response needs a target the spec can name: a post, or a web page
 // (§10.6's {url}). A PDF on this disk, a file: page or the library has none.
 export const canRespond = page => !!(page && isWebUrl(page.url));

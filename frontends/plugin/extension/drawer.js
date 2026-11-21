@@ -7224,22 +7224,41 @@ ${bubbleShellHtml()}`;
     }
 
     // ---- the footbar's message -----------------------------------------------
-    // ONE list of what the footbar is saying, ONE field (D.footNote), ONE
-    // setter. How long a message stays is a property of its mode, not a timer
-    // that inspects the text: an 'info' line goes after 6 s, a 'saved' result
-    // after 12 s, a 'warning' after 15 s; 'busy' and 'error' stay until the
-    // next message replaces them; 'idle' is no message.
+    // ONE list of what the footbar is saying (FOOT_NOTES), ONE field
+    // (D.footNote), ONE function that changes it (footNoteMove), which refuses
+    // a move its table does not allow. The moves:
+    //   say     put up a message of some mode; allowed from every mode, since a
+    //           new message always replaces the old one
+    //   clear   back to no message; allowed from every mode
+    //   expire  a timed message running out; allowed only from the timed modes
+    //           (info goes after 6 s, saved after 12 s, warning after 15 s),
+    //           and only for the very message the timer was set for: a busy
+    //           line or an error is never timed out, and a timer left over from
+    //           an earlier message does nothing.
+    // setFootNote(mode, text) is the short way to say or clear.
     const FOOT_NOTES = Object.freeze(['idle', 'busy', 'info', 'saved', 'warning', 'error']);
     const FOOT_NOTE_LIFE = Object.freeze({ info: 6000, saved: 12000, warning: 15000 });
-    function setFootNote(mode, text) {
-      if (FOOT_NOTES.indexOf(mode) === -1) return false;
-      const seq = D.footNote.seq + 1;
-      D.footNote = { mode, text: mode === 'idle' ? '' : String(text || ''), seq };
-      const life = FOOT_NOTE_LIFE[mode];
-      if (life) setTimeout(() => { if (D.footNote.seq === seq) setFootNote('idle'); }, life);
+    const FOOT_NOTE_MOVES = Object.freeze({
+      say: FOOT_NOTES,
+      clear: FOOT_NOTES,
+      expire: Object.freeze(Object.keys(FOOT_NOTE_LIFE)),
+    });
+    function footNoteMove(move, { mode, text, seq } = {}) {
+      const from = FOOT_NOTE_MOVES[move];
+      if (!from || from.indexOf(D.footNote.mode) === -1) return false;
+      if (move === 'say' && (FOOT_NOTES.indexOf(mode) === -1 || mode === 'idle')) return false;
+      if (move === 'expire' && seq !== D.footNote.seq) return false;
+      const next = D.footNote.seq + 1;
+      D.footNote = move === 'say' ? { mode, text: String(text || ''), seq: next } : { mode: 'idle', text: '', seq: next };
+      const life = move === 'say' ? FOOT_NOTE_LIFE[mode] : 0;
+      if (life) setTimeout(() => footNoteMove('expire', { seq: next }), life);
       paintFoot();
       return true;
     }
+    function setFootNote(mode, text) {
+      return mode === 'idle' ? footNoteMove('clear') : footNoteMove('say', { mode, text });
+    }
+    D.footNoteMove = footNoteMove;                           // test/blygdrawer.test.mjs
 
     // ---- agents popover --------------------------------------------------
     // Deliberately behind a gear: a model picker, two context gauges and a
@@ -10541,11 +10560,9 @@ ${bubbleShellHtml()}`;
     // it takes effect: the note gains blyg_stub_of, naming this post (and
     // version) on a Blygger post, or this page's address on any other page.
     // Not offered in the library, which is no page.
-    // the same rule as the companion's note-quotes.responseOf: the reader's
-    // stored choice, else on by default on a Blygger post's own page
-    const isResponse = () => !!(D.page && (D.page.export_response === 'response'
-      || (D.page.export_response !== 'not-a-response'
-        && ((D.page.blyg && D.page.blyg.status === 'blyg') || D.blyg.mode === 'blyg'))));
+    // the one rule, shared with the companion (config.js responseOf): the
+    // reader's stored choice, else on by default on a Blygger post's own page
+    const isResponse = () => !!D.page && CFG.responseOf(D.page, D.blyg.mode) === 'response';
     function responseRowHtml() {
       // only where a response can name its target: a web page (not a PDF on
       // this computer, a file or the library)

@@ -203,6 +203,29 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   eq('a plain export is info', [drawer.footNote.mode, drawer.footNote.text], ['info', 'exported → /vault/Note.md']);
   await run();
   eq('a failure is an error, drawn as one', [drawer.footNote.mode, foot().classList.contains('err')], ['error', true]);
+  // the move table
+  const seq = drawer.footNote.seq;
+  eq('an error is never timed out', [drawer.footNoteMove('expire', { seq }), drawer.footNote.mode], [false, 'error']);
+  eq('say needs a real message mode', [drawer.footNoteMove('say', { mode: 'idle' }), drawer.footNoteMove('say', { mode: 'shouting' })], [false, false]);
+  eq('an unknown move is refused', drawer.footNoteMove('vanish'), false);
+  ok('say replaces any message', drawer.footNoteMove('say', { mode: 'info', text: 'one' }));
+  const first = drawer.footNote.seq;
+  drawer.footNoteMove('say', { mode: 'info', text: 'two' });
+  eq('a leftover timer for an earlier message does nothing', [drawer.footNoteMove('expire', { seq: first }), drawer.footNote.text], [false, 'two']);
+  eq('the timer for this message clears it', [drawer.footNoteMove('expire', { seq: drawer.footNote.seq }), drawer.footNote.mode], [true, 'idle']);
+  eq('nothing to expire when idle', drawer.footNoteMove('expire', { seq: drawer.footNote.seq }), false);
+  ok('clear works from anywhere', drawer.footNoteMove('say', { mode: 'busy', text: 'x' }) && drawer.footNoteMove('clear') && drawer.footNote.mode === 'idle');
+}
+
+// ---- one rule for the response default, shared by drawer and companion ----------------
+{
+  const NQ = await import(path.join(here, '..', 'note-quotes.mjs'));
+  const CFG = require(path.join(here, '..', 'extension', 'config.js'));
+  ok('the companion uses the drawer\'s very function', NQ.responseOf === CFG.responseOf);
+  eq('stored choice, else on for a post, off elsewhere', [
+    CFG.responseOf({ export_response: 'not-a-response', blyg: { status: 'blyg' } }),
+    CFG.responseOf({ blyg: { status: 'blyg' } }), CFG.responseOf({}), CFG.responseOf({}, 'blyg'), CFG.responseOf(null, 'blyg')],
+    ['not-a-response', 'response', 'not-a-response', 'response', 'not-a-response']);
 }
 
 for (const f of failures) console.log('  FAIL ' + f);

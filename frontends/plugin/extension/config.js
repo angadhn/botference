@@ -166,6 +166,23 @@
     return to;
   }
 
+  // ── whether an exported note is a RESPONSE to its page ─────────────────
+  // Blygger's "stub" (spec §10.6). One field on the page record,
+  // export_response, one of RESPONSE_MODES. The reader's explicit choice, once
+  // made on a page, is what counts. Until then the default comes from the
+  // page: a note made from a Blygger post's own page is nearly always a reply
+  // to it, so there it is 'response'; everywhere else 'not-a-response'. The
+  // default is derived, never stored, and derived HERE only: the companion's
+  // export and draft and the drawer's export chooser all call responseOf.
+  // `liveBlygMode` is the drawer's own blyg check (BLYG_MODES), which can know
+  // the page is a post a moment before the record says so.
+  const RESPONSE_MODES = Object.freeze(['not-a-response', 'response']);
+  function responseOf(page, liveBlygMode) {
+    if (page && RESPONSE_MODES.indexOf(page.export_response) !== -1) return page.export_response;
+    const post = (page && page.blyg && page.blyg.status === 'blyg') || liveBlygMode === 'blyg';
+    return page && post ? 'response' : 'not-a-response';
+  }
+
   // ── how long a request to the companion may take ──────────────────────────
   // Every one-shot request has a limit; none may wait for ever. Most are a
   // read or a small write on this machine and answer in milliseconds, so 30s
@@ -339,6 +356,7 @@
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
+    RESPONSE_MODES, responseOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
