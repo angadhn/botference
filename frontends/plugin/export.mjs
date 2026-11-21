@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -229,7 +229,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // What it responds to, when it is a response: exactly one target, the post
   // at the version the reader read, or (an ordinary page) the page's URL.
   const stubOf = !response ? null
-    : item ? { origin: item.origin, id: item.id, version: item.version } : { url: page.url };
+    : item ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : { url: page.url };
   const keys = frontMatter({ sources, stubOf });
   if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
   return parts.join('\n\n') + '\n';

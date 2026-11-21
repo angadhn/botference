@@ -179,6 +179,12 @@ await test('marking the note as a response: one named field, anything else refus
   assert.equal((await page(PLAIN)).export_response, 'response');
   await POST(B, '/export-response', { url: PLAIN, response: 'not-a-response' });
   assert.ok(!('export_response' in await page(PLAIN)));
+  // on a post, the version current as it is marked is kept beside it
+  await POST(B, '/export-response', { url: PAGE, response: 'response' });
+  const marked = await page(PAGE);
+  assert.deepEqual([marked.export_response, marked.export_response_version], ['response', marked.blyg.item.version]);
+  await POST(B, '/export-response', { url: PAGE, response: 'not-a-response' });
+  assert.ok(!('export_response_version' in await page(PAGE)));
 });
 
 await test('a page never checked is checked at export, before the note is written', async () => {

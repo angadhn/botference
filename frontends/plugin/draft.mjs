@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import * as blog from './blog.mjs';
 // how a quote is written, and the two optional Blygger front-matter keys:
 // the same module the Obsidian export uses, so the rules exist once
-import { highlightParts, quoteStyleOf, labelOf, responseOf, frontMatter as blygKeys } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, labelOf, responseOf, readVersion, frontMatter as blygKeys } from './note-quotes.mjs';
 
 export function parseCommand(text) {
   const s = String(text || '').trim();
@@ -125,7 +125,7 @@ export function quoteSet(page, cfg = {}) {
   const label = labelOf((page && (page.custom_title || page.title)) || '');
   const sources = item ? [item.page] : [];
   for (const { t } of items) if (t.blyg && t.blyg.status === 'blyg' && t.blyg.page) sources.push(t.blyg.page);
-  const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: item.version } : null;
+  const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : null;
   return { items, style: quoteStyleOf(cfg.quote_style).style, url: (page && page.url) || '', label,
     keys: item ? blygKeys({ sources, stubOf }) : [] };
 }

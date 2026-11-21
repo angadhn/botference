@@ -562,6 +562,22 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   eq('not a response: no stub_of at all', renderNote({ ...plainPage, export_response: undefined }, CFG, NOW).includes('blyg_'), false);
 }
 
+// ---- blyg_stub_of names the version the reader READ -------------------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  const item = BLYG_PAGE([]).blyg.item;
+  // the record has since seen version 4; the reader's highlights were on 2 and 3
+  const moved = { ...BLYG_PAGE([{ quote: S1, blyg: stamp({ version: 2 }), msgs: [] }, { quote: S1, blyg: stamp({ version: 3 }), msgs: [] }]),
+    export_response: 'response' };
+  moved.blyg = { ...moved.blyg, item: { ...item, version: 4, latest: 4 } };
+  eq('read version: the newest version on the reader\'s own records', Q.readVersion(moved, moved.blyg.item), 3);
+  ok('…is what blyg_stub_of says', renderNote(moved, CFG, NOW).includes('  version: 3\n'));
+  const chatOnly = { ...BLYG_PAGE([]), export_response: 'response', export_response_version: 2 };
+  chatOnly.blyg = { ...chatOnly.blyg, item: { ...item, version: 5, latest: 5 } };
+  eq('no stamped record: the version when the response was marked', Q.readVersion(chatOnly, chatOnly.blyg.item), 2);
+  eq('neither: the record\'s version', Q.readVersion(BLYG_PAGE([]), item), 2);
+}
+
 // ---- mixed: highlights by reference and ordinary quotes in one note -------------
 // One page can carry both: highlights stamped with the post, highlights from
 // before the page was ever checked (on a page whose first check found it was

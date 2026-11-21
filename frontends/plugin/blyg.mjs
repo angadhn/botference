@@ -639,9 +639,40 @@ export function settleWithin(promise, ms) {
 }
 
 // ---- what is stored -------------------------------------------------------------------
-// ON THE PAGE RECORD, `page.blyg`: the last answer, without the post's words.
+// ON THE PAGE RECORD, `page.blyg`: the last VERIFIED answer, without the
+// post's words.
 //   { status, checked, reason? , site?, item? }
-// Absent on every record made before this existed, which reads as 'unknown'.
+// `checked` is when that answer was last confirmed. Absent on every record
+// made before this existed, which reads as 'unknown'.
+//
+// Its status is one of the BLYG_MODES words, kept in this one field and
+// changed only by recordMove, under RECORD_MOVES: a settled answer (blyg,
+// blyg-site, not-a-blyg) is replaced only by another settled answer — a
+// newer version, or a site that now says something else — and NEVER by a
+// check that failed. A failed re-check (offline, timed out) therefore leaves
+// a verified post a post: the export keeps quoting it and the bots keep
+// being told. 'check-failed' is stored only where nothing better is known.
+const SETTLED = Object.freeze(['blyg', 'blyg-site', 'not-a-blyg']);
+export const RECORD_MOVES = Object.freeze({
+  none: Object.freeze([...SETTLED, 'check-failed']),
+  'check-failed': Object.freeze([...SETTLED, 'check-failed']),
+  blyg: SETTLED,
+  'blyg-site': SETTLED,
+  'not-a-blyg': SETTLED,
+});
+export const recordStatus = page => (page && page.blyg && RECORD_MOVES[page.blyg.status] ? page.blyg.status : 'none');
+/** Put `result`'s answer on the page record if RECORD_MOVES allows it. → 'moved' | 'same' | 'refused'. */
+export function recordMove(page, result, at = new Date()) {
+  const from = recordStatus(page);
+  const to = result && result.status;
+  if (!RECORD_MOVES[from].includes(to)) return 'refused';
+  const rec = pageRecordOf(result, at);
+  // the moment of asking is not news: only a different answer is (though a
+  // confirmation moves `checked`, the answer's own date)
+  const was = page.blyg ? JSON.stringify({ ...page.blyg, checked: rec.checked }) : '';
+  page.blyg = rec;
+  return was === JSON.stringify(rec) ? 'same' : 'moved';
+}
 export function pageRecordOf(result, at = new Date()) {
   const out = { status: result.status, checked: at.toISOString() };
   if (result.reason) out.reason = clip(result.reason, 300);
@@ -711,12 +742,8 @@ export function restamp(rec, next) {
 export function applyAnswer(page, result, at = new Date()) {
   if (!page || !result) return false;
   const first = !page.blyg;
-  const before = JSON.stringify(page.blyg || null);
-  const rec = pageRecordOf(result, at);
-  // the moment of asking is not news: only a different answer is
-  const same = before !== 'null' && JSON.stringify({ ...JSON.parse(before), checked: rec.checked }) === JSON.stringify(rec);
-  let changed = false;
-  if (!same) { page.blyg = rec; changed = true; }
+  const move = recordMove(page, result, at);
+  let changed = move === 'moved';
   const fill = (r, quote) => {
     const from = stampStatus(r);
     if (from === 'blyg') return;

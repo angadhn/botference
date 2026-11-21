@@ -49,6 +49,20 @@ export function quoteStyleOf(value) {
 export const RESPONSE_MODES = Object.freeze(['not-a-response', 'response']);
 export const responseOf = page => (page && page.export_response === 'response' ? 'response' : 'not-a-response');
 
+// The version of the post the reader READ, for blyg_stub_of (§10.6: "at
+// creation, what the author saw"): the newest version stamped on the reader's
+// own records on this post; else the version current when the note was marked
+// as a response (`export_response_version`); else the record's. Never simply
+// the latest check, which may be a version the reader never opened.
+export function readVersion(page, item) {
+  const seen = [...((page && page.threads) || []), ...((page && page.page_chat) || [])]
+    .map(r => r && r.blyg).filter(b => b && b.status === 'blyg' && b.id === item.id && Number.isInteger(b.version))
+    .map(b => b.version);
+  if (seen.length) return Math.max(...seen);
+  const marked = Number(page && page.export_response_version);
+  return Number.isInteger(marked) && marked > 0 ? marked : item.version;
+}
+
 // ---- small pieces ---------------------------------------------------------------
 const blockquote = q => String(q || '').split('\n')
   .map(l => (l.trim() ? `> ${l}` : '>')).join('\n');

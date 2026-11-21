@@ -4820,8 +4820,13 @@ export function handler(req, res) {
       if (!RESPONSE_MODES.includes(data.response)) {
         return fail(res, 400, `response must be one of ${RESPONSE_MODES.join(', ')}`);
       }
-      if (data.response === 'response') page.export_response = 'response';
-      else delete page.export_response;
+      // …and, on a Blygger post, the version current as it is marked: the
+      // version the response answers when the reader's own records name none
+      // (note-quotes.readVersion)
+      if (data.response === 'response') {
+        page.export_response = 'response';
+        if (page.blyg && page.blyg.status === 'blyg' && page.blyg.item) page.export_response_version = page.blyg.item.version;
+      } else { delete page.export_response; delete page.export_response_version; }
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { response: data.response });

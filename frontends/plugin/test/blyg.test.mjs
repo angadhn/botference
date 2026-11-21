@@ -442,6 +442,29 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ok('a waiting stamp on a page that turns out not to be a blyg is removed', !('blyg' in turnsOut.threads[0]));
 }
 
+// ---- the page record's one field, and its moves ---------------------------------------
+{
+  const w = fakeWeb(VR_WEB);
+  const answer = await B.createChecker({ get: w.get }).check(VR_PAGE, { json: VR_JSON });
+  const T1 = new Date('2026-11-21T12:00:00Z');
+  const T2 = new Date('2026-11-21T13:00:00Z');
+  const page = { url: VR_PAGE, threads: [], page_chat: [] };
+  eq('record: unknown → blyg', B.recordMove(page, answer, T1), 'moved');
+  eq('record: a failed re-check never replaces a verified post', B.recordMove(page, { status: 'check-failed', reason: 'offline' }, T2), 'refused');
+  eq('…which stays a post, confirmed when it was', [page.blyg.status, page.blyg.item.version, page.blyg.checked], ['blyg', 2, T1.toISOString()]);
+  B.applyAnswer(page, { status: 'check-failed', reason: 'timeout' }, T2);
+  eq('…through applyAnswer too', page.blyg.status, 'blyg');
+  const v3 = { ...answer, item: { ...answer.item, version: 3, latest: 3 } };
+  eq('record: a newer verified version replaces it', [B.recordMove(page, v3, T2), page.blyg.item.version], ['moved', 3]);
+  eq('record: the same answer again is a confirmation', [B.recordMove(page, v3, T2), page.blyg.checked], ['same', T2.toISOString()]);
+  eq('record: a confirmed "not a blyg" may replace it (the site changed)', B.recordMove(page, { status: 'not-a-blyg', reason: 'gone' }, T2), 'moved');
+  eq('record: …and a failed check never replaces that either', B.recordMove(page, { status: 'check-failed' }, T2), 'refused');
+  const fresh = { url: 'https://example.com/a' };
+  eq('record: with nothing known, a failed check is stored', [B.recordMove(fresh, { status: 'check-failed' }, T1), fresh.blyg.status], ['moved', 'check-failed']);
+  eq('record: an answer that is not a status is refused', B.recordMove(fresh, { status: 'maybe' }, T1), 'refused');
+  eq('record: the moves, named', Object.keys(B.RECORD_MOVES), ['none', 'check-failed', 'blyg', 'blyg-site', 'not-a-blyg']);
+}
+
 // ---- what the bots are told -----------------------------------------------------------
 {
   const w = fakeWeb(VR_WEB);
