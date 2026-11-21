@@ -130,6 +130,9 @@
 //                                         on, so the url travels instead of
 //                                         being assumed
 //   onExportPage(url, mode)             → {ok, path}   (POST /export {url, mode})
+//   onExportResponse(response)          → {ok}  (POST /export-response) whether the
+//                                         exported note is a response to this
+//                                         page: 'response' | 'not-a-response'
 //   onBlygCheck()                       → {ok, status, site?, item?, reason?}
 //                                         (POST /blyg) is this page a Blygger
 //                                         post? asked once per page
@@ -8168,6 +8171,7 @@ ${bubbleShellHtml()}`;
         loadMemory();
       },
       'export-run': (btn) => pickExport(btn.dataset.mode),
+      'export-response': () => toggleResponse(),
       'pages': () => { holdOff(); if (D.view === 'pages') showThreads(); else showPages(); },
       'pages-back': () => showThreads(),
       'lib-export': () => doLibraryExport(),
@@ -8442,7 +8446,7 @@ ${bubbleShellHtml()}`;
           if (inBox) syncMention(inBox); else closeMention();
         }
         // …and so does anything that is not the export chooser or its button
-        if (popIs('export') && !(btn && /^export(-run)?$/.test(btn.dataset.act || ''))) closeExportPick();
+        if (popIs('export') && !(btn && /^export(-run|-response)?$/.test(btn.dataset.act || ''))) closeExportPick();
         if (popIs('projects') && !(btn && /^(filein|proj-file)$/.test(btn.dataset.act || ''))) closeProjPick();
         if (!btn) {
           const card = e.target.closest && e.target.closest('.card[data-thread]');
@@ -10407,8 +10411,37 @@ ${bubbleShellHtml()}`;
             `<button class="xrow" type="button" role="menuitem" data-act="export-run" data-mode="pdf">
                <span class="xname">Annotated copy</span>
                <span class="xwhy">the discussion as Acrobat comments, downloaded</span></button>`
-          : '');
+          : '')
+        + responseRowHtml();
       D.el.exportpick.hidden = false;
+    }
+    // WHETHER THE NOTE IS A RESPONSE to this page — Blygger's "stub" (spec
+    // §10.6). One field on the page record, export_response, one of the
+    // companion's RESPONSE_MODES ('not-a-response', the default, or
+    // 'response'), shown here as one toggle row because the export is where
+    // it takes effect: the note gains blyg_stub_of, naming this post (and
+    // version) on a Blygger post, or this page's address on any other page.
+    // Not offered in the library, which is no page.
+    const isResponse = () => !!(D.page && D.page.export_response === 'response');
+    function responseRowHtml() {
+      if (!D.page || !D.page.url || isLibraryUrl(D.page.url)) return '';
+      const on = isResponse();
+      const post = D.blyg.mode === 'blyg';
+      return `<div class="pop-head second">The note is…</div>`
+        + `<button class="xrow xresp${on ? ' on' : ''}" type="button" role="menuitemcheckbox" aria-checked="${on}"
+             data-act="export-response"><span class="xname">${on ? '✓ ' : ''}a response to this ${post ? 'post' : 'page'}</span>`
+        + `<span class="xwhy">${esc(on ? 'adds blyg_stub_of to the front matter; click to undo'
+          : 'adds blyg_stub_of naming this ' + (post ? 'post and the version you read' : 'page'))}</span></button>`;
+    }
+    async function toggleResponse() {
+      if (!D.page) return;
+      const next = isResponse() ? 'not-a-response' : 'response';
+      let r = null;
+      try { r = await cb('onExportResponse')(next); } catch (_) { r = null; }
+      if (!r || r.ok === false) { D.foot = (r && r.error) || 'could not change that'; D.footErr = true; paintFoot(); return; }
+      // the page broadcast brings the record back too; the row answers now
+      if (next === 'response') D.page.export_response = 'response'; else delete D.page.export_response;
+      if (popIs('export')) paintExportPick();
     }
     function openExportPick() {
       if (!D.mounted) return;

@@ -145,6 +145,31 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
     && !notes[0].querySelector('b'), notes[0] && notes[0].outerHTML);
 }
 
+// ---- marking the note as a response ------------------------------------------------------
+{
+  const said = [];
+  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+    onBlygCheck: async () => ANSWER, onExportResponse: async r => { said.push(r); return { ok: true }; } });
+  drawer.setConn(true); drawer.setAuthor('reader');
+  drawer.open('comments');
+  drawer.setPage({ url: POST_URL, title: 'x', threads: [], page_chat: [] });
+  await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  const row = () => drawer.shadow.querySelector('.exportpick .xresp');
+  ok('the export chooser offers it, named for a post', row() && /a response to this post/.test(row().textContent), row() && row().textContent);
+  eq('…off by default', row().getAttribute('aria-checked'), 'false');
+  row().click(); await tick(10);
+  eq('one click asks the companion to mark it', said, ['response']);
+  ok('the chooser stays open and the row is ticked', drawer.popover === 'export' && row().getAttribute('aria-checked') === 'true' && /✓/.test(row().textContent));
+  row().click(); await tick(10);
+  eq('and once more to undo', said, ['response', 'not-a-response']);
+  drawer.setPage({ url: 'bfp://library', title: 'Library', threads: [], page_chat: [] });
+  await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  ok('not offered in the library', drawer.popover === 'export' && !row());
+}
+
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blygdrawer: ${pass} passed, ${fail} failed`);
 process.exit(fail);
