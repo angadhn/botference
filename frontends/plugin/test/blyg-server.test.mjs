@@ -178,13 +178,14 @@ await test('marking the note as a response: one named field, anything else refus
   assert.equal(r.status, 200, r.body);
   assert.equal((await page(PLAIN)).export_response, 'response');
   await POST(B, '/export-response', { url: PLAIN, response: 'not-a-response' });
-  assert.ok(!('export_response' in await page(PLAIN)));
+  assert.equal((await page(PLAIN)).export_response, 'not-a-response', 'the reader\'s choice is stored either way');
   // on a post, the version current as it is marked is kept beside it
   await POST(B, '/export-response', { url: PAGE, response: 'response' });
   const marked = await page(PAGE);
   assert.deepEqual([marked.export_response, marked.export_response_version], ['response', marked.blyg.item.version]);
   await POST(B, '/export-response', { url: PAGE, response: 'not-a-response' });
   assert.ok(!('export_response_version' in await page(PAGE)));
+  assert.equal((await page(PAGE)).export_response, 'not-a-response');
 });
 
 await test('a page never checked is checked at export, before the note is written', async () => {
@@ -193,7 +194,8 @@ await test('a page never checked is checked at export, before the note is writte
   const note = fs.readFileSync(r.json.path, 'utf8');
   assert.equal(note, '---\nurl: https://blyg.web.test/notes/t/abcdefghjkmnpqrstvwxyz0123\nsite: blyg.web.test\n'
     + `saved: ${new Date().toISOString().slice(0, 10)}\ntags: [botference-discuss]\n`
-    + `blyg_sources:\n  - ${EXPORT_PAGE}\n---\n\n# Another made-up post\n\n`
+    // a post's own page: the note is a response by default
+    + `blyg_sources:\n  - ${EXPORT_PAGE}\nblyg_stub_of:\n  origin: ${ORIGIN}\n  id: ${ID2}\n  version: 1\n---\n\n# Another made-up post\n\n`
     + `from before\n\n![[${ID2} | Another made-up post]]\n> ${PASSAGE}\n\n`
     + '*Version 1 is the version current when Discuss first checked this page, which was after this highlight was made.*\n\n'
     + '## Page chat\n\nan old question\n');

@@ -495,7 +495,9 @@ const BLYG_PAGE = (threads, chat = []) => ({
   blyg: { status: 'blyg', checked: '2026-11-21T12:00:00.000Z', item: { origin: VR, id: VR_ID, kind: 'thread', version: 2,
     latest: 2, pinned: false, pinned_versions: [], page: VR_PAGE, pinned_page: '', json: `${VR}items/${VR_ID}.json`,
     source: "Venkatesh Rao's Blyg", author: 'Venkatesh Rao' } },
-  threads, page_chat: chat });
+  // the reader's explicit choice (a post's own page defaults to a response;
+  // the default has its own tests below)
+  export_response: 'not-a-response', threads, page_chat: chat });
 const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\nsite: venkateshrao.com\nsaved: 2026-08-08\n'
   + 'tags: [botference-discuss]\nblyg_sources:\n  - https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/\n---\n\n# It’s the Liveness, Stupid\n\n';
 {
@@ -759,6 +761,19 @@ const bareTk = s => /\[\/?tk\]/i.test(String(s).replace(/`+[^`]*`+/g, ''));
   const note = renderNote(page, { author: 'angadh' }, NOW);
   ok('a whole note with TK marks everywhere carries none bare', !bareTk(note), note);
   eq('…and a label with a TK mark is dropped', Q.labelOf('A [TK] title'), '');
+}
+
+// ---- the response choice's default ---------------------------------------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  const unset = { ...BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [me('Mine.', 'a')] }]) };
+  delete unset.export_response;
+  eq('a Blygger post\'s own page, nothing chosen: a response', Q.responseOf(unset), 'response');
+  ok('…so its note says blyg_stub_of', renderNote(unset, { author: 'angadh' }, NOW).includes(`blyg_stub_of:\n  origin: ${VR}\n  id: ${VR_ID}\n  version: 2\n`));
+  eq('the reader said no: not a response', Q.responseOf({ ...unset, export_response: 'not-a-response' }), 'not-a-response');
+  eq('any other page, nothing chosen: not a response', Q.responseOf({ url: 'https://example.org/a' }), 'not-a-response');
+  eq('…a blyg\'s front page too', Q.responseOf({ url: 'https://example.org/blyg/', blyg: { status: 'blyg-site' } }), 'not-a-response');
+  eq('an ordinary page the reader marked: a response', Q.responseOf({ url: 'https://example.org/a', export_response: 'response' }), 'response');
 }
 
 // ---- agents' words in callouts ------------------------------------------------------

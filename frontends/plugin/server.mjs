@@ -4854,10 +4854,12 @@ export function handler(req, res) {
       // …and, on a Blygger post, the version current as it is marked: the
       // version the response answers when the reader's own records name none
       // (note-quotes.readVersion)
-      if (data.response === 'response') {
-        page.export_response = 'response';
-        if (page.blyg && page.blyg.status === 'blyg' && page.blyg.item) page.export_response_version = page.blyg.item.version;
-      } else { delete page.export_response; delete page.export_response_version; }
+      // the choice is stored either way: once made, it is the reader's, and a
+      // default derived from the page no longer applies (note-quotes.responseOf)
+      page.export_response = data.response;
+      if (data.response === 'response' && page.blyg && page.blyg.status === 'blyg' && page.blyg.item) {
+        page.export_response_version = page.blyg.item.version;
+      } else delete page.export_response_version;
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
       ok(res, { response: data.response });

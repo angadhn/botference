@@ -149,7 +149,7 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
 {
   const said = [];
   const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
-    onBlygCheck: async () => ANSWER, onExportResponse: async r => { said.push(r); return { ok: true }; } });
+    onBlygCheck: async () => (drawer.page && drawer.page.url === POST_URL ? ANSWER : { ok: true, status: 'not-a-blyg' }), onExportResponse: async r => { said.push(r); return { ok: true }; } });
   drawer.setConn(true); drawer.setAuthor('reader');
   drawer.open('comments');
   drawer.setPage({ url: POST_URL, title: 'x', threads: [], page_chat: [] });
@@ -157,12 +157,15 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   const row = () => drawer.shadow.querySelector('.exportpick .xresp');
   ok('the export chooser offers it, named for a post', row() && /a response to this post/.test(row().textContent), row() && row().textContent);
-  eq('…off by default, with a visibly empty box', [row().getAttribute('aria-checked'), !!row().querySelector('.xcheck'), row().querySelector('.xcheck').textContent], ['false', true, '']);
+  eq('…ON by default on a Blygger post\'s own page, the box ticked', [row().getAttribute('aria-checked'), row().querySelector('.xcheck').textContent], ['true', '✓']);
   row().click(); await tick(10);
-  eq('one click asks the companion to mark it', said, ['response']);
-  ok('the chooser stays open and the row is ticked', drawer.popover === 'export' && row().getAttribute('aria-checked') === 'true' && /✓/.test(row().textContent));
+  eq('one click un-marks it, and that choice is the reader\'s from now on', said, ['not-a-response']);
+  ok('the chooser stays open and the box is visibly empty', drawer.popover === 'export' && row().getAttribute('aria-checked') === 'false'
+    && !!row().querySelector('.xcheck') && row().querySelector('.xcheck').textContent === '');
+  drawer.setPage({ ...drawer.page }); await tick(10);
+  ok('…and stays off after the page refreshes (the stored choice wins over the default)', row().getAttribute('aria-checked') === 'false');
   row().click(); await tick(10);
-  eq('and once more to undo', said, ['response', 'not-a-response']);
+  eq('and once more to mark it again', said, ['not-a-response', 'response']);
   drawer.setPage({ url: 'bfp://library', title: 'Library', threads: [], page_chat: [] });
   await tick(10);
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
@@ -173,6 +176,11 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   ok('not offered on a PDF read off this computer', drawer.popover === 'export' && !row());
+  drawer.setPage({ url: 'https://example.com/ordinary', title: 'Ordinary', threads: [], page_chat: [] });
+  await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
+  eq('OFF by default on any other page', row() && row().getAttribute('aria-checked'), 'false');
 }
 
 // ---- the footbar's message: one mode, one setter ---------------------------------------

@@ -10445,7 +10445,11 @@ ${bubbleShellHtml()}`;
     // it takes effect: the note gains blyg_stub_of, naming this post (and
     // version) on a Blygger post, or this page's address on any other page.
     // Not offered in the library, which is no page.
-    const isResponse = () => !!(D.page && D.page.export_response === 'response');
+    // the same rule as the companion's note-quotes.responseOf: the reader's
+    // stored choice, else on by default on a Blygger post's own page
+    const isResponse = () => !!(D.page && (D.page.export_response === 'response'
+      || (D.page.export_response !== 'not-a-response'
+        && ((D.page.blyg && D.page.blyg.status === 'blyg') || D.blyg.mode === 'blyg'))));
     function responseRowHtml() {
       // only where a response can name its target: a web page (not a PDF on
       // this computer, a file or the library)
@@ -10466,7 +10470,8 @@ ${bubbleShellHtml()}`;
       try { r = await cb('onExportResponse')(next); } catch (_) { r = null; }
       if (!r || r.ok === false) { setFootNote('error', (r && r.error) || 'could not change that'); return; }
       // the page broadcast brings the record back too; the row answers now
-      if (next === 'response') D.page.export_response = 'response'; else delete D.page.export_response;
+      // stored either way: once chosen, the default no longer applies
+      D.page.export_response = next;
       if (popIs('export')) paintExportPick();
     }
     function openExportPick() {

@@ -174,7 +174,12 @@ export function separateCallouts(parts) {
 // anything else reads as the first. A note has at most one target, and a page
 // note's only candidate is its page.
 export const RESPONSE_MODES = Object.freeze(['not-a-response', 'response']);
-export const responseOf = page => (page && page.export_response === 'response' ? 'response' : 'not-a-response');
+// The reader's explicit choice, once made on a page, is what counts. Until
+// then the default comes from the page: a note made from a Blygger post's own
+// page is nearly always a reply to it, so there it is 'response'; everywhere
+// else 'not-a-response'. (One field; the default is derived, never stored.)
+export const responseOf = page => (page && RESPONSE_MODES.includes(page.export_response) ? page.export_response
+  : page && page.blyg && page.blyg.status === 'blyg' ? 'response' : 'not-a-response');
 // …and a response needs a target the spec can name: a post, or a web page
 // (§10.6's {url}). A PDF on this disk, a file: page or the library has none.
 export const canRespond = page => !!(page && isWebUrl(page.url));
