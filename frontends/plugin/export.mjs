@@ -13,6 +13,8 @@ import { codeBlocks } from './run.mjs';
 // a bot's capped answer keeps its long half in the note: the vault is where
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
+// TK gaps in the reader's own words, as filled at export (tkgaps.mjs)
+import { renderGaps, gapStyleOf, gapAgentOf, fillFor, generatedLines } from './tkgaps.mjs';
 // how every quote is written, in one place (export and blog draft alike)
 import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond,
   commentOrderOf, splitOpening, arrangeThread, tkSafe, agentStyleOf, calloutTypeOf, messageParts,
@@ -98,8 +100,6 @@ export function withRuns(text, runs, attach) {
 
 // (and never bare TK grammar, whoever wrote it: note-quotes.tkSafe)
 const bodyOf = (m, attach) => tkSafe(withRuns(stripMore(m.text), m.runs, attach));
-const authored = (msgs, attach) =>
-  msgs.map(m => `**${m.author}:** ${bodyOf(m, attach)}`).join('\n');
 // tool-activity summaries are process noise in a note: the drawer keeps them
 // (collapsed), the vault does not
 const readable = msgs => (msgs || []).filter(m => m.kind !== 'tools');
@@ -171,8 +171,21 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   const { order } = commentOrderOf(cfg && cfg.comment_order);
   // agent_style / callout_type (note-quotes.AGENT_STYLES): an agent's words in
   // a callout of their own unless the config says 'inline'
+  // A message's words: anyone's go through tkSafe (no bare TK grammar); the
+  // READER's own are also read for TK gaps (tkgaps.mjs), written in gap_style
+  // with what fillGaps found for them (opts.gaps; a gap with no fill is
+  // written as unfilled). Filled gaps in 'studio' style are listed, in note
+  // order, for blyg_generated.
+  const gapStyle = gapStyleOf(cfg && cfg.gap_style).style;
+  const generated = [];
+  const calloutType = calloutTypeOf(cfg && cfg.callout_type).type;
+  const textOf = threadId => m => (m && m.author === author
+    ? renderGaps(withRuns(stripMore(m.text), m.runs, attach), g => fillFor(opts.gaps, threadId, m, g),
+      { style: gapStyle, calloutType, agent: gapAgentOf(cfg && cfg.gap_agent),
+        onFilled: f => { if (gapStyle === 'studio') generated.push(f); } })
+    : bodyOf(m, attach));
   const agents = { reader: author, isBot: isBotAuthor, style: agentStyleOf(cfg && cfg.agent_style).style,
-    type: calloutTypeOf(cfg && cfg.callout_type).type, body: m => bodyOf(m, attach) };
+    type: calloutType, body: textOf('__page__') };
   const parts = [
     ['---',
       `url: ${page.url}`,
@@ -216,10 +229,14 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     // (comment_order, note-quotes.splitOpening); what is left is the thread
     const { opening, rest } = splitOpening(keptMsgs(t.msgs, only),
       { first: readable(t.msgs)[0] || null, reader: author, order });
+    // written in note order (the opening comment first), so blyg_generated
+    // lists the gaps in the order the note shows them
+    const body = textOf(t.id);
+    const openingText = opening ? body(opening) : '';
     // the rest of the thread: a lone comment of your own reads as prose under
     // its quote; agents' words go in callouts (or, inline, every speaker named)
-    after.push(...messageParts(rest, agents));
-    parts.push(...arrangeThread({ opening: opening ? bodyOf(opening, attach) : '', quote: h.parts, after }));
+    after.push(...messageParts(rest, { ...agents, body }));
+    parts.push(...arrangeThread({ opening: openingText, quote: h.parts, after }));
   }
   // the page chat is a conversation with the bots from end to end, so
   // "comments only" has nothing to take from it
@@ -228,7 +245,8 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // it is the whole note
   if (chat.length) {
     parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat',
-      ...(agents.style === 'callout' ? messageParts(chat, agents) : [authored(chat, attach)]));
+      ...(agents.style === 'callout' ? messageParts(chat, agents)
+        : [chat.map(m => `**${m.author}:** ${agents.body(m)}`).join('\n')]));
   }
   // A note about a Blygger post that quotes none of it by reference — a page
   // chat with no highlights, or highlights that could not be — still names
@@ -248,7 +266,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // at the version the reader read, or (an ordinary page) the page's URL.
   const stubOf = !response ? null
     : item ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : { url: page.url };
-  const keys = frontMatter({ sources, stubOf });
+  const keys = [...frontMatter({ sources, stubOf }), ...generatedLines(generated)];
   if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
   return separateCallouts(parts).join('\n\n') + '\n';
 }

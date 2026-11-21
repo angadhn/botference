@@ -10389,9 +10389,13 @@ ${bubbleShellHtml()}`;
       const r = await run();
       if (r && r.ok === false) { setFootNote('error', r.error || 'export failed'); return; }
       // a PDF also lands in the vault's reading log, and the toast says so
-      const done = (r && r.logged ? 'exported and logged → ' : 'exported → ') + ((r && r.path) || 'Obsidian');
+      const g = r && r.gaps;
+      const done = (r && r.logged ? 'exported and logged → ' : 'exported → ') + ((r && r.path) || 'Obsidian')
+        // TK gaps in your notes: how many an agent filled, and how many not
+        + (g ? ` · ${g.filled} gap${g.filled === 1 ? '' : 's'} filled${g.unfilled ? `, ${g.unfilled} not` : ''}` : '');
       // e.g. a quote_style the config does not name (written as plain)
       if (r && r.warning) setFootNote('warning', done + ' — ' + r.warning);
+      else if (g && g.unfilled) setFootNote('warning', done);
       else setFootNote('info', done);
     }
     const doExport = mode => exportFlow(() => cb('onExport')(mode));

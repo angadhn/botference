@@ -155,11 +155,14 @@ export function messageParts(msgs, { reader = '', isBot = () => false, style = D
 const firstLine = p => String(p).split('\n')[0] || '';
 const lastLine = p => String(p).split('\n').filter(l => l.trim()).pop() || '';
 const isCallout = p => /^> \[![a-z]/.test(firstLine(p));
+// …and a part (a comment with a filled TK gap in it) may END in a callout
+const lastBlock = p => String(p).replace(/\s+$/, '').split(/\n[ \t]*\n/).pop() || '';
+const endsInCallout = p => lastBlock(p).split("\n").some(l => /^> \[![a-z]/.test(l));
 export function separateCallouts(parts) {
   const out = [];
   for (const p of parts) {
     const prev = out[out.length - 1];
-    if (prev !== undefined && (isCallout(p) || isCallout(prev))
+    if (prev !== undefined && (isCallout(p) || endsInCallout(prev))
         && /^\s*>/.test(lastLine(prev)) && /^\s*>/.test(firstLine(p))) out.push('<!-- -->');
     out.push(p);
   }

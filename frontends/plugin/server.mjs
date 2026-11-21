@@ -41,6 +41,7 @@ import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyR
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
+import { fillGaps, gapAgentOf, gapStyleOf } from './tkgaps.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -2124,6 +2125,29 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
       pageNumber: Number(page_number || (thread && thread.page) || 0) || 0,
       mark: mark || (thread && thread.mark) || '',
     });
+  });
+}
+
+// A TK gap in the reader's note, filled at export (tkgaps.mjs): the same
+// silent one-answer job as a tidy, on the page's lane, whose prompt is
+// tkgaps.gapPrompt's (the instruction from the reader, the page only as quoted
+// data). Its answer goes back to this request alone and into no thread.
+function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
+  if (NO_AGENTS || !chat) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
+  const c = chatFor(page.url);
+  if (!c) return Promise.resolve({ ok: false, error: UNCONFIRMED_REASON });
+  const tidy_id = `gap-${Date.now()}-${++tidySeq}`;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      if (tidies.delete(tidy_id)) resolve({ ok: false, error: 'the agent took too long' });
+    }, timeoutMs);
+    tidies.set(tidy_id, { resolve: r => {
+      // the model the agent was set to run as, when the reader chose one; not invented otherwise
+      const model = (store.readConfig().agents.model || {})[agent];
+      resolve(r.ok && model ? { ...r, model } : r);
+    }, timer });
+    c.submit({ url: page.url, target: store.PAGE_CHAT, title: page.title,
+      text: `@${agent} `, tidy: prompt, tidy_kind: 'gap', tidy_id });
   });
 }
 
@@ -6132,6 +6156,29 @@ export function handler(req, res) {
       if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
       const post = blygAnswer && blygAnswer.status === 'blyg'
         ? { id: blygAnswer.item.id, version: blygAnswer.item.version, text: blygAnswer.text } : null;
+      // TK gaps in the reader's own words: filled now (only in the export that
+      // includes the agents' words), each at most once ever — what an agent
+      // wrote is kept on the page (tk_fills), so exporting again writes the
+      // same bytes. Bounded in count and time, and never fatal to the export.
+      const cfgNow = store.readConfig();
+      const gapAgent = gapAgentOf(cfgNow.gap_agent);
+      const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
+      let gaps = { fills: {}, filled: 0, unfilled: 0 };
+      try {
+        gaps = await fillGaps(page, { reader: cfgNow.author, include: exportMode(data.mode) === 'all',
+          ask: (prompt, o) => askGap(page, prompt, o), agent: gapAgent, cache: page.tk_fills || {},
+          post: item ? { id: item.id, version: item.version, origin: item.origin } : null });
+        const fresh = Object.entries(gaps.fills).filter(([, f]) => f.fresh);
+        if (fresh.length) {
+          const latest = store.readPage(page.url) || page;
+          latest.tk_fills = { ...(latest.tk_fills || {}) };
+          for (const [k, f] of fresh) {
+            latest.tk_fills[k] = { text: f.text, by: f.by, at: f.at, ...(f.model ? { model: f.model } : {}) };
+          }
+          store.savePage(latest);
+          page.tk_fills = latest.tk_fills;
+        }
+      } catch (e) { console.warn(`[gaps] ${e.message}`); }
       // `mode` decides what goes in the note: "comments" is the reading
       // without the conversation (see export.mjs). Anything unrecognised —
       // including an older extension that sends nothing — means everything,
@@ -6143,7 +6190,7 @@ export function handler(req, res) {
       const cfg = store.readConfig();
       const now = new Date();
       let file;
-      try { file = exportPage(page, cfg, now, mode, { post }); }
+      try { file = exportPage(page, cfg, now, mode, { post, gaps: gaps.fills }); }
       catch (e) { return fail(res, 500, `export failed: ${e.message}`); }
       // …and a PDF is also logged: one row in the vault's reading log
       // (Clippings/read-links.md), tagged papers, linking the note just
@@ -6159,8 +6206,10 @@ export function handler(req, res) {
       // a quote_style the config does not name was written as 'plain'; the
       // drawer says so beside the path rather than leaving the reader guessing
       const warning = [quoteStyleOf(cfg.quote_style).refused, commentOrderOf(cfg.comment_order).refused,
-        agentStyleOf(cfg.agent_style).refused, calloutTypeOf(cfg.callout_type).refused].filter(Boolean).join('; ');
-      ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(warning ? { warning } : {}) });
+        agentStyleOf(cfg.agent_style).refused, calloutTypeOf(cfg.callout_type).refused,
+        gapStyleOf(cfg.gap_style).refused].filter(Boolean).join('; ');
+      ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(warning ? { warning } : {}),
+        ...(gaps.filled || gaps.unfilled ? { gaps: { filled: gaps.filled, unfilled: gaps.unfilled } } : {}) });
     });
   }
   // Model and effort are the reader's standing PREFERENCES, stored in

@@ -508,7 +508,7 @@ export function envelope({ url, title, target, text, quote, history,
   snapshotPath, decisionPath, pageImage, pageImages, paged,
   pageNumber, mark, summary, card, cardHint, tidy, project, untaggedAll, routeHint,
   filedContext, suggestContext, strikeContext, questionContext, nearbyContext,
-  blogContext, attachContext, webContext, edited, drafting, blygContext }) {
+  blogContext, attachContext, webContext, edited, drafting, blygContext, tidyKind }) {
   // the route this turn carries: what the reader tagged, or — on a project
   // artifact's page chat — the room, because that is what plain text means in
   // a council (routeOf)
@@ -543,6 +543,7 @@ export function envelope({ url, title, target, text, quote, history,
   // …and the third silent turn: a dictated comment made terse, answered back
   // into the reader's own box. Same exclusions, same reasons.
   if (tidy) {
+    if (tidyKind === 'gap') return route + String(tidy);
     return route + tidyPrompt({ title, url, quote, pageNumber, mark, text: tidy });
   }
   if (library) {
@@ -1671,6 +1672,9 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
         card: !!job.card,
         // a dictated comment to make terse: the words themselves
         tidy: job.tidy ? String(job.tidy) : '',
+        // a TK gap to fill at export (tkgaps.mjs): the same silent one-answer
+        // job, whose `tidy` is the whole prompt, already framed
+        tidyKind: job.tidy_kind === 'gap' ? 'gap' : '',
         untaggedAll: !!job.untaggedAll,
         // the thread's sticky address, when the reader's words named nobody
         routeHint: job.routeHint || '',
