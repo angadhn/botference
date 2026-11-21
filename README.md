@@ -925,6 +925,36 @@ tunnel from its options page (URL, password, display name). Owner-only
 stays owner-only: export, page deletion, model/effort/verbosity, relay,
 interrupt.
 
+### Reading a Blygger post
+
+When the page is a post on a [Blygger](https://blygger.org) blog (a
+"blyg"), Discuss recognises it. The companion reads the blyg's public
+`blyg.json` and the post's JSON document and checks that they match. The
+drawer's header then shows one grey line: `blyg · v2 · Author`. Every
+highlight, comment and page-chat message records which post and which
+version it was made on, so an old highlight still says what it quoted after
+the post changes. The models are told which post they are discussing.
+
+The export quotes the post by reference, in Blygger's own syntax: a
+`![[<post id> | <title>]]` line, with your highlighted passage as a `>`
+quote directly under it and your comment after a blank line. Any Blygger
+editor accepts it. The front matter gains `blyg_sources:` (the posts the
+note quotes) and, if you mark the note as a response in the export chooser,
+`blyg_stub_of:`. Both keys are optional; delete them if your site does not
+use them. A highlight whose words are not word for word in the post (it ran
+into a caption or a button) is not written as a Blygger quote, because the
+publisher would reject it. The drawer and the note say so, and offer the
+nearest exact passage.
+
+On any other page, quotes in the note end with the page's URL as their last
+paragraph (`quote_style: "url-card"`, the default). Set
+`"quote_style": "plain"` in `.botference/plugin/config.json` for the old
+shape: the quote alone.
+
+The companion only reads (plain GETs, limited in time and size, never to
+your own network). It never posts or registers anything. Details, the exact
+format and a worked example: [docs/blygger.md](docs/blygger.md).
+
 ### Several pages at once
 
 A turn on one page no longer holds up another. Ask something on an
