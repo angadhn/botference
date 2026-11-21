@@ -1,0 +1,45 @@
+{
+  "about": "Public Blygger documents saved for test/blyg.test.mjs. Retrieved by plain GET on 2026-11-21. Each entry says where the file came from and what, if anything, was changed. Posts by other authors are kept only as short excerpts.",
+  "files": {
+    "venkat-item-page.html": {
+      "from": "https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/",
+      "changed": "head kept as served; body cut to the article's heading and first paragraph"
+    },
+    "venkat-manifest.json": {
+      "from": "https://venkateshrao.com/blyg/blyg.json",
+      "changed": "none"
+    },
+    "venkat-item.json": {
+      "from": "https://venkateshrao.com/blyg/items/27x0ewgc6yqq0h9e2n9g16me8n.json",
+      "changed": "content_md and content_html shortened to the heading and first short paragraph (an excerpt for testing; the post is its author's); content_hash recomputed for the shortened content_md; every other field as served"
+    },
+    "venkat-pinned-item.json": {
+      "from": "https://venkateshrao.com/blyg/items/3vzq82afn6rmyvk6vsq8abnkqh.json",
+      "changed": "content_md and content_html shortened to the heading and first short paragraph (an excerpt for testing; the post is its author's); content_hash recomputed for the shortened content_md; every other field as served"
+    },
+    "venkat-pinned-v2.json": {
+      "from": "https://venkateshrao.com/blyg/items/3vzq82afn6rmyvk6vsq8abnkqh/v2.json",
+      "changed": "content_md and content_html shortened to the heading and first short paragraph (an excerpt for testing; the post is its author's); content_hash recomputed for the shortened content_md; every other field as served"
+    },
+    "angadh-article-page.html": {
+      "from": "https://angadh.com/rockets-1",
+      "changed": "only the title and the canonical, alternate and blyg link elements kept"
+    },
+    "angadh-manifest.json": {
+      "from": "https://angadh.com/blyg/blyg.json",
+      "changed": "none"
+    },
+    "angadh-item.json": {
+      "from": "https://angadh.com/blyg/items/2a1v0zsryykw9srnzt4xd5z0hj.json",
+      "changed": "content_md and content_html shortened to their first two blocks; content_hash recomputed for the shortened content_md"
+    },
+    "blygger-front-page.html": {
+      "from": "https://blyg.blygger.org/",
+      "changed": "head kept as served; body replaced by a placeholder"
+    },
+    "blygger-manifest.json": {
+      "from": "https://blyg.blygger.org/blyg.json",
+      "changed": "none"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "blyg": "0.4",
+  "level": 2,
+  "generator": "angadh-jekyll-blyg/1.0.0",
+  "site": "https://angadh.com/blyg/",
+  "title": "angadh.com",
+  "author": {
+    "name": "Angadh Nanjangud"
+  },
+  "feed": "feed.xml",
+  "items": "items/index.json",
+  "updated": "2026-11-20T16:40:14Z"
+}

@@ -1,0 +1,47 @@
+{
+ "content_md": "<h1>A Vacuum of the Imagination</h1>\n<blockquote>\n  <p>Yet it is clear that in many cases there is indeed no good reason why an invention was made at a particular point in time and not centuries earlier. It is tempting to argue that lack of perceived need or demand was responsible, but it is also possible that a particular innovation simply did not occur to anyone before.</p>\n\n  <p><em>The Lever of Riches</em>, Joel Mokyr</p>\n</blockquote>",
+ "content_html": "<h1>A Vacuum of the Imagination</h1>\n<blockquote>\n  <p>Yet it is clear that in many cases there is indeed no good reason why an invention was made at a particular point in time and not centuries earlier. It is tempting to argue that lack of perceived need or demand was responsible, but it is also possible that a particular innovation simply did not occur to anyone before.</p>",
+ "content_hash": "sha256:7e38a3f99a3b5b306e01fd3fea6fd5102684b393ae7728697d853269d45e506e",
+ "media": [
+  {
+   "url": "https://angadh.com/blyg/media/05686fc9f8758456fd606494a3703cd7813702a94eee7c92ba82c0fa96254de6.jpg",
+   "mime": "image/jpeg",
+   "alt": ""
+  },
+  {
+   "url": "https://angadh.com/blyg/media/53ad21c8c46e3da74b052d910fc3c288ce17de785a1036fbc35eeacae58d9715.jpg",
+   "mime": "image/jpeg",
+   "alt": ""
+  },
+  {
+   "url": "https://angadh.com/blyg/media/916da206bf53b19cdb8991544122f4b499eb5d216bfe51c4c482bbd2866e05f0.jpg",
+   "mime": "image/jpeg",
+   "alt": ""
+  },
+  {
+   "url": "https://angadh.com/blyg/media/9554e18c2c92833d5a4581867fb956366df82fbd0d323f36aa331879a12b13ab.jpg",
+   "mime": "image/jpeg",
+   "alt": ""
+  }
+ ],
+ "page": "https://angadh.com/rockets-1",
+ "author": {
+  "name": "Angadh Nanjangud",
+  "url": "https://angadh.com"
+ },
+ "kind": "thread",
+ "transclusions": [],
+ "blyg": "0.4",
+ "id": "2a1v0zsryykw9srnzt4xd5z0hj",
+ "origin": "https://angadh.com/blyg/",
+ "created": "2026-11-20T16:40:14Z",
+ "updated": "2026-11-20T16:40:14Z",
+ "version": 1,
+ "changelog": [
+  {
+   "version": 1,
+   "at": "2026-11-20T16:40:14Z",
+   "note": null
+  }
+ ]
+}
