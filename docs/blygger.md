@@ -99,6 +99,19 @@ delete them.
 
 ### The body
 
+- **Your words and the quote.** For each highlight, the comment you wrote
+  when you made it (the thread's first message, if it is yours and has words)
+  comes first, as prose; then the quote; then the rest of the thread (your
+  later replies, the bots' replies) as before. Blygger readers take position
+  to mean something: words above a quote make a quote post, words below it a
+  reply. A highlight with no comment of yours at its start (none at all, a
+  thread a bot began, a bare strike) starts with the quote. A strike's note is
+  its reason, so it goes above too. Blank lines always separate your words
+  from the quote; words that end in a list get an empty `<!-- -->` line after
+  them, so the directive can never be read as part of the list. To keep the
+  old order, quote first and the whole thread under it, set
+  `"comment_order": "quote-first"` (the default is `"comment-first"`; any
+  other value is refused and the drawer says so).
 - **A highlight on a post whose words pass the check** is a partial
   transclusion: the directive `![[<id> | <label>]]` on a line of its own, and
   directly under it, with no blank line, the passage as a `> ` blockquote. A
@@ -106,10 +119,9 @@ delete them.
   passage is your highlight's own words, written as plain text: `* _ ` [ < \ ~`,
   an `&` that would start an entity, and line-start characters that would
   make a heading, list, quote or rule are escaped with a backslash, so the
-  publisher reads the same text the check was run on. Your comment follows
-  after a blank line. The label is the page's title as Discuss shows it (your
-  own name for the page if you renamed it). It is your label, not a claim
-  about the post (§10.1).
+  publisher reads the same text the check was run on. The label is the
+  page's title as Discuss shows it (your own name for the page if you renamed
+  it). It is your label, not a claim about the post (§10.1).
 - **A highlight that is not word for word** (it ran into a caption, a
   footnote marker, a button), or whose words are no longer in the post's
   current version, is never written as a directive, because the publisher's
@@ -119,8 +131,11 @@ delete them.
   instead. The drawer shows the same line under the highlight while you read.
 - **The whole post** is the bare directive line `![[<id> | <label>]]`. It is
   written at the top of the body when the note quotes no passage of the post
-  by reference (for example a note that is only a page chat), and when the
-  note is marked as a response.
+  by reference (for example a note that is only a page chat), so every note
+  about a post references it. A response that quotes a passage by reference
+  starts with your words instead: its quote is its reference. (With
+  `comment_order: "quote-first"`, a response starts with the whole-post line,
+  as before.)
 - **A page that is not a Blygger post** is quoted as an ordinary blockquote.
 - A note may mix both kinds. Each highlight is written in its own form.
 - The page chat, when the export includes it, is written as it always was.
@@ -159,7 +174,9 @@ so no local path or internal address ever goes into a note's body:
   the URL. Sites that turn a trailing bare URL into a link card want this. In
   any other renderer it reads as a quote with its source under it.
 - `plain` writes the quote alone, as Discuss always did. The page's URL is in
-  the note's front matter only. To switch back, set `"quote_style": "plain"`.
+  the note's front matter only. To switch back, set `"quote_style": "plain"`,
+  and for the old order too, `"comment_order": "quote-first"`: the two together
+  write exactly what Discuss wrote before.
 
 Any other value is refused: the note is written with `plain`, and the drawer
 says why.
@@ -172,10 +189,11 @@ bare.
 ### A worked example
 
 The public post <https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/>
-("It's the Liveness, Stupid", version 2) with two highlights. The second one
-ran into the page's "RSS ⧉" link. There is a short page chat, and the note is
-marked as a response. Rendered by the export code from the saved test
-fixtures. The comments and the bot's line are made up.
+("It's the Liveness, Stupid", version 2) with two highlights. The first has a
+comment made with it and one later reply; the second ran into the page's
+"RSS ⧉" link. There is a short page chat, and the note is marked as a
+response. Rendered by the export code from the saved test fixtures, with the
+default settings. The comments and the bot's line are made up.
 
 ```markdown
 ---
@@ -193,20 +211,20 @@ blyg_stub_of:
 
 # It’s the Liveness, Stupid
 
-![[27x0ewgc6yqq0h9e2n9g16me8n | It’s the Liveness, Stupid]]
+This is the claim worth arguing with: was it really smooth?
 
 ![[27x0ewgc6yqq0h9e2n9g16me8n | It’s the Liveness, Stupid]]
 > The ChatGPT moment was ultimately a smooth extrapolation of existing trends.
 
-This is the claim worth arguing with: was it really smooth?
+Smooth for the builders, perhaps; not for anyone watching.
+
+A good early signal.
 
 > RSS ⧉ My first view was when a reader trained a simple Markov chain bot on my tweets in 2017.
 >
 > https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/
 
 *Not quoted by reference: these words are not word for word in version 2 of the post (nearest exact passage: “My first view was when a reader trained a simple Markov chain bot on my tweets in 2017.”).*
-
-A good early signal.
 
 ## Page chat
 
@@ -222,7 +240,9 @@ matter gains the same two keys. They replace the same keys if the template
 already has them, and every other template line is kept, in its order. On any
 other page the template is written exactly as before. The bot does not
 retype your highlights. It writes a placeholder line where a quote belongs,
-and the companion puts the highlight there in the same syntax as the export.
+and the companion puts the highlight there in the same syntax and order as
+the export: the comment you made with it, then the quote (the thread's later
+replies are left to the bot's prose).
 A blockquote the bot wrote that is a near copy of one of your highlights is
 replaced by your highlight's exact words. Jekyll runs Liquid over a post,
 and a page title or passage is somebody else's text: a quote containing

@@ -12728,9 +12728,22 @@ this is the contract.
   passage), "not in the current version" (`/export` passes the post's
   current text), "could not check", and as_of `check`.
 - A strike on a post: the quote by reference, then `*suggested deletion*`.
+- Order (`COMMENT_ORDERS = ['comment-first','quote-first']`, config
+  `comment_order`, default `comment-first`; unknown → default + footbar
+  warning): `splitOpening(msgs, {first, reader, order})` takes the thread's
+  first readable message when it is the reader's own, non-empty and still in
+  the export's filtered list; `arrangeThread` writes it (via `proseBlock`,
+  which appends `<!-- -->` after a trailing list item or indented line) above
+  the quote, then the rest (resolved line, then the remaining messages
+  formatted as before). A strike's note follows the same rule. With
+  comment-first, the whole-post line is written only when no passage is
+  quoted by reference (a response's quote is its reference); quote-first keeps
+  the old rule (also for a response). `plain` + `quote-first` = the
+  pre-Blygger bytes.
 - Drafts (`draft.mjs`): `quoteSet`, `quotesPrompt` and `placeQuotes`.
-  - The bot writes `<!-- quote:N -->`, and the companion fills it with
-    `highlightParts`.
+  - The bot writes `<!-- quote:N -->`, and the companion fills it with the
+    opening comment (by the same `splitOpening` rule) and `highlightParts`;
+    the thread's replies are not inserted.
   - A blockquote that shares at least 60% of a highlight's words is replaced
     by that highlight.
   - The two keys are added to the template's front matter only on a post,

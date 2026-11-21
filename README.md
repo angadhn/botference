@@ -939,8 +939,10 @@ the post changes. The models are told which post they are discussing.
 
 The export quotes the post by reference, in Blygger's own syntax: a
 `![[<post id> | <title>]]` line, with your highlighted passage as a `>`
-quote directly under it and your comment after a blank line. Any Blygger
-editor accepts it. The front matter gains `blyg_sources:` (the posts the
+quote directly under it. Any Blygger editor accepts it. The comment you wrote
+when you made the highlight comes first, above the quote, and the thread's
+later replies follow it (on every page, not only Blygger posts:
+`"comment_order": "quote-first"` restores the old order). The front matter gains `blyg_sources:` (the posts the
 note quotes) and, if you mark the note as a response in the export chooser,
 `blyg_stub_of:`. Both keys are optional; delete them if your site does not
 use them. A highlight whose words are not word for word in the post (it ran
@@ -951,7 +953,8 @@ nearest exact passage.
 On any other web page, quotes in the note end with the page's URL as their
 last paragraph (`quote_style: "url-card"`, the default). Set
 `"quote_style": "plain"` in `.botference/plugin/config.json` for the old
-shape: the quote alone. PDFs on your computer, local files and the library
+shape: the quote alone (with `"comment_order": "quote-first"` as well, the
+note is exactly what Discuss wrote before). PDFs on your computer, local files and the library
 always get the plain shape.
 
 The companion only reads: plain GETs to the page's site and to whatever host
