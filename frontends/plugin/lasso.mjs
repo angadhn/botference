@@ -913,33 +913,78 @@ export function hostAllowed(host, hosts) {
 // is checked — and again at each redirect, which is followed by hand for
 // exactly that reason. No exceptions, the reader's own local preview included.
 const COMPANION_PORTS = new Set(['4189', ...(Number(process.env.PORT) > 0 ? [String(Number(process.env.PORT))] : [])]);
-const v4Private = ip => {
-  const [a, b] = ip.split('.').map(Number);
-  return a === 127 || a === 10 || a === 0
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 169 && b === 254);
-};
-/** Loopback, private, link-local or unspecified — any address that is not the public internet's. */
+// WHICH ADDRESSES ARE NOT THE PUBLIC INTERNET'S, as one table per family.
+// Everything special-purpose is refused, not only "private": loopback, the
+// private ranges, shared address space (100.64/10: carrier NAT, and Tailscale's
+// 100.100.100.100), link-local (169.254/16, the cloud metadata address
+// included), benchmarking, documentation, multicast, reserved and broadcast.
+// IPv6 forms that CARRY an IPv4 address — mapped (::ffff:a.b.c.d),
+// v4-compatible (::a.b.c.d), NAT64 (64:ff9b::/96) and 6to4 (2002::/16) — are
+// unwrapped and the IPv4 inside is checked by the same table; Teredo
+// (2001::/32) hides its address and is refused whole.
+const V4_SPECIAL = [
+  ['0.0.0.0', 8],        // "this network"
+  ['10.0.0.0', 8],       // private
+  ['100.64.0.0', 10],    // shared address space (carrier NAT, Tailscale)
+  ['127.0.0.0', 8],      // loopback
+  ['169.254.0.0', 16],   // link-local, cloud metadata
+  ['172.16.0.0', 12],    // private
+  ['192.0.0.0', 24],     // IETF protocol assignments
+  ['192.0.2.0', 24],     // documentation
+  ['192.88.99.0', 24],   // 6to4 relay anycast
+  ['192.168.0.0', 16],   // private
+  ['198.18.0.0', 15],    // benchmarking
+  ['198.51.100.0', 24],  // documentation
+  ['203.0.113.0', 24],   // documentation
+  ['224.0.0.0', 4],      // multicast
+  ['240.0.0.0', 4],      // reserved, and 255.255.255.255
+];
+const V6_SPECIAL = [
+  ['::', 128],           // unspecified
+  ['::1', 128],          // loopback
+  ['64:ff9b:1::', 48],   // local-use NAT64
+  ['100::', 64],         // discard
+  ['2001::', 32],        // Teredo (the address inside is obfuscated)
+  ['2001:db8::', 32],    // documentation
+  ['fc00::', 7],         // unique local
+  ['fe80::', 10],        // link-local
+  ['fec0::', 10],        // site-local (deprecated)
+  ['ff00::', 8],         // multicast
+];
+// [prefix, bits, which 32 bits hold the IPv4 address (bit offset from the left)]
+const V6_CARRIES_V4 = [
+  ['::ffff:0:0', 96, 96],  // IPv4-mapped
+  ['64:ff9b::', 96, 96],   // NAT64
+  ['2002::', 16, 16],      // 6to4
+  ['::', 96, 96],          // IPv4-compatible (deprecated)
+];
+const v4Big = ip => ip.split('.').reduce((n, o) => (n << 8n) | BigInt(Number(o)), 0n);
+function v6Big(ip) {
+  let s = ip;
+  // a trailing dotted IPv4 is two groups
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
+  if (dotted) {
+    const n = v4Big(dotted[1]);
+    s = s.slice(0, -dotted[1].length) + `${((n >> 16n) & 0xffffn).toString(16)}:${(n & 0xffffn).toString(16)}`;
+  }
+  const [head, tail] = s.includes('::') ? s.split('::') : [s, null];
+  const h = head ? head.split(':') : [];
+  const t = tail === null ? [] : (tail ? tail.split(':') : []);
+  const groups = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
+  return groups.reduce((n, g) => (n << 16n) | BigInt(parseInt(g || '0', 16)), 0n);
+}
+const inRange = (n, prefix, bits, width) => (bits === 0 ? true : (n >> BigInt(width - bits)) === (prefix >> BigInt(width - bits)));
+const v4Special = n => V4_SPECIAL.some(([p, b]) => inRange(n, v4Big(p), b, 32));
+/** Any address that is not the public internet's (tables above). Not an address at all: refused. */
 export function privateAddress(ip) {
   const a = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
-  if (net.isIPv4(a)) return v4Private(a);
+  if (net.isIPv4(a)) return v4Special(v4Big(a));
   if (!net.isIPv6(a)) return true; // not an address at all: refuse rather than guess
-  if (a === '::1' || a === '::') return true;
-  // IPv4 carried inside IPv6 (::ffff:127.0.0.1, or the hex form a URL parser writes)
-  const mapped = /^(?:0{0,4}:){0,5}(?:0{0,4}:)?ffff:(.+)$/.exec(a) || /^::(\d+\.\d+\.\d+\.\d+)$/.exec(a);
-  if (mapped) {
-    const tail = mapped[1];
-    if (net.isIPv4(tail)) return v4Private(tail);
-    const m = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(tail);
-    if (m) {
-      const hi = parseInt(m[1], 16); const lo = parseInt(m[2], 16);
-      return v4Private(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-    }
+  const n = v6Big(a);
+  if (V6_SPECIAL.some(([p, b]) => inRange(n, v6Big(p), b, 128))) return true;
+  for (const [p, b, at] of V6_CARRIES_V4) {
+    if (inRange(n, v6Big(p), b, 128)) return v4Special((n >> BigInt(128 - at - 32)) & 0xffffffffn);
   }
-  const first = parseInt(a.split(':')[0] || '0', 16);
-  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7, unique local
-  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10, link-local
   return false;
 }
 /**

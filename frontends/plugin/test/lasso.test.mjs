@@ -805,6 +805,34 @@ await test('private addresses are refused before any request, by literal and by 
   assert.equal(lasso.privateAddress('2606:4700::1'), false);
 });
 
+await test('every special-purpose range is refused, one address per range, and every wrapped form', () => {
+  const refused = {
+    'this network 0/8': '0.1.2.3', 'private 10/8': '10.255.0.1', 'shared 100.64/10 (Tailscale)': '100.100.100.100',
+    'shared 100.64/10 low edge': '100.64.0.1', 'loopback 127/8': '127.8.9.10', 'link-local 169.254/16': '169.254.169.254',
+    'private 172.16/12': '172.31.255.255', 'IETF 192.0.0/24': '192.0.0.170', 'documentation 192.0.2/24': '192.0.2.1',
+    '6to4 relay 192.88.99/24': '192.88.99.1', 'private 192.168/16': '192.168.1.1', 'benchmarking 198.18/15': '198.19.255.1',
+    'documentation 198.51.100/24': '198.51.100.7', 'documentation 203.0.113/24': '203.0.113.9',
+    'multicast 224/4': '239.255.255.250', 'reserved 240/4': '240.0.0.1', 'broadcast': '255.255.255.255',
+    'v6 unspecified': '::', 'v6 loopback': '::1', 'v6 local NAT64': '64:ff9b:1::1', 'v6 discard': '100::1',
+    'Teredo 2001::/32': '2001:0:4136:e378:8000:63bf:3fff:fdd2', 'v6 documentation': '2001:db8::1',
+    'unique local fc00::/7': 'fd12:3456::1', 'link-local fe80::/10': 'fe80::1', 'site-local fec0::/10': 'fec0::1',
+    'multicast ff00::/8': 'ff02::1',
+    'mapped, dotted': '::ffff:127.0.0.1', 'mapped, hex (as a URL parser writes it)': '::ffff:7f00:1',
+    'mapped, written out': '0:0:0:0:0:ffff:a9fe:a9fe', 'v4-compatible': '::10.0.0.1',
+    'NAT64 of loopback': '64:ff9b::7f00:1', 'NAT64 of Tailscale': '64:ff9b::100.100.100.100',
+    '6to4 of private': '2002:c0a8:0101::1', 'bracketed': '[::1]', 'with a zone': 'fe80::1%en0',
+    'not an address at all': 'example.org', 'decimal IPv4 is no address': '2130706433',
+  };
+  for (const [what, ip] of Object.entries(refused)) assert.equal(lasso.privateAddress(ip), true, `${what}: ${ip}`);
+  const allowed = {
+    'public v4': '8.8.8.8', 'just outside 172.16/12': '172.32.0.1', 'just outside 100.64/10': '100.128.0.1',
+    'just below 100.64/10': '100.63.255.255', 'just outside 198.18/15': '198.20.0.1', 'public v6': '2606:4700::1',
+    'NAT64 of a public address': '64:ff9b::808:808', '6to4 of a public address': '2002:0808:0808::1',
+    'mapped public': '::ffff:8.8.8.8',
+  };
+  for (const [what, ip] of Object.entries(allowed)) assert.equal(lasso.privateAddress(ip), false, `${what}: ${ip}`);
+});
+
 await test('a redirect to a private address is refused, and what came back is not used', async () => {
   const http = async () => ({ ok: true, status: 200, url: 'http://192.168.0.1/router', contentType: 'text/html',
     body: Buffer.from('<html><body><p>router admin secrets</p></body></html>') });
