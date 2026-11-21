@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // TK gaps in the reader's own words, as filled at export (tkgaps.mjs)
-import { renderGaps, gapStyleOf, gapAgentOf, fillFor, generatedLines } from './tkgaps.mjs';
+import { renderGaps, gapStyleOf, gapAgentOf, fillFor, generatedLines, ownerTyped } from './tkgaps.mjs';
 // how every quote is written, in one place (export and blog draft alike)
 import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond,
   commentOrderOf, splitOpening, arrangeThread, tkSafe, agentStyleOf, calloutTypeOf, messageParts,
@@ -179,7 +179,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   const gapStyle = gapStyleOf(cfg && cfg.gap_style).style;
   const generated = [];
   const calloutType = calloutTypeOf(cfg && cfg.callout_type).type;
-  const textOf = threadId => m => (m && m.author === author
+  const textOf = threadId => m => (ownerTyped(m)
     ? renderGaps(withRuns(stripMore(m.text), m.runs, attach), g => fillFor(opts.gaps, threadId, m, g),
       { style: gapStyle, calloutType, agent: gapAgentOf(cfg && cfg.gap_agent),
         onFilled: f => { if (gapStyle === 'studio') generated.push(f); } })

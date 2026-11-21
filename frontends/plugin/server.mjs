@@ -41,7 +41,9 @@ import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyR
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
-import { fillGaps, gapAgentOf, gapStyleOf } from './tkgaps.mjs';
+import { fillGaps, gapAgentOf, gapStyleOf, OWNER_TYPED } from './tkgaps.mjs';
+import { runOneShot } from './oneshot.mjs';
+import { spawn as spawnChild } from 'node:child_process';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -2132,23 +2134,19 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
 // silent one-answer job as a tidy, on the page's lane, whose prompt is
 // tkgaps.gapPrompt's (the instruction from the reader, the page only as quoted
 // data). Its answer goes back to this request alone and into no thread.
+// Run in a FRESH one-shot of the bot with no tools (oneshot.mjs), never on
+// the page's own agent session; killed when the wait ends. PLUGIN_ONESHOT_CMD
+// (tests: a JSON argv array) replaces the bot's CLI, as PLUGIN_BRIDGE_CMD
+// replaces the bridge.
 function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
-  if (NO_AGENTS || !chat) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
-  const c = chatFor(page.url);
-  if (!c) return Promise.resolve({ ok: false, error: UNCONFIRMED_REASON });
-  const tidy_id = `gap-${Date.now()}-${++tidySeq}`;
-  return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      if (tidies.delete(tidy_id)) resolve({ ok: false, error: 'the agent took too long' });
-    }, timeoutMs);
-    tidies.set(tidy_id, { resolve: r => {
-      // the model the agent was set to run as, when the reader chose one; not invented otherwise
-      const model = (store.readConfig().agents.model || {})[agent];
-      resolve(r.ok && model ? { ...r, model } : r);
-    }, timer });
-    c.submit({ url: page.url, target: store.PAGE_CHAT, title: page.title,
-      text: `@${agent} `, tidy: prompt, tidy_kind: 'gap', tidy_id });
-  });
+  if (NO_AGENTS) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
+  // the model the agent is set to run as, when the reader chose one; not invented otherwise
+  const model = (store.readConfig().agents.model || {})[agent] || '';
+  const override = process.env.PLUGIN_ONESHOT_CMD ? JSON.parse(process.env.PLUGIN_ONESHOT_CMD) : null;
+  const spawnFn = override
+    ? (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args], o)
+    : undefined;
+  return runOneShot(agent, prompt, { model, timeoutMs, ...(spawnFn ? { spawn: spawnFn } : {}) });
 }
 
 // ---- the question vault ---------------------------------------------------
@@ -2940,6 +2938,16 @@ async function blygFor(req, url, hints, ms = BLYG_RECORD_WAIT_MS) {
 // (a thread, or a page-chat message of the reader's) is stamped after.
 function blygOnto(page, answer) {
   if (page && answer) blygMod.applyAnswer(page, answer);
+}
+// A message the OWNER typed in this companion says so, written here from the
+// authenticated request and from nothing the request says about itself
+// (tkgaps.ownerTyped: only such a message may hold a TK gap an agent fills).
+// Anything imported or mirrored (an `origin`), a guest's and a bot's never
+// carry it; an edit by anyone but the owner takes it away.
+function markTyped(req, msg) {
+  if (!msg) return;
+  if (hosted.isOwner(req) && !msg.origin) msg.provenance = OWNER_TYPED;
+  else delete msg.provenance;
 }
 function blygMark(rec, answer, quote = null) {
   if (answer === undefined || !rec) return;
@@ -4936,6 +4944,7 @@ export function handler(req, res) {
         route,
       });
       blygMark(thread, blygAnswer, data.quote);
+      markTyped(req, thread.msgs && thread.msgs[0]);
       dedupe.remember(thread);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -5266,6 +5275,7 @@ export function handler(req, res) {
       const msg = store.appendMsg(page, target, { author: me.handle, text, route });
       if (!msg) return fail(res, 404, 'unknown thread');
       if (target === store.PAGE_CHAT) blygMark(msg, blygAnswer);
+      markTyped(req, msg);
       dedupe.remember(msg);
       store.savePage(page);
       broadcast({ type: 'page', url: page.url });
@@ -5295,6 +5305,9 @@ export function handler(req, res) {
       const text = String(data.text || '');
       const changed = text !== String(msg.text || '');
       msg.text = text;
+      // re-saving a comment is also how an owner's comment written before
+      // provenance existed comes to count as typed by them
+      markTyped(req, msg);
       // The code has moved, so what it once printed is a claim about a message
       // that no longer exists. Results (and their directories) go with the
       // edit rather than hanging under a block they were never run from.
