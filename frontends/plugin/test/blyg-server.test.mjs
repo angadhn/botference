@@ -130,7 +130,8 @@ await test('a highlight that is not an exact passage says so, with the nearest e
 });
 
 await test('the first page-chat message carries the post too', async () => {
-  const r = await POST(B, '/reply', { url: PAGE, text: 'what is this post about?', blyg_hints: HINTS });
+  // (the drawer names the page chat by its id, as every client does)
+  const r = await POST(B, '/reply', { url: PAGE, thread_id: '__page__', text: 'what is this post about?', blyg_hints: HINTS });
   assert.equal(r.status, 200, r.body);
   assert.deepEqual([r.json.msg.blyg.status, r.json.msg.blyg.id, r.json.msg.blyg.version], ['blyg', ID, 2]);
   assert.ok(!('passage' in r.json.msg.blyg));

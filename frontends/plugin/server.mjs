@@ -5134,7 +5134,8 @@ export function handler(req, res) {
       // which Blygger post the page was when it was written — the first one
       // included, which waits briefly for the page's answer exactly as the
       // first highlight does (see /thread). Asked before the page is read.
-      const blygAnswer = data.thread_id ? undefined : await blygFor(data.url, data.blyg_hints);
+      const blygAnswer = (data.thread_id || store.PAGE_CHAT) === store.PAGE_CHAT
+        ? await blygFor(data.url, data.blyg_hints) : undefined;
       const page = pageOf(res, data);
       if (!page) return;
       blygOnto(page, blygAnswer);
