@@ -175,6 +175,28 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   ok('not offered on a PDF read off this computer', drawer.popover === 'export' && !row());
 }
 
+// ---- the footbar's message: one mode, one setter ---------------------------------------
+{
+  const answers = [{ ok: true, path: '/vault/Note.md', warning: 'quote_style "x" is not one of url-card, plain; wrote plain quotes' },
+    { ok: true, path: '/vault/Note.md' }, { ok: false, error: 'export failed: disk full' }];
+  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+    onBlygCheck: async () => ({ ok: true, status: 'not-a-blyg' }), onExport: async () => answers.shift() });
+  drawer.setConn(true); drawer.setAuthor('reader');
+  drawer.open('comments');
+  drawer.setPage({ url: 'https://example.com/x', title: 'X', threads: [], page_chat: [] });
+  await tick(10);
+  eq('askBlyg sets the page it asks about through blygSet', drawer.blyg.url, 'https://example.com/x');
+  const foot = () => drawer.shadow.querySelector('.footbar');
+  const run = async () => { drawer.shadow.querySelector('[data-act="export"]').click(); await tick(5);
+    drawer.shadow.querySelector('[data-act="export-run"][data-mode="all"]').click(); await tick(20); };
+  await run();
+  eq('a refused quote_style is a warning, beside the path', [drawer.footNote.mode, foot().textContent.includes('wrote plain quotes')], ['warning', true]);
+  await run();
+  eq('a plain export is info', [drawer.footNote.mode, drawer.footNote.text], ['info', 'exported → /vault/Note.md']);
+  await run();
+  eq('a failure is an error, drawn as one', [drawer.footNote.mode, foot().classList.contains('err')], ['error', true]);
+}
+
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blygdrawer: ${pass} passed, ${fail} failed`);
 process.exit(fail);

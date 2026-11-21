@@ -2789,7 +2789,9 @@
       // the reader sees ('' = none); the next answer that arrives clears it
       timeout: '',
       bridge: '',
-      foot: '',
+      // the footbar's own message: { mode, text, seq }, mode one of FOOT_NOTES,
+      // changed only by setFootNote (seq tells an expiry which note it was for)
+      footNote: { mode: 'idle', text: '', seq: 0 },
       // effort mirrors models ({current, options}, null until the bridge has
       // spoken); verbosity is a companion-level preference, so it is a string
       // `line`: the one line under the pickers, { text, tone } (LINE_TONES),
@@ -7116,8 +7118,8 @@ ${bubbleShellHtml()}`;
         D.el.foot.setAttribute('aria-label', workingLabel(busy));
       } else if (lost.length) {
         html = esc(TURN_LOST_TEXT);
-      } else if (D.foot) {
-        html = esc(D.foot);
+      } else if (D.footNote.text) {
+        html = esc(D.footNote.text);
       } else if (D.bridge) {
         html = esc('bridge: ' + D.bridge);
       } else {
@@ -7125,7 +7127,25 @@ ${bubbleShellHtml()}`;
       }
       if (!busy.length) D.el.foot.removeAttribute('aria-label');
       D.el.foot.innerHTML = html;
-      D.el.foot.classList.toggle('err', !!D.footErr && !anyRunning);
+      D.el.foot.classList.toggle('err', D.footNote.mode === 'error' && !anyRunning);
+    }
+
+    // ---- the footbar's message -----------------------------------------------
+    // ONE list of what the footbar is saying, ONE field (D.footNote), ONE
+    // setter. How long a message stays is a property of its mode, not a timer
+    // that inspects the text: an 'info' line goes after 6 s, a 'saved' result
+    // after 12 s, a 'warning' after 15 s; 'busy' and 'error' stay until the
+    // next message replaces them; 'idle' is no message.
+    const FOOT_NOTES = Object.freeze(['idle', 'busy', 'info', 'saved', 'warning', 'error']);
+    const FOOT_NOTE_LIFE = Object.freeze({ info: 6000, saved: 12000, warning: 15000 });
+    function setFootNote(mode, text) {
+      if (FOOT_NOTES.indexOf(mode) === -1) return false;
+      const seq = D.footNote.seq + 1;
+      D.footNote = { mode, text: mode === 'idle' ? '' : String(text || ''), seq };
+      const life = FOOT_NOTE_LIFE[mode];
+      if (life) setTimeout(() => { if (D.footNote.seq === seq) setFootNote('idle'); }, life);
+      paintFoot();
+      return true;
     }
 
     // ---- agents popover --------------------------------------------------
@@ -10365,15 +10385,14 @@ ${bubbleShellHtml()}`;
     // One export feedback path, whichever crystal was clicked: the header's
     // (this page) or a row's in the pages list (that page).
     async function exportFlow(run) {
-      D.foot = 'exporting…'; D.footErr = false; paintFoot();
+      setFootNote('busy', 'exporting…');
       const r = await run();
-      if (r && r.ok === false) { D.foot = r.error || 'export failed'; D.footErr = true; }
+      if (r && r.ok === false) { setFootNote('error', r.error || 'export failed'); return; }
       // a PDF also lands in the vault's reading log, and the toast says so
-      else D.foot = (r && r.logged ? 'exported and logged → ' : 'exported → ') + ((r && r.path) || 'Obsidian')
-        // e.g. a quote_style the config does not name (written as plain)
-        + (r && r.warning ? ' — ' + r.warning : '');
-      paintFoot();
-      setTimeout(() => { if (String(D.foot).startsWith('exported')) { D.foot = ''; paintFoot(); } }, 6000);
+      const done = (r && r.logged ? 'exported and logged → ' : 'exported → ') + ((r && r.path) || 'Obsidian');
+      // e.g. a quote_style the config does not name (written as plain)
+      if (r && r.warning) setFootNote('warning', done + ' — ' + r.warning);
+      else setFootNote('info', done);
     }
     const doExport = mode => exportFlow(() => cb('onExport')(mode));
     // A row in the pages list exports SILENTLY, in whichever mode was last
@@ -10440,7 +10459,7 @@ ${bubbleShellHtml()}`;
       const next = isResponse() ? 'not-a-response' : 'response';
       let r = null;
       try { r = await cb('onExportResponse')(next); } catch (_) { r = null; }
-      if (!r || r.ok === false) { D.foot = (r && r.error) || 'could not change that'; D.footErr = true; paintFoot(); return; }
+      if (!r || r.ok === false) { setFootNote('error', (r && r.error) || 'could not change that'); return; }
       // the page broadcast brings the record back too; the row answers now
       if (next === 'response') D.page.export_response = 'response'; else delete D.page.export_response;
       if (popIs('export')) paintExportPick();
@@ -11552,10 +11571,7 @@ ${bubbleShellHtml()}`;
       // `pending` from the record it just refetched (setPdfAnnots), and a
       // fully imported file has nothing left to offer
       const n = (r.created || 0) + (r.appended || 0);
-      D.foot = n ? `imported ${n} comment${n === 1 ? '' : 's'} from the PDF` : 'those comments were already here';
-      D.footErr = false;
-      paintFoot();
-      setTimeout(() => { if (String(D.foot).startsWith('imported') || String(D.foot).startsWith('those comments')) { D.foot = ''; paintFoot(); } }, 6000);
+      setFootNote('info', n ? `imported ${n} comment${n === 1 ? '' : 's'} from the PDF` : 'those comments were already here');
       render();
     }
 
@@ -11568,9 +11584,7 @@ ${bubbleShellHtml()}`;
       if (PDF.out && PDF.out.kind === 'busy') return;
       PDF.out = { kind: 'busy', text: 'Writing the annotated copy…',
                   sub: 'Choose where to save it.' };
-      D.foot = 'writing the PDF…';
-      D.footErr = false;
-      paintFoot();
+      setFootNote('busy', 'writing the PDF…');
       render();
       let r;
       try { r = await cb('onPdfExport')(); }
@@ -11578,14 +11592,12 @@ ${bubbleShellHtml()}`;
       if (!r || r.ok === false) {
         const err = (r && r.error) || 'the PDF could not be written';
         PDF.out = { kind: 'err', text: 'The annotated copy was not written', sub: err };
-        D.foot = err;
-        D.footErr = true;
+        setFootNote('error', err);
       } else if (r.cancelled) {
         // the reader closed the Save dialog: a decision, not a failure, and
         // nothing was written anywhere
         PDF.out = null;
-        D.foot = 'save cancelled — nothing was written';
-        D.footErr = false;
+        setFootNote('saved', 'save cancelled — nothing was written');
       } else {
         const skipped = (r.orphaned || 0) + (r.already || 0);
         const n = Number(r.written || 0);
@@ -11596,16 +11608,14 @@ ${bubbleShellHtml()}`;
             + (skipped ? `${n ? ' · ' : ''}${skipped} could not be placed` : '')
             + (r.picked ? '' : ' — to wherever this browser puts downloads'),
         };
-        D.foot = (r.picked ? 'saved ' : 'downloaded ') + (r.name || 'the annotated copy')
-          + (skipped ? ` · ${skipped} not written` : '');
-        D.footErr = false;
+        setFootNote('saved', (r.picked ? 'saved ' : 'downloaded ') + (r.name || 'the annotated copy')
+          + (skipped ? ` · ${skipped} not written` : ''));
       }
-      paintFoot();
       render();
-      // the good news goes by itself; a failure stays until it is dismissed
+      // the good news goes by itself (the footbar's 'saved' note too, by its
+      // mode); a failure stays until it is dismissed
       setTimeout(() => {
         if (PDF.out && PDF.out.kind === 'ok') { PDF.out = null; render(); }
-        if (/^(saved|downloaded|save cancelled)/.test(String(D.foot))) { D.foot = ''; paintFoot(); }
       }, 12000);
     }
 
@@ -11640,7 +11650,7 @@ ${bubbleShellHtml()}`;
         resetMsgWindows(LIBRARY_TARGET);
         if (D.edit && D.edit.target !== LIBRARY_TARGET) moveEdit('leave');
         D.confirm = null; D.focused = null; D.pending = null;
-        D.foot = ''; D.footErr = false;
+        setFootNote('idle');
       }
       renderPages();
       render();
@@ -11657,7 +11667,7 @@ ${bubbleShellHtml()}`;
         return;
       }
       const r = await cb('onOpenPage')(url);
-      if (r && r.ok === false) { D.foot = r.error || 'could not open that page'; D.footErr = true; paintFoot(); }
+      if (r && r.ok === false) setFootNote('error', r.error || 'could not open that page');
     }
 
     // ---- filtering, renaming, tagging -------------------------------------
@@ -12114,10 +12124,10 @@ ${bubbleShellHtml()}`;
     // What it shows is deliberately quiet: one grey line in the header, and
     // only for a post (mode 'blyg'). Every other mode shows exactly what the
     // drawer always showed.
-    function blygSet(next, info) {
+    function blygSet(next, info, forUrl) {
       if (!CFG || !CFG.canBlygMove(D.blyg.mode, next)) return false;
-      const url = (D.page && D.page.url) ? String(D.page.url) : '';
-      D.blyg = { mode: next, url: next === 'unknown' ? '' : (D.blyg.url || url),
+      const url = forUrl || ((D.page && D.page.url) ? String(D.page.url) : '');
+      D.blyg = { mode: next, url: next === 'unknown' ? '' : (next === 'checking' ? url : (D.blyg.url || url)),
         since: next === 'checking' ? new Date().toISOString() : D.blyg.since,
         info: (next === 'blyg' || next === 'blyg-site') ? (info || null) : null };
       paintBlyg();
@@ -12126,8 +12136,7 @@ ${bubbleShellHtml()}`;
     async function askBlyg() {
       const url = (D.page && D.page.url) ? String(D.page.url) : '';
       if (!url || isLibraryUrl(url) || D.blyg.mode !== 'unknown') return;
-      D.blyg.url = url;
-      if (!blygSet('checking')) return;
+      if (!blygSet('checking', null, url)) return;
       let r = null;
       try { r = await cb('onBlygCheck')(); } catch (_) { r = null; }
       // the tab moved to another page meanwhile: this answer is not for it
