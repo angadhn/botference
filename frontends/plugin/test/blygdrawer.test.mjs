@@ -157,7 +157,7 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   drawer.shadow.querySelector('[data-act="export"]').click(); await tick(10);
   const row = () => drawer.shadow.querySelector('.exportpick .xresp');
   ok('the export chooser offers it, named for a post', row() && /a response to this post/.test(row().textContent), row() && row().textContent);
-  eq('…off by default', row().getAttribute('aria-checked'), 'false');
+  eq('…off by default, with a visibly empty box', [row().getAttribute('aria-checked'), !!row().querySelector('.xcheck'), row().querySelector('.xcheck').textContent], ['false', true, '']);
   row().click(); await tick(10);
   eq('one click asks the companion to mark it', said, ['response']);
   ok('the chooser stays open and the row is ticked', drawer.popover === 'export' && row().getAttribute('aria-checked') === 'true' && /✓/.test(row().textContent));

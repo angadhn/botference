@@ -599,7 +599,8 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .xrow.newproj.open { cursor: default }
 /* "blyg · v2 · Author" — the page is a Blygger post. Same slot and same
    register as "made from": a fact about the page, not a control. */
-.hdr .blyg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default }
+/* It wraps rather than truncating, so a narrow drawer still shows the author. */
+.hdr .blyg { color: var(--muted); white-space: normal; overflow-wrap: anywhere; cursor: default }
 /* "made from <page>" — the header line on an artifact that came from an
    annotated page. Same slot and same register as "part of project X". */
 .hdr .madefrom { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
@@ -721,6 +722,15 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 .xrow.on { border-color: var(--accent) }
 .xname { display: block; font: 600 13px/1.35 var(--sans) }
 .xwhy { display: block; font: 12px/1.4 var(--sans); color: var(--muted) }
+/* the response row is a toggle, so it carries a box that is visibly empty or
+   ticked, unlike the export rows above it, which act at once */
+.xrow.xresp { display: flex; gap: 8px; align-items: flex-start }
+.xrow.xresp .xtext { flex: 1 1 auto; min-width: 0 }
+.xcheck {
+  flex: none; width: 14px; height: 14px; margin-top: 2px; border: 1.5px solid var(--muted); border-radius: 3px;
+  font: 700 11px/12px var(--sans); text-align: center; color: var(--accent);
+}
+.xrow.xresp.on .xcheck { border-color: var(--accent) }
 
 /* ── filing this page in a council project ─────────────────────────────── */
 /* Same popover, same rows: the picker is the export chooser's twin because it

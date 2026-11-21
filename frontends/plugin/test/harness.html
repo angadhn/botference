@@ -1424,7 +1424,7 @@ const RECORD = {
 // past the passage, so it is not word for word in it
 if (Q.get('blyg') === '1') {
   RECORD.threads[0].blyg = blygStamp({ match: true });
-  RECORD.threads[1].blyg = blygStamp({ match: false, nearest: 'called it a structural failure of oversight' });
+  RECORD.threads[1].blyg = blygStamp({ match: false, nearest: 'a structural failure of oversight' });
 }
 // a fresh page has no history: the record the first act creates starts empty
 if (FRESH) { RECORD.threads = []; RECORD.page_chat = []; RECORD.session_id = null; }

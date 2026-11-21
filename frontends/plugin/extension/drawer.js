@@ -10450,9 +10450,10 @@ ${bubbleShellHtml()}`;
       const post = D.blyg.mode === 'blyg';
       return `<div class="pop-head second">The note is…</div>`
         + `<button class="xrow xresp${on ? ' on' : ''}" type="button" role="menuitemcheckbox" aria-checked="${on}"
-             data-act="export-response"><span class="xname">${on ? '✓ ' : ''}a response to this ${post ? 'post' : 'page'}</span>`
+             data-act="export-response"><span class="xcheck" aria-hidden="true">${on ? '✓' : ''}</span>`
+        + `<span class="xtext"><span class="xname">a response to this ${post ? 'post' : 'page'}</span>`
         + `<span class="xwhy">${esc(on ? 'adds blyg_stub_of to the front matter; click to undo'
-          : 'adds blyg_stub_of naming this ' + (post ? 'post and the version you read' : 'page'))}</span></button>`;
+          : 'adds blyg_stub_of naming this ' + (post ? 'post and the version you read' : 'page'))}</span></span></button>`;
     }
     async function toggleResponse() {
       if (!D.page) return;
