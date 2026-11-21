@@ -36,7 +36,7 @@ const NOW = new Date('2026-08-08T00:00:00Z');
 // quote_style 'plain' with comment_order 'quote-first' is the export as it
 // always was, so every exact-text assertion below holds that shape still; the
 // defaults ('url-card', 'comment-first') have their own groups further down
-const CFG = { author: 'angadh', quote_style: 'plain', comment_order: 'quote-first' };
+const CFG = { author: 'angadh', quote_style: 'plain', comment_order: 'quote-first', agent_style: 'inline' };
 const me = (t, ts) => ({ author: 'angadh', ts: ts || t, text: t });
 const bot = (t, who) => ({ author: who || 'claude', ts: t, text: t });
 const tools = () => ({ author: 'claude', ts: 'tl', kind: 'tools', text: 'Explored\n└ Read' });
@@ -640,14 +640,17 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   // a Blygger post: opening comment, the quote by reference, then the replies
   const post = BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [me('Smooth? I doubt it.', 'a'),
     me('@claude was it smooth?', 'b'), bot('Mostly, for the people watching.'), me('Fair.', 'c')] }]);
-  eq('post: opening comment, directive and passage, then the thread', renderNote(post, DEF, NOW),
+  eq('post: opening comment, directive and passage, then the thread (agents in callouts)', renderNote(post, DEF, NOW),
+    BLYG_HEAD + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\n`
+    + '@claude was it smooth?\n\n> [!note] Claude\n> Mostly, for the people watching.\n\nFair.\n');
+  eq('post, agent_style inline: every speaker named, as before', renderNote(post, { ...DEF, agent_style: 'inline' }, NOW),
     BLYG_HEAD + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\n`
     + '**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
   eq('post, comments only: the questions to bots drop out, the opening comment stays above',
     renderNote(post, DEF, NOW, 'comments'), BLYG_HEAD + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\nFair.\n`);
   eq('post, quote-first: the old order', renderNote(post, { ...DEF, comment_order: 'quote-first' }, NOW),
     BLYG_HEAD + `${L}\n> ${S1}\n\n`
-    + '**angadh:** Smooth? I doubt it.\n**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
+    + 'Smooth? I doubt it.\n\n@claude was it smooth?\n\n> [!note] Claude\n> Mostly, for the people watching.\n\nFair.\n');
 
   // an ordinary page, both quote styles
   const plainPage = { url: 'https://example.org/piece', title: 'The Quiet Machine', site: 'example.org', page_chat: [],
@@ -663,11 +666,11 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   eq('no opening comment: the quote alone, as before', renderNote(noOpening, DEF, NOW),
     head + '> the mood was flat\n>\n> https://example.org/piece\n');
   const botFirst = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [bot('An automatic note.'), me('My reply.', 'z')] }] };
-  eq('a thread a bot began: nothing above the quote', renderNote(botFirst, DEF, NOW),
-    head + '> the mood was flat\n>\n> https://example.org/piece\n\n**claude:** An automatic note.\n**angadh:** My reply.\n');
+  eq('a thread a bot began: nothing above the quote; its callout kept apart from the quote', renderNote(botFirst, DEF, NOW),
+    head + '> the mood was flat\n>\n> https://example.org/piece\n\n<!-- -->\n\n> [!note] Claude\n> An automatic note.\n\nMy reply.\n');
   const emptyFirst = { ...plainPage, threads: [{ quote: 'the mood was flat', msgs: [me('', 'a'), me('Later.', 'b')] }] };
-  eq('an empty first message: nothing above the quote', renderNote(emptyFirst, DEF, NOW),
-    head + '> the mood was flat\n>\n> https://example.org/piece\n\n**angadh:** \n**angadh:** Later.\n');
+  eq('an empty first message: nothing above the quote, and nothing written for it', renderNote(emptyFirst, DEF, NOW),
+    head + '> the mood was flat\n>\n> https://example.org/piece\n\nLater.\n');
 
   // a strike: the same rule — its note is the reason, written above it
   const strike = BLYG_PAGE([{ quote: 'smooth extrapolation', mark: 'strike', blyg: stamp(), msgs: [me('Overstated.', 'a')] }]);
@@ -683,7 +686,7 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   eq('response note: starts with the reader\'s words, then the quote', respNote,
     BLYG_HEAD.replace('---\n\n#', `blyg_stub_of:\n  origin: ${VR}\n  id: ${VR_ID}\n  version: 2\n---\n\n#`)
     + `Smooth? I doubt it.\n\n${L}\n> ${S1}\n\n`
-    + '**angadh:** @claude was it smooth?\n**claude:** Mostly, for the people watching.\n**angadh:** Fair.\n');
+    + '@claude was it smooth?\n\n> [!note] Claude\n> Mostly, for the people watching.\n\nFair.\n');
   const respNoPassage = { ...BLYG_PAGE([], [me('@claude summarise?'), bot('Liveness.')]), export_response: 'response' };
   ok('response with no passage: still the whole-post line, so it references the post',
     renderNote(respNoPassage, DEF, NOW).includes(`# It’s the Liveness, Stupid\n\n${L}\n\n## Page chat`));
@@ -756,6 +759,39 @@ const bareTk = s => /\[\/?tk\]/i.test(String(s).replace(/`+[^`]*`+/g, ''));
   const note = renderNote(page, { author: 'angadh' }, NOW);
   ok('a whole note with TK marks everywhere carries none bare', !bareTk(note), note);
   eq('…and a label with a TK mark is dropped', Q.labelOf('A [TK] title'), '');
+}
+
+// ---- agents' words in callouts ------------------------------------------------------
+{
+  const Q = await import('../note-quotes.mjs');
+  const DEF = { author: 'angadh' };
+  const L = `![[${VR_ID} | It’s the Liveness, Stupid]]`;
+  eq('the agent styles, in one list', Q.AGENT_STYLES, ['callout', 'inline']);
+  eq('an unknown agent style is refused and the default used', Q.agentStyleOf('boxes').style, 'callout');
+  eq('a callout type must be a callout name', Q.calloutTypeOf('note"><script>').type, 'note');
+  // a bot's reply straight after a passage: the passage is still only the
+  // `>` lines directly under the directive (the receiving rule), and the
+  // callout is its own block
+  const direct = BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [bot('First.'), bot('Second, on\ntwo lines.', 'codex')] }],
+    [me('@claude a question'), bot('An answer.')]);
+  const note = renderNote(direct, DEF, NOW);
+  eq('a passage, then two agents\' replies, then the page chat', note,
+    BLYG_HEAD + `${L}\n> ${S1}\n\n<!-- -->\n\n> [!note] Claude\n> First.\n\n<!-- -->\n\n> [!note] Codex\n> Second, on\n> two lines.\n\n`
+    + '## Page chat\n\n@claude a question\n\n> [!note] Claude\n> An answer.\n');
+  const lines = note.split('\n');
+  const at = lines.indexOf(L);
+  const passage = [];
+  for (let i = at + 1; i < lines.length && lines[i].startsWith('>'); i++) passage.push(lines[i]);
+  eq('…the directive\'s passage is exactly the highlighted words', passage, [`> ${S1}`]);
+  eq('a callout type of the reader\'s choosing', renderNote(direct, { ...DEF, callout_type: 'quote' }, NOW).includes('> [!quote] Claude'), true);
+  eq('my notes only: no agent words at all', renderNote(direct, DEF, NOW, 'comments').includes('[!note]'), false);
+  // the pre-feature bytes: plain + quote-first + inline
+  const old = { url: 'https://example.org/piece', title: 'The Quiet Machine', site: 'example.org',
+    threads: [{ quote: 'the mood was flat', msgs: [me('A note.', 'a'), bot('A reply.')] }], page_chat: [me('@claude?'), bot('Yes.')] };
+  eq('plain + quote-first + inline: exactly the export as it always was',
+    renderNote(old, { ...DEF, quote_style: 'plain', comment_order: 'quote-first', agent_style: 'inline' }, NOW),
+    '---\nurl: https://example.org/piece\nsite: example.org\nsaved: 2026-08-08\ntags: [botference-discuss]\n---\n\n# The Quiet Machine\n\n'
+    + '> the mood was flat\n\n**angadh:** A note.\n**claude:** A reply.\n\n## Page chat\n\n**angadh:** @claude?\n**claude:** Yes.\n');
 }
 
 console.log(`\nexport: ${pass} passed, ${fail} failed`);

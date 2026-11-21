@@ -196,7 +196,7 @@ await test('a page never checked is checked at export, before the note is writte
     + `blyg_sources:\n  - ${EXPORT_PAGE}\n---\n\n# Another made-up post\n\n`
     + `from before\n\n![[${ID2} | Another made-up post]]\n> ${PASSAGE}\n\n`
     + '*Version 1 is the version current when Discuss first checked this page, which was after this highlight was made.*\n\n'
-    + '## Page chat\n\n**reader:** an old question\n');
+    + '## Page chat\n\nan old question\n');
   const p = await page(EXPORT_PAGE);
   assert.deepEqual([p.blyg.status, p.threads[0].blyg.as_of], ['blyg', 'check']);
 });

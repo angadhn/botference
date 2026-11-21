@@ -6591,7 +6591,7 @@ ${bubbleShellHtml()}`;
     // A row's crystal runs straight away in the remembered mode, so the row
     // has to SAY which one that is — the chooser lives on the header's crystal.
     const EXPORT_ROW_TIP = () => 'Export this page to Obsidian (' +
-      (D.exportMode === 'comments' ? 'comments only' : 'everything') + ')';
+      (D.exportMode === 'comments' ? 'my notes only' : 'my notes and the agents\' replies') + ')';
 
     // ---- the archive, sliced ---------------------------------------------
     // Two filters over one list, and they combine: a KIND (what sort of
@@ -10407,8 +10407,8 @@ ${bubbleShellHtml()}`;
     // preselected, so the second export of a session is one click on the same
     // row it was last time.
     const EXPORT_PICK = [
-      ['comments', 'Comments only', 'highlights and your own notes'],
-      ['all', 'Everything', 'including the bot conversation'],
+      ['comments', 'My notes only', 'highlights and what you wrote'],
+      ['all', 'My notes and the agents\' replies', 'the agents\' words in callout boxes'],
     ];
     function paintExportPick() {
       if (!D.mounted || !D.el.exportpick) return;

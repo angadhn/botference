@@ -94,6 +94,78 @@ export function arrangeThread({ opening = '', quote = [], after = [] } = {}) {
   return [...(opening ? [proseBlock(opening)] : []), ...quote, ...after];
 }
 
+// How an agent's words are written into a note. One setting, `agent_style`,
+// beside quote_style and comment_order:
+//   'callout' — each agent message in its own Obsidian callout, headed with
+//               the agent's name (`> [!note] Claude`), so the reader's words
+//               and the agents' are never confused, and the box is easy to
+//               delete; the reader's own words are never inside one
+//   'inline'  — `**claude:** …` lines, as Discuss always wrote them
+// The callout's type is a setting of its own, `callout_type` (default
+// 'note', which Obsidian and the common static-site callout plugins draw).
+export const AGENT_STYLES = Object.freeze(['callout', 'inline']);
+export const DEFAULT_AGENT_STYLE = 'callout';
+export function agentStyleOf(value) {
+  if (value === undefined || value === null || value === '') return { style: DEFAULT_AGENT_STYLE, refused: '' };
+  if (AGENT_STYLES.includes(value)) return { style: value, refused: '' };
+  return { style: DEFAULT_AGENT_STYLE,
+    refused: `agent_style ${JSON.stringify(String(value)).slice(0, 60)} is not one of ${AGENT_STYLES.join(', ')}; wrote ${DEFAULT_AGENT_STYLE}` };
+}
+export const DEFAULT_CALLOUT_TYPE = 'note';
+export function calloutTypeOf(value) {
+  if (value === undefined || value === null || value === '') return { type: DEFAULT_CALLOUT_TYPE, refused: '' };
+  if (/^[a-z][a-z0-9-]{0,30}$/.test(String(value))) return { type: String(value), refused: '' };
+  return { type: DEFAULT_CALLOUT_TYPE,
+    refused: `callout_type ${JSON.stringify(String(value)).slice(0, 60)} is not a callout name (lowercase letters, digits, dashes); wrote ${DEFAULT_CALLOUT_TYPE}` };
+}
+export const agentName = a => { const s = String(a || 'agent'); return s.charAt(0).toUpperCase() + s.slice(1); };
+
+/** One agent message as a callout: `> [!type] Name`, then its lines, quoted. */
+export function agentCallout(name, text, type = DEFAULT_CALLOUT_TYPE) {
+  const lines = String(text == null ? '' : text).replace(/\s+$/, '').split('\n');
+  return [`> [!${type}] ${name}`, ...lines.map(l => (l.trim() ? `> ${l}` : '>'))].join('\n');
+}
+
+/**
+ * How a run of a thread's (or a page chat's) messages is written: → parts.
+ * 'inline': a lone message of the reader's own is prose, anything with a
+ * second voice is `**name:** …` lines, as before. 'callout': each message is
+ * its own part — an agent's in a callout, the reader's as prose, anyone
+ * else's with their name. `body(m)` writes one message's text.
+ */
+export function messageParts(msgs, { reader = '', isBot = () => false, style = DEFAULT_AGENT_STYLE,
+  type = DEFAULT_CALLOUT_TYPE, body = m => String(m.text || '') } = {}) {
+  const list = Array.isArray(msgs) ? msgs : [];
+  if (!list.length) return [];
+  if (style !== 'callout') {
+    return [list.length === 1 && list[0].author === reader ? body(list[0])
+      : list.map(m => `**${m.author}:** ${body(m)}`).join('\n')];
+  }
+  // (a message with nothing in it is written as nothing)
+  return list.filter(m => String(body(m) || '').trim())
+    .map(m => (isBot(m.author) ? agentCallout(agentName(m.author), body(m), type)
+      : m.author === reader ? body(m) : `**${m.author}:** ${body(m)}`));
+}
+
+// A callout is a blockquote, and two blockquotes that touch can be read as
+// one (a renderer that merges across a blank line, or a lazy line). So a
+// callout never touches another `>` block — a quote, a Blygger passage or
+// another callout: an empty HTML comment line is put between them, which
+// every markdown reader takes as the end of a blockquote. Nothing else moves.
+const firstLine = p => String(p).split('\n')[0] || '';
+const lastLine = p => String(p).split('\n').filter(l => l.trim()).pop() || '';
+const isCallout = p => /^> \[![a-z]/.test(firstLine(p));
+export function separateCallouts(parts) {
+  const out = [];
+  for (const p of parts) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && (isCallout(p) || isCallout(prev))
+        && /^\s*>/.test(lastLine(prev)) && /^\s*>/.test(firstLine(p))) out.push('<!-- -->');
+    out.push(p);
+  }
+  return out;
+}
+
 // Whether the note answers the page it is about (spec §10.6, a "stub"). One
 // field on the page record, `export_response`, one of these; absent or
 // anything else reads as the first. A note has at most one target, and a page

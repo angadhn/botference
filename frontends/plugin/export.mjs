@@ -15,7 +15,8 @@ import { codeBlocks } from './run.mjs';
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
 import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost, responseOf, readVersion, canRespond,
-  commentOrderOf, splitOpening, arrangeThread, tkSafe } from './note-quotes.mjs';
+  commentOrderOf, splitOpening, arrangeThread, tkSafe, agentStyleOf, calloutTypeOf, messageParts,
+  separateCallouts } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -168,6 +169,10 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // comment_order (note-quotes.COMMENT_ORDERS): the reader's opening comment
   // above the quote unless the config says 'quote-first'
   const { order } = commentOrderOf(cfg && cfg.comment_order);
+  // agent_style / callout_type (note-quotes.AGENT_STYLES): an agent's words in
+  // a callout of their own unless the config says 'inline'
+  const agents = { reader: author, isBot: isBotAuthor, style: agentStyleOf(cfg && cfg.agent_style).style,
+    type: calloutTypeOf(cfg && cfg.callout_type).type, body: m => bodyOf(m, attach) };
   const parts = [
     ['---',
       `url: ${page.url}`,
@@ -211,12 +216,9 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     // (comment_order, note-quotes.splitOpening); what is left is the thread
     const { opening, rest } = splitOpening(keptMsgs(t.msgs, only),
       { first: readable(t.msgs)[0] || null, reader: author, order });
-    // a lone comment of your own reads as prose under its quote; anything
-    // with a second voice in it needs the speakers named
-    if (rest.length) {
-      after.push(rest.length === 1 && rest[0].author === author
-        ? bodyOf(rest[0], attach) : authored(rest, attach));
-    }
+    // the rest of the thread: a lone comment of your own reads as prose under
+    // its quote; agents' words go in callouts (or, inline, every speaker named)
+    after.push(...messageParts(rest, agents));
     parts.push(...arrangeThread({ opening: opening ? bodyOf(opening, attach) : '', quote: h.parts, after }));
   }
   // the page chat is a conversation with the bots from end to end, so
@@ -224,7 +226,10 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   const chat = only === 'comments' ? [] : readable(page.page_chat);
   // the library has no page under it: its conversation is not "the page chat",
   // it is the whole note
-  if (chat.length) parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat', authored(chat, attach));
+  if (chat.length) {
+    parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat',
+      ...(agents.style === 'callout' ? messageParts(chat, agents) : [authored(chat, attach)]));
+  }
   // A note about a Blygger post that quotes none of it by reference — a page
   // chat with no highlights, or highlights that could not be — still names
   // the post: the whole-post reference line, directly under the title.
@@ -245,7 +250,7 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
     : item ? { origin: item.origin, id: item.id, version: readVersion(page, item) } : { url: page.url };
   const keys = frontMatter({ sources, stubOf });
   if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
-  return parts.join('\n\n') + '\n';
+  return separateCallouts(parts).join('\n\n') + '\n';
 }
 
 // <vault>/<folder>/<title>.md — unless a note of that name already belongs to

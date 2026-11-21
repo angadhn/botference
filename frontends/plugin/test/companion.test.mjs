@@ -1172,7 +1172,7 @@ async function main() {
     assert.equal(r.json.path, vaultFile);
     const note = fs.readFileSync(vaultFile, 'utf8');
     assert.ok(!note.includes('Explored'), 'the note omits tool activity');
-    assert.ok(note.includes('**claude:** MOCK claude reply.'), 'but keeps the answer');
+    assert.ok(note.includes('> [!note] Claude\n> MOCK claude reply.'), 'but keeps the answer, in a callout');
     // the comment made with the highlight is written above its quote (comment-first)
     assert.ok(/@claude verify this \[mock:tools\]\n\n> /.test(note), note);
     assert.equal(t.msgs.length, 1);
@@ -1271,12 +1271,19 @@ async function main() {
       '>',
       `> ${url}`,
       '',
-      '**claude:** MOCK claude reply.',
+      // agent_style 'callout', the default: an agent's words in a callout of
+      // their own, kept apart from the quote above it by an empty comment
+      '<!-- -->',
+      '',
+      '> [!note] Claude',
+      '> MOCK claude reply.',
       '',
       '## Page chat',
       '',
-      '**angadh:** @claude what is this about?',
-      '**claude:** MOCK claude reply.',
+      '@claude what is this about?',
+      '',
+      '> [!note] Claude',
+      '> MOCK claude reply.',
       '',
     ].join('\n');
     assert.equal(r.json.path, path.join(vault, 'Web Clippings', 'Export Fixture.md'));

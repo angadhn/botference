@@ -40,7 +40,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
-import { quoteStyleOf, commentOrderOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
+import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -6158,7 +6158,8 @@ export function handler(req, res) {
       } catch (e) { console.warn(`[export] reading log not written: ${e.message}`); }
       // a quote_style the config does not name was written as 'plain'; the
       // drawer says so beside the path rather than leaving the reader guessing
-      const warning = [quoteStyleOf(cfg.quote_style).refused, commentOrderOf(cfg.comment_order).refused].filter(Boolean).join('; ');
+      const warning = [quoteStyleOf(cfg.quote_style).refused, commentOrderOf(cfg.comment_order).refused,
+        agentStyleOf(cfg.agent_style).refused, calloutTypeOf(cfg.callout_type).refused].filter(Boolean).join('; ');
       ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(warning ? { warning } : {}) });
     });
   }
