@@ -282,6 +282,11 @@ tags: [web-annotation]
 **claude:** …
 ```
 
+(Quote shape since 2026-11-21: `quote_style` in config.json, `url-card` by
+default, closes each quote with an empty `>` line and the page's URL; `plain`
+is the block above. A highlight on a Blygger post is a quote by reference.
+See "Amendment (2026-11-21): Blygger posts" at the end.)
+
 ## Extension (MV3)
 
 - `manifest_version: 3`. Permissions: `storage`, `activeTab`, `scripting`, `alarms`;
@@ -12588,3 +12593,157 @@ the drawer's who-commented pills (`D.commenter`, `commenters()`,
 - Tests: `test/commentpills.test.mjs`; harness `?pills=1&selftest=1`
   (screenshot poses `?pills=1&pill=notes|bots`, `&moved=1`,
   `?pills=nobots&pill=bots`).
+
+### Amendment (2026-11-21): Blygger posts
+
+A page may be a post on a Blygger blog (spec 0.4, https://blygger.org/spec/0.4/).
+Discuss recognises it, records which post and version each record was made
+on, checks highlights against the post's quoting rule, exports them as quotes
+by reference, and tells the bots. `docs/blygger.md` is the account for users;
+this is the contract.
+
+#### Detection (blyg.mjs, companion)
+
+- **Where:** the companion does every fetch. The content script only reads
+  `<link rel="blyg">` and `<link rel="alternate" type="application/json">`
+  (absolute hrefs, nothing fetched) and sends them as `blyg_hints` with
+  `POST /page`, `/thread`, page-chat `/reply` and `/export`, and as `hints`
+  with `POST /blyg`. Why: a content script's fetch is made for the page's
+  origin, so CORS applies and, on some browsers, the page's CSP. The
+  companion has neither problem, already has a web guard, and owns the
+  records.
+- **Order:** §12.1 without the feed steps: `{page path}/blyg.json`, the
+  rel=blyg href (as a manifest, then as a base), `/blyg/blyg.json`,
+  `/blyg.json`. Identity origin = the folder of the final manifest URL
+  (§12.2). The post: the alternate JSON link, else an id-shaped segment of the
+  page path that the document's `page` confirms. The document is always read
+  from the manifest's `item` template (default `items/{id}.json`). `id` and
+  `origin` must match byte for byte, and `content_hash` must equal
+  sha256(content_md). On the `{page}v{n}/` page of a pinned version, that
+  version's pin document is read (`pin` template).
+- **Answers:** `blyg` | `blyg-site` | `not-a-blyg` | `check-failed`, plus
+  `reason`. If a probe could not be asked (refused, timeout, too big,
+  network, budget spent), "no" cannot be said: the answer is `check-failed`.
+  PDFs (`kind: 'pdf'`, `.pdf`) and non-http(s) URLs are `not-a-blyg`, with
+  no request.
+- **Guard:** http and https only. `lasso.webAddressRefusal` refuses
+  loopback, private and link-local addresses (every resolved address) and
+  the companion's own port; the one exception is the page's own host when
+  the page is itself local. Redirects are followed by hand, at most 5, each
+  hop guarded. Limits: 8 s per request, 20 s and 8 requests per check, 256 KB
+  per manifest, 4 MB per item document, 2 MB per page, enforced while
+  streaming.
+- **Once per page:** `createChecker` keeps one answer per page URL (10 min;
+  1 min for `check-failed`) and shares an in-flight check between askers.
+  `PLUGIN_BLYG_CHECKS=off` turns all checks off (the test harness default).
+
+#### The modes, named once
+
+- `config.js`: `BLYG_MODES = ['unknown','checking','blyg','blyg-site','not-a-blyg','check-failed']`.
+- `BLYG_MOVES`: an answer may arrive only from `checking`, or from `unknown`
+  when the companion already held one. A settled answer is replaced only by
+  asking again. Any mode may go back to `unknown` when the tab changes page.
+- `blygMove` throws on an illegal move; `canBlygMove` asks without throwing.
+- The drawer keeps the page's mode in `D.blyg.mode`. Only `blygSet` changes
+  it, and it refuses an illegal move.
+- Record stamps use the same words: `BLYG_STAMPS = ['checking','blyg','check-failed']`,
+  or no stamp. Only `blyg.restamp` moves a stamp, under `STAMP_MOVES`. A
+  `blyg` stamp is final.
+
+#### Records
+
+- `page.blyg = { status, checked, reason?, site?, item? }`, with
+  `item = { origin, id, kind, version, latest, pinned, pinned_versions, page,
+  pinned_page, json, source, author }`. Absent means never asked.
+- `thread.blyg` and page-chat `msg.blyg` (the reader's own messages only):
+  `{ status: 'blyg', origin, id, version, pinned, page, pinned_page?, as_of:
+  'record'|'check', passage? }`, or `{status:'checking'}`, or
+  `{status:'check-failed'}`. Absent on ordinary pages and on records from
+  before this. `passage` (threads only) is `{match:true}` or
+  `{match:false, nearest}`.
+- `/thread` and page-chat `/reply` wait up to 4 s for the page's answer before
+  they read the page (`PLUGIN_BLYG_RECORD_WAIT_MS`); `/export` and `/blyg`
+  wait up to 25 s. A record written before the answer arrives is stamped
+  `checking`.
+- `applyAnswer` fills in, once: `checking` stamps (as_of `record`),
+  `check-failed` stamps (as_of `check`), and, on a page's first answer, the
+  threads with no stamp (as_of `check`).
+- `page.export_response` is `'response'` or absent (`note-quotes.RESPONSE_MODES`
+  = `['not-a-response','response']`). `POST /export-response {url, response}`
+  sets it (owner only; any other value is a 400).
+
+#### Passage rule (§10.2)
+
+- `blyg.textContent(html)` follows blygger-studio's `selectionText`:
+  - script and style are dropped;
+  - closing p, h1–h6, li, blockquote, pre, div, tr, section and article, and
+    `<br>`, end a block;
+  - tags are stripped;
+  - `&lt; &gt; &quot; &#39; &apos; &nbsp; &hellip; &mdash; &ndash;` and the
+    curly-quote entities are decoded, `&amp;` last;
+  - whitespace is collapsed within each block, and blocks are joined by line
+    breaks.
+- A highlight passes when its lines, collapsed and joined by line breaks,
+  are a substring of that text.
+- `nearest` is the longest in-order run of the highlight's own words that is
+  a substring (from its first 200 words), if it is at least 20 characters.
+
+#### Export (note-quotes.mjs: one function per output kind)
+
+- `webQuote(t, style, url)`. `QUOTE_STYLES = ['url-card','plain']`, default
+  `url-card`, which adds `>` and `> <url>` after any attribution line. An
+  unknown `quote_style` writes `plain` and puts `warning` in the `/export`
+  answer.
+- `blygQuote`: `![[<id> | <label>]]`, then the `> ` lines directly under it
+  (no blank line), with `>` between paragraphs. The passage is escaped:
+  `` * _ ` [ < \ ~ ``, an `&` that starts an entity, and at the start of a
+  line `# > - + =` and `N.` / `N)`. The label is the page's display title on
+  one line, with `]]` broken.
+- `wholePost`: the bare directive. It goes at the top of the body when the
+  note quotes no passage of the post, or is a response.
+- `frontMatter`: `blyg_sources:` (a YAML list of post pages, without
+  duplicates), and `blyg_stub_of:` with `{origin, id, version}` on a post or
+  `{url}` elsewhere, never both. Inserted after `tags:`. An ordinary page's
+  note gets no keys unless it is a response.
+- `quoteNotes`: the italic lines for "not word for word" (with the nearest
+  passage), "not in the current version" (`/export` passes the post's
+  current text), "could not check", and as_of `check`.
+- A strike on a post: the quote by reference, then `*suggested deletion*`.
+- Drafts (`draft.mjs`): `quoteSet`, `quotesPrompt` and `placeQuotes`.
+  - The bot writes `<!-- quote:N -->`, and the companion fills it with
+    `highlightParts`.
+  - A blockquote that shares at least 60% of a highlight's words is replaced
+    by that highlight.
+  - The two keys are added to the template's front matter only on a post,
+    replacing the same keys if the template has them. Other template lines
+    are left as they are.
+
+#### Drawer
+
+- One grey header line, `.hdr .blyg`, shown only in mode `blyg`:
+  `blyg · vN[ pinned] · Author`, with a tooltip that explains it.
+- The drawer asks once per page, on the first opening (`onBlygCheck` →
+  `POST /blyg`). It takes a pending answer from the page record only if
+  `checked` is newer than the asking.
+- A thread whose stamp says `passage.match: false` shows `.where.blygmiss`
+  under its quote.
+- The export chooser has one toggle row, "a response to this post/page"
+  (`onExportResponse`). It is not offered in the library.
+- Harness: `?blyg=1` (and `?blyg=1&export=1`).
+
+#### Bots
+
+`blyg.blygContextBlock(page, stamp)` returns one standing envelope line
+(`blygContext`). It gives the post id, version, pinned or not, origin, and
+the blyg's title and author (clipped, as quoted data); how to write `[[id]]`
+and `![[id]]`; and the version of the highlight under discussion, and
+whether its words pass the check.
+
+#### Tests
+
+- `test/blyg.test.mjs`: modes, guard, discovery, verification, passage rule,
+  checker, records, bot context.
+- `test/blyg-server.test.mjs`: the companion end to end, against a fake web.
+- `test/blygdrawer.test.mjs`, `test/export.test.mjs`, `test/draft.test.mjs`.
+- Fixtures: `test/fixtures/blyg/` (`sources.json` says where each came from).
+  Other authors' posts are kept only as short excerpts.
