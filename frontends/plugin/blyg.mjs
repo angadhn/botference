@@ -30,12 +30,8 @@
 // a private one to the connection — "DNS rebinding" — gets nowhere); the same
 // at every redirect hop; a time limit, a size limit.
 import crypto from 'node:crypto';
-import http from 'node:http';
-import https from 'node:https';
-import net from 'node:net';
-import dns from 'node:dns';
 import { createRequire } from 'node:module';
-import { privateAddress } from './lasso.mjs';
+import { FetchTrouble, urlRefusal, systemResolve, vetHost, fetchRefusal, guardedGet as netGet, DNS_MS } from './netguard.mjs';
 
 // The one list of what a page's blyg status can be. It lives in config.js
 // because the drawer (a browser script) keeps the same field; see the comment
@@ -49,7 +45,7 @@ export const LIMITS = Object.freeze({
   fetches: 8,
   timeoutMs: 8000,
   // a name that takes longer than this to resolve is not waited for
-  dnsMs: 3000,
+  dnsMs: DNS_MS,
   // …and the whole check, however many requests it makes, stops asking after
   // this long (an answer by then is 'check-failed', never a guess)
   checkMs: 20000,
@@ -64,160 +60,13 @@ export const UA = 'Mozilla/5.0 (compatible; botference-discuss/1.0; +https://bot
 
 // ---- the guard --------------------------------------------------------------
 
-// A failed fetch, named. `kind` says what went wrong in one word, so a check
-// can tell "this is not here" (404, not JSON: the answer is no) from "could
-// not ask" (refused, timeout, too big, network: the answer is unknown).
-export class FetchTrouble extends Error {
-  constructor(kind, message) { super(message); this.kind = kind; }
-}
-
-// The companion's own port is never fetched, whatever address it is on.
-const COMPANION_PORTS = new Set(['4189', ...(Number(process.env.PORT) > 0 ? [String(Number(process.env.PORT))] : [])]);
-const bareHost = u => u.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
-
-/**
- * Why this URL is not fetched, judged before any name is resolved, or ''.
- * A page on this computer or its private network is never checked either:
- * the URL a check starts from is whatever the caller says it is, so no
- * address is ever trusted because of it.
- */
-export function urlRefusal(raw) {
-  let u;
-  try { u = new URL(String(raw)); } catch { return 'that is not a web address'; }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'that is not a web address';
-  const port = u.port || (u.protocol === 'https:' ? '443' : '80');
-  if (COMPANION_PORTS.has(port)) return "that is the companion's own port, which it never fetches";
-  const host = bareHost(u);
-  const local = 'that address is on this computer or its private network, which the companion never fetches';
-  if (!host || host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return local;
-  if (net.isIP(host)) return privateAddress(host) ? local : '';
-  return '';
-}
-
-// The default resolver: every address the name has, given LIMITS.dnsMs.
-export async function systemResolve(host) {
-  let timer;
-  try {
-    return await Promise.race([
-      dns.promises.lookup(host, { all: true, verbatim: true }),
-      new Promise((_, no) => { timer = setTimeout(() => no(new Error('dns timeout')), LIMITS.dnsMs); }),
-    ]);
-  } finally { clearTimeout(timer); }
-}
-
-/**
- * Resolve `host` once and check EVERY address it answers; → the one address
- * the connection will be made to. A name with any special-purpose address
- * among its answers is refused outright (a name that answers one public and
- * one private address is not "probably fine").
- */
-export async function vetHost(host, resolve = systemResolve) {
-  if (net.isIP(host)) {
-    if (privateAddress(host)) throw new FetchTrouble('refused', `${host} is on this computer or its private network`);
-    return { address: host, family: net.isIP(host) };
-  }
-  let addrs;
-  try { addrs = await resolve(host); }
-  catch (e) {
-    throw /timeout/i.test(String(e && e.message)) ? new FetchTrouble('timeout', `${host} did not resolve in time`)
-      : new FetchTrouble('network', `could not find ${host}`);
-  }
-  if (!Array.isArray(addrs) || !addrs.length) throw new FetchTrouble('network', `could not find ${host}`);
-  if (addrs.some(a => !a || privateAddress(a.address))) {
-    throw new FetchTrouble('refused', `${host} resolves to an address on this computer or a private network`);
-  }
-  const a = addrs[0];
-  return { address: a.address, family: a.family || net.isIP(a.address) };
-}
-
-/** '' if `raw` may be fetched (the URL and every address its name resolves to), else why not. */
-export async function fetchRefusal(raw, resolve = systemResolve) {
-  const why = urlRefusal(raw);
-  if (why) return why;
-  try { await vetHost(bareHost(new URL(String(raw))), resolve); return ''; }
-  catch (e) { return String(e.message); }
-}
-
-/**
- * The default transport: GET `url`, follow at most LIMITS.redirects redirects
- * by hand, stop reading at `maxBytes`, give up after `timeoutMs`.
- * → { status, url (final), contentType, text }. Throws a FetchTrouble for
- * refused / timeout / too-big / network.
- *
- * Every hop: the URL is judged (urlRefusal), its name resolved ONCE and every
- * address checked (vetHost), and the request is made with a lookup that can
- * only answer that checked address, so the connection goes nowhere else. A
- * fresh agent per request and no proxy. `resolve`
- * and `transport` ({ http, https }) are injectable for the tests.
- */
-export async function guardedGet(url, { maxBytes = LIMITS.itemBytes, timeoutMs = LIMITS.timeoutMs,
-  accept = 'application/json', resolve = systemResolve, transport = { http, https } } = {}) {
-  const deadline = Date.now() + timeoutMs;
-  const late = () => new FetchTrouble('timeout', `no answer from ${url} in ${Math.round(timeoutMs / 1000)}s`);
-  let at = String(url);
-  for (let hop = 0; ; hop++) {
-    const why = urlRefusal(at);
-    if (why) throw new FetchTrouble('refused', `will not fetch ${at}: ${why}`);
-    const u = new URL(at);
-    const host = bareHost(u);
-    const vetted = await Promise.race([vetHost(host, resolve),
-      new Promise((_, no) => setTimeout(() => no(late()), Math.max(0, deadline - Date.now())).unref?.())]);
-    const res = await requestOnce(transport, u, host, vetted, accept, deadline, late);
-    const loc = res.statusCode >= 300 && res.statusCode < 400 ? res.headers.location : null;
-    if (loc) {
-      res.resume();
-      if (hop >= LIMITS.redirects) throw new FetchTrouble('network', `too many redirects from ${url}`);
-      try { at = new URL(String(loc), at).href; } catch { throw new FetchTrouble('network', `a bad redirect from ${at}`); }
-      continue; // judged and vetted at the top of the loop, scheme included
-    }
-    const text = await readCapped(res, maxBytes, at, deadline, late);
-    return { status: res.statusCode, url: at, contentType: String(res.headers['content-type'] || ''), text };
-  }
-}
-
-function requestOnce(transport, u, host, vetted, accept, deadline, late) {
-  return new Promise((resolve, reject) => {
-    const mod = u.protocol === 'https:' ? transport.https : transport.http;
-    const req = mod.request({
-      protocol: u.protocol, hostname: host, port: u.port || undefined, path: `${u.pathname}${u.search}`,
-      method: 'GET',
-      // a fresh agent per request, and explicitly no proxy from the
-      // environment (proxyEnv: {}), so nothing between here and the checked
-      // address decides where the connection goes
-      agent: new (u.protocol === 'https:' ? https.Agent : http.Agent)({ keepAlive: false, proxyEnv: {} }),
-      headers: { 'user-agent': UA, accept, 'accept-encoding': 'identity' },
-      // the connection may go to the checked address and nowhere else
-      lookup: (_h, opts, cb) => (opts && opts.all
-        ? cb(null, [{ address: vetted.address, family: vetted.family }])
-        : cb(null, vetted.address, vetted.family)),
-      ...(net.isIP(host) ? {} : { servername: host }),
-    }, resolve);
-    const timer = setTimeout(() => req.destroy(late()), Math.max(0, deadline - Date.now()));
-    req.on('close', () => clearTimeout(timer));
-    req.on('error', e => reject(e instanceof FetchTrouble ? e : new FetchTrouble('network', `could not reach ${u.href}`)));
-    req.end();
-  });
-}
-
-// Read a body without ever holding more than `maxBytes` of it: a response that
-// says it is bigger, or turns out to be, is abandoned and named too-big.
-function readCapped(res, maxBytes, at, deadline, late) {
-  return new Promise((resolve, reject) => {
-    const said = Number(res.headers['content-length']);
-    const tooBig = () => new FetchTrouble('too-big', `${at} is larger than ${maxBytes} bytes`);
-    if (said > maxBytes) { reject(tooBig()); res.destroy(); return; }
-    const parts = [];
-    let size = 0;
-    const timer = setTimeout(() => { reject(late()); res.destroy(); }, Math.max(0, deadline - Date.now()));
-    res.on('data', c => {
-      size += c.length;
-      if (size > maxBytes) { clearTimeout(timer); reject(tooBig()); res.destroy(); return; }
-      parts.push(c);
-    });
-    res.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(parts).toString('utf8')); });
-    res.on('error', () => { clearTimeout(timer); reject(new FetchTrouble('network', `the answer from ${at} broke off`)); });
-    res.on('aborted', () => { clearTimeout(timer); reject(new FetchTrouble('network', `the answer from ${at} broke off`)); });
-  });
+// FetchTrouble, urlRefusal, systemResolve, vetHost, fetchRefusal and the
+// guarded transport live in netguard.mjs (shared with lasso's link fetch);
+// guardedGet here is that transport with the check's own limits.
+export { FetchTrouble, urlRefusal, systemResolve, vetHost, fetchRefusal };
+export function guardedGet(url, { maxBytes = LIMITS.itemBytes, timeoutMs = LIMITS.timeoutMs,
+  accept = 'application/json', resolve = systemResolve, transport } = {}) {
+  return netGet(url, { maxBytes, timeoutMs, accept, resolve, transport, ua: UA, redirects: LIMITS.redirects });
 }
 
 // ---- one check's fetches --------------------------------------------------------

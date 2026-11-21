@@ -7,8 +7,11 @@
 // This suite runs the companion IN PROCESS (PLUGIN_NO_LISTEN=1, its handler on
 // a port of our own) because the only way to land a write inside the route's
 // await on purpose is to be the thing it awaits: a link in the comment makes
-// the turn fetch it (lasso.webForTurn), and the stubbed fetch writes the "bot
-// answer" into the page file before it answers. No network: DNS is stubbed too.
+// the turn fetch it (lasso.webForTurn), and the stand-in web page writes the
+// "bot answer" into the page file before it answers. No network: DNS is
+// stubbed, and a request for example.org is carried to a loopback server of
+// this suite's own (node's https.request, which the companion's guarded fetch
+// uses, is wrapped for that one name).
 //
 //   node frontends/plugin/test/reread.test.mjs
 import assert from 'node:assert/strict';
@@ -16,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
 import dns from 'node:dns';
 import { fileURLToPath } from 'node:url';
 import { POST, GET } from './harness.mjs';
@@ -40,8 +44,7 @@ const { handler } = await import('../server.mjs');
 // the "bot answer" that lands while the route is suspended on the fetch
 const BOT = 'an answer that landed while the route was waiting';
 let landOn = null;
-const realFetch = globalThis.fetch;
-globalThis.fetch = async () => {
+const web = http.createServer(async (_req, res) => {
   if (landOn) {
     const p = store.readPage(landOn);
     store.appendMsg(p, store.PAGE_CHAT, { author: 'claude', text: BOT });
@@ -49,8 +52,15 @@ globalThis.fetch = async () => {
     landOn = null;
   }
   await new Promise(r => setTimeout(r, 20));
-  return new Response('<html><head><title>Linked</title></head><body><p>linked text</p></body></html>',
-    { status: 200, headers: { 'content-type': 'text/html' } });
+  res.writeHead(200, { 'content-type': 'text/html' })
+    .end('<html><head><title>Linked</title></head><body><p>linked text</p></body></html>');
+});
+await new Promise(r => web.listen(0, '127.0.0.1', r));
+const realHttpsRequest = https.request;
+https.request = function (opts, cb) {
+  if (!opts || typeof opts !== 'object' || opts.hostname !== 'example.org') return realHttpsRequest.apply(this, arguments);
+  return http.request({ host: '127.0.0.1', port: web.address().port, path: opts.path, method: opts.method || 'GET',
+    headers: opts.headers, agent: false }, cb);
 };
 
 const server = http.createServer(handler);
@@ -82,13 +92,14 @@ await test('review mirror: a bot answer written during a summon survives the com
   ] });
   assert.equal(r.status, 200, r.body);
   assert.equal(r.json.created, 2);
-  assert.equal(landOn, null, 'the stubbed fetch ran inside the route');
+  assert.equal(landOn, null, 'the stand-in page was fetched inside the route');
   const page = (await GET(base, `/page?url=${encodeURIComponent(url)}`)).json;
   assert.ok((page.page_chat || []).some(m => m.text === BOT), 'the answer that landed meanwhile is still there');
   assert.equal(page.threads.length, 2, 'and both comments were filed');
 });
 
-globalThis.fetch = realFetch;
+https.request = realHttpsRequest;
+web.close();
 server.close();
 for (const d of [ROOT, SECRETS]) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ reread.test.mjs — ${passed} passed, ${failures.length} failed`);

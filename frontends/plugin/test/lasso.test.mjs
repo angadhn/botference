@@ -820,7 +820,8 @@ await test('every special-purpose range is refused, one address per range, and e
     'mapped, dotted': '::ffff:127.0.0.1', 'mapped, hex (as a URL parser writes it)': '::ffff:7f00:1',
     'mapped, written out': '0:0:0:0:0:ffff:a9fe:a9fe', 'v4-compatible': '::10.0.0.1',
     'NAT64 of loopback': '64:ff9b::7f00:1', 'NAT64 of Tailscale': '64:ff9b::100.100.100.100',
-    '6to4 of private': '2002:c0a8:0101::1', 'bracketed': '[::1]', 'with a zone': 'fe80::1%en0',
+    '6to4 of private': '2002:c0a8:0101::1', 'translated (SIIT) of private': '::ffff:0:10.0.0.1',
+    'translated (SIIT) of loopback, hex': '::ffff:0:7f00:1', 'bracketed': '[::1]', 'with a zone': 'fe80::1%en0',
     'not an address at all': 'example.org', 'decimal IPv4 is no address': '2130706433',
   };
   for (const [what, ip] of Object.entries(refused)) assert.equal(lasso.privateAddress(ip), true, `${what}: ${ip}`);
@@ -828,7 +829,7 @@ await test('every special-purpose range is refused, one address per range, and e
     'public v4': '8.8.8.8', 'just outside 172.16/12': '172.32.0.1', 'just outside 100.64/10': '100.128.0.1',
     'just below 100.64/10': '100.63.255.255', 'just outside 198.18/15': '198.20.0.1', 'public v6': '2606:4700::1',
     'NAT64 of a public address': '64:ff9b::808:808', '6to4 of a public address': '2002:0808:0808::1',
-    'mapped public': '::ffff:8.8.8.8',
+    'mapped public': '::ffff:8.8.8.8', 'translated (SIIT) of a public address': '::ffff:0:8.8.8.8',
   };
   for (const [what, ip] of Object.entries(allowed)) assert.equal(lasso.privateAddress(ip), false, `${what}: ${ip}`);
 });
@@ -841,29 +842,75 @@ await test('a redirect to a private address is refused, and what came back is no
   assert.ok(!JSON.stringify(r).includes('router admin secrets'));
 });
 
-await test('the default transport follows redirects by hand and checks every hop', async () => {
-  const realFetch = globalThis.fetch;
-  const asked = [];
-  globalThis.fetch = async (u, init) => {
-    asked.push(String(u));
-    assert.equal(init.redirect, 'manual', 'never let fetch follow on its own');
-    if (String(u).endsWith('/start')) return new Response('', { status: 302, headers: { location: 'https://example.org/two' } });
-    if (String(u).endsWith('/two')) return new Response('', { status: 301, headers: { location: 'http://127.0.0.1:4189/index' } });
-    return new Response('<p>should never be read</p>', { status: 200, headers: { 'content-type': 'text/html' } });
-  };
-  try {
-    const r = await lasso.fetchWeb('https://example.org/start');
-    assert.match(r.error || '', /redirects to an address it will not fetch/);
-    assert.deepEqual(asked, ['https://example.org/start', 'https://example.org/two'], 'the private hop is never requested');
-    globalThis.fetch = async u => (String(u).endsWith('/a')
-      ? new Response('', { status: 302, headers: { location: '/b' } })
-      : new Response('<html><head><title>Arrived</title></head><body><p>the real text</p></body></html>',
-        { status: 200, headers: { 'content-type': 'text/html' } }));
-    const ok = await lasso.fetchWeb('https://example.org/a');
-    assert.equal(ok.title, 'Arrived');
-    assert.equal(ok.url, 'https://example.org/b', 'the final address is the one reported');
-  } finally { globalThis.fetch = realFetch; }
+// The default transport is netguard's guarded GET. A loopback server stands
+// in for the web; the requests reach it the way a real site is reached — a
+// public name, and a transport that asks the request's own lookup which
+// address it would connect to (that is what is recorded) before carrying the
+// request to the loopback server.
+const nodeHttp = await import('node:http');
+const webSrv = nodeHttp.createServer((req, res) => {
+  if (req.url === '/start') return res.writeHead(302, { location: 'https://example.org/two' }).end();
+  if (req.url === '/two') return res.writeHead(301, { location: 'http://127.0.0.1:4189/index' }).end();
+  if (req.url === '/a') return res.writeHead(302, { location: '/b' }).end();
+  if (req.url === '/b') return res.writeHead(200, { 'content-type': 'text/html' })
+    .end('<html><head><title>Arrived</title></head><body><p>the real text</p></body></html>');
+  if (req.url === '/huge') {
+    res.writeHead(200, { 'content-type': 'text/plain', 'content-length': String(lasso.WEB_BYTES_MAX + 4096) });
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    let sent = 0;
+    const more = () => { while (sent < lasso.WEB_BYTES_MAX + 4096 && !res.destroyed) {
+      const n = Math.min(chunk.length, lasso.WEB_BYTES_MAX + 4096 - sent); sent += n;
+      if (!res.write(chunk.subarray(0, n))) return res.once('drain', more); }
+      if (!res.destroyed) res.end(); };
+    return more();
+  }
+  res.writeHead(200, { 'content-type': 'text/html' }).end('<p>should never be read</p>');
 });
+await new Promise(r => webSrv.listen(0, '127.0.0.1', r));
+const webAsked = [];
+const connectedTo = [];
+const via = { request(opts, cb) {
+  opts.lookup(opts.hostname, {}, (_e, a) => connectedTo.push(a));
+  webAsked.push(`${opts.protocol}//${opts.hostname}${opts.path}`);
+  return nodeHttp.request({ host: '127.0.0.1', port: webSrv.address().port, path: opts.path, method: opts.method,
+    headers: opts.headers, agent: false }, cb);
+} };
+const transport = { http: via, https: via };
+const webGetVia = resolve => (u, o) => lasso.webGet(u, { ...o, transport, ...(resolve ? { resolve } : {}) });
+
+await test('the default transport follows redirects by hand and checks every hop', async () => {
+  webAsked.length = 0;
+  const r = await lasso.fetchWeb('https://example.org/start', { http: webGetVia() });
+  assert.match(r.error || '', /redirects to an address it will not fetch/);
+  assert.deepEqual(webAsked, ['https://example.org/start', 'https://example.org/two'], 'the private hop is never requested');
+  const ok = await lasso.fetchWeb('https://example.org/a', { http: webGetVia() });
+  assert.equal(ok.title, 'Arrived');
+  assert.equal(ok.url, 'https://example.org/b', 'the final address is the one reported');
+});
+
+await test('the name is resolved once and the connection goes to that address only (no rebinding)', async () => {
+  connectedTo.length = 0;
+  let calls = 0;
+  // a name that answers public the first time and loopback after
+  const rebinding = async () => (calls++ ? [{ address: '127.0.0.1', family: 4 }] : [{ address: '93.184.216.34', family: 4 }]);
+  const r = await lasso.fetchWeb('https://example.org/b', { http: webGetVia(rebinding) });
+  assert.equal(r.title, 'Arrived');
+  assert.equal(calls, 1, 'one lookup for the one hop');
+  assert.deepEqual(connectedTo, ['93.184.216.34'], 'connected to the address that was checked');
+  // a name with ANY private answer is refused before a request is made
+  webAsked.length = 0;
+  const mixed = async () => [{ address: '93.184.216.34', family: 4 }, { address: '10.0.0.5', family: 4 }];
+  const no = await lasso.fetchWeb('https://example.org/b', { http: webGetVia(mixed) });
+  assert.match(no.error || '', /could not fetch/);
+  assert.deepEqual(webAsked, [], 'nothing was requested');
+});
+
+await test('a page longer than the limit is cut at the limit, not refused', async () => {
+  const r = await lasso.webGet('https://example.org/huge', { transport });
+  assert.equal(r.ok, true);
+  assert.equal(r.body.length, lasso.WEB_BYTES_MAX);
+});
+webSrv.close();
 
 for (const d of tmps) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { } }
 console.log(`\n✓ lasso.test.mjs — ${passed} passed, ${failures.length} failed`);

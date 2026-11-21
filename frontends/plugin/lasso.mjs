@@ -37,6 +37,7 @@ import {
   pageKey, normUrl, displayTitle, isLibrary,
 } from './store.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
+import { privateAddress, COMPANION_PORTS, guardedGet } from './netguard.mjs';
 import {
   knownCouncilRoots, rootState, projectTitle, stripEnvelope,
 } from './workspace.mjs';
@@ -904,94 +905,16 @@ export function hostAllowed(host, hosts) {
 // ---- fetching -------------------------------------------------------------
 
 // ---- never this machine, never the private network -----------------------
-//
-// A link in a message is the reader's text, but it may have been pasted from
-// anywhere, and the companion fetches it with the reader's own network
-// position: a link to 127.0.0.1, the router's admin page or a box on the LAN
-// would be read out and handed to the bots. So those are refused, by address,
-// before any request — the name is resolved and EVERY address it resolves to
-// is checked — and again at each redirect, which is followed by hand for
-// exactly that reason. No exceptions, the reader's own local preview included.
-const COMPANION_PORTS = new Set(['4189', ...(Number(process.env.PORT) > 0 ? [String(Number(process.env.PORT))] : [])]);
-// WHICH ADDRESSES ARE NOT THE PUBLIC INTERNET'S, as one table per family.
-// Everything special-purpose is refused, not only "private": loopback, the
-// private ranges, shared address space (100.64/10: carrier NAT, and Tailscale's
-// 100.100.100.100), link-local (169.254/16, the cloud metadata address
-// included), benchmarking, documentation, multicast, reserved and broadcast.
-// IPv6 forms that CARRY an IPv4 address — mapped (::ffff:a.b.c.d),
-// v4-compatible (::a.b.c.d), NAT64 (64:ff9b::/96) and 6to4 (2002::/16) — are
-// unwrapped and the IPv4 inside is checked by the same table; Teredo
-// (2001::/32) hides its address and is refused whole.
-const V4_SPECIAL = [
-  ['0.0.0.0', 8],        // "this network"
-  ['10.0.0.0', 8],       // private
-  ['100.64.0.0', 10],    // shared address space (carrier NAT, Tailscale)
-  ['127.0.0.0', 8],      // loopback
-  ['169.254.0.0', 16],   // link-local, cloud metadata
-  ['172.16.0.0', 12],    // private
-  ['192.0.0.0', 24],     // IETF protocol assignments
-  ['192.0.2.0', 24],     // documentation
-  ['192.88.99.0', 24],   // 6to4 relay anycast
-  ['192.168.0.0', 16],   // private
-  ['198.18.0.0', 15],    // benchmarking
-  ['198.51.100.0', 24],  // documentation
-  ['203.0.113.0', 24],   // documentation
-  ['224.0.0.0', 4],      // multicast
-  ['240.0.0.0', 4],      // reserved, and 255.255.255.255
-];
-const V6_SPECIAL = [
-  ['::', 128],           // unspecified
-  ['::1', 128],          // loopback
-  ['64:ff9b:1::', 48],   // local-use NAT64
-  ['100::', 64],         // discard
-  ['2001::', 32],        // Teredo (the address inside is obfuscated)
-  ['2001:db8::', 32],    // documentation
-  ['fc00::', 7],         // unique local
-  ['fe80::', 10],        // link-local
-  ['fec0::', 10],        // site-local (deprecated)
-  ['ff00::', 8],         // multicast
-];
-// [prefix, bits, which 32 bits hold the IPv4 address (bit offset from the left)]
-const V6_CARRIES_V4 = [
-  ['::ffff:0:0', 96, 96],  // IPv4-mapped
-  ['64:ff9b::', 96, 96],   // NAT64
-  ['2002::', 16, 16],      // 6to4
-  ['::', 96, 96],          // IPv4-compatible (deprecated)
-];
-const v4Big = ip => ip.split('.').reduce((n, o) => (n << 8n) | BigInt(Number(o)), 0n);
-function v6Big(ip) {
-  let s = ip;
-  // a trailing dotted IPv4 is two groups
-  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(s);
-  if (dotted) {
-    const n = v4Big(dotted[1]);
-    s = s.slice(0, -dotted[1].length) + `${((n >> 16n) & 0xffffn).toString(16)}:${(n & 0xffffn).toString(16)}`;
-  }
-  const [head, tail] = s.includes('::') ? s.split('::') : [s, null];
-  const h = head ? head.split(':') : [];
-  const t = tail === null ? [] : (tail ? tail.split(':') : []);
-  const groups = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
-  return groups.reduce((n, g) => (n << 16n) | BigInt(parseInt(g || '0', 16)), 0n);
-}
-const inRange = (n, prefix, bits, width) => (bits === 0 ? true : (n >> BigInt(width - bits)) === (prefix >> BigInt(width - bits)));
-const v4Special = n => V4_SPECIAL.some(([p, b]) => inRange(n, v4Big(p), b, 32));
-/** Any address that is not the public internet's (tables above). Not an address at all: refused. */
-export function privateAddress(ip) {
-  const a = String(ip || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
-  if (net.isIPv4(a)) return v4Special(v4Big(a));
-  if (!net.isIPv6(a)) return true; // not an address at all: refuse rather than guess
-  const n = v6Big(a);
-  if (V6_SPECIAL.some(([p, b]) => inRange(n, v6Big(p), b, 128))) return true;
-  for (const [p, b, at] of V6_CARRIES_V4) {
-    if (inRange(n, v6Big(p), b, 128)) return v4Special((n >> BigInt(128 - at - 32)) & 0xffffffffn);
-  }
-  return false;
-}
+// The addresses the companion never fetches, and the guarded transport that
+// connects only to an address it checked, live in netguard.mjs, shared with
+// the Blygger check (blyg.mjs). webAddressRefusal below is the early,
+// friendly answer for a link before any request is made.
 /**
  * Why the companion will not fetch this address, or '' if it will. Resolves the
  * host (dns.promises.lookup, looked up at call time) and refuses if ANY of its
  * addresses is private, so a public name pointed at 127.0.0.1 is refused too.
  */
+export { privateAddress };
 export async function webAddressRefusal(raw) {
   let u;
   try { u = new URL(String(raw)); } catch { return 'that is not a web address'; }
@@ -1011,39 +934,20 @@ export async function webAddressRefusal(raw) {
 
 const WEB_REDIRECTS_MAX = 5;
 /**
- * The default transport. Answers `{ok, status, url, contentType, body}` —
- * exactly what an injected `http` must answer, so a suite can be a function.
- * Redirects are followed BY HAND, each hop checked like the first link.
+ * The default transport: netguard's guarded GET (resolve once, connect only
+ * to the checked address, redirects by hand with every hop judged), keeping
+ * the first WEB_BYTES_MAX of a longer page. Answers `{ok, status, url,
+ * contentType, body}` — exactly what an injected `http` must answer, so a
+ * suite can be a function. `resolve` and `transport` reach netguard, for the
+ * tests.
  */
-async function defaultHttp(url, { timeout = WEB_TIMEOUT_MS } = {}) {
-  const signal = AbortSignal.timeout(timeout);
-  let at = url;
-  for (let hop = 0; ; hop++) {
-    const res = await fetch(at, {
-      redirect: 'manual',
-      signal,
-      headers: {
-        'user-agent': WEB_UA,
-        accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
-      },
-    });
-    const loc = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
-    if (loc) {
-      try { await res.body?.cancel(); } catch { /* nothing to drain */ }
-      if (hop >= WEB_REDIRECTS_MAX) throw new Error('too many redirects');
-      const next = new URL(loc, at).href;
-      const why = await webAddressRefusal(next);
-      if (why) throw new Error(`it redirects to an address it will not fetch (${why})`);
-      at = next;
-      continue;
-    }
-    const body = Buffer.from(await res.arrayBuffer());
-    return {
-      ok: res.ok, status: res.status, url: at,
-      contentType: res.headers.get('content-type') || '',
-      body: body.length > WEB_BYTES_MAX ? body.subarray(0, WEB_BYTES_MAX) : body,
-    };
-  }
+export async function webGet(url, { timeout = WEB_TIMEOUT_MS, resolve, transport } = {}) {
+  const r = await guardedGet(String(url), {
+    timeoutMs: timeout, maxBytes: WEB_BYTES_MAX, tooBig: 'cut', redirects: WEB_REDIRECTS_MAX, ua: WEB_UA,
+    accept: 'text/html,application/xhtml+xml,application/pdf;q=0.9,text/plain;q=0.8,*/*;q=0.5',
+    ...(resolve ? { resolve } : {}), ...(transport ? { transport } : {}),
+  });
+  return { ok: r.status >= 200 && r.status < 300, status: r.status, url: r.url, contentType: r.contentType, body: r.body };
 }
 
 const TITLE_RE = /<title[^>]*>([\s\S]{0,400}?)<\/title>/i;
@@ -1091,12 +995,13 @@ export async function fetchWeb(url, { http = null, timeout = WEB_TIMEOUT_MS } = 
   if (!isHttpUrl(url)) return { error: 'that is not a web address' };
   const refused = await webAddressRefusal(url);
   if (refused) return { error: `could not fetch: ${refused}`, status: 0 };
-  const get = typeof http === 'function' ? http : defaultHttp;
+  const get = typeof http === 'function' ? http : webGet;
   let r = null;
   try { r = await get(String(url), { timeout }); }
   catch (e) {
     const why = String((e && (e.message || e.name)) || 'network error');
-    return { error: `could not fetch: ${/abort|timeout/i.test(why) ? `no answer in ${Math.round(timeout / 1000)}s` : why}`, status: 0 };
+    const late = (e && e.kind === 'timeout') || /abort|timeout/i.test(why);
+    return { error: `could not fetch: ${late ? `no answer in ${Math.round(timeout / 1000)}s` : why}`, status: 0 };
   }
   if (!r) return { error: 'could not fetch: nothing came back', status: 0 };
   const status = Number(r.status) || 0;
