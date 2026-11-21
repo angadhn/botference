@@ -383,6 +383,9 @@ const pinTemplate = m => (typeof m.pin === 'string' && m.pin ? m.pin : 'items/{i
 export const itemUrlOf = (manifest, origin, id) => expandTemplate(itemTemplate(manifest), { id }, origin);
 export const pinUrlOf = (manifest, origin, id, n) => expandTemplate(pinTemplate(manifest), { id, n }, origin);
 
+// http(s) and nothing else, for every URL that comes out of a remote document
+export const isWebUrl = v => { try { return /^https?:$/.test(new URL(String(v)).protocol); } catch { return false; } };
+
 // Two page addresses are the same page when they differ only in query,
 // fragment or a trailing slash.
 export function samePage(a, b) {
@@ -470,6 +473,7 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
   // item template), never only from where the page pointed: a page may name
   // any JSON it likes, and only the origin speaks for the origin (§12.2).
   const docUrl = itemUrlOf(m.manifest, origin, id);
+  if (!isWebUrl(docUrl)) return failed(`the blyg's item template does not give a web address (${clip(docUrl, 120)})`);
   const r = await s.json(docUrl);
   if (r.status === 'trouble') return failed(r.message);
   if (malformed(r)) return failed(`${docUrl} is not a JSON document`);
@@ -482,10 +486,13 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
   if (!KINDS.includes(doc.kind)) return notItem(`post ${id} is of a kind this version does not know`);
 
   // §5.8: page, relative to the origin or absolute; else the reference
-  // client's convention, which is good enough for a reader's own display
+  // client's convention, which is good enough for a reader's own display.
+  // Every URL taken from a remote document must be a web address: a page of
+  // `javascript:…` would otherwise reach a note's front matter and quotes.
   let page = '';
   try { page = new URL(typeof doc.page === 'string' && doc.page ? doc.page : `${doc.kind === 'fragment' ? 'f' : 't'}/${id}/`, origin).href; }
   catch { page = ''; }
+  if (!isWebUrl(page)) return failed(`post ${id} did not verify: its page is not a web address`);
   const pinned = (Array.isArray(doc.changelog) ? doc.changelog : [])
     .filter(e => e && e.pinned === true && Number.isInteger(e.version) && e.version > 0 && e.version <= doc.version)
     .map(e => e.version);
@@ -503,6 +510,7 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
     if (!pinned.includes(n)) return notItem(`version ${n} of post ${id} is not pinned`);
     if (n !== doc.version) {
       const pinUrl = pinUrlOf(m.manifest, origin, id, n);
+      if (!isWebUrl(pinUrl)) return failed(`the blyg's pin template does not give a web address (${clip(pinUrl, 120)})`);
       const p = await s.json(pinUrl);
       if (p.status === 'trouble') return failed(p.message);
       if (p.status !== 'ok') return failed(`pinned version ${n} of post ${id} is not served`);

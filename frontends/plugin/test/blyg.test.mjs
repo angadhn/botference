@@ -307,6 +307,15 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: 'too-big' }, { json: VR_JSON }));
   eq('an oversized item document: could not check', r.status, 'check-failed');
 
+  // every URL out of a remote document must be a web address
+  for (const bad of ['javascript:alert(1)//', 'data:text/html,hi', 'file:///etc/hosts']) {
+    ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: JSON.stringify({ ...item, page: bad }) } }, { json: VR_JSON }));
+    eq(`a page field of ${bad.split(':')[0]}: refused`, [r.status, /not a web address/.test(r.reason)], ['check-failed', true]);
+  }
+  const vrMan = JSON.parse(fx('venkat-manifest.json'));
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [`${VR}blyg.json`]: { text: JSON.stringify({ ...vrMan, item: 'javascript:x/{id}' }) } }, { json: VR_JSON }));
+  eq('an item template that is not a web address: refused', r.status, 'check-failed');
+
   // the guard is applied with the page that is being read: a public page whose
   // rel=blyg points into the private network gets nothing fetched from there
   const w = fakeWeb({});
