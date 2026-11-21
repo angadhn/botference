@@ -819,6 +819,9 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
   margin: -2px 0 8px; font-size: 11.5px; color: var(--muted);
   overflow-wrap: anywhere;
 }
+/* the second such line a card can carry: on a Blygger post, a highlight whose
+   words are not word for word in the post. Still grey, still no control. */
+.where + .where.blygmiss { margin-top: -6px }
 .fromdisc .rebtn:not([disabled]):hover { color: var(--strike-line) }
 /* …and the same line for the OTHER thing a thread can leave behind: a memory
    in the vault. Filing a question paints nothing on the document by design, so

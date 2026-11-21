@@ -4680,6 +4680,23 @@ ${bubbleShellHtml()}`;
       const w = whereText(t);
       return w ? `<div class="where" title="${esc('where this passage is in the document')}">${esc(w)}</div>` : '';
     };
+    // …and, on a Blygger post, the one thing about a highlight the reader
+    // would otherwise only learn from the export: its words are not word for
+    // word in the post (it ran into a caption, a footnote marker, a button),
+    // so it will be exported as an ordinary quote rather than a quote by
+    // reference that the publisher's build would reject. The companion
+    // checked it when it was made (blyg.mjs checkPassage) and found the
+    // nearest exact passage when there is one; this only reports it. The
+    // same quiet line as `where`, because it is the same kind of thing.
+    const blygPassageHtml = t => {
+      const b = t && t.blyg;
+      if (!b || b.status !== 'blyg' || !b.passage || b.passage.match !== false) return '';
+      const near = String(b.passage.nearest || '');
+      return `<div class="where blygmiss" title="${esc('Blygger checks a quoted passage word for word against the post; this one would not pass, so the export writes it as an ordinary quote')}">`
+        + `not word for word in v${esc(String(b.version))} of the post — exports as an ordinary quote`
+        + (near ? `; nearest exact passage: “${esc(near.length > 160 ? near.slice(0, 157) + '…' : near)}”` : '')
+        + '</div>';
+    };
     const quoteHtml = (t, orph, extra) =>
       `<div class="quote${isStruck(t) ? ' struck' : ''}" data-act="jump" data-target="${esc(t.id)}" title="${orph ? 'the anchor text is gone from this page' : (isStruck(t) ? 'scroll to this strikeout' : 'scroll to this highlight')}">“${esc(t.quote)}”${strikeBadge(t)}${orph ? '<span class="badge orphan-badge">orphaned</span>' : ''}${extra || ''}</div>`;
 
@@ -5014,7 +5031,7 @@ ${bubbleShellHtml()}`;
           ${quoteHtml(t, orph, badge)}
           ${head}
         </div>
-        ${whereHtml(t)}
+        ${whereHtml(t)}${blygPassageHtml(t)}
         ${fromDiscussionHtml(t)}
         ${broodHtml(t)}
         ${originHtml(t)}
@@ -5053,7 +5070,7 @@ ${bubbleShellHtml()}`;
           ${quoteHtml(t, orph)}
           ${reopenBtn(t)}
         </div>
-        ${whereHtml(t)}
+        ${whereHtml(t)}${blygPassageHtml(t)}
         ${broodHtml(t)}
         ${memoryLineHtml(t)}
         <p class="digest${pending ? ' provisional' : ''}">${esc(t.summary || '')}</p>

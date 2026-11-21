@@ -127,6 +127,24 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
   eq('library: not asked', [asked.length, drawer.blyg.mode], [0, 'unknown']);
 }
 
+// ---- a highlight that is not word for word in the post ---------------------------------
+{
+  const { drawer } = make([ANSWER]);
+  const st = { status: 'blyg', origin: ANSWER.item.origin, id: ANSWER.item.id, version: 2, pinned: false, page: POST_URL + '/', as_of: 'record' };
+  drawer.open('comments');
+  drawer.setPage({ url: POST_URL, title: 'x', page_chat: [], threads: [
+    { id: 'good', status: 'open', quote: 'exact words', blyg: { ...st, passage: { match: true } }, msgs: [{ author: 'reader', ts: '1', text: 'fine' }] },
+    { id: 'miss', status: 'open', quote: 'Share exact words 3', blyg: { ...st, passage: { match: false, nearest: 'exact words <b>' } }, msgs: [{ author: 'reader', ts: '2', text: 'oops' }] },
+    { id: 'plain', status: 'open', quote: 'ordinary page words', msgs: [{ author: 'reader', ts: '3', text: 'no stamp' }] },
+  ] });
+  drawer.open('comments'); await tick(20);
+  const notes = [...drawer.shadow.querySelectorAll('.where.blygmiss')];
+  eq('one notice, on the highlight that would not pass', notes.length, 1);
+  ok('it says what will happen, and offers the nearest exact passage, escaped',
+    notes[0] && notes[0].textContent === 'not word for word in v2 of the post — exports as an ordinary quote; nearest exact passage: “exact words <b>”'
+    && !notes[0].querySelector('b'), notes[0] && notes[0].outerHTML);
+}
+
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blygdrawer: ${pass} passed, ${fail} failed`);
 process.exit(fail);
