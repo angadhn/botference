@@ -447,3 +447,64 @@ export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {
       pinned_versions: pinned, page, pinned_page: pinnedPage, json, source: site.title, author },
   });
 }
+
+// ---- does a highlighted passage pass the publisher's check? (§10.2) ------------
+// A Blygger partial quote is checked when the quoting post is published: the
+// selection MUST be a substring of the target's "text content" — its
+// content_html with tags stripped, whitespace collapsed within a block, block
+// boundaries kept as line breaks (§2, §10.2). The spec leaves which elements
+// are blocks to the implementation, so this follows the reference client
+// (blygger-studio's selectionText): the closing tags of p, h1–h6, li,
+// blockquote, pre, div, tr, section and article, and <br>, end a block;
+// script and style are dropped; a short list of entities is decoded after the
+// tags are gone, &amp; last. Anything a publisher might do differently is a
+// reason this check can only ever say "will pass the reference client".
+const BLOCK_END = /<\/(?:p|h[1-6]|li|blockquote|pre|div|tr|section|article)\s*>|<br\s*\/?>/gi;
+const SEP = '\u0000'; // a C0 control, which content may not contain (§5.1)
+const ENTITIES = { lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', hellip: '…',
+  mdash: '—', ndash: '–', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”' };
+export function textContent(html) {
+  const s = String(html || '')
+    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
+    .replace(BLOCK_END, SEP)
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#39;/g, "'")
+    .replace(/&([a-z]+);/g, (m, n) => (Object.hasOwn(ENTITIES, n) ? ENTITIES[n] : m))
+    .replace(/&amp;/g, '&');
+  return s.split(SEP).map(b => b.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+}
+
+// A highlight as the publisher will read it once exported: each line of the
+// selection its own paragraph (the export separates them with an empty '>'
+// line), whitespace collapsed, empty lines gone.
+export const passageOf = quote => String(quote || '').split(/\r?\n/)
+  .map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+
+const NEAREST_WORDS_MAX = 200;
+const NEAREST_MIN_CHARS = 20;
+/**
+ * → { match: true } or { match: false, nearest } where `nearest` is the
+ * longest run of the passage's own words, in order, that IS in the text (''
+ * when nothing of at least a few words is). That is the usual repair: a
+ * selection that ran into a caption, a footnote marker or a button keeps its
+ * real words and loses the rest. Bounded: at most NEAREST_WORDS_MAX words are
+ * tried, so a long selection costs a few thousand substring tests at most.
+ */
+export function checkPassage(quote, text) {
+  const passage = passageOf(quote);
+  const hay = String(text || '');
+  if (passage && hay.includes(passage)) return { match: true };
+  // tokens keep the separator that followed them, so a run that crosses a
+  // paragraph break is tried with the line break the text has there
+  const toks = [...passage.matchAll(/(\S+)(\s*)/g)].slice(0, NEAREST_WORDS_MAX).map(m => [m[1], m[2]]);
+  const join = (i, j) => toks.slice(i, j).map((t, k) => t[0] + (k < j - i - 1 ? t[1] : '')).join('');
+  let best = '';
+  for (let i = 0; i < toks.length; i++) {
+    if (join(i, toks.length).length <= best.length) break;
+    let j = i;
+    while (j < toks.length && hay.includes(join(i, j + 1))) j++;
+    const run = join(i, j);
+    if (run.length > best.length) best = run;
+  }
+  return { match: false, nearest: best.length >= NEAREST_MIN_CHARS ? best : '' };
+}

@@ -277,6 +277,34 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ok('private address: refused, and the check says it could not be made', pr.status === 'check-failed' && !w.calls.includes('http://10.0.0.8/blyg.json'), JSON.stringify(pr));
 }
 
+// ---- the passage rule (§10.2) ------------------------------------------------------
+{
+  eq('text content: blocks are lines, whitespace collapsed within them',
+    B.textContent('<h1>Title</h1>\n<p>One  two\n three</p><ul><li>a <em>b</em></li></ul><p>x<br>y</p>'),
+    'Title\nOne two three\na b\nx\ny');
+  eq('text content: entities after tags, &amp; last, script and style gone',
+    B.textContent('<p>&lt;b&gt; &amp;lt; &rsquo;s&nbsp;x &copy;</p><script>evil()</script><style>p{}</style>'),
+    '<b> &lt; ’s x &copy;');
+  const vr = B.textContent(JSON.parse(fx('venkat-item.json')).content_html);
+  eq('text content of a real post starts with its heading line', vr.split('\n')[0], 'It’s the Liveness, Stupid');
+  const S1 = 'The ChatGPT moment was ultimately a smooth extrapolation of existing trends.';
+  eq('passage: one sentence of a paragraph', B.checkPassage(S1, vr), { match: true });
+  eq('passage: across the heading and the paragraph', B.checkPassage('Liveness, Stupid\n\nThe ChatGPT moment', vr), { match: true });
+  eq('passage: the selection\'s own spacing does not matter', B.checkPassage('The ChatGPT  moment was\n', vr), { match: true });
+  eq('passage: with page furniture around it, the nearest exact text is offered',
+    B.checkPassage(`Share this post ${S1} 3 comments`, vr), { match: false, nearest: S1 });
+  eq('passage: a word changed', B.checkPassage('The ChatGPT moment was ultimately a smooth continuation of existing trends.', vr),
+    { match: false, nearest: 'The ChatGPT moment was ultimately a smooth' });
+  eq('passage: nothing close', B.checkPassage('Entirely unrelated words here.', vr), { match: false, nearest: '' });
+  eq('passage: an empty highlight never matches', B.checkPassage('', vr).match, false);
+  const an = B.textContent(JSON.parse(fx('angadh-item.json')).content_html);
+  ok('passage: inside a quoted block of a real post', B.checkPassage('there is indeed no good reason why an invention was made', an).match, an.slice(0, 200));
+  const long = Array.from({ length: 2000 }, (_, i) => `w${i}`).join(' ');
+  const t0 = Date.now();
+  B.checkPassage(long, vr);
+  ok('passage: a very long selection is bounded', Date.now() - t0 < 2000, `${Date.now() - t0}ms`);
+}
+
 // ---- report -----------------------------------------------------------------
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blyg: ${pass} passed, ${fail} failed`);
