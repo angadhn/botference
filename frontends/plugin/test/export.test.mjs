@@ -526,6 +526,20 @@ const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9
   ok('…and still quoted by reference when it is still there', still.includes(`![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n`), still);
 }
 
+// ---- a Blygger post with nothing quoted by reference: the whole post -----------
+{
+  const chatOnly = BLYG_PAGE([], [me('@claude what is the argument here?'), bot('That liveness, not intelligence, is the jump.')]);
+  eq('page chat and no highlights: the whole-post reference, then the chat as it always was',
+    renderNote(chatOnly, CFG, NOW),
+    BLYG_HEAD + `![[${VR_ID} | It’s the Liveness, Stupid]]\n\n## Page chat\n\n`
+    + '**angadh:** @claude what is the argument here?\n**claude:** That liveness, not intelligence, is the jump.\n');
+  eq('…and the same note without the chat still names the post', renderNote(chatOnly, CFG, NOW, 'comments'),
+    BLYG_HEAD + `![[${VR_ID} | It’s the Liveness, Stupid]]\n`);
+  const onlyMiss = renderNote(BLYG_PAGE([{ quote: 'Menu', blyg: stamp({ passage: { match: false, nearest: '' } }), msgs: [] }]), CFG, NOW);
+  ok('highlights that could not be quoted by reference: the whole post is named above them',
+    onlyMiss.startsWith(BLYG_HEAD + `![[${VR_ID} | It’s the Liveness, Stupid]]\n\n> Menu\n\n*Not quoted by reference`), onlyMiss);
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

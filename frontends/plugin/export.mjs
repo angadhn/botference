@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { highlightParts, quoteStyleOf, frontMatter, labelOf } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf, wholePost } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -215,6 +215,14 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // the library has no page under it: its conversation is not "the page chat",
   // it is the whole note
   if (chat.length) parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat', authored(chat, attach));
+  // A note about a Blygger post that quotes none of it by reference — a page
+  // chat with no highlights, or highlights that could not be — still names
+  // the post: the whole-post reference line, directly under the title.
+  const item = page.blyg && page.blyg.status === 'blyg' && page.blyg.item ? page.blyg.item : null;
+  if (item && !sources.length) {
+    parts.splice(2, 0, wholePost(item.id, label));
+    sources.unshift(item.page);
+  }
   const keys = frontMatter({ sources });
   if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
   return parts.join('\n\n') + '\n';
