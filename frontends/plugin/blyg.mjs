@@ -607,35 +607,59 @@ export function checkPassage(quote, text) {
 // opening, the first highlight, the page chat and the export all ask the
 // same checker, and a second asker while the first is still waiting shares the
 // first one's request. An answer is kept for ANSWER_MS (a post can be edited,
-// so not for ever); a 'check-failed' only for FAILED_MS, so reopening the
-// drawer after the network comes back asks again.
+// so not for ever).
+//
+// A FAILED check backs off per host. A site that could not be asked (offline,
+// behind a firewall, too slow) is not asked again until its back-off ends:
+// one minute after the first failure, doubling with each further failure up
+// to six hours, and forgotten at the first success. Until then every page on
+// that host answers 'check-failed' at once, without a request, so a highlight
+// or an export never waits on that host again.
 export const ANSWER_MS = 10 * 60 * 1000;
-export const FAILED_MS = 60 * 1000;
+export const BACKOFF = Object.freeze({ firstMs: 60 * 1000, maxMs: 6 * 60 * 60 * 1000 });
 const keyOf = url => String(url || '').split('#')[0];
+const hostOf = url => { try { return new URL(url).host; } catch { return ''; } };
 export function createChecker({ get = guardedGet, now = Date.now } = {}) {
-  const answers = new Map(); // key → { at, result }
-  const asking = new Map();  // key → Promise<result>
+  const answers = new Map(); // page key → { at, result }
+  const asking = new Map();  // page key → Promise<result>
+  const failing = new Map(); // host → { failures, until }: the back-off schedule
+  const backedOff = host => { const f = failing.get(host); return f && now() < f.until ? f : null; };
   const fresh = key => {
     const a = answers.get(key);
     if (!a) return null;
-    const life = a.result.status === 'check-failed' ? FAILED_MS : ANSWER_MS;
-    return now() - a.at < life ? a.result : null;
+    if (a.result.status === 'check-failed') return backedOff(hostOf(key)) ? a.result : null;
+    return now() - a.at < ANSWER_MS ? a.result : null;
+  };
+  const settle = (key, result) => {
+    const host = hostOf(key);
+    if (result.status === 'check-failed') {
+      const failures = ((failing.get(host) || {}).failures || 0) + 1;
+      failing.set(host, { failures, until: now() + Math.min(BACKOFF.firstMs * 2 ** (failures - 1), BACKOFF.maxMs) });
+    } else failing.delete(host);
+    answers.set(key, { at: now(), result });
   };
   return {
     // the answer already held for this page, or null
     peek: url => fresh(keyOf(url)),
+    // when this page's host may next be asked (0 = now)
+    backoffUntil: url => { const f = backedOff(hostOf(keyOf(url))); return f ? f.until : 0; },
     // the answer, asking the site if nothing fresh is held
     check(url, hints, { kind = '' } = {}) {
       const key = keyOf(url);
       const held = fresh(key);
       if (held) return Promise.resolve(held);
       if (asking.has(key)) return asking.get(key);
+      const off = backedOff(hostOf(key));
+      if (off) {
+        return Promise.resolve({ status: 'check-failed', fetched: [],
+          reason: `${hostOf(key)} could not be checked recently; not asking again before ${new Date(off.until).toISOString()}` });
+      }
       const run = detect(key, hints, { get, kind })
         .catch(e => ({ status: 'check-failed', reason: String((e && e.message) || 'the check broke'), fetched: [] }))
         .then(result => {
           // the words are what passage checks read; worked out once per answer
           if (result.status === 'blyg') result.text = textContent(result.html);
-          answers.set(key, { at: now(), result });
+          settle(key, result);
           asking.delete(key);
           return result;
         });

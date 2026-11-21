@@ -382,11 +382,27 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   await checker.check(VR_PAGE, { json: VR_JSON });
   eq('…and is asked for again after that', w.calls.length, 6);
 
-  const w2 = fakeWeb({ [`${VR}blyg.json`]: 'timeout' });
+  // a host that could not be asked backs off: 1 min, 2, 4 … capped at 6 h
+  const routes2 = { [`${VR}blyg.json`]: 'timeout' };
+  const w2 = fakeWeb(routes2);
   const c2 = B.createChecker({ get: w2.get, now: () => clock });
   eq('a failed check', (await c2.check(VR_PAGE, { json: '' })).status, 'check-failed');
-  clock += B.FAILED_MS + 1;
-  ok('a failed check is forgotten soon, so it is asked again', c2.peek(VR_PAGE) === null);
+  const asked1 = w2.calls.length;
+  const other = `${VR}t/${PIN_ID}/`;
+  eq('another page on the same host: answered at once, from the back-off', (await c2.check(other, { json: '' })).status, 'check-failed');
+  eq('…with no request', w2.calls.length, asked1);
+  eq('back-off: one minute after the first failure', c2.backoffUntil(VR_PAGE) - clock, B.BACKOFF.firstMs);
+  clock += B.BACKOFF.firstMs + 1;
+  ok('back-off over: the page is asked again', c2.peek(VR_PAGE) === null);
+  await c2.check(VR_PAGE, { json: '' });
+  eq('second failure: two minutes', c2.backoffUntil(VR_PAGE) - clock, 2 * B.BACKOFF.firstMs);
+  for (let i = 0; i < 12; i++) { clock += B.BACKOFF.maxMs + 1; await c2.check(VR_PAGE, { json: '' }); }
+  eq('…never more than six hours', c2.backoffUntil(VR_PAGE) - clock, B.BACKOFF.maxMs);
+  routes2[`${VR}blyg.json`] = 'venkat-manifest.json';
+  Object.assign(routes2, { [VR_JSON]: 'venkat-item.json' });
+  clock += B.BACKOFF.maxMs + 1;
+  eq('the host answers again', (await c2.check(VR_PAGE, { json: VR_JSON })).status, 'blyg');
+  eq('…and its back-off is forgotten', c2.backoffUntil(other), 0);
 
   let slow;
   const c3 = B.createChecker({ get: () => new Promise(r => { slow = r; }) });

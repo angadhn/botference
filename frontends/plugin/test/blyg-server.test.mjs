@@ -208,6 +208,18 @@ await test('an ordinary page exports as before, its quote closed by its URL (url
   assert.ok(!note.includes('blyg_sources'), note);
 });
 
+await test('the reader\'s setting blyg_checks: "off" asks about no page at all', async () => {
+  store.saveConfig({ blyg_checks: 'off' });
+  try {
+    const before = webSeen.length;
+    const url = `${ORIGIN}t/${SLOW_ID}/?fresh=1`;
+    const r = await POST(B, '/thread', { url, quote: PASSAGE, msg: { text: 'checks are off' }, blyg_hints: HINTS });
+    assert.equal(r.status, 200, r.body);
+    assert.ok(!('blyg' in r.json.thread));
+    assert.deepEqual(webSeen.slice(before), []);
+  } finally { store.saveConfig({ blyg_checks: 'on' }); }
+});
+
 // ---- a guest over the tunnel never makes the companion fetch anything ------
 // A second companion in hosted mode on the same pretend web. Requests carry
 // the shared guest password and a tunnel Host, as a remote guest's do.

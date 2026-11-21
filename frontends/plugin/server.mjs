@@ -2874,10 +2874,14 @@ const blygPersisted = new WeakSet();
 const BLYG_RECORD_WAIT_MS = Number(process.env.PLUGIN_BLYG_RECORD_WAIT_MS) || 4000;
 // …and how long the drawer's question and an export may wait
 const BLYG_ASK_WAIT_MS = 25000;
-// PLUGIN_BLYG_CHECKS=off asks about no page at all (the test harness sets it,
-// so a suite about something else never reaches the real web)
-const BLYG_CHECKS = process.env.PLUGIN_BLYG_CHECKS === 'off' ? 'off' : 'on';
-const blygSkips = url => BLYG_CHECKS === 'off' || !url || store.isLibrary(url) || !/^https?:\/\//i.test(String(url));
+// Whether pages are asked about at all: the reader's setting, `blyg_checks`
+// in config.json, one of BLYG_CHECK_SETTINGS ('on', the default, or 'off').
+// PLUGIN_BLYG_CHECKS=off overrides it (the test harness sets that, so a suite
+// about something else never reaches the real web).
+const BLYG_CHECK_SETTINGS = Object.freeze(['on', 'off']);
+const blygChecksOn = () => process.env.PLUGIN_BLYG_CHECKS !== 'off'
+  && (BLYG_CHECK_SETTINGS.includes(store.readConfig().blyg_checks) ? store.readConfig().blyg_checks : 'on') === 'on';
+const blygSkips = url => !url || store.isLibrary(url) || !/^https?:\/\//i.test(String(url)) || !blygChecksOn();
 // ONLY THE OWNER'S REQUESTS EVER START A CHECK. A check makes the companion
 // fetch from the web on a URL the request names; over the tunnel a guest
 // could otherwise point it anywhere. A guest's highlight or message is simply
