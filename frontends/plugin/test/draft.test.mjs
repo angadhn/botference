@@ -79,6 +79,93 @@ await test('baseline front matter is preserved while generated fields stay safe 
   assert.equal(fs.readFileSync(file, 'utf8'), template);
   assert.throws(() => dest(cmd, { draft_template: '../outside.md' }));
 });
+// ---- the reader's highlights in a draft, and Blygger posts -------------------
+// Generic templates only: one with a `blyg:` key (a site that publishes
+// Blygger threads) and one without (any other site).
+const BLYG_ORIGIN = 'https://example.org/blyg/';
+const BLYG_ID = '0123456789abcdefghjkmnpqrs';
+const BLYG_PAGE = `${BLYG_ORIGIN}t/${BLYG_ID}/`;
+const P1 = 'The first sentence the reader marked, word for word.';
+const P2 = 'A second passage from an ordinary part of the page.';
+const blygPage = (extra = {}) => ({
+  url: 'https://example.org/blyg/t/0123456789abcdefghjkmnpqrs', title: 'A made-up post',
+  blyg: { status: 'blyg', checked: '2026-11-21T00:00:00Z', item: { origin: BLYG_ORIGIN, id: BLYG_ID, kind: 'thread',
+    version: 3, latest: 3, pinned: false, pinned_versions: [], page: BLYG_PAGE, pinned_page: '', source: 'Made-up', author: 'Someone' } },
+  threads: [
+    { id: 'a', quote: P1, msgs: [], blyg: { status: 'blyg', origin: BLYG_ORIGIN, id: BLYG_ID, version: 3, pinned: false,
+      page: BLYG_PAGE, as_of: 'record', passage: { match: true } } },
+    { id: 'b', quote: P2, msgs: [] },
+  ], page_chat: [], ...extra });
+const withTemplate = (text, fn) => {
+  const file = path.join(root, 'Templates', 'baseline.md');
+  const before = fs.readFileSync(file, 'utf8');
+  fs.writeFileSync(file, text);
+  try { return fn(); } finally { fs.writeFileSync(file, before); }
+};
+
+await test('quotes: placeholders are filled with the highlights, by reference on a Blygger post', () => {
+  const set = draft.quoteSet(blygPage(), { quote_style: 'url-card' });
+  const r = draft.placeQuotes(`Opening.\n\n<!-- quote:1 -->\n\nMiddle.\n\n<!-- quote:2 -->\n\n<!-- quote:9 -->\nEnd.`, set);
+  assert.equal(r.body, 'Opening.\n\n'
+    + `![[${BLYG_ID} | A made-up post]]\n> ${P1}\n\nMiddle.\n\n`
+    + `> ${P2}\n>\n> https://example.org/blyg/t/0123456789abcdefghjkmnpqrs\n\nEnd.`);
+  assert.deepEqual([r.placed, r.restored, r.unknown], [2, 0, 1]);
+  assert.match(draft.quotesPrompt(set), /<!-- quote:N -->/);
+});
+
+await test('quotes: a passage the bot retyped is replaced by the stored words; its own quotes are left alone', () => {
+  const set = draft.quoteSet(blygPage(), { quote_style: 'plain' });
+  const bot = 'As the post puts it:\n\n'
+    + `![[${BLYG_ID}]]\n> The first sentence that the reader marked, word for word!\n\n`
+    + '> A completely different line the bot chose to quote from elsewhere.\n\nDone.';
+  const r = draft.placeQuotes(bot, set);
+  assert.equal(r.body, 'As the post puts it:\n\n'
+    + `![[${BLYG_ID} | A made-up post]]\n> ${P1}\n\n`
+    + '> A completely different line the bot chose to quote from elsewhere.\n\nDone.');
+  assert.equal(r.restored, 1);
+});
+
+await test('front matter: a template with a blyg key gains the two keys, every template line kept in order', () => {
+  const template = '---\ntitle:\nreleased:\nblyg: true\ntags:\n  - essays\npublished: true\n---\n';
+  withTemplate(template, () => {
+    const d = dest(draft.parseCommand('/draft-blog'));
+    d.quotes = draft.quoteSet(blygPage({ export_response: 'response' }), {});
+    draft.saveDraft(d, `# My answer\n\n<!-- quote:1 -->\n\nI disagree.`, { url: blygPage().url });
+    const saved = fs.readFileSync(d.file, 'utf8');
+    const front = saved.slice(0, saved.indexOf('\n---\n', 4) + 5);
+    assert.match(front, /^---\ntitle: "My answer"\nreleased: \d{4}-\d{2}-\d{2}\nblyg: true\ntags: \["essays"\]\npublished: false\n/);
+    assert.ok(front.endsWith(`blyg_sources:\n  - ${BLYG_PAGE}\nblyg_stub_of:\n  origin: ${BLYG_ORIGIN}\n  id: ${BLYG_ID}\n  version: 3\n---\n`), front);
+    assert.ok(saved.includes(`![[${BLYG_ID} | A made-up post]]\n> ${P1}\n\nI disagree.`), saved);
+    assert.deepEqual(d.quoteCounts, { placed: 1, restored: 0, unknown: 0 });
+  });
+});
+
+await test('front matter: a template without a blyg key, on an ordinary page, is exactly as before', () => {
+  const template = '---\ntitle:\ncreated:\ntags:\npublished: true\n---\n';
+  withTemplate(template, () => {
+    const plain = { url: 'https://example.com/article', title: 'An article', threads: [{ id: 'x', quote: P2, msgs: [] }], page_chat: [] };
+    const a = dest(draft.parseCommand('/draft-blog'));
+    a.quotes = draft.quoteSet(plain, { quote_style: 'plain' });
+    draft.saveDraft(a, '# Ordinary one\n\nNo quotes here.', { url: plain.url });
+    const b = dest(draft.parseCommand('/draft-blog'));
+    draft.saveDraft(b, '# Ordinary two\n\nNo quotes here.', { url: plain.url });
+    const front = f => fs.readFileSync(f, 'utf8').split('\n---\n')[0].replace(/title: "[^"]*"/, 'title: X').replace(/permalink: "[^"]*"/, 'permalink: X');
+    assert.equal(front(a.file), front(b.file), 'no Blygger keys, nothing else different');
+    assert.doesNotMatch(fs.readFileSync(a.file, 'utf8'), /blyg/);
+  });
+});
+
+await test('front matter: a blyg_sources key already in the template is filled in place', () => {
+  withTemplate('---\ntitle:\nblyg_sources:\n  - https://old.example/\nnotes: keep me\npublished: true\n---\n', () => {
+    const d = dest(draft.parseCommand('/draft-blog'));
+    d.quotes = draft.quoteSet(blygPage(), {});
+    draft.saveDraft(d, '# In place\n\nText.', { url: blygPage().url });
+    const saved = fs.readFileSync(d.file, 'utf8');
+    assert.match(saved, new RegExp(`title: "In place"\\nblyg_sources:\\n  - ${BLYG_PAGE.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}\\nnotes: keep me\\n`));
+    assert.doesNotMatch(saved, /old\.example/);
+  });
+});
+
 await test('preview starts one Jekyll process for concurrent requests and checks its actual output', async () => {
   const calls = [];
   const child = new EventEmitter(); child.kill = () => calls.push('kill');

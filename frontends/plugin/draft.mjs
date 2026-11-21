@@ -6,6 +6,9 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import * as blog from './blog.mjs';
+// how a quote is written, and the two optional Blygger front-matter keys:
+// the same module the Obsidian export uses, so the rules exist once
+import { highlightParts, quoteStyleOf, labelOf, responseOf, frontMatter as blygKeys } from './note-quotes.mjs';
 
 export function parseCommand(text) {
   const s = String(text || '').trim();
@@ -74,8 +77,131 @@ export function frontMatterFor(d, title, source, now = new Date(), { preserveDat
     } else if (!replacing) lines.push(line);
   }
   for (const [key, value] of Object.entries(fields)) if (!seen.has(key)) lines.push(`${key}: ${value}`);
-  return ['---', ...lines.filter((line, i) => line || i > 0), '---'].join('\n');
+  return ['---', ...withBlygKeys(lines, d.quotes ? d.quotes.keys : []), '---'].join('\n');
 }
+
+// The two optional Blygger keys (note-quotes.frontMatter), when the draft is
+// about a Blygger post: added at the end, or in place of the same key where
+// the template already has one (its old value lines dropped). Every other
+// template line is kept as the template wrote it, in its order.
+function withBlygKeys(lines, keys) {
+  const kept = lines.filter((line, i) => line || i > 0);
+  if (!keys || !keys.length) return kept;
+  const groups = [];
+  for (const l of keys) if (/^\S/.test(l)) groups.push([l]); else groups[groups.length - 1].push(l);
+  const out = [];
+  const placed = new Set();
+  let skipping = false;
+  for (const line of kept) {
+    const key = /^([A-Za-z_][\w -]*):/.exec(line)?.[1];
+    if (key) {
+      const g = groups.find(x => x[0].startsWith(key + ':'));
+      skipping = !!g;
+      if (g) { out.push(...g); placed.add(g); continue; }
+    } else if (skipping) continue;
+    out.push(line);
+  }
+  for (const g of groups) if (!placed.has(g)) out.push(...g);
+  return out;
+}
+
+// ---- the reader's highlights, quoted exactly ---------------------------------
+// A draft's prose is the bot's; the PASSAGES it quotes are the reader's
+// highlights, and a passage a bot retypes drifts (a word smoothed, a clause
+// dropped) — which on a Blygger post is a quote the site's build rejects, and
+// anywhere is a misquotation. So the bot never writes a highlighted passage:
+// it writes a placeholder line, <!-- quote:N -->, and the companion puts the
+// highlight there in the format module's own words. And a blockquote the bot
+// wrote anyway that is plainly one of the highlights (or a near copy of one)
+// is replaced by that highlight, exactly as stored.
+//
+// quoteSet(page, cfg) → what the draft needs to know, prepared when the
+// draft is asked for: the highlights in order, the quote style, the label,
+// and the Blygger front-matter keys (only when the page is a Blygger post).
+export function quoteSet(page, cfg = {}) {
+  const items = (page && Array.isArray(page.threads) ? page.threads : [])
+    .filter(t => t && String(t.quote || '').trim()).map((t, i) => ({ n: i + 1, t }));
+  const item = page && page.blyg && page.blyg.status === 'blyg' && page.blyg.item ? page.blyg.item : null;
+  const label = labelOf((page && (page.custom_title || page.title)) || '');
+  const sources = item ? [item.page] : [];
+  for (const { t } of items) if (t.blyg && t.blyg.status === 'blyg' && t.blyg.page) sources.push(t.blyg.page);
+  const stubOf = item && responseOf(page) === 'response' ? { origin: item.origin, id: item.id, version: item.version } : null;
+  return { items, style: quoteStyleOf(cfg.quote_style).style, url: (page && page.url) || '', label,
+    keys: item ? blygKeys({ sources, stubOf }) : [] };
+}
+
+// the lines the bot is shown, so it can choose which to quote and where
+export function quotesPrompt(set) {
+  if (!set || !set.items.length) return '';
+  return 'The reader\'s highlights on the source, numbered:\n'
+    + set.items.map(({ n, t }) => `${n}. “${String(t.quote).replace(/\s+/g, ' ').trim().slice(0, 400)}”`).join('\n')
+    + '\nTo quote one of them, write a line containing only <!-- quote:N --> (N its number) where the quote belongs; '
+    + 'the companion puts the exact passage there in the site\'s quoting syntax. Never retype a highlighted passage yourself.\n';
+}
+
+const PLACEHOLDER = /^\s*<!--\s*quote:(\d{1,4})\s*-->\s*$/;
+const DIRECTIVE = /^\s*!\[\[[0-9abcdefghjkmnpqrstvwxyz]{26}(?:\s*\|[^\n]*)?\]\]\s*$/;
+// words of a passage, for telling "the same passage" from "another one":
+// case, punctuation, markdown escapes and URLs set aside
+const words = s => String(s || '').toLowerCase().replace(/https?:\/\/\S+/g, ' ')
+  .replace(/\\(.)/g, '$1').match(/[\p{L}\p{N}]+/gu) || [];
+function likeness(a, b) {
+  const x = words(a); const y = words(b);
+  if (x.length < 4 || y.length < 4) return 0;
+  const pool = new Map();
+  for (const w of y) pool.set(w, (pool.get(w) || 0) + 1);
+  let common = 0;
+  for (const w of x) if (pool.get(w) > 0) { common++; pool.set(w, pool.get(w) - 1); }
+  return common / Math.max(x.length, y.length);
+}
+const SAME_PASSAGE = 0.6;
+
+/**
+ * The draft body with the highlights put in: placeholders filled, and any
+ * blockquote (with the directive line above it, if any) that is one of the
+ * highlights or a near copy replaced by that highlight as the format module
+ * writes it. → { body, placed, restored, unknown }: counts for the receipt.
+ */
+export function placeQuotes(body, set) {
+  const lines = String(body || '').split('\n');
+  if (!set || !set.items.length) {
+    return { body: lines.filter(l => !PLACEHOLDER.test(l)).join('\n'), placed: 0, restored: 0,
+      unknown: lines.filter(l => PLACEHOLDER.test(l)).length };
+  }
+  const render = t => highlightParts(t, { style: set.style, url: set.url, label: set.label }).parts.join('\n\n');
+  const out = [];
+  let placed = 0, restored = 0, unknown = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const ph = PLACEHOLDER.exec(lines[i]);
+    if (ph) {
+      const hit = set.items.find(x => x.n === Number(ph[1]));
+      if (hit) { out.push(render(hit.t)); placed++; } else unknown++;
+      continue;
+    }
+    // a blockquote the bot wrote: a run of '>' lines, with a directive line
+    // directly above it belonging to it
+    const startsQuote = /^\s*>/.test(lines[i]);
+    const directiveFirst = DIRECTIVE.test(lines[i]) && i + 1 < lines.length && /^\s*>/.test(lines[i + 1]);
+    if (!startsQuote && !directiveFirst) { out.push(lines[i]); continue; }
+    let j = directiveFirst ? i + 1 : i;
+    while (j < lines.length && /^\s*>/.test(lines[j])) j++;
+    const run = lines.slice(i, j);
+    const text = run.filter(l => /^\s*>/.test(l)).map(l => l.replace(/^\s*>\s?/, '')).join(' ');
+    let best = null; let score = 0;
+    for (const x of set.items) {
+      const s = likeness(text, x.t.quote);
+      if (s > score) { best = x; score = s; }
+    }
+    if (best && score >= SAME_PASSAGE) {
+      const fresh = render(best.t);
+      if (fresh !== run.join('\n')) restored++;
+      out.push(fresh);
+    } else out.push(...run);
+    i = j - 1;
+  }
+  return { body: out.join('\n'), placed, restored, unknown };
+}
+
 
 export function destination(command, config, sites = blog.listSites(), state = blog.rootState,
                             { allowExisting = false } = {}) {
@@ -119,6 +245,7 @@ export function prompt(d) {
     + 'Choose a fitting # title; the companion moves it into front matter and derives an available filename from it. Do not include YAML front matter: the companion fills the site’s baseline template. This is the requested deliverable: write it in your reply, do not summon another agent or write files. '
     + 'The normal short-reply limit does not apply to the draft. Cite the source where useful, distinguish your interpretation from its claims, and do not invent evidence. '
     + 'The companion saves this block as a new unpublished post and starts its local preview. Do not claim the file was saved or the preview is live yourself.\n'
+    + quotesPrompt(d.quotes)
     + DRAFT_STYLE;
 }
 
@@ -162,7 +289,12 @@ export function saveDraft(d, body, source) {
     Object.assign(d, candidate);
   }
   if (occupied(d)) throw new Error('The draft filename or URL is now used by another file.');
-  const prose = body.slice(body.indexOf('\n') < 0 ? body.length : body.indexOf('\n') + 1).trimStart();
+  const rawProse = body.slice(body.indexOf('\n') < 0 ? body.length : body.indexOf('\n') + 1).trimStart();
+  // the reader's highlights, exactly as stored (placeQuotes); the counts go
+  // back to the caller for the receipt
+  const q = placeQuotes(rawProse, d.quotes || null);
+  d.quoteCounts = { placed: q.placed, restored: q.restored, unknown: q.unknown };
+  const prose = q.body;
   const content = [frontMatterFor(d, title, source), '', prose, '',
     `<!-- botference-draft:${d.previewToken} -->`, ''].join('\n');
   fs.writeFileSync(d.file, content, { flag: 'wx' });

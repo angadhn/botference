@@ -1635,6 +1635,9 @@ async function submitDraft(page, target, d, me) {
   }
   const id = crypto.randomUUID();
   d.sourceTitle = page.title || page.url;
+  // the reader's highlights, which the draft quotes exactly (draft.placeQuotes),
+  // and the Blygger front-matter keys when the page is a Blygger post
+  d.quotes = drafts.quoteSet(page, store.readConfig());
   const history = [...(page.page_chat || []), ...(page.threads || []).flatMap(t =>
     [{ author: 'passage', text: t.quote }, ...(t.msgs || [])])];
   d.context = `Source: ${page.title} · ${page.url}\n`
@@ -1682,7 +1685,12 @@ async function finishDraft(ev, d) {
       if (original) projectNetwork.observeOutput(original, { root: d.root },
         { path: d.file, title, url: d.url }, { create: true });
     } catch (e) { console.error('[project-network] draft indexing:', e.message); }
-    draftReceipt(ev.url, ev.target, `Saved unpublished draft \`${d.rel}\`. Starting the local preview…`);
+    const qc = d.quoteCounts || {};
+    const quoted = [qc.placed ? `${qc.placed} highlight${qc.placed === 1 ? '' : 's'} quoted exactly` : '',
+      qc.restored ? `${qc.restored} passage${qc.restored === 1 ? '' : 's'} the bot retyped replaced by the highlighted words` : '',
+      qc.unknown ? `${qc.unknown} quote placeholder${qc.unknown === 1 ? '' : 's'} naming no highlight removed` : '']
+      .filter(Boolean).join('; ');
+    draftReceipt(ev.url, ev.target, `Saved unpublished draft \`${d.rel}\`${quoted ? ` (${quoted})` : ''}. Starting the local preview…`);
     try {
       const url = await draftPreview.start(d);
       draftReceipt(ev.url, ev.target, `Read [the draft](<${url}>) and continue with Discuss beside it. Saved at \`${d.file}\`.`);
