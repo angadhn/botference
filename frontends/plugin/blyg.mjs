@@ -612,8 +612,11 @@ export function stampFor(result, { asOf = 'record', quote = null } = {}) {
   if (result.status === 'check-failed') return { status: 'check-failed' };
   if (result.status !== 'blyg' || !result.item) return null;
   const i = result.item;
+  // `page` is the post's live page, which is what a reader (or a site's
+  // importer) can always open; a highlight made on a pinned version's own
+  // page also keeps that page's address
   const st = { status: 'blyg', origin: i.origin, id: i.id, version: i.version, pinned: !!i.pinned,
-    page: i.pinned_page || i.page, as_of: asOf === 'check' ? 'check' : 'record' };
+    page: i.page, ...(i.pinned_page ? { pinned_page: i.pinned_page } : {}), as_of: asOf === 'check' ? 'check' : 'record' };
   if (quote !== null) st.passage = checkPassage(quote, result.text || textContent(result.html));
   return st;
 }

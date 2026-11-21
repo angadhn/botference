@@ -14,7 +14,7 @@ import { codeBlocks } from './run.mjs';
 // the whole thing is meant to live, so the marker comes out and both halves stay
 import { stripMore } from './more.mjs';
 // how every quote is written, in one place (export and blog draft alike)
-import { webQuote, quoteStyleOf } from './note-quotes.mjs';
+import { highlightParts, quoteStyleOf, frontMatter, labelOf } from './note-quotes.mjs';
 
 // note names are article headlines, which contain everything a filesystem
 // hates; keep the words, drop the punctuation that breaks paths
@@ -153,7 +153,11 @@ export function tagsLine(page) {
   return `tags: [${out.join(', ')}]`;
 }
 
-export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = null) {
+// `opts.post` is the Blygger post this page is NOW ({ id, version, text },
+// from the export's own check), so a highlight made on an older version can be
+// checked against the version a publisher would quote. Absent for every
+// other page.
+export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = null, opts = {}) {
   const author = (cfg && cfg.author) || 'angadh';
   const only = exportMode(mode);
   // quote_style (note-quotes.QUOTE_STYLES): 'url-card' unless the config says
@@ -173,13 +177,22 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
       ...(page.file_name ? [`file: ${page.file_name}`] : []),
       `saved: ${now.toISOString().slice(0, 10)}`,
       tagsLine(page),
+      // the two optional Blygger keys go here, once the body says which
+      // posts it references (see below); none on an ordinary page's note
       '---'].join('\n'),
     // the reader's own name for the page if they gave it one — the same title
     // the file is named after
     `# ${displayTitle(page)}`,
   ];
+  // A highlight made on a Blygger post is quoted BY REFERENCE (note-quotes),
+  // labelled with the reader's name for the page; everything else is quoted
+  // in quote_style, exactly as before.
+  const label = labelOf(displayTitle(page));
+  const sources = [];
   for (const t of page.threads || []) {
-    parts.push(webQuote(t, style, page.url));
+    const h = highlightParts(t, { style, url: page.url, label, post: opts.post || null });
+    parts.push(...h.parts);
+    if (h.source) sources.push(h.source);
     // A thread the reader filed says so, and says what it settled — the note
     // is the thing they will re-read in a year, and "we dealt with this, and
     // here is how" is most of what a resolved thread is worth by then. Plain
@@ -202,6 +215,8 @@ export function renderNote(page, cfg, now = new Date(), mode = 'all', attach = n
   // the library has no page under it: its conversation is not "the page chat",
   // it is the whole note
   if (chat.length) parts.push(isLibrary(page.url) ? '## Library chat' : '## Page chat', authored(chat, attach));
+  const keys = frontMatter({ sources });
+  if (keys.length) parts[0] = parts[0].replace(/\n---$/, `\n${keys.join('\n')}\n---`);
   return parts.join('\n\n') + '\n';
 }
 

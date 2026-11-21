@@ -474,6 +474,58 @@ const note = mode => renderNote(PAGE(), CFG, NOW, mode);
     renderNote(page, { author: 'angadh', quote_style: 'plain' }, NOW));
 }
 
+// ---- a Blygger post: highlights quoted by reference ---------------------------
+// The page record and stamps are what the companion writes on a real post
+// (test/blyg.test.mjs makes them from the saved fixtures); the passages are
+// from the post's first paragraph, which the fixture keeps.
+const VR = 'https://venkateshrao.com/blyg/';
+const VR_ID = '27x0ewgc6yqq0h9e2n9g16me8n';
+const VR_PAGE = `${VR}t/${VR_ID}/`;
+const S1 = 'The ChatGPT moment was ultimately a smooth extrapolation of existing trends.';
+const stamp = (extra = {}) => ({ status: 'blyg', origin: VR, id: VR_ID, version: 2, pinned: false, page: VR_PAGE,
+  as_of: 'record', passage: { match: true }, ...extra });
+const BLYG_PAGE = (threads, chat = []) => ({
+  url: 'https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n', title: 'It’s the Liveness, Stupid', site: 'venkateshrao.com',
+  blyg: { status: 'blyg', checked: '2026-11-21T12:00:00.000Z', item: { origin: VR, id: VR_ID, kind: 'thread', version: 2,
+    latest: 2, pinned: false, pinned_versions: [], page: VR_PAGE, pinned_page: '', json: `${VR}items/${VR_ID}.json`,
+    source: "Venkatesh Rao's Blyg", author: 'Venkatesh Rao' } },
+  threads, page_chat: chat });
+const BLYG_HEAD = '---\nurl: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n\nsite: venkateshrao.com\nsaved: 2026-08-08\n'
+  + 'tags: [botference-discuss]\nblyg_sources:\n  - https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/\n---\n\n# It’s the Liveness, Stupid\n\n';
+{
+  const note = renderNote(BLYG_PAGE([
+    { quote: S1, blyg: stamp(), msgs: [me('This is the claim to argue with.')] },
+    { quote: 'It’s the Liveness, Stupid\n\nThe ChatGPT moment', blyg: stamp({ as_of: 'check' }), msgs: [] },
+    { quote: 'smooth extrapolation', mark: 'strike', blyg: stamp(), msgs: [] },
+  ]), CFG, NOW);
+  eq('blyg quote: directive, passage directly under it, comment after a blank line', note, BLYG_HEAD
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n\nThis is the claim to argue with.\n\n`
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> It’s the Liveness, Stupid\n>\n> The ChatGPT moment\n\n`
+    + '*Version 2 is the version current when Discuss first checked this page, which was after this highlight was made.*\n\n'
+    + `![[${VR_ID} | It’s the Liveness, Stupid]]\n> smooth extrapolation\n\n*suggested deletion*\n`);
+
+  const Q = await import('../note-quotes.mjs');
+  eq('passage text is escaped, not formatted', Q.blygQuote(stamp(), '', '*not* emphasis_ [x] <b> a\\b `c` ~~d~~ &amp;\n# not a heading\n1. not a list\n- nor this'),
+    `![[${VR_ID}]]\n> \\*not\\* emphasis\\_ \\[x] \\<b> a\\\\b \\\`c\\\` \\~\\~d\\~\\~ \\&amp;\n>\n> \\# not a heading\n>\n> 1\\. not a list\n>\n> \\- nor this`);
+  eq('a label never closes the directive early', Q.wholePost(VR_ID, 'odd ]] title\nwith a line break'), `![[${VR_ID} | odd ] ] title with a line break]]`);
+
+  const miss = renderNote(BLYG_PAGE([
+    { quote: `Share this ${S1} 3`, blyg: stamp({ passage: { match: false, nearest: S1 } }), msgs: [me('Selected too much.')] },
+  ]), CFG, NOW);
+  ok('mismatch: an ordinary quote, never a directive the publisher would reject', !miss.includes(`> Share this`) || !/!\[\[.*\]\]\n> Share/.test(miss), miss);
+  ok('mismatch: says so, and offers the nearest exact passage', miss.includes(
+    `> Share this ${S1} 3\n\n*Not quoted by reference: these words are not word for word in version 2 of the post. The nearest exact passage is: “${S1}”.*\n\nSelected too much.`), miss);
+
+  // the post has moved on: a highlight made on v2 whose words are gone from v3
+  const moved = renderNote(BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [] }]), CFG, NOW, 'all', null,
+    { post: { id: VR_ID, version: 3, text: 'It’s the Liveness, Stupid\nAn entirely rewritten opening.' } });
+  ok('post edited since: the passage is checked against the current version', moved.includes(
+    `> ${S1}\n\n*Not quoted by reference: this passage was in version 2 of the post and is not in version 3, the current one.*`), moved);
+  const still = renderNote(BLYG_PAGE([{ quote: S1, blyg: stamp(), msgs: [] }]), CFG, NOW, 'all', null,
+    { post: { id: VR_ID, version: 3, text: `Heading\n${S1} More.` } });
+  ok('…and still quoted by reference when it is still there', still.includes(`![[${VR_ID} | It’s the Liveness, Stupid]]\n> ${S1}\n`), still);
+}
+
 console.log(`\nexport: ${pass} passed, ${fail} failed`);
 if (fail) { console.log('\nfailures:'); for (const f of failures) console.log('  ✗ ' + f); }
 process.exit(fail);

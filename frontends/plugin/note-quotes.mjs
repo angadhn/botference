@@ -20,6 +20,7 @@
 // the two front-matter keys are only for a site whose build reads them, and
 // can be deleted by anyone who does not want them.
 import { whereParts } from './store.mjs';
+import { checkPassage } from './blyg.mjs';
 
 // ---- the choices, named -------------------------------------------------------
 // How a passage from an ordinary (non-Blygger) page is written. One setting,
@@ -160,4 +161,36 @@ export function quoteNotes(stamp, { current = null } = {}) {
 export function byReference(stamp, { current = null } = {}) {
   return !!(stamp && stamp.status === 'blyg' && stamp.passage && stamp.passage.match === true
     && !(current && current.match === false));
+}
+
+/**
+ * The post as it is NOW, for one highlight: when the highlight was made on an
+ * older version of the same post, does its passage still pass the check
+ * against the current one? (The site that publishes the note will quote
+ * whatever version it imports, which is the current one.) `post` is
+ * { id, version, text } from the export's own check, or null; `quote` is
+ * the highlight's words (a stamp does not hold them).
+ */
+export function currentFor(stamp, post, quote) {
+  if (!post || !stamp || stamp.status !== 'blyg' || stamp.id !== post.id || stamp.version === post.version) return null;
+  return { version: post.version, match: checkPassage(quote, post.text).match };
+}
+
+/**
+ * Everything one highlight contributes to a note, before its comments:
+ * → { parts, source }. A highlight on a Blygger post whose words pass the
+ * post's check is a quote by reference (and `source` is the post's page, for
+ * blyg_sources); every other highlight is an ordinary quote in `style`, with
+ * the italic line saying why when it was made on a post.
+ */
+export function highlightParts(t, { style, url, label, post = null }) {
+  const st = t && t.blyg;
+  const current = currentFor(st, post, String((t && t.quote) || ''));
+  if (byReference(st, { current })) {
+    const parts = [blygQuote(st, label, t.quote)];
+    if (struck(t)) parts.push('*suggested deletion*');
+    return { parts: [...parts, ...quoteNotes(st, { current })], source: st.page };
+  }
+  const from = st && st.status === 'blyg' && st.page ? st.page : url;
+  return { parts: [webQuote(t, style, from), ...quoteNotes(st, { current })], source: '' };
 }
