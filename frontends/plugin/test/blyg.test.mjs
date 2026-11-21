@@ -177,6 +177,106 @@ const BB = 'https://blyg.blygger.org/';
   eq('…so does an oversized answer', r.status, 'trouble');
 }
 
+// ---- which post, verified -------------------------------------------------------
+const crypto = await import('node:crypto');
+const sha = s => 'sha256:' + crypto.createHash('sha256').update(s, 'utf8').digest('hex');
+const VR_WEB = { [`${VR}blyg.json`]: 'venkat-manifest.json', [VR_JSON]: 'venkat-item.json',
+  [`${VR}items/${PIN_ID}.json`]: 'venkat-pinned-item.json', [`${VR}items/${PIN_ID}/v2.json`]: 'venkat-pinned-v2.json',
+  [VR_PAGE]: 'venkat-item-page.html' };
+const AN_WEB = { [`${AN}blyg.json`]: 'angadh-manifest.json', [AN_JSON]: 'angadh-item.json', [AN_PAGE]: 'angadh-article-page.html' };
+const detectOn = async (page, routes, hints, opts = {}) => {
+  const w = fakeWeb(routes);
+  const r = await B.detect(page, hints, { get: w.get, ...opts });
+  return { r, calls: w.calls };
+};
+{
+  let { r, calls } = await detectOn(VR_PAGE, VR_WEB, { json: VR_JSON });
+  eq('item page: a blyg', r.status, 'blyg');
+  eq('item page: its identity', { ...r.item }, {
+    origin: VR, id: VR_ID, kind: 'thread', version: 2, latest: 2, pinned: false, pinned_versions: [],
+    page: VR_PAGE, pinned_page: '', json: VR_JSON, source: "Venkatesh Rao's Blyg", author: 'Venkatesh Rao' });
+  eq('item page: three requests, none twice', calls, [`${VR_PAGE}blyg.json`, `${VR}blyg.json`, VR_JSON]);
+  ok('item page: the version\'s HTML is held for passage checks', r.html.startsWith('<h1>It’s the Liveness, Stupid</h1>'));
+
+  ({ r, calls } = await detectOn(AN_PAGE, AN_WEB, B.pageLinks(fx('angadh-article-page.html'), AN_PAGE)));
+  eq('root-level article of a blyg mounted at /blyg/: a blyg', [r.status, r.item && r.item.origin, r.item && r.item.id, r.item && r.item.page],
+    ['blyg', AN, AN_ID, AN_PAGE]);
+  eq('…its author from the item, its source from the manifest', [r.item.author, r.item.source], ['Angadh Nanjangud', 'angadh.com']);
+  eq('…in three requests', calls.length, 3);
+
+  ({ r, calls } = await detectOn(VR_PAGE, VR_WEB, null));
+  eq('no hints from the extension: the companion reads the page\'s links itself', [r.status, r.item && r.item.id], ['blyg', VR_ID]);
+  eq('…one request more', calls[0], VR_PAGE);
+
+  ({ r } = await detectOn(BB, { [`${BB}blyg.json`]: 'blygger-manifest.json' }, { blyg: '', json: '' }));
+  eq('a blyg\'s front page: part of a blyg, not a post', [r.status, r.site && r.site.title], ['blyg-site', 'Blygger']);
+  ({ r } = await detectOn(`${VR}h/favorites/`, VR_WEB, { blyg: '', json: '' }));
+  eq('a collection page: part of a blyg, not a post', r.status, 'blyg-site');
+  ({ r } = await detectOn('https://example.com/2026/11/a-post', {}, { blyg: '', json: '' }));
+  eq('an ordinary page: not a blyg', r.status, 'not-a-blyg');
+
+  ({ r, calls } = await detectOn('https://example.com/paper.pdf', VR_WEB, null));
+  eq('a PDF is never a blyg, and nothing is fetched', [r.status, calls.length], ['not-a-blyg', 0]);
+  ({ r, calls } = await detectOn('bfp-pdf://sha256/abc', VR_WEB, null));
+  eq('a local file is never a blyg, and nothing is fetched', [r.status, calls.length], ['not-a-blyg', 0]);
+  ({ r, calls } = await detectOn('https://example.com/viewer', VR_WEB, null, { kind: 'pdf' }));
+  eq('…nor is a page the record says is a PDF', [r.status, calls.length], ['not-a-blyg', 0]);
+
+  // a pinned post, by the id in its own path (its page carries no hints we pass)
+  const PIN_PAGE = `${VR}t/${PIN_ID}/`;
+  ({ r } = await detectOn(PIN_PAGE, VR_WEB, { blyg: '', json: '' }));
+  eq('pinned post, live page: version 2, pinned', [r.status, r.item.version, r.item.pinned, r.item.pinned_versions, r.item.pinned_page],
+    ['blyg', 2, true, [2], '']);
+  ({ r } = await detectOn(`${VR}search/${PIN_ID}/`, VR_WEB, { blyg: '', json: '' }));
+  eq('an id-shaped path segment is believed only where the post says its page is', r.status, 'blyg-site');
+
+  // the same post after a third, unpinned edit: its v2/ page quotes version 2
+  const pin = JSON.parse(fx('venkat-pinned-item.json'));
+  const v3 = { ...pin, version: 3, content_md: pin.content_md + '\n\nA third paragraph.',
+    content_html: pin.content_html + '\n<p>A third paragraph.</p>',
+    changelog: [...pin.changelog, { version: 3, at: '2026-11-20T00:00:00Z', note: null }] };
+  v3.content_hash = sha(v3.content_md);
+  const V3_WEB = { ...VR_WEB, [`${VR}items/${PIN_ID}.json`]: { text: JSON.stringify(v3) } };
+  ({ r, calls } = await detectOn(`${PIN_PAGE}v2/`, V3_WEB, { blyg: '', json: '' }));
+  eq('pinned version page: quotes the pinned version', [r.status, r.item.version, r.item.latest, r.item.pinned, r.item.pinned_page, r.item.json],
+    ['blyg', 2, 3, true, `${PIN_PAGE}v2/`, `${VR}items/${PIN_ID}/v2.json`]);
+  ok('…and holds that version\'s words', !r.html.includes('A third paragraph'));
+  ({ r } = await detectOn(PIN_PAGE, V3_WEB, { blyg: '', json: '' }));
+  eq('…while the live page is version 3, not pinned', [r.item.version, r.item.pinned], [3, false]);
+  ({ r } = await detectOn(`${PIN_PAGE}v1/`, V3_WEB, { blyg: '', json: '' }));
+  eq('an unpinned version page is not taken at its word', r.status, 'blyg-site');
+
+  // verification refusals
+  const item = JSON.parse(fx('venkat-item.json'));
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: JSON.stringify({ ...item, origin: 'https://mirror.example/blyg/' }) } }, { json: VR_JSON }));
+  eq('origin mismatch: the document claims another origin', [r.status, /origin/.test(r.reason)], ['check-failed', true]);
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: JSON.stringify({ ...item, content_md: item.content_md + ' (edited)' }) } }, { json: VR_JSON }));
+  eq('content_hash mismatch', [r.status, /content_hash/.test(r.reason)], ['check-failed', true]);
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: JSON.stringify({ ...item, id: PIN_ID }) } }, { json: VR_JSON }));
+  ok('a document whose id is not the one asked for is not believed', r.status === 'check-failed', JSON.stringify(r));
+  const elsewhere = 'https://mirror.example/copy.json';
+  ({ r, calls } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: undefined, [elsewhere]: 'venkat-item.json' }, { json: elsewhere }));
+  eq('a JSON link to another host is read for its id, then checked at the origin', calls.slice(-1), [VR_JSON]);
+  eq('…which does not serve it: not verified', r.status, 'check-failed');
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: { text: '{"blyg": "0.4", "id": ' } }, { json: VR_JSON }));
+  eq('a malformed item document', r.status, 'check-failed');
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: 'timeout' }, { json: VR_JSON }));
+  eq('a slow item document: could not check', r.status, 'check-failed');
+  ({ r } = await detectOn(VR_PAGE, { ...VR_WEB, [VR_JSON]: 'too-big' }, { json: VR_JSON }));
+  eq('an oversized item document: could not check', r.status, 'check-failed');
+
+  // the guard is applied with the page that is being read: a public page whose
+  // rel=blyg points into the private network gets nothing fetched from there
+  const w = fakeWeb({});
+  const guarded = async (url, o) => {
+    const why = await B.fetchRefusal(url, o.pageUrl);
+    if (why) throw new B.FetchTrouble('refused', why);
+    return w.get(url, o);
+  };
+  const pr = await B.detect('https://example.com/post', { blyg: 'http://10.0.0.8/blyg.json', json: '' }, { get: guarded });
+  ok('private address: refused, and the check says it could not be made', pr.status === 'check-failed' && !w.calls.includes('http://10.0.0.8/blyg.json'), JSON.stringify(pr));
+}
+
 // ---- report -----------------------------------------------------------------
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`blyg: ${pass} passed, ${fail} failed`);

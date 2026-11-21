@@ -289,3 +289,161 @@ export async function findManifest(s, pageUrl, hints) {
   }
   return { status: s.troubles.length ? 'trouble' : 'none' };
 }
+
+// ---- which post, verified (§5, §5.8, §6.1, §8) ------------------------------------
+
+// §5.1: 128 random bits as 26 characters of lowercase Crockford base32
+export const ID_RE = /^[0-9abcdefghjkmnpqrstvwxyz]{26}$/;
+const KINDS = ['fragment', 'thread', 'withdrawn'];
+// a string out of somebody else's JSON, made safe to keep: control characters
+// gone, length bounded. (The drawer escapes it again when it draws it.)
+export const clip = (v, n = 300) => (typeof v === 'string' ? v : '')
+  .replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+const sha256 = s => 'sha256:' + crypto.createHash('sha256').update(String(s), 'utf8').digest('hex');
+
+// §6.1: the manifest's item and pin templates (RFC 6570 level 1), or their
+// defaults, expanded and resolved against the identity origin
+export function expandTemplate(template, vars, origin) {
+  const filled = String(template).replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(String(vars[k] ?? '')));
+  return new URL(filled, origin).href;
+}
+const itemTemplate = m => (typeof m.item === 'string' && m.item ? m.item : 'items/{id}.json');
+const pinTemplate = m => (typeof m.pin === 'string' && m.pin ? m.pin : 'items/{id}/v{n}.json');
+export const itemUrlOf = (manifest, origin, id) => expandTemplate(itemTemplate(manifest), { id }, origin);
+export const pinUrlOf = (manifest, origin, id, n) => expandTemplate(pinTemplate(manifest), { id, n }, origin);
+
+// Two page addresses are the same page when they differ only in query,
+// fragment or a trailing slash.
+export function samePage(a, b) {
+  try {
+    const x = new URL(String(a)); const y = new URL(String(b));
+    const p = u => u.pathname.replace(/\/+$/, '');
+    return x.protocol === y.protocol && x.host === y.host && p(x) === p(y);
+  } catch { return false; }
+}
+
+// Why this document is not the item it claims to be, or ''. The id and origin
+// are compared byte for byte (§5.9, §12.2); content_hash is checked because the
+// spec defines it exactly (§5.1: sha256 over content_md's UTF-8 bytes).
+export function docRefusal(j, { id, origin, version = 0 }) {
+  if (!j || typeof j.blyg !== 'string') return 'it is not an item document';
+  if (j.id !== id) return `it names a different id (${clip(j.id, 40) || 'none'})`;
+  if (j.origin !== origin) return `its origin (${clip(j.origin, 200) || 'none'}) is not where its manifest is (${origin})`;
+  if (!Number.isInteger(j.version) || j.version < 1) return 'it has no version number';
+  if (version && j.version !== version) return `it is version ${j.version}, not ${version}`;
+  if (typeof j.content_md !== 'string' || typeof j.content_html !== 'string') return 'it has no content';
+  if (typeof j.content_hash !== 'string' || sha256(j.content_md) !== j.content_hash) return 'its content_hash does not match its content';
+  return '';
+}
+
+/**
+ * Is `pageUrl` a Blygger post? → one of
+ *   { status: 'blyg', site, item, html }   html: the content_html of the version read
+ *   { status: 'blyg-site', site, reason }
+ *   { status: 'not-a-blyg', reason }
+ *   { status: 'check-failed', reason }
+ * plus `fetched`, every URL requested. `hints` are the page's own two links
+ * (cleanHints), or null to read them from the page itself (one more request).
+ * `kind` is the page record's kind: a PDF is never a blyg.
+ */
+export async function detect(pageUrl, hints, { get = guardedGet, kind = '' } = {}) {
+  let u;
+  try { u = new URL(String(pageUrl)); } catch { u = null; }
+  if (!u || !/^https?:$/.test(u.protocol)) return { status: 'not-a-blyg', reason: 'not a web page', fetched: [] };
+  if (kind === 'pdf' || /\.pdf$/i.test(u.pathname)) return { status: 'not-a-blyg', reason: 'a PDF', fetched: [] };
+  const s = session(u.href, get);
+  const done = r => ({ ...r, fetched: s.fetched.slice() });
+  const failed = reason => done({ status: 'check-failed', reason });
+
+  let h = cleanHints(hints);
+  if (!h) {
+    const r = await s.raw(u.href, { maxBytes: LIMITS.pageBytes, accept: 'text/html' });
+    h = r.status === 'answered' && r.code >= 200 && r.code < 300 ? pageLinks(r.text, r.url) : { blyg: '', json: '' };
+  }
+  const m = await findManifest(s, u.href, h);
+  if (m.status === 'none') return done({ status: 'not-a-blyg', reason: 'no Blygger manifest was found' });
+  if (m.status === 'trouble') return failed(s.troubles[0] ? s.troubles[0].message : 'the site could not be asked');
+  const origin = m.origin;
+  const site = { origin, title: clip(m.manifest.title, 200), author: clip(m.manifest.author && m.manifest.author.name, 200) };
+  const notItem = reason => done({ status: 'blyg-site', site, reason });
+
+  // WHICH ITEM. The page's own <link rel="alternate" type="application/json">
+  // first (§5.8: "the way back from a page to the document"); else an id in
+  // the page's own path, which is how the reference client spells permalinks
+  // (t/{id}/, f/{id}/, and t/{id}/v{n}/ for a pinned version) — a guess, so
+  // it is believed only when the document's own page field agrees.
+  // A 2xx that is not a JSON object is a broken document, not an absent one.
+  const malformed = r => r.status === 'absent' && r.code >= 200 && r.code < 300;
+  let id = '';
+  let fromLink = false;
+  if (h.json) {
+    const r = await s.json(h.json);
+    if (r.status === 'trouble') return failed(r.message);
+    if (malformed(r)) return failed(`${h.json} is not a JSON document`);
+    if (r.status === 'ok' && ID_RE.test(String(r.json.id || ''))) {
+      id = r.json.id; fromLink = true;
+      // a link whose own address names one post and whose document names
+      // another is contradicting itself; neither half is believed
+      const named = new URL(h.json).pathname.split(/[/.]/).filter(seg => ID_RE.test(seg));
+      if (named.length && !named.includes(id)) return failed(`${h.json} holds a document for a different post (${id})`);
+    }
+  }
+  if (!id) id = u.pathname.split('/').filter(seg => ID_RE.test(seg)).pop() || '';
+  if (!id) return notItem('this page is not one post');
+
+  // …and the document is read from where the ORIGIN keeps it (its manifest's
+  // item template), never only from where the page pointed: a page may name
+  // any JSON it likes, and only the origin speaks for the origin (§12.2).
+  const docUrl = itemUrlOf(m.manifest, origin, id);
+  const r = await s.json(docUrl);
+  if (r.status === 'trouble') return failed(r.message);
+  if (malformed(r)) return failed(`${docUrl} is not a JSON document`);
+  if (r.status !== 'ok') {
+    return fromLink ? failed(`the page names post ${id}, which its blyg does not serve`) : notItem('this page is not one post');
+  }
+  const doc = r.json;
+  const why = docRefusal(doc, { id, origin });
+  if (why) return failed(`post ${id} did not verify: ${why}`);
+  if (!KINDS.includes(doc.kind)) return notItem(`post ${id} is of a kind this version does not know`);
+
+  // §5.8: page, relative to the origin or absolute; else the reference
+  // client's convention, which is good enough for a reader's own display
+  let page = '';
+  try { page = new URL(typeof doc.page === 'string' && doc.page ? doc.page : `${doc.kind === 'fragment' ? 'f' : 't'}/${id}/`, origin).href; }
+  catch { page = ''; }
+  const pinned = (Array.isArray(doc.changelog) ? doc.changelog : [])
+    .filter(e => e && e.pinned === true && Number.isInteger(e.version) && e.version > 0 && e.version <= doc.version)
+    .map(e => e.version);
+
+  // A pinned version's own page (§8.4: {page}v{n}/) shows THAT version's
+  // words, so that is the version a highlight on it quotes.
+  let content = doc;
+  let version = doc.version;
+  let pinnedPage = '';
+  let json = docUrl;
+  const vm = page ? /^v(\d{1,6})$/.exec(u.pathname.replace(/\/+$/, '').split('/').pop() || '') : null;
+  const onVersionPage = vm && samePage(new URL('..', candidateBase(u.href)).href, page);
+  if (onVersionPage) {
+    const n = Number(vm[1]);
+    if (!pinned.includes(n)) return notItem(`version ${n} of post ${id} is not pinned`);
+    if (n !== doc.version) {
+      const pinUrl = pinUrlOf(m.manifest, origin, id, n);
+      const p = await s.json(pinUrl);
+      if (p.status === 'trouble') return failed(p.message);
+      if (p.status !== 'ok') return failed(`pinned version ${n} of post ${id} is not served`);
+      const pwhy = docRefusal(p.json, { id, origin, version: n });
+      if (pwhy) return failed(`pinned version ${n} of post ${id} did not verify: ${pwhy}`);
+      content = p.json; json = pinUrl;
+    }
+    version = n; pinnedPage = u.href;
+  } else if (!fromLink && !samePage(u.href, page)) {
+    return notItem('this page is not one post');
+  }
+
+  const author = clip(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || site.author;
+  return done({
+    status: 'blyg', site, html: String(content.content_html || ''),
+    item: { origin, id, kind: doc.kind, version, latest: doc.version, pinned: pinned.includes(version),
+      pinned_versions: pinned, page, pinned_page: pinnedPage, json, source: site.title, author },
+  });
+}
