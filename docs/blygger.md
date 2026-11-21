@@ -138,7 +138,8 @@ delete them.
   as before.)
 - **A page that is not a Blygger post** is quoted as an ordinary blockquote.
 - A note may mix both kinds. Each highlight is written in its own form.
-- The page chat, when the export includes it, is written as it always was.
+- The page chat, when the export includes it, follows the same rules: your
+  words as prose, each agent's reply in a callout (see below).
 
 ### The front matter
 
@@ -153,8 +154,9 @@ blyg_stub_of:
 
 - `blyg_sources` lists the page of every Blygger post the note references,
   once each. It is written only when the note references one.
-- `blyg_stub_of` is written only when you mark the note as a response (the
-  export chooser's "a response to this post/page" row). It names exactly one
+- `blyg_stub_of` is written only when the note is a response (the export
+  chooser's "a response to this post/page" row; on a post's own page it is
+  ticked to begin with). It names exactly one
   target. On a Blygger post it is the post at the version you read (`origin`,
   `id`, `version`), and the body starts with the whole-post line, as a
   Blygger stub does (§10.6). On any other page it is `url:` and the page's
@@ -186,51 +188,167 @@ title that contains `]]` or ends in `]` cannot be written as a label that
 reads back the same; such a label is left out and the directive names the post
 bare.
 
+### TK marks in a quoted passage
+
+A passage that contains Blygger Studio's TK marks (`[TK]`, `[/TK]`, in any
+case) has them written as code spans: `` `[TK]` ``. A Blygger conformance
+checker refuses a published post whose source holds TK marks outside code,
+and it reads the raw text, so a backslash would not help; the §10.2 text
+rule ignores inline formatting, so the passage still matches the post word
+for word. Bracket-directive text in a passage (`![[id]]`, `[[id]]`) keeps a
+backslash instead, because a receiving site's wikilink pass reads inside
+code spans. No part of a note (comments, replies, the page chat, a title, an
+ordinary page's quoted words) carries bare TK marks: outside code they are
+written as code spans. To write the letters `[TK]` yourself, put them in
+code formatting.
+
+### The agents' words
+
+The export chooser offers "My notes and the agents' replies" and "My notes
+only". In the first, an agent's reply is written in an Obsidian callout of
+its own, headed with the agent's name:
+
+```markdown
+> [!note] Claude
+> The agent's words.
+```
+
+so your words and an agent's are never confused, and the box is easy to
+delete. Your own words are never in one. A callout never touches a quote or
+a Blygger passage: an empty `<!-- -->` line keeps them apart, so a
+directive's passage is still exactly the lines under it. Two settings in the
+companion's `config.json`: `callout_type` (default `note`, which Obsidian and
+the common static-site callout plugins draw) and `agent_style` (`callout`,
+the default, or `inline` for the old `**claude:** …` lines).
+
+### TK gaps in your own notes
+
+In a comment, reply or page-chat message of your own, `[TK] an instruction
+[/TK]` marks a gap for an agent to fill, as in Blygger Studio. When you export
+with the agents' replies, one agent (`gap_agent`: `claude` by default, or
+`codex`) is asked to write it; the answer goes where the gap was. Only your
+own words are read for gaps, never a page's text, a quoted passage or an
+agent's reply. The agent is given your instruction as an instruction, and the
+page's title and address, the post's identity, the highlighted passage and
+your surrounding words only as quoted data, which it is told not to obey.
+What it writes is kept with the page, so exporting again does not ask again
+and writes the same note. At most 8 gaps and three minutes per export; a gap
+that cannot be filled never stops the export, and the footbar says how many
+were filled and how many not. "My notes only" fills and shows no gap.
+
+How a gap is written is one setting, `gap_style`:
+
+- `callout` (the default): the text in a callout under an HTML comment that
+  keeps your instruction (you see it, readers do not). An unfilled gap is a
+  `[!warning] Not filled` callout with the reason. No TK marks reach the note,
+  so any markdown site can publish it.
+- `studio`: Blygger Studio's own draft grammar, exactly as Studio writes it
+  after its Generate button: `[TK] instruction [=]the text[/TK]` (a gap inside
+  a sentence stays one paragraph; one in a paragraph of its own may hold
+  several). An unfilled gap stays `[TK] instruction [/TK]`, which Studio shows
+  as ungenerated and refuses to publish. A Blygger-aware publisher keeps your
+  instruction out of the post and publishes the text disclosed as generated;
+  the note's front matter lists each filled gap, in order, under
+  `blyg_generated:` (the model when the companion knows it, and the time it
+  was written). Inside a scope, any `[` that would begin a TK token or a
+  bracket directive, and every backtick, is written as a character reference
+  (`&#91;`, `&#96;`): they render as the same characters and can never end the
+  scope early or hide its end in code; a bracket directive in your
+  instruction is therefore never Studio's TK-transclude source reference.
+  Choose this only for a site that is Blygger-aware: any other site would
+  publish the TK marks and your instruction as text.
+
+### The response default
+
+On a Blygger post's own page, the export chooser's "a response to this post"
+starts ticked: a note made from one post is nearly always a reply to it. On
+any other page it starts unticked. Once you change it on a page, your choice
+is what counts there.
+
+### Settings, and the old shape
+
+All in the companion's `config.json` (`.botference/plugin/config.json`), each
+refused with a footbar warning when its value is unknown:
+
+| Setting | Values (default first) |
+|---|---|
+| `quote_style` | `url-card`, `plain` |
+| `comment_order` | `comment-first`, `quote-first` |
+| `agent_style` | `callout`, `inline` |
+| `callout_type` | `note`, or any callout name |
+| `gap_style` | `callout`, `studio` |
+| `gap_agent` | `claude`, `codex` |
+| `blyg_checks` | `on`, `off` |
+
+`quote_style: "plain"` with `comment_order: "quote-first"` and
+`agent_style: "inline"` writes an ordinary page's note exactly as Discuss
+did before any of this.
+
 ### A worked example
 
-The public post <https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/>
-("It's the Liveness, Stupid", version 2) with two highlights. The first has a
-comment made with it and one later reply; the second ran into the page's
-"RSS ⧉" link. There is a short page chat, and the note is marked as a
-response. Rendered by the export code from the saved test fixtures, with the
-default settings. The comments and the bot's line are made up.
+The public post <https://venkateshrao.com/blyg/t/3vzq82afn6rmyvk6vsq8abnkqh/>
+("Starter checklist", version 2, pinned), read by GET. One highlight of a
+line that contains TK marks, with an opening comment holding a TK gap, a
+later question and an agent's reply. Rendered by the export code with the
+default settings; the comments, the gap's filled text and the agent's reply
+are made up.
 
 ```markdown
 ---
-url: https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n
+url: https://venkateshrao.com/blyg/t/3vzq82afn6rmyvk6vsq8abnkqh
 site: venkateshrao.com
 saved: 2026-11-21
 tags: [botference-discuss]
 blyg_sources:
-  - https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/
+  - https://venkateshrao.com/blyg/t/3vzq82afn6rmyvk6vsq8abnkqh/
 blyg_stub_of:
   origin: https://venkateshrao.com/blyg/
-  id: 27x0ewgc6yqq0h9e2n9g16me8n
+  id: 3vzq82afn6rmyvk6vsq8abnkqh
   version: 2
 ---
 
-# It’s the Liveness, Stupid
+# Starter checklist
 
-This is the claim worth arguing with: was it really smooth?
+The checklist treats a model as one more tool to set up.
 
-![[27x0ewgc6yqq0h9e2n9g16me8n | It’s the Liveness, Stupid]]
-> The ChatGPT moment was ultimately a smooth extrapolation of existing trends.
+<!-- TK: say in one sentence what a TK scope is, for a reader new to Blygger -->
+> [!note] Claude
+> A TK scope is a gap the author marks for a model to fill; the published post shows only the text, disclosed as generated.
 
-Smooth for the builders, perhaps; not for anyone watching.
+![[3vzq82afn6rmyvk6vsq8abnkqh | Starter checklist]]
+> Add an AI for `[TK]` prompt `[/TK]` generation and Changelog generation (recommended: Sonnet and Haiku or equivalent)
 
-A good early signal.
+@claude which of the two would you start with?
 
-> RSS ⧉ My first view was when a reader trained a simple Markov chain bot on my tweets in 2017.
->
-> https://venkateshrao.com/blyg/t/27x0ewgc6yqq0h9e2n9g16me8n/
-
-*Not quoted by reference: these words are not word for word in version 2 of the post (nearest exact passage: “My first view was when a reader trained a simple Markov chain bot on my tweets in 2017.”).*
-
-## Page chat
-
-**reader:** @claude what does he mean by liveness?
-**claude:** That the model keeps acting in the world between your prompts.
+> [!note] Claude
+> Haiku for changelog notes, since they are short and frequent; Sonnet for prompts that write prose.
 ```
+
+The same note with `gap_style: "studio"`, from the front matter to the quote:
+
+```markdown
+blyg_sources:
+  - https://venkateshrao.com/blyg/t/3vzq82afn6rmyvk6vsq8abnkqh/
+blyg_stub_of:
+  origin: https://venkateshrao.com/blyg/
+  id: 3vzq82afn6rmyvk6vsq8abnkqh
+  version: 2
+blyg_generated:
+  - at: 2026-11-21T10:02:00Z
+---
+
+# Starter checklist
+
+The checklist treats a model as one more tool to set up.
+
+[TK] say in one sentence what a TK scope is, for a reader new to Blygger [=]A TK scope is a gap the author marks for a model to fill; the published post shows only the text, disclosed as generated.[/TK]
+
+![[3vzq82afn6rmyvk6vsq8abnkqh | Starter checklist]]
+> Add an AI for `[TK]` prompt `[/TK]` generation and Changelog generation (recommended: Sonnet and Haiku or equivalent)
+```
+
+(No model name is listed under `blyg_generated` here: the companion writes one
+only when the reader has set which model the agent runs as.)
 
 ### Blog drafts
 
@@ -312,6 +430,11 @@ neither.
   `Mozilla/5.0 (compatible; botference-discuss/1.0; +https://botference.com)`.
 - The export writes a file. Publishing it, and sending any mention the spec
   asks a publisher to send, is up to you and your own site.
+- Filling a TK gap sends the gap's instruction, your surrounding words, the
+  highlighted passage and the page's title and address to the agent you
+  already use for Discuss (gap_agent), on this machine's own agent session,
+  as any question to it would. Nothing is sent for a gap in "My notes only",
+  and nothing again for a gap already filled.
 
 ## Known limits
 

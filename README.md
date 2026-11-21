@@ -942,7 +942,15 @@ The export quotes the post by reference, in Blygger's own syntax: a
 quote directly under it. Any Blygger editor accepts it. The comment you wrote
 when you made the highlight comes first, above the quote, and the thread's
 later replies follow it (on every page, not only Blygger posts:
-`"comment_order": "quote-first"` restores the old order). The front matter gains `blyg_sources:` (the posts the
+`"comment_order": "quote-first"` restores the old order). An agent's replies,
+when you export them, are each in a callout box of their own
+(`> [!note] Claude`; `"agent_style": "inline"` for the old lines). On a post's
+own page the note is marked as a response to it unless you untick that.
+
+In a comment of your own, `[TK] an instruction [/TK]` marks a gap for an agent
+to fill when you export with the agents' replies (`gap_style`: a callout, or
+Blygger Studio's own `[TK] … [=] … [/TK]` grammar for a Blygger-aware site).
+TK marks anywhere else, quoted passages included, are written as code. The front matter gains `blyg_sources:` (the posts the
 note quotes) and, if you mark the note as a response in the export chooser,
 `blyg_stub_of:`. Both keys are optional; delete them if your site does not
 use them. A highlight whose words are not word for word in the post (it ran

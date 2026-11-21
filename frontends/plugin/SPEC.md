@@ -12750,6 +12750,36 @@ this is the contract.
     replacing the same keys if the template has them. Other template lines
     are left as they are.
 
+#### TK marks, agents' words, TK gaps, the response default (2026-11-21)
+
+- TK marks: `note-quotes.escapePassageLine` writes `[TK]`/`[/TK]` (any case)
+  in a passage as code spans; bracket directives keep backslashes.
+  `tkSafe` does the same for every other text outside code; a label with a TK
+  mark is dropped.
+- Agents' words: `AGENT_STYLES = ['callout','inline']` (config `agent_style`),
+  `callout_type` (default `note`); `messageParts` writes each agent message
+  as `> [!type] Name` + quoted lines, the reader's as prose, others named;
+  `separateCallouts` puts `<!-- -->` between a callout (or a part ending in
+  one) and a following `>` block. plain + quote-first + inline = old bytes.
+- TK gaps (`tkgaps.mjs`): `findGaps` (paired marks, any case, outside code,
+  no nesting; `[=]` text is the reader's own), `GAP_STATES = ['found',
+  'filling','filled','unfilled']` moved only by `gapMove`; `fillGaps` reads
+  only the reader's own messages, asks `gap_agent` through `askGap` (the tidy
+  job, `tidy_kind: 'gap'`, prompt verbatim) with `gapPrompt` (instruction
+  outside, everything from the page between `<<<BEGIN QUOTED DATA>>>` and
+  `<<<END QUOTED DATA>>>`, markers stripped from the data); caps in
+  `GAP_LIMITS`; results cached in `page.tk_fills` (byte-stable re-export);
+  `include` false ('comments' mode) → unfilled, no call. `GAP_STYLES =
+  ['callout','studio']` (config `gap_style`): callout = `<!-- TK: … -->` +
+  callout, unfilled `[!warning] Not filled`; studio = `[TK] i [=]text[/TK]`
+  (Studio's tk.ts setScopeOutput), inline gaps one paragraph, unfilled
+  `[TK] i [/TK]`, token-starting `[` and backticks as `&#91;`/`&#96;`,
+  `blyg_generated` one entry per filled scope in note order. `/export`
+  answers `gaps: {filled, unfilled}`; the footbar says so.
+- Response default: `responseOf` = the stored `export_response` if set, else
+  `response` when `page.blyg.status === 'blyg'`, else `not-a-response`;
+  `/export-response` stores either value.
+
 #### Drawer
 
 - One grey header line, `.hdr .blyg`, shown only in mode `blyg`:
