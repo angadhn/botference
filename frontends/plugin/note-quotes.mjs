@@ -226,7 +226,7 @@ const blockquote = q => String(q || '').split('\n')
 // Where the passage came from, when the document has somewhere to come from:
 // a PDF's page number, or the heading it sat under and which copy of the
 // words it was. Rides inside the blockquote as its attribution line.
-const attribution = t => {
+export const attribution = t => {
   if (t && Number(t.page) > 0) return `\n> — p. ${Number(t.page)}`;
   const w = whereParts(t).join(', ');
   return w ? `\n> (${w})` : '';
