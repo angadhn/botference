@@ -8,12 +8,12 @@ const B32 = '0123456789abcdefghjkmnpqrstvwxyz';
 export const idOf = n => { let s = ''; let x = n; do { s = B32[x % 32] + s; x = Math.floor(x / 32); } while (x); return s.padStart(26, '0'); };
 
 export function makeDoc({ id, origin, kind = 'fragment', version = 1, title = 'A made-up title', body = 'Some invented words.',
-  created = '2026-11-01T10:00:00Z', updated = created, transclusions, stub_of, links, author = 'Invented Author', page }) {
+  created = '2026-11-01T10:00:00Z', updated = created, transclusions, stub_of, links, author = 'Invented Author', page, changelog = [] }) {
   const md = (title ? `# ${title}\n\n` : '') + body;
   const html = (title ? `<h1>${title}</h1>\n` : '') + `<p>${body}</p>`;
   const doc = { blyg: '0.4', id, kind, origin, version, created, updated, content_md: kind === 'withdrawn' ? '' : md,
     content_html: kind === 'withdrawn' ? '' : html, content_hash: sha(kind === 'withdrawn' ? '' : md), media: [],
-    changelog: [] };
+    changelog };
   if (author !== null) doc.author = { name: author };
   if (page !== undefined) doc.page = page;
   if (kind === 'thread') doc.transclusions = transclusions || [];

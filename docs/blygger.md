@@ -547,19 +547,20 @@ Studio should try these, in this order:
 4. Put `*/` and `[[+ x]]` in a comment in Discuss, copy, paste, and confirm Studio shows them as
    written and does not make a new item or complain of a stray comment.
 
-## Following: a private reading feed
+## The Hub: a private reading feed
 
-Following is a list of blygs you read, kept by the companion on your own
-computer, and one console for reading them. Open
-`http://127.0.0.1:4189/following` (the drawer's feed icon, or the link on the
-extension's options page). It has three views, side by side:
+The Hub is one console for what you read and what answers you. It is kept by
+the companion on your own computer. Open `http://127.0.0.1:4189/hub` (the
+drawer's feed icon, or the link on the extension's options page; `/following`
+opens the same page). It has three views, side by side:
 
 - **Feed**: what is new on the blygs you follow.
 - **Mentions**: responses to your own posts, from your own site's inbox.
 - **Background**: what should not interrupt reading.
 
-It is the reading half of a Blygger client; nothing here publishes, mentions or
-writes anything.
+Below them is **Following**, the list of blygs you follow, where you add one,
+import a blogroll and change the settings. The Hub is the reading half of a
+Blygger client; nothing here publishes, mentions or writes anything.
 
 **Following a blyg.** Paste any address on it (a post, its front page) into
 "Follow a blyg". Discuss finds the blyg's manifest the way the spec's
@@ -581,13 +582,23 @@ every run: the document wins, and the post is asked about again only when the
 index's entry changes. Newest first, filtered by All, New, Threads, Fragments or
 Responses to me. "Responses to me" lists posts whose `stub_of`, or whose
 transclusions, point at a blyg listed in the setting `my_origins` (one origin per
-line, on the Following page; empty by default, and a post of one of your own
+line, in the Hub's Following section; empty by default, and a post of one of your own
 blygs is never a response to you); it is worked out from the blygs you follow,
 whereas Mentions is the authoritative list from your inbox. Each entry shows the
 blyg, author, date, kind, version, what it is "in response to", its first heading
 or an excerpt, and Open. Only an excerpt is kept and shown: the page never
 renders a post in full. A post dated in the future cannot sit on top: ordering
 and the date shown use at most the time Discuss fetched it (§13.7).
+
+**Versions and pins.** Each entry reads "v5 · 5 versions", with a small history
+(date, the changelog note, a "pinned" mark) and, when any version is pinned
+(§8), a "pinned: v1, v4" line. It is read from the post's own changelog, which
+Discuss already fetches; pinned documents are never fetched in the background. A
+pinned mark opens that version's page only when the page can be worked out from
+what is held (the post's page, then `v<n>/`, §8.4); otherwise it is shown without
+a link. Open always opens the current version. The stamp on a highlight says
+which kind of version was read: `current-unpinned`, `current-pinned` or
+`older-pinned` (a pinned version's own page).
 
 **Background.** One function decides, for every post and mention, which view it
 belongs to, and the entry says why. In Background: *withdrawn* posts (§13.4;
@@ -611,15 +622,23 @@ percent of the longer text. The threshold is never sent anywhere.
 
 **Mentions.** If your own site runs a private inbox of responses to your posts,
 set `inbox_api_url` (https only) and `inbox_token_file` (an absolute path to a
-local file whose first line is the token). The token is never a setting: it is
+local file whose first line is the token: visible ASCII, 8 to 512 characters, no
+quote or backslash; one that is longer is refused, never cut). The token is never a setting: it is
 read from that file when the companion is about to ask, sent as
 `Authorization: Bearer …` to the inbox's own address only (not to anywhere it
 redirects), and never stored in `config.json` or `following.json`, shown in the
 page, put in a note or written to a log. The file may not be inside the
-repository or the companion's data folders. The inbox is asked on the same timer
+repository or the companion's data folders, and the Hub warns (it does not refuse)
+when other users of the computer can read it: keep it to yourself with
+`chmod 600`. The token is scrubbed out of everything the inbox sends before any of
+it is read, so an inbox that echoes it back cannot put it on the page. The inbox is asked on the same timer
 and on **Refresh now**, and has a state of its own: *off* (no address set),
-*pending* (not asked yet), *ok*, *unauthorised* (the inbox refused, or there is
-no usable token file) or *unreachable*. The Mentions view lists responses newest
+*pending* (not asked yet), *paused* (an inbox is set but Blygger checks are off),
+*ok*, *unauthorised* (the inbox refused, or there is no usable token file),
+*unreachable* (it could not be asked, answered with an error, or answered from
+another origin than the one set) or *unreadable* (it answered something that is not
+a JSON document this code can read). The inbox has its own small request budget, so
+the blygs cannot starve it. The Mentions view lists responses newest
 first, grouped by your post, each with the responder, the blyg, what they did,
 the passage, a link to the source (Open, below) and, when the source is a post of
 a blyg you follow, a link to its entry in the Feed. The tab shows how many are
@@ -668,13 +687,13 @@ origin (same scheme, host and port, under its path), also after redirects: a
 manifest that points elsewhere is refused and the reason is shown beside the
 blyg. A host that fails three times in a row is not asked for 15 minutes. One
 refresh runs at a time; a second is refused, not queued. These are settings on
-the Following page (in `config.json`: `following_refresh_minutes`,
+the Hub's Following section (in `config.json`: `following_refresh_minutes`,
 `following_max_items_per_blyg`, `following_max_items_total`,
 `following_run_seconds`, `following_run_requests`,
 `following_barely_changed_percent`, `my_origins`, `inbox_api_url`,
 `inbox_token_file`); a value outside its range is refused and the default is
 used. With no blyg followed and no inbox there is no timer, and with
-`"blyg_checks": "off"` Following asks no site anything, its timer disarms, and
+`"blyg_checks": "off"` the Hub asks no site anything, its timer disarms, and
 Refresh now says so.
 
 **What is stored, and what is not published.** In the companion's data folder
@@ -689,9 +708,22 @@ fetched, and when" below, whose limits apply to every one of them: the same
 guard, the same address rules, no other way out), and they carry no cookie, no
 account and no mention of you; the one exception is the request to your own
 inbox, which carries your token. The page is the owner's alone: over a tunnel a
-guest, or a request with no password, is refused on every Following route, and
+guest, or a request with no password, is refused on every Hub route, and
 so is a request a browser says came from another site. The page is never framed
 and runs one script and one style under a Content-Security-Policy.
+
+## Which names the companion answers to
+
+A web page can make a browser send requests to your own computer under the
+page's name, after pointing that name at `127.0.0.1` ("DNS rebinding"). So the
+companion refuses (HTTP 421) every request whose `Host` is not `127.0.0.1`,
+`localhost` or `[::1]` on the port it listens on, or a public hostname you have
+configured. Public names come from `PLUGIN_PUBLIC_HOSTNAMES` (a comma-separated
+list) and the reading room's and memorizer's names (`PLUGIN_READING_HOSTNAME`,
+`PLUGIN_MEMORY_HOSTNAME`). A companion started with `--hosted` also answers other
+names (its tunnel carries its public name, or `localhost` when the tunnel rewrites
+the Host line), but only to a request that passes the password. A request with no
+`Host` at all is always refused.
 
 ## What is fetched, and when
 

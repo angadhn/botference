@@ -115,7 +115,7 @@ test('OPML by URL goes through the injected (guarded) getter', async () => {
 
 test('directory JSON (an object or a list; origin, title, feed): preview, confirm', async () => {
   const doc = { generated: 'x', blygs: [
-    { origin: A, title: 'Alpha‮evil', feed: `${A}feed.xml` }, { origin: Bo, title: 'Beta', feed: `${Bo}feed.xml` },
+    { origin: A, title: 'Alpha\u202eevil', feed: `${A}feed.xml` }, { origin: Bo, title: 'Beta', feed: `${Bo}feed.xml` },
     { origin: 'javascript:alert(1)', title: 'no' }, { title: 'no origin' }, 7] };
   for (const text of [JSON.stringify(doc), JSON.stringify(doc.blygs)]) {
     const r = rig();
@@ -537,17 +537,17 @@ test('blyg state: one list, one function, illegal moves refused', () => {
 
 test('hostile remote content is cleaned when it is kept: no control or bidi-override characters, bounded', async () => {
   const r = rig();
-  const site = r.web.add(A, { title: 'Evil <script>alert(1)</script>‮' });
-  const evil = '<img src=x onerror=alert(1)> ‮evil‬ javascript:alert(1) \u0000\u0007 ' + 'x'.repeat(5000);
-  site.put(makeDoc({ id: idOf(1), origin: A, title: '<b>t</b>‮⁦bad', body: evil, author: 'Mallory‮<script>' }));
+  const site = r.web.add(A, { title: 'Evil <script>alert(1)</script>\u202e' });
+  const evil = '<img src=x onerror=alert(1)> \u202eevil\u202c javascript:alert(1) \u0000\u0007 ' + 'x'.repeat(5000);
+  site.put(makeDoc({ id: idOf(1), origin: A, title: '<b>t</b>\u202e\u2066bad', body: evil, author: 'Mallory\u202e<script>' }));
   await follow(r, A);
   await r.f.refresh();
   const i = items(r)[0];
   for (const f of ['title', 'excerpt', 'text', 'author']) {
-    assert.ok(!/[‪-‮⁦-⁩\u0000-\u001f]/.test(i[f]), `${f} has no control or override characters`);
+    assert.ok(!/[\u202a-\u202e\u2066-\u2069\u0000-\u001f]/.test(i[f]), `${f} has no control or override characters`);
     assert.ok(i[f].length <= F.LIMITS.textChars, f);
   }
-  assert.ok(!/[‪-‮]/.test(r.f.listBlygs()[0].title));
+  assert.ok(!/[\u202a-\u202e]/.test(r.f.listBlygs()[0].title));
   // §5.8: a post's page may be on another host (kept, as an outbound link); one that is not a web address is not kept
   site.put(makeDoc({ id: idOf(2), origin: A, page: 'https://elsewhere.web.test/steal/' }));
   site.put(makeDoc({ id: idOf(3), origin: A, page: 'javascript:alert(1)' }));
@@ -679,23 +679,24 @@ test('the default transport really is netguard.guardedGet', async () => {
   assert.equal(typeof guard.guardedGet, 'function');
 });
 
-test('the extension reaches Following: a drawer button, the worker\'s open-here, and an options link', () => {
+test('the extension reaches the Hub: a drawer button, the worker\'s open-here at /hub, and an options link', () => {
   const ext = f => fs.readFileSync(path.join(HERE, '..', 'extension', f), 'utf8');
   assert.match(ext('drawer.js'), /data-act="following"/);
   assert.match(ext('drawer.js'), /'following': \(\) => cb\('onOpenFollowing'\)\(\)/);
-  assert.match(ext('content.js'), /onOpenFollowing: \(\) => \{ bg\(\{ t: 'open-here', path: '\/following' \}\); \}/);
+  assert.match(ext('content.js'), /onOpenFollowing: \(\) => \{ bg\(\{ t: 'open-here', path: '\/hub' \}\); \}/);
   // the worker only opens paths of this shape at the companion
-  assert.match('/following', /^\/[A-Za-z0-9/_-]*$/);
+  assert.match('/hub', /^\/[A-Za-z0-9/_-]*$/);
+  assert.match(ext('options.js'), /'\/hub'/);
   assert.match(ext('options.html'), /id="following-link"/);
   assert.match(ext('options.js'), /following-link/);
 });
 
 test('the user docs name every state and every setting', () => {
   const doc = fs.readFileSync(path.join(HERE, '..', '..', '..', 'docs', 'blygger.md'), 'utf8');
-  const section = doc.slice(doc.indexOf('## Following: a private reading feed'), doc.indexOf('## What is fetched, and when')).replace(/\s+/g, ' ');
+  const section = doc.slice(doc.indexOf('## The Hub: a private reading feed'), doc.indexOf('## What is fetched, and when')).replace(/\s+/g, ' ');
   assert.ok(section.length > 500, 'the section exists');
   for (const s of [...F.BLYG_STATES, ...F.READ_STATES, ...F.INBOX_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
-  for (const w of ['Feed', 'Mentions', 'Background', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
+  for (const w of ['Hub', 'Feed', 'Mentions', 'Background', 'Following', '/hub', 'chmod 600', 'PLUGIN_PUBLIC_HOSTNAMES', 'older-pinned', 'pinned: v1, v4', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
   for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file']) assert.ok(section.includes(k), `setting ${k}`);
 });
 
@@ -1005,4 +1006,139 @@ test('NO OTHER WAY OUT: with every outbound primitive of the process made to thr
     assert.deepEqual(trips, ['fetch']);
     r.done();
   } finally { for (const [o, n, f] of saved) o[n] = f; }
+});
+
+test('an unread post is never hidden: a burst folds its members only under a head that is itself in the Feed', async () => {
+  const r = rig({ settings: { following_barely_changed_percent: 5 } });
+  const site = r.web.add(A);
+  const [th, old, fresh] = [1, 2, 3].map(idOf);
+  const body = 'a sentence of invented words that goes on for a while. '.repeat(8);
+  site.put(makeDoc({ id: old, origin: A, title: 'Old fragment', created: '2026-11-05T10:00:00Z' }));
+  site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', body, created: '2026-11-05T10:01:00Z', transclusions: [{ origin: A, id: old, version: 1 }] }));
+  await follow(r, A);
+  await r.f.refresh();
+  r.f.readMove(r.f.keyFor(A, th), 'open');          // the reader opened the thread...
+  r.f.readMove(r.f.keyFor(A, old), 'see');
+  // ...and it is republished barely changed, now transcluding a NEW fragment
+  site.put(makeDoc({ id: fresh, origin: A, title: 'Fresh fragment', created: '2026-11-08T10:00:00Z' }));
+  site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-05T10:01:00Z',
+    updated: '2026-11-08T10:01:00Z', transclusions: [{ origin: A, id: old, version: 1 }, { origin: A, id: fresh, version: 1 }] }));
+  const s = await r.f.refresh();
+  assert.equal(s.minor, 1);
+  const feed = r.f.view().entries.map(e => e.head.id);
+  assert.ok(feed.includes(fresh), 'the unread fragment is in the Feed');
+  assert.ok(r.f.view({ filter: 'new' }).entries.some(e => e.head.id === fresh), 'and in New');
+  assert.equal(r.f.view().tabs.feed, feed.length);
+  assert.ok(!feed.includes(th), 'the barely changed, already opened thread went to Background');
+  const bg = Object.fromEntries(inBackground(r).map(b => [b.post.id, b.reason]));
+  assert.equal(bg[th], 'barely changed');
+  assert.ok(!(fresh in bg));
+  // when the head IS in the Feed, its members fold under it as before
+  r.f.markAllSeen();
+  const pure = F.buildView({ items: [{ origin: A, id: th, kind: 'thread', read: 'new', last_change: 'new-words', created: '2026-11-05T10:01:00Z', updated: '2026-11-05T10:01:00Z',
+    refs: [{ origin: A, id: old }], key: 'h' }, { origin: A, id: old, kind: 'fragment', read: 'new', last_change: 'new-words', created: '2026-11-05T10:00:00Z', updated: '2026-11-05T10:00:00Z', refs: [], key: 'm' }],
+    blygs: { [A]: { state: 'active' } } });
+  assert.deepEqual(pure.feed.entries.map(e => [e.head.key, e.members.map(m => m.key)]), [['h', ['m']]]);
+  r.done();
+});
+
+test('placement: a post that is still new to the reader never goes to Background for "barely changed" or "no new words"', () => {
+  const post = { kind: 'fragment', origin: A, read: 'new', last_change: 'minor' };
+  const at = p => F.placementOf({ type: 'post', post: p, blyg: { state: 'active' }, mine: [], burstHead: null });
+  assert.deepEqual(at(post), { placement: 'feed', reason: '' });
+  assert.deepEqual(at({ ...post, last_change: 'maintenance' }), { placement: 'feed', reason: '' });
+  for (const read of ['seen', 'opened', 'responded']) {
+    assert.equal(at({ ...post, read }).placement, 'background', `${read}: a minor change is background`);
+  }
+});
+
+// ---- versions and pins (§5.2, §8) ------------------------------------------------------------
+
+const BIDI_O = String.fromCharCode(0x202e), NUL = String.fromCharCode(0);
+const log5 = [
+  { version: 1, at: '2026-11-01T10:00:00Z', note: 'first publish', pinned: true },
+  { version: 2, at: '2026-11-02T10:00:00Z', note: null },
+  { version: 3, at: '2026-11-03T10:00:00Z', note: `<script>alert(1)</script>${BIDI_O}evil ${'n'.repeat(500)}` },
+  { version: 4, at: '2026-11-04T10:00:00Z', note: 'tidied', pinned: true },
+  { version: 5, at: '2026-11-05T10:00:00Z', note: `note${NUL} with control` },
+  { version: 9, at: '2026-11-06T10:00:00Z', note: 'a version the post does not have' },
+  { version: 4, at: '2026-11-04T11:00:00Z', note: 'a duplicate' },
+  'not an entry', null, { version: 'x' },
+];
+
+test('versions and pins are read from the changelog of the document already fetched: cleaned, clipped, one per version; NO pinned document is fetched', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  const id = idOf(1);
+  site.put(makeDoc({ id, origin: A, version: 5, updated: '2026-11-05T10:00:00Z', changelog: log5 }));
+  await follow(r, A);
+  const before = r.web.requests.length;
+  await r.f.refresh();
+  const rec = r.f.itemByKey(r.f.keyFor(A, id));
+  assert.deepEqual(rec.versions.map(v => [v.version, v.pin]), [[1, 'pinned'], [2, 'unpinned'], [3, 'unpinned'], [4, 'pinned'], [5, 'unpinned']]);
+  assert.deepEqual(F.pinnedOf(rec), [1, 4]);
+  assert.equal(rec.versions[1].note, '', 'a null note is empty');
+  const hostile = rec.versions[2].note;
+  assert.ok(hostile.length <= F.LIMITS.noteChars && !hostile.includes(BIDI_O));
+  assert.ok(!/[\u0000-\u001f]/.test(rec.versions[4].note), 'control characters are gone');
+  assert.deepEqual(F.VERSION_PINS, ['unpinned', 'pinned']);
+  // the requests: manifest, index, the one document. Nothing for a pin.
+  const asked = r.web.requests.slice(before);
+  assert.equal(asked.length, 3, JSON.stringify(asked));
+  assert.ok(!asked.some(u => /\/v\d+(\.json|\/)/.test(u)), 'no pinned document or page was requested');
+  assert.ok(!r.web.requests.some(u => /\/v\d+(\.json|\/)/.test(u)));
+  // the view's entry
+  const head = r.f.view().entries[0].head;
+  assert.equal(head.versions_note, '5 versions');
+  assert.deepEqual(head.pinned_list, [1, 4]);
+  assert.deepEqual(head.history.map(v => [v.version, v.mark]), [[5, ''], [4, 'link'], [3, ''], [2, ''], [1, 'link']], 'newest first; a pin of a directory-style page links');
+  r.done();
+});
+
+test('a pinned version\'s page is linked only when it can be told from what is held; Open opens the current version unless a pin is asked for', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  const withSlash = idOf(1), noSlash = idOf(2);
+  const pins = [{ version: 1, at: '2026-11-01T10:00:00Z', note: 'a', pinned: true }, { version: 2, at: '2026-11-02T10:00:00Z', note: 'b' }];
+  site.put(makeDoc({ id: withSlash, origin: A, version: 2, updated: '2026-11-02T10:00:00Z', changelog: pins }));
+  site.put(makeDoc({ id: noSlash, origin: A, version: 2, updated: '2026-11-02T10:00:00Z', changelog: pins, page: 'https://alpha.web.test/some-post' }));
+  await follow(r, A);
+  await r.f.refresh();
+  const k1 = r.f.keyFor(A, withSlash), k2 = r.f.keyFor(A, noSlash);
+  const marks = id => r.f.view().entries.find(e => e.head.id === id).head.history.find(v => v.version === 1).mark;
+  assert.equal(marks(withSlash), 'link');
+  assert.equal(marks(noSlash), 'plain', 'a page that is not directory-style: the mark without a link');
+  assert.equal(r.f.open(k1).url, `${A}f/${withSlash}/`, 'Open is the current version');
+  assert.equal(r.f.open(k1, 1).url, `${A}f/${withSlash}/v1/`, 'a pin only when asked for');
+  assert.throws(() => r.f.open(k1, 2), /not pinned/, 'an unpinned version has no page to open');
+  assert.throws(() => r.f.open(k1, 7), /not pinned/);
+  assert.throws(() => r.f.open(k2, 1), /not pinned|cannot be told/);
+  assert.equal(F.pinPageOf({ versions: [{ version: 3, pin: 'pinned' }], page: 'javascript:alert(1)' }, 3), '');
+  r.done();
+});
+
+test('the identity stamp says which version is read, as one named value: current-unpinned, current-pinned (older-pinned for a pinned version\'s own page)', async () => {
+  const B = await import('../blyg.mjs');
+  assert.deepEqual(B.VERSION_STATES, ['current-unpinned', 'current-pinned', 'older-pinned']);
+  assert.equal(B.versionStateOf({ version: 2, latest: 2, pinned: false }), 'current-unpinned');
+  assert.equal(B.versionStateOf({ version: 2, latest: 2, pinned: true }), 'current-pinned');
+  assert.equal(B.versionStateOf({ version: 1, latest: 2, pinned: true }), 'older-pinned');
+  assert.equal(B.stampFor({ status: 'blyg', item: { origin: A, id: 'x', version: 2, latest: 2, pinned: true, page: A } }).version_state, 'current-pinned');
+  const r = rig();
+  const site = r.web.add(A);
+  const id = idOf(1);
+  const hints = { blyg: `${A}blyg.json`, json: `${A}items/${id}.json` };
+  site.put(makeDoc({ id, origin: A, version: 2, updated: '2026-11-02T10:00:00Z', changelog: [{ version: 1, at: 'a', note: '', pinned: true }, { version: 2, at: 'b', note: '' }] }));
+  await follow(r, A);
+  await r.f.refresh();
+  let got = r.f.identityFor(`${A}f/${id}/`, hints);
+  assert.equal(B.versionStateOf(got.result.item), 'current-unpinned', 'the current version is not the pinned one');
+  assert.deepEqual(got.result.item.pinned_versions, [1]);
+  assert.equal(B.stampFor(got.result).version_state, 'current-unpinned');
+  site.put(makeDoc({ id, origin: A, version: 3, updated: '2026-11-03T10:00:00Z', changelog: [{ version: 1, at: 'a', note: '', pinned: true }, { version: 2, at: 'b', note: '' }, { version: 3, at: 'c', note: '', pinned: true }] }));
+  await r.f.refresh();
+  got = r.f.identityFor(`${A}f/${id}/`, hints);
+  assert.equal(B.stampFor(got.result).version_state, 'current-pinned');
+  assert.equal(got.result.item.pinned, true);
+  r.done();
 });

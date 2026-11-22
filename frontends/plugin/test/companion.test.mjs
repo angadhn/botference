@@ -3518,12 +3518,20 @@ async function main() {
         { host: 'localhost', 'x-forwarded-for': '203.0.113.9' },
       ];
       for (const h of proxied) {
-        const w = await POST(kb, '/keys', { agent: 'codex', key: 'sk-stolen' }, h);
-        assert.equal(w.status, 403, JSON.stringify(h));
-        assert.deepEqual(w.json, { ok: false, error: 'API keys can only be set from this machine' });
-        assert.equal((await GET(kb, '/keys', h)).status, 403, 'not even the status');
-        assert.equal((await POST(kb, '/keys/remove', { agent: 'codex' }, h)).status, 403);
-        assert.equal((await POST(kb, '/key-mode', { agent: 'codex', mode: 'key' }, h)).status, 403);
+        // This companion is not hosted, so a name that is not this machine's is now refused (421) by the Host
+        // check before any route is reached; a name that is this machine's (here: with the right port) reaches
+        // the route, which refuses it itself (403). Either way nothing is set.
+        const here = h.host === 'localhost' ? { ...h, host: 'localhost:' + new URL(kb).port } : h;
+        const w = await POST(kb, '/keys', { agent: 'codex', key: 'sk-stolen' }, here);
+        if (w.status === 421) assert.equal(here.host === h.host && h.host !== 'localhost', true, 'only a foreign name is refused by name');
+        else {
+          assert.equal(w.status, 403, JSON.stringify(h));
+          assert.deepEqual(w.json, { ok: false, error: 'API keys can only be set from this machine' });
+        }
+        const refused = r => [403, 421].includes(r.status);
+        assert.ok(refused(await GET(kb, '/keys', here)), 'not even the status');
+        assert.ok(refused(await POST(kb, '/keys/remove', { agent: 'codex' }, here)));
+        assert.ok(refused(await POST(kb, '/key-mode', { agent: 'codex', mode: 'key' }, here)));
       }
       const untouched = await GET(kb, '/keys');
       assert.equal(untouched.json.codex, 'set', 'and nothing a remote caller sent was applied');

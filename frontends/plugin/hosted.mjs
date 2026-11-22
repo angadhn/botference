@@ -95,6 +95,47 @@ export function originVerdict(req, { publicHosts = [] } = {}) {
   if (u.protocol === 'https:' && pub.has(u.hostname)) return 'trusted';
   return 'foreign';
 }
+// --- WHICH NAME WAS ASKED, by the Host header ---------------------------
+// A page on the open web can make the browser send requests to this machine under ITS OWN name: the
+// name is "rebound" to 127.0.0.1 after the page loads ("DNS rebinding"). Such a request carries
+// Host and Origin of the attacker's name, so the Origin check above (an Origin equal to the Host
+// it was asked on is "our own page") is satisfied, and a companion that is not hosted treats
+// everyone who reaches it as its owner. So every request is judged by the NAME it asked for, once,
+// by this one function, before anything is routed:
+//   'loopback'  — 127.0.0.1, localhost or [::1], on the port this server listens on
+//   'allowed'   — a public hostname the owner configured (publicHosts: the reading room's and the
+//                 memorizer's names, PLUGIN_PUBLIC_HOSTNAMES)
+//   'wrong-port'— a loopback name on some other port
+//   'foreign'   — any other name
+//   'missing'   — no Host header
+export const HOST_VERDICTS = Object.freeze(['loopback', 'allowed', 'wrong-port', 'foreign', 'missing']);
+export function hostVerdict(req, { publicHosts = [] } = {}) {
+  const raw = String(req.headers.host || '').trim().toLowerCase();
+  if (!raw) return 'missing';
+  const m = /^(\[[0-9a-f:.]+\]|[^:\[\]]+)(?::(\d{1,5}))?$/.exec(raw);
+  if (!m) return 'foreign';
+  const [, name, port] = m;
+  if (name === '127.0.0.1' || name === 'localhost' || name === '[::1]') {
+    const lp = req.socket && req.socket.localPort;
+    return !lp || String(port || '80') === String(lp) ? 'loopback' : 'wrong-port';
+  }
+  const pub = new Set([...publicHosts.map(h => String(h).toLowerCase()), ...csv(process.env.PLUGIN_PUBLIC_HOSTNAMES)]);
+  return pub.has(name) ? 'allowed' : 'foreign';
+}
+/**
+ * Is a request refused because of the name it asked for? A missing Host always is. A foreign name, or a
+ * loopback name on the wrong port, is refused when this companion is not hosted (everyone who reaches it is
+ * its owner, so a name that is not this machine's is a rebinding attempt). When it is hosted, the password
+ * gate answers for them instead: its tunnel carries the public name (or, behind cloudflared's
+ * httpHostHeader, "localhost" with no port), and a request that merely claims to be local-direct with such
+ * a name already is not (isLocalDirect).
+ */
+export function hostRefused(verdict, hosted) {
+  if (verdict === 'loopback' || verdict === 'allowed') return false;
+  if (verdict === 'missing') return true;
+  return !hosted; // 'foreign' and 'wrong-port'
+}
+
 // The CORS answer for one request, from its verdict. Hosted mode only (the
 // local companion never sent any, and its extension's worker needs none):
 // an origin that passed is echoed back; no Origin at all keeps the wildcard

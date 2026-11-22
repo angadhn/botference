@@ -110,6 +110,18 @@ export function privateAddress(ip) {
   return false;
 }
 
+// Extra request headers (a credential): never one that decides where or how the request goes, and never a name
+// or value that could carry a line break or another header.
+const FORBIDDEN_HEADERS = new Set(['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect', 'proxy-authorization']);
+const hasControl = s => [...String(s)].some(c => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127);
+export function checkExtraHeaders(headers) {
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(k)) throw new Error('guardedGet: a header name is not valid');
+    if (FORBIDDEN_HEADERS.has(k.toLowerCase())) throw new Error(`guardedGet: the ${k} header may not be set`);
+    if (typeof v !== 'string' || hasControl(v)) throw new Error(`guardedGet: the ${k} header's value is not valid`);
+  }
+}
+
 // ---- the guard --------------------------------------------------------------
 
 // A failed fetch, named. `kind` says what went wrong in one word, so a check
@@ -201,6 +213,7 @@ export async function fetchRefusal(raw, resolve = systemResolve) {
 export async function guardedGet(url, { maxBytes, timeoutMs, accept = '*/*', ua = DEFAULT_UA, redirects = 5,
   tooBig = 'refuse', resolve = systemResolve, transport = { http, https }, headers = {} } = {}) {
   if (TOO_BIG.indexOf(tooBig) === -1) throw new Error('guardedGet: tooBig must be one of ' + TOO_BIG.join(', '));
+  checkExtraHeaders(headers);
   const deadline = Date.now() + timeoutMs;
   const late = () => new FetchTrouble('timeout', `no answer from ${url} in ${Math.round(timeoutMs / 1000)}s`);
   let at = String(url);

@@ -22,7 +22,7 @@
     { "id": "m5", "who": "Ed Invented", "action": "webmention", "timestamp": "2026-11-16T10:00:00Z",
       "source": "https://ed.example.test/plain", "post_title": "On kettles", "post_url": "https://me.example.test/t/cccccccccccccccccccccccccc/" },
     { "id": "m6", "who": "Flo Invented", "timestamp": "2026-11-15T10:00:00Z", "quote": "a mention that does not say what it is" },
-    { "id": "m7", "who": "<script>alert(1)</script>‮Evil", "action": "replied", "quote": "<img src=x onerror=alert(1)> javascript:alert(1)",
+    { "id": "m7", "who": "<script>alert(1)</script>\u202eEvil", "action": "replied", "quote": "<img src=x onerror=alert(1)> javascript:alert(1)",
       "source": "javascript:alert(1)", "post_title": "</title><script>alert(2)</script>", "post_url": "javascript:alert(3)" }
   ]
 }

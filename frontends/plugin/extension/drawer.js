@@ -3172,8 +3172,8 @@ ${markPickHtml()}
            So the button is a DOOR, and the only thing it says is how many are
            waiting behind it. -->
       <button class="iconbtn quiz" data-act="quiz" type="button" title="Quiz — questions you asked to be reminded of" aria-label="Open the quiz" hidden>?<span class="qdue" hidden></span></button>
-      <!-- Following: the reader's private list of blygs, a page of the companion's own -->
-      <button class="iconbtn following" data-act="following" type="button" title="Following — blygs you read" aria-label="Open Following"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3.5a9.5 9.5 0 0 1 9.5 9.5M3 7.5a5.5 5.5 0 0 1 5.5 5.5"/><circle cx="3.8" cy="12.2" r="1" fill="currentColor" stroke="none"/></svg></button>
+      <!-- Hub: the reader's console for blygs, a page of the companion's own -->
+      <button class="iconbtn following" data-act="following" type="button" title="Hub — your blygs, mentions and background" aria-label="Open the Hub"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3.5a9.5 9.5 0 0 1 9.5 9.5M3 7.5a5.5 5.5 0 0 1 5.5 5.5"/><circle cx="3.8" cy="12.2" r="1" fill="currentColor" stroke="none"/></svg></button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
       <button class="iconbtn obsidian" data-act="export" type="button" title="Export to Obsidian" aria-label="Export to Obsidian">${OBSIDIAN_SVG}</button>
       <button class="iconbtn" data-act="close" type="button" title="Close (Esc)">✕</button>

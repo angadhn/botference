@@ -432,7 +432,7 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   ok('page record: no html, no text', !('html' in pr) && !('text' in pr));
 
   eq('stamp: a highlight made on the post', B.stampFor(answer, { quote: S1 }), {
-    status: 'blyg', origin: VR, id: VR_ID, version: 2, pinned: false, page: VR_PAGE, as_of: 'record', passage: { match: true } });
+    status: 'blyg', origin: VR, id: VR_ID, version: 2, pinned: false, version_state: 'current-unpinned', page: VR_PAGE, as_of: 'record', passage: { match: true } });
   eq('stamp: a page-chat message carries no passage', 'passage' in B.stampFor(answer), false);
   eq('stamp: while the check is still running', B.stampFor(null), { status: 'checking' });
   eq('stamp: when the check failed', B.stampFor({ status: 'check-failed', reason: 'x' }), { status: 'check-failed' });

@@ -40,24 +40,33 @@ textarea{width:100%;min-height:5rem}label{display:block;margin:.3rem 0}#msg{min-
 `;
 
 const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background' });
-const INBOX_WORDS = Object.freeze({ off: 'no inbox is set', pending: 'not asked yet', ok: 'up to date', unauthorised: 'the inbox refused the token', unreachable: 'the inbox could not be reached' });
+const INBOX_WORDS = Object.freeze({ off: 'no inbox is set', pending: 'not asked yet', ok: 'up to date', unauthorised: 'the inbox refused the token', unreachable: 'the inbox could not be reached', paused: 'paused: Blygger checks are off', unreadable: 'the inbox answered something this page cannot read' });
 const openBtn = (key, label = 'Open') => `<button type="button" class="btn" data-act="open" data-key="${escHtml(key)}">${escHtml(label)}</button>`;
 
+// a post's versions, newest first: date, the changelog note, and a "pinned" mark that opens that version's page (by key
+// and number, through the companion) only when the page can be told from what is held
+function history(h) {
+  if (!h.history || h.history.length < 2) return '';
+  const rows = h.history.map(v => `<li>v${Number(v.version)} <span class="mut">${day(v.at)}</span> ${v.note ? t(v.note, 200) : '<span class="mut">no note</span>'}
+    ${v.mark === 'link' ? `<button type="button" class="badge" data-act="open-pin" data-key="${escHtml(h.key)}" data-version="${Number(v.version)}">pinned</button>`
+      : v.mark === 'plain' ? '<span class="badge">pinned</span>' : ''}</li>`).join('');
+  return `<details><summary class="mut">history</summary><ul class="history">${rows}</ul></details>`;
+}
 function entry(e) {
   const h = e.head;
   const resp = h.in_response_to ? `<div class="mut">in response to ${t(h.in_response_to.label, 160)}</div>` : '';
   const ident = h.identity === 'disagrees'
     ? `<div class="warn">When this post was opened its page disagreed with this list: ${t(h.identity_note || 'it names another post', 300)}. Discuss used its own check there.</div>` : '';
   const folded = e.members.length
-    ? `<div class="mut">${e.members.length} published together, <a href="/following?view=background">in Background</a></div>` : '';
+    ? `<div class="mut">${e.members.length} published together, <a href="/hub?view=background">in Background</a></div>` : '';
   const acts = [openBtn(h.key, h.opens_on ? `Open (on ${cleanText(h.opens_on, 80)})` : 'Open')];
   if (h.read === 'new') acts.push(`<button type="button" data-act="see" data-key="${escHtml(h.key)}">Mark seen</button>`);
   return `<article class="entry read-${escHtml(h.read)}" id="e-${escHtml(h.key)}" data-key="${escHtml(h.key)}">
     <div class="meta mut"><span>${t(h.blyg_title || h.origin, 160)}</span>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
-      <span>${day(h.shown_at || h.updated || h.created)}</span><span class="badge">${t(h.kind, 20)}</span><span>v${Number(h.version) || 1}</span>
-      ${h.versions_note ? `<span>${t(h.versions_note, 30)}</span>` : ''}<span class="badge">${t(h.read, 20)}</span>${h.maintenance ? `<span class="mut">${Number(h.maintenance)} maintenance</span>` : ''}</div>
+      <span>${day(h.shown_at || h.updated || h.created)}</span><span class="badge">${t(h.kind, 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>
+      ${(h.pinned_list || []).length ? `<span>pinned: ${h.pinned_list.map(n => `v${Number(n)}`).join(', ')}</span>` : ''}<span class="badge">${t(h.read, 20)}</span>${h.maintenance ? `<span class="mut">${Number(h.maintenance)} maintenance</span>` : ''}</div>
     ${h.title ? `<div class="title">${t(h.title, 200)}</div>` : ''}${resp}
-    <div class="excerpt">${t(h.excerpt, 300)}</div>${ident}${folded}
+    <div class="excerpt">${t(h.excerpt, 300)}</div>${history(h)}${ident}${folded}
     <div class="acts">${acts.join('')}</div></article>`;
 }
 
@@ -76,7 +85,7 @@ function mentionCard(m, reason) {
   const what = [m.action, m.version ? `v${Number(m.version)}` : ''].filter(Boolean).join(' ');
   const acts = [];
   if (m.source_url) acts.push(openBtn(m.key, 'Open'));
-  if (m.feed_key) acts.push(`<a class="btn" href="/following?view=feed#e-${escHtml(m.feed_key)}">In your feed</a>`);
+  if (m.feed_key) acts.push(`<a class="btn" href="/hub?view=feed#e-${escHtml(m.feed_key)}">In your feed</a>`);
   if (m.read === 'unseen') acts.push(`<button type="button" data-act="mention-seen" data-key="${escHtml(m.key)}">Mark seen</button>`);
   return `<article class="entry read-${m.read === 'unseen' ? 'new' : 'seen'}" data-key="${escHtml(m.key)}">
     <div class="meta mut"><span class="badge">${t(reason, 60)}</span><span>${t(m.who || 'someone', 160)}</span>${m.blyg_title ? `<span>${t(m.blyg_title, 160)}</span>` : ''}
@@ -89,7 +98,8 @@ function mentionCard(m, reason) {
 
 function mentionsPane(data) {
   const box = data.inbox;
-  const line = `<p class="mut">Your inbox: ${escHtml(INBOX_WORDS[box.state] || box.state)}${box.error ? ` (${t(box.error, 200)})` : ''}${box.generated_at ? `; generated ${t(box.generated_at, 40)}` : ''}.
+  const warn = box.token_warning ? `<p class="warn">${t(box.token_warning, 300)}</p>` : '';
+  const line = `${warn}<p class="mut">Your inbox: ${escHtml(INBOX_WORDS[box.state] || box.state)}${box.error ? ` (${t(box.error, 200)})` : ''}${box.generated_at ? `; generated ${t(box.generated_at, 40)}` : ''}.
     ${box.blocked_count ? `${Number(box.blocked_count)} blocked. ` : ''}${data.tabs.mentions_unseen ? `<button type="button" data-act="mention-seen-all">Mark all seen</button>` : ''}</p>`;
   const verified = data.mentions.filter(m => m.reason !== 'plain mention (lower class)');
   const plain = data.mentions.filter(m => m.reason === 'plain mention (lower class)');
@@ -101,7 +111,7 @@ function mentionsPane(data) {
     ? `<p class="mut">${Number(box.never_verified_count)} accepted, never verified${box.never_verified.length ? `: ${box.never_verified.map(x => t(x, 160)).join('; ')}` : ''}.</p>` : '';
   return `${line}${body || (box.state === 'off' ? '<p class="mut">Set an inbox below to see responses to your posts here.</p>' : '<p class="mut">No responses yet.</p>')}
     ${plain.length ? `<h2>Plain mentions</h2><p class="mut">A lower class: the source is not a blyg post and was checked only by its link.</p>${plain.map(m => mentionCard(m, m.reason)).join('')}` : ''}${nv}
-    <p class="mut">Notices (links and reposts) are in <a href="/following?view=background">Background</a>.</p>`;
+    <p class="mut">Notices (links and reposts) are in <a href="/hub?view=background">Background</a>.</p>`;
 }
 
 const SCRIPT = `
@@ -118,6 +128,10 @@ const SCRIPT = `
       return post('/following/open',{key:b.dataset.key}).then(function(r){
         if(r&&r.ok&&r.url){if(w){w.location.href=r.url;}else say('Allow pop-ups for this page to open posts.',true);}
         else{if(w)w.close();say((r&&r.error)||'failed',true);}});}
+    if(a==='open-pin'){var w2=window.open('about:blank','_blank');if(w2){try{w2.opener=null;}catch(e){}}
+      return post('/following/open',{key:b.dataset.key,version:Number(b.dataset.version)}).then(function(r){
+        if(r&&r.ok&&r.url){if(w2){w2.location.href=r.url;}else say('Allow pop-ups for this page to open posts.',true);}
+        else{if(w2)w2.close();say((r&&r.error)||'failed',true);}});}
     if(a==='see')return post('/following/read',{key:b.dataset.key,move:'see'}).then(function(r){done(r);});
     if(a==='seen-all')return post('/following/read',{all:true}).then(function(r){done(r);});
     if(a==='mention-seen')return post('/following/mention-read',{key:b.dataset.key}).then(function(r){done(r);});
@@ -162,9 +176,9 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
   const tabs = VIEWS.map(v => {
     const n = v === 'feed' ? data.tabs.feed : v === 'mentions' ? data.tabs.mentions : data.tabs.background;
     const extra = v === 'mentions' && data.tabs.mentions_unseen ? ` <span class="badge">${Number(data.tabs.mentions_unseen)} unseen</span>` : '';
-    return `<a href="/following${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])} (${Number(n) || 0})${extra}</a>`;
+    return `<a href="/hub${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])} (${Number(n) || 0})${extra}</a>`;
   }).join('');
-  const nav = FILTERS.map(f => `<a href="/following${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
+  const nav = FILTERS.map(f => `<a href="/hub${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
   const last = data.last_run;
   const lastLine = last ? `Last refresh ${t(last.at, 30)}: ${Number(last.new)} new, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
   const blygs = data.blygs.map(b => `<tr><td>${t(b.title || b.origin, 160)}<div class="mut">${t(b.origin, 300)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
@@ -179,17 +193,18 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
          ${data.background.length ? data.background.map(backgroundEntry).join('') : '<p class="mut">Nothing here.</p>'}`
       : `<nav class="filters" aria-label="filter">${nav}</nav>
          <section aria-label="posts">${data.entries.length ? data.entries.map(entry).join('') : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
-         ${data.tabs.background ? `<p class="mut"><a href="/following?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
+         ${data.tabs.background ? `<p class="mut"><a href="/hub?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Following — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style></head><body><main>
+<title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style></head><body><main>
 <p class="mut"><a href="/pages">All annotated pages</a></p>
-<h1>Following</h1>
+<h1>Hub</h1>
 <p class="mut">Blygs you read. Only you see this, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer.'}</p>
 ${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p class="warn">These settings were not valid and the defaults are used: ${t(refused.join(', '), 300)}.</p>` : ''}
 <div class="acts"><button type="button" data-act="refresh">Refresh now</button><button type="button" data-act="seen-all">Mark all seen</button><span id="msg" role="status"></span></div>
 <nav class="filters" aria-label="views">${tabs}</nav>
 ${pane}
-<h2>Followed blygs</h2>
+<h2>Following</h2>
+<p class="mut">The blygs you follow. Add one, import a blogroll, or change the settings below.</p>
 <table><thead><tr><th>Blyg</th><th>State</th><th>Posts</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="4" class="mut">None yet.</td></tr>'}</tbody></table>
 <h2>Follow a blyg</h2>
 <form id="follow-form"><label>Any address on it (a post, its front page) <input type="url" name="url" required size="48" placeholder="https://"></label><button type="submit">Follow</button></form>
@@ -202,6 +217,7 @@ ${pane}
 <textarea name="my_origins">${settings.my_origins.map(o => escHtml(o)).join('\n')}</textarea></label>
 <label>Mentions inbox address (https) <input type="url" name="inbox_api_url" size="48" value="${escHtml(settings.inbox_api_url)}" placeholder="https://"></label>
 <label>Token file (an absolute path; its first line is the token, which is never kept here) <input type="text" name="inbox_token_file" size="48" value="${escHtml(settings.inbox_token_file)}"></label>
+${data.inbox.token_warning ? `<p class="warn">${t(data.inbox.token_warning, 300)}</p>` : ''}
 <button type="submit">Save settings</button></form>
 <p class="mut">Read states: ${READ_STATES.map(s => escHtml(s)).join(', ')}. Inbox states: ${INBOX_STATES.map(s => escHtml(s)).join(', ')}.</p>
 </main><script nonce="${escHtml(nonce)}">${SCRIPT}</script></body></html>`;

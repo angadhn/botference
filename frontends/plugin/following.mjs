@@ -41,7 +41,7 @@ import { guardedGet as netGet, FetchTrouble, urlRefusal } from './netguard.mjs';
 import { readJsonState, writeJson, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 import { session, findManifest, identityOf, isManifest, ID_RE, clip, textContent, isWebUrl, samePage,
   docRefusal, cleanHints, candidateBase, pageLinks, LIMITS as BLYG_LIMITS } from './blyg.mjs';
-import { parseInbox, readTokenFile, redactor, REPOST_RE } from './following-inbox.mjs';
+import { parseInbox, readTokenFile, redactor, scrubDeep, tokenFileWarning, REPOST_RE } from './following-inbox.mjs';
 
 const CFG = createRequire(import.meta.url)('./extension/config.js');
 export const { followingSettingsOf, originOf, FOLLOWING_NUMBERS } = CFG;
@@ -144,14 +144,20 @@ export function setIdentity(rec, ev) { rec.identity = identityMachine.to(rec.ide
 //   pending      — set, not asked yet
 //   ok           — the last answer was a JSON document
 //   unauthorised — the inbox said 401 or 403, or there is no usable token file
-//   unreachable  — it could not be asked or did not answer with JSON
-export const INBOX_STATES = Object.freeze(['off', 'pending', 'ok', 'unauthorised', 'unreachable']);
+//   paused       — set, but fetching is off (blyg_checks), so it is not asked
+//   unreachable  — it could not be asked, or answered something other than 2xx, or from another origin
+//   unreadable   — it answered, but not with a JSON object this code can read (or nested too deeply)
+export const INBOX_STATES = Object.freeze(['off', 'pending', 'paused', 'ok', 'unauthorised', 'unreachable', 'unreadable']);
+const ASKED_STATES = ['pending', 'ok', 'unauthorised', 'unreachable', 'unreadable'];
+const everyAsked = to => Object.fromEntries(ASKED_STATES.map(s => [s, to]));
 export const INBOX_MOVES = Object.freeze({
-  set: { off: 'pending' },
-  unset: { pending: 'off', ok: 'off', unauthorised: 'off', unreachable: 'off' },
-  succeed: { pending: 'ok', ok: 'ok', unauthorised: 'ok', unreachable: 'ok' },
-  deny: { pending: 'unauthorised', ok: 'unauthorised', unauthorised: 'unauthorised', unreachable: 'unauthorised' },
-  fail: { pending: 'unreachable', ok: 'unreachable', unauthorised: 'unreachable', unreachable: 'unreachable' },
+  set: { off: 'pending', paused: 'pending' },
+  unset: { ...everyAsked('off'), paused: 'off' },
+  pause: everyAsked('paused'),
+  succeed: everyAsked('ok'),
+  deny: everyAsked('unauthorised'),
+  fail: everyAsked('unreachable'),
+  garble: everyAsked('unreadable'),
 });
 const inboxMachine = machine('inbox', INBOX_STATES, INBOX_MOVES);
 export function moveInbox(box, ev) { box.state = inboxMachine.to(box.state, ev); return box.state; }
@@ -163,6 +169,10 @@ const mentionMachine = machine('mention read state', MENTION_READ, MENTION_MOVES
 export const canMoveMention = (m, ev) => mentionMachine.can(m.read, ev);
 export function moveMention(m, ev) { m.read = mentionMachine.to(m.read, ev); return m.read; }
 
+// Whether one version in a post's changelog is pinned (§8: a pinned version has a permanent document at
+// items/<id>/v<n>.json and a page). Read from the changelog of the document already fetched; the pinned
+// documents themselves are never fetched here.
+export const VERSION_PINS = Object.freeze(['unpinned', 'pinned']);
 // What a version of a post changed (worked out when it is fetched, by changeOf):
 //   new-words   — it is new to the list, or its words really changed
 //   minor       — its words changed by no more than the reader's threshold (§13.2, "barely changed")
@@ -191,7 +201,7 @@ export const LIMITS = Object.freeze({
   importMax: 100,             // entries of a blogroll resolved in one preview
   importRequests: 300,        // requests one preview may make
   followRequests: 12,         // requests following one URL may make
-  mentionsKept: 500,
+  mentionsKept: 500, versionsKept: 100, noteChars: 200,
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
@@ -207,7 +217,7 @@ export const REFUSALS = Object.freeze({
 });
 
 // ---- clean strings out of remote documents ----------------------------------
-const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
+const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 /** A string out of somebody else's document, made safe to keep AND to show: no control or bidirectional-override characters, one line, bounded. */
 export const cleanText = (v, n = 300) => clip(String(typeof v === 'string' ? v : '').replace(/[\u0080-\u009f]/g, ' ').replace(BIDI, ''), n);
 
@@ -284,7 +294,7 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   if (!isWebUrl(page)) return { invalid: 'its page is not a web address' };
   const base = { origin, id: doc.id, kind: doc.kind, version: doc.version,
     created: cleanText(doc.created, 40), updated: cleanText(doc.updated, 40), page, content_hash: doc.content_hash,
-    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '' };
+    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [] };
   if (doc.kind === 'withdrawn') return base;
   const lines = textContent(doc.content_html).split('\n').map(l => cleanText(l, 2000)).filter(Boolean);
   const title = firstHeading(doc.content_html);
@@ -294,7 +304,7 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   const stub = doc.stub_of && typeof doc.stub_of === 'object' ? doc.stub_of : null;
   const stubOrigin = stub ? originOf(stub.origin) : '';
   return {
-    ...base, title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars), text_chars: body.length,
+    ...base, versions: versionsOf(doc), title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars), text_chars: body.length,
     author: cleanText(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || blyg.author || '',
     stub_of: stubOrigin ? { origin: stubOrigin, id: ID_RE.test(String(stub.id || '')) ? stub.id : '' } : null,
     transclusions: Array.isArray(doc.transclusions) ? doc.transclusions.length : 0,
@@ -302,6 +312,29 @@ export function recordFromDoc(doc, origin, blyg = {}) {
     refs: refsAll.slice(0, LIMITS.refsKept),
     ref_origins: [...new Set(refsAll.map(r => r.origin))].slice(0, LIMITS.refOriginsKept),
   };
+}
+
+/** A post's versions from its changelog (§5.2): version, date, note, and whether it is pinned. Every string is cleaned. */
+export function versionsOf(doc) {
+  const log = Array.isArray(doc.changelog) ? doc.changelog : [];
+  const seen = new Set();
+  const out = [];
+  for (const e of log) {
+    if (!e || typeof e !== 'object' || !Number.isInteger(e.version) || e.version < 1 || e.version > doc.version || seen.has(e.version)) continue;
+    seen.add(e.version);
+    out.push({ version: e.version, at: cleanText(e.at, 40), note: cleanText(e.note, LIMITS.noteChars), pin: e.pinned === true ? 'pinned' : 'unpinned' });
+  }
+  return out.sort((a, b) => a.version - b.version).slice(-LIMITS.versionsKept);
+}
+export const pinnedOf = rec => (rec.versions || []).filter(v => v.pin === 'pinned').map(v => v.version);
+/** The address of a pinned version's page (§8.4: the post's page, then v<n>/), when it can be told from what is held: the version is pinned and the page is a directory-style address. Else ''. */
+export function pinPageOf(rec, n) {
+  if (!(rec.versions || []).some(v => v.version === n && v.pin === 'pinned')) return '';
+  try {
+    const u = new URL(rec.page);
+    if (!/^https?:$/.test(u.protocol) || !u.pathname.endsWith('/')) return '';
+    return new URL(`v${n}/`, u).href;
+  } catch { return ''; }
 }
 
 /**
@@ -412,7 +445,11 @@ export function foldBursts(items) {
 export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all' }) {
   const posts = items.filter(i => blygs[i.origin]);
   const live = posts.filter(i => !isWithdrawn(i));
-  const folded = foldBursts(live);
+  // A burst folds its members only under a head that is itself in the Feed. A head that goes elsewhere (a barely
+  // changed thread you have read) must not take an unread post with it: each member then stands on its own.
+  const alone = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine, burstHead: null });
+  const folded = foldBursts(live).flatMap(e => (alone(e.head).placement === 'feed' ? [e]
+    : [{ head: e.head, members: [] }, ...e.members.map(m => ({ head: m, members: [] }))]));
   const memberOf = new Map(); // ident → head
   for (const e of folded) for (const m of e.members) memberOf.set(identOf(m.origin, m.id), e.head);
   const place = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine,
@@ -459,7 +496,7 @@ function newBudget(settings, now) {
 
 // ---- the engine -----------------------------------------------------------------------
 export function createFollowing({ file, get = netGet, now = Date.now, getSettings = () => followingSettingsOf({}).settings,
-  mayFetch = () => true, readToken = readTokenFile, tokenForbidden = [],
+  mayFetch = () => true, readToken = readTokenFile, tokenWarning = tokenFileWarning, tokenForbidden = [],
   timers = { set: (fn, ms) => setInterval(fn, ms), clear: h => clearInterval(h) }, onChange = () => {} } = {}) {
   let state = null; // { blygs, items (by identOf), last_run, inbox }
   const emptyInbox = () => ({ state: 'off', fetched_at: 0, generated_at: '', count: 0, error: '', never_verified: [], never_verified_count: 0, blocked_count: 0, mentions: [] });
@@ -655,7 +692,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const tombstone = (held, e) => ({ key: held.key || randomKey(), origin: held.origin, id: held.id, kind: 'withdrawn', version: e.version, index_version: e.version,
     created: held.created, updated: e.updated || held.updated, fetched_at: now(), page: held.page, content_hash: held.content_hash, read: held.read || 'seen',
     identity: held.identity || 'unverified', last_change: 'new-words', stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [],
-    title: '', excerpt: '', text: '', text_chars: 0, author: '', first_seen: held.first_seen, maintenance: 0 });
+    title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [], first_seen: held.first_seen, maintenance: 0 });
   const totalItems = () => Object.values(load().items).filter(i => !isWithdrawn(i)).length;
   const itemUrlFor = (manifest, origin, id) => {
     const t = typeof manifest.item === 'string' && manifest.item ? manifest.item : 'items/{id}.json';
@@ -757,12 +794,21 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
 
   // ---- the mentions inbox ----
-  async function refreshInbox(g, cfg) {
-    const st = load();
-    const box = st.inbox;
-    const url = cfg.inbox_api_url;
-    if (!url) { if (box.state !== 'off') moveInbox(box, 'unset'); box.mentions = []; return; }
+  // What the inbox's state should be given the settings and whether fetching is allowed: set, paused and unset are
+  // decided here, once; asking it is refreshInbox's.
+  function syncInbox(cfg) {
+    const box = load().inbox;
+    if (!cfg.inbox_api_url) { if (box.state !== 'off') moveInbox(box, 'unset'); return box; }
     if (box.state === 'off') moveInbox(box, 'set');
+    if (!mayFetch()) { if (box.state !== 'paused') moveInbox(box, 'pause'); }
+    else if (box.state === 'paused') moveInbox(box, 'set');
+    return box;
+  }
+  async function refreshInbox(g, cfg) {
+    const box = syncInbox(cfg);
+    const url = cfg.inbox_api_url;
+    if (!url) { box.mentions = []; return; }
+    if (box.state === 'paused') return;
     box.fetched_at = now();
     let token;
     try { token = readToken(cfg.inbox_token_file, tokenForbidden); }
@@ -774,12 +820,20 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       if (e && (e.kind === 'limit' || e.kind === 'breaker' || e.kind === 'off')) return; // not asked: the state stays what it was
       moveInbox(box, 'fail'); box.error = cleanText(redact(String((e && e.message) || 'could not fetch')), 200); return;
     }
+    // the answer must come from the inbox's own origin, after any redirects
+    let sameOrigin = false;
+    try { sameOrigin = new URL(String(r.url || url)).origin === new URL(url).origin; } catch { sameOrigin = false; }
+    if (!sameOrigin) { moveInbox(box, 'fail'); box.error = 'the inbox answered from another origin than the one set'; return; }
     const code = Number(r.status) || 0;
     if (code === 401 || code === 403) { moveInbox(box, 'deny'); box.error = `the inbox answered ${code}`; return; }
-    let json = null;
-    if (code >= 200 && code < 300) { try { json = JSON.parse(String(r.text ?? '')); } catch { json = null; } }
-    if (!json || typeof json !== 'object' || Array.isArray(json)) { moveInbox(box, 'fail'); box.error = code >= 200 && code < 300 ? 'the inbox did not answer with a JSON object' : `the inbox answered ${code}`; return; }
-    const parsed = parseInbox(json, redact, LIMITS.mentionsKept);
+    if (code < 200 || code >= 300) { moveInbox(box, 'fail'); box.error = `the inbox answered ${code}`; return; }
+    let parsed;
+    try {
+      const json = JSON.parse(String(r.text ?? ''));
+      if (!json || typeof json !== 'object' || Array.isArray(json)) throw new Error('not an object');
+      // the token is replaced everywhere in the document BEFORE anything is read out of it or clipped
+      parsed = parseInbox(scrubDeep(json, token), redact, LIMITS.mentionsKept);
+    } catch { moveInbox(box, 'garble'); box.error = 'the inbox did not answer with a JSON object this code can read'; return; }
     const old = new Map(box.mentions.map(m => [m.ident, m]));
     box.mentions = parsed.mentions.map(m => { const o = old.get(m.ident); return { ...m, key: o ? o.key : randomKey(), read: o ? o.read : 'unseen' }; });
     Object.assign(box, { generated_at: parsed.generated_at, count: parsed.count, never_verified: parsed.never_verified,
@@ -789,7 +843,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
 
   /** Refresh every blyg that is due, and the inbox. At most one run at a time; a second ask while one is going is refused, not queued. */
   async function refresh({ reason = 'demand' } = {}) {
-    if (!mayFetch()) return { started: false, reason: 'fetching is off (blyg_checks), so nothing was asked' };
+    if (!mayFetch()) { syncInbox(settings()); return { started: false, reason: 'fetching is off (blyg_checks), so nothing was asked' }; }
     if (run.state !== 'idle') return { started: false, reason: 'a refresh is already running' };
     moveRun(run, 'begin');
     const cfg = settings();
@@ -806,7 +860,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
         save();
       }
-      try { await refreshInbox(g, cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
+      try { await refreshInbox(getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now)), cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
       tally.requests = budget.requests;
       load().last_run = { ...tally, at: new Date(now()).toISOString() };
       save();
@@ -874,12 +928,15 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
    * the list its source is, if any, `opened`). → { url }, the ORIGINAL page. The caller opens it, and Discuss
    * identifies it when the page asks (identityFor), from the list only if the page's own links agree.
    */
-  function open(key) {
+  function open(key, version = 0) {
     const rec = byKey(key);
     if (rec) {
       if (isWithdrawn(rec)) throw new Error('no such post');
+      // opening a post opens its CURRENT version; a pinned older one only by asking for it, and only if its page can be told
+      const pin = version ? pinPageOf(rec, Number(version)) : '';
+      if (version && !pin) throw new Error('that version is not pinned, or its page cannot be told from what is held');
       if (canMoveRead(rec, 'open')) { moveRead(rec, 'open'); save(); onChange(); }
-      return { url: rec.page, opens_on: hostOf(rec.page) !== hostOf(rec.origin) ? hostOf(rec.page) : '' };
+      return { url: pin || rec.page, opens_on: hostOf(rec.page) !== hostOf(rec.origin) ? hostOf(rec.page) : '' };
     }
     const m = load().inbox.mentions.find(x => x.key === key);
     if (!m) throw new Error('no such post or mention');
@@ -928,8 +985,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         status: 'blyg', source: 'from-list', site: { origin: rec.origin, title: blyg.title, author: blyg.author },
         // the list holds an excerpt, not the post: a passage cannot be checked against it
         html: '', text: rec.text,
-        item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version, pinned: false,
-          pinned_versions: [], page: rec.page, pinned_page: '', json: '', source: blyg.title, author: rec.author },
+        item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version,
+          pinned: pinnedOf(rec).includes(rec.version), pinned_versions: pinnedOf(rec), page: rec.page, pinned_page: '', json: '', source: blyg.title, author: rec.author },
       } };
     }
     const no = verdicts.filter(v => v.why);
@@ -950,12 +1007,15 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       const target = i.stub_of && i.stub_of.id ? heldItem(i.stub_of.origin, i.stub_of.id) : null;
       return { ...copy(i), blyg_title: titleOf(i.origin), shown_at: new Date(sortTime(i)).toISOString(),
         versions_note: i.version > 1 ? `${i.version} versions` : '',
+        history: [...(i.versions || [])].sort((a, b) => b.version - a.version)
+          .map(v => ({ ...v, mark: v.pin === 'pinned' ? (pinPageOf(i, v.version) ? 'link' : 'plain') : '' })),
+        pinned_list: pinnedOf(i),
         opens_on: i.page && hostOf(i.page) !== hostOf(i.origin) ? hostOf(i.page) : '',
         in_response_to: i.stub_of ? { origin: i.stub_of.origin, id: i.stub_of.id,
           label: (target && !isWithdrawn(target) && (target.title || target.excerpt)) || titleOf(i.stub_of.origin) || i.stub_of.origin } : null };
     };
     const mention = m => { const p = feedItemFor(m); return { ...copy(m), feed_key: p ? p.key : '' }; };
-    const box = st.inbox;
+    const box = syncInbox(settings());
     return { view: viewOf(tab), filter: v.feed.filter, counts: v.feed.counts, tabs: v.tabs,
       run: { ...run }, schedule: { ...schedule }, last_run: copy(st.last_run), blygs: listBlygs(),
       entries: viewOf(tab) === 'feed' ? v.feed.entries.map(e => ({ head: decorate(e.head), members: e.members.map(decorate) })) : [],
@@ -964,7 +1024,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         : { type: 'mention', reason: b.reason, mention: mention(b.mention) })) : [],
       mentions: viewOf(tab) === 'mentions' ? v.mentions.map(mention) : [],
       inbox: { state: box.state, fetched_at: box.fetched_at, generated_at: box.generated_at, count: box.count, error: box.error,
-        never_verified: [...box.never_verified], never_verified_count: box.never_verified_count, blocked_count: box.blocked_count } };
+        never_verified: [...box.never_verified], never_verified_count: box.never_verified_count, blocked_count: box.blocked_count,
+        token_warning: settings().inbox_token_file ? tokenWarning(settings().inbox_token_file) : '' } };
   }
   const itemByKey = key => copy(byKey(key));
 
@@ -983,7 +1044,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
 // applied to each entry (a reader's list is the owner's, not a guest's), and the auth
 // test walks this table.
 export const ROUTES = Object.freeze([
-  { method: 'GET', path: '/following', what: 'the page' },
+  { method: 'GET', path: '/hub', what: 'the page (the Hub: Feed, Mentions, Background, and the list of blygs followed)' },
+  { method: 'GET', path: '/following', what: 'the same page, under its older address' },
   { method: 'GET', path: '/following/data', what: 'the console as JSON' },
   { method: 'POST', path: '/following/open', what: 'open a post or mention (marks it, answers with the original address)' },
   { method: 'POST', path: '/following/follow', what: 'follow a blyg by any URL on it' },

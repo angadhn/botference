@@ -46,7 +46,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
   GAP_LIMITS } from './tkgaps.mjs';
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
-import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor } from './hosted.mjs';
+import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor, hostVerdict, hostRefused } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
@@ -2281,6 +2281,8 @@ const PUBLIC_HOSTS = [...new Set([
   ...String(process.env.PLUGIN_READING_HOSTNAME || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
 ])];
 const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS });
+// and the Host check that comes before everything (hosted.mjs hostVerdict): a rebound name is refused.
+const hostBlocked = req => hostRefused(hostVerdict(req, { publicHosts: PUBLIC_HOSTS }), HOSTED);
 // What is served on the vault's hostname, and nothing else is. Everything here
 // is either the quiz, the session (so the sign-in the reading room uses works
 // unchanged on this host too) or an answer a script asks for.
@@ -3342,6 +3344,7 @@ function handleFollowing(route, req, res) {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };
   switch (route.path) {
+    case '/hub':
     case '/following': {
       const s = settings();
       const nonce = crypto.randomBytes(16).toString('base64');
@@ -3355,7 +3358,7 @@ function handleFollowing(route, req, res) {
   }
   return readBody(req, res, say(async data => {
     switch (route.path) {
-      case '/following/open': return following.open(String(data.key || ''));
+      case '/following/open': return following.open(String(data.key || ''), Number.isInteger(data.version) ? data.version : 0);
       case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
       case '/following/unfollow': return { removed: following.unfollow(String(data.origin || '')) };
       case '/following/state': {
@@ -3396,6 +3399,8 @@ function handleFollowing(route, req, res) {
 }
 
 export function handler(req, res) {
+  // BEFORE ANYTHING ELSE, the name this request asked for. 421, and nothing about why in the body.
+  if (hostBlocked(req)) { req.resume(); return res.writeHead(421, JSON_HEAD).end('{"ok":false,"error":"misdirected request"}'); }
   let url = req.url.split('?')[0];
   const draftCommandOnly = req.method === 'POST' && (url === '/draft-blog' || url === '/draft-blog/thread');
   if (draftCommandOnly) url = url === '/draft-blog/thread' ? '/thread' : '/reply';
@@ -6607,7 +6612,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     // ride the query string (?auth=…&handle=…); cookies work too
     // a website's page can open a socket to the loopback too, and would hear
     // every event: the same Origin rule as every HTTP request
-    authorize: req => !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req),
+    authorize: req => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req),
     onOpen(ws) {
       ws.send(JSON.stringify({ type: 'hello' }));
       wsClients.add(ws);

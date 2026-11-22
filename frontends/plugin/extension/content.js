@@ -3173,7 +3173,7 @@
       // reader reviews on a phone, and this drawer cannot follow them there.
       // So the button is a door, and this opens it.
       onOpenQuiz: () => { bg({ t: 'open-here', path: '/quiz' }); },
-      onOpenFollowing: () => { bg({ t: 'open-here', path: '/following' }); },
+      onOpenFollowing: () => { bg({ t: 'open-here', path: '/hub' }); },
       // "not done" — the reader's answer to a thread the bots claimed handled.
       // Only the clearing direction exists here: marking a thread ADDRESSED is
       // what a bot's reply landing in it does, server-side, and is never a

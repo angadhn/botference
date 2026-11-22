@@ -52,7 +52,7 @@ export const ACTION_CLASSES = Object.freeze({
 });
 export const REPOST_RE = /repost/i;
 
-const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
+const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
 const clean = (v, n = 300) => String(typeof v === 'string' ? v : '').replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
   .replace(BIDI, '').replace(/\s+/g, ' ').trim().slice(0, n);
 const webUrl = v => { try { const u = new URL(String(v || '').trim()); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch { return ''; } };
@@ -61,11 +61,12 @@ function pick(obj, keys) {
   for (const k of keys) if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
   return undefined;
 }
-function textOf(v, n = 300) {
+function textOf(v, n = 300, depth = 0) {
   if (v === undefined || v === null) return '';
   if (typeof v === 'string') return clean(v, n);
   if (typeof v === 'number' || typeof v === 'boolean') return clean(String(v), n);
-  if (typeof v === 'object') return textOf(pick(v, ['name', 'title', 'text', 'url']), n);
+  // an object is read one or two levels down (an author given as { name }), never further
+  if (typeof v === 'object' && depth < 3 && !Array.isArray(v)) return textOf(pick(v, ['name', 'title', 'text', 'url']), n, depth + 1);
   return '';
 }
 function urlOf(v) {
@@ -100,6 +101,23 @@ export function normaliseMention(raw, redact = s => s) {
 }
 // the raw copy keeps its line breaks (it is shown in a <pre>, escaped) but loses control and override characters
 const clean2 = (s, n) => String(s).replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' ').replace(BIDI, '').slice(0, n);
+
+export const SCRUB_DEPTH = 24;
+/**
+ * A copy of a parsed JSON document with `token` replaced, in every string and every key, BEFORE anything is
+ * extracted or clipped (so a token cut by a clip limit cannot leave a prefix of itself). Nesting deeper than
+ * SCRUB_DEPTH is replaced by a marker, so a hostile document cannot overflow the stack.
+ */
+export function scrubDeep(value, token, depth = 0) {
+  const fix = s => (token ? String(s).split(token).join('[redacted]') : String(s));
+  if (typeof value === 'string') return fix(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= SCRUB_DEPTH) return '[too deeply nested]';
+  if (Array.isArray(value)) return value.map(v => scrubDeep(v, token, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[fix(k)] = scrubDeep(v, token, depth + 1);
+  return out;
+}
 
 /** The whole inbox answer → { generated_at, count, never_verified: [label], never_verified_count, blocked_count, mentions: [normalised] } */
 export function parseInbox(json, redact = s => s, limit = 500) {
@@ -147,8 +165,21 @@ export function readTokenFile(file, forbidden = []) {
   try { text = fs.readFileSync(file, 'utf8').slice(0, 4096); } catch { throw new Error('the token file cannot be read'); }
   const token = text.split(/\r?\n/)[0].trim();
   if (!token) throw new Error('the token file is empty');
-  if (/[\u0000- \u007f-￿]/.test(token)) throw new Error('the token file\'s first line is not a usable token');
+  // a first line that is too long is refused, never truncated (a truncated token is a different, wrong one)
+  if (token.length > TOKEN_MAX) throw new Error(`the token file's first line is longer than ${TOKEN_MAX} characters`);
+  if (token.length < TOKEN_MIN) throw new Error("the token file's first line is too short to be a token");
+  // visible ASCII only, and neither a quote nor a backslash: such a token would survive, escaped, in a JSON copy
+  if (!/^[!#-\[\]-~]+$/.test(token)) throw new Error("the token file's first line is not a usable token");
   return token;
+}
+export const TOKEN_MAX = 512, TOKEN_MIN = 8;
+/** A warning, or '', about who else can read the token file (group or others): never a refusal. Reads no content. */
+export function tokenFileWarning(file) {
+  try {
+    const st = fs.statSync(String(file || ''));
+    if (st.isFile() && (st.mode & 0o077) !== 0) return 'this token file can be read by other users of this computer; make it readable by you alone (chmod 600)';
+  } catch { /* not there: readTokenFile says so when it is used */ }
+  return '';
 }
 /** A scrubber for one token: replaces every occurrence with a marker. */
 export const redactor = token => (token ? s => String(s).split(token).join('[redacted]') : s => s);

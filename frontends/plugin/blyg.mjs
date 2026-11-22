@@ -639,6 +639,11 @@ export function pageRecordOf(result, at = new Date()) {
 // stamp is final, so an old highlight goes on saying which version it quoted
 // after the post changes.
 export const BLYG_STAMPS = Object.freeze(['checking', 'blyg', 'check-failed']);
+// Which version of the post a highlight was made on, relative to the post: the live version, unpinned or pinned
+// (§8: a pinned version has a permanent document and page), or an older version that is pinned (a pinned
+// version's own page). One list; versionStateOf says which.
+export const VERSION_STATES = Object.freeze(['current-unpinned', 'current-pinned', 'older-pinned']);
+export const versionStateOf = i => (i.latest !== undefined && i.version !== i.latest ? 'older-pinned' : (i.pinned ? 'current-pinned' : 'current-unpinned'));
 for (const s of BLYG_STAMPS) if (!BLYG_MODES.includes(s)) throw new Error(`blyg stamp ${s} is not a blyg mode`);
 const STAMP_MOVES = Object.freeze({
   none: Object.freeze(['checking', 'blyg', 'check-failed']),
@@ -658,7 +663,7 @@ export function stampFor(result, { asOf = 'record', quote = null } = {}) {
   // importer) can always open; a highlight made on a pinned version's own
   // page also keeps that page's address
   const st = { status: 'blyg', origin: i.origin, id: i.id, version: i.version, pinned: !!i.pinned,
-    page: i.page, ...(i.pinned_page ? { pinned_page: i.pinned_page } : {}), as_of: asOf === 'check' ? 'check' : 'record' };
+    version_state: versionStateOf(i), page: i.page, ...(i.pinned_page ? { pinned_page: i.pinned_page } : {}), as_of: asOf === 'check' ? 'check' : 'record' };
   // (an answer built from the Following list, source 'from-list', holds an excerpt, not the post: no verdict is better than a wrong one)
   if (quote !== null && result.source !== 'from-list') st.passage = checkPassage(quote, result.text || textContent(result.html));
   return st;

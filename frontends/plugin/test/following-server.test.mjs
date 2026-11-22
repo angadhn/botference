@@ -8,6 +8,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import net from 'node:net';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createHarness, GET, POST, request } from './harness.mjs';
@@ -29,10 +30,10 @@ site.put(makeDoc({ id: ID1, origin: A, kind: 'thread', title: 'A made-up thread'
   created: '2026-11-05T10:00:00Z', updated: '2026-11-05T10:00:00Z', transclusions: [] }));
 site.put(makeDoc({ id: ID2, origin: A, title: 'A made-up fragment', body: 'A short invented fragment.', created: '2026-11-04T10:00:00Z' }));
 // a hostile blyg: markup and override characters in every field a reader might see
-const bad = web.add(H, { title: '<script>alert("blyg")</script>‮evil', author: '"><img src=x onerror=alert(1)>' });
+const bad = web.add(H, { title: '<script>alert("blyg")</script>\u202eevil', author: '"><img src=x onerror=alert(1)>' });
 const HID = idOf(9);
-bad.put(makeDoc({ id: HID, origin: H, title: '&lt;script&gt;alert(1)&lt;/script&gt;‮',
-  body: '&lt;img src=x onerror=alert(1)&gt; &lt;a href="javascript:alert(1)"&gt;click&lt;/a&gt; ‮txet', author: '"><svg onload=alert(2)>' }));
+bad.put(makeDoc({ id: HID, origin: H, title: '&lt;script&gt;alert(1)&lt;/script&gt;\u202e',
+  body: '&lt;img src=x onerror=alert(1)&gt; &lt;a href="javascript:alert(1)"&gt;click&lt;/a&gt; \u202etxet', author: '"><svg onload=alert(2)>' }));
 
 // the owner's mentions inbox: answers only to the right bearer token, and notes what it was sent
 const INBOX_TOKEN = 'tok_INVENTED_server_test_0123456789';
@@ -65,6 +66,15 @@ const WEB_ENV = { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import ${JS
 
 const srv = await startServer({ root, args: ['--no-agents'], env: { PLUGIN_BLYG_CHECKS: 'on', ...WEB_ENV } });
 const B = srv.base;
+// a request with NO Host header at all (node's own client always adds one), as HTTP/1.0 allows
+const withoutHost = (base, pathName, extra = '') => new Promise((resolve, reject) => {
+  const u = new URL(base);
+  const sock = net.connect(Number(u.port), u.hostname, () => sock.write(`GET ${pathName} HTTP/1.0\r\n${extra}\r\n`));
+  let out = '';
+  sock.on('data', c => { out += c; });
+  sock.on('end', () => resolve(Number(/^HTTP\/1\.\d (\d+)/.exec(out)[1])));
+  sock.on('error', reject);
+});
 const dataOf = async (q = '') => (await GET(B, '/following/data' + q)).json;
 const keyOfPost = async id => {
   const d = await dataOf('?view=background');
@@ -126,6 +136,7 @@ await test('Open (a POST): marks the post opened and answers with the ORIGINAL p
   const th = (await POST(B, '/thread', { url: PAGE1, quote: 'invented words', msg: { text: 'a note' }, blyg_hints: HINTS })).json.thread;
   assert.deepEqual([th.blyg.status, th.blyg.origin, th.blyg.id, th.blyg.version], ['blyg', A, ID1, 2]);
   assert.ok(!('passage' in th.blyg), 'a passage is not judged against an excerpt');
+  assert.equal(th.blyg.version_state, 'current-unpinned', 'the stamp says which kind of version was read');
   assert.equal(web.requests.length, before);
 });
 
@@ -227,7 +238,7 @@ await test('hostile titles, excerpts, authors and addresses are text: nothing is
   assert.ok(!/<script>alert/i.test(body) && !/<img\b/i.test(body) && !/<svg\b/i.test(body), 'no remote markup became an element');
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body), 'no event-handler attribute on any element');
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html), 'no bidi override characters reach the page');
-  for (const m of body.matchAll(/\shref="([^"]*)"/g)) assert.match(m[1], /^\/(following|pages)/, `href ${m[1]}`);
+  for (const m of body.matchAll(/\shref="([^"]*)"/g)) assert.match(m[1], /^\/(hub|pages)/, `href ${m[1]}`);
   assert.equal((html.match(/<script/g) || []).length, 1, 'one script: ours');
 });
 
@@ -375,6 +386,51 @@ await test('Mentions end to end: the inbox is asked with the token over netguard
   await POST(B, '/following/refresh', {});
   assert.equal((await dataOf('?view=mentions')).inbox.state, 'unauthorised');
   fs.writeFileSync(tokenFile, `${INBOX_TOKEN}\n`);
+});
+
+await test('DNS rebinding: a request under a rebound name is refused (421) on every kind of route, even with a same-origin Origin and Sec-Fetch-Site', async () => {
+  const port = new URL(B).port;
+  const rebound = { host: `attacker.example:${port}`, origin: `http://attacker.example:${port}`, 'sec-fetch-site': 'same-origin' };
+  const routes = [['GET', '/following/data'], ['GET', '/hub'], ['POST', '/following/settings', { inbox_api_url: 'https://attacker.example/steal', inbox_token_file: '/etc/hosts' }],
+    ['GET', '/index'], ['POST', '/export', { url: 'https://x.example/' }], ['GET', '/health'], ['GET', '/'], ['GET', '/pages'], ['GET', '/events']];
+  for (const [m, p, body] of routes) {
+    const r = await request(B, m, p, body, rebound);
+    assert.equal(r.status, 421, `${m} ${p}`);
+    assert.ok(!/inbox|steal|token|following/i.test(r.body), 'and nothing about why');
+  }
+  const d = (await GET(B, '/following/data')).json;
+  assert.equal(d.settings.inbox_api_url.includes('attacker'), false, 'nothing the rebound page asked was done');
+  // this machine's own names, on the right port, are served
+  for (const h of [`127.0.0.1:${port}`, `localhost:${port}`, `[::1]:${port}`]) assert.equal((await request(B, 'GET', '/health', undefined, { host: h })).status, 200, h);
+  // another port, or no name at all, is refused
+  assert.equal((await request(B, 'GET', '/health', undefined, { host: `127.0.0.1:${Number(port) + 1}` })).status, 421);
+  assert.equal((await request(B, 'GET', '/health', undefined, { host: `localhost` })).status, 421);
+  assert.equal(await withoutHost(B, '/health'), 421, 'no Host header at all');
+});
+
+await test('a public hostname is accepted only when configured; unconfigured, a hosted companion leaves a foreign name to its password', async () => {
+  const pubRoot = tmp('pub');
+  const pub = await startServer({ root: pubRoot, args: ['--no-agents'], env: { PLUGIN_BLYG_CHECKS: 'off', PLUGIN_PUBLIC_HOSTNAMES: 'hub.example.test' } });
+  assert.equal((await request(pub.base, 'GET', '/health', undefined, { host: 'hub.example.test' })).status, 200);
+  assert.equal((await request(pub.base, 'GET', '/health', undefined, { host: 'other.example.test' })).status, 421);
+  pub.proc.kill();
+  assert.equal((await request(hosted.base, 'GET', '/health', undefined, { host: 'discuss.botference.com' })).status, 401, 'hosted: the gate, not a refusal of the name');
+  assert.equal((await request(hosted.base, 'GET', '/health', undefined, { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' })).status, 200);
+  assert.equal(await withoutHost(hosted.base, '/health'), 421);
+  assert.equal((await request(hosted.base, 'GET', '/health', undefined, { host: 'localhost', 'cf-ray': 'x' })).status, 401, 'Host rewritten to localhost by a tunnel: the password gate, not a refusal');
+  // a rebound name on a hosted companion, claiming to be local, still has no way in: the gate answers
+  const sneaky = await request(hosted.base, 'GET', '/following/data', undefined, { host: 'attacker.example', 'x-forwarded-for': '1.2.3.4' });
+  assert.equal(sneaky.status, 401);
+});
+
+await test('the Hub and its older address serve the same page', async () => {
+  const a = await GET(B, '/hub', { accept: 'text/html' }), b = await GET(B, '/following', { accept: 'text/html' });
+  assert.equal(a.status, 200);
+  assert.match(a.body, /<title>Hub /);
+  assert.match(a.body, /<h1>Hub<\/h1>/);
+  assert.match(a.body, /<h2>Following<\/h2>/);
+  for (const w of ['Feed', 'Mentions', 'Background']) assert.match(a.body, new RegExp(`>${w} \\(`));
+  assert.equal(a.body.replace(/nonce="[^"]*"/g, ''), b.body.replace(/nonce="[^"]*"/g, ''));
 });
 
 cleanup();
