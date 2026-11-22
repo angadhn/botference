@@ -423,3 +423,28 @@ test('a token file that other users can read is warned about (never refused); on
   assert.equal(I.tokenFileWarning(path.join(r.tokenDir, 'missing')), '');
   r.done();
 });
+
+// The shape the owner's inbox actually returns (field names seen on a live inbox; every value
+// here is invented). The table must read its page addresses, time and the inbox's own verdict.
+test('a mention in the live inbox shape is read: source page, own post page, time, and the inbox mode as its class', async () => {
+  const { parseInbox, INBOX_MODE_CLASSES } = await import('../following-inbox.mjs');
+  const doc = { count: 2, mentions: [
+    { id: 'm-1', mode: 'verified-response', relation: 'stub', target_item: 'a'.repeat(26), target_title: 'My post',
+      target_page: 'https://me.example.test/my-post', target_version: 3, source_origin: 'https://them.example.test/blyg/',
+      source_id: 'b'.repeat(26), source_page: 'https://them.example.test/blyg/t/' + 'b'.repeat(26) + '/',
+      source_document: 'https://them.example.test/blyg/items/' + 'b'.repeat(26) + '.json', author_name: 'A Writer',
+      blyg_title: 'Their Blyg', post_title: null, excerpt: 'the passage', first_verified_at: '2026-01-02T03:04:05.000Z' },
+    { id: 'm-2', mode: 'verified-notice', relation: 'stub', target_page: 'https://me.example.test/my-post',
+      source_page: 'https://them.example.test/blyg/t/x/', author_name: 'A Writer', verified_at: '2026-01-03T00:00:00.000Z' },
+  ] };
+  const out = parseInbox(doc);
+  const [a, b] = out.mentions;
+  assert.equal(a.source_url, 'https://them.example.test/blyg/t/' + 'b'.repeat(26) + '/');
+  assert.equal(a.post_url, 'https://me.example.test/my-post');
+  assert.equal(a.post_title, 'My post');
+  assert.equal(a.version, 3);
+  assert.ok(a.at, 'the time is read');
+  assert.equal(a.class, 'response');
+  assert.equal(b.class, 'notice', 'the inbox mode outranks the relation word');
+  assert.deepEqual(Object.keys(INBOX_MODE_CLASSES).sort(), ['verified-notice', 'verified-response']);
+});

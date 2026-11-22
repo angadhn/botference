@@ -30,12 +30,13 @@ export const MENTION_FIELDS = Object.freeze({
   blyg_title: ['blyg_title', 'blyg', 'site_title', 'source_title', 'site'],
   action: ['action', 'relation', 'type', 'kind', 'what', 'verb'],
   version: ['version', 'target_version', 'my_version', 'post_version', 'item_version'],
-  at: ['at', 'timestamp', 'received_at', 'created', 'time', 'when', 'date'],
+  at: ['at', 'timestamp', 'first_verified_at', 'verified_at', 'updated_at', 'received_at', 'created', 'time', 'when', 'date'],
   passage: ['passage', 'quote', 'quoted', 'excerpt', 'text'],
-  source_url: ['source_url', 'source', 'url', 'from_url', 'page'],
+  source_url: ['source_url', 'source_page', 'source', 'url', 'from_url', 'page', 'source_document'],
   post_title: ['post_title', 'target_title', 'my_post_title', 'item_title', 'title'],
-  post_url: ['post_url', 'target_url', 'my_post_url', 'item_url', 'target'],
+  post_url: ['post_url', 'target_page', 'target_url', 'my_post_url', 'item_url', 'target'],
   explicit_class: ['class', 'mention_class', 'tier'],
+  inbox_mode: ['mode'],
 });
 
 // What the owner did / the relation → the spec's class (§15.5). Anything not here is 'unknown',
@@ -50,6 +51,9 @@ export const ACTION_CLASSES = Object.freeze({
   linked: 'notice', link: 'notice', reposted: 'notice', repost: 'notice',
   plain: 'plain', webmention: 'plain', 'plain mention': 'plain',
 });
+// The inbox's own verdict, when it gives one (its `mode` field), outranks the relation word:
+// the inbox has read the source and knows whether it carries words of its own.
+export const INBOX_MODE_CLASSES = Object.freeze({ 'verified-response': 'response', 'verified-notice': 'notice' });
 export const REPOST_RE = /repost/i;
 
 const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -85,7 +89,9 @@ export function normaliseMention(raw, redact = s => s) {
   const f = Object.fromEntries(Object.entries(MENTION_FIELDS).map(([k, keys]) => [k, pick(m, keys)]));
   const action = textOf(f.action, 40).toLowerCase();
   const explicit = textOf(f.explicit_class, 20).toLowerCase();
+  const mode = textOf(f.inbox_mode, 40).toLowerCase();
   const klass = MENTION_CLASSES.includes(explicit) && explicit !== 'unknown' ? explicit
+    : Object.prototype.hasOwnProperty.call(INBOX_MODE_CLASSES, mode) ? INBOX_MODE_CLASSES[mode]
     : Object.prototype.hasOwnProperty.call(ACTION_CLASSES, action) ? ACTION_CLASSES[action] : 'unknown';
   const out = { class: klass, action, who: textOf(f.who, 160), blyg_title: textOf(f.blyg_title, 200),
     version: Number.isInteger(f.version) ? f.version : (/^\d{1,6}$/.test(textOf(f.version, 8)) ? Number(textOf(f.version, 8)) : 0),
