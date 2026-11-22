@@ -1,0 +1,138 @@
+// following-view.mjs — the Following page the companion serves (GET /following).
+//
+// EVERYTHING FROM A REMOTE DOCUMENT IS TEXT. A blyg's title, a post's title,
+// author, excerpt and addresses are somebody else's words: each is passed
+// through cleanText (no control or bidirectional-override characters, bounded)
+// and then HTML-escaped wherever it is written into this page. Nothing remote
+// is ever put in a URL the page links to: the Open link carries only the post's
+// key (hex), and the companion redirects it to the post's own page. The one
+// script on the page is fixed text; it reads values from data- attributes (which
+// are escaped) and builds anything it learns from the companion with
+// textContent, never innerHTML.
+//
+// A reader's posts are not re-rendered here: an excerpt and a link, nothing more.
+import { escHtml } from './hosted.mjs';
+import { FILTERS, FILTER_LABELS, READ_STATES, cleanText, FOLLOWING_NUMBERS } from './following.mjs';
+
+const t = (v, n = 300) => escHtml(cleanText(typeof v === 'string' ? v : String(v ?? ''), n));
+const day = v => t(String(v || '').slice(0, 10), 10);
+
+const CSS = `
+:root{color-scheme:light dark;--bg:#fbfaf8;--fg:#222;--mut:#6b6b6b;--line:#ddd;--card:#fff;--acc:#1b5fb4;--new:#b4361b}
+@media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e6e6e6;--mut:#9a9a9a;--line:#333;--card:#1e1e1e;--acc:#7db3f5;--new:#f0866a}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+main{max-width:56rem;margin:0 auto;padding:1rem}
+h1{font-size:1.4rem;margin:.2rem 0}h2{font-size:1.05rem;margin:1.5rem 0 .4rem}
+a{color:var(--acc)}.mut{color:var(--mut);font-size:.88em}
+nav.filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0}
+nav.filters a{padding:.2rem .6rem;border:1px solid var(--line);border-radius:1rem;text-decoration:none;color:var(--fg)}
+nav.filters a[aria-current=page]{background:var(--acc);color:var(--bg);border-color:var(--acc)}
+article.entry{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .9rem;margin:.6rem 0}
+article.entry.read-new{border-left:4px solid var(--new)}
+.meta{display:flex;flex-wrap:wrap;gap:.2rem .8rem}.title{font-weight:600;margin:.2rem 0}
+.excerpt{margin:.3rem 0;overflow-wrap:anywhere}.acts{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.4rem}
+button,.btn{font:inherit;padding:.15rem .6rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
+ul.burst{margin:.4rem 0 0 .2rem;padding-left:1rem;border-left:2px solid var(--line);list-style:none}
+ul.burst li{margin:.3rem 0}.badge{font-size:.78em;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem}
+.warn{color:var(--new)}table{border-collapse:collapse;width:100%}td,th{padding:.25rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+input[type=text],input[type=url],input[type=number],textarea{font:inherit;padding:.25rem .4rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg);max-width:100%}
+textarea{width:100%;min-height:5rem}label{display:block;margin:.3rem 0}#msg{min-height:1.4em}
+`;
+
+function entry(e, mineLabel) {
+  const h = e.head;
+  const resp = h.in_response_to ? `<div class="mut">in response to ${t(h.in_response_to.label, 160)}</div>` : '';
+  const ident = h.identity === 'disagrees'
+    ? `<div class="warn">When this post was opened its page disagreed with this list: ${t(h.identity_note || 'it names another post', 300)}. Discuss used its own check there.</div>` : '';
+  const members = e.members.length
+    ? `<ul class="burst" aria-label="published together">${e.members.map(m => `<li><span class="badge">${t(m.kind, 20)}</span> ${t(m.title || m.excerpt, 160)}
+        <span class="mut">${day(m.created)}</span> <a href="/following/open?key=${escHtml(m.key)}" target="_blank" rel="noopener noreferrer">Open</a></li>`).join('')}</ul>
+      <div class="mut">${e.members.length} published together</div>` : '';
+  const acts = [`<a class="btn" href="/following/open?key=${escHtml(h.key)}" target="_blank" rel="noopener noreferrer">Open</a>`];
+  if (h.read === 'new') acts.push(`<button type="button" data-act="see" data-key="${escHtml(h.key)}">Mark seen</button>`);
+  return `<article class="entry read-${escHtml(h.read)}" data-key="${escHtml(h.key)}">
+    <div class="meta mut"><span>${t(h.blyg_title || h.origin, 160)}</span>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
+      <span>${day(h.updated || h.created)}</span><span class="badge">${t(h.kind, 20)}</span><span>v${Number(h.version) || 1}</span>
+      ${h.versions_note ? `<span>${t(h.versions_note, 30)}</span>` : ''}<span class="badge">${t(h.read, 20)}</span>${h.maintenance ? `<span class="mut">${Number(h.maintenance)} maintenance</span>` : ''}</div>
+    ${h.title ? `<div class="title">${t(h.title, 200)}</div>` : ''}${resp}
+    <div class="excerpt">${t(h.excerpt, 300)}</div>${ident}${members}
+    <div class="acts">${acts.join('')}</div></article>`;
+}
+
+const SCRIPT = `
+(function(){
+  var msg=document.getElementById('msg');
+  function say(s,bad){msg.textContent=s;msg.className=bad?'warn':'mut';}
+  function post(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})})
+    .then(function(r){return r.json().catch(function(){return {ok:false,error:'HTTP '+r.status};});});}
+  function done(r,okText){if(r&&r.ok){say(okText||'done');setTimeout(function(){location.reload();},400);}else say((r&&r.error)||'failed',true);}
+  document.addEventListener('click',function(ev){
+    var b=ev.target.closest&&ev.target.closest('button[data-act]');if(!b)return;
+    var a=b.dataset.act;
+    if(a==='see')return post('/following/read',{key:b.dataset.key,move:'see'}).then(function(r){done(r);});
+    if(a==='seen-all')return post('/following/read',{all:true}).then(function(r){done(r);});
+    if(a==='pause'||a==='resume')return post('/following/state',{origin:b.dataset.origin,move:a}).then(function(r){done(r);});
+    if(a==='unfollow'){if(!confirm('Stop following this blyg and forget its posts here?'))return;
+      return post('/following/unfollow',{origin:b.dataset.origin}).then(function(r){done(r);});}
+    if(a==='refresh'){say('refreshing…');b.disabled=true;return post('/following/refresh',{}).then(function(r){b.disabled=false;
+      if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
+  });
+  document.getElementById('follow-form').addEventListener('submit',function(ev){ev.preventDefault();
+    say('looking for the blyg…');post('/following/follow',{url:this.url.value}).then(function(r){done(r,'followed');});});
+  var preview=document.getElementById('preview');
+  document.getElementById('import-form').addEventListener('submit',function(ev){ev.preventDefault();
+    say('reading…');preview.textContent='';
+    post('/following/import-preview',{url:this.url.value,text:this.text.value}).then(function(r){
+      if(!r||!r.ok){say((r&&r.error)||'failed',true);return;}
+      say('');var p=r.preview,form=document.createElement('form');
+      var h=document.createElement('p');h.textContent=p.add.length?('Would add '+p.add.length+' (tick what to follow):'):'Nothing new to add.';form.appendChild(h);
+      p.add.forEach(function(a,i){var l=document.createElement('label'),c=document.createElement('input');c.type='checkbox';c.checked=true;c.dataset.i=i;
+        l.appendChild(c);l.appendChild(document.createTextNode(' '+(a.title||a.origin)+' — '+a.origin));form.appendChild(l);});
+      if(p.already.length){var al=document.createElement('p');al.className='mut';al.textContent='Already followed: '+p.already.length;form.appendChild(al);}
+      p.skipped.forEach(function(s){var d=document.createElement('div');d.className='mut';d.textContent='Skipped '+(s.title||s.url)+': '+s.reason;form.appendChild(d);});
+      if(p.add.length){var go=document.createElement('button');go.type='submit';go.textContent='Follow the ticked ones';form.appendChild(go);
+        form.addEventListener('submit',function(e2){e2.preventDefault();var pick=[];
+          form.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)pick.push(p.add[Number(c.dataset.i)]);});
+          post('/following/import-confirm',{entries:pick}).then(function(r2){done(r2,'added');});});}
+      preview.appendChild(form);});});
+  document.getElementById('settings-form').addEventListener('submit',function(ev){ev.preventDefault();var f=this,b={};
+    f.querySelectorAll('input[data-num]').forEach(function(i){b[i.name]=Number(i.value);});
+    b.my_origins=f.my_origins.value.split(/\\n/).map(function(s){return s.trim();}).filter(Boolean);
+    post('/following/settings',b).then(function(r){done(r,'saved');});});
+})();
+`;
+
+/** The page. `data` is following.view()'s answer; `settings` the validated settings; `refused` the keys the stored config had wrong. */
+export function followingPage({ data, settings, refused = [], notice = '' }) {
+  const nav = FILTERS.map(f => `<a href="/following${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
+  const last = data.last_run;
+  const lastLine = last ? `Last refresh ${t(last.at, 30)}: ${Number(last.new)} new, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}.` : 'Not refreshed yet.';
+  const blygs = data.blygs.map(b => `<tr><td>${t(b.title || b.origin, 160)}<div class="mut">${t(b.origin, 300)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 200)}</div>` : ''}</td>
+      <td><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}</td><td>${Number(b.items)}</td>
+      <td>${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
+        ${b.state === 'active' || b.state === 'unreachable' ? `<button type="button" data-act="pause" data-origin="${escHtml(b.origin)}">Pause</button>` : ''}
+        <button type="button" data-act="unfollow" data-origin="${escHtml(b.origin)}">Unfollow</button></td></tr>`).join('');
+  const nums = Object.entries(FOLLOWING_NUMBERS).map(([k, spec]) => `<label>${escHtml(spec.what)} <input type="number" data-num name="${escHtml(k)}" min="${spec.min}" max="${spec.max}" value="${Number(settings[k])}"> <span class="mut">(${spec.min} to ${spec.max})</span></label>`).join('');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Following — Discuss</title><style>${CSS}</style></head><body><main>
+<p class="mut"><a href="/pages">All annotated pages</a></p>
+<h1>Following</h1>
+<p class="mut">Blygs you read. Only you see this list, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer (nothing is followed).'}</p>
+${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p class="warn">These settings were not valid and the defaults are used: ${t(refused.join(', '), 300)}.</p>` : ''}
+<div class="acts"><button type="button" data-act="refresh">Refresh now</button><button type="button" data-act="seen-all">Mark all seen</button><span id="msg" role="status"></span></div>
+<nav class="filters" aria-label="filter">${nav}</nav>
+<section aria-label="posts">${data.entries.length ? data.entries.map(e => entry(e)).join('') : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
+<h2>Followed blygs</h2>
+<table><thead><tr><th>Blyg</th><th>State</th><th>Posts</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="4" class="mut">None yet.</td></tr>'}</tbody></table>
+<h2>Follow a blyg</h2>
+<form id="follow-form"><label>Any address on it (a post, its front page) <input type="url" name="url" required size="48" placeholder="https://"></label><button type="submit">Follow</button></form>
+<h2>Import a blogroll</h2>
+<form id="import-form"><p class="mut">An OPML blogroll, or a blygger.com directory (blygs.json). Nothing is added until you confirm it.</p>
+<label>Address of the document <input type="url" name="url" size="48" placeholder="https://"></label>
+<label>…or paste it here <textarea name="text"></textarea></label><button type="submit">Show what would be added</button></form><div id="preview"></div>
+<h2>Settings</h2>
+<form id="settings-form">${nums}<label>Your own blygs (one address per line): posts that answer or quote them are listed under "Responses to me"
+<textarea name="my_origins">${settings.my_origins.map(o => escHtml(o)).join('\n')}</textarea></label><button type="submit">Save settings</button></form>
+<p class="mut">Read states: ${READ_STATES.map(s => escHtml(s)).join(', ')}.</p>
+</main><script>${SCRIPT}</script></body></html>`;
+}

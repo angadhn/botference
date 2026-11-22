@@ -72,6 +72,8 @@ import * as handoff from './council-handoff.mjs';
 import * as ownership from './ownership.mjs';
 import * as figedits from './figedits.mjs';
 import * as blygMod from './blyg.mjs';
+import * as followingMod from './following.mjs';
+import { followingPage } from './following-view.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
 const fteRouted = new Map();
 import * as turnwatch from './turnwatch.mjs';
@@ -2896,6 +2898,12 @@ function pageOf(res, data) {
 // the extension read them; an older extension sends none and the companion
 // reads the page itself.
 const blygChecker = blygMod.createChecker();
+// Following (following.mjs): the reader's private list of blygs, kept in the
+// profile's data folder beside the pages. Its timer starts with the server.
+const following = followingMod.createFollowing({
+  file: path.join(store.DIR, 'following.json'),
+  getSettings: () => followingMod.followingSettingsOf(store.readConfig()).settings,
+});
 const blygPersisted = new WeakSet();
 // how long a new highlight or message may wait for the page's FIRST answer
 // before it is written stamped 'checking' (and filled in when the answer lands)
@@ -2916,9 +2924,16 @@ const blygSkips = url => !url || store.isLibrary(url) || !/^https?:\/\//i.test(S
 // not stamped (unknown), and a guest's /page starts nothing. Every route that
 // can start a check passes its `req` through here.
 const blygMay = req => hosted.isOwner(req);
-function blygAsk(url, hints) {
+// `verify` asks the post's own site even when the Following list holds the page
+// (the export does: it needs the post's words to check a passage against).
+function blygAsk(url, hints, { verify = false } = {}) {
   const known = store.readPage(url);
-  const p = blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
+  // A page the reader FOLLOWS is identified from what the list holds (origin, id,
+  // version), so detection is skipped; unless the page's own links disagree
+  // with the list, in which case the list's word is not used and the check runs.
+  const listed = verify ? null : following.identityFor(url, blygMod.cleanHints(hints));
+  const p = listed && listed.result ? Promise.resolve(listed.result)
+    : blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
   p.then(result => {
     if (blygPersisted.has(result)) return;
     blygPersisted.add(result);
@@ -2933,9 +2948,9 @@ function blygAsk(url, hints) {
 // The answer for a record about to be written, waiting at most `ms`; null if
 // it is not in yet (the record is then stamped 'checking'), undefined when
 // this page is never asked about (the library, a file).
-async function blygFor(req, url, hints, ms = BLYG_RECORD_WAIT_MS) {
+async function blygFor(req, url, hints, ms = BLYG_RECORD_WAIT_MS, opts = {}) {
   if (!blygMay(req) || blygSkips(url)) return undefined;
-  return blygMod.settleWithin(blygAsk(url, hints), ms);
+  return blygMod.settleWithin(blygAsk(url, hints, opts), ms);
 }
 // Two halves around the write of a new record, both synchronous so they run in
 // the same tick as the save that follows: the answer goes onto the page
@@ -3300,6 +3315,73 @@ function runFigure(req, res) {
   });
 }
 
+// ---- Following routes ---------------------------------------------------------
+const FOLLOWING_SETTING_KEYS = [...Object.keys(followingMod.FOLLOWING_NUMBERS), 'my_origins'];
+const followingNeedsChecks = () => {
+  if (!blygChecksOn()) throw new Error('Blygger checks are off on this companion (blyg_checks), so Following asks no site anything');
+};
+function handleFollowing(route, req, res) {
+  const q = new URLSearchParams(req.url.split('?')[1] || '');
+  const settings = () => followingMod.followingSettingsOf(store.readConfig());
+  const viewOf = () => following.view({ filter: q.get('filter') || 'all', mine: settings().settings.my_origins });
+  const say = fn => async data => {
+    try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
+  };
+  switch (route.path) {
+    case '/following': {
+      const s = settings();
+      return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+        .end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '' }));
+    }
+    case '/following/data': return ok(res, { ...viewOf(), settings: settings().settings });
+    case '/following/open': {
+      const item = following.itemByKey(q.get('key') || '');
+      if (!item || item.withdrawn) return fail(res, 404, 'no such post on your list');
+      // opening is reading: new/seen become opened (a responded post stays responded)
+      if (followingMod.canMoveRead(item, 'open')) following.readMove(item.key, 'open');
+      // the original page, in the tab this link opened; the companion knows which
+      // origin, id and version it is (following.identityFor, asked by blygAsk)
+      return res.writeHead(302, { location: item.page, 'cache-control': 'no-store' }).end();
+    }
+    default: break;
+  }
+  return readBody(req, res, say(async data => {
+    switch (route.path) {
+      case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
+      case '/following/unfollow': return { removed: following.unfollow(String(data.origin || '')) };
+      case '/following/state': {
+        if (!['pause', 'resume'].includes(data.move)) throw new Error('move must be pause or resume');
+        return { state: following.setBlygState(String(data.origin || ''), data.move) };
+      }
+      case '/following/import-preview':
+        followingNeedsChecks();
+        return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };
+      case '/following/import-confirm': return following.confirmImport(data.entries);
+      case '/following/refresh': {
+        followingNeedsChecks();
+        return await following.refresh({ reason: 'demand' });
+      }
+      case '/following/read': {
+        if (!['see', 'open'].includes(data.move || 'see')) throw new Error('move must be see or open');
+        if (data.all) return { seen: following.markAllSeen(String(data.origin || '')) };
+        return { read: following.readMove(String(data.key || ''), data.move || 'see') };
+      }
+      case '/following/settings': {
+        const cur = store.readConfig();
+        const patch = {};
+        for (const k of FOLLOWING_SETTING_KEYS) if (data[k] !== undefined) patch[k] = data[k];
+        const { refused } = followingMod.followingSettingsOf({ ...cur, ...patch });
+        const bad = refused.filter(k => k in patch);
+        if (bad.length) throw new Error(`not valid: ${bad.join(', ')}`);
+        store.saveConfig(patch);
+        following.reschedule();
+        return { settings: settings().settings };
+      }
+      default: throw new Error('no such route');
+    }
+  }));
+}
+
 export function handler(req, res) {
   let url = req.url.split('?')[0];
   const draftCommandOnly = req.method === 'POST' && (url === '/draft-blog' || url === '/draft-blog/thread');
@@ -3352,6 +3434,15 @@ export function handler(req, res) {
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
 
+  // --- Following: the reader's private list of blygs (following.mjs) ------
+  // Every route is in followingMod.ROUTES, behind the gate above, and the
+  // owner's alone: it makes the companion fetch from the web and it is the
+  // owner's reading. (test/following-server.test.mjs walks that table.)
+  const followingRoute = followingMod.routeOf(req.method, url);
+  if (followingRoute) {
+    if (notOwner(req, res)) return;
+    return handleFollowing(followingRoute, req, res);
+  }
   if (req.method === 'GET' && (url === '/project-network/view' || /^\/network-assets\/(network\.(?:js|css))$/.test(url))) {
     if (notOwner(req, res)) return;
     const name = url === '/project-network/view' ? 'network.html' : path.basename(url);
@@ -6281,7 +6372,7 @@ export function handler(req, res) {
       // written, and its records labelled by the answer. The same answer says
       // which version the post is NOW, which the note checks old highlights
       // against. Asked before the page is read, as /thread does.
-      const blygAnswer = await blygFor(req, data.url, data.blyg_hints, BLYG_ASK_WAIT_MS);
+      const blygAnswer = await blygFor(req, data.url, data.blyg_hints, BLYG_ASK_WAIT_MS, { verify: true });
       const page = pageOf(res, data);
       if (!page) return;
       if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
@@ -6301,6 +6392,11 @@ export function handler(req, res) {
       // (a message's gaps were written when it was sent: the export asks no agent)
       try { file = exportPage(page, cfg, now, mode, { post }); }
       catch (e) { return fail(res, 500, `export failed: ${e.message}`); }
+      // a note for a post the reader follows: that post is now `responded` on the list
+      try {
+        const posted = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
+        if (posted) following.markResponded(posted.origin, posted.id);
+      } catch (e) { console.warn(`[following] ${e.message}`); }
       // …and a PDF is also logged: one row in the vault's reading log
       // (Clippings/read-links.md), tagged papers, linking the note just
       // written (export.mjs, logExportedPaper). `words` and `published` are
@@ -6513,6 +6609,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   }
   server.listen(PORT, '127.0.0.1', () => {
     const p = server.address().port;
+    // the Following refresh timer: armed only while something is followed, and
+    // only when Blygger checks are on (it fetches from the web)
+    if (blygChecksOn()) following.start();
     console.log(`Web annotator companion live at http://127.0.0.1:${p} — workspace: ${store.ROOT}`);
     // the projects `botference site` registered (markers.mjs), read once now
     // and again on POST /sites/rescan; the skipped ones are said, never hidden

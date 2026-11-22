@@ -658,7 +658,8 @@ export function stampFor(result, { asOf = 'record', quote = null } = {}) {
   // page also keeps that page's address
   const st = { status: 'blyg', origin: i.origin, id: i.id, version: i.version, pinned: !!i.pinned,
     page: i.page, ...(i.pinned_page ? { pinned_page: i.pinned_page } : {}), as_of: asOf === 'check' ? 'check' : 'record' };
-  if (quote !== null) st.passage = checkPassage(quote, result.text || textContent(result.html));
+  // (an answer built from the Following list holds an excerpt, not the post: no verdict is better than a wrong one)
+  if (quote !== null && !result.text_partial) st.passage = checkPassage(quote, result.text || textContent(result.html));
   return st;
 }
 
