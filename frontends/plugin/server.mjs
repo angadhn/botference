@@ -73,6 +73,7 @@ import * as ownership from './ownership.mjs';
 import * as figedits from './figedits.mjs';
 import * as blygMod from './blyg.mjs';
 import * as followingMod from './following.mjs';
+import * as inboxMod from './following-inbox.mjs';
 import { followingPage } from './following-view.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
 const fteRouted = new Map();
@@ -2900,9 +2901,14 @@ function pageOf(res, data) {
 const blygChecker = blygMod.createChecker();
 // Following (following.mjs): the reader's private list of blygs, kept in the
 // profile's data folder beside the pages. Its timer starts with the server.
+// The token file for the owner's mentions inbox may not live in the repository or the companion's own data
+// folders (which are the places that get shared, synced or committed).
+const FOLLOWING_TOKEN_FORBIDDEN = [path.resolve(PLUGIN, '..', '..'), store.ROOT, store.BASE_DIR, store.DIR];
 const following = followingMod.createFollowing({
   file: path.join(store.DIR, 'following.json'),
   getSettings: () => followingMod.followingSettingsOf(store.readConfig()).settings,
+  mayFetch: () => blygChecksOn(),
+  tokenForbidden: FOLLOWING_TOKEN_FORBIDDEN,
 });
 const blygPersisted = new WeakSet();
 // how long a new highlight or message may wait for the page's FIRST answer
@@ -3316,37 +3322,40 @@ function runFigure(req, res) {
 }
 
 // ---- Following routes ---------------------------------------------------------
-const FOLLOWING_SETTING_KEYS = [...Object.keys(followingMod.FOLLOWING_NUMBERS), 'my_origins'];
+const FOLLOWING_SETTING_KEYS = [...Object.keys(followingMod.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file'];
 const followingNeedsChecks = () => {
   if (!blygChecksOn()) throw new Error('Blygger checks are off on this companion (blyg_checks), so Following asks no site anything');
 };
+// A Following page is the owner's alone and is never framed or given anything but its own one script and style.
+const followingHeaders = (type, extra = {}) => ({ 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...extra });
 function handleFollowing(route, req, res) {
+  // Cross-site requests are refused outright (defence in depth beyond the Origin check every route has had): a
+  // browser says where a request came from in Sec-Fetch-Site; reading a page may also come from nowhere (typing the
+  // address, a bookmark: 'none'), every change must come from this very site. No header at all (curl, node) passes.
+  const site = String(req.headers['sec-fetch-site'] || '');
+  const fromAllowed = req.method === 'GET' ? ['', 'same-origin', 'none'] : ['', 'same-origin'];
+  if (!fromAllowed.includes(site)) { req.resume(); return fail(res, 403, 'refused: Following answers only this site\'s own pages'); }
   const q = new URLSearchParams(req.url.split('?')[1] || '');
   const settings = () => followingMod.followingSettingsOf(store.readConfig());
-  const viewOf = () => following.view({ filter: q.get('filter') || 'all', mine: settings().settings.my_origins });
+  const viewOf = () => following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins });
   const say = fn => async data => {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };
   switch (route.path) {
     case '/following': {
       const s = settings();
-      return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-        .end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '' }));
+      const nonce = crypto.randomBytes(16).toString('base64');
+      return res.writeHead(200, followingHeaders('text/html; charset=utf-8', {
+        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
+      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce }));
     }
     case '/following/data': return ok(res, { ...viewOf(), settings: settings().settings });
-    case '/following/open': {
-      const item = following.itemByKey(q.get('key') || '');
-      if (!item || item.withdrawn) return fail(res, 404, 'no such post on your list');
-      // opening is reading: new/seen become opened (a responded post stays responded)
-      if (followingMod.canMoveRead(item, 'open')) following.readMove(item.key, 'open');
-      // the original page, in the tab this link opened; the companion knows which
-      // origin, id and version it is (following.identityFor, asked by blygAsk)
-      return res.writeHead(302, { location: item.page, 'cache-control': 'no-store' }).end();
-    }
     default: break;
   }
   return readBody(req, res, say(async data => {
     switch (route.path) {
+      case '/following/open': return following.open(String(data.key || ''));
       case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
       case '/following/unfollow': return { removed: following.unfollow(String(data.origin || '')) };
       case '/following/state': {
@@ -3357,15 +3366,15 @@ function handleFollowing(route, req, res) {
         followingNeedsChecks();
         return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };
       case '/following/import-confirm': return following.confirmImport(data.entries);
-      case '/following/refresh': {
-        followingNeedsChecks();
-        return await following.refresh({ reason: 'demand' });
-      }
+      case '/following/refresh': return await following.refresh({ reason: 'demand' });
       case '/following/read': {
         if (!['see', 'open'].includes(data.move || 'see')) throw new Error('move must be see or open');
         if (data.all) return { seen: following.markAllSeen(String(data.origin || '')) };
         return { read: following.readMove(String(data.key || ''), data.move || 'see') };
       }
+      case '/following/mention-read':
+        if (data.all) return { seen: following.allMentionsSeen() };
+        return { read: following.mentionSeen(String(data.key || '')) };
       case '/following/settings': {
         const cur = store.readConfig();
         const patch = {};
@@ -3373,6 +3382,10 @@ function handleFollowing(route, req, res) {
         const { refused } = followingMod.followingSettingsOf({ ...cur, ...patch });
         const bad = refused.filter(k => k in patch);
         if (bad.length) throw new Error(`not valid: ${bad.join(', ')}`);
+        if (patch.inbox_token_file) {
+          const why = inboxMod.tokenPathRefusal(patch.inbox_token_file, FOLLOWING_TOKEN_FORBIDDEN);
+          if (why) throw new Error(why);
+        }
         store.saveConfig(patch);
         following.reschedule();
         return { settings: settings().settings };

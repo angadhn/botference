@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createHarness, GET, POST, request } from './harness.mjs';
 import { makeWeb, makeDoc, idOf } from './following-fake.mjs';
-import { ROUTES, keyOf } from '../following.mjs';
+import { ROUTES } from '../following.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(TEST, '..', 'server.mjs');
@@ -34,7 +34,16 @@ const HID = idOf(9);
 bad.put(makeDoc({ id: HID, origin: H, title: '&lt;script&gt;alert(1)&lt;/script&gt;‮',
   body: '&lt;img src=x onerror=alert(1)&gt; &lt;a href="javascript:alert(1)"&gt;click&lt;/a&gt; ‮txet', author: '"><svg onload=alert(2)>' }));
 
+// the owner's mentions inbox: answers only to the right bearer token, and notes what it was sent
+const INBOX_TOKEN = 'tok_INVENTED_server_test_0123456789';
+const inboxSeen = [];
+const FIXTURE = fs.readFileSync(path.join(TEST, 'fixtures', 'following', 'inbox-invented.json'), 'utf8');
 const fakeWebServer = http.createServer(async (req, res) => {
+  if (req.url === '/inbox/mentions.json') {
+    inboxSeen.push(req.headers.authorization || '');
+    if (req.headers.authorization !== `Bearer ${INBOX_TOKEN}`) return res.writeHead(401, { 'content-type': 'application/json' }).end('{"error":"no"}');
+    return res.writeHead(200, { 'content-type': 'application/json' }).end(FIXTURE);
+  }
   try {
     const r = await web.get(HOST + req.url);
     res.writeHead(r.status, { 'content-type': r.contentType || 'application/json' }).end(r.text);
@@ -46,6 +55,9 @@ const root = tmp('root');
 const portFile = path.join(root, 'fake-web-port');
 fs.writeFileSync(portFile, String(fakeWebServer.address().port));
 const vault = tmp('vault');
+const tokenDir = tmp('token');
+const tokenFile = path.join(tokenDir, 'inbox-token');
+fs.writeFileSync(tokenFile, `${INBOX_TOKEN}\n`);
 process.env.BOTFERENCE_PROJECT_ROOT = root;
 const store = await import('../store.mjs');
 store.saveConfig({ vault_path: vault, export_folder: 'Web Clippings', author: 'reader' });
@@ -54,6 +66,12 @@ const WEB_ENV = { NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import ${JS
 const srv = await startServer({ root, args: ['--no-agents'], env: { PLUGIN_BLYG_CHECKS: 'on', ...WEB_ENV } });
 const B = srv.base;
 const dataOf = async (q = '') => (await GET(B, '/following/data' + q)).json;
+const keyOfPost = async id => {
+  const d = await dataOf('?view=background');
+  const all = [...(await dataOf()).entries.flatMap(e => [e.head, ...e.members]), ...d.background.filter(b => b.post).map(b => b.post)];
+  const hit = all.find(i => i.id === id);
+  return hit && hit.key;
+};
 const PAGE1 = `${A}t/${ID1}/`;
 const HINTS = { blyg: `${A}blyg.json`, json: `${A}items/${ID1}.json` };
 
@@ -75,7 +93,7 @@ await test('follow by a post URL, refresh, and the data route lists it newest fi
   assert.match(page.body, /2 versions/);
   // stored in the profile's data folder, in a file of its own
   assert.ok(fs.existsSync(path.join(root, '.botference', 'plugin', 'following.json')));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.botference', 'plugin', 'following.json'), 'utf8')).items[keyOf(A, ID1)].version, 2);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.botference', 'plugin', 'following.json'), 'utf8')).items[`${A}\n${ID1}`].version, 2);
 });
 
 await test('a second refresh while one runs is refused, not run alongside', async () => {
@@ -88,13 +106,15 @@ await test('a second refresh while one runs is refused, not run alongside', asyn
   web.delayMs = 0;
 });
 
-await test('Open: marks the post opened, sends the reader to the ORIGINAL page, and Discuss is told which post it is', async () => {
-  const key = keyOf(A, ID1);
-  const r = await GET(B, '/following/open?key=' + key);
-  assert.equal(r.status, 302);
-  assert.equal(r.headers.location, PAGE1, 'the original page, not a copy');
+await test('Open (a POST): marks the post opened and answers with the ORIGINAL page; with the page\'s own links agreeing, Discuss is told which post it is, with no request', async () => {
+  const key = await keyOfPost(ID1);
+  assert.match(key, /^[0-9a-f]{24}$/, 'a random key, not one computed from the post');
+  assert.equal((await GET(B, '/following/open?key=' + key)).status, 404, 'there is no GET that changes state');
+  const r = await POST(B, '/following/open', { key });
+  assert.equal(r.status, 200, r.body);
+  assert.equal(r.json.url, PAGE1, 'the original page, not a copy');
   assert.equal((await dataOf()).entries.find(e => e.head.id === ID1).head.read, 'opened');
-  assert.equal((await GET(B, '/following/open?key=nope')).status, 404);
+  assert.equal((await POST(B, '/following/open', { key: 'nope' })).status, 400);
   // the page loads: the extension asks about it with the page's own two links; detection is skipped
   const before = web.requests.length;
   const q = await POST(B, '/blyg', { url: PAGE1, hints: HINTS });
@@ -122,26 +142,39 @@ await test('Open: when the page disagrees with the list, the list is not used, d
   assert.match(html, /names post/);
 });
 
-await test('exporting a note for a followed post sets it responded', async () => {
-  const key = keyOf(A, ID2);
+await test('with no links from the page (the extension sends empty ones for a page without them) the list is NOT used: the post\'s site is asked', async () => {
+  const before = web.requests.length;
   const PAGE2 = `${A}f/${ID2}/`;
-  const hints = { blyg: `${A}blyg.json`, json: `${A}items/${ID2}.json` };
+  const q = await POST(B, '/blyg', { url: PAGE2, hints: { blyg: '', json: '' } });
+  assert.ok(web.requests.length > before, 'detection ran');
+  const th = (await POST(B, '/thread', { url: PAGE2, quote: 'short invented', msg: { text: 'again' }, blyg_hints: { blyg: '', json: '' } })).json.thread;
+  assert.ok(web.requests.length > before);
+  assert.ok(th.blyg === undefined || th.blyg.status !== 'blyg' || 'passage' in th.blyg, 'not stamped from the list');
+});
+
+await test('exporting a note for a followed post sets it responded', async () => {
+  const EID = idOf(12);
+  site.put(makeDoc({ id: EID, origin: A, title: 'A post to answer', body: 'A short invented answerable post.', created: '2026-11-07T09:00:00Z' }));
+  await POST(B, '/following/refresh', {});
+  const key = await keyOfPost(EID);
+  const PAGE2 = `${A}f/${EID}/`;
+  const hints = { blyg: `${A}blyg.json`, json: `${A}items/${EID}.json` };
   await POST(B, '/page', { url: PAGE2, title: 'A made-up fragment', blyg_hints: hints });
   await POST(B, '/thread', { url: PAGE2, quote: 'short invented', msg: { text: 'my reply' }, blyg_hints: hints });
-  assert.equal((await dataOf()).entries.find(e => e.head.id === ID2).head.read, 'new');
+  assert.equal((await dataOf()).entries.find(e => e.head.id === EID).head.read, 'new');
   const before = web.requests.length;
   const r = await POST(B, '/export', { url: PAGE2, mode: 'all', blyg_hints: hints });
   assert.equal(r.status, 200, r.body);
-  assert.ok(web.requests.slice(before).some(u => u.endsWith(`items/${ID2}.json`)),
+  assert.ok(web.requests.slice(before).some(u => u.endsWith(`items/${EID}.json`)),
     'the export asks the post\'s own site for its words even though the list knows the post (the list keeps only an excerpt)');
-  assert.equal((await dataOf()).entries.find(e => e.head.id === ID2).head.read, 'responded');
+  assert.equal((await dataOf()).entries.find(e => e.head.id === EID).head.read, 'responded');
   // and an opened-then-responded post is not dragged back by Open
-  assert.equal((await GET(B, '/following/open?key=' + key)).status, 302);
-  assert.equal((await dataOf()).entries.find(e => e.head.id === ID2).head.read, 'responded');
+  assert.equal((await POST(B, '/following/open', { key })).status, 200);
+  assert.equal((await dataOf()).entries.find(e => e.head.id === EID).head.read, 'responded');
 });
 
 await test('read: see, see-all; illegal moves are refused', async () => {
-  const key = keyOf(A, ID1);
+  const key = await keyOfPost(ID1);
   let r = await POST(B, '/following/read', { key, move: 'see' });
   assert.equal(r.status, 400, 'an opened post cannot be "seen"');
   assert.match(r.json.error, /cannot see while opened/);
@@ -187,7 +220,7 @@ await test('import: preview adds nothing, confirm adds what was ticked', async (
 await test('hostile titles, excerpts, authors and addresses are text: nothing is markup, nothing is a link, no override characters', async () => {
   await POST(B, '/following/refresh', {});
   const html = (await GET(B, '/following', { accept: 'text/html' })).body;
-  const body = html.replace(/<script>[\s\S]*?<\/script>/, '[our script]');
+  const body = html.replace(/<script nonce="[^"]*">[\s\S]*?<\/script>/, '[our script]');
   assert.ok(body.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'the hostile post title is there, as escaped text');
   assert.ok(body.includes('&lt;script&gt;alert(&quot;blyg&quot;)'), 'and so is the hostile blyg title');
   assert.ok(body.includes('&lt;img src=x onerror=alert(1)&gt;'), 'and the excerpt');
@@ -195,7 +228,7 @@ await test('hostile titles, excerpts, authors and addresses are text: nothing is
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body), 'no event-handler attribute on any element');
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html), 'no bidi override characters reach the page');
   for (const m of body.matchAll(/\shref="([^"]*)"/g)) assert.match(m[1], /^\/(following|pages)/, `href ${m[1]}`);
-  assert.equal((html.match(/<script>/g) || []).length, 1, 'one script: ours');
+  assert.equal((html.match(/<script/g) || []).length, 1, 'one script: ours');
 });
 
 // ---- every route is behind the same gate ------------------------------------
@@ -233,15 +266,115 @@ await test('hosted: every new route refuses an unauthenticated request (and a wr
   assert.ok(!/data-act="refresh"/.test(html.body), 'the gate page shows no list');
 });
 
-await test('with Blygger checks off, Following fetches nothing', async () => {
+await test('with Blygger checks off, Following fetches nothing and its timer stays disarmed, whichever route is used', async () => {
   const offRoot = tmp('off');
   const off = await startServer({ root: offRoot, args: ['--no-agents'], env: { PLUGIN_BLYG_CHECKS: 'off', ...WEB_ENV } });
   const seen = web.requests.length;
   assert.equal((await POST(off.base, '/following/follow', { url: PAGE1 })).status, 400);
-  assert.equal((await POST(off.base, '/following/refresh', {})).status, 400);
+  assert.equal((await POST(off.base, '/following/import-preview', { url: 'https://roll.web.test/x.opml' })).status, 400);
+  const r = await POST(off.base, '/following/refresh', {});
+  assert.equal(r.json.started, false);
+  assert.match(r.json.reason, /off/);
+  // routes that would arm the timer do not
+  assert.equal((await POST(off.base, '/following/import-confirm', { entries: [{ origin: A }] })).status, 200);
+  assert.equal((await dataOf.call(null, '')).blygs.length >= 0, true);
+  const d = (await GET(off.base, '/following/data')).json;
+  assert.equal(d.blygs.length, 1);
+  assert.equal(d.schedule.mode, 'off', 'following something does not arm the timer while checks are off');
+  assert.equal((await POST(off.base, '/following/settings', { following_refresh_minutes: 10, inbox_api_url: 'https://fol.web.test/inbox/mentions.json' })).status, 200);
+  assert.equal((await GET(off.base, '/following/data')).json.schedule.mode, 'off');
+  assert.equal((await POST(off.base, '/following/unfollow', { origin: A })).status, 200);
   assert.equal(web.requests.length, seen);
-  assert.equal((await GET(off.base, '/following/data')).status, 200);
+  assert.equal(inboxSeen.length, 0);
   off.proc.kill();
+});
+
+await test('Following is never framed, and its one script and style carry a fresh nonce under a Content-Security-Policy', async () => {
+  const get = () => GET(B, '/following', { accept: 'text/html' });
+  const a = await get(), b = await get();
+  for (const r of [a, b]) {
+    const csp = r.headers['content-security-policy'];
+    assert.match(csp, /frame-ancestors 'none'/);
+    assert.match(csp, /default-src 'none'/);
+    assert.ok(!/unsafe-inline|unsafe-eval/.test(csp));
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)[1];
+    assert.ok(r.body.includes(`<script nonce="${nonce}">`) && r.body.includes(`<style nonce="${nonce}">`));
+    assert.equal((r.body.match(/<script/g) || []).length, 1);
+    assert.equal(r.headers['x-frame-options'], 'DENY');
+  }
+  assert.notEqual(/nonce-([^']+)'/.exec(a.headers['content-security-policy'])[1], /nonce-([^']+)'/.exec(b.headers['content-security-policy'])[1], 'a new nonce each time');
+});
+
+await test('a request that a browser says came from another site is refused on every route, even with a trusted Origin', async () => {
+  for (const rt of ROUTES) {
+    for (const site of ['cross-site', 'same-site']) {
+      const r = await request(B, rt.method, rt.path, rt.method === 'POST' ? { key: 'x' } : undefined, { 'sec-fetch-site': site });
+      assert.equal(r.status, 403, `${rt.method} ${rt.path} (${site})`);
+    }
+    if (rt.method === 'POST') {
+      const none = await request(B, 'POST', rt.path, { key: 'x' }, { 'sec-fetch-site': 'none' });
+      assert.equal(none.status, 403, `a change is never made by "none": ${rt.path}`);
+    }
+  }
+  assert.equal((await request(B, 'GET', '/following', undefined, { 'sec-fetch-site': 'none', accept: 'text/html' })).status, 200, 'typing the address is fine');
+  assert.equal((await request(B, 'POST', '/following/open', { key: 'x' }, { 'sec-fetch-site': 'same-origin' })).status, 400, 'the page\'s own requests are answered');
+});
+
+await test('Open refuses a withdrawn post', async () => {
+  const wid = idOf(11);
+  site.put(makeDoc({ id: wid, origin: A, title: 'To be withdrawn', created: '2026-11-07T10:00:00Z' }));
+  await POST(B, '/following/refresh', {});
+  const key = await keyOfPost(wid);
+  assert.ok(key);
+  site.put(makeDoc({ id: wid, origin: A, kind: 'withdrawn', title: '', version: 2, created: '2026-11-07T10:00:00Z', updated: '2026-11-08T10:00:00Z' }));
+  await POST(B, '/following/refresh', {});
+  const r = await POST(B, '/following/open', { key });
+  assert.equal(r.status, 400);
+  assert.match(r.json.error, /no such post/);
+  assert.equal((await POST(B, '/following/read', { key, move: 'see' })).status, 400);
+  const bg = await dataOf('?view=background');
+  assert.equal(bg.background.find(b => b.post && b.post.id === wid).reason, 'withdrawn');
+});
+
+await test('Mentions end to end: the inbox is asked with the token over netguard; responses in Mentions, notices in Background; the token is nowhere', async () => {
+  let r = await POST(B, '/following/settings', { inbox_api_url: 'https://fol.web.test/inbox/mentions.json', inbox_token_file: path.join(root, 'token') });
+  assert.equal(r.status, 400, 'a token file inside the companion\'s own folder is refused');
+  r = await POST(B, '/following/settings', { inbox_api_url: 'https://fol.web.test/inbox/mentions.json', inbox_token_file: path.join(TEST, 'token') });
+  assert.equal(r.status, 400, 'and so is one inside the repository');
+  r = await POST(B, '/following/settings', { inbox_api_url: 'http://fol.web.test/inbox/mentions.json' });
+  assert.equal(r.status, 400, 'https only');
+  r = await POST(B, '/following/settings', { inbox_api_url: 'https://fol.web.test/inbox/mentions.json', inbox_token_file: tokenFile });
+  assert.equal(r.status, 200, r.body);
+  assert.equal(r.json.settings.inbox_token_file, tokenFile);
+  await POST(B, '/following/refresh', {});
+  assert.deepEqual(inboxSeen, [`Bearer ${INBOX_TOKEN}`]);
+  const m = await dataOf('?view=mentions');
+  assert.equal(m.inbox.state, 'ok');
+  assert.deepEqual(m.mentions.map(x => x.reason).sort(), ['class unknown', 'plain mention (lower class)', 'response', 'response', 'response']);
+  assert.equal(m.tabs.mentions_unseen, 5);
+  const bg = await dataOf('?view=background');
+  assert.deepEqual(bg.background.filter(b => b.type === 'mention').map(b => b.reason).sort(), ['linked from', 'reposted by']);
+  // opening a mention: the same Open path, and it is seen
+  const first = m.mentions.find(x => x.ident === 'id:m1');
+  const o = await POST(B, '/following/open', { key: first.key });
+  assert.equal(o.json.url, 'https://ada.example.test/a/t/00000000000000000000000001/');
+  assert.equal((await dataOf()).tabs.mentions_unseen, 4);
+  assert.equal((await POST(B, '/following/mention-read', { all: true })).status, 200);
+  assert.equal((await dataOf()).tabs.mentions_unseen, 0);
+  // the page
+  const html = (await GET(B, '/following?view=mentions', { accept: 'text/html' })).body;
+  assert.match(html, /On gardens/);
+  assert.match(html, /2 accepted, never verified/);
+  // the token is in no response and no file the companion keeps
+  for (const text of [html, JSON.stringify(await dataOf('?view=mentions')), JSON.stringify(await dataOf('?view=background')),
+    fs.readFileSync(path.join(root, '.botference', 'plugin', 'following.json'), 'utf8'), fs.readFileSync(path.join(root, '.botference', 'plugin', 'config.json'), 'utf8'), srv.out()]) {
+    assert.ok(!text.includes(INBOX_TOKEN));
+  }
+  // a wrong token: unauthorised, shown as such
+  fs.writeFileSync(tokenFile, 'tok_wrong_one\n');
+  await POST(B, '/following/refresh', {});
+  assert.equal((await dataOf('?view=mentions')).inbox.state, 'unauthorised');
+  fs.writeFileSync(tokenFile, `${INBOX_TOKEN}\n`);
 });
 
 cleanup();

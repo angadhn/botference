@@ -34,6 +34,7 @@ function rig({ settings = {}, clock = { t: Date.parse('2026-11-10T12:00:00Z') } 
 }
 const follow = async (r, origin) => r.f.confirmImport([{ origin, title: 'x' }]);
 const items = r => r.f.view({ filter: 'all' }).entries.flatMap(e => [e.head, ...e.members]);
+const inBackground = r => r.f.view({ view: 'background' }).background;
 
 test('follow by any URL on a blyg resolves its origin; unfollow forgets it and its posts; list', async () => {
   const r = rig();
@@ -142,7 +143,7 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   let s = await r.f.refresh();
   assert.equal(s.new, 4);
   assert.equal(r.web.itemRequests().length, 4);
-  const key = id => F.keyOf(A, id);
+  const key = id => r.f.keyFor(A, id);
   for (const id of [i1, i2, i3, i4]) r.f.readMove(key(id), 'see');
   r.web.requests.length = 0;
   s = await r.f.refresh();
@@ -162,16 +163,19 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   const got = Object.fromEntries(items(r).map(i => [i.id, i]));
   assert.equal(got[i1].read, 'new', 'new words resurface a read post');
   assert.equal(got[i1].version, 2);
-  assert.equal(got[i2].read, 'seen', 'a maintenance version (same content_hash) does not resurface it');
-  assert.equal(got[i2].version, 2);
-  assert.equal(got[i2].maintenance, 1);
+  assert.ok(!(i2 in got), 'a maintenance version (same content_hash) does not put it back on top of the feed: it is in Background');
+  const m2 = inBackground(r).find(b => b.type === 'post' && b.post.id === i2);
+  assert.equal(m2.reason, 'no new words');
+  assert.equal(m2.post.read, 'seen', 'and it is not resurfaced as new');
+  assert.equal(m2.post.version, 2);
+  assert.equal(m2.post.maintenance, 1);
   assert.ok(!(i3 in got), 'a withdrawn post leaves the list');
   assert.ok(!(i4 in got), 'a post gone from the index leaves the list');
   assert.equal(got[i5].read, 'new');
   assert.equal(r.web.itemRequests().length, 3, 'only the changed, non-withdrawn documents were fetched (the withdrawal is read off the index)');
   // the withdrawn one is a bare marker: not asked about again, no words kept
   const tomb = r.f.itemByKey(key(i3));
-  assert.equal(tomb.withdrawn, true);
+  assert.equal(tomb.kind, 'withdrawn');
   assert.equal(tomb.text, '');
   r.web.requests.length = 0;
   await r.f.refresh();
@@ -223,7 +227,7 @@ test('what is kept: title from the first heading, else an excerpt; stub_of; coun
   assert.deepEqual(t.stub_of, { origin: Bo, id: idOf(77) });
   assert.equal(t.transclusions, 2);
   assert.equal(t.links, 1);
-  assert.equal(t.withdrawn, false);
+  assert.equal(t.kind, 'thread');
   assert.ok(t.text.length <= F.LIMITS.textChars && t.excerpt.length <= F.LIMITS.excerptChars);
   assert.ok(!('content_html' in t) && !('content_md' in t) && !t.text.includes('<'));
   assert.equal(by[noTitle].title, '');
@@ -255,7 +259,7 @@ test('burst folding: a thread and the posts it names, published together, are on
   assert.equal(r.f.view({ filter: 'threads' }).entries.length, 1);
   // a thread of another blyg never folds this blyg's posts
   assert.equal(F.foldBursts([{ key: 'a', kind: 'thread', origin: Bo, created: '2026-11-05T10:03:00Z', updated: '2026-11-05T10:03:00Z', refs: [{ origin: A, id: f1 }] },
-    { key: F.keyOf(A, f1), kind: 'fragment', origin: A, id: f1, created: '2026-11-05T10:00:00Z' }]).length, 2);
+    { key: 'z', kind: 'fragment', origin: A, id: f1, created: '2026-11-05T10:00:00Z' }]).length, 2);
   r.done();
 });
 
@@ -274,7 +278,7 @@ test('filters: New, Threads, Fragments, Responses to me (stub_of or a transclusi
   assert.deepEqual(r.f.view({ filter: 'responses', mine: [] }).entries, [], 'with my_origins empty nothing is a response to me');
   assert.deepEqual(names('threads').sort(), [stub, quoter].sort());
   assert.deepEqual(names('fragments'), [plain]);
-  r.f.readMove(F.keyOf(A, plain), 'see');
+  r.f.readMove(r.f.keyFor(A, plain), 'see');
   assert.equal(names('new').includes(plain), false);
   assert.equal(names('new').length, 2);
   // the response entry says what it answers
@@ -348,7 +352,7 @@ test('per-host breaker opens after repeated failures and refuses that host until
   for (const o of hosts) r.f.confirmImport([{ origin: o }]);
   r.web.requests.length = 0;
   const s = await r.f.refresh();
-  const b = r.f.breakers.get('alpha.web.test');
+  const b = r.f.breakerSnapshot('alpha.web.test');
   assert.equal(b.state, 'open');
   assert.equal(r.web.requests.length, F.BREAKER.threshold, 'after three failures the host is not asked again this run');
   assert.ok(s.deferred >= 1);
@@ -360,7 +364,7 @@ test('per-host breaker opens after repeated failures and refuses that host until
   r.web.requests.length = 0;
   await r.f.refresh();
   assert.ok(r.web.requests.length > 0, 'half-open: a probe is let through');
-  assert.equal(r.f.breakers.get('alpha.web.test').state === 'closed' || r.f.breakers.get('alpha.web.test').state === 'open', true);
+  assert.equal(r.f.breakerSnapshot('alpha.web.test').state === 'closed' || r.f.breakerSnapshot('alpha.web.test').state === 'open', true);
   // a different host is unaffected
   const x = rig();
   x.web.add(A).down = 'timeout';
@@ -427,7 +431,7 @@ test('never more than one reconciliation in flight: a second refresh is refused,
   r.web.delayMs = 15;
   r.web.requests.length = 0;
   const first = r.f.refresh();
-  assert.equal(r.f.run.state, 'running');
+  assert.equal(r.f.runState(), 'running');
   const [second, third] = await Promise.all([r.f.refresh(), r.f.refresh()]);
   assert.equal(second.started, false);
   assert.equal(third.started, false);
@@ -435,7 +439,7 @@ test('never more than one reconciliation in flight: a second refresh is refused,
   assert.equal(done.started, true);
   assert.equal(r.web.maxInFlight, 1, 'one request at a time, one run at a time');
   assert.equal(r.web.requests.length, 5, 'one run\'s requests only (manifest, index, three documents)');
-  assert.equal(r.f.run.state, 'idle');
+  assert.equal(r.f.runState(), 'idle');
   const again = await r.f.refresh();
   assert.equal(again.started, true, 'idle again: a new run is allowed');
   r.done();
@@ -447,13 +451,13 @@ test('the timer: armed (at the configured interval) while something is followed,
   assert.equal(r.timers.set.length, 0, 'nothing followed: no timer');
   r.web.add(A).put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
-  assert.equal(r.f.schedule.mode, 'scheduled');
+  assert.equal(r.f.scheduleMode(), 'scheduled');
   assert.equal(r.timers.set.at(-1).ms, 45 * 60 * 1000);
   r.timers.set.at(-1).fn();
   await new Promise(res => setTimeout(res, 50));
   assert.equal(items(r).length, 1, 'the timer ran a refresh');
   r.f.unfollow(A);
-  assert.equal(r.f.schedule.mode, 'off');
+  assert.equal(r.f.scheduleMode(), 'off');
   assert.ok(r.timers.cleared.length >= 1);
   assert.equal(F.createFollowing({ file: path.join(r.dir, 'd.json') }) && CFG.followingSettingsOf({}).settings.following_refresh_minutes, 30, 'the default is thirty minutes');
   r.done();
@@ -497,7 +501,7 @@ test('read state through the engine: see, open, markResponded; withdrawn and unk
   site.put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
   await r.f.refresh();
-  const key = F.keyOf(A, idOf(1));
+  const key = r.f.keyFor(A, idOf(1));
   assert.equal(r.f.readMove(key, 'see'), 'seen');
   assert.throws(() => r.f.readMove(key, 'see'), /cannot see while seen/);
   assert.equal(r.f.markResponded(A, idOf(1)), true);
@@ -544,16 +548,17 @@ test('hostile remote content is cleaned when it is kept: no control or bidi-over
     assert.ok(i[f].length <= F.LIMITS.textChars, f);
   }
   assert.ok(!/[‪-‮]/.test(r.f.listBlygs()[0].title));
-  // a post whose page is on another host is not kept (the list vouches for pages)
+  // §5.8: a post's page may be on another host (kept, as an outbound link); one that is not a web address is not kept
   site.put(makeDoc({ id: idOf(2), origin: A, page: 'https://elsewhere.web.test/steal/' }));
   site.put(makeDoc({ id: idOf(3), origin: A, page: 'javascript:alert(1)' }));
   const s = await r.f.refresh();
-  assert.equal(s.invalid, 2);
-  assert.equal(items(r).length, 1);
+  assert.equal(s.invalid, 1);
+  assert.equal(items(r).length, 2);
+  assert.equal(items(r).find(i => i.id === idOf(2)).opens_on, 'elsewhere.web.test', 'labelled as opening elsewhere');
   r.done();
 });
 
-test('identityFor: the list vouches for a page it holds; the page\'s own links can disagree', async () => {
+test('identityFor: the list alone never supplies identity; the page\'s own links must agree', async () => {
   const r = rig();
   const site = r.web.add(A, { title: 'Alpha Notes' });
   const id = idOf(1);
@@ -561,22 +566,89 @@ test('identityFor: the list vouches for a page it holds; the page\'s own links c
   await follow(r, A);
   await r.f.refresh();
   const page = `${A}f/${id}/`;
-  assert.equal(r.f.identityFor('https://other.web.test/x', null).verdict, 'none');
-  const none = r.f.identityFor(page, null);
-  assert.equal(none.verdict, 'unverified');
-  assert.deepEqual([none.result.status, none.result.item.origin, none.result.item.id, none.result.item.version], ['blyg', A, id, 2]);
-  assert.equal(none.result.text_partial, true);
-  const ok = r.f.identityFor(page, { blyg: `${A}blyg.json`, json: `${A}items/${id}.json` });
+  const hints = { blyg: `${A}blyg.json`, json: `${A}items/${id}.json` };
+  assert.equal(r.f.identityFor('https://other.web.test/x', hints).verdict, 'none');
+  // no links at all: the list is NOT used, detection runs
+  const bare = r.f.identityFor(page, null);
+  assert.equal(bare.verdict, 'unconfirmed');
+  assert.equal(bare.result, undefined);
+  assert.equal(r.f.identityFor(page, { blyg: '', json: '' }).result, undefined, 'the extension sends empty links for a page with none');
+  // one of the two links is not enough, though nothing contradicts it
+  assert.equal(r.f.identityFor(page, { blyg: hints.blyg, json: '' }).verdict, 'unconfirmed');
+  assert.equal(r.f.identityFor(page, { blyg: '', json: hints.json }).verdict, 'unconfirmed');
+  // both agree: the list's origin, id and version are used, and the answer says where it came from
+  const ok = r.f.identityFor(page, hints);
   assert.equal(ok.verdict, 'agrees');
-  assert.equal(r.f.itemByKey(F.keyOf(A, id)).identity, 'agrees');
-  const bad = r.f.identityFor(page, { blyg: `${A}blyg.json`, json: `${A}items/${idOf(2)}.json` });
+  assert.deepEqual([ok.result.status, ok.result.source, ok.result.item.origin, ok.result.item.id, ok.result.item.version], ['blyg', 'from-list', A, id, 2]);
+  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).identity, 'agrees');
+  // a link naming another post, or another blyg: not used, and the entry says so
+  const bad = r.f.identityFor(page, { blyg: hints.blyg, json: `${A}items/${idOf(2)}.json` });
   assert.equal(bad.verdict, 'disagrees');
   assert.equal(bad.result, undefined, 'a disagreeing page gets no result from the list');
   assert.match(bad.reason, /names post/);
-  assert.equal(r.f.itemByKey(F.keyOf(A, id)).identity, 'disagrees');
+  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).identity, 'disagrees');
   assert.equal(r.f.view().entries[0].head.identity, 'disagrees');
-  const otherBlyg = r.f.identityFor(page, { blyg: 'https://evil.web.test/blyg.json', json: '' });
-  assert.equal(otherBlyg.verdict, 'disagrees');
+  assert.equal(r.f.identityFor(page, { blyg: 'https://evil.web.test/blyg.json', json: hints.json }).verdict, 'disagrees');
+  // what comes back cannot be used to change the list
+  const copy = r.f.identityFor(page, hints).item;
+  copy.version = 99;
+  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).version, 2);
+  r.done();
+});
+
+test('identityFor: a page outside the blyg\'s mount (§5.8) is identified when ITS links agree, and only then', async () => {
+  const r = rig();
+  const MOUNT = 'https://site.web.test/blyg/';
+  const site = r.web.add(MOUNT, { title: 'Site Notes' });
+  const id = idOf(4);
+  // the owner's own kind of site: permalinks at /some-post, the blyg mounted at /blyg/
+  site.put(makeDoc({ id, origin: MOUNT, page: 'https://site.web.test/some-post' }));
+  await follow(r, MOUNT);
+  await r.f.refresh();
+  assert.equal(items(r).length, 1);
+  const hints = { blyg: `${MOUNT}blyg.json`, json: `${MOUNT}items/${id}.json` };
+  const ok = r.f.identityFor('https://site.web.test/some-post', hints);
+  assert.equal(ok.verdict, 'agrees', 'the page is outside the mount, its own links agree: identity used');
+  assert.equal(ok.result.item.id, id);
+  const bare = r.f.identityFor('https://site.web.test/some-post', { blyg: '', json: '' });
+  assert.equal(bare.verdict, 'unconfirmed', 'the same page with no links: detection');
+  assert.equal(bare.result, undefined);
+  // and a post whose page is on ANOTHER host is an outbound link, labelled, with the same rule
+  const far = makeDoc({ id: idOf(5), origin: MOUNT, page: 'https://other.web.test/p/5' });
+  site.put(far);
+  await r.f.refresh();
+  const e = items(r).find(i => i.id === idOf(5));
+  assert.equal(e.opens_on, 'other.web.test');
+  assert.equal(r.f.identityFor('https://other.web.test/p/5', { blyg: '', json: '' }).result, undefined);
+  assert.equal(r.f.identityFor('https://other.web.test/p/5', { blyg: `${MOUNT}blyg.json`, json: `${MOUNT}items/${idOf(5)}.json` }).verdict, 'agrees');
+  r.done();
+});
+
+test('identityFor: a blyg cannot claim another blyg\'s page, on a shared host or with a reused id', async () => {
+  const r = rig();
+  const EVIL = 'https://shared.web.test/evil/', VICTIM = 'https://shared.web.test/victim/';
+  const evil = r.web.add(EVIL, { title: 'Evil' });
+  const victimSite = r.web.add(VICTIM, { title: 'Victim' });
+  const vid = idOf(5), eid = idOf(7);
+  const victimPage = `${VICTIM}t/${vid}/`;
+  victimSite.put(makeDoc({ id: vid, origin: VICTIM, kind: 'thread', page: `t/${vid}/`, transclusions: [] }));
+  evil.put(makeDoc({ id: eid, origin: EVIL, page: victimPage }));
+  await follow(r, EVIL);
+  await r.f.refresh();
+  assert.equal(items(r).length, 1, 'the claim is held (as an address to open)…');
+  // …but never supplies identity: the victim page's own links name the victim
+  const victimHints = { blyg: `${VICTIM}blyg.json`, json: `${VICTIM}items/${vid}.json` };
+  const a = r.f.identityFor(victimPage, victimHints);
+  assert.equal(a.verdict, 'disagrees');
+  assert.equal(a.result, undefined);
+  assert.equal(r.f.identityFor(victimPage, { blyg: '', json: '' }).result, undefined, 'no links: detection');
+  // a json-only link with the SAME id on another origin is not used either
+  r.web.add('https://reuse.web.test/b/').put(makeDoc({ id: eid, origin: 'https://reuse.web.test/b/' }));
+  const reused = r.f.identityFor(victimPage, { blyg: '', json: `https://reuse.web.test/b/items/${eid}.json` });
+  assert.equal(reused.verdict, 'disagrees');
+  assert.equal(reused.result, undefined);
+  // the evil blyg's own links on the victim page (a page that really did link it) are the only way, and then it IS that blyg's
+  assert.equal(r.f.identityFor(victimPage, { blyg: `${EVIL}blyg.json`, json: `${EVIL}items/${eid}.json` }).verdict, 'agrees');
   r.done();
 });
 
@@ -620,8 +692,296 @@ test('the extension reaches Following: a drawer button, the worker\'s open-here,
 
 test('the user docs name every state and every setting', () => {
   const doc = fs.readFileSync(path.join(HERE, '..', '..', '..', 'docs', 'blygger.md'), 'utf8');
-  const section = doc.slice(doc.indexOf('## Following: a private reading feed'), doc.indexOf('## What is fetched, and when'));
+  const section = doc.slice(doc.indexOf('## Following: a private reading feed'), doc.indexOf('## What is fetched, and when')).replace(/\s+/g, ' ');
   assert.ok(section.length > 500, 'the section exists');
-  for (const s of [...F.BLYG_STATES, ...F.READ_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
-  for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins']) assert.ok(section.includes(k), `setting ${k}`);
+  for (const s of [...F.BLYG_STATES, ...F.READ_STATES, ...F.INBOX_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
+  for (const w of ['Feed', 'Mentions', 'Background', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
+  for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file']) assert.ok(section.includes(k), `setting ${k}`);
+});
+
+// ---- the review's fixes ---------------------------------------------------------------
+
+test('fetch scope: a manifest cannot send the companion to another host for its index or its documents (named reason, nothing fetched)', async () => {
+  for (const [what, manifest] of [['index', { items: 'https://third.web.test/items/index.json' }], ['item', { item: 'https://third.web.test/items/{id}.json' }],
+    ['index on the same host but another mount', { items: '/other/items/index.json' }], ['http downgrade', { items: 'http://alpha.web.test/notes/items/index.json' }]]) {
+    const r = rig();
+    const site = r.web.add(A);
+    r.web.add('https://third.web.test/');
+    r.web.add('https://alpha.web.test/other/');
+    for (let n = 1; n <= 5; n++) site.put(makeDoc({ id: idOf(n), origin: A }));
+    const orig = r.web.get;
+    const f = F.createFollowing({ file: path.join(r.dir, 'scope.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
+      get: async (u, o) => (u === `${A}blyg.json` ? { status: 200, url: u, text: JSON.stringify({ blyg: '0.4', title: 't', ...manifest }) } : orig(u, o)) });
+    f.confirmImport([{ origin: A }]);
+    const s = await f.refresh();
+    assert.ok(s.refused >= 1, `${what}: refused`);
+    assert.equal(r.web.requests.filter(u => !u.startsWith(A) || /\/other\//.test(u)).length, 0, `${what}: nothing outside the blyg was requested`);
+    assert.match(f.listBlygs()[0].last_error, /outside the blyg's own origin/, `${what}: the reason is named`);
+    r.done();
+  }
+  // a document that arrives from somewhere else after a redirect is not accepted
+  const r = rig();
+  const site = r.web.add(A);
+  site.put(makeDoc({ id: idOf(1), origin: A }));
+  const orig = r.web.get;
+  const f = F.createFollowing({ file: path.join(r.dir, 'redir.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
+    get: async (u, o) => { const x = await orig(u, o); return /items\/0/.test(u) ? { ...x, url: 'https://third.web.test/items/x.json' } : x; } });
+  f.confirmImport([{ origin: A }]);
+  const s = await f.refresh();
+  assert.equal(s.refused, 1);
+  assert.equal(f.view().entries.length, 0);
+  assert.match(f.listBlygs()[0].last_error, /served from outside/);
+  r.done();
+});
+
+test('an index that lies about versions is not chased: one fetch, not one per run, until its entry changes', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  const id = idOf(1);
+  site.put(makeDoc({ id, origin: A, version: 3, updated: '2026-11-02T10:00:00Z' }));
+  const orig = r.web.get;
+  const f = F.createFollowing({ file: path.join(r.dir, 'lie.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
+    get: async (u, o) => {
+      const x = await orig(u, o);
+      if (!u.endsWith('items/index.json')) return x;
+      const j = JSON.parse(x.text); j.items[0].version = 1; return { ...x, text: JSON.stringify(j) };
+    } });
+  f.confirmImport([{ origin: A }]);
+  let s = await f.refresh();
+  assert.equal(s.mismatched, 1);
+  assert.equal(r.web.itemRequests().length, 1);
+  for (let n = 0; n < 3; n++) s = await f.refresh();
+  assert.equal(r.web.itemRequests().length, 1, 'the lie is not refetched every run');
+  assert.equal(f.view().entries[0].head.version, 3, 'the document is the ground truth (§13.1)');
+  assert.deepEqual(f.itemByKey(f.keyFor(A, id)).index_mismatch, { index: 1, document: 3 });
+  r.done();
+});
+
+test('fetching off: refresh makes no request, the timer disarms, every route that re-arms it obeys', async () => {
+  let on = true;
+  const clock = { t: 1 };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-following-'));
+  const web = makeWeb();
+  web.add(A).put(makeDoc({ id: idOf(1), origin: A }));
+  const timers = { set: [], cleared: 0 };
+  const f = F.createFollowing({ file: path.join(dir, 'f.json'), get: web.get, now: () => clock.t, mayFetch: () => on,
+    getSettings: () => SETTINGS(), timers: { set: (fn, ms) => { const h = { fn, ms }; timers.set.push(h); return h; }, clear: () => { timers.cleared++; } } });
+  f.confirmImport([{ origin: A }]);
+  assert.equal(f.scheduleMode(), 'scheduled');
+  on = false;
+  web.requests.length = 0;
+  const off = await f.refresh();
+  assert.equal(off.started, false);
+  assert.match(off.reason, /off/);
+  await assert.rejects(() => f.follow(A), /could not ask|off/);
+  await assert.rejects(() => f.previewImport({ url: 'https://roll.web.test/x.opml' }), /off|fetch/);
+  assert.equal(web.requests.length, 0, 'not one request');
+  // the timer fires once more, finds fetching off, and disarms itself
+  timers.set.at(-1).fn();
+  assert.equal(f.scheduleMode(), 'off');
+  // actions that re-arm the timer do not while fetching is off
+  f.confirmImport([{ origin: Bo }]);
+  f.setBlygState(Bo, 'pause');
+  assert.equal(f.unfollow(Bo), true);
+  assert.equal(f.reschedule(), 'off');
+  assert.equal(web.requests.length, 0);
+  on = true;
+  assert.equal(f.reschedule(), 'scheduled');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('unfollow during a refresh leaves no orphan posts, and orphans are pruned on load', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  for (let n = 1; n <= 6; n++) site.put(makeDoc({ id: idOf(n), origin: A }));
+  await follow(r, A);
+  r.web.delayMs = 15;
+  const run = r.f.refresh();
+  await new Promise(res => setTimeout(res, 50));
+  assert.equal(r.f.unfollow(A), true);
+  const s = await run;
+  assert.equal(s.started, true);
+  assert.equal(r.f.view().entries.length, 0);
+  assert.equal(r.f.view({ view: 'background' }).background.length, 0);
+  const onDisk = JSON.parse(fs.readFileSync(r.file, 'utf8'));
+  assert.deepEqual(Object.keys(onDisk.items), [], 'nothing of an unfollowed blyg is on disk');
+  // an orphan left by an older version is dropped when the file is loaded
+  onDisk.items['x\ny'] = { key: 'k', origin: 'https://gone.web.test/', id: 'y', kind: 'fragment', version: 1, read: 'new' };
+  fs.writeFileSync(r.file, JSON.stringify(onDisk));
+  const again = r.reload();
+  again.listBlygs();
+  await again.refresh();
+  assert.ok(!('x\ny' in JSON.parse(fs.readFileSync(r.file, 'utf8')).items));
+  r.done();
+});
+
+test('the key a page carries is random per record (not computable from the post) and the engine returns copies, not live records', async () => {
+  const r = rig();
+  r.web.add(A).put(makeDoc({ id: idOf(1), origin: A }));
+  await follow(r, A);
+  await r.f.refresh();
+  const key = r.f.keyFor(A, idOf(1));
+  assert.match(key, /^[0-9a-f]{24}$/);
+  const crypto = await import('node:crypto');
+  assert.notEqual(key, crypto.createHash('sha1').update(`${A}\n${idOf(1)}`).digest('hex').slice(0, 20));
+  assert.equal(r.f.itemByKey(F.identOf(A, idOf(1))), null, 'the post\'s own identity is not a key');
+  r.f.unfollow(A);
+  await follow(r, A);
+  await r.f.refresh();
+  assert.notEqual(r.f.keyFor(A, idOf(1)), key, 'a new record, a new key');
+  const rec = r.f.itemByKey(r.f.keyFor(A, idOf(1)));
+  rec.read = 'responded'; rec.title = 'tampered';
+  assert.equal(r.f.itemByKey(r.f.keyFor(A, idOf(1))).read, 'new');
+  const snap = r.f.breakerSnapshot('alpha.web.test');
+  assert.throws(() => { 'use strict'; snap.state = 'open'; }, TypeError);
+  assert.equal(r.f.runState(), 'idle');
+  r.done();
+});
+
+test('open: a post becomes opened and the answer is its ORIGINAL address; withdrawn and unknown keys are refused; a mention-free key cannot open anything', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  site.put(makeDoc({ id: idOf(1), origin: A }));
+  site.put(makeDoc({ id: idOf(2), origin: A, created: '2026-11-02T10:00:00Z' }));
+  await follow(r, A);
+  await r.f.refresh();
+  const k1 = r.f.keyFor(A, idOf(1)), k2 = r.f.keyFor(A, idOf(2));
+  assert.deepEqual(r.f.open(k1), { url: `${A}f/${idOf(1)}/`, opens_on: '' });
+  assert.equal(r.f.itemByKey(k1).read, 'opened');
+  site.put(makeDoc({ id: idOf(2), origin: A, kind: 'withdrawn', title: '', version: 2, created: '2026-11-02T10:00:00Z', updated: '2026-11-05T10:00:00Z' }));
+  await r.f.refresh();
+  assert.throws(() => r.f.open(k2), /no such post/);
+  assert.throws(() => r.f.open('nope'), /no such post or mention/);
+  assert.throws(() => r.f.readMove(k2, 'see'), /no such post/);
+  r.done();
+});
+
+test('clock skew: a post dated in the future cannot sit on top (ordering uses at most the time it was fetched)', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  site.put(makeDoc({ id: idOf(1), origin: A, title: 'Honest', created: '2026-11-09T10:00:00Z' }));
+  site.put(makeDoc({ id: idOf(2), origin: A, title: 'From the future', created: '2099-01-01T00:00:00Z', updated: '2099-01-01T00:00:00Z' }));
+  await follow(r, A);
+  r.clock.t = Date.parse('2026-11-10T12:00:00Z');
+  await r.f.refresh();
+  const titles = r.f.view().entries.map(e => e.head.title);
+  assert.deepEqual(titles, ['From the future', 'Honest'], 'newest fetched is first, but not by claiming 2099');
+  assert.ok(Date.parse(r.f.view().entries[0].head.shown_at) <= r.clock.t, 'and its shown date is not in the future');
+  r.clock.t += 5 * 3600 * 1000;
+  site.put(makeDoc({ id: idOf(3), origin: A, title: 'Later honest', created: '2026-11-10T14:00:00Z' }));
+  await r.f.refresh();
+  assert.equal(r.f.view().entries[0].head.title, 'Later honest', 'a later real post goes above the forged one');
+  r.done();
+});
+
+test('the per-blyg document cap per run: at most docsPerBlygRun documents, the rest next run', async () => {
+  const r = rig({ settings: { following_run_requests: 2000, following_max_items_per_blyg: 2000, following_max_items_total: 20000 } });
+  const site = r.web.add(A);
+  const N = F.LIMITS.docsPerBlygRun + 10;
+  for (let n = 1; n <= N; n++) site.put(makeDoc({ id: idOf(n), origin: A, created: `2026-10-${String(1 + (n % 28)).padStart(2, '0')}T10:00:00Z` }));
+  await follow(r, A);
+  const s = await r.f.refresh();
+  assert.equal(r.web.itemRequests().length, F.LIMITS.docsPerBlygRun);
+  assert.equal(s.new, F.LIMITS.docsPerBlygRun);
+  assert.equal(s.deferred, 10);
+  await r.f.refresh();
+  assert.equal(r.web.itemRequests().length, N);
+  r.done();
+});
+
+test('placement: one function says which view a post or mention belongs to, with a named reason', () => {
+  const blyg = { state: 'active' };
+  const post = o => ({ kind: 'fragment', origin: A, read: 'new', last_change: 'new-words', ...o });
+  const at = (p, extra = {}) => F.placementOf({ type: 'post', post: p, blyg, mine: [], burstHead: null, ...extra });
+  assert.deepEqual(at(post({})), { placement: 'feed', reason: '' });
+  assert.deepEqual(at(post({ kind: 'withdrawn' })), { placement: 'background', reason: 'withdrawn' });
+  assert.deepEqual(at(post({ kind: 'withdrawn' }), { mine: [A] }), { placement: 'background', reason: 'withdrawn (your own)' });
+  assert.deepEqual(at(post({}), { blyg: { state: 'paused' } }), { placement: 'background', reason: 'paused blyg' });
+  assert.deepEqual(at(post({}), { burstHead: post({ kind: 'thread' }) }), { placement: 'background', reason: 'part of a burst' });
+  assert.deepEqual(at(post({ read: 'seen', last_change: 'maintenance' })), { placement: 'background', reason: 'no new words' });
+  assert.deepEqual(at(post({ read: 'seen', last_change: 'minor' })), { placement: 'background', reason: 'barely changed' });
+  assert.deepEqual(at(post({ read: 'new', last_change: 'maintenance' })), { placement: 'feed', reason: '' }, 'a post never read is still new to the reader');
+  assert.deepEqual(at(post({}), { blyg: null }), { placement: 'hidden', reason: 'not followed' });
+  const m = (klass, action = '') => F.placementOf({ type: 'mention', mention: { class: klass, action } });
+  assert.deepEqual(m('response', 'replied'), { placement: 'mentions', reason: 'response' });
+  assert.deepEqual(m('notice', 'linked'), { placement: 'background', reason: 'linked from' });
+  assert.deepEqual(m('notice', 'reposted'), { placement: 'background', reason: 'reposted by' });
+  assert.deepEqual(m('plain', 'webmention'), { placement: 'mentions', reason: 'plain mention (lower class)' });
+  assert.deepEqual(m('unknown'), { placement: 'mentions', reason: 'class unknown' });
+  for (const v of [at(post({})), m('notice')]) assert.ok(F.PLACEMENTS.includes(v.placement));
+});
+
+test('Background: maintenance and barely-changed versions, burst members, withdrawn and paused-blyg posts; a real new version brings a post back to the Feed', async () => {
+  const r = rig({ settings: { following_barely_changed_percent: 5 } });
+  const site = r.web.add(A);
+  const [maint, minor, edited, frag, th, gone, other] = [1, 2, 3, 4, 5, 6, 7].map(idOf);
+  const body = 'a sentence of invented words that goes on for a while. '.repeat(8);
+  for (const [id, t] of [[maint, 'Maint'], [minor, 'Minor'], [edited, 'Edited']]) site.put(makeDoc({ id, origin: A, title: t, body, created: '2026-11-01T10:00:00Z' }));
+  site.put(makeDoc({ id: frag, origin: A, title: 'Frag', created: '2026-11-05T10:00:00Z' }));
+  site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', created: '2026-11-05T10:01:00Z', transclusions: [{ origin: A, id: frag, version: 1 }] }));
+  site.put(makeDoc({ id: gone, origin: A, title: 'Soon gone', created: '2026-11-02T10:00:00Z' }));
+  await follow(r, A);
+  await r.f.refresh();
+  r.f.markAllSeen();
+  site.put(makeDoc({ id: maint, origin: A, title: 'Maint', body, version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
+  site.put(makeDoc({ id: minor, origin: A, title: 'Minor', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
+  site.put(makeDoc({ id: edited, origin: A, title: 'Edited', body: 'something else entirely, rewritten from the ground up. '.repeat(8), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
+  site.put(makeDoc({ id: gone, origin: A, kind: 'withdrawn', title: '', version: 2, created: '2026-11-02T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
+  const s = await r.f.refresh();
+  assert.deepEqual([s.maintenance, s.minor, s.edited], [1, 1, 1]);
+  const bg = Object.fromEntries(inBackground(r).map(b => [b.post.id, b.reason]));
+  assert.deepEqual(bg, { [maint]: 'no new words', [minor]: 'barely changed', [frag]: 'part of a burst', [gone]: 'withdrawn' });
+  const feed = r.f.view().entries.map(e => e.head.id);
+  assert.ok(feed.includes(edited) && feed.includes(th) && !feed.includes(maint) && !feed.includes(minor) && !feed.includes(frag));
+  assert.equal(r.f.view().entries.find(e => e.head.id === th).members.length, 1);
+  assert.equal(r.f.view().tabs.background, 4);
+  // a real new version brings a background post back
+  site.put(makeDoc({ id: maint, origin: A, title: 'Maint', body: 'now actually different words, all of them. '.repeat(8), version: 3, created: '2026-11-01T10:00:00Z', updated: '2026-11-07T10:00:00Z' }));
+  await r.f.refresh();
+  assert.ok(r.f.view().entries.some(e => e.head.id === maint), 'back in the Feed');
+  assert.ok(!inBackground(r).some(b => b.post && b.post.id === maint));
+  // a paused blyg's posts are background
+  r.f.setBlygState(A, 'pause');
+  assert.equal(r.f.view().entries.length, 0);
+  assert.ok(inBackground(r).every(b => b.reason === 'paused blyg' || b.reason === 'withdrawn'));
+  r.done();
+});
+
+test('barely changed is measured only when it honestly can be: whole texts, same heading; 0 means identical words only', () => {
+  const mk = (text, title = 'T', extra = {}) => ({ text, title, text_chars: text.length, ...extra });
+  const base = 'x'.repeat(500);
+  assert.equal(F.barelyChanged(mk(base), mk(base.slice(0, 250) + 'y' + base.slice(251)), 2), true);
+  assert.equal(F.barelyChanged(mk(base), mk('z'.repeat(500)), 2), false);
+  assert.equal(F.barelyChanged(mk(base), mk(base.slice(0, 250) + 'y' + base.slice(251)), 0), false, 'threshold 0: only the same hash');
+  assert.equal(F.barelyChanged(mk(base), mk(base.slice(0, 250) + 'y' + base.slice(251), 'Other'), 2), false, 'a changed heading is not barely changed');
+  const clipped = mk('x'.repeat(1200), 'T', { text_chars: 5000 });
+  assert.equal(F.barelyChanged(clipped, mk('x'.repeat(1199) + 'y', 'T', { text_chars: 5000 }), 20), false, 'a clipped text cannot be measured, so it is not claimed');
+  assert.equal(F.changeOf(null, { content_hash: 'a' }, 2), 'new-words');
+  assert.equal(F.changeOf({ content_hash: 'a', kind: 'fragment' }, { content_hash: 'a' }, 2), 'maintenance');
+});
+
+test('NO OTHER WAY OUT: with every outbound primitive of the process made to throw, the engine\'s only traffic is its injected transport', async () => {
+  const [http, https, net, dns, tls] = (await Promise.all(['node:http', 'node:https', 'node:net', 'node:dns', 'node:tls'].map(m => import(m)))).map(m => m.default);
+  const trips = [];
+  const saved = [];
+  const stub = (obj, name, label) => { if (typeof obj[name] !== 'function') return; saved.push([obj, name, obj[name]]); obj[name] = function () { trips.push(label); throw new Error(`outbound ${label}`); }; };
+  for (const [o, n] of [[globalThis, 'fetch'], [http, 'request'], [http, 'get'], [https, 'request'], [https, 'get'], [net, 'connect'], [net, 'createConnection'],
+    [tls, 'connect'], [dns, 'lookup'], [dns, 'resolve']]) stub(o, n, n);
+  try {
+    const r = rig();
+    const site = r.web.add(A);
+    for (let n = 1; n <= 3; n++) site.put(makeDoc({ id: idOf(n), origin: A }));
+    r.web.add(Bo).put(makeDoc({ id: idOf(9), origin: Bo }));
+    await r.f.follow(`${A}f/${idOf(1)}/`);
+    await r.f.previewImport({ text: JSON.stringify([{ origin: Bo, title: 'B' }]) });
+    r.f.confirmImport([{ origin: Bo }]);
+    const s = await r.f.refresh();
+    assert.equal(s.new, 4);
+    assert.ok(r.web.requests.length > 0, 'the injected transport carried everything');
+    assert.deepEqual(trips, [], 'nothing else tried to go out');
+    // and a call that tries, by any spelling, is caught by the stubs
+    assert.throws(() => globalThis['fe' + 'tch']('http://x.invalid/'), /outbound/);
+    assert.deepEqual(trips, ['fetch']);
+    r.done();
+  } finally { for (const [o, n, f] of saved) o[n] = f; }
 });

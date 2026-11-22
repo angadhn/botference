@@ -1,38 +1,47 @@
 // following.mjs — "Following": a private reading feed of blyg posts inside Discuss.
 //
 // The reader follows blygs (https://blygger.org/spec/0.4/); the companion keeps,
-// per followed blyg, what its archive index says it holds, and shows one list
-// of what is new. This is the READING half of a Blygger client: it publishes
-// nothing, mentions nothing, and tells no blyg what it is read by whom.
+// per followed blyg, what its archive index says it holds, and shows one console:
+// the Feed (what is new), Mentions (responses to the owner's posts, from the
+// owner's own inbox) and Background (what should not interrupt reading). This is
+// the READING half of a Blygger client: it publishes nothing and mentions nothing,
+// and tells no blyg what it is read by whom.
 //
-// THE ONE WAY TO THE WEB. Every request here is made by netguard.mjs's
-// guardedGet (or a test's stand-in for it, injected as `get`); this file never
-// calls fetch, http or https itself (test/following.test.mjs reads the source
-// to make sure). So the guard's rules (no private addresses, redirects judged
-// hop by hop, time and size limits) hold for every request Following makes.
+// THE ONE WAY TO THE WEB. Every request here is made by netguard.mjs's guardedGet
+// (or a test's stand-in for it, injected as `get`), through ONE function (`getter`)
+// that counts it against the run's budget, refuses it when the host's breaker is
+// open or when fetching is off, and is the only caller of `get`. This file never
+// calls fetch, http or https itself (test/following.test.mjs reads the source AND
+// runs the engine with every outbound primitive of the process made to throw).
+// A blyg's manifest may not send the companion anywhere else: the index and every
+// item document must be inside the blyg's own origin (`within`), after redirects too.
 //
-// WHAT IS NAMED, each as ONE list with ONE field and ONE function that moves
-// it and refuses a move that is not in the table:
-//   BLYG_STATES    a followed blyg's standing:        moveBlyg
-//   READ_STATES    a post's read state:               moveRead
-//   RUN_STATES     whether a reconciliation is going: moveRun
-//   BREAKER_STATES a host's circuit breaker:          moveBreaker
-//   SCHEDULE_MODES whether the refresh timer is armed: moveSchedule
-//   IDENTITY_STATES whether the page a reader opened agreed with what the
-//                   list knew about it:                setIdentity
+// WHAT IS NAMED, each as ONE list with ONE field and ONE function that moves it
+// and refuses a move that is not in the table:
+//   BLYG_STATES     a followed blyg's standing:           moveBlyg
+//   READ_STATES     a post's read state:                  moveRead
+//   RUN_STATES      whether a reconciliation is going:    moveRun
+//   BREAKER_STATES  a host's circuit breaker:             moveBreaker
+//   SCHEDULE_MODES  whether the refresh timer is armed:   moveSchedule
+//   IDENTITY_STATES whether a post's page agreed with the list: setIdentity
+//   INBOX_STATES    the mentions inbox's standing:        moveInbox
+//   MENTION_READ    a mention's read state:               moveMention
+// and, as values a function works out rather than states that move:
+//   PLACEMENTS (placementOf: which view an entry belongs to, and why),
+//   IDENTITY_VERDICTS (identityFor), ANSWER_SOURCES, LAST_CHANGES.
 //
-// WHAT IS KEPT, per post (never the whole HTML): origin, id, kind, current
-// version, created, updated, title (first heading) or excerpt, stub_of, how
-// many transclusions and links, withdrawn or not, and the sanitised plain text
-// the list needs (clipped). One record per post, at its newest version (the
-// rollup, §13.1); a withdrawn post is kept only as a bare marker so it is not
-// fetched again (§13.4), and leaves every list.
+// WHAT IS KEPT, per post (never the whole HTML): origin, id, kind, current version,
+// created, updated, title (first heading) or an excerpt, stub_of, how many
+// transclusions and links, and the sanitised plain text the list needs (clipped). One
+// record per post at its newest version (the rollup, §13.1). A withdrawn post
+// (kind 'withdrawn') is a bare marker, so it is not fetched again (§13.4).
 import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { guardedGet as netGet, FetchTrouble, urlRefusal } from './netguard.mjs';
 import { readJsonState, writeJson, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 import { session, findManifest, identityOf, isManifest, ID_RE, clip, textContent, isWebUrl, samePage,
   docRefusal, cleanHints, candidateBase, pageLinks, LIMITS as BLYG_LIMITS } from './blyg.mjs';
+import { parseInbox, readTokenFile, redactor, REPOST_RE } from './following-inbox.mjs';
 
 const CFG = createRequire(import.meta.url)('./extension/config.js');
 export const { followingSettingsOf, originOf, FOLLOWING_NUMBERS } = CFG;
@@ -107,7 +116,9 @@ const breakerMachine = machine('breaker', BREAKER_STATES, BREAKER_MOVES);
 export function moveBreaker(b, ev) { b.state = breakerMachine.to(b.state, ev); return b.state; }
 export const BREAKER = Object.freeze({ threshold: 3, cooldownMs: 15 * 60 * 1000 });
 
-// Whether the refresh timer is armed. It is armed exactly while something is followed.
+// Whether the refresh timer is armed. It is armed exactly while something is
+// followed (or an inbox is set) AND fetching is allowed. The timer's handle is kept
+// beside this field and means something only while the mode is 'scheduled'.
 export const SCHEDULE_MODES = Object.freeze(['off', 'scheduled']);
 export const SCHEDULE_MOVES = Object.freeze({
   arm: { off: 'scheduled', scheduled: 'scheduled' },
@@ -117,9 +128,9 @@ const scheduleMachine = machine('schedule', SCHEDULE_MODES, SCHEDULE_MOVES);
 export function moveSchedule(s, ev) { s.mode = scheduleMachine.to(s.mode, ev); return s.mode; }
 
 // Whether the page a reader opened from the list was the post the list said.
-//   unverified — nothing to compare yet (no hints from the page)
-//   agrees     — the page's own links name the same blyg and post
-//   disagrees  — they name something else: the list's word is NOT used for it
+//   unverified — the page has not been compared yet
+//   agrees     — the page's own links named the same blyg and post
+//   disagrees  — they named something else: the list's word was NOT used for it
 export const IDENTITY_STATES = Object.freeze(['unverified', 'agrees', 'disagrees']);
 export const IDENTITY_MOVES = Object.freeze({
   agree: { unverified: 'agrees', agrees: 'agrees', disagrees: 'agrees' },
@@ -128,34 +139,89 @@ export const IDENTITY_MOVES = Object.freeze({
 const identityMachine = machine('identity', IDENTITY_STATES, IDENTITY_MOVES);
 export function setIdentity(rec, ev) { rec.identity = identityMachine.to(rec.identity, ev); return rec.identity; }
 
+// The mentions inbox.
+//   off          — no inbox_api_url is set
+//   pending      — set, not asked yet
+//   ok           — the last answer was a JSON document
+//   unauthorised — the inbox said 401 or 403, or there is no usable token file
+//   unreachable  — it could not be asked or did not answer with JSON
+export const INBOX_STATES = Object.freeze(['off', 'pending', 'ok', 'unauthorised', 'unreachable']);
+export const INBOX_MOVES = Object.freeze({
+  set: { off: 'pending' },
+  unset: { pending: 'off', ok: 'off', unauthorised: 'off', unreachable: 'off' },
+  succeed: { pending: 'ok', ok: 'ok', unauthorised: 'ok', unreachable: 'ok' },
+  deny: { pending: 'unauthorised', ok: 'unauthorised', unauthorised: 'unauthorised', unreachable: 'unauthorised' },
+  fail: { pending: 'unreachable', ok: 'unreachable', unauthorised: 'unreachable', unreachable: 'unreachable' },
+});
+const inboxMachine = machine('inbox', INBOX_STATES, INBOX_MOVES);
+export function moveInbox(box, ev) { box.state = inboxMachine.to(box.state, ev); return box.state; }
+
+// A mention's read state (the Mentions tab's unseen count).
+export const MENTION_READ = Object.freeze(['unseen', 'seen']);
+export const MENTION_MOVES = Object.freeze({ see: { unseen: 'seen' } });
+const mentionMachine = machine('mention read state', MENTION_READ, MENTION_MOVES);
+export const canMoveMention = (m, ev) => mentionMachine.can(m.read, ev);
+export function moveMention(m, ev) { m.read = mentionMachine.to(m.read, ev); return m.read; }
+
+// What a version of a post changed (worked out when it is fetched, by changeOf):
+//   new-words   — it is new to the list, or its words really changed
+//   minor       — its words changed by no more than the reader's threshold (§13.2, "barely changed")
+//   maintenance — same content_hash as the version before (§13.2)
+export const LAST_CHANGES = Object.freeze(['new-words', 'minor', 'maintenance']);
+// Where an answer about a page came from: asked of the post's site, or built from the list.
+export const ANSWER_SOURCES = Object.freeze(['detected', 'from-list']);
+// What identityFor says about a page.
+//   none        the list holds no post with that page
+//   agrees      the page's OWN links name the blyg and the item the list holds: the list's identity is used
+//   unconfirmed the page sent no links, or only one of the two: nothing to compare, normal detection runs
+//   disagrees   the page's own links name something else: the list is not used, detection runs, the entry says so
+export const IDENTITY_VERDICTS = Object.freeze(['none', 'agrees', 'unconfirmed', 'disagrees']);
+
 // ---- limits ----------------------------------------------------------------
 export const LIMITS = Object.freeze({
   manifestBytes: 256 * 1024,
   indexBytes: 4 * 1024 * 1024,
   itemBytes: 4 * 1024 * 1024,
   importBytes: 1024 * 1024,
+  inboxBytes: 4 * 1024 * 1024,
   timeoutMs: 8000,
   indexEntries: 20000,        // more entries than this in one index are not read
   docsPerBlygRun: 50,         // item documents fetched for one blyg in one run
   followMax: 500,             // blygs followed
   importMax: 100,             // entries of a blogroll resolved in one preview
   importRequests: 300,        // requests one preview may make
-  followRequests: 12,          // requests following one URL may make (§12.1: six, plus slack)
+  followRequests: 12,         // requests following one URL may make
+  mentionsKept: 500,
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
 });
 const KINDS = ['fragment', 'thread', 'withdrawn'];
+export const isWithdrawn = rec => rec.kind === 'withdrawn';
+// why a request or document was refused, in the words the page shows
+export const REFUSALS = Object.freeze({
+  index: 'its manifest points its items index outside the blyg\'s own origin, which Discuss will not fetch',
+  item: 'its manifest points its item documents outside the blyg\'s own origin, which Discuss will not fetch',
+  redirect: 'a document was served from outside the blyg\'s own origin, which Discuss will not accept',
+});
 
 // ---- clean strings out of remote documents ----------------------------------
 const BIDI = /[؜‎‏‪-‮⁦-⁩]/g;
 /** A string out of somebody else's document, made safe to keep AND to show: no control or bidirectional-override characters, one line, bounded. */
 export const cleanText = (v, n = 300) => clip(String(typeof v === 'string' ? v : '').replace(/[\u0080-\u009f]/g, ' ').replace(BIDI, ''), n);
 
-export const keyOf = (origin, id) => crypto.createHash('sha1').update(`${origin}\n${id}`).digest('hex').slice(0, 20);
+/** The internal identity of a post: its blyg and its id. (The key a page's buttons carry is a separate, random one.) */
+export const identOf = (origin, id) => `${origin}\n${id}`;
+const randomKey = () => crypto.randomBytes(12).toString('hex');
 const hostOf = u => { try { return new URL(u).host; } catch { return ''; } };
-const sha1 = s => crypto.createHash('sha1').update(String(s)).digest('hex');
+/** Is `url` inside `origin` (same scheme, host and port, and a path under its path)? */
+export function within(origin, url) {
+  try {
+    const o = new URL(origin), u = new URL(String(url));
+    return u.protocol === o.protocol && u.host === o.host && u.pathname.startsWith(o.pathname.endsWith('/') ? o.pathname : o.pathname + '/');
+  } catch { return false; }
+}
 
 // ---- reading what the reader gives us (pure) --------------------------------
 const xmlDecode = s => String(s).replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, (m, e) => {
@@ -165,6 +231,7 @@ const xmlDecode = s => String(s).replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos
   const n = l[1] === 'x' ? parseInt(l.slice(2), 16) : parseInt(l.slice(1), 10);
   return Number.isFinite(n) && n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : ' ';
 });
+const originOfUrl = v => { try { const u = new URL(String(v || '').trim()); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch { return ''; } };
 /** OPML → [{ title, url, feed }] (a regex over outline tags: no entity expansion, no DOCTYPE, nothing executed). */
 export function parseOpml(text) {
   const out = [];
@@ -179,7 +246,6 @@ export function parseOpml(text) {
   }
   return out;
 }
-const originOfUrl = v => { try { const u = new URL(String(v || '').trim()); return /^https?:$/.test(u.protocol) ? u.href : ''; } catch { return ''; } };
 /** A directory document (blygger.com's /blygs.json: an object holding a list, or a list) → [{ origin, title, feed }]. */
 export function parseDirectory(text) {
   let j;
@@ -206,19 +272,20 @@ const refOf = (r, dflt) => {
   const origin = originOf(r.origin || dflt);
   return origin ? { origin, id: r.id } : null;
 };
-/** → the record to keep for a verified item document, or { invalid: why }. */
+/**
+ * → the record to keep for a verified item document, or { invalid: why }. `page` is
+ * where the post lives (§5.8: it may be absolute and outside the blyg's mount, even on
+ * another host). It is only an address to OPEN: it never supplies the post's identity.
+ */
 export function recordFromDoc(doc, origin, blyg = {}) {
   if (!KINDS.includes(doc.kind)) return { invalid: 'a kind this version does not know' };
   let page = '';
   try { page = new URL(typeof doc.page === 'string' && doc.page ? doc.page : `${doc.kind === 'fragment' ? 'f' : 't'}/${doc.id}/`, origin).href; } catch { page = ''; }
-  // a post's page must be on the blyg's own host: the list vouches for the page's
-  // identity (identityFor), and a blyg may not vouch for a page that is not its own
-  if (!isWebUrl(page) || hostOf(page) !== hostOf(origin)) return { invalid: 'its page is not on the blyg\'s own host' };
-  const withdrawn = doc.kind === 'withdrawn';
-  const base = { key: keyOf(origin, doc.id), origin, id: doc.id, kind: doc.kind, version: doc.version,
+  if (!isWebUrl(page)) return { invalid: 'its page is not a web address' };
+  const base = { origin, id: doc.id, kind: doc.kind, version: doc.version,
     created: cleanText(doc.created, 40), updated: cleanText(doc.updated, 40), page, content_hash: doc.content_hash,
-    withdrawn, stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', author: '' };
-  if (withdrawn) return base;
+    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '' };
+  if (doc.kind === 'withdrawn') return base;
   const lines = textContent(doc.content_html).split('\n').map(l => cleanText(l, 2000)).filter(Boolean);
   const title = firstHeading(doc.content_html);
   if (title && lines.length && lines[0] === title) lines.shift();
@@ -227,7 +294,7 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   const stub = doc.stub_of && typeof doc.stub_of === 'object' ? doc.stub_of : null;
   const stubOrigin = stub ? originOf(stub.origin) : '';
   return {
-    ...base, title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars),
+    ...base, title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars), text_chars: body.length,
     author: cleanText(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || blyg.author || '',
     stub_of: stubOrigin ? { origin: stubOrigin, id: ID_RE.test(String(stub.id || '')) ? stub.id : '' } : null,
     transclusions: Array.isArray(doc.transclusions) ? doc.transclusions.length : 0,
@@ -237,59 +304,144 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   };
 }
 
+/**
+ * Is `next` barely changed from `prev` (§13.2: "a barely changed version may be queued low;
+ * the threshold is reader-local")? Measured ONLY when it can be measured honestly from what
+ * is stored: both versions' whole text is held (not clipped), their headings are equal, and
+ * the one contiguous stretch between their common beginning and common ending is at most
+ * `percent` of the longer text. Anything else is NOT barely changed. percent 0 = never.
+ */
+export function barelyChanged(prev, next, percent) {
+  if (!(percent > 0)) return false;
+  const whole = r => r.text_chars > 0 && r.text_chars <= r.text.length;
+  if (!whole(prev) || !whole(next) || prev.title !== next.title) return false;
+  const a = prev.text, b = next.text;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  let j = 0;
+  while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+  const changed = Math.max(a.length - i - j, b.length - i - j);
+  return (changed * 100) / Math.max(a.length, b.length, 1) <= percent;
+}
+/** What a fetched version changed: one of LAST_CHANGES. `held` is the record before (or null). */
+export function changeOf(held, rec, percent) {
+  if (!held || isWithdrawn(held)) return 'new-words';
+  if (held.content_hash === rec.content_hash) return 'maintenance';
+  return barelyChanged(held, rec, percent) ? 'minor' : 'new-words';
+}
+
+// ---- placement: which view an entry belongs to, and why ----------------------------
+// ONE function decides it, for a post and for a mention, and names the reason shown on
+// the entry. An entry moves between views only because this function says so.
+export const PLACEMENTS = Object.freeze(['feed', 'mentions', 'background', 'hidden']);
+export const REASONS = Object.freeze({
+  notFollowed: 'not followed', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
+  burst: 'part of a burst', maintenance: 'no new words', minor: 'barely changed',
+  response: 'response', unknown: 'class unknown', plain: 'plain mention (lower class)',
+  linked: 'linked from', reposted: 'reposted by',
+});
+/**
+ * entry: { type: 'post', post, blyg (its record or null), burstHead (the head post of the burst this
+ * post is a member of, or null), mine: [origins] } or { type: 'mention', mention }.
+ * → { placement, reason }.
+ */
+export function placementOf(entry) {
+  if (entry.type === 'mention') {
+    const m = entry.mention;
+    if (m.class === 'notice') return { placement: 'background', reason: REPOST_RE.test(m.action) ? REASONS.reposted : REASONS.linked };
+    if (m.class === 'plain') return { placement: 'mentions', reason: REASONS.plain };
+    if (m.class === 'unknown') return { placement: 'mentions', reason: REASONS.unknown };
+    return { placement: 'mentions', reason: REASONS.response };
+  }
+  const p = entry.post;
+  if (!entry.blyg) return { placement: 'hidden', reason: REASONS.notFollowed };
+  if (isWithdrawn(p)) return { placement: 'background', reason: (entry.mine || []).includes(p.origin) ? REASONS.withdrawnOwn : REASONS.withdrawn };
+  if (entry.blyg.state === 'paused') return { placement: 'background', reason: REASONS.paused };
+  if (entry.burstHead) return { placement: 'background', reason: REASONS.burst };
+  if (p.read !== 'new' && p.last_change === 'maintenance') return { placement: 'background', reason: REASONS.maintenance };
+  if (p.read !== 'new' && p.last_change === 'minor') return { placement: 'background', reason: REASONS.minor };
+  return { placement: 'feed', reason: '' };
+}
+
 // ---- the view (pure) ----------------------------------------------------------
+export const VIEWS = Object.freeze(['feed', 'mentions', 'background']);
+export const viewOf = v => (VIEWS.includes(v) ? v : 'feed');
 export const FILTERS = Object.freeze(['all', 'new', 'threads', 'fragments', 'responses']);
 export const FILTER_LABELS = Object.freeze({ all: 'All', new: 'New', threads: 'Threads', fragments: 'Fragments', responses: 'Responses to me' });
 export const filterOf = v => (FILTERS.includes(v) ? v : 'all');
 
 const isResponseToMe = (it, mine) => !mine.includes(it.origin)
   && ((it.stub_of && mine.includes(it.stub_of.origin)) || (it.ref_origins || []).some(o => mine.includes(o)));
-const when = it => Date.parse(it.updated) || Date.parse(it.created) || 0;
+// A post's time for ordering and display: what it says, but never later than when this
+// companion fetched that version (§13.7: a future-dated post cannot sit on top).
+const stamp = (iso, at) => { const t = Date.parse(iso); const f = Number.isFinite(at) ? at : Infinity; return Number.isFinite(t) ? Math.min(t, f) : (f === Infinity ? 0 : f); };
+export const sortTime = it => Math.max(stamp(it.updated, it.fetched_at), stamp(it.created, it.fetched_at));
 
 /**
- * Burst folding (§13.7), display only. A thread and the posts of the SAME blyg
- * its transclusions name, whose `created` is within burstMs of the thread's
- * created or updated (the publish that first named them), are one burst under
- * the thread. A post is in at most one burst. Nothing is left out.
- * → [{ head, members }] in no particular order.
+ * Burst folding (§13.7), display only. A thread and the posts of the SAME blyg its
+ * transclusions name, whose `created` is within burstMs of the thread's created or
+ * updated (the publish that first named them), are one burst under the thread. A post is
+ * in at most one burst. Nothing is left out. → [{ head, members }].
  */
 export function foldBursts(items) {
-  const byKey = new Map(items.map(i => [i.key, i]));
+  const byIdent = new Map(items.map(i => [identOf(i.origin, i.id), i]));
   const claimed = new Set();
-  const heads = new Map(items.map(i => [i.key, { head: i, members: [] }]));
+  const heads = new Map(items.map(i => [identOf(i.origin, i.id), { head: i, members: [] }]));
   const threads = items.filter(i => i.kind === 'thread').sort((a, b) => (Date.parse(a.created) || 0) - (Date.parse(b.created) || 0));
   for (const t of threads) {
     const near = [Date.parse(t.created), Date.parse(t.updated)].filter(Number.isFinite);
     for (const r of t.refs || []) {
       if (r.origin !== t.origin) continue;
-      const k = keyOf(r.origin, r.id);
-      const m = byKey.get(k);
-      if (!m || m.key === t.key || m.kind === 'thread' || claimed.has(k)) continue;
+      const k = identOf(r.origin, r.id);
+      const m = byIdent.get(k);
+      if (!m || k === identOf(t.origin, t.id) || m.kind === 'thread' || claimed.has(k)) continue;
       const c = Date.parse(m.created);
       if (!Number.isFinite(c) || !near.some(n => Math.abs(n - c) <= LIMITS.burstMs)) continue;
       claimed.add(k);
-      heads.get(t.key).members.push(m);
+      heads.get(identOf(t.origin, t.id)).members.push(m);
     }
   }
-  return [...heads.values()].filter(h => !claimed.has(h.head.key));
+  return [...heads.values()].filter(h => !claimed.has(identOf(h.head.origin, h.head.id)));
 }
 
-/** The list for one filter: [{ head, members }] newest first, plus the count behind every filter. */
-export function listFor(allItems, filter, mine = []) {
-  const live = allItems.filter(i => !i.withdrawn);
+/**
+ * Everything the console shows, from what is held. Pure. → {
+ *   feed: { entries: [{ head, members }], counts, filter }, background: [{ type, post|mention, reason }],
+ *   mentions: [mention + reason], tabs: { feed, mentions, mentions_unseen, background } }
+ */
+export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all' }) {
+  const posts = items.filter(i => blygs[i.origin]);
+  const live = posts.filter(i => !isWithdrawn(i));
+  const folded = foldBursts(live);
+  const memberOf = new Map(); // ident → head
+  for (const e of folded) for (const m of e.members) memberOf.set(identOf(m.origin, m.id), e.head);
+  const place = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine,
+    burstHead: memberOf.get(identOf(p.origin, p.id)) || null });
+  const placed = new Map(posts.map(p => [p, place(p)]));
+  const at = view => posts.filter(p => placed.get(p).placement === view);
+  // the feed: heads (bursts folded) placed in the feed, with their members counted
+  const feedHeads = folded.filter(e => placed.get(e.head) && placed.get(e.head).placement === 'feed');
+  // the flat filters list every post of that sort that the feed or a burst holds
+  const flat = posts.filter(p => ['feed'].includes(placed.get(p).placement) || placed.get(p).reason === REASONS.burst);
   const pick = {
-    all: () => foldBursts(live),
-    new: () => foldBursts(live).filter(e => e.head.read === 'new' || e.members.some(m => m.read === 'new')),
-    threads: () => live.filter(i => i.kind === 'thread').map(head => ({ head, members: [] })),
-    fragments: () => live.filter(i => i.kind === 'fragment').map(head => ({ head, members: [] })),
-    responses: () => live.filter(i => isResponseToMe(i, mine)).map(head => ({ head, members: [] })),
+    all: () => feedHeads,
+    new: () => feedHeads.filter(e => e.head.read === 'new' || e.members.some(m => m.read === 'new')),
+    threads: () => flat.filter(i => i.kind === 'thread').map(head => ({ head, members: [] })),
+    fragments: () => flat.filter(i => i.kind === 'fragment').map(head => ({ head, members: [] })),
+    responses: () => flat.filter(i => isResponseToMe(i, mine)).map(head => ({ head, members: [] })),
   };
   const counts = {};
   for (const f of FILTERS) counts[f] = pick[f]().length;
-  const entries = pick[filterOf(filter)]()
-    .sort((a, b) => Math.max(when(b.head), ...b.members.map(when)) - Math.max(when(a.head), ...a.members.map(when)));
-  for (const e of entries) e.members.sort((a, b) => when(b) - when(a));
-  return { entries, counts };
+  const entries = pick[filterOf(filter)]().map(e => ({ head: e.head, members: [...e.members].sort((a, b) => sortTime(b) - sortTime(a)) }))
+    .sort((a, b) => Math.max(sortTime(b.head), ...b.members.map(sortTime)) - Math.max(sortTime(a.head), ...a.members.map(sortTime)));
+  const withReason = mentions.map(m => ({ ...m, ...placementOf({ type: 'mention', mention: m }) }));
+  const background = [
+    ...at('background').map(p => ({ type: 'post', post: p, reason: placed.get(p).reason, burst_head: memberOf.get(identOf(p.origin, p.id)) || null })),
+    ...withReason.filter(m => m.placement === 'background').map(m => ({ type: 'mention', mention: m, reason: m.reason })),
+  ].sort((a, b) => (b.post ? sortTime(b.post) : Date.parse(b.mention.at) || 0) - (a.post ? sortTime(a.post) : Date.parse(a.mention.at) || 0));
+  const inMentions = withReason.filter(m => m.placement === 'mentions').sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
+  return { feed: { entries, counts, filter: filterOf(filter) }, background, mentions: inMentions,
+    tabs: { feed: counts.all, mentions: inMentions.length, mentions_unseen: inMentions.filter(m => m.read === 'unseen').length, background: background.length } };
 }
 
 // ---- budget, breaker, getter -----------------------------------------------------
@@ -307,25 +459,36 @@ function newBudget(settings, now) {
 
 // ---- the engine -----------------------------------------------------------------------
 export function createFollowing({ file, get = netGet, now = Date.now, getSettings = () => followingSettingsOf({}).settings,
+  mayFetch = () => true, readToken = readTokenFile, tokenForbidden = [],
   timers = { set: (fn, ms) => setInterval(fn, ms), clear: h => clearInterval(h) }, onChange = () => {} } = {}) {
-  let state = null; // { blygs, items, last_run }
+  let state = null; // { blygs, items (by identOf), last_run, inbox }
+  const emptyInbox = () => ({ state: 'off', fetched_at: 0, generated_at: '', count: 0, error: '', never_verified: [], never_verified_count: 0, blocked_count: 0, mentions: [] });
+  // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
+  const prune = st => { for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k]; };
   const load = () => {
     if (state) return state;
     const got = readJsonState(file);
     if (got.state === 'unreadable') warnUnreadable(file, got.error);
     const v = got.state === 'ok' && got.value && typeof got.value === 'object' ? got.value : {};
     state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {},
-      last_run: v.last_run || null };
+      last_run: v.last_run || null, inbox: { ...emptyInbox(), ...(v.inbox && typeof v.inbox === 'object' ? v.inbox : {}) } };
     // a hand-edited record never makes the engine fetch something the reader paused
     for (const b of Object.values(state.blygs)) if (!BLYG_STATES.includes(b.state)) b.state = 'paused';
-    for (const i of Object.values(state.items)) if (!READ_STATES.includes(i.read)) i.read = 'seen';
-    for (const i of Object.values(state.items)) if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
+    for (const i of Object.values(state.items)) {
+      if (!READ_STATES.includes(i.read)) i.read = 'seen';
+      if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
+      if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
+      if (!i.key) i.key = randomKey();
+    }
+    if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
+    for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
+    prune(state);
     return state;
   };
-  const save = () => { refuseIfUnreadable(file); writeJson(file, load()); };
+  const save = () => { refuseIfUnreadable(file); prune(load()); writeJson(file, load()); };
   const run = { state: 'idle' };
   const schedule = { mode: 'off' };
-  let timer = null;
+  let handle; // the timer's handle: meaningful only while schedule.mode is 'scheduled'
   const breakers = new Map(); // host → { state, failures, until }
   const breakerOf = host => { if (!breakers.has(host)) breakers.set(host, { state: 'closed', failures: 0, until: 0 }); return breakers.get(host); };
   const breakerAllows = host => {
@@ -340,14 +503,15 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (b.state === 'half-open' || b.failures >= BREAKER.threshold) { if (b.state !== 'open') moveBreaker(b, 'trip'); b.until = now() + BREAKER.cooldownMs; }
   };
 
-  // The ONLY place a request is made: counted against the budget, refused by an
-  // open breaker, judged by the guard (get = netguard's guardedGet).
-  const getter = budget => async (url, { maxBytes, accept = 'application/json', timeoutMs = LIMITS.timeoutMs } = {}) => {
+  // The ONLY place a request is made: refused when fetching is off, counted against the
+  // budget, refused by an open breaker, judged by the guard (get = netguard's guardedGet).
+  const getter = budget => async (url, { maxBytes, accept = 'application/json', timeoutMs = LIMITS.timeoutMs, headers } = {}) => {
+    if (!mayFetch()) throw new FetchTrouble('off', 'fetching is off (blyg_checks)');
     const host = hostOf(url);
     if (!breakerAllows(host)) throw new FetchTrouble('breaker', `${host} failed too often; not asked again for a while`);
     budget.take();
     let r;
-    try { r = await get(String(url), { maxBytes, accept, timeoutMs: Math.max(1, Math.min(timeoutMs, budget.left())) }); }
+    try { r = await get(String(url), { maxBytes, accept, timeoutMs: Math.max(1, Math.min(timeoutMs, budget.left())), ...(headers ? { headers } : {}) }); }
     catch (e) { if (!e || e.kind !== 'refused') breakerFail(host); throw e; }
     if (Number(r.status) >= 500) breakerFail(host); else breakerOk(host);
     return r;
@@ -366,6 +530,9 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
 
   const settings = () => getSettings();
   const itemsOf = origin => Object.values(load().items).filter(i => i.origin === origin);
+  const heldItem = (origin, id) => load().items[identOf(origin, id)];
+  const byKey = key => Object.values(load().items).find(i => i.key === key) || null;
+  const copy = v => (v === null || v === undefined ? v : structuredClone(v));
 
   // ---- the follow list ----
   async function resolve(url, g) {
@@ -409,8 +576,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const st = load();
     if (!st.blygs[origin]) return false;
     delete st.blygs[origin];
-    for (const [k, i] of Object.entries(st.items)) if (i.origin === origin) delete st.items[k];
-    save(); reschedule(); onChange();
+    save(); reschedule(); onChange(); // save() prunes its posts
     return true;
   }
   function setBlygState(origin, ev) {
@@ -421,7 +587,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     save(); onChange();
     return b.state;
   }
-  const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: itemsOf(b.origin).filter(i => !i.withdrawn).length }));
+  const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: itemsOf(b.origin).filter(i => !isWithdrawn(i)).length }));
 
   // ---- importing a blogroll or directory ----
   /** What WOULD be added from OPML or a directory document (a URL, or pasted text). Adds nothing. */
@@ -445,9 +611,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       (have.has(e.origin) ? out.already : out.add).push({ origin: e.origin, title: e.title || '', author: e.author || '' });
     };
     if (head === '<') {
-      const entries = parseOpml(body);
       let n = 0;
-      for (const e of entries) {
+      for (const e of parseOpml(body)) {
         if (n++ >= LIMITS.importMax) { out.skipped.push({ title: '', url: '', reason: `only the first ${LIMITS.importMax} entries are looked at` }); break; }
         if (budget.spent()) { out.skipped.push({ title: e.title, url: e.url, reason: 'out of requests for this preview' }); continue; }
         const r = await resolve(e.url, g);
@@ -464,14 +629,13 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const added = [], skipped = [];
     for (const e of Array.isArray(entries) ? entries.slice(0, LIMITS.followMax) : []) {
       const origin = originOf(e && e.origin);
-      if (!origin || urlRefusalOf(origin)) { skipped.push(String(e && e.origin || '').slice(0, 200)); continue; }
+      if (!origin || urlRefusal(origin)) { skipped.push(String(e && e.origin || '').slice(0, 200)); continue; }
       try { if (addBlyg({ origin, title: e.title, author: e.author, via: 'import' })) added.push(origin); else skipped.push(origin); }
       catch { skipped.push(origin); }
     }
     if (added.length) { save(); reschedule(); onChange(); }
     return { added, skipped };
   }
-  const urlRefusalOf = origin => urlRefusal(origin);
 
   // ---- reconciliation ----
   const backoffMs = failures => Math.min(LIMITS.backoffFirstMs * 2 ** Math.max(0, failures - 1), LIMITS.backoffMaxMs);
@@ -488,12 +652,28 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     moveBlyg(b, 'fail');
     b.retry_after = now() + backoffMs(b.failures);
   }
+  const tombstone = (held, e) => ({ key: held.key || randomKey(), origin: held.origin, id: held.id, kind: 'withdrawn', version: e.version, index_version: e.version,
+    created: held.created, updated: e.updated || held.updated, fetched_at: now(), page: held.page, content_hash: held.content_hash, read: held.read || 'seen',
+    identity: held.identity || 'unverified', last_change: 'new-words', stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [],
+    title: '', excerpt: '', text: '', text_chars: 0, author: '', first_seen: held.first_seen, maintenance: 0 });
+  const totalItems = () => Object.values(load().items).filter(i => !isWithdrawn(i)).length;
+  const itemUrlFor = (manifest, origin, id) => {
+    const t = typeof manifest.item === 'string' && manifest.item ? manifest.item : 'items/{id}.json';
+    try { return new URL(t.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(k === 'id' ? id : '')), origin).href; } catch { return ''; }
+  };
+  function halt(b, r, tally) {
+    // out of budget, fetching off, or the host's breaker is open: not the blyg's fault, no mark against it
+    if (r.kind === 'limit' || r.kind === 'breaker' || r.kind === 'off') { tally.deferred++; return; }
+    noteFailure(b, 'trouble', r.message); tally.unreachable++;
+  }
 
-  /** One blyg: manifest, index, diff, changed documents. → counts. */
+  /** One blyg: manifest, index, diff, changed documents. Stops, leaving no trace, if the reader unfollows it meanwhile. */
   async function reconcileBlyg(b, g, cfg, tally) {
     const st = load();
+    const alive = () => load().blygs[b.origin] === b;
     b.last_try = now();
     const man = await fetchJson(g, new URL('blyg.json', b.origin).href, LIMITS.manifestBytes);
+    if (!alive()) { tally.aborted++; return; }
     if (man.status === 'trouble') return halt(b, man, tally);
     if (man.status !== 'ok' || !isManifest(man.json) || identityOf(man.url) !== b.origin) {
       noteFailure(b, 'absent', 'it has no manifest at its origin'); tally.absent++; return;
@@ -503,8 +683,11 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     let indexUrl;
     try { indexUrl = new URL(typeof man.json.items === 'string' && man.json.items ? man.json.items : 'items/index.json', b.origin).href; } catch { indexUrl = ''; }
     if (!isWebUrl(indexUrl)) { noteFailure(b, 'absent', 'its items index is not a web address'); tally.absent++; return; }
+    if (!within(b.origin, indexUrl)) { b.last_error = REFUSALS.index; tally.refused++; return; }
     const idx = await fetchJson(g, indexUrl, LIMITS.indexBytes);
+    if (!alive()) { tally.aborted++; return; }
     if (idx.status === 'trouble') return halt(b, idx, tally);
+    if (idx.status === 'ok' && !within(b.origin, idx.url)) { b.last_error = REFUSALS.redirect; tally.refused++; return; }
     if (idx.status !== 'ok' || !Array.isArray(idx.json.items)) { noteFailure(b, 'absent', 'it has no items index'); tally.absent++; return; }
     // the manifest and the index answered: this blyg is reachable and present
     if (canMoveBlyg(b, 'recover')) moveBlyg(b, 'recover');
@@ -520,71 +703,100 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     // the window: the newest `perBlyg` live posts; withdrawn ones cost nothing to hold
     let live = 0;
     const window = entries.filter(e => e.kind === 'withdrawn' || live++ < cfg.following_max_items_per_blyg);
-    const inWindow = new Set(window.map(e => keyOf(b.origin, e.id)));
+    const inWindow = new Set(window.map(e => identOf(b.origin, e.id)));
     // A held post that is not in the window is dropped: either it is gone from the index entirely
     // (the index lists every post ever published, §6.2) or it is older than the per-blyg cap.
-    for (const i of itemsOf(b.origin)) if (!inWindow.has(i.key)) { delete st.items[i.key]; tally.removed++; }
+    for (const i of itemsOf(b.origin)) if (!inWindow.has(identOf(i.origin, i.id))) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
 
     let docs = 0;
     for (const e of window) {
-      const key = keyOf(b.origin, e.id);
-      const held = st.items[key];
-      if (held && e.version < held.version) { tally.regressions++; continue; } // §13.3: a lower version is not adopted
+      const ident = identOf(b.origin, e.id);
+      const held = st.items[ident];
+      // what the INDEX said last time we looked: a document that disagrees with its index entry
+      // (an index that lies about versions) is not fetched again until the entry changes
+      const known = held ? (held.index_version ?? held.version) : 0;
+      if (held && e.version === known && (e.kind === 'withdrawn') === isWithdrawn(held)) continue;
+      if (held && e.version < known) { tally.regressions++; continue; } // §13.3: a lower version is not adopted
       if (e.kind === 'withdrawn') {
-        if (held && !held.withdrawn) { st.items[key] = { ...tombstone(held), version: e.version }; tally.withdrawn++; }
+        if (held) { st.items[ident] = tombstone(held, e); if (!isWithdrawn(held)) tally.withdrawn++; }
         continue;
       }
-      if (held && !held.withdrawn && e.version === held.version) continue;
-      if (held && held.withdrawn && e.version <= held.version) continue;
       if (!held && totalItems() >= cfg.following_max_items_total) { tally.capped++; continue; }
-      if (docs >= LIMITS.docsPerBlygRun || budgetSpent(g)) { tally.deferred++; continue; }
+      if (docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      const url = itemUrlFor(man.json, b.origin, e.id);
+      if (!isWebUrl(url)) { tally.invalid++; continue; }
+      if (!within(b.origin, url)) { b.last_error = REFUSALS.item; tally.refused++; continue; }
       docs++;
-      const r = await fetchJson(g, itemUrlFor(man.json, b.origin, e.id), LIMITS.itemBytes);
-      if (r.status === 'trouble') { tally.errors++; if (r.kind === 'limit') tally.deferred++; continue; }
+      const r = await fetchJson(g, url, LIMITS.itemBytes);
+      if (!alive()) { tally.aborted++; return; }
+      if (r.status === 'trouble') { tally.errors++; if (r.kind === 'limit' || r.kind === 'off') tally.deferred++; continue; }
+      if (r.status === 'ok' && !within(b.origin, r.url)) { b.last_error = REFUSALS.redirect; tally.refused++; continue; }
       const doc = r.json;
       if (r.status !== 'ok' || docRefusal(doc, { id: e.id, origin: b.origin })) { tally.invalid++; continue; }
       const rec = recordFromDoc(doc, b.origin, b);
       if (rec.invalid) { tally.invalid++; continue; }
       if (held && rec.version < held.version) { tally.regressions++; continue; }
-      if (rec.withdrawn) { st.items[key] = { ...tombstone(held || rec), version: rec.version }; tally.withdrawn++; continue; }
-      if (!held || held.withdrawn) {
-        st.items[key] = { ...rec, read: 'new', identity: 'unverified', first_seen: new Date(now()).toISOString(), maintenance: 0 };
+      if (doc.version !== e.version) tally.mismatched++;
+      const common = { index_version: e.version, fetched_at: now() };
+      if (isWithdrawn(rec)) { st.items[ident] = { ...tombstone(held || { ...rec, key: randomKey() }, rec), index_version: e.version }; tally.withdrawn++; continue; }
+      const change = changeOf(held, rec, cfg.following_barely_changed_percent);
+      if (!held || isWithdrawn(held)) {
+        st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: new Date(now()).toISOString(), maintenance: 0, last_change: 'new-words',
+          ...(doc.version === e.version ? {} : { index_mismatch: { index: e.version, document: doc.version } }) };
         tally.new++;
-      } else if (held.content_hash === rec.content_hash) {
-        // §13.2: same words, new version: kept current, never resurfaced
-        st.items[key] = { ...held, ...rec, read: held.read, identity: held.identity, first_seen: held.first_seen, maintenance: (held.maintenance || 0) + 1 };
-        tally.maintenance++;
       } else {
-        st.items[key] = { ...held, ...rec, read: held.read, identity: held.identity, first_seen: held.first_seen, maintenance: held.maintenance || 0 };
-        if (canMoveRead(st.items[key], 'resurface')) moveRead(st.items[key], 'resurface');
-        tally.edited++;
+        const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
+          maintenance: (held.maintenance || 0) + (change === 'maintenance' ? 1 : 0) };
+        if (doc.version === e.version) delete next.index_mismatch; else next.index_mismatch = { index: e.version, document: doc.version };
+        st.items[ident] = next;
+        if (change === 'maintenance') tally.maintenance++;
+        else if (change === 'minor') tally.minor++;
+        else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
       }
     }
   }
-  const budgetSpent = g => g.budget.spent();
-  const totalItems = () => Object.values(load().items).filter(i => !i.withdrawn).length;
-  const tombstone = i => ({ key: i.key, origin: i.origin, id: i.id, kind: 'withdrawn', version: i.version, created: i.created, updated: i.updated,
-    page: i.page, content_hash: i.content_hash, withdrawn: true, read: i.read || 'seen', identity: i.identity || 'unverified',
-    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', author: '', first_seen: i.first_seen, maintenance: 0 });
-  const itemUrlFor = (manifest, origin, id) => {
-    const t = typeof manifest.item === 'string' && manifest.item ? manifest.item : 'items/{id}.json';
-    try { return new URL(t.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(k === 'id' ? id : '')), origin).href; } catch { return ''; }
-  };
-  function halt(b, r, tally) {
-    // out of budget, or the host's breaker is open: not the blyg's fault, no mark against it
-    if (r.kind === 'limit' || r.kind === 'breaker') { tally.deferred++; return; }
-    noteFailure(b, 'trouble', r.message); tally.unreachable++;
+
+  // ---- the mentions inbox ----
+  async function refreshInbox(g, cfg) {
+    const st = load();
+    const box = st.inbox;
+    const url = cfg.inbox_api_url;
+    if (!url) { if (box.state !== 'off') moveInbox(box, 'unset'); box.mentions = []; return; }
+    if (box.state === 'off') moveInbox(box, 'set');
+    box.fetched_at = now();
+    let token;
+    try { token = readToken(cfg.inbox_token_file, tokenForbidden); }
+    catch (e) { moveInbox(box, 'deny'); box.error = cleanText(String(e && e.message), 200); return; }
+    const redact = redactor(token);
+    let r;
+    try { r = await g(url, { maxBytes: LIMITS.inboxBytes, accept: 'application/json', headers: { authorization: `Bearer ${token}` } }); }
+    catch (e) {
+      if (e && (e.kind === 'limit' || e.kind === 'breaker' || e.kind === 'off')) return; // not asked: the state stays what it was
+      moveInbox(box, 'fail'); box.error = cleanText(redact(String((e && e.message) || 'could not fetch')), 200); return;
+    }
+    const code = Number(r.status) || 0;
+    if (code === 401 || code === 403) { moveInbox(box, 'deny'); box.error = `the inbox answered ${code}`; return; }
+    let json = null;
+    if (code >= 200 && code < 300) { try { json = JSON.parse(String(r.text ?? '')); } catch { json = null; } }
+    if (!json || typeof json !== 'object' || Array.isArray(json)) { moveInbox(box, 'fail'); box.error = code >= 200 && code < 300 ? 'the inbox did not answer with a JSON object' : `the inbox answered ${code}`; return; }
+    const parsed = parseInbox(json, redact, LIMITS.mentionsKept);
+    const old = new Map(box.mentions.map(m => [m.ident, m]));
+    box.mentions = parsed.mentions.map(m => { const o = old.get(m.ident); return { ...m, key: o ? o.key : randomKey(), read: o ? o.read : 'unseen' }; });
+    Object.assign(box, { generated_at: parsed.generated_at, count: parsed.count, never_verified: parsed.never_verified,
+      never_verified_count: parsed.never_verified_count, blocked_count: parsed.blocked_count, error: '' });
+    moveInbox(box, 'succeed');
   }
 
-  /** Refresh every blyg that is due. At most one run at a time; a second ask while one is going is refused, not queued. */
+  /** Refresh every blyg that is due, and the inbox. At most one run at a time; a second ask while one is going is refused, not queued. */
   async function refresh({ reason = 'demand' } = {}) {
+    if (!mayFetch()) return { started: false, reason: 'fetching is off (blyg_checks), so nothing was asked' };
     if (run.state !== 'idle') return { started: false, reason: 'a refresh is already running' };
     moveRun(run, 'begin');
     const cfg = settings();
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget;
-    const tally = { reason, new: 0, edited: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, absent: 0, unreachable: 0, blygs: 0, skipped: 0, requests: 0 };
+    const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
+      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, blygs: 0, skipped: 0, requests: 0 };
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
       tally.skipped = Object.keys(load().blygs).length - todo.length;
@@ -594,6 +806,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
         save();
       }
+      try { await refreshInbox(g, cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
       tally.requests = budget.requests;
       load().last_run = { ...tally, at: new Date(now()).toISOString() };
       save();
@@ -603,29 +816,33 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
 
   // ---- the timer ----
+  // Armed while there is something to refresh (a followed blyg, or an inbox set) and fetching is allowed.
   function reschedule() {
-    const want = Object.keys(load().blygs).length > 0;
-    if (timer !== null) { timers.clear(timer); timer = null; }
+    const want = mayFetch() && (Object.keys(load().blygs).length > 0 || !!settings().inbox_api_url);
+    if (schedule.mode === 'scheduled') timers.clear(handle);
+    handle = undefined;
     if (!want) { if (schedule.mode === 'scheduled') moveSchedule(schedule, 'disarm'); return schedule.mode; }
     moveSchedule(schedule, 'arm');
-    const t = timers.set(() => { refresh({ reason: 'timer' }).catch(e => console.warn(`[following] ${e.message}`)); },
-      settings().following_refresh_minutes * 60 * 1000);
-    if (t && t.unref) t.unref();
-    timer = t;
+    handle = timers.set(() => {
+      // fetching turned off since: the timer disarms itself rather than ticking on
+      if (!mayFetch()) { reschedule(); return; }
+      refresh({ reason: 'timer' }).catch(e => console.warn(`[following] ${e.message}`));
+    }, settings().following_refresh_minutes * 60 * 1000);
+    if (handle && handle.unref) handle.unref();
     return schedule.mode;
   }
 
   // ---- reading state, identity ----
   function readMove(key, ev) {
-    const rec = load().items[key];
-    if (!rec || rec.withdrawn) throw new Error('no such post');
+    const rec = byKey(key);
+    if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     moveRead(rec, ev); save(); onChange();
     return rec.read;
   }
   function markAllSeen(origin = '') {
     let n = 0;
     for (const i of Object.values(load().items)) {
-      if (i.withdrawn || (origin && i.origin !== origin) || !canMoveRead(i, 'see')) continue;
+      if (isWithdrawn(i) || (origin && i.origin !== origin) || !canMoveRead(i, 'see')) continue;
       moveRead(i, 'see'); n++;
     }
     if (n) { save(); onChange(); }
@@ -633,81 +850,142 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
   /** A note for this post was exported: its read state becomes `responded`. → false when the post is not on the list. */
   function markResponded(origin, id) {
-    const rec = load().items[keyOf(String(origin), String(id))];
-    if (!rec || rec.withdrawn) return false;
+    const rec = heldItem(String(origin), String(id));
+    if (!rec || isWithdrawn(rec)) return false;
     moveRead(rec, 'respond'); save(); onChange();
     return true;
   }
+  function mentionSeen(key) {
+    const m = load().inbox.mentions.find(x => x.key === key);
+    if (!m) throw new Error('no such mention');
+    if (canMoveMention(m, 'see')) { moveMention(m, 'see'); save(); onChange(); }
+    return m.read;
+  }
+  function allMentionsSeen() {
+    let n = 0;
+    for (const m of load().inbox.mentions) if (canMoveMention(m, 'see')) { moveMention(m, 'see'); n++; }
+    if (n) { save(); onChange(); }
+    return n;
+  }
+  /** The post a mention's source address is, when it is on the list. */
+  const feedItemFor = m => (m.source_url ? Object.values(load().items).find(i => !isWithdrawn(i) && i.page && samePage(i.page, m.source_url)) || null : null);
   /**
-   * The page at `url` is a post the list holds? → { verdict, item?, result? }
-   *   none        the list knows no such page
-   *   agrees      the page's own links (`hints`, from blyg.cleanHints) name the same blyg and post
-   *   unverified  the page sent no links to compare; the list's word is used
-   *   disagrees   the page's links name another blyg or post; the list's word is NOT used
-   * For agrees and unverified, `result` has the shape blyg.detect answers, built
-   * from what the list holds, so detection is skipped.
+   * Open a post or a mention: the one path. A post becomes `opened`; a mention becomes `seen` (and the post of
+   * the list its source is, if any, `opened`). → { url }, the ORIGINAL page. The caller opens it, and Discuss
+   * identifies it when the page asks (identityFor), from the list only if the page's own links agree.
+   */
+  function open(key) {
+    const rec = byKey(key);
+    if (rec) {
+      if (isWithdrawn(rec)) throw new Error('no such post');
+      if (canMoveRead(rec, 'open')) { moveRead(rec, 'open'); save(); onChange(); }
+      return { url: rec.page, opens_on: hostOf(rec.page) !== hostOf(rec.origin) ? hostOf(rec.page) : '' };
+    }
+    const m = load().inbox.mentions.find(x => x.key === key);
+    if (!m) throw new Error('no such post or mention');
+    if (!m.source_url) throw new Error('that mention has no link to open');
+    if (canMoveMention(m, 'see')) moveMention(m, 'see');
+    const post = feedItemFor(m);
+    if (post && canMoveRead(post, 'open')) moveRead(post, 'open');
+    save(); onChange();
+    return { url: m.source_url, opens_on: '' };
+  }
+
+  /**
+   * The page at `url` is a post the list holds? → { verdict, item?, reason?, result? } (IDENTITY_VERDICTS).
+   * THE LIST ALONE NEVER SUPPLIES IDENTITY. A page's address, and the `page` a blyg claims for a post, prove nothing
+   * (§5.8: a page may be anywhere, even on another host, and a blyg may name a page that is not its own). The list's
+   * origin, id and version are used for a page only when the page's OWN links agree: a <link rel="blyg"> that
+   * resolves to the same origin AND a JSON alternate for the item, inside that origin, whose id is the post's. No
+   * links, or one of the two, is `unconfirmed`: normal detection runs. Links that name anything else are `disagrees`:
+   * detection runs and the entry says so. `result`, for `agrees`, has the shape blyg.detect answers, source 'from-list'.
    */
   function identityFor(url, hints) {
-    const rec = Object.values(load().items).find(i => !i.withdrawn && i.page && samePage(i.page, url));
-    if (!rec) return { verdict: 'none' };
-    const blyg = load().blygs[rec.origin];
-    if (!blyg) return { verdict: 'none' };
+    const claimants = Object.values(load().items).filter(i => !isWithdrawn(i) && i.page && samePage(i.page, url) && load().blygs[i.origin]);
+    if (!claimants.length) return { verdict: 'none' };
     const h = cleanHints(hints) || { blyg: '', json: '' };
-    let why = '';
-    if (h.json) {
-      const named = new URL(h.json).pathname.split(/[/.]/).filter(seg => ID_RE.test(seg));
-      if (named.length && !named.includes(rec.id)) why = `the page's own link names post ${named[0]}, the list says ${rec.id}`;
+    const judge = rec => {
+      let why = '';
+      let jsonOk = false, blygOk = false;
+      if (h.json) {
+        const named = new URL(h.json).pathname.split(/[/.]/).filter(seg => ID_RE.test(seg));
+        if (!within(rec.origin, h.json)) why = `the page's own item link is not inside the blyg the list says (${rec.origin})`;
+        else if (!named.length || !named.includes(rec.id)) why = `the page's own link names post ${named[0] || '(none)'}, the list says ${rec.id}`;
+        else jsonOk = true;
+      }
+      if (!why && h.blyg) {
+        if (identityOf(h.blyg) !== rec.origin && candidateBase(h.blyg) !== rec.origin) why = `the page's own link names the blyg at ${cleanText(identityOf(h.blyg), 200)}, the list says ${rec.origin}`;
+        else blygOk = true;
+      }
+      return why ? { rec, why } : { rec, agrees: jsonOk && blygOk };
+    };
+    const verdicts = claimants.map(judge);
+    const yes = verdicts.find(v => v.agrees);
+    if (yes) {
+      const rec = yes.rec, blyg = load().blygs[rec.origin];
+      if (rec.identity !== 'agrees') { setIdentity(rec, 'agree'); delete rec.identity_note; save(); }
+      return { verdict: 'agrees', item: copy(rec), result: {
+        status: 'blyg', source: 'from-list', site: { origin: rec.origin, title: blyg.title, author: blyg.author },
+        // the list holds an excerpt, not the post: a passage cannot be checked against it
+        html: '', text: rec.text,
+        item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version, pinned: false,
+          pinned_versions: [], page: rec.page, pinned_page: '', json: '', source: blyg.title, author: rec.author },
+      } };
     }
-    if (!why && h.blyg) {
-      const asManifest = identityOf(h.blyg), asBase = candidateBase(h.blyg);
-      if (asManifest !== rec.origin && asBase !== rec.origin) why = `the page's own link names the blyg at ${cleanText(asManifest, 200)}, the list says ${rec.origin}`;
+    const no = verdicts.filter(v => v.why);
+    if (no.length) {
+      for (const v of no) { setIdentity(v.rec, 'disagree'); v.rec.identity_note = cleanText(v.why, 300); }
+      save(); onChange();
+      return { verdict: 'disagrees', item: copy(no[0].rec), reason: no[0].why };
     }
-    if (why) {
-      setIdentity(rec, 'disagree'); rec.identity_note = cleanText(why, 300); save(); onChange();
-      return { verdict: 'disagrees', item: rec, reason: why };
-    }
-    const verdict = h.blyg || h.json ? 'agrees' : 'unverified';
-    if (verdict === 'agrees' && rec.identity !== 'agrees') { setIdentity(rec, 'agree'); delete rec.identity_note; save(); }
-    return { verdict, item: rec, result: {
-      status: 'blyg', site: { origin: rec.origin, title: blyg.title, author: blyg.author },
-      // the list holds an excerpt, not the post: a passage cannot be checked against it
-      html: '', text: rec.text, text_partial: true, from_following: true,
-      item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version, pinned: false,
-        pinned_versions: [], page: rec.page, pinned_page: '', json: '', source: blyg.title, author: rec.author },
-    } };
+    return { verdict: 'unconfirmed', item: copy(claimants[0]) };
   }
 
   // ---- what the page shows ----
-  function view({ filter = 'all', mine = [] } = {}) {
+  function view({ view: tab = 'feed', filter = 'all', mine = [] } = {}) {
     const st = load();
-    const { entries, counts } = listFor(Object.values(st.items), filter, mine);
+    const v = buildView({ items: Object.values(st.items), blygs: st.blygs, mentions: st.inbox.mentions, mine, filter });
     const titleOf = o => (st.blygs[o] && st.blygs[o].title) || '';
     const decorate = i => {
-      const target = i.stub_of && i.stub_of.id ? st.items[keyOf(i.stub_of.origin, i.stub_of.id)] : null;
-      return { ...i, blyg_title: titleOf(i.origin),
+      const target = i.stub_of && i.stub_of.id ? heldItem(i.stub_of.origin, i.stub_of.id) : null;
+      return { ...copy(i), blyg_title: titleOf(i.origin), shown_at: new Date(sortTime(i)).toISOString(),
         versions_note: i.version > 1 ? `${i.version} versions` : '',
+        opens_on: i.page && hostOf(i.page) !== hostOf(i.origin) ? hostOf(i.page) : '',
         in_response_to: i.stub_of ? { origin: i.stub_of.origin, id: i.stub_of.id,
-          label: (target && !target.withdrawn && (target.title || target.excerpt)) || titleOf(i.stub_of.origin) || i.stub_of.origin } : null };
+          label: (target && !isWithdrawn(target) && (target.title || target.excerpt)) || titleOf(i.stub_of.origin) || i.stub_of.origin } : null };
     };
-    return { filter: filterOf(filter), counts, run: { ...run }, schedule: { ...schedule }, last_run: st.last_run,
-      blygs: listBlygs(), entries: entries.map(e => ({ head: decorate(e.head), members: e.members.map(decorate) })) };
+    const mention = m => { const p = feedItemFor(m); return { ...copy(m), feed_key: p ? p.key : '' }; };
+    const box = st.inbox;
+    return { view: viewOf(tab), filter: v.feed.filter, counts: v.feed.counts, tabs: v.tabs,
+      run: { ...run }, schedule: { ...schedule }, last_run: copy(st.last_run), blygs: listBlygs(),
+      entries: viewOf(tab) === 'feed' ? v.feed.entries.map(e => ({ head: decorate(e.head), members: e.members.map(decorate) })) : [],
+      background: viewOf(tab) === 'background' ? v.background.map(b => (b.type === 'post'
+        ? { type: 'post', reason: b.reason, post: decorate(b.post), burst_head_title: b.burst_head ? (b.burst_head.title || b.burst_head.excerpt) : '' }
+        : { type: 'mention', reason: b.reason, mention: mention(b.mention) })) : [],
+      mentions: viewOf(tab) === 'mentions' ? v.mentions.map(mention) : [],
+      inbox: { state: box.state, fetched_at: box.fetched_at, generated_at: box.generated_at, count: box.count, error: box.error,
+        never_verified: [...box.never_verified], never_verified_count: box.never_verified_count, blocked_count: box.blocked_count } };
   }
-  const itemByKey = key => load().items[key] || null;
+  const itemByKey = key => copy(byKey(key));
 
   return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove, markAllSeen,
-    markResponded, identityFor, view, itemByKey, run, schedule, breakers,
-    start: () => reschedule(), stop: () => { if (timer !== null) { timers.clear(timer); timer = null; } if (schedule.mode === 'scheduled') moveSchedule(schedule, 'disarm'); } };
+    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey,
+    keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
+    runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
+    breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },
+    start: () => reschedule(),
+    stop: () => { if (schedule.mode === 'scheduled') { timers.clear(handle); handle = undefined; moveSchedule(schedule, 'disarm'); } } };
 }
 
 // ---- the routes -----------------------------------------------------------------------
-// ONE table. server.mjs serves nothing under /following except through it, after
-// the same gate every other route passes and with the owner check applied to
-// each entry (a reader's list is the owner's, not a guest's), and the auth test
-// walks this table.
+// ONE table. server.mjs serves nothing under /following except through it, after the
+// same gate every other route passes, with the owner check and the cross-site check
+// applied to each entry (a reader's list is the owner's, not a guest's), and the auth
+// test walks this table.
 export const ROUTES = Object.freeze([
   { method: 'GET', path: '/following', what: 'the page' },
-  { method: 'GET', path: '/following/data', what: 'the list as JSON' },
-  { method: 'GET', path: '/following/open', what: 'open a post (marks it opened, redirects to its page)' },
+  { method: 'GET', path: '/following/data', what: 'the console as JSON' },
+  { method: 'POST', path: '/following/open', what: 'open a post or mention (marks it, answers with the original address)' },
   { method: 'POST', path: '/following/follow', what: 'follow a blyg by any URL on it' },
   { method: 'POST', path: '/following/unfollow', what: 'stop following' },
   { method: 'POST', path: '/following/state', what: 'pause or resume one' },
@@ -715,6 +993,7 @@ export const ROUTES = Object.freeze([
   { method: 'POST', path: '/following/import-confirm', what: 'add what was confirmed' },
   { method: 'POST', path: '/following/refresh', what: 'refresh now' },
   { method: 'POST', path: '/following/read', what: 'move a post\'s read state' },
-  { method: 'POST', path: '/following/settings', what: 'refresh interval, caps, my_origins' },
+  { method: 'POST', path: '/following/mention-read', what: 'mark a mention (or all) seen' },
+  { method: 'POST', path: '/following/settings', what: 'refresh interval, caps, my_origins, inbox' },
 ]);
 export const routeOf = (method, path) => ROUTES.find(r => r.method === method && r.path === path) || null;

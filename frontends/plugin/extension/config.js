@@ -218,8 +218,27 @@
     following_max_items_total: Object.freeze({ dflt: 2000, min: 50, max: 20000, what: 'items kept in all' }),
     following_run_seconds: Object.freeze({ dflt: 60, min: 5, max: 600, what: 'seconds one refresh may take' }),
     following_run_requests: Object.freeze({ dflt: 200, min: 5, max: 2000, what: 'requests one refresh may make' }),
+    following_barely_changed_percent: Object.freeze({ dflt: 2, min: 0, max: 20, what: 'percent of a post that may change and still count as barely changed (0 = identical words only)' }),
   });
+  // …and three more. `following_barely_changed_percent` is the reader-local threshold of
+  // spec 13.2 for "a barely changed version" (0 = only an identical content_hash is
+  // maintenance); it is never advertised anywhere. `inbox_api_url` (https only) and
+  // `inbox_token_file` (an absolute path; the token is the file's first line and is never
+  // kept in settings) name the owner's own mentions inbox.
   const MY_ORIGINS_MAX = 100;
+  function inboxUrlOf(raw) {
+    if (raw === undefined || raw === null || raw === '') return { value: '', refused: false };
+    let u;
+    try { u = new URL(String(raw).trim()); } catch { return { value: '', refused: true }; }
+    if (u.protocol !== 'https:' || u.username || u.password || u.hash || String(raw).length > 500) return { value: '', refused: true };
+    return { value: u.href, refused: false };
+  }
+  function tokenFileOf(raw) {
+    if (raw === undefined || raw === null || raw === '') return { value: '', refused: false };
+    const s = String(raw).trim();
+    if (!/^(\/|[A-Za-z]:[\\/])/.test(s) || /[\u0000-\u001f]/.test(s) || s.length > 1000) return { value: '', refused: true };
+    return { value: s, refused: false };
+  }
   function originOf(raw) {
     let u;
     try { u = new URL(String(raw == null ? '' : raw).trim()); } catch { return ''; }
@@ -252,6 +271,8 @@
       if (list.length > MY_ORIGINS_MAX && refused.indexOf('my_origins') === -1) refused.push('my_origins');
     }
     settings.my_origins = mine;
+    const iu = inboxUrlOf(c.inbox_api_url); settings.inbox_api_url = iu.value; if (iu.refused) refused.push('inbox_api_url');
+    const tf = tokenFileOf(c.inbox_token_file); settings.inbox_token_file = tf.value; if (tf.refused) refused.push('inbox_token_file');
     return { settings, refused };
   }
 

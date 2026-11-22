@@ -199,11 +199,15 @@ export async function fetchRefusal(raw, resolve = systemResolve) {
  * and `transport` ({ http, https }) are injectable for the tests.
  */
 export async function guardedGet(url, { maxBytes, timeoutMs, accept = '*/*', ua = DEFAULT_UA, redirects = 5,
-  tooBig = 'refuse', resolve = systemResolve, transport = { http, https } } = {}) {
+  tooBig = 'refuse', resolve = systemResolve, transport = { http, https }, headers = {} } = {}) {
   if (TOO_BIG.indexOf(tooBig) === -1) throw new Error('guardedGet: tooBig must be one of ' + TOO_BIG.join(', '));
   const deadline = Date.now() + timeoutMs;
   const late = () => new FetchTrouble('timeout', `no answer from ${url} in ${Math.round(timeoutMs / 1000)}s`);
   let at = String(url);
+  // `headers` (a credential, say) go only to the ORIGIN the fetch started at: a
+  // redirect to anywhere else is followed without them
+  let firstOrigin = '';
+  try { firstOrigin = new URL(at).origin; } catch { firstOrigin = ''; }
   for (let hop = 0; ; hop++) {
     // a hop after the first is named as the redirect it is
     const refuse = why => new FetchTrouble('refused', hop
@@ -217,7 +221,8 @@ export async function guardedGet(url, { maxBytes, timeoutMs, accept = '*/*', ua 
       vetted = await Promise.race([vetHost(host, resolve),
         new Promise((_, no) => setTimeout(() => no(late()), Math.max(0, deadline - Date.now())).unref?.())]);
     } catch (e) { throw (e && e.kind === 'refused') ? refuse(e.message) : e; }
-    const res = await requestOnce(transport, u, host, vetted, accept, ua, deadline, late);
+    const extra = u.origin === firstOrigin ? headers : {};
+    const res = await requestOnce(transport, u, host, vetted, accept, ua, deadline, late, extra);
     const loc = res.statusCode >= 300 && res.statusCode < 400 ? res.headers.location : null;
     if (loc) {
       res.resume();
@@ -231,7 +236,7 @@ export async function guardedGet(url, { maxBytes, timeoutMs, accept = '*/*', ua 
   }
 }
 
-function requestOnce(transport, u, host, vetted, accept, ua, deadline, late) {
+function requestOnce(transport, u, host, vetted, accept, ua, deadline, late, extra = {}) {
   return new Promise((resolve, reject) => {
     const mod = u.protocol === 'https:' ? transport.https : transport.http;
     const req = mod.request({
@@ -241,7 +246,7 @@ function requestOnce(transport, u, host, vetted, accept, ua, deadline, late) {
       // environment (proxyEnv: {}), so nothing between here and the checked
       // address decides where the connection goes
       agent: new (u.protocol === 'https:' ? https.Agent : http.Agent)({ keepAlive: false, proxyEnv: {} }),
-      headers: { 'user-agent': ua, accept, 'accept-encoding': 'identity' },
+      headers: { ...extra, 'user-agent': ua, accept, 'accept-encoding': 'identity' },
       // the connection may go to the checked address and nowhere else
       lookup: (_h, opts, cb) => (opts && opts.all
         ? cb(null, [{ address: vetted.address, family: vetted.family }])

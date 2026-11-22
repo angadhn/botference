@@ -1,0 +1,28 @@
+{
+  "generated_at": "2026-11-20T09:00:00Z",
+  "count": 7,
+  "capacity": { "used": 7, "max": 500 },
+  "failure_log": { "never_verified": 2, "unreachable": 1 },
+  "never_verified": [
+    { "who": "Pat Example", "source": "https://pat.example.test/notes/a" },
+    "https://sam.example.test/orphan"
+  ],
+  "blocked": [ { "source": "https://spam.example.test/x" } ],
+  "mentions": [
+    { "id": "m1", "who": "Ada Invented", "blyg_title": "Ada's Notes", "action": "replied", "version": 2,
+      "timestamp": "2026-11-19T10:00:00Z", "quote": "an invented passage about gardens",
+      "source": "https://ada.example.test/a/t/00000000000000000000000001/", "post_title": "On gardens", "post_url": "https://me.example.test/t/aaaaaaaaaaaaaaaaaaaaaaaaaa/" },
+    { "id": "m2", "who": "Bo Invented", "blyg_title": "Bo's Blyg", "action": "quoted", "version": 1,
+      "timestamp": "2026-11-18T10:00:00Z", "quote": "another invented passage",
+      "source": "https://bo.example.test/f/bbbbbbbbbbbbbbbbbbbbbbbbbb/", "post_title": "On gardens", "post_url": "https://me.example.test/t/aaaaaaaaaaaaaaaaaaaaaaaaaa/" },
+    { "id": "m3", "who": "Cy Invented", "action": "linked", "timestamp": "2026-11-17T10:00:00Z",
+      "source": "https://cy.example.test/links", "post_title": "On kettles", "post_url": "https://me.example.test/t/cccccccccccccccccccccccccc/" },
+    { "id": "m4", "who": { "name": "Di Invented" }, "action": "reposted", "timestamp": 1763500000,
+      "source": "https://di.example.test/r/1", "post_title": "On kettles", "post_url": "https://me.example.test/t/cccccccccccccccccccccccccc/" },
+    { "id": "m5", "who": "Ed Invented", "action": "webmention", "timestamp": "2026-11-16T10:00:00Z",
+      "source": "https://ed.example.test/plain", "post_title": "On kettles", "post_url": "https://me.example.test/t/cccccccccccccccccccccccccc/" },
+    { "id": "m6", "who": "Flo Invented", "timestamp": "2026-11-15T10:00:00Z", "quote": "a mention that does not say what it is" },
+    { "id": "m7", "who": "<script>alert(1)</script>‮Evil", "action": "replied", "quote": "<img src=x onerror=alert(1)> javascript:alert(1)",
+      "source": "javascript:alert(1)", "post_title": "</title><script>alert(2)</script>", "post_url": "javascript:alert(3)" }
+  ]
+}

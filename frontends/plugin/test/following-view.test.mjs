@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { followingPage } from '../following-view.mjs';
-import { followingSettingsOf, listFor } from '../following.mjs';
+import { followingSettingsOf, buildView } from '../following.mjs';
 
 const HOSTILE = [
   '<script>alert(1)</script>', '"><img src=x onerror=alert(1)>', "' onmouseover='alert(1)", 'javascript:alert(1)',
@@ -21,16 +21,17 @@ const rec = (n, text) => ({ key: `k${n}`, origin: `https://x${n}.web.test/`, id:
 
 test('hostile titles, excerpts, authors, notes and labels are escaped; hrefs are only the page\'s own routes', () => {
   const entries = HOSTILE.map((h, n) => ({ head: rec(n, h), members: [rec(n + 50, h)] }));
-  const data = { filter: 'all', counts: { all: 8, new: 8, threads: 4, fragments: 4, responses: 0 }, run: { state: 'idle' }, schedule: { mode: 'scheduled' },
+  const data = { view: 'feed', filter: 'all', counts: { all: 8, new: 8, threads: 4, fragments: 4, responses: 0 }, run: { state: 'idle' }, schedule: { mode: 'scheduled' },
+    tabs: { feed: 8, mentions: 0, mentions_unseen: 0, background: 0 }, background: [], mentions: [], inbox: { state: 'off', never_verified: [] },
     last_run: { at: HOSTILE[0], new: 1, edited: 0, requests: 3, deferred: 0 }, entries,
     blygs: [{ origin: HOSTILE[1], title: HOSTILE[0], state: 'unreachable', failures: 2, items: 1, last_error: HOSTILE[2] }] };
   const settings = { ...followingSettingsOf({}).settings, my_origins: [HOSTILE[1]] };
-  const html = followingPage({ data, settings, refused: [HOSTILE[0]], notice: HOSTILE[7] });
-  const body = html.replace(/<script>[\s\S]*?<\/script>/, '[our script]');
+  const html = followingPage({ data, settings, refused: [HOSTILE[0]], notice: HOSTILE[7], nonce: 'N' });
+  const body = html.replace(/<script nonce="N">[\s\S]*?<\/script>/, '[our script]');
   assert.ok(!/<script>alert/i.test(body) && !/<img\b/i.test(body) && !/<a href="javascript/i.test(body));
   assert.ok(!/<\/title><script/i.test(body));
   assert.ok(!/[‪-‮⁦-⁩]/.test(html));
-  assert.equal((html.match(/<script>/g) || []).length, 1);
+  assert.equal((html.match(/<script/g) || []).length, 1);
   for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^\/(following|pages)/, m[1]);
   // no attribute value was broken out of: every tag's attributes parse as name="value" pairs only
   for (const tag of body.matchAll(/<(?:article|a|button|input|textarea)\b([^>]*)>/g)) {
@@ -43,15 +44,20 @@ test('hostile titles, excerpts, authors, notes and labels are escaped; hrefs are
 
 test('a post is shown as an excerpt and a link: its text is not re-rendered', () => {
   const r = { ...rec(1, 'hi'), excerpt: 'short', text: 'THE WHOLE POST '.repeat(50) };
-  const html = followingPage({ data: { filter: 'all', counts: { all: 1, new: 1, threads: 1, fragments: 0, responses: 0 }, run: { state: 'idle' },
-    schedule: { mode: 'off' }, last_run: null, entries: [{ head: r, members: [] }], blygs: [] }, settings: followingSettingsOf({}).settings });
+  const html = followingPage({ data: { view: 'feed', filter: 'all', counts: { all: 1, new: 1, threads: 1, fragments: 0, responses: 0 }, run: { state: 'idle' },
+    tabs: { feed: 1, mentions: 0, mentions_unseen: 0, background: 0 }, background: [], mentions: [], inbox: { state: 'off', never_verified: [] },
+    schedule: { mode: 'off' }, last_run: null, entries: [{ head: r, members: [] }], blygs: [] }, settings: followingSettingsOf({}).settings, nonce: 'N' });
   assert.ok(!html.includes('THE WHOLE POST'));
-  assert.match(html, /href="\/following\/open\?key=k1"/);
+  assert.match(html, /data-act="open" data-key="k1"/);
+  assert.ok(!/href="\/following\/open/.test(html), 'Open is a button that POSTs, not a link that changes state');
 });
 
-test('listFor leaves withdrawn posts out of every filter', () => {
-  const live = { ...rec(1, 'a'), withdrawn: false }, gone = { ...rec(2, 'b'), withdrawn: true };
-  for (const f of ['all', 'new', 'threads', 'fragments']) {
-    assert.ok(!listFor([live, gone], f).entries.some(e => e.head.key === 'k2'), f);
-  }
+test('buildView: withdrawn posts are in Background, not the Feed, and a post of an unfollowed blyg is in neither', () => {
+  const live = { ...rec(1, 'a'), origin: 'https://a.web.test/', id: 'a'.repeat(26) };
+  const gone = { ...rec(2, 'b'), origin: 'https://a.web.test/', id: 'b'.repeat(26), kind: 'withdrawn' };
+  const orphan = { ...rec(3, 'c'), origin: 'https://nobody.web.test/', id: 'c'.repeat(26) };
+  const v = buildView({ items: [live, gone, orphan], blygs: { 'https://a.web.test/': { state: 'active' } } });
+  assert.deepEqual(v.feed.entries.map(e => e.head.key), ['k1']);
+  assert.deepEqual(v.background.map(b => [b.post.key, b.reason]), [['k2', 'withdrawn']]);
+  assert.equal(v.tabs.background, 1);
 });

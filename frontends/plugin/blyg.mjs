@@ -556,6 +556,7 @@ export function createChecker({ get = guardedGet, now = Date.now } = {}) {
         .catch(e => ({ status: 'check-failed', reason: String((e && e.message) || 'the check broke'), fetched: [] }))
         .then(result => {
           // the words are what passage checks read; worked out once per answer
+          result.source = 'detected';
           if (result.status === 'blyg') result.text = textContent(result.html);
           settle(key, result);
           asking.delete(key);
@@ -658,8 +659,8 @@ export function stampFor(result, { asOf = 'record', quote = null } = {}) {
   // page also keeps that page's address
   const st = { status: 'blyg', origin: i.origin, id: i.id, version: i.version, pinned: !!i.pinned,
     page: i.page, ...(i.pinned_page ? { pinned_page: i.pinned_page } : {}), as_of: asOf === 'check' ? 'check' : 'record' };
-  // (an answer built from the Following list holds an excerpt, not the post: no verdict is better than a wrong one)
-  if (quote !== null && !result.text_partial) st.passage = checkPassage(quote, result.text || textContent(result.html));
+  // (an answer built from the Following list, source 'from-list', holds an excerpt, not the post: no verdict is better than a wrong one)
+  if (quote !== null && result.source !== 'from-list') st.passage = checkPassage(quote, result.text || textContent(result.html));
   return st;
 }
 
