@@ -112,7 +112,7 @@ function webLink(text, url) {
 function webQuote(t, { url, title }) {
   const struck = !!(t && t.mark === 'strike');
   const words = struck ? `~~${String(t.quote || '').replace(/\n+/g, ' ').trim()}~~` : String(t.quote || '');
-  const quote = studioProse(words, { own: false }).split('\n').map(l => (l.trim() ? `> ${l}` : '>')).join('\n');
+  const quote = studioProse(words, { own: false }).replace(/\$/g, '\\$').split('\n').map(l => (l.trim() ? `> ${l}` : '>')).join('\n');
   const where = studioProse(attribution(t), { own: false });
   const link = webLink(title, url);
   return quote + where + (struck ? '\n> *suggested deletion*' : '') + (link ? `\n>\n> — ${link}` : '');
@@ -163,7 +163,10 @@ export function renderStudioPaste(page, cfg, mode = 'all', opts = {}) {
     const after = [];
     let quote;
     if (byReference(st, { current })) {
-      quote = [blygQuote(st, label, t.quote), ...(t.mark === 'strike' ? ['*suggested deletion*'] : [])];
+      // (a `$` in a passage would pair with another into a formula, whose text
+      // is not the passage; Studio's own reference says to write \$)
+      const passage = blygQuote(st, label, t.quote).split('\n').map((l, i) => (i ? l.replace(/\$/g, '\\$') : l)).join('\n');
+      quote = [passage, ...(t.mark === 'strike' ? ['*suggested deletion*'] : [])];
       referenced++;
       checked.set(`${st.id} v${st.version}`, { version: st.version, page: st.page });
     } else {

@@ -110,6 +110,8 @@ eq('an unknown target is refused with a sentence, not guessed', exportTargetOf('
   const s = scan(out);
   eq('Studio finds exactly one directive, with the passage as its quote', s.directives.map(d => [d.id, d.label.trim(), d.quote]), [[POST_ID, 'On Scheduling', [P1]]]);
   eq('…one comment, closed, no stray closer, no TK, no new item', [s.comments.length, s.comments.every(c => c.end > 0), s.strayClosers, s.tokens.length, s.newItems], [1, true, 0, 0, 0]);
+  const money = studio(blygPage([{ quote: 'costs $5 and $10 each', blyg: stamp(), msgs: [] }, { quote: 'web $x$ words', msgs: [] }]));
+  ok('a $ in a passage or a web quote is written \\$, so two of them are never a formula', money.includes('> costs \\$5 and \\$10 each') && money.includes('> web \\$x\\$ words'), money);
   const two = studio(blygPage([{ quote: `${P1}\n\n${P2}`, blyg: stamp(), msgs: [] }]));
   ok('a two-paragraph passage has an empty > line between paragraphs', two.includes(`> ${P1}\n>\n> ${P2}`), two);
   const miss = studio(blygPage([{ quote: P2, blyg: stamp({ passage: { match: false, nearest: P1 } }), msgs: [] }]));

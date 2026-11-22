@@ -451,6 +451,102 @@ it is printed and never run. The draft's `source_url` is written only as a
 web address. The draft stays an unpublished draft. Nothing here publishes
 anything.
 
+## Pasting into Blygger Studio
+
+The export above writes a note for one particular site's vault. If you write in
+[Blygger Studio](https://github.com/blygger/blygger-studio) instead, use
+**Copy for Blygger Studio**, which puts Studio's own markdown on the clipboard.
+
+**For a Studio user** (nothing here needs a token, and Discuss never contacts your Studio):
+
+1. Install the Discuss extension (the repository README, "Load unpacked" → `frontends/plugin/extension`) and start its companion with `./botference discuss`.
+2. In Studio, subscribe to the blyg whose post you will quote, and let it import. Studio
+   can only quote a post it holds.
+3. Open the post in your browser, highlight passages, and write your comments in Discuss.
+4. Open the export chooser (the crystal at the top of the drawer), and choose
+   **Copy for Blygger Studio**. The footbar says how much was copied.
+5. In Studio, press **stub** on the post under *reading* if your note is a response (its
+   first line names the post), then paste over the draft's text. For a quote post without a
+   stub, paste into a new thread draft (quotes work in threads, not fragments).
+6. Read the preview, then publish. Lines in `/* … */` are notes to yourself: Studio takes
+   them out.
+
+**What paste cannot carry.** Whether the post is a *stub* (Studio sets that from its stub
+button, never from text), the version a quote is of (Studio quotes the version current at
+publish), the page chat, a note's tags and title, and an agent's name or model. It also
+cannot make Studio hold a post it has not imported. For an ordinary web page, a response
+is only a link in the text, not a declared response.
+
+### What Studio's compose screen accepts
+
+Read from the public source of [blygger-studio](https://github.com/blygger/blygger-studio)
+at commit `27b5924` (main as of 2026-11-22 04:23 UTC) and the
+[0.4 spec](https://blygger.org/spec/0.4/). Paths are in that repository.
+
+| What | What Studio accepts | Where |
+|---|---|---|
+| A partial quote of another origin's item | An own-line `![[id]]` or `![[id \| label]]` with the passage as `> ` lines directly under it (a bare `>` between paragraphs). **No version is written.** The quote is taken at the version current when you publish. | `src/grammar.ts` (`DIRECTIVE_LINE`); `src/directives.ts` (`attachedQuote`); `src/ui/syntax.tsx`: "Always takes the target's current version at publish time" |
+| The passage is checked as text | The quote's markdown is rendered and its plain text compared with the item, so markdown characters in a passage must be backslash-escaped (Discuss does), and `$…$` would become a formula (Discuss writes `\$`). | `src/transclusion.ts` (`selectionFromQuote`, `locateSelection`) |
+| A pinned version | `![[id@vN]]` is "reserved syntax, not implemented": it fails publish. Discuss never writes it. | `src/grammar.ts` (`RESERVED_LINE`); `src/ui/syntax.tsx` |
+| A whole-item quote | The bare `![[id]]` line. | same |
+| A link | `[[id]]` or `[[id \| text]]`, inline anywhere. An id Studio cannot resolve fails the whole publish. | `src/grammar.ts` (`LINK_INLINE`) |
+| Declaring a stub | **Not markup, not a field in the editor, not a URL.** The only ways are the **stub** button on a reading entry (or a hopper member) and the API's `createItem {mode: "response", source: {subscriptionId, remoteId}}`; both need the target to be imported through a subscription. The editor can only *clear* a stub. | `src/item-create.ts` (`createResponseDraft`); `src/ui/reading.tsx` (`stub`); `src/ui/catalog.tsx`; `src/ui/authoring.tsx` ("clear stub"); `docs/api.md`. The router has no compose or stub deep link: `src/ui/app.tsx` lists `/`, `/reading`, `/reading/$sub/$id`, `/peek`, `/edit/$id`, `/fork` and others, none of which takes a quote or stub parameter. |
+| A stub of a web page | Only for a plain-RSS entry, whose stub button writes a `[label](url)` line and a `{url}` citation. Nothing in the editor sets one for a page you read in a browser. | `src/item-create.ts`; `src/stub.ts` (`parseStubOf`) |
+| TK gaps | `[TK]instruction[/TK]` ungenerated; Studio's Generate button writes `[=]output` itself. A gap needs no spaces, Discuss writes `[TK] instruction [/TK]`. Not inside code. | `src/tk.ts` (`parseScopes`) |
+| Generated text, marked | `[TK]impyrt=text[/TK]` or `[TK]impyrt <model>=text[/TK]` is "text generated somewhere else", published as written and disclosed as machine-generated. A filled `[TK] i [=]text[/TK]` pasted from elsewhere has no provenance record behind it, so Studio treats it as hand-written and does **not** disclose it. | `src/tk.ts` (`IMPYRT_INLINE`); `src/model.ts` (comment above the publish step: "no provenance (hand-authored output) are plain text, no disclosure") |
+| Notes to yourself | `/* … */`, from a line start or after a space, removed before publish; a stray `/*` or `*/` blocks publish. | `src/comments.ts` |
+| New items | `![[+` at a line start and `[[+ idea]]` make new items at publish; Discuss never writes them and makes them inert in your words. | `src/ui/syntax.tsx` |
+| HTML | Studio renders markdown with HTML off, so an HTML comment such as `<!-- -->` would publish as visible text. The vault note uses them; the Studio paste never does. | `src/directives.ts`, `src/code-ranges.ts`, `src/markdown.ts` (`html: false`) |
+
+### What the Studio copy writes
+
+- No front matter, title or page chat. The reader's comments and quotes follow
+  `comment_order` (comment above the quote by default), and "my notes only" leaves agents out.
+- A highlight on a post that passes Discuss's word-for-word check: `![[id | label]]` and the
+  passage under it. One that does not pass, or any highlight on another page: a plain
+  blockquote ending with `— [title](address)`. A PDF on your disk gets no address.
+- An agent's reply: `[TK]impyrt=…[/TK]`, as its own paragraph, with no model named (Discuss
+  does not store one for chat replies; Studio's own rule is not to invent one). Gaps an agent
+  filled for you carry their model. Gaps not filled stay `[TK] instruction [/TK]`, which
+  Studio can generate and will not publish until it has. There are no callouts.
+- If the note is a response, its first line is a `/* STUB THIS POST: … */` note with the
+  post's address, id and the version you read. On a post Discuss adds the whole-post line
+  where the Obsidian note does. On a page it is a link line instead.
+- What Discuss has to tell you (the version it checked, a quote that is not word for word)
+  is in `/* */` notes, never in text that publishes.
+- Words made safe: TK marks in your words are code, `/*` and `*/` are backslash-escaped,
+  `[[+` is defused, a fence you left open is closed, and a guest's or a web page's `[[` and
+  `![[` are defused. A directive you type on a line of your own, and a `[[id | text]]` link
+  with a real id, stay live. The exact characters are `&#91;` for a bracket, which Studio
+  renders as `[`.
+
+**Nothing is sent.** The companion renders the text from the page record it already holds
+(it does not ask the post's site, as the vault export does), and the drawer copies it. No
+Studio, no token, no network.
+
+### Verified, and assumed
+
+*Read in Studio's source:* every row of the table above. Discuss's test suite holds each
+output to a small restatement of those scanners (`test/studio-paste.test.mjs`).
+
+*Assumed, because nothing here runs a Studio:* that pasting into the editor's text area
+keeps the text as it is (no auto-formatting on paste); that your Studio holds the same
+version of the post that you read, or at least still contains the passage (it checks at
+publish, and refuses a mismatch with the list); that Studio's preview shows an `impyrt`
+scope highlighted as generated; that `&#91;` renders as `[` in the preview; and that a
+`/* */` line directly above a `![[id]]` line leaves the directive working. A person with a
+Studio should try these, in this order:
+
+1. Paste a note with one passage from a post you subscribe to into a **new thread**, open the
+   preview, and publish to a test blyg. The quote should render as a blockquote naming the
+   post, with no "unresolvable" or "not in the version we hold" error.
+2. Press **stub** on that post, paste over the draft, and check the draft header says
+   "stub of …" and that the stub note's first line was removed on publish.
+3. Paste a note with an agent reply and an unfilled gap. The reply should show as generated
+   text; the gap should offer Generate.
+4. Put `*/` and `[[+ x]]` in a comment in Discuss, copy, paste, and confirm Studio shows them as
+   written and does not make a new item or complain of a stray comment.
+
 ## What is fetched, and when
 
 All fetching is done by the Discuss companion on your own computer, never by
