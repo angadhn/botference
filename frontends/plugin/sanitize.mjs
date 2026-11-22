@@ -74,9 +74,13 @@ const ATTRS = {
 };
 const URL_ATTRS = new Set(['href', 'src', 'cite']);
 
-const escText = s => String(s).replace(/&(?!#?[a-zA-Z0-9]{1,31};)/g, '&amp;')
+// Control characters and the bidirectional overrides and isolates (which can make text read as something it is not) are never kept
+// in text or attribute values; ordinary whitespace is.
+const stripBad = v => [...String(v)].filter(c => { const n = c.codePointAt(0);
+  return !(n < 9 || n === 11 || n === 12 || (n >= 14 && n < 32) || n === 127 || (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069)); }).join('');
+const escText = s => stripBad(s).replace(/&(?!#?[a-zA-Z0-9]{1,31};)/g, '&amp;')
   .replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const escAttr = s => String(s).replace(/&(?!#?[a-zA-Z0-9]{1,31};)/g, '&amp;')
+const escAttr = s => stripBad(s).replace(/&(?!#?[a-zA-Z0-9]{1,31};)/g, '&amp;')
   .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // An absolute http(s) URL, or nothing. Control characters and whitespace are
@@ -86,6 +90,19 @@ export function safeUrl(raw) {
   // U+0000..U+0020 covers NUL, tab, newline, form feed and the space itself
   const v = String(raw == null ? '' : raw).replace(/[\u0000-\u0020\u007f]/g, '');
   return /^https?:\/\/[^\s]/i.test(v) ? v : '';
+}
+
+// A link's target: http(s) as above, or mailto:. (An image's source is stricter, httpsImageUrl.)
+export function safeLinkUrl(raw) {
+  const v = String(raw == null ? '' : raw).replace(/[\u0000-\u0020\u007f]/g, '');
+  if (/^mailto:[^\s]/i.test(v)) return v;
+  return safeUrl(raw);
+}
+// An image's source: https only. A page served over https must not pull an image over http (and the article
+// view's Content-Security-Policy would block it anyway), so it is not kept.
+export function httpsImageUrl(raw) {
+  const u = safeUrl(raw);
+  return /^https:\/\//i.test(u) ? u : '';
 }
 
 // A tolerant tokenizer: comments, doctypes, close tags, open tags, text.
@@ -145,7 +162,7 @@ export const SNAPSHOT_MAX = 2 * 1024 * 1024; // 2 MB of sanitized HTML
 // `dropped` counts the elements that were removed outright, which the tests
 // assert on and the companion logs — a snapshot that lost half the page is
 // worth noticing.
-export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX } = {}) {
+export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, truncate = false } = {}) {
   const out = [];
   const open = [];            // stack of emitted element names
   let killDepth = 0;          // >0 while inside a dropped subtree
@@ -185,7 +202,7 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX }
       for (const [k, v] of attrPairs(tok.attrs)) {
         if (!(ATTRS['*'].has(k) || (allow && allow.has(k)))) continue;
         if (URL_ATTRS.has(k)) {
-          const u = safeUrl(v);
+          const u = name === 'img' ? httpsImageUrl(v) : name === 'a' ? safeLinkUrl(v) : safeUrl(v);
           if (!u) continue;
           kept.push(` ${k}="${escAttr(u)}"`);
           continue;
@@ -195,7 +212,9 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX }
       // an <img> we could not resolve a source for is not worth a broken icon
       if (name === 'img' && !kept.some(a => a.startsWith(' src='))) { dropped++; continue; }
       // links always leave this site safely, and never in place
-      const extra = name === 'a' ? ' rel="noreferrer noopener" target="_blank"' : '';
+      // …and an image is fetched lazily, sending no Referer
+      const extra = name === 'a' ? ' rel="noreferrer noopener" target="_blank"'
+        : name === 'img' ? ' loading="lazy" decoding="async" referrerpolicy="no-referrer"' : '';
       if (VOID.has(name) || tok.self) { push(`<${name}${kept.join('')}${extra}>`); continue; }
       push(`<${name}${kept.join('')}${extra}>`);
       open.push(name);
@@ -208,6 +227,7 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX }
     for (let k = open.length - 1; k >= at; k--) push(`</${open[k]}>`);
     open.length = at;
   }
-  for (let k = open.length - 1; k >= 0; k--) push(`</${open[k]}>`);
+  // `truncate`: an over-long article is cut at the limit and its open elements are closed, rather than refused
+  for (let k = open.length - 1; k >= 0; k--) { if (truncate) out.push(`</${open[k]}>`); else push(`</${open[k]}>`); }
   return { html: out.join(''), dropped, tooBig };
 }

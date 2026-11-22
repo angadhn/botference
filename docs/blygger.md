@@ -690,7 +690,7 @@ refresh runs at a time; a second is refused, not queued. These are settings on
 the Hub's Following section (in `config.json`: `following_refresh_minutes`,
 `following_max_items_per_blyg`, `following_max_items_total`,
 `following_run_seconds`, `following_run_requests`,
-`following_barely_changed_percent`, `my_origins`, `inbox_api_url`,
+`following_barely_changed_percent`, `following_feed_clip_words`, `my_origins`, `inbox_api_url`,
 `inbox_token_file`); a value outside its range is refused and the default is
 used. With no blyg followed and no inbox there is no timer, and with
 `"blyg_checks": "off"` the Hub asks no site anything, its timer disarms, and
@@ -711,6 +711,38 @@ inbox, which carries your token. The page is the owner's alone: over a tunnel a
 guest, or a request with no password, is refused on every Hub route, and
 so is a request a browser says came from another site. The page is never framed
 and runs one script and one style under a Content-Security-Policy.
+
+## Reading in the Hub
+
+Each post in the Feed is shown in place: a meta line (an unread dot, THREAD or FRAGMENT, the blyg's name, or "you" for
+a blyg in `my_origins`, the date in your own style, and a reading time at 220 words a minute), up to its three most
+recent versions as lines ("V4 Nov 20, 2026: the changelog note", with "and N earlier, in history" for the rest), its
+title, its text, its address (shortened; the whole of it on hover) and the actions **Respond**, **Read here**, **Open
+original** and a "..." menu (Mark seen / Mark new). A post of at most `following_feed_clip_words` words (default 300) is
+shown whole, a fragment always, and a longer one is cut at a paragraph, quote or list boundary, with "more" opening the
+rest in place. The search box above the list ("search every word") filters what is loaded on the page by substring,
+ignoring case, over the text, title, author and blyg; it asks nothing of anyone. The Feed carries at most 100 entries
+at a time, with "show more".
+
+**Read here** keeps the post's text as an annotatable page in the same store as every other page you annotate, under the
+post's own address, so a highlight made there and a highlight made later on the original site with the extension are one
+record and one list of threads. Highlights, comments, page chat, TK gaps and export all work as on any article, in a plain
+browser too (on a phone, for one). Respond opens the same page with the page chat ready. The post's origin, id and version
+on the record come from the post's own item document, which is where the text came from (the stamp's source is
+`item-document`), so they are authoritative. The text is sanitised by the article view's own sanitiser, an allow-list:
+no scripts, styles, frames, forms, SVG or MathML, no event handlers or `style` attributes, links only to http(s) and
+`mailto:` (opened with `rel="noopener noreferrer"`), images only over https, loaded lazily with no referrer. Reading here
+marks the post opened; exporting a note marks it answered. If the Hub later sees a newer version, the page says so and
+offers to load it; loading it keeps each highlight whose quote still matches and marks the others as no longer on the
+page, and nothing is swapped under your highlights before you ask. A page you had already captured with the extension, with
+highlights on it, is kept as it is until you load the post's version.
+
+**What is stored, and for whom.** The sanitised text of every followed post (at most 40 KB each, with "Read here for the
+rest" when it was longer) is kept in a file of its own in the companion's data folder (`following-bodies/`), removed with
+its post, and a post you read here becomes an ordinary page record. Images are not copied: your browser loads them from
+their https addresses. Nothing is sent anywhere. At the default limits the bodies come to at most 2000 x 40 KB = 80 MB,
+usually a small fraction of that. Like every page in the companion's store they are the owner's; a guest who has the
+password of a shared companion can open any annotated page, these too.
 
 ## Which names the companion answers to
 

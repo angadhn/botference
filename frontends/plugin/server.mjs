@@ -74,6 +74,7 @@ import * as figedits from './figedits.mjs';
 import * as blygMod from './blyg.mjs';
 import * as followingMod from './following.mjs';
 import * as inboxMod from './following-inbox.mjs';
+import { holdPost, hubInfoOf } from './hubread.mjs';
 import { followingPage } from './following-view.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
 const fteRouted = new Map();
@@ -2824,7 +2825,7 @@ const isForm = req => /^application\/x-www-form-urlencoded/i.test(req.headers['c
 // encoding is accepted on. Everywhere else the body is JSON or nothing: a page
 // on another website can send a form or text/plain without asking first, but
 // it cannot send application/json to another origin without a preflight.
-const FORM_ROUTES = new Set(['/reply', '/edit', '/rename-page', '/tag-page', '/resolve', '/addressed',
+const FORM_ROUTES = new Set(['/following/read-here', '/reply', '/edit', '/rename-page', '/tag-page', '/resolve', '/addressed',
   '/quiz-keep', '/quiz-answer', '/quiz-flag', '/quiz-delete']);
 const isJsonType = ct => !ct || /^application\/(?:[\w.+-]*\+)?json\b/i.test(ct);
 function readBody(req, res, fn) {
@@ -2934,13 +2935,22 @@ const blygSkips = url => !url || store.isLibrary(url) || !/^https?:\/\//i.test(S
 const blygMay = req => hosted.isOwner(req);
 // `verify` asks the post's own site even when the Following list holds the page
 // (the export does: it needs the post's words to check a passage against).
+function hubAnswerFor(url) {
+  const page = store.readPage(url);
+  if (!page || !page.hub || !page.blyg || page.blyg.status !== 'blyg' || page.blyg.source !== 'item-document') return null;
+  return { status: 'blyg', source: 'item-document', site: page.blyg.site, item: page.blyg.item, html: '',
+    text: blygMod.textContent(store.readSnapshot(store.pageKey(url))) };
+}
 function blygAsk(url, hints, { verify = false } = {}) {
   const known = store.readPage(url);
   // A page the reader FOLLOWS is identified from what the list holds (origin, id,
   // version), so detection is skipped; unless the page's own links disagree
   // with the list, in which case the list's word is not used and the check runs.
   const listed = verify ? null : following.identityFor(url, blygMod.cleanHints(hints));
-  const p = listed && listed.result ? Promise.resolve(listed.result)
+  // A request that sends NO hints at all (the Hub's own article view; an extension always sends some) about a page the Hub
+  // holds is answered by the record: its identity came from the item document (source 'item-document'), not from a page.
+  const held = verify || hints !== undefined ? null : hubAnswerFor(url);
+  const p = held ? Promise.resolve(held) : listed && listed.result ? Promise.resolve(listed.result)
     : blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
   p.then(result => {
     if (blygPersisted.has(result)) return;
@@ -3330,6 +3340,21 @@ const followingNeedsChecks = () => {
 };
 // A Following page is the owner's alone and is never framed or given anything but its own one script and style.
 const followingHeaders = (type, extra = {}) => ({ 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', ...extra });
+// "Read here": the post's own item document, sanitised, becomes the snapshot of the post's page record (hubread.mjs).
+async function readHere(data) {
+  const key = String(data.key || '');
+  const replace = [true, 1, '1', 'true'].includes(data.replace);
+  const rec = following.itemByKey(key);
+  if (!rec || rec.kind === 'withdrawn') throw new Error('no such post');
+  const existing = store.readPage(rec.page);
+  if (existing && existing.hub && !replace) { following.openedHere(key); return { url: `/a/${store.pageKey(existing.url)}`, kept: true }; }
+  followingNeedsChecks();
+  const post = await following.fetchPost(key);
+  const held = holdPost({ store, applyAnswer: blygMod.applyAnswer, post, replace });
+  following.openedHere(key);
+  broadcast({ type: 'page', url: held.page.url });
+  return { url: `/a/${held.key}`, text_from: held.text_from, orphaned: held.orphaned };
+}
 function handleFollowing(route, req, res) {
   // Cross-site requests are refused outright (defence in depth beyond the Origin check every route has had): a
   // browser says where a request came from in Sec-Fetch-Site; reading a page may also come from nowhere (typing the
@@ -3339,7 +3364,9 @@ function handleFollowing(route, req, res) {
   if (!fromAllowed.includes(site)) { req.resume(); return fail(res, 403, 'refused: Following answers only this site\'s own pages'); }
   const q = new URLSearchParams(req.url.split('?')[1] || '');
   const settings = () => followingMod.followingSettingsOf(store.readConfig());
-  const viewOf = () => following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins });
+  const locale = followingMod.localeOf(req.headers['accept-language']);
+  const viewOf = () => following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
+    limit: Math.max(1, Math.min(Number(q.get('n')) || followingMod.LIMITS.feedEntries, 1000)) });
   const say = fn => async data => {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };
@@ -3349,12 +3376,25 @@ function handleFollowing(route, req, res) {
       const s = settings();
       const nonce = crypto.randomBytes(16).toString('base64');
       return res.writeHead(200, followingHeaders('text/html; charset=utf-8', {
-        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
         'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
-      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce }));
+      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce, locale }));
     }
     case '/following/data': return ok(res, { ...viewOf(), settings: settings().settings });
     default: break;
+  }
+  if (route.path === '/following/read-here') {
+    return readBody(req, res, async data => {
+      try {
+        const out = await readHere(data);
+        if (data._form) return res.writeHead(303, { location: out.url, 'cache-control': 'no-store' }).end();
+        return ok(res, out);
+      } catch (e) {
+        const msg = String((e && e.message) || 'failed').slice(0, 300);
+        if (data._form) return res.writeHead(303, { location: `/hub?notice=${encodeURIComponent(msg)}`, 'cache-control': 'no-store' }).end();
+        return fail(res, 400, msg);
+      }
+    });
   }
   return readBody(req, res, say(async data => {
     switch (route.path) {
@@ -3371,7 +3411,7 @@ function handleFollowing(route, req, res) {
       case '/following/import-confirm': return following.confirmImport(data.entries);
       case '/following/refresh': return await following.refresh({ reason: 'demand' });
       case '/following/read': {
-        if (!['see', 'open'].includes(data.move || 'see')) throw new Error('move must be see or open');
+        if (!['see', 'open', 'renew'].includes(data.move || 'see')) throw new Error('move must be see, open or renew');
         if (data.all) return { seen: following.markAllSeen(String(data.origin || '')) };
         return { read: following.readMove(String(data.key || ''), data.move || 'see') };
       }
@@ -4987,6 +5027,7 @@ export function handler(req, res) {
     const nonce = crypto.randomBytes(16).toString('base64');
     const html = articleView({
       page, key, me, snapshot: store.readSnapshot(key), info: store.snapshotInfo(key), nonce,
+      hub: hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) }),
     });
     // Belt and braces over the sanitizer: even if something got through, this
     // page can run no script it did not itself nonce, load no stylesheet, and

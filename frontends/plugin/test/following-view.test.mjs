@@ -32,7 +32,7 @@ test('hostile titles, excerpts, authors, notes and labels are escaped; hrefs are
   assert.ok(!/<\/title><script/i.test(body));
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html));
   assert.equal((html.match(/<script/g) || []).length, 1);
-  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^\/(hub|pages)/, m[1]);
+  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
   // no attribute value was broken out of: every tag's attributes parse as name="value" pairs only
   for (const tag of body.matchAll(/<(?:article|a|button|input|textarea)\b([^>]*)>/g)) {
     const rest = tag[1].replace(/\s[\w-]+(?:="[^"]*")?/g, '').replace(/\s*\/?$/, '');
@@ -73,19 +73,20 @@ test('the version history renders escaped: "v5 · 5 versions", "pinned: v1, v4",
   const body = html.replace(/<script nonce="N">[\s\S]*?<\/script>/, '[our script]');
   assert.match(body, /v5 · 5 versions/);
   assert.match(body, /pinned: v1, v4/);
-  assert.match(body, /<details><summary[^>]*>history<\/summary><ul class="history">/);
+  assert.match(body, /<details><summary[^>]*>and 2 earlier, in history<\/summary>/);
+  assert.match(body, /V5 [^<]*:/, 'the three most recent versions are lines');
   assert.equal((body.match(/data-act="open-pin"/g) || []).length, 1, 'only the pin whose page can be told is a button');
   assert.match(body, /data-act="open-pin" data-key="k1" data-version="4"/);
   assert.equal((body.match(/<span class="badge">pinned<\/span>/g) || []).length, 1, 'the other is a plain mark');
   assert.ok(body.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && body.includes('&quot;&gt;&lt;img'));
   assert.ok(!/<script>alert|<img\b/i.test(body));
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body));
-  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^\/(hub|pages)/, m[1]);
-  assert.ok(!body.includes('x.web.test/p/'), 'the post\'s own address is not in the page');
+  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
+  assert.ok(!/href="https?:\/\/x\.web\.test/.test(body), 'the post\'s own address is never a link (it is a button that asks the companion)');
   // one version only: no history to show
   const one = followingPage({ data: { view: 'feed', filter: 'all', counts: { all: 1, new: 1, threads: 1, fragments: 0, responses: 0 }, run: { state: 'idle' },
     tabs: { feed: 1, mentions: 0, mentions_unseen: 0, background: 0 }, background: [], mentions: [], inbox: { state: 'off', never_verified: [] },
     schedule: { mode: 'off' }, last_run: null, entries: [{ head: { ...rec(2, 'hi'), version: 1, versions_note: '', history: [history[4]], pinned_list: [] }, members: [] }], blygs: [] },
     settings: followingSettingsOf({}).settings, nonce: 'N' });
-  assert.ok(!/history<\/summary>/.test(one));
+  assert.ok(!/earlier, in history/.test(one));
 });

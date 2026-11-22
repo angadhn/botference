@@ -74,7 +74,7 @@ test('a byline photo as <picture><source> does not swallow the story after it', 
   const out = clean(html);
   assert.ok(/The first paragraph of the story itself\./.test(out), 'the body survived');
   assert.ok(/And the second\./.test(out));
-  assert.ok(/<img src="https:\/\/n\.test\/a\.jpg" alt="photo">/.test(out), 'the picture keeps its <img>');
+  assert.ok(/<img src="https:\/\/n\.test\/a\.jpg" alt="photo" loading="lazy" decoding="async" referrerpolicy="no-referrer">/.test(out), 'the picture keeps its <img>');
   assert.ok(!/<source/.test(out));
 });
 
@@ -100,7 +100,7 @@ test('an http(s) link survives, and always leaves safely', () => {
 
 test('images keep an absolute source and nothing else', () => {
   assert.equal(clean('<img src="https://i.test/a.png" alt="a" onerror="alert(1)" srcset="x 2x">'),
-    '<img src="https://i.test/a.png" alt="a">');
+    '<img src="https://i.test/a.png" alt="a" loading="lazy" decoding="async" referrerpolicy="no-referrer">');
   assert.equal(clean('<img src="javascript:alert(1)">'), '', 'no source, no image');
   assert.equal(clean('<img src="https://i.test/a.png">', { allowImages: false }), '');
 });
@@ -126,7 +126,7 @@ test('the article structure survives intact', () => {
     + '<figcaption>cap</figcaption></figure>'
     + '<table><tr><th scope="col">h</th><td colspan="2">d</td></tr></table>';
   assert.equal(clean(src), src.replace('<img src="https://i.test/x.png" alt="f">',
-    '<img src="https://i.test/x.png" alt="f">'));
+    '<img src="https://i.test/x.png" alt="f" loading="lazy" decoding="async" referrerpolicy="no-referrer">'));
 });
 
 test('an unknown element is unwrapped, keeping its words', () => {

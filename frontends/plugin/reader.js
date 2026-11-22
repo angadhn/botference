@@ -451,6 +451,11 @@
     open = { kind: 'page' };
     render();
   });
+  // "Respond" in the Hub's Feed opens this page with the page chat's composer ready
+  if (location.hash === '#respond') {
+    document.getElementById('bfp-chat').click();
+    setTimeout(function () { var ta = document.querySelector('#bfp-sheet textarea'); if (ta) ta.focus(); }, 50);
+  }
   document.getElementById('bfp-close').addEventListener('click', function () {
     open = null;
     render();

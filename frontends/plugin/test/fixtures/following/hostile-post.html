@@ -1,0 +1,21 @@
+<h1>An invented post</h1>
+<p>Honest words before the trouble, enough to find again.</p>
+<script>alert('script')</script>
+<p onclick="alert('click')" style="position:fixed;top:0;left:0;width:100%;height:100%">Styled paragraph with a handler.</p>
+<img src="https://img.example.test/a.png" alt="ok" onerror="alert('img')" srcset="https://evil.example.test/a.png 2x, https://evil.example.test/b.png 3x">
+<img src="http://img.example.test/insecure.png" alt="plain http">
+<img src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=" alt="data">
+<a href="javascript:alert('js')">javascript link</a>
+<a href="data:text/html,<script>alert(1)</script>">data link</a>
+<a href="https://ok.example.test/page" target="_self" onmouseover="alert(1)">a link with a target and no rel</a>
+<a href="mailto:someone@example.test">a mail link</a>
+<iframe src="https://evil.example.test/frame"></iframe>
+<form action="https://evil.example.test/post" method="post"><input name="x"><button>send</button></form>
+<meta http-equiv="refresh" content="0;url=https://evil.example.test/">
+<base href="https://evil.example.test/">
+<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert('svg')</script><circle r="5"/></svg>
+<math><mi>x</mi></math>
+<object data="https://evil.example.test/o"></object><embed src="https://evil.example.test/e">
+<link rel="stylesheet" href="https://evil.example.test/s.css"><style>body{display:none}</style>
+<blockquote><p>A quoted passage of another post.</p></blockquote>
+<p>Honest words after the trouble.</p>

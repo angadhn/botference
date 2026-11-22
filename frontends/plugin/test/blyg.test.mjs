@@ -428,7 +428,8 @@ const detectOn = async (page, routes, hints, opts = {}) => {
   const S1 = 'The ChatGPT moment was ultimately a smooth extrapolation of existing trends.';
 
   const pr = B.pageRecordOf(answer, AT);
-  eq('page record: the answer without the post\'s words', Object.keys(pr), ['status', 'checked', 'site', 'item']);
+  eq('page record: the answer without the post\'s words', Object.keys(pr), ['status', 'checked', 'site', 'item', 'source']);
+  eq('page record: and where the answer came from', pr.source, 'detected');
   ok('page record: no html, no text', !('html' in pr) && !('text' in pr));
 
   eq('stamp: a highlight made on the post', B.stampFor(answer, { quote: S1 }), {

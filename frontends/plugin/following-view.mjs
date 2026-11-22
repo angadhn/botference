@@ -12,45 +12,94 @@
 //
 // A reader's posts are not re-rendered here: an excerpt and a link, nothing more.
 import { escHtml } from './hosted.mjs';
-import { FILTERS, FILTER_LABELS, VIEWS, READ_STATES, cleanText, FOLLOWING_NUMBERS, INBOX_STATES } from './following.mjs';
+import { FILTERS, FILTER_LABELS, VIEWS, READ_STATES, cleanText, FOLLOWING_NUMBERS, INBOX_STATES, formatDate } from './following.mjs';
 
 const t = (v, n = 300) => escHtml(cleanText(typeof v === 'string' ? v : String(v ?? ''), n));
-const day = v => t(String(v || '').slice(0, 10), 10);
+// Dates are shown in the viewer's own style ("Nov 22, 2026" or "22 Nov 2026", set by their Accept-Language), never changing what is
+// stored. The locale of the page being rendered is set once per render (rendering is synchronous).
+let LOCALE = 'en-US';
+const day = v => escHtml(formatDate(v, LOCALE) || '');
+const when = v => escHtml(formatDate(v, LOCALE, true) || cleanText(String(v || ''), 40));
+// An address as a person reads it: host and a clipped path, the whole of it in the title (a tooltip). Every part escaped.
+const shortUrl = (u, n = 38) => {
+  try {
+    const x = new URL(String(u));
+    const path = (x.pathname + x.search).replace(/\/$/, '');
+    return path.length > n ? x.host + path.slice(0, n) + '\u2026' : x.host + path;
+  } catch { return cleanText(String(u || ''), n); }
+};
+const addr = (u, n) => `<span class="addr" title="${t(String(u || ''), 500)}">${t(shortUrl(u, n), 120)}</span>`;
 
 const CSS = `
 :root{color-scheme:light dark;--bg:#fbfaf8;--fg:#222;--mut:#6b6b6b;--line:#ddd;--card:#fff;--acc:#1b5fb4;--new:#b4361b}
 @media (prefers-color-scheme:dark){:root{--bg:#161616;--fg:#e6e6e6;--mut:#9a9a9a;--line:#333;--card:#1e1e1e;--acc:#7db3f5;--new:#f0866a}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+*{box-sizing:border-box;min-width:0}html,body{max-width:100%;overflow-x:hidden}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif;overflow-wrap:anywhere}
 main{max-width:56rem;margin:0 auto;padding:1rem}
+@media (min-width:1100px){main{margin:0 auto 0 clamp(1rem,3vw,3rem);max-width:50rem}}
 h1{font-size:1.4rem;margin:.2rem 0}h2{font-size:1.05rem;margin:1.5rem 0 .4rem}
-a{color:var(--acc)}.mut{color:var(--mut);font-size:.88em}
+a{color:var(--acc)}.mut{color:var(--mut);font-size:.88em}.addr{overflow-wrap:anywhere}
 nav.filters{display:flex;flex-wrap:wrap;gap:.4rem;margin:.6rem 0}
 nav.filters a{padding:.2rem .6rem;border:1px solid var(--line);border-radius:1rem;text-decoration:none;color:var(--fg)}
 nav.filters a[aria-current=page]{background:var(--acc);color:var(--bg);border-color:var(--acc)}
 article.entry{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .9rem;margin:.6rem 0}
-article.entry.read-new{border-left:4px solid var(--new)}
-.meta{display:flex;flex-wrap:wrap;gap:.2rem .8rem}.title{font-weight:600;margin:.2rem 0}
-.excerpt{margin:.3rem 0;overflow-wrap:anywhere}.acts{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.4rem}
+.meta{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.title{font-weight:600;margin:.3rem 0;font-size:1.05rem}
+.title a{color:inherit;text-decoration:none}.title a:hover{text-decoration:underline}
+.dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;background:var(--new)}
+.kind{font-size:.7em;letter-spacing:.06em;text-transform:uppercase;padding:0 .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}
+.vlines{margin:.3rem 0;font-size:.88em;color:var(--mut)}.vlines div{margin:.1rem 0}
+.hub-entry-body{margin:.4rem 0;overflow-wrap:anywhere}.hub-entry-body img{max-width:100%;height:auto}
+.hub-entry-body pre{overflow-x:auto;white-space:pre-wrap}.hub-entry-body table{display:block;overflow-x:auto}
+.hub-quote,.hub-entry-body blockquote{margin:.6rem 0;padding:.3rem .8rem;border-left:3px solid var(--line);border-radius:.2rem;color:var(--mut)}
+.rest[hidden]{display:none}.moremsg{margin-top:.2rem}
+.acts{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.5rem}.acts.right{justify-content:flex-end;align-items:center}
+.src{margin-top:.4rem;font-size:.85em}
 button,.btn{font:inherit;padding:.15rem .6rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg);cursor:pointer;text-decoration:none}
-ul.burst{margin:.4rem 0 0 .2rem;padding-left:1rem;border-left:2px solid var(--line);list-style:none}
-ul.burst li{margin:.3rem 0}.badge{font-size:.78em;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem}
-.warn{color:var(--new)}table{border-collapse:collapse;width:100%}td,th{padding:.25rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+button.link{border:0;background:none;color:var(--acc);padding:0}
+details.menu{position:relative;display:inline-block}details.menu summary{list-style:none;cursor:pointer;padding:.15rem .6rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card)}
+details.menu summary::-webkit-details-marker{display:none}
+details.menu .pop{position:absolute;right:0;z-index:5;display:flex;flex-direction:column;gap:.3rem;padding:.4rem;margin-top:.2rem;background:var(--card);border:1px solid var(--line);border-radius:.3rem;min-width:8rem}
+ul.history{margin:.3rem 0;padding-left:1.1rem}
+.badge{font-size:.78em;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem}
+.warn{color:var(--new)}input[type=search]{width:100%;font:inherit;padding:.4rem .6rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg)}
+table{border-collapse:collapse;width:100%}td,th{padding:.25rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
 input[type=text],input[type=url],input[type=number],textarea{font:inherit;padding:.25rem .4rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg);max-width:100%}
-textarea{width:100%;min-height:5rem}label{display:block;margin:.3rem 0}#msg{min-height:1.4em}
+input[type=url],input[type=text]{width:100%}textarea{width:100%;min-height:5rem}label{display:block;margin:.3rem 0}#msg{min-height:1.4em}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}
+@media (max-width:560px){
+  table.blygs,table.blygs tbody,table.blygs tr,table.blygs td{display:block;width:100%}table.blygs thead{display:none}
+  table.blygs tr{border:1px solid var(--line);border-radius:.5rem;padding:.5rem .6rem;margin:.5rem 0;background:var(--card)}
+  table.blygs td{border:0;padding:.1rem 0}table.blygs td.b-state::before{content:"State: "}table.blygs td.b-posts::before{content:"Posts: "}
+  table.blygs td.b-acts{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem}
+  .acts.right{justify-content:flex-start}
+}
 `;
 
 const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background' });
 const INBOX_WORDS = Object.freeze({ off: 'no inbox is set', pending: 'not asked yet', ok: 'up to date', unauthorised: 'the inbox refused the token', unreachable: 'the inbox could not be reached', paused: 'paused: Blygger checks are off', unreadable: 'the inbox answered something this page cannot read' });
 const openBtn = (key, label = 'Open') => `<button type="button" class="btn" data-act="open" data-key="${escHtml(key)}">${escHtml(label)}</button>`;
 
-// a post's versions, newest first: date, the changelog note, and a "pinned" mark that opens that version's page (by key
-// and number, through the companion) only when the page can be told from what is held
-function history(h) {
+// One version line: "V4 Nov 20, 2026: the changelog note" (escaped, clipped; "no note" when empty), and a pinned mark that opens that
+// version's page (by key and number, through the companion) only when the page can be told from what is held.
+function vline(h, v) {
+  const mark = v.mark === 'link' ? ` <button type="button" class="badge" data-act="open-pin" data-key="${escHtml(h.key)}" data-version="${Number(v.version)}">pinned</button>`
+    : v.mark === 'plain' ? ' <span class="badge">pinned</span>' : '';
+  return `<div>V${Number(v.version)} ${day(v.at)}: ${v.note ? t(v.note, 200) : '<span class="mut">no note</span>'}${mark}</div>`;
+}
+// up to the three most recent versions, then "and N earlier, in history"
+function versions(h) {
   if (!h.history || h.history.length < 2) return '';
-  const rows = h.history.map(v => `<li>v${Number(v.version)} <span class="mut">${day(v.at)}</span> ${v.note ? t(v.note, 200) : '<span class="mut">no note</span>'}
-    ${v.mark === 'link' ? `<button type="button" class="badge" data-act="open-pin" data-key="${escHtml(h.key)}" data-version="${Number(v.version)}">pinned</button>`
-      : v.mark === 'plain' ? '<span class="badge">pinned</span>' : ''}</li>`).join('');
-  return `<details><summary class="mut">history</summary><ul class="history">${rows}</ul></details>`;
+  const recent = h.history.slice(0, 3), older = h.history.slice(3);
+  const hist = older.length ? `<details><summary class="mut">and ${older.length} earlier, in history</summary>${older.map(v => vline(h, v)).join('')}</details>` : '';
+  return `<div class="vlines">${recent.map(v => vline(h, v)).join('')}${hist}</div>`;
+}
+// the post's own text, in place: as much as the Feed shows (the head), the rest behind "more"; a truncated body says where the rest is
+function bodyOf(h) {
+  if (!h.body_head) return h.excerpt ? `<div class="hub-entry-body"><p>${t(h.excerpt, 300)}</p></div>` : '';
+  const quote = x => x.replace(/<blockquote/g, '<blockquote class="hub-quote"');
+  const more = h.body_rest ? `<div class="rest" hidden>${quote(h.body_rest)}</div><button type="button" class="link" data-act="more">more</button>` : '';
+  const trunc = h.body_state === 'truncated' ? `<div class="moremsg"><button type="button" class="link" data-act="read" data-key="${escHtml(h.key)}">Read here for the rest</button></div>` : '';
+  return `<div class="hub-entry-body" data-blyg-page="${t(h.page, 500)}" data-blyg-origin="${t(h.origin, 500)}" data-blyg-id="${t(h.id, 40)}" data-blyg-version="${Number(h.version) || 1}">${quote(h.body_head)}${more}${trunc}</div>`;
 }
 function entry(e) {
   const h = e.head;
@@ -59,15 +108,16 @@ function entry(e) {
     ? `<div class="warn">When this post was opened its page disagreed with this list: ${t(h.identity_note || 'it names another post', 300)}. Discuss used its own check there.</div>` : '';
   const folded = e.members.length
     ? `<div class="mut">${e.members.length} published together, <a href="/hub?view=background">in Background</a></div>` : '';
-  const acts = [openBtn(h.key, h.opens_on ? `Open (on ${cleanText(h.opens_on, 80)})` : 'Open')];
-  if (h.read === 'new') acts.push(`<button type="button" data-act="see" data-key="${escHtml(h.key)}">Mark seen</button>`);
-  return `<article class="entry read-${escHtml(h.read)}" id="e-${escHtml(h.key)}" data-key="${escHtml(h.key)}">
-    <div class="meta mut"><span>${t(h.blyg_title || h.origin, 160)}</span>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
-      <span>${day(h.shown_at || h.updated || h.created)}</span><span class="badge">${t(h.kind, 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>
-      ${(h.pinned_list || []).length ? `<span>pinned: ${h.pinned_list.map(n => `v${Number(n)}`).join(', ')}</span>` : ''}<span class="badge">${t(h.read, 20)}</span>${h.maintenance ? `<span class="mut">${Number(h.maintenance)} maintenance</span>` : ''}</div>
-    ${h.title ? `<div class="title">${t(h.title, 200)}</div>` : ''}${resp}
-    <div class="excerpt">${t(h.excerpt, 300)}</div>${history(h)}${ident}${folded}
-    <div class="acts">${acts.join('')}</div></article>`;
+  const pins = (h.pinned_list || []).length ? `<div class="mut">pinned: ${h.pinned_list.map(n => `v${Number(n)}`).join(', ')}</div>` : '';
+  const k = escHtml(h.key);
+  const title = h.title ? `<div class="title hub-entry-title"><a href="#e-${k}" data-act="read" data-key="${k}">${t(h.title, 200)}</a></div>` : '';
+  const menu = `<details class="menu"><summary aria-label="more actions">\u22ef</summary><div class="pop">${h.read === 'new' ? `<button type="button" data-act="see" data-key="${k}">Mark seen</button>` : `<button type="button" data-act="renew" data-key="${k}">Mark new</button>`}</div></details>`;
+  return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}">
+    <div class="meta mut hub-entry-meta">${h.read === 'new' ? '<span class="dot" title="unread"></span>' : ''}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
+      <span>${day(h.shown_at || h.updated || h.created)}</span><span>${t(h.reading || '', 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>${h.maintenance ? `<span>${Number(h.maintenance)} maintenance</span>` : ''}</div>
+    ${versions(h)}${pins}${title}${resp}${bodyOf(h)}${ident}${folded}
+    <div class="src">${h.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="open the original">${addr(h.page)}</button>` : ''}${h.opens_on ? ` <span class="mut">(on ${t(h.opens_on, 80)})</span>` : ''}</div>
+    <div class="acts right hub-entry-actions"><button type="button" data-act="respond" data-key="${k}">Respond</button><button type="button" data-act="read" data-key="${k}">Read here</button><button type="button" data-act="open" data-key="${k}">Open original</button>${menu}</div></article>`;
 }
 
 function backgroundEntry(b) {
@@ -89,9 +139,9 @@ function mentionCard(m, reason) {
   if (m.read === 'unseen') acts.push(`<button type="button" data-act="mention-seen" data-key="${escHtml(m.key)}">Mark seen</button>`);
   return `<article class="entry read-${m.read === 'unseen' ? 'new' : 'seen'}" data-key="${escHtml(m.key)}">
     <div class="meta mut"><span class="badge">${t(reason, 60)}</span><span>${t(m.who || 'someone', 160)}</span>${m.blyg_title ? `<span>${t(m.blyg_title, 160)}</span>` : ''}
-      ${what ? `<span>${t(what, 80)}</span>` : ''}${m.at ? `<span>${t(m.at, 40)}</span>` : ''}${m.read === 'unseen' ? '<span class="badge">unseen</span>' : ''}</div>
+      ${what ? `<span>${t(what, 80)}</span>` : ''}${m.at ? `<span>${when(m.at)}</span>` : ''}${m.read === 'unseen' ? '<span class="badge">unseen</span>' : ''}</div>
     ${m.passage ? `<blockquote class="excerpt">${t(m.passage, 600)}</blockquote>` : ''}
-    ${m.source_url ? `<div class="mut">${t(m.source_url, 300)}</div>` : ''}
+    ${m.source_url ? `<div class="mut">${addr(m.source_url)}</div>` : ''}
     <div class="acts">${acts.join('')}</div>
     <details><summary class="mut">details</summary><pre>${escHtml(m.raw || '')}</pre></details></article>`;
 }
@@ -99,14 +149,14 @@ function mentionCard(m, reason) {
 function mentionsPane(data) {
   const box = data.inbox;
   const warn = box.token_warning ? `<p class="warn">${t(box.token_warning, 300)}</p>` : '';
-  const line = `${warn}<p class="mut">Your inbox: ${escHtml(INBOX_WORDS[box.state] || box.state)}${box.error ? ` (${t(box.error, 200)})` : ''}${box.generated_at ? `; generated ${t(box.generated_at, 40)}` : ''}.
+  const line = `${warn}<p class="mut">Your inbox: ${escHtml(INBOX_WORDS[box.state] || box.state)}${box.error ? ` (${t(box.error, 200)})` : ''}${box.generated_at ? `; generated ${when(box.generated_at)}` : ''}.
     ${box.blocked_count ? `${Number(box.blocked_count)} blocked. ` : ''}${data.tabs.mentions_unseen ? `<button type="button" data-act="mention-seen-all">Mark all seen</button>` : ''}</p>`;
   const verified = data.mentions.filter(m => m.reason !== 'plain mention (lower class)');
   const plain = data.mentions.filter(m => m.reason === 'plain mention (lower class)');
   const groups = new Map();
   for (const m of verified) { const k = m.post_url || m.post_title || ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
   const body = [...groups.values()].map(list => `<section><h2>${t(list[0].post_title || list[0].post_url || 'A post of yours', 200)}</h2>
-      ${list[0].post_url ? `<div class="mut">${t(list[0].post_url, 300)}</div>` : ''}${list.map(m => mentionCard(m, m.reason)).join('')}</section>`).join('');
+      ${list[0].post_url ? `<div class="mut">${addr(list[0].post_url)}</div>` : ''}${list.map(m => mentionCard(m, m.reason)).join('')}</section>`).join('');
   const nv = box.never_verified_count
     ? `<p class="mut">${Number(box.never_verified_count)} accepted, never verified${box.never_verified.length ? `: ${box.never_verified.map(x => t(x, 160)).join('; ')}` : ''}.</p>` : '';
   return `${line}${body || (box.state === 'off' ? '<p class="mut">Set an inbox below to see responses to your posts here.</p>' : '<p class="mut">No responses yet.</p>')}
@@ -132,6 +182,12 @@ const SCRIPT = `
       return post('/following/open',{key:b.dataset.key,version:Number(b.dataset.version)}).then(function(r){
         if(r&&r.ok&&r.url){if(w2){w2.location.href=r.url;}else say('Allow pop-ups for this page to open posts.',true);}
         else{if(w2)w2.close();say((r&&r.error)||'failed',true);}});}
+    if(a==='read'||a==='respond'){var rk=b.dataset.key,resp=a==='respond';say('opening…');
+      return post('/following/read-here',{key:rk}).then(function(r){
+        if(r&&r.ok&&r.url){location.href=r.url+(resp?'#respond':'');}else say((r&&r.error)||'failed',true);});}
+    if(a==='more'){var box=b.closest('.hub-entry-body'),rest=box&&box.querySelector('.rest');
+      if(rest){rest.hidden=!rest.hidden;b.textContent=rest.hidden?'more':'less';}return;}
+    if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
     if(a==='see')return post('/following/read',{key:b.dataset.key,move:'see'}).then(function(r){done(r);});
     if(a==='seen-all')return post('/following/read',{all:true}).then(function(r){done(r);});
     if(a==='mention-seen')return post('/following/mention-read',{key:b.dataset.key}).then(function(r){done(r);});
@@ -142,6 +198,9 @@ const SCRIPT = `
     if(a==='refresh'){say('refreshing…');b.disabled=true;return post('/following/refresh',{}).then(function(r){b.disabled=false;
       if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
   });
+  var search=document.getElementById('hub-search');
+  if(search)search.addEventListener('input',function(){var q=search.value.trim().toLowerCase();
+    document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){e.hidden=!!q&&e.textContent.toLowerCase().indexOf(q)<0;});});
   document.getElementById('follow-form').addEventListener('submit',function(ev){ev.preventDefault();
     say('looking for the blyg…');post('/following/follow',{url:this.url.value}).then(function(r){done(r,'followed');});});
   var preview=document.getElementById('preview');
@@ -172,7 +231,8 @@ const SCRIPT = `
  * The page. `data` is following.view()'s answer; `settings` the validated settings; `refused` the keys the stored
  * config had wrong; `nonce` the Content-Security-Policy nonce of this response (the one script and the one style carry it).
  */
-export function followingPage({ data, settings, refused = [], notice = '', nonce = '' }) {
+export function followingPage({ data, settings, refused = [], notice = '', nonce = '', locale = 'en-US' }) {
+  LOCALE = locale;
   const tabs = VIEWS.map(v => {
     const n = v === 'feed' ? data.tabs.feed : v === 'mentions' ? data.tabs.mentions : data.tabs.background;
     const extra = v === 'mentions' && data.tabs.mentions_unseen ? ` <span class="badge">${Number(data.tabs.mentions_unseen)} unseen</span>` : '';
@@ -180,10 +240,10 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
   }).join('');
   const nav = FILTERS.map(f => `<a href="/hub${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
   const last = data.last_run;
-  const lastLine = last ? `Last refresh ${t(last.at, 30)}: ${Number(last.new)} new, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
-  const blygs = data.blygs.map(b => `<tr><td>${t(b.title || b.origin, 160)}<div class="mut">${t(b.origin, 300)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
-      <td><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}</td><td>${Number(b.items)}</td>
-      <td>${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
+  const lastLine = last ? `Last refresh ${when(last.at)}: ${Number(last.new)} new, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
+  const blygs = data.blygs.map(b => `<tr><td class="b-name">${t(b.title || b.origin, 160)}<div class="mut">${addr(b.origin, 60)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
+      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}</td><td class="b-posts">${Number(b.items)}</td>
+      <td class="b-acts">${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
         ${b.state === 'active' || b.state === 'unreachable' ? `<button type="button" data-act="pause" data-origin="${escHtml(b.origin)}">Pause</button>` : ''}
         <button type="button" data-act="unfollow" data-origin="${escHtml(b.origin)}">Unfollow</button></td></tr>`).join('');
   const nums = Object.entries(FOLLOWING_NUMBERS).map(([k, spec]) => `<label>${escHtml(spec.what)} <input type="number" data-num name="${escHtml(k)}" min="${spec.min}" max="${spec.max}" value="${Number(settings[k])}"> <span class="mut">(${spec.min} to ${spec.max})</span></label>`).join('');
@@ -192,20 +252,22 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
       ? `<p class="mut">What should not interrupt reading: withdrawn posts, posts folded into a burst, versions with no new words, posts of paused blygs, and notices (links and reposts) from your inbox. A post comes back to the Feed when it gets a real new version.</p>
          ${data.background.length ? data.background.map(backgroundEntry).join('') : '<p class="mut">Nothing here.</p>'}`
       : `<nav class="filters" aria-label="filter">${nav}</nav>
-         <section aria-label="posts">${data.entries.length ? data.entries.map(entry).join('') : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
+         <input type="search" id="hub-search" placeholder="search every word" aria-label="search every word on this page">
+         <section aria-label="posts" id="hub-posts">${data.entries.length ? data.entries.map(entry).join('') : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
+         ${data.entry_total > data.entries.length ? `<p class="mut">${data.entries.length} of ${Number(data.entry_total)} shown (search covers these). <a href="/hub?${data.filter === 'all' ? '' : `filter=${escHtml(data.filter)}&amp;`}n=${Math.min(1000, (Number(data.limit) || 100) + 100)}">show more</a></p>` : ''}
          ${data.tabs.background ? `<p class="mut"><a href="/hub?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style></head><body><main>
+<title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style></head><body class="hub"><main class="hub-main">
 <p class="mut"><a href="/pages">All annotated pages</a></p>
 <h1>Hub</h1>
 <p class="mut">Blygs you read. Only you see this, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer.'}</p>
 ${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p class="warn">These settings were not valid and the defaults are used: ${t(refused.join(', '), 300)}.</p>` : ''}
 <div class="acts"><button type="button" data-act="refresh">Refresh now</button><button type="button" data-act="seen-all">Mark all seen</button><span id="msg" role="status"></span></div>
-<nav class="filters" aria-label="views">${tabs}</nav>
+<nav class="filters hub-tabs" aria-label="views">${tabs}</nav>
 ${pane}
 <h2>Following</h2>
 <p class="mut">The blygs you follow. Add one, import a blogroll, or change the settings below.</p>
-<table><thead><tr><th>Blyg</th><th>State</th><th>Posts</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="4" class="mut">None yet.</td></tr>'}</tbody></table>
+<table class="blygs"><thead><tr><th>Blyg</th><th>State</th><th>Posts</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="4" class="mut">None yet.</td></tr>'}</tbody></table>
 <h2>Follow a blyg</h2>
 <form id="follow-form"><label>Any address on it (a post, its front page) <input type="url" name="url" required size="48" placeholder="https://"></label><button type="submit">Follow</button></form>
 <h2>Import a blogroll</h2>
@@ -213,7 +275,7 @@ ${pane}
 <label>Address of the document <input type="url" name="url" size="48" placeholder="https://"></label>
 <label>…or paste it here <textarea name="text"></textarea></label><button type="submit">Show what would be added</button></form><div id="preview"></div>
 <h2>Settings</h2>
-<form id="settings-form">${nums}<label>Your own blygs (one address per line): posts that answer or quote them are listed under "Responses to me"
+<form id="settings-form" class="hub-settings">${nums}<label>Your own blygs (one address per line): posts that answer or quote them are listed under "Responses to me"
 <textarea name="my_origins">${settings.my_origins.map(o => escHtml(o)).join('\n')}</textarea></label>
 <label>Mentions inbox address (https) <input type="url" name="inbox_api_url" size="48" value="${escHtml(settings.inbox_api_url)}" placeholder="https://"></label>
 <label>Token file (an absolute path; its first line is the token, which is never kept here) <input type="text" name="inbox_token_file" size="48" value="${escHtml(settings.inbox_token_file)}"></label>

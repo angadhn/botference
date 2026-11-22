@@ -36,11 +36,14 @@
 // record per post at its newest version (the rollup, §13.1). A withdrawn post
 // (kind 'withdrawn') is a bare marker, so it is not fetched again (§13.4).
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { guardedGet as netGet, FetchTrouble, urlRefusal } from './netguard.mjs';
 import { readJsonState, writeJson, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 import { session, findManifest, identityOf, isManifest, ID_RE, clip, textContent, isWebUrl, samePage,
   docRefusal, cleanHints, candidateBase, pageLinks, LIMITS as BLYG_LIMITS } from './blyg.mjs';
+import { sanitizeArticle } from './sanitize.mjs';
 import { parseInbox, readTokenFile, redactor, scrubDeep, tokenFileWarning, REPOST_RE } from './following-inbox.mjs';
 
 const CFG = createRequire(import.meta.url)('./extension/config.js');
@@ -93,6 +96,8 @@ export const READ_MOVES = Object.freeze({
   respond: { new: 'responded', seen: 'responded', opened: 'responded', responded: 'responded' },
   // an edit that changes the words (not a maintenance version) puts a read post back
   resurface: { seen: 'new', opened: 'new' },
+  // the reader's own "mark new"
+  renew: { seen: 'new', opened: 'new' },
 });
 const readMachine = machine('read state', READ_STATES, READ_MOVES);
 export const canMoveRead = (rec, ev) => readMachine.can(rec.read, ev);
@@ -179,7 +184,12 @@ export const VERSION_PINS = Object.freeze(['unpinned', 'pinned']);
 //   maintenance — same content_hash as the version before (§13.2)
 export const LAST_CHANGES = Object.freeze(['new-words', 'minor', 'maintenance']);
 // Where an answer about a page came from: asked of the post's site, or built from the list.
-export const ANSWER_SOURCES = Object.freeze(['detected', 'from-list']);
+// ...and 'item-document': the text of the page record came from the post's own item document, so the identity on it
+// (origin, id, version) is the document's, not a page's say-so.
+export const ANSWER_SOURCES = Object.freeze(['detected', 'from-list', 'item-document']);
+// What is held of a post's body (the sanitised content, in a file of its own): all of it, the first part of it (the
+// stored cap was reached, so "Read here" has the rest), or none (a withdrawn post, or one kept before bodies were).
+export const BODY_STATES = Object.freeze(['whole', 'truncated', 'none']);
 // What identityFor says about a page.
 //   none        the list holds no post with that page
 //   agrees      the page's OWN links name the blyg and the item the list holds: the list's identity is used
@@ -202,6 +212,8 @@ export const LIMITS = Object.freeze({
   importRequests: 300,        // requests one preview may make
   followRequests: 12,         // requests following one URL may make
   mentionsKept: 500, versionsKept: 100, noteChars: 200,
+  bodyBytes: 40 * 1024,       // sanitised HTML kept per post, in a file of its own
+  feedEntries: 100,           // entries (with their text) one page of the Feed carries
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
@@ -272,6 +284,78 @@ export function parseDirectory(text) {
   return out;
 }
 
+// ---- plain text, dates, reading time, bodies ----------------------------------
+/** Markdown and directive syntax out of a line of text, leaving the words: links keep their text, images, `![[..]]` directives, `[[id]]` links, headings, quote markers and emphasis marks go. */
+export function plainText(v) {
+  let s = String(v == null ? '' : v);
+  s = s.replace(/^[ \t]*!\[\[[^\]]*\]\][ \t]*$/gm, ' ').replace(/!\[\[[^\]]*\]\]/g, ' ')
+    .replace(/\[\[[^\]|]*\|([^\]]*)\]\]/g, '$1').replace(/\[\[[^\]]*\]\]/g, ' ')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '').replace(/^[ \t]*>+[ \t]?/gm, '')
+    .replace(/(\*\*|__|~~|`)/g, '')
+    .replace(/(^|\s)[*_]+(?=\S)/g, '$1').replace(/(\S)[*_]+(?=\s|$|[.,;:!?)])/g, '$1');
+  return s;
+}
+const wordsIn = s => (String(s).match(/\S+/g) || []).length;
+/** "< 1 min", "2 min": 220 words a minute. */
+export const readingLabel = words => { const m = Number(words) / 220; return m < 1 ? '< 1 min' : `${Math.round(m)} min`; };
+/** The first language tag of an Accept-Language header that Intl knows, else en-US. */
+export function localeOf(header) {
+  for (const part of String(header || '').split(',')) {
+    const tag = part.split(';')[0].trim();
+    if (/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(tag)) {
+      try { if (Intl.DateTimeFormat.supportedLocalesOf([tag]).length) return tag; } catch { /* next */ }
+    }
+  }
+  return 'en-US';
+}
+/** "Nov 22, 2026" (en-US) or "22 Nov 2026" (en-GB); with time, ", 09:45". Stored values are never changed; '' for a date that is not one. */
+export function formatDate(iso, locale = 'en-US', withTime = false) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  try {
+    return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', year: 'numeric',
+      ...(withTime ? { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' } : {}) }).format(new Date(t));
+  } catch { return ''; }
+}
+/** A post's sanitised body (the SAME sanitiser the article view uses), capped; and how many words it has. → { html, state, words } */
+export function bodyOf(doc) {
+  const src = typeof doc.content_html === 'string' && doc.content_html.trim() ? doc.content_html : mdFallbackHtml(doc.content_md);
+  const r = sanitizeArticle(src, { max: LIMITS.bodyBytes, truncate: true });
+  return { html: r.html, state: !r.html.trim() ? 'none' : r.tooBig ? 'truncated' : 'whole', words: wordsIn(textContent(src)) };
+}
+/** Markdown with nothing rendered: paragraphs of escaped text (the fallback when a document has no HTML). */
+export function mdFallbackHtml(md) {
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(md == null ? '' : md).split(/\n\s*\n/).map(p => p.trim()).filter(Boolean).map(p => `<p>${esc(p).replace(/\n/g, '<br>')}</p>`).join('');
+}
+const VOID_TAGS = new Set(['br', 'hr', 'img', 'wbr', 'col']);
+/** Top-level blocks of sanitised HTML (an element and everything in it, or a run of top-level text): so a clip is never inside a quote, list or paragraph. */
+export function splitBlocks(html) {
+  const out = [];
+  let depth = 0, start = 0;
+  const re = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
+  let m;
+  while ((m = re.exec(html))) {
+    const name = m[2].toLowerCase();
+    if (m[1]) depth = Math.max(0, depth - 1);
+    else if (!VOID_TAGS.has(name)) depth++;
+    if (depth === 0) { out.push(html.slice(start, re.lastIndex)); start = re.lastIndex; }
+  }
+  if (start < html.length && html.slice(start).trim()) out.push(html.slice(start));
+  return out;
+}
+/** The body to show: { head, rest, words }. A fragment, and any post of at most `clipWords` words, is all head. Otherwise the head runs to the first block boundary at or past clipWords. */
+export function clipBody(html, kind, clipWords) {
+  const blocks = splitBlocks(html);
+  const counts = blocks.map(b => wordsIn(b.replace(/<[^>]*>/g, ' ')));
+  const total = counts.reduce((a, b) => a + b, 0);
+  if (kind === 'fragment' || total <= clipWords) return { head: html, rest: '', words: total };
+  let n = 0, i = 0;
+  while (i < blocks.length) { n += counts[i]; i++; if (n >= clipWords) break; }
+  return { head: blocks.slice(0, i).join(''), rest: blocks.slice(i).join(''), words: total };
+}
+
 // ---- turning a fetched item document into the record we keep ----------------
 function firstHeading(html) {
   const m = /<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]\s*>/i.exec(String(html || ''));
@@ -294,9 +378,9 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   if (!isWebUrl(page)) return { invalid: 'its page is not a web address' };
   const base = { origin, id: doc.id, kind: doc.kind, version: doc.version,
     created: cleanText(doc.created, 40), updated: cleanText(doc.updated, 40), page, content_hash: doc.content_hash,
-    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [] };
+    stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [], words: 0, body_state: 'none' };
   if (doc.kind === 'withdrawn') return base;
-  const lines = textContent(doc.content_html).split('\n').map(l => cleanText(l, 2000)).filter(Boolean);
+  const lines = textContent(doc.content_html).split('\n').map(l => cleanText(plainText(l), 2000)).filter(Boolean);
   const title = firstHeading(doc.content_html);
   if (title && lines.length && lines[0] === title) lines.shift();
   const body = lines.join(' ');
@@ -304,7 +388,7 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   const stub = doc.stub_of && typeof doc.stub_of === 'object' ? doc.stub_of : null;
   const stubOrigin = stub ? originOf(stub.origin) : '';
   return {
-    ...base, versions: versionsOf(doc), title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars), text_chars: body.length,
+    ...base, versions: versionsOf(doc), words: wordsIn(textContent(doc.content_html)), title, excerpt: cleanText(body, LIMITS.excerptChars), text: cleanText(body, LIMITS.textChars), text_chars: body.length,
     author: cleanText(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || blyg.author || '',
     stub_of: stubOrigin ? { origin: stubOrigin, id: ID_RE.test(String(stub.id || '')) ? stub.id : '' } : null,
     transclusions: Array.isArray(doc.transclusions) ? doc.transclusions.length : 0,
@@ -520,9 +604,34 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
     prune(state);
+    queueMicrotask(() => { try { sweepBodies(); } catch { /* nothing to sweep */ } });
     return state;
   };
   const save = () => { refuseIfUnreadable(file); prune(load()); writeJson(file, load()); };
+  // The sanitised body of each post lives in a file of its own beside the list (so following.json stays small and each
+  // body is written atomically), named by the record's random key, and is swept away with its post.
+  const bodiesDir = path.join(path.dirname(file), 'following-bodies');
+  const bodyFile = key => path.join(bodiesDir, `${String(key).replace(/[^0-9a-f]/g, '')}.html`);
+  const writeBody = (key, html) => {
+    fs.mkdirSync(bodiesDir, { recursive: true });
+    const f = bodyFile(key), tmp = `${f}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, String(html));
+    fs.renameSync(tmp, f);
+  };
+  // read back through the sanitiser again: a file edited by hand is no more trusted than the web
+  const readBodyHtml = key => {
+    let s = '';
+    try { s = fs.readFileSync(bodyFile(key), 'utf8'); } catch { return ''; }
+    return sanitizeArticle(s, { max: LIMITS.bodyBytes + 4096, truncate: true }).html;
+  };
+  function sweepBodies() {
+    let names = [];
+    try { names = fs.readdirSync(bodiesDir); } catch { return 0; }
+    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn').map(i => `${i.key}.html`));
+    let n = 0;
+    for (const f of names) if (!keep.has(f)) { try { fs.unlinkSync(path.join(bodiesDir, f)); n++; } catch { /* gone already */ } }
+    return n;
+  }
   const run = { state: 'idle' };
   const schedule = { mode: 'off' };
   let handle; // the timer's handle: meaningful only while schedule.mode is 'scheduled'
@@ -613,7 +722,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const st = load();
     if (!st.blygs[origin]) return false;
     delete st.blygs[origin];
-    save(); reschedule(); onChange(); // save() prunes its posts
+    save(); sweepBodies(); reschedule(); onChange(); // save() prunes its posts
     return true;
   }
   function setBlygState(origin, ev) {
@@ -716,6 +825,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       noteFailure(b, 'absent', 'it has no manifest at its origin'); tally.absent++; return;
     }
     b.title = cleanText(man.json.title, 200) || b.title;
+    b.item_template = typeof man.json.item === 'string' ? cleanText(man.json.item, 300) : '';
     b.author = cleanText(man.json.author && man.json.author.name, 200) || b.author;
     let indexUrl;
     try { indexUrl = new URL(typeof man.json.items === 'string' && man.json.items ? man.json.items : 'items/index.json', b.origin).href; } catch { indexUrl = ''; }
@@ -774,6 +884,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       if (rec.invalid) { tally.invalid++; continue; }
       if (held && rec.version < held.version) { tally.regressions++; continue; }
       if (doc.version !== e.version) tally.mismatched++;
+      const body = bodyOf(doc);
+      rec.body_state = body.state;
       const common = { index_version: e.version, fetched_at: now() };
       if (isWithdrawn(rec)) { st.items[ident] = { ...tombstone(held || { ...rec, key: randomKey() }, rec), index_version: e.version }; tally.withdrawn++; continue; }
       const change = changeOf(held, rec, cfg.following_barely_changed_percent);
@@ -790,6 +902,9 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         else if (change === 'minor') tally.minor++;
         else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
       }
+      // the body is kept with the post: rewritten when the words changed, or when it is not there
+      const bk = st.items[ident].key;
+      if (change !== 'maintenance' || !fs.existsSync(bodyFile(bk))) writeBody(bk, body.html);
     }
   }
 
@@ -864,6 +979,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       tally.requests = budget.requests;
       load().last_run = { ...tally, at: new Date(now()).toISOString() };
       save();
+      sweepBodies();
     } finally { moveRun(run, 'end'); }
     onChange();
     return { started: true, ...tally };
@@ -948,6 +1064,64 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     return { url: m.source_url, opens_on: '' };
   }
 
+  // ---- reading a post here ----
+  /**
+   * The post's own item document, fetched again through the same guarded getter and the same origin rule (its URL and
+   * its final URL must be inside the blyg's origin), checked as the reconciliation checks it, and its content
+   * sanitised by the article view's sanitiser. → what the page record is made of; nothing is written here.
+   * The identity in `result` is the DOCUMENT's (source 'item-document'): the text came from it, not from a page's say-so.
+   */
+  async function fetchPost(key) {
+    if (!mayFetch()) throw new Error('fetching is off (blyg_checks), so the post cannot be fetched');
+    const rec = byKey(key);
+    if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+    const b = load().blygs[rec.origin];
+    if (!b) throw new Error('that blyg is not followed');
+    const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
+    const url = itemUrlFor({ item: b.item_template }, rec.origin, rec.id);
+    if (!isWebUrl(url)) throw new Error('the blyg\'s item address is not a web address');
+    if (!within(rec.origin, url)) throw new Error(REFUSALS.item);
+    const r = await fetchJson(g, url, LIMITS.itemBytes);
+    if (r.status === 'trouble') throw new Error(`could not fetch the post: ${r.message}`);
+    if (r.status !== 'ok') throw new Error('the blyg does not serve that post any more');
+    if (!within(rec.origin, r.url)) throw new Error(REFUSALS.redirect);
+    const doc = r.json;
+    const why = docRefusal(doc, { id: rec.id, origin: rec.origin });
+    if (why) throw new Error(`the post did not verify: ${why}`);
+    if (doc.kind === 'withdrawn') throw new Error('that post has been withdrawn');
+    const post = recordFromDoc(doc, rec.origin, b);
+    if (post.invalid) throw new Error(`the post cannot be shown: ${post.invalid}`);
+    const src = typeof doc.content_html === 'string' && doc.content_html.trim() ? doc.content_html : mdFallbackHtml(doc.content_md);
+    const clean = sanitizeArticle(src); // the article view's own cap (2 MB), refused rather than cut
+    if (clean.tooBig) throw new Error('the post is too large to keep a readable copy of');
+    if (!clean.html.trim()) throw new Error('there is nothing readable in that post');
+    const pinned = pinnedOf(post);
+    return {
+      key: rec.key, page_url: post.page, title: post.title || post.excerpt || 'A post', html: clean.html,
+      result: { status: 'blyg', source: 'item-document', site: { origin: rec.origin, title: b.title, author: b.author },
+        html: '', text: textContent(clean.html),
+        item: { origin: rec.origin, id: rec.id, kind: post.kind, version: post.version, latest: post.version, pinned: pinned.includes(post.version),
+          pinned_versions: pinned, page: post.page, pinned_page: '', json: url, source: b.title, author: post.author } },
+      meta: { origin: rec.origin, id: rec.id, kind: post.kind, version: post.version, created: post.created, updated: post.updated,
+        author: post.author, blyg_title: b.title, versions: post.versions, stub_of: post.stub_of, key: rec.key },
+    };
+  }
+  /** Reading a post here is opening it. */
+  function openedHere(key) {
+    const rec = byKey(key);
+    if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+    if (canMoveRead(rec, 'open')) { moveRead(rec, 'open'); save(); onChange(); }
+    return rec.read;
+  }
+  const heldVersion = (origin, id) => { const r = heldItem(String(origin), String(id)); return r && !isWithdrawn(r) ? r.version : 0; };
+  /** What a post answers, said as a person would: the target's title when it is a followed post held here, else its host. */
+  function responseOf(stub) {
+    if (!stub) return null;
+    const target = stub.id ? heldItem(stub.origin, stub.id) : null;
+    return { origin: stub.origin, id: stub.id,
+      label: (target && !isWithdrawn(target) && (plainText(target.title) || plainText(target.excerpt))) || hostOf(stub.origin) || stub.origin };
+  }
+
   /**
    * The page at `url` is a post the list holds? → { verdict, item?, reason?, result? } (IDENTITY_VERDICTS).
    * THE LIST ALONE NEVER SUPPLIES IDENTITY. A page's address, and the `page` a blyg claims for a post, prove nothing
@@ -999,26 +1173,32 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
 
   // ---- what the page shows ----
-  function view({ view: tab = 'feed', filter = 'all', mine = [] } = {}) {
+  function view({ view: tab = 'feed', filter = 'all', mine = [], limit = LIMITS.feedEntries } = {}) {
     const st = load();
     const v = buildView({ items: Object.values(st.items), blygs: st.blygs, mentions: st.inbox.mentions, mine, filter });
     const titleOf = o => (st.blygs[o] && st.blygs[o].title) || '';
-    const decorate = i => {
-      const target = i.stub_of && i.stub_of.id ? heldItem(i.stub_of.origin, i.stub_of.id) : null;
-      return { ...copy(i), blyg_title: titleOf(i.origin), shown_at: new Date(sortTime(i)).toISOString(),
+    const cfg = settings();
+    const decorate = (i, withBody = false) => {
+      const body = withBody && i.body_state && i.body_state !== 'none' ? clipBody(readBodyHtml(i.key), i.kind, cfg.following_feed_clip_words) : { head: '', rest: '' };
+      return { ...copy(i), excerpt: cleanText(plainText(i.excerpt), LIMITS.excerptChars), title: cleanText(plainText(i.title), LIMITS.titleChars),
+        blyg_title: titleOf(i.origin), blyg_label: mine.includes(i.origin) ? 'you' : titleOf(i.origin),
+        shown_at: new Date(sortTime(i)).toISOString(), reading: readingLabel(i.words || wordsIn(i.text || '')),
+        body_head: body.head, body_rest: body.rest,
         versions_note: i.version > 1 ? `${i.version} versions` : '',
         history: [...(i.versions || [])].sort((a, b) => b.version - a.version)
           .map(v => ({ ...v, mark: v.pin === 'pinned' ? (pinPageOf(i, v.version) ? 'link' : 'plain') : '' })),
         pinned_list: pinnedOf(i),
         opens_on: i.page && hostOf(i.page) !== hostOf(i.origin) ? hostOf(i.page) : '',
-        in_response_to: i.stub_of ? { origin: i.stub_of.origin, id: i.stub_of.id,
-          label: (target && !isWithdrawn(target) && (target.title || target.excerpt)) || titleOf(i.stub_of.origin) || i.stub_of.origin } : null };
+        in_response_to: responseOf(i.stub_of) };
     };
     const mention = m => { const p = feedItemFor(m); return { ...copy(m), feed_key: p ? p.key : '' }; };
     const box = syncInbox(settings());
     return { view: viewOf(tab), filter: v.feed.filter, counts: v.feed.counts, tabs: v.tabs,
       run: { ...run }, schedule: { ...schedule }, last_run: copy(st.last_run), blygs: listBlygs(),
-      entries: viewOf(tab) === 'feed' ? v.feed.entries.map(e => ({ head: decorate(e.head), members: e.members.map(decorate) })) : [],
+      // the Feed carries each entry's text, so at most `limit` entries at a time (the rest is `entry_total` minus that)
+      entry_total: v.feed.entries.length, limit,
+      entries: viewOf(tab) === 'feed' ? v.feed.entries.slice(0, Math.max(1, Math.min(Number(limit) || LIMITS.feedEntries, 1000)))
+        .map(e => ({ head: decorate(e.head, true), members: e.members.map(m => decorate(m)) })) : [],
       background: viewOf(tab) === 'background' ? v.background.map(b => (b.type === 'post'
         ? { type: 'post', reason: b.reason, post: decorate(b.post), burst_head_title: b.burst_head ? (b.burst_head.title || b.burst_head.excerpt) : '' }
         : { type: 'mention', reason: b.reason, mention: mention(b.mention) })) : [],
@@ -1030,7 +1210,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const itemByKey = key => copy(byKey(key));
 
   return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove, markAllSeen,
-    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey,
+    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
     breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },
@@ -1048,6 +1228,7 @@ export const ROUTES = Object.freeze([
   { method: 'GET', path: '/following', what: 'the same page, under its older address' },
   { method: 'GET', path: '/following/data', what: 'the console as JSON' },
   { method: 'POST', path: '/following/open', what: 'open a post or mention (marks it, answers with the original address)' },
+  { method: 'POST', path: '/following/read-here', what: 'keep the post\'s text as an annotatable page and open it (or load its newer version)' },
   { method: 'POST', path: '/following/follow', what: 'follow a blyg by any URL on it' },
   { method: 'POST', path: '/following/unfollow', what: 'stop following' },
   { method: 'POST', path: '/following/state', what: 'pause or resume one' },

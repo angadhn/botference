@@ -253,7 +253,7 @@ test('the Mentions page: grouped by your post, passage, details as escaped JSON,
   assert.ok(body.includes('&lt;script&gt;alert(1)&lt;/script&gt;') || body.includes('&lt;img'), 'hostile text is there as text');
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html));
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body));
-  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^\/(hub|pages)/, m[1]);
+  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
   assert.equal((html.match(/<script/g) || []).length, 1);
   assert.ok(!html.includes(TOKEN));
   // the Background page names the reasons

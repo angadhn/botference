@@ -218,6 +218,7 @@
     following_max_items_total: Object.freeze({ dflt: 2000, min: 50, max: 20000, what: 'items kept in all' }),
     following_run_seconds: Object.freeze({ dflt: 60, min: 5, max: 600, what: 'seconds one refresh may take' }),
     following_run_requests: Object.freeze({ dflt: 200, min: 5, max: 2000, what: 'requests one refresh may make' }),
+    following_feed_clip_words: Object.freeze({ dflt: 300, min: 50, max: 2000, what: 'words a post may have before the Feed clips it (a fragment is never clipped)' }),
     following_barely_changed_percent: Object.freeze({ dflt: 2, min: 0, max: 20, what: 'percent of a post that may change and still count as barely changed (0 = identical words only)' }),
   });
   // …and three more. `following_barely_changed_percent` is the reader-local threshold of

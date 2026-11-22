@@ -619,6 +619,8 @@ export function pageRecordOf(result, at = new Date()) {
   if (result.reason) out.reason = clip(result.reason, 300);
   if (result.site) out.site = { ...result.site };
   if (result.item) out.item = { ...result.item };
+  // where the answer came from (following.mjs ANSWER_SOURCES), kept on the record: 'item-document' is authoritative for the text held
+  if (typeof result.source === 'string' && /^[a-z-]{1,20}$/.test(result.source)) out.source = result.source;
   return out;
 }
 

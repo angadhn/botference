@@ -850,6 +850,11 @@ ${acts}
 // served from /assets — so a highlight made on a phone is the same kind of
 // object, anchored by the same code, as one made in the drawer on the Mac.
 const ARTICLE_STYLE = `
+.hubhead { max-width:min(42rem, 100%); margin:0 auto; padding:.8rem 1.1rem 0; font-size:.85rem; overflow-wrap:anywhere }
+.hubhead .meta { display:flex; flex-wrap:wrap; gap:.2rem .8rem; color:var(--muted) }
+.hubhead .mut { color:var(--muted); margin-top:.2rem }
+.hubnewer { margin:.6rem 0 0; padding:.5rem .7rem; border:1px solid var(--line); border-radius:8px; background:var(--card);
+  display:flex; flex-wrap:wrap; gap:.4rem .7rem; align-items:center }
 /* a phone is the point of this view: nothing may push the page sideways */
 html, body { max-width:100%; overflow-x:hidden }
 .bar { position:sticky; top:0; z-index:5; display:flex; align-items:center; gap:.6rem;
@@ -896,7 +901,24 @@ const jsonScript = (id, data, nonce) =>
   `<script type="application/json" id="${id}" nonce="${escHtml(nonce)}">`
   + JSON.stringify(data).replace(/</g, '\\u003c') + '</script>';
 
-export function articleView({ page, key, me, snapshot, info, nonce }) {
+// The Hub's header over a followed post's text: whose it is, which version, what it answers, and (when the Hub has seen a
+// newer version) a button that loads it. Everything here came from a remote document and is escaped.
+function hubHeader(hub) {
+  if (!hub) return '';
+  const bits = [hub.blyg_title, hub.author, hub.kind, hub.date, `v${Number(hub.version) || 1}${hub.versions_note ? ` \u00b7 ${hub.versions_note}` : ''}`].filter(Boolean)
+    .map(x => `<span>${escHtml(x)}</span>`).join('');
+  const pins = hub.pinned && hub.pinned.length ? `<div class="mut">pinned: ${hub.pinned.map(n => `v${Number(n)}`).join(', ')}</div>` : '';
+  const resp = hub.in_response_to ? `<div class="mut">in response to ${escHtml(hub.in_response_to)}</div>` : '';
+  const note = [hub.source_note, hub.text_state === 'partial' ? 'Only the first part of this post is held here; load it to read the rest.' : ''].filter(Boolean)
+    .map(x => `<div class="mut">${escHtml(x)}</div>`).join('');
+  const newer = hub.newer ? `<form class="hubnewer" method="post" action="/following/read-here"><span>A newer version (v${Number(hub.newer.version)}) exists.</span>
+<input type="hidden" name="key" value="${escHtml(hub.newer.key)}"><input type="hidden" name="replace" value="1">
+<button class="pill" type="submit">Load v${Number(hub.newer.version)}</button>
+<span class="mut">Highlights are kept where their quotes still match and marked otherwise.</span></form>` : '';
+  return `<header class="hubhead hub-entry-meta"><div class="meta">${bits}</div>${pins}${resp}${note}${newer}</header>`;
+}
+
+export function articleView({ page, key, me, snapshot, info, nonce, hub = null, theme = false }) {
   const n = escHtml(nonce);
   const head = `<div class="bar"><a href="/pages">‹ pages</a>
 <span class="t">${escHtml(displayTitle(page))}</span>
@@ -917,7 +939,7 @@ companion will keep a copy — after that this page works from anywhere.</p>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escHtml(displayTitle(page))}</title>${FAVICON_LINK}
 <style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
-${head}${body}
+${head}${hubHeader(hub)}${body}
 <button id="bfp-pill" hidden>comment</button>
 <div id="bfp-light" role="dialog" aria-label="figure"></div>
 <div id="bfp-sheet" aria-live="polite"><div class="head"><span class="h"></span>

@@ -238,7 +238,9 @@ await test('hostile titles, excerpts, authors and addresses are text: nothing is
   assert.ok(!/<script>alert/i.test(body) && !/<img\b/i.test(body) && !/<svg\b/i.test(body), 'no remote markup became an element');
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body), 'no event-handler attribute on any element');
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html), 'no bidi override characters reach the page');
-  for (const m of body.matchAll(/\shref="([^"]*)"/g)) assert.match(m[1], /^\/(hub|pages)/, `href ${m[1]}`);
+  // real attributes of real tags only: the page's own links, or (inside a post's sanitised text) an http(s) or mailto link
+  for (const m of body.matchAll(/<[a-zA-Z][^>]*?\shref="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-|https?:\/\/|mailto:)/, `href ${m[1]}`);
+  assert.ok(!/<[a-zA-Z][^>]*\s(?:href|src)="\s*(?:javascript|data|vbscript):/i.test(body), 'no script or data link in any tag');
   assert.equal((html.match(/<script/g) || []).length, 1, 'one script: ours');
 });
 
@@ -431,6 +433,73 @@ await test('the Hub and its older address serve the same page', async () => {
   assert.match(a.body, /<h2>Following<\/h2>/);
   for (const w of ['Feed', 'Mentions', 'Background']) assert.match(a.body, new RegExp(`>${w} \\(`));
   assert.equal(a.body.replace(/nonce="[^"]*"/g, ''), b.body.replace(/nonce="[^"]*"/g, ''));
+});
+
+await test('Read here: the post becomes an annotatable page (same record as the original page), identity from the document, no network for highlights; a newer version is offered, loaded on request, highlights kept or orphaned', async () => {
+  const RID = idOf(21);
+  const body = n => `<p>The opening paragraph stays exactly as it was.</p><p>${n}</p><p>The closing paragraph stays too.</p>`;
+  const d1 = makeDoc({ id: RID, origin: A, kind: 'thread', title: 'Read here post', version: 1, created: '2026-11-09T09:00:00Z', transclusions: [] });
+  d1.content_html = body('A middle sentence that will be rewritten.');
+  site.put(d1);
+  await POST(B, '/following/refresh', {});
+  const key = await keyOfPost(RID);
+  const before = web.requests.length;
+  let r = await POST(B, '/following/read-here', { key });
+  assert.equal(r.status, 200, r.body);
+  assert.match(r.json.url, /^\/a\/[0-9a-f]{40}$/);
+  assert.equal(web.requests.length, before + 1, 'one request: the post\'s own item document');
+  assert.ok(web.requests.at(-1).endsWith(`items/${RID}.json`));
+  assert.equal((await dataOf()).entries.find(e => e.head.id === RID).head.read, 'opened', 'reading here is opening');
+  let art = await GET(B, r.json.url, { accept: 'text/html' });
+  assert.equal(art.status, 200);
+  assert.match(art.body, /The opening paragraph stays exactly/);
+  assert.match(art.body, /<header class="hubhead hub-entry-meta">/);
+  assert.match(art.body, /Invented Notes/);
+  assert.match(art.headers['content-security-policy'], /img-src 'self' https: data:/);
+  assert.match(art.headers['content-security-policy'], /default-src 'none'/);
+  // the second press is the record already held: no request
+  const n2 = web.requests.length;
+  r = await POST(B, '/following/read-here', { key });
+  assert.equal(r.json.kept, true);
+  assert.equal(web.requests.length, n2);
+  // a highlight made there (no hints: the Hub's own page), stamped from the document, no request
+  const PAGE = `${A}t/${RID}/`;
+  for (const q of ['opening paragraph stays exactly', 'middle sentence that will be rewritten']) {
+    const t = (await POST(B, '/thread', { url: PAGE, quote: q, msg: { text: 'note on ' + q } })).json.thread;
+    assert.deepEqual([t.blyg.status, t.blyg.origin, t.blyg.id, t.blyg.version, t.blyg.version_state], ['blyg', A, RID, 1, 'current-unpinned']);
+    assert.deepEqual(t.blyg.passage, { match: true }, 'the passage is checked against the document\'s own text');
+  }
+  assert.equal(web.requests.length, n2, 'highlighting on the Hub copy asks nobody');
+  assert.equal((await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json.blyg.source, 'item-document');
+  // the blyg publishes version 2; the Hub sees it; the page says so, and nothing under the highlights has changed
+  const d2 = makeDoc({ id: RID, origin: A, kind: 'thread', title: 'Read here post', version: 2, created: '2026-11-09T09:00:00Z', updated: '2026-11-10T09:00:00Z', transclusions: [] });
+  d2.content_html = body('A completely different middle.');
+  d2.content_md = 'v2 markdown'; d2.content_hash = 'sha256:' + (await import('node:crypto')).createHash('sha256').update('v2 markdown').digest('hex');
+  site.put(d2);
+  await POST(B, '/following/refresh', {});
+  art = await GET(B, r.json.url, { accept: 'text/html' });
+  assert.match(art.body, /A newer version \(v2\) exists/);
+  assert.match(art.body, /<form class="hubnewer" method="post" action="\/following\/read-here">/);
+  assert.match(art.body, /A middle sentence that will be rewritten/, 'not swapped silently');
+  // loading it: a plain form post, as the page's button does
+  const load = await request(B, 'POST', '/following/read-here', undefined, { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' },
+    new URLSearchParams({ key, replace: '1' }).toString());
+  assert.equal(load.status, 303);
+  assert.equal(load.headers.location, r.json.url);
+  const after = (await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json;
+  assert.deepEqual(Object.fromEntries(after.threads.map(t => [t.quote.slice(0, 10), !!t.orphaned])), { 'opening pa': false, 'middle sen': true });
+  assert.equal(after.blyg.item.version, 2);
+  art = await GET(B, r.json.url, { accept: 'text/html' });
+  assert.match(art.body, /A completely different middle/);
+  assert.ok(!/A newer version/.test(art.body));
+  // export: a note for this post marks the SAME post responded
+  const hints = { blyg: `${A}blyg.json`, json: `${A}items/${RID}.json` };
+  const ex = await POST(B, '/export', { url: PAGE, mode: 'all', blyg_hints: hints });
+  assert.equal(ex.status, 200, ex.body);
+  assert.equal((await dataOf()).entries.find(e => e.head.id === RID).head.read, 'responded');
+  // the Feed page: images over https allowed, nothing else remote
+  const feed = await GET(B, '/hub', { accept: 'text/html' });
+  assert.match(feed.headers['content-security-policy'], /default-src 'none'; script-src 'nonce-[^']+'; style-src 'nonce-[^']+'; img-src https:; connect-src 'self'/);
 });
 
 cleanup();
