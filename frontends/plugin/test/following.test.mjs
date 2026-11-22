@@ -605,3 +605,14 @@ test('the default transport really is netguard.guardedGet', async () => {
   await assert.rejects(() => f.follow('http://127.0.0.1:9/'), /could not ask|refused|no Blygger|not asked/);
   assert.equal(typeof guard.guardedGet, 'function');
 });
+
+test('the extension reaches Following: a drawer button, the worker\'s open-here, and an options link', () => {
+  const ext = f => fs.readFileSync(path.join(HERE, '..', 'extension', f), 'utf8');
+  assert.match(ext('drawer.js'), /data-act="following"/);
+  assert.match(ext('drawer.js'), /'following': \(\) => cb\('onOpenFollowing'\)\(\)/);
+  assert.match(ext('content.js'), /onOpenFollowing: \(\) => \{ bg\(\{ t: 'open-here', path: '\/following' \}\); \}/);
+  // the worker only opens paths of this shape at the companion
+  assert.match('/following', /^\/[A-Za-z0-9/_-]*$/);
+  assert.match(ext('options.html'), /id="following-link"/);
+  assert.match(ext('options.js'), /following-link/);
+});

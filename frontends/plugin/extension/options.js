@@ -139,6 +139,8 @@
     el('password').value = cfg.password;
     el('handle').value = cfg.handle;
     el('pdf').checked = cfg.pdf !== false;
+    const fl = el('following-link');
+    if (fl) fl.href = CFG.httpUrl(cfg.base, '/following');
   }
 
   // Asked here on every visit, and the answer written down for the service
