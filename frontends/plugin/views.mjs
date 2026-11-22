@@ -918,7 +918,7 @@ function hubHeader(hub) {
   return `<header class="hubhead hub-entry-meta"><div class="meta">${bits}</div>${pins}${resp}${note}${newer}</header>`;
 }
 
-export function articleView({ page, key, me, snapshot, info, nonce, hub = null, theme = false }) {
+export function articleView({ page, key, me, snapshot, info, nonce, hub = null, themeHref = '' }) {
   const n = escHtml(nonce);
   const head = `<div class="bar"><a href="/pages">‹ pages</a>
 <span class="t">${escHtml(displayTitle(page))}</span>
@@ -929,7 +929,7 @@ ${me.owner ? '<button class="pill" id="bfp-export">export</button>' : ''}
   // A page annotated before snapshots existed has no article to show. Say so
   // in one line, offer the conversation, and name the one thing that fixes it.
   const body = snapshot
-    ? `<article id="bfp-article">${snapshot}</article>`
+    ? `<article id="bfp-article"${hub ? ' class="hub-main hub-entry-body"' : ''}>${hub ? snapshot.replace(/<blockquote/g, '<blockquote class="hub-quote"') : snapshot}</article>`
     : `<div class="none"><p>No readable copy of this article has been captured yet, so there
 is nothing to mark up here.</p><p>Open it once on the Mac with the extension running and the
 companion will keep a copy — after that this page works from anywhere.</p>
@@ -938,7 +938,7 @@ companion will keep a copy — after that this page works from anywhere.</p>
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escHtml(displayTitle(page))}</title>${FAVICON_LINK}
-<style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style></head><body>
+<style nonce="${n}">${STYLE}${ARTICLE_STYLE}</style>${hub && themeHref ? `<link rel="stylesheet" href="${escHtml(themeHref)}">` : ''}</head><body${hub ? ' class="hub"' : ''}>
 ${head}${hubHeader(hub)}${body}
 <button id="bfp-pill" hidden>comment</button>
 <div id="bfp-light" role="dialog" aria-label="figure"></div>

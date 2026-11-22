@@ -222,7 +222,7 @@ const SCRIPT = `
   document.getElementById('settings-form').addEventListener('submit',function(ev){ev.preventDefault();var f=this,b={};
     f.querySelectorAll('input[data-num]').forEach(function(i){b[i.name]=Number(i.value);});
     b.my_origins=f.my_origins.value.split(/\\n/).map(function(s){return s.trim();}).filter(Boolean);
-    b.inbox_api_url=f.inbox_api_url.value.trim();b.inbox_token_file=f.inbox_token_file.value.trim();
+    b.inbox_api_url=f.inbox_api_url.value.trim();b.hub_theme_dir=f.hub_theme_dir.value.trim();b.inbox_token_file=f.inbox_token_file.value.trim();
     post('/following/settings',b).then(function(r){done(r,'saved');});});
 })();
 `;
@@ -231,7 +231,7 @@ const SCRIPT = `
  * The page. `data` is following.view()'s answer; `settings` the validated settings; `refused` the keys the stored
  * config had wrong; `nonce` the Content-Security-Policy nonce of this response (the one script and the one style carry it).
  */
-export function followingPage({ data, settings, refused = [], notice = '', nonce = '', locale = 'en-US' }) {
+export function followingPage({ data, settings, refused = [], notice = '', nonce = '', locale = 'en-US', theme = { state: 'none', reason: '' } }) {
   LOCALE = locale;
   const tabs = VIEWS.map(v => {
     const n = v === 'feed' ? data.tabs.feed : v === 'mentions' ? data.tabs.mentions : data.tabs.background;
@@ -257,7 +257,7 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
          ${data.entry_total > data.entries.length ? `<p class="mut">${data.entries.length} of ${Number(data.entry_total)} shown (search covers these). <a href="/hub?${data.filter === 'all' ? '' : `filter=${escHtml(data.filter)}&amp;`}n=${Math.min(1000, (Number(data.limit) || 100) + 100)}">show more</a></p>` : ''}
          ${data.tabs.background ? `<p class="mut"><a href="/hub?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style></head><body class="hub"><main class="hub-main">
+<title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style>${theme.state === 'ok' ? '<link rel="stylesheet" href="/hub/theme/hub.css">' : ''}</head><body class="hub"><main class="hub-main">
 <p class="mut"><a href="/pages">All annotated pages</a></p>
 <h1>Hub</h1>
 <p class="mut">Blygs you read. Only you see this, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer.'}</p>
@@ -280,6 +280,8 @@ ${pane}
 <label>Mentions inbox address (https) <input type="url" name="inbox_api_url" size="48" value="${escHtml(settings.inbox_api_url)}" placeholder="https://"></label>
 <label>Token file (an absolute path; its first line is the token, which is never kept here) <input type="text" name="inbox_token_file" size="48" value="${escHtml(settings.inbox_token_file)}"></label>
 ${data.inbox.token_warning ? `<p class="warn">${t(data.inbox.token_warning, 300)}</p>` : ''}
+<label>Theme folder (an absolute path to a folder with hub.css and, if you like, fonts) <input type="text" name="hub_theme_dir" size="48" value="${escHtml(settings.hub_theme_dir || '')}"></label>
+<p class="mut">Theme: ${t(theme.state, 20)}${theme.reason ? ` (${t(theme.reason, 200)})` : ''}</p>
 <button type="submit">Save settings</button></form>
 <p class="mut">Read states: ${READ_STATES.map(s => escHtml(s)).join(', ')}. Inbox states: ${INBOX_STATES.map(s => escHtml(s)).join(', ')}.</p>
 </main><script nonce="${escHtml(nonce)}">${SCRIPT}</script></body></html>`;

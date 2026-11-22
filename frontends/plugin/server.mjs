@@ -75,6 +75,7 @@ import * as blygMod from './blyg.mjs';
 import * as followingMod from './following.mjs';
 import * as inboxMod from './following-inbox.mjs';
 import { holdPost, hubInfoOf } from './hubread.mjs';
+import * as hubTheme from './hubtheme.mjs';
 import { followingPage } from './following-view.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
 const fteRouted = new Map();
@@ -3334,7 +3335,16 @@ function runFigure(req, res) {
 }
 
 // ---- Following routes ---------------------------------------------------------
-const FOLLOWING_SETTING_KEYS = [...Object.keys(followingMod.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file'];
+const FOLLOWING_SETTING_KEYS = [...Object.keys(followingMod.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file', 'hub_theme_dir'];
+// the theme folder may not be inside the companion's own data folders
+const THEME_FORBIDDEN = [store.BASE_DIR, store.DIR];
+const themeNow = () => hubTheme.themeState(followingMod.followingSettingsOf(store.readConfig()).settings.hub_theme_dir, THEME_FORBIDDEN);
+// The Content-Security-Policy of a Hub page: nothing remote but https images; with a working theme, the companion's own
+// stylesheet and fonts too (exactly style-src 'self' and font-src 'self'), and still no remote style, font or script.
+const hubCsp = (nonce, theme, extra = []) => [
+  "default-src 'none'", `script-src 'nonce-${nonce}'`, `style-src 'nonce-${nonce}'${theme.state === 'ok' ? " 'self'" : ''}`,
+  ...(theme.state === 'ok' ? ["font-src 'self'"] : []), ...extra,
+].join('; ');
 const followingNeedsChecks = () => {
   if (!blygChecksOn()) throw new Error('Blygger checks are off on this companion (blyg_checks), so Following asks no site anything');
 };
@@ -3376,9 +3386,9 @@ function handleFollowing(route, req, res) {
       const s = settings();
       const nonce = crypto.randomBytes(16).toString('base64');
       return res.writeHead(200, followingHeaders('text/html; charset=utf-8', {
-        'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        'content-security-policy': hubCsp(nonce, themeNow(), ["img-src https:", "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"]),
         'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
-      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce, locale }));
+      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce, locale, theme: themeNow() }));
     }
     case '/following/data': return ok(res, { ...viewOf(), settings: settings().settings });
     default: break;
@@ -3425,6 +3435,10 @@ function handleFollowing(route, req, res) {
         const { refused } = followingMod.followingSettingsOf({ ...cur, ...patch });
         const bad = refused.filter(k => k in patch);
         if (bad.length) throw new Error(`not valid: ${bad.join(', ')}`);
+        if (patch.hub_theme_dir) {
+          const th = hubTheme.themeState(patch.hub_theme_dir, THEME_FORBIDDEN);
+          if (th.state === 'unreadable' && /data folders/.test(th.reason)) throw new Error(th.reason);
+        }
         if (patch.inbox_token_file) {
           const why = inboxMod.tokenPathRefusal(patch.inbox_token_file, FOLLOWING_TOKEN_FORBIDDEN);
           if (why) throw new Error(why);
@@ -3496,6 +3510,13 @@ export function handler(req, res) {
   // Every route is in followingMod.ROUTES, behind the gate above, and the
   // owner's alone: it makes the companion fetch from the web and it is the
   // owner's reading. (test/following-server.test.mjs walks that table.)
+  // The owner's theme files: only files directly in the theme folder, by name, behind the same gate (a guest may read an article
+  // view that links them, so this is not owner-only; it serves styles and fonts and nothing else).
+  if (req.method === 'GET' && url.startsWith('/hub/theme/')) {
+    const got = hubTheme.readThemeFile(followingMod.followingSettingsOf(store.readConfig()).settings.hub_theme_dir, decodeURIComponent(url.slice('/hub/theme/'.length)), THEME_FORBIDDEN);
+    if (got.refused) return fail(res, 404, 'not found');
+    return res.writeHead(200, { 'content-type': got.type, 'cache-control': 'private, no-cache', 'x-content-type-options': 'nosniff', 'content-length': String(got.body.length) }).end(got.body);
+  }
   const followingRoute = followingMod.routeOf(req.method, url);
   if (followingRoute) {
     if (notOwner(req, res)) return;
@@ -5025,9 +5046,12 @@ export function handler(req, res) {
     if (!page) return fail(res, 404, 'unknown page');
     const me = hosted.identity(req);
     const nonce = crypto.randomBytes(16).toString('base64');
+    const hubInfo = hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) });
+    // the Hub's own pages (a followed post's text) may wear the owner's theme; no other article does
+    const theme = hubInfo ? themeNow() : { state: 'none', reason: '' };
     const html = articleView({
       page, key, me, snapshot: store.readSnapshot(key), info: store.snapshotInfo(key), nonce,
-      hub: hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) }),
+      hub: hubInfo, themeHref: theme.state === 'ok' ? '/hub/theme/hub.css' : '',
     });
     // Belt and braces over the sanitizer: even if something got through, this
     // page can run no script it did not itself nonce, load no stylesheet, and
@@ -5039,7 +5063,8 @@ export function handler(req, res) {
       'content-security-policy': [
         "default-src 'none'",
         `script-src 'nonce-${nonce}'`,
-        `style-src 'nonce-${nonce}'`,
+        `style-src 'nonce-${nonce}'${theme.state === 'ok' ? " 'self'" : ''}`,
+        ...(theme.state === 'ok' ? ["font-src 'self'"] : []),
         // 'self' is the companion's own /run-figure — a plot made by a code
         // block, served from this origin under the same owner-only gate
         "img-src 'self' https: data:",

@@ -272,6 +272,7 @@
       if (list.length > MY_ORIGINS_MAX && refused.indexOf('my_origins') === -1) refused.push('my_origins');
     }
     settings.my_origins = mine;
+    const th = tokenFileOf(c.hub_theme_dir); settings.hub_theme_dir = th.value; if (th.refused) refused.push('hub_theme_dir');
     const iu = inboxUrlOf(c.inbox_api_url); settings.inbox_api_url = iu.value; if (iu.refused) refused.push('inbox_api_url');
     const tf = tokenFileOf(c.inbox_token_file); settings.inbox_token_file = tf.value; if (tf.refused) refused.push('inbox_token_file');
     return { settings, refused };

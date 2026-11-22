@@ -502,6 +502,79 @@ await test('Read here: the post becomes an annotatable page (same record as the 
   assert.match(feed.headers['content-security-policy'], /default-src 'none'; script-src 'nonce-[^']+'; style-src 'nonce-[^']+'; img-src https:; connect-src 'self'/);
 });
 
+await test('the theme: served only from the owner\'s folder, behind the gate; linked after the built-in style; the CSP gains exactly style-src \'self\' and font-src \'self\'; a broken theme leaves the built-in look', async () => {
+  const themeRoot = tmp('theme');
+  const dir = path.join(themeRoot, 'folder'), outside = path.join(themeRoot, 'outside');
+  fs.mkdirSync(dir); fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(dir, 'hub.css'), "@import url('https://evil.example.test/x.css');\n.hub-main{font-family:'Invented Serif',serif;max-width:34em}\n@font-face{font-family:'Invented Serif';src:url(/hub/theme/Serif.woff2)}\n");
+  fs.writeFileSync(path.join(dir, 'Serif.woff2'), 'woff2-bytes');
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'not served');
+  fs.writeFileSync(path.join(outside, 'secret.css'), 'secret');
+  fs.symlinkSync(path.join(outside, 'secret.css'), path.join(dir, 'leak.css'));
+  const csp = r => r.headers['content-security-policy'];
+  // before: no theme, the strict policy, no link
+  let feed = await GET(B, '/hub', { accept: 'text/html' });
+  assert.ok(!/font-src/.test(csp(feed)) && !/style-src 'nonce-[^']+' 'self'/.test(csp(feed)));
+  assert.ok(!/hub\/theme/.test(feed.body));
+  assert.match(feed.body, /Theme: none/);
+  assert.equal((await GET(B, '/hub/theme/hub.css')).status, 404);
+  // a theme inside the companion's own data folders is refused
+  assert.equal((await POST(B, '/following/settings', { hub_theme_dir: path.join(root, '.botference', 'plugin') })).status, 400);
+  assert.equal((await POST(B, '/following/settings', { hub_theme_dir: 'relative/dir' })).status, 400);
+  // set
+  assert.equal((await POST(B, '/following/settings', { hub_theme_dir: dir })).status, 200);
+  const css = await GET(B, '/hub/theme/hub.css');
+  assert.equal(css.status, 200);
+  assert.match(css.headers['content-type'], /^text\/css/);
+  assert.match(css.headers['cache-control'], /private/);
+  assert.equal(css.headers['x-content-type-options'], 'nosniff');
+  assert.equal((await GET(B, '/hub/theme/Serif.woff2')).headers['content-type'], 'font/woff2');
+  for (const bad of ['', 'notes.txt', 'leak.css', '..%2Foutside%2Fsecret.css', '%2e%2e/outside/secret.css', 'nothere.css', 'sub/x.css']) {
+    assert.equal((await GET(B, '/hub/theme/' + bad)).status, 404, bad);
+  }
+  feed = await GET(B, '/hub', { accept: 'text/html' });
+  const head = feed.body.slice(0, feed.body.indexOf('</head>'));
+  assert.ok(head.indexOf('<style') < head.indexOf('<link rel="stylesheet" href="/hub/theme/hub.css">'), 'linked AFTER the built-in stylesheet');
+  assert.match(feed.body, /Theme: ok/);
+  const nonce = /script-src 'nonce-([^']+)'/.exec(csp(feed))[1];
+  assert.equal(csp(feed), `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}' 'self'; font-src 'self'; img-src https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`);
+  assert.ok(!/unsafe|https:\/\/evil|\*/.test(csp(feed).replace('img-src https:', '')), 'no remote style, font or script is allowed, an @import of one cannot load');
+  // the Hub's article view wears it too (a post read here); another article does not
+  const key = await keyOfPost(idOf(21));
+  const read = await POST(B, '/following/read-here', { key });
+  const art = await GET(B, read.json.url, { accept: 'text/html' });
+  assert.match(art.body, /<link rel="stylesheet" href="\/hub\/theme\/hub\.css">/);
+  assert.match(art.body, /<body class="hub">/);
+  assert.match(art.body, /<article id="bfp-article" class="hub-main hub-entry-body">/);
+  assert.match(csp(art), /style-src 'nonce-[^']+' 'self'; font-src 'self'; img-src 'self' https: data:/);
+  assert.match(csp(art), /default-src 'none'/);
+  await POST(B, '/page', { url: 'https://plain.web.test/x', title: 'a plain page' });
+  await POST(B, '/snapshot', { url: 'https://plain.web.test/x', html: '<p>plain article words</p>' });
+  const plain = await GET(B, '/a/' + (await import('../store.mjs')).pageKey('https://plain.web.test/x'), { accept: 'text/html' });
+  assert.equal(plain.status, 200);
+  assert.ok(!/hub\/theme/.test(plain.body) && !/font-src/.test(csp(plain)), 'an ordinary article is not themed');
+  // a broken theme: the built-in look is intact
+  fs.rmSync(path.join(dir, 'hub.css'));
+  feed = await GET(B, '/hub', { accept: 'text/html' });
+  assert.match(feed.body, /Theme: unreadable \(the folder has no hub\.css\)/);
+  assert.ok(!/hub\/theme/.test(feed.body.replace(/Theme folder[\s\S]*?<\/label>/, '')), 'no link to a theme that cannot be served');
+  assert.ok(!/font-src/.test(csp(feed)));
+  assert.match(feed.body, /<style nonce="[^"]+">\n:root\{color-scheme/, 'the built-in stylesheet is still there');
+  assert.equal((await POST(B, '/following/settings', { hub_theme_dir: '' })).status, 200);
+  // the markup hooks a theme restyles
+  feed = await GET(B, '/hub', { accept: 'text/html' });
+  assert.match(feed.body, /<body class="hub"><main class="hub-main">/);
+  for (const hook of ['hub-tabs', 'hub-settings', 'hub-entry', 'hub-entry-meta', 'hub-entry-title', 'hub-entry-body', 'hub-entry-actions', 'hub-quote']) {
+    assert.ok(feed.body.includes(hook), `hook ${hook}`);
+  }
+});
+
+await test('theme files are behind the gate: unauthenticated, hosted, they are refused', async () => {
+  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com' })).status, 401);
+  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com', authorization: 'Bearer nope' })).status, 401);
+  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, GUEST)).status, 404, 'a guest who passes the gate gets the file if there is one (here none is set)');
+});
+
 cleanup();
 fakeWebServer.close();
 console.log(`\n${passed()} passed, ${failures().length} failed`);

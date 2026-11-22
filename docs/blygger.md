@@ -744,6 +744,51 @@ their https addresses. Nothing is sent anywhere. At the default limits the bodie
 usually a small fraction of that. Like every page in the companion's store they are the owner's; a guest who has the
 password of a shared companion can open any annotated page, these too.
 
+## Theming the Hub
+
+Set `hub_theme_dir` (in the Hub's Following section, or `config.json`) to the absolute path of a folder of your own that
+holds `hub.css` and, if you like, font files (`.woff2`, `.woff`, `.ttf`, `.otf`). The folder may not be inside the
+companion's data folders. The companion serves only files directly in it, by name, with those extensions, as
+`/hub/theme/<name>` behind the same sign-in as the Hub: no listing, no sub-folders, no `..`, a symlink only if it stays
+inside the folder, at most 256 KB for a stylesheet and 2 MB for a font. The Hub, and the Hub's page for a post you read
+here, link `/hub/theme/hub.css` after the built-in stylesheet. The theme's state is shown in Settings: *none*, *ok*, or
+*unreadable* (the built-in look is then used, untouched).
+
+The pages' Content-Security-Policy stays `default-src 'none'` with a nonce for the page's own script and style and https
+images. With a working theme it gains exactly `style-src ... 'self'` and `font-src 'self'`: your stylesheet and fonts load
+from the companion, and an `@import` of, or font from, anywhere else does not. Without one there is no `font-src` at all.
+
+Hooks a theme may rely on (the markup keeps them stable):
+
+| class | what it is |
+|---|---|
+| `hub` | the `<body>` of every Hub page, and of a post's page |
+| `hub-main` | the reading column (`<main>`; on a post's page, its `<article>`) |
+| `hub-tabs` | the Feed / Mentions / Background links |
+| `hub-entry` | one post in the Feed |
+| `hub-entry-meta` | its first line: dot, kind, blyg, date, reading time, version |
+| `hub-entry-title` | its title |
+| `hub-entry-body` | the post's text (also the post's page text) |
+| `hub-quote` | a quoted post inside the text (a blockquote) |
+| `hub-entry-actions` | Respond, Read here, Open original |
+| `hub-settings` | the settings form |
+
+A theme (the page is a left-aligned column with room on the right, about 24rem, for the Discuss side panel on wide
+screens, full width under 900px):
+
+```css
+.hub-main { font-family: "Iowan Old Style", Georgia, serif; font-size: 1.1rem; line-height: 1.6;
+  max-width: 34em; margin: 0 24rem 0 3rem; }
+.hub-entry { background: none; border: 0; border-bottom: 1px solid #ddd; border-radius: 0; padding: 1.4rem 0; }
+.hub-entry-meta { font: .8rem system-ui, sans-serif; letter-spacing: .02em; }
+.hub-entry-title { font-size: 1.5rem; line-height: 1.25; }
+.hub-entry-body p { margin: 0 0 1em; }
+.hub-quote { border-left: 3px solid #c9b79c; margin: 1em 0; padding: .1em 1em; font-style: italic; }
+.hub-entry-actions button { font: .8rem system-ui, sans-serif; }
+.hub-tabs a { font-family: system-ui, sans-serif; }
+@media (max-width: 900px) { .hub-main { margin: 0 auto; max-width: none; padding: 0 1rem; } }
+```
+
 ## Which names the companion answers to
 
 A web page can make a browser send requests to your own computer under the
