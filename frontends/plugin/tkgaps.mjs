@@ -255,6 +255,16 @@ export const studioInstruction = i => refTokens(String(i).replace(/\s+/g, ' ').t
 export const isBlockGap = (text, g) => g.form === 'line' || /(^\s*|\n[ \t]*\n)[ \t]*$/.test(text.slice(0, g.start))
   && /^[ \t]*(\n[ \t]*\n|\s*$)/.test(text.slice(g.end));
 
+// How a gap the agent FILLED is written in 'studio' style, one name each:
+//   'scope'    — `[TK] instruction [=]text[/TK]`, as Studio's Generate writes it
+//                (the note for the owner's own Blygger-aware site)
+//   'imported' — `[TK]impyrt <model>=text[/TK]`, Studio's marker for text
+//                generated somewhere else (tk.ts IMPYRT_INLINE): what to paste
+export const FILLED_FORMS = Object.freeze(['scope', 'imported']);
+export const DEFAULT_FILLED_FORM = 'scope';
+// the model token of an impyrt scope is one run of non-space, non-`=` characters
+const importedModel = m => { const t = String(m || '').replace(/[\s=\[\]`<>&]/g, '').slice(0, 60); return t ? ` ${t}` : ''; };
+
 /**
  * The reader's text with its gaps written into a note, in `style`, from the
  * gaps STORED on the message (no model call). `gaps` are msg.gaps; a gap the
@@ -265,12 +275,16 @@ export const isBlockGap = (text, g) => g.form === 'line' || /(^\s*|\n[ \t]*\n)[ 
  * agent-written gap in the order it is written (blyg_generated, studio style);
  * a gap edited by the reader is the reader's text and is not listed.
  */
-export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType = 'note', include = true, onGenerated = null } = {}) {
+export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType = 'note', include = true, onGenerated = null,
+  filled = DEFAULT_FILLED_FORM, prose: proseOf = null } = {}) {
   const s = String(text || '');
+  if (!FILLED_FORMS.includes(filled)) throw new Error(`renderGaps: no such filled form ${filled}`);
   const found = Grammar.parseGaps(s);
   // the reader's own words between gaps: `\/tk` written as the letters, and
-  // no bare TK grammar
-  const prose = t => tkSafe(Grammar.unescape(t));
+  // no bare TK grammar (or, when the caller has a stricter rule for the
+  // grammar it writes into, that rule)
+  const prose = t => (proseOf ? proseOf(Grammar.unescape(t)) : tkSafe(Grammar.unescape(t)));
+  const adopted = t => (proseOf ? proseOf(neutralProse(t)) : tkSafe(neutralProse(t)));
   if (!found.length) return prose(s);
   const stored = Array.isArray(gaps) ? gaps : [];
   let out = '';
@@ -279,7 +293,7 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
     const g = stored[i] && stored[i].instruction === f.instruction ? stored[i] : { mode: 'failed', reason: 'never sent to an agent' };
     // the reader's own now: plain prose, no disclosure, in every style
     if (g.mode === 'adopted-by-reader') {
-      out += prose(s.slice(at, f.start)) + tkSafe(neutralProse(g.text));
+      out += prose(s.slice(at, f.start)) + adopted(g.text);
       at = f.end;
       return;
     }
@@ -300,7 +314,15 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
       }
       if (g.mode === 'removed') { if (block && out) out += '\n\n'; return; }
       const instr = studioInstruction(f.instruction);
-      const scope = written ? `[TK] ${instr} [=]${studioOutput(g.text, { inline: !block })}[/TK]` : `[TK] ${instr} [/TK]`;
+      // 'scope' is what Studio's own Generate button writes. Pasted into Studio
+      // it has no provenance record behind it, so Studio would publish the
+      // words undisclosed, as hand-written; 'imported' is Studio's grammar for
+      // text generated elsewhere (`[TK]impyrt <model>=…[/TK]`), disclosed as
+      // generated whatever its history.
+      const out1 = studioOutput(g.text, { inline: !block });
+      const scope = !written ? `[TK] ${instr} [/TK]`
+        : filled === 'imported' ? `[TK]impyrt${importedModel(g.model)}=${out1}[/TK]`
+          : `[TK] ${instr} [=]${out1}[/TK]`;
       // still marked as the agent's (edited or not): listed as generated
       if (written && onGenerated) onGenerated(g);
       out += block ? `${out ? '\n\n' : ''}${scope}\n\n` : scope;

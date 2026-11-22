@@ -183,6 +183,26 @@
     return page && post ? 'response' : 'not-a-response';
   }
 
+  // ── where an exported note goes ────────────────────────────────────────
+  // The export has two TARGETS, named here once for the companion (which
+  // renders them, studio-paste.mjs renderTarget) and the drawer (which offers
+  // them):
+  //   'vault'  — the note written into the owner's Obsidian vault, with YAML
+  //              front matter that only the owner's own site reads. The
+  //              default, and what every export wrote before there was a choice.
+  //   'studio' — markdown for pasting into Blygger Studio's compose screen: no
+  //              front matter, Studio's own grammar. Copied to the clipboard,
+  //              never written to disk, sent nowhere.
+  // An unknown name is refused (exportTargetOf says so), never guessed.
+  const EXPORT_TARGETS = Object.freeze(['vault', 'studio']);
+  const DEFAULT_EXPORT_TARGET = 'vault';
+  function exportTargetOf(value) {
+    if (value === undefined || value === null || value === '') return { target: DEFAULT_EXPORT_TARGET, refused: '' };
+    if (EXPORT_TARGETS.indexOf(value) !== -1) return { target: value, refused: '' };
+    return { target: DEFAULT_EXPORT_TARGET,
+      refused: 'export target ' + JSON.stringify(String(value)).slice(0, 60) + ' is not one of ' + EXPORT_TARGETS.join(', ') };
+  }
+
   // ── how long a request to the companion may take ──────────────────────────
   // Every one-shot request has a limit; none may wait for ever. Most are a
   // read or a small write on this machine and answer in milliseconds, so 30s
@@ -357,6 +377,7 @@
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
+    EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
