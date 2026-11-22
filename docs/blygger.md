@@ -550,11 +550,16 @@ Studio should try these, in this order:
 ## Following: a private reading feed
 
 Following is a list of blygs you read, kept by the companion on your own
-computer. It answers "what is new?" in one place: open
+computer, and one console for reading them. Open
 `http://127.0.0.1:4189/following` (the drawer's feed icon, or the link on the
-extension's options page), read an excerpt, and press **Open** to read the
-post on its own site, where Discuss is ready to highlight it. It is the reading
-half of a Blygger client; nothing here publishes, mentions or writes anything.
+extension's options page). It has three views, side by side:
+
+- **Feed**: what is new on the blygs you follow.
+- **Mentions**: responses to your own posts, from your own site's inbox.
+- **Background**: what should not interrupt reading.
+
+It is the reading half of a Blygger client; nothing here publishes, mentions or
+writes anything.
 
 **Following a blyg.** Paste any address on it (a post, its front page) into
 "Follow a blyg". Discuss finds the blyg's manifest the way the spec's
@@ -565,74 +570,128 @@ an object holding one, of entries with `origin`, `title` and `feed`). Discuss
 shows what would be added and what it could not resolve; nothing is followed
 until you tick it and confirm.
 
-**What it does about new posts.** Every 30 minutes (and on **Refresh now**) the
-companion asks each followed blyg for its manifest and its `items/index.json`,
-compares the index with what it holds (§13.2: the index is the reconciliation
-surface), and fetches only the posts that are new or whose version went up.
-One entry per post, at its newest version, with "N versions" when it has
-more than one. A new version with the same `content_hash` is a maintenance
-version: the post is brought up to date but does not come back as new. A
-version with different words does: a post you had seen or opened is new again
-(one you have answered stays answered). A withdrawn post leaves the list, and
-only a bare marker is kept so it is not fetched again. A post gone from the
-index is dropped. A lower version than the one held is not adopted (§13.3).
-Posts of one blyg published together, where a thread's transclusions name them,
-are shown folded under the thread (§13.7); folding changes only the display,
-every post is still held and the Fragments filter lists them flat. Discuss
-judges "together" by the post's `created` being within ten minutes of the
-thread's `created` or `updated`, which is an approximation of "the same
-publish".
-
-**The list.** Newest first, filtered by All, New, Threads, Fragments or
+**The Feed.** Every 30 minutes (and on **Refresh now**) the companion asks each
+followed blyg for its manifest and its `items/index.json`, compares the index
+with what it holds (§13.2: the index is the reconciliation surface), and fetches
+only the posts that are new or whose version went up. One entry per post, at its
+newest version, with "N versions" when it has more than one. A post gone from the
+index is dropped. A lower version than the one held is not adopted (§13.3). An
+index that disagrees with the documents about a post's version is not chased on
+every run: the document wins, and the post is asked about again only when the
+index's entry changes. Newest first, filtered by All, New, Threads, Fragments or
 Responses to me. "Responses to me" lists posts whose `stub_of`, or whose
-transclusions, point at a blyg listed in the setting `my_origins` (one origin
-per line, on the Following page; empty by default, and a post of one of your
-own blygs is never a response to you). Each entry shows the blyg, author, date,
-kind, version, what it is "in response to", its first heading or an excerpt,
-and Open. Only an excerpt is kept and shown: the page never renders a post in
-full.
+transclusions, point at a blyg listed in the setting `my_origins` (one origin per
+line, on the Following page; empty by default, and a post of one of your own
+blygs is never a response to you); it is worked out from the blygs you follow,
+whereas Mentions is the authoritative list from your inbox. Each entry shows the
+blyg, author, date, kind, version, what it is "in response to", its first heading
+or an excerpt, and Open. Only an excerpt is kept and shown: the page never
+renders a post in full. A post dated in the future cannot sit on top: ordering
+and the date shown use at most the time Discuss fetched it (§13.7).
 
-**Opening a post.** Open goes to the post's own page in a new tab. Because the
-list already holds the post's blyg, id and version, Discuss does not check the
-page for a manifest again; highlights made there are stamped with that
-identity. If the page's own `<link>` elements name a different blyg or post
-than the list does, the list's word is not used, the normal check runs, and
-the entry says the page disagreed. A highlight made on a followed post is not
-checked against the post's words (§10.2) unless the export, which always asks
-the post's own site, does it. Exporting a note for a followed post marks it
-answered.
+**Background.** One function decides, for every post and mention, which view it
+belongs to, and the entry says why. In Background: *withdrawn* posts (§13.4;
+yours too, when `my_origins` names your blyg, as "withdrawn (your own)"), the
+members of a folded burst ("part of a burst": a thread, and the posts of the same
+blyg its transclusions name that were created within ten minutes of the thread's
+`created` or `updated`, which approximates "the same publish", §13.7), versions
+with "no new words" (the same `content_hash`: a maintenance version, §13.2),
+versions that are "barely changed", posts of a paused blyg, and notices from your
+inbox ("linked from", "reposted by"). A maintenance or barely-changed version of a
+post you have not read yet stays in the Feed, because it is still new to you. A
+post comes back to the Feed when it gets a version with real new words (one you
+had seen or opened is new again; one you have answered stays answered). "Barely
+changed" is the reader-local threshold of §13.2, the setting
+`following_barely_changed_percent` (default 2; 0 means only an identical
+`content_hash` counts). It can only be measured honestly from what Discuss keeps,
+so it is measured when the whole text of both versions is held (a post whose text
+was clipped is never called barely changed), the headings are equal, and the one
+stretch between the versions' common beginning and ending is no more than that
+percent of the longer text. The threshold is never sent anywhere.
 
-**What the states mean.** A followed blyg is *active* (refreshed), *paused*
-(your choice; never asked until you resume it), *unreachable* (it could not be
-asked: asked again after 10 minutes, then 20, doubling up to 6 hours, and
-**Retry** forces it) or *gone* (it answered three times in a row without a
-manifest or index; not asked again until you resume it). A post is *new*,
-*seen* (you marked it), *opened* (you opened it) or *responded* (you exported a
-note for it).
+**Mentions.** If your own site runs a private inbox of responses to your posts,
+set `inbox_api_url` (https only) and `inbox_token_file` (an absolute path to a
+local file whose first line is the token). The token is never a setting: it is
+read from that file when the companion is about to ask, sent as
+`Authorization: Bearer …` to the inbox's own address only (not to anywhere it
+redirects), and never stored in `config.json` or `following.json`, shown in the
+page, put in a note or written to a log. The file may not be inside the
+repository or the companion's data folders. The inbox is asked on the same timer
+and on **Refresh now**, and has a state of its own: *off* (no address set),
+*pending* (not asked yet), *ok*, *unauthorised* (the inbox refused, or there is
+no usable token file) or *unreachable*. The Mentions view lists responses newest
+first, grouped by your post, each with the responder, the blyg, what they did,
+the passage, a link to the source (Open, below) and, when the source is a post of
+a blyg you follow, a link to its entry in the Feed. The tab shows how many are
+unseen. Following the spec (§15.5), a response is a mention with words of its own
+(a reply, a quote, a fork); a notice (a bare link, or a repost with no words of
+its own) never appears there and goes to Background as "linked from" or
+"reposted by"; a plain mention, whose source is not a blyg post and was checked
+only by its link (§15.6), is held apart under its own heading as a lower class;
+and a mention that does not say which it is is shown in Mentions labelled "class
+unknown", not guessed. "Accepted, never verified" entries, and how many were
+blocked, are noted at the foot. Each mention has a "details" toggle with what the
+inbox sent, as escaped JSON.
+**The real shape of the inbox's mentions is unverified**: Discuss reads what a
+command-line listing showed (who, their blyg's title, what they did, the version
+of your post, a time, the quoted passage, the source, your post's title and
+address) and shows whatever of it is present. The mapping from the inbox's field
+names to these is one table, `MENTION_FIELDS` in
+`frontends/plugin/following-inbox.mjs`, with what each action means in
+`ACTION_CLASSES`; correct them there if your inbox spells them differently.
+
+**Opening a post.** Open (a button that asks the companion, which answers with the
+original address) opens the post's own page in a new tab and marks it opened (a
+mention, seen). A post's `page` may be on another host (§5.8); then the button
+says where it opens. The list's knowledge of a post is used to identify a page
+only when the page itself agrees: Discuss then skips the manifest check and
+stamps highlights with the list's blyg, id and version. The page agrees when it
+carries a `<link rel="blyg">` whose target resolves to the same origin and a JSON
+alternate for the item, inside that origin, whose id matches. A page with no such
+links, or only one, goes through the normal check; a page whose links name a
+different blyg or post goes through the normal check too, and the entry says it
+disagreed. A highlight made on a followed post is not checked against the post's
+words (§10.2) unless the export, which always asks the post's own site, does it.
+Exporting a note for a followed post marks it answered.
+
+**What the states mean.** A followed blyg is *active* (refreshed), *paused* (your
+choice; never asked until you resume it), *unreachable* (it could not be asked:
+asked again after 10 minutes, then 20, doubling up to 6 hours, and **Retry**
+forces it) or *gone* (it answered three times in a row without a manifest or
+index; not asked again until you resume it). A post is *new*, *seen* (you marked
+it), *opened* (you opened it) or *responded* (you exported a note for it).
 
 **Limits.** At most 500 blygs; 200 posts kept per blyg and 2000 in all; per
 refresh at most 200 requests and 60 seconds, and 50 post documents per blyg.
-A host that fails three times in a row is not asked for 15 minutes. One
+A blyg's index and every post document must come from inside the blyg's own
+origin (same scheme, host and port, under its path), also after redirects: a
+manifest that points elsewhere is refused and the reason is shown beside the
+blyg. A host that fails three times in a row is not asked for 15 minutes. One
 refresh runs at a time; a second is refused, not queued. These are settings on
 the Following page (in `config.json`: `following_refresh_minutes`,
 `following_max_items_per_blyg`, `following_max_items_total`,
-`following_run_seconds`, `following_run_requests`, `my_origins`); a value
-outside its range is refused and the default is used. With no blyg followed
-there is no timer, and with `"blyg_checks": "off"` Following asks no site
-anything.
+`following_run_seconds`, `following_run_requests`,
+`following_barely_changed_percent`, `my_origins`, `inbox_api_url`,
+`inbox_token_file`); a value outside its range is refused and the default is
+used. With no blyg followed and no inbox there is no timer, and with
+`"blyg_checks": "off"` Following asks no site anything, its timer disarms, and
+Refresh now says so.
 
 **What is stored, and what is not published.** In the companion's data folder
 (`.botference/plugin/following.json`, per profile): the blygs you follow with
-their states, and per post its origin, id, kind, version, dates, title or
-excerpt, the post it answers (`stub_of`), counts of transclusions and links,
-whether it was withdrawn, a clipped plain-text copy for the list (never the
-HTML), and your read state. Nothing about what you follow or read is sent
-anywhere: the requests are the same plain GETs for public files that the page
-check makes (see "What is fetched, and when" below, whose limits apply to every
-one of them: the same guard, the same address rules, no other way out), and
-they carry no cookie, no account and no mention of you. The page is the
-owner's alone: over a tunnel a guest, or a request with no password, is
-refused on every Following route.
+their states, per post its origin, id, kind, version, dates, title or excerpt,
+the post it answers (`stub_of`), counts of transclusions and links, a clipped
+plain-text copy for the list (never the HTML), your read state, and the
+mentions the inbox last listed with what it sent for each (never the token).
+Nothing about what you follow or read is sent anywhere: the requests are the
+same plain GETs for public files that the page check makes (see "What is
+fetched, and when" below, whose limits apply to every one of them: the same
+guard, the same address rules, no other way out), and they carry no cookie, no
+account and no mention of you; the one exception is the request to your own
+inbox, which carries your token. The page is the owner's alone: over a tunnel a
+guest, or a request with no password, is refused on every Following route, and
+so is a request a browser says came from another site. The page is never framed
+and runs one script and one style under a Content-Security-Policy.
 
 ## What is fetched, and when
 
