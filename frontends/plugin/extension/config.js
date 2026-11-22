@@ -203,6 +203,58 @@
       refused: 'export target ' + JSON.stringify(String(value)).slice(0, 60) + ' is not one of ' + EXPORT_TARGETS.join(', ') };
   }
 
+  // ── Following: the settings of the private reading feed ────────────────────
+  // Named values, each with a default and a range, kept in the companion's
+  // config.json under these exact keys. A value that is missing, not a whole
+  // number or out of range is NOT used: the default stands and followingSettingsOf
+  // says which key was refused, so a hand-edit never makes the companion
+  // refresh every second or hold a million items. `my_origins` is a list of
+  // blyg origins (web addresses) that are the reader's own, which is what
+  // "responses to me" means; each is normalised to the WHATWG form with a
+  // trailing slash, anything that is not an http(s) address is refused.
+  const FOLLOWING_NUMBERS = Object.freeze({
+    following_refresh_minutes: Object.freeze({ dflt: 30, min: 5, max: 1440, what: 'minutes between refreshes' }),
+    following_max_items_per_blyg: Object.freeze({ dflt: 200, min: 10, max: 2000, what: 'items kept per blyg' }),
+    following_max_items_total: Object.freeze({ dflt: 2000, min: 50, max: 20000, what: 'items kept in all' }),
+    following_run_seconds: Object.freeze({ dflt: 60, min: 5, max: 600, what: 'seconds one refresh may take' }),
+    following_run_requests: Object.freeze({ dflt: 200, min: 5, max: 2000, what: 'requests one refresh may make' }),
+  });
+  const MY_ORIGINS_MAX = 100;
+  function originOf(raw) {
+    let u;
+    try { u = new URL(String(raw == null ? '' : raw).trim()); } catch { return ''; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
+    u.search = ''; u.hash = '';
+    if (!u.pathname.endsWith('/')) u.pathname += '/';
+    return u.href;
+  }
+  // → { settings: {every key above, my_origins}, refused: [key, …] }
+  function followingSettingsOf(cfg) {
+    const c = cfg && typeof cfg === 'object' ? cfg : {};
+    const settings = {};
+    const refused = [];
+    for (const k of Object.keys(FOLLOWING_NUMBERS)) {
+      const spec = FOLLOWING_NUMBERS[k];
+      const v = c[k];
+      if (v === undefined || v === null || v === '') { settings[k] = spec.dflt; continue; }
+      if (typeof v === 'number' && Number.isInteger(v) && v >= spec.min && v <= spec.max) settings[k] = v;
+      else { settings[k] = spec.dflt; refused.push(k); }
+    }
+    const list = c.my_origins === undefined || c.my_origins === null ? [] : c.my_origins;
+    const mine = [];
+    if (!Array.isArray(list)) refused.push('my_origins');
+    else {
+      for (const o of list.slice(0, MY_ORIGINS_MAX)) {
+        const n = originOf(o);
+        if (!n) { if (refused.indexOf('my_origins') === -1) refused.push('my_origins'); continue; }
+        if (mine.indexOf(n) === -1) mine.push(n);
+      }
+      if (list.length > MY_ORIGINS_MAX && refused.indexOf('my_origins') === -1) refused.push('my_origins');
+    }
+    settings.my_origins = mine;
+    return { settings, refused };
+  }
+
   // ── how long a request to the companion may take ──────────────────────────
   // Every one-shot request has a limit; none may wait for ever. Most are a
   // read or a small write on this machine and answer in milliseconds, so 30s
@@ -378,6 +430,7 @@
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
+    FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
