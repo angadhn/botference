@@ -2963,6 +2963,7 @@
         () => { if (typeof opts.onCssFail === 'function') opts.onCssFail(); });
       styleGate = gate;
 
+      const PAGE_KEY_EVENTS = ['keydown', 'keypress', 'keyup'];
       const shadow = host.attachShadow({ mode: 'open' });
       // KaTeX's own stylesheet goes in FIRST so drawer.css keeps the last word
       // on anything the two both style. Its @font-face rules are inert in here
@@ -3011,6 +3012,15 @@
       attach(host);
 
       D.host = host; D.shadow = shadow; D.mounted = true;
+      // KEYS TYPED IN HERE STAY IN HERE (2026-11-22). A key pressed in a
+      // composer bubbles out of the shadow root with its target rewritten to
+      // this host, so the page cannot tell it was typed into a text box and
+      // runs its own shortcut: on YouTube, Space paused the video and "/"
+      // threw the focus into the site's search box, mid-sentence. The
+      // listeners inside the shadow root have all run by the time a key
+      // reaches the host, and content.js's own page-wide keys listen in the
+      // capture phase, before this — so stopping here costs neither.
+      for (const type of PAGE_KEY_EVENTS) host.addEventListener(type, e => e.stopPropagation());
       // a bubble has a composer too, and can be up with the panel never opened
       micStatus();
       D.el = {
