@@ -517,13 +517,12 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       }
     }
     entries.sort((a, c) => (Date.parse(c.updated) || 0) - (Date.parse(a.updated) || 0));
-    const inIndex = new Set(entries.map(e => keyOf(b.origin, e.id)));
-    // gone from the index entirely: gone from the list (the index lists every post ever published, §6.2)
-    for (const i of itemsOf(b.origin)) if (!inIndex.has(i.key)) { delete st.items[i.key]; tally.removed++; }
     // the window: the newest `perBlyg` live posts; withdrawn ones cost nothing to hold
     let live = 0;
     const window = entries.filter(e => e.kind === 'withdrawn' || live++ < cfg.following_max_items_per_blyg);
     const inWindow = new Set(window.map(e => keyOf(b.origin, e.id)));
+    // A held post that is not in the window is dropped: either it is gone from the index entirely
+    // (the index lists every post ever published, §6.2) or it is older than the per-blyg cap.
     for (const i of itemsOf(b.origin)) if (!inWindow.has(i.key)) { delete st.items[i.key]; tally.removed++; }
 
     let docs = 0;

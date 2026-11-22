@@ -129,8 +129,11 @@ await test('exporting a note for a followed post sets it responded', async () =>
   await POST(B, '/page', { url: PAGE2, title: 'A made-up fragment', blyg_hints: hints });
   await POST(B, '/thread', { url: PAGE2, quote: 'short invented', msg: { text: 'my reply' }, blyg_hints: hints });
   assert.equal((await dataOf()).entries.find(e => e.head.id === ID2).head.read, 'new');
+  const before = web.requests.length;
   const r = await POST(B, '/export', { url: PAGE2, mode: 'all', blyg_hints: hints });
   assert.equal(r.status, 200, r.body);
+  assert.ok(web.requests.slice(before).some(u => u.endsWith(`items/${ID2}.json`)),
+    'the export asks the post\'s own site for its words even though the list knows the post (the list keeps only an excerpt)');
   assert.equal((await dataOf()).entries.find(e => e.head.id === ID2).head.read, 'responded');
   // and an opened-then-responded post is not dragged back by Open
   assert.equal((await GET(B, '/following/open?key=' + key)).status, 302);
