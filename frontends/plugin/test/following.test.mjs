@@ -757,6 +757,24 @@ test('an index that lies about versions is not chased: one fetch, not one per ru
   r.done();
 });
 
+test('an index that lies the other way (a version the document does not have) is not chased either', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  site.put(makeDoc({ id: idOf(1), origin: A, version: 3, updated: '2026-11-02T10:00:00Z' }));
+  const orig = r.web.get;
+  const f = F.createFollowing({ file: path.join(r.dir, 'lie2.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
+    get: async (u, o) => {
+      const x = await orig(u, o);
+      if (!u.endsWith('items/index.json')) return x;
+      const j = JSON.parse(x.text); j.items[0].version = 5; return { ...x, text: JSON.stringify(j) };
+    } });
+  f.confirmImport([{ origin: A }]);
+  for (let n = 0; n < 4; n++) await f.refresh();
+  assert.equal(r.web.itemRequests().length, 1, 'fetched once, not on every run');
+  assert.equal(f.itemByKey(f.keyFor(A, idOf(1))).index_version, 5);
+  r.done();
+});
+
 test('fetching off: refresh makes no request, the timer disarms, every route that re-arms it obeys', async () => {
   let on = true;
   const clock = { t: 1 };
@@ -799,8 +817,11 @@ test('unfollow during a refresh leaves no orphan posts, and orphans are pruned o
   const run = r.f.refresh();
   await new Promise(res => setTimeout(res, 50));
   assert.equal(r.f.unfollow(A), true);
+  const atUnfollow = r.web.requests.length;
   const s = await run;
   assert.equal(s.started, true);
+  assert.ok(r.web.requests.length - atUnfollow <= 1, 'once unfollowed, the blyg is not asked for more (at most the request already in flight)');
+  assert.ok(s.aborted >= 1);
   assert.equal(r.f.view().entries.length, 0);
   assert.equal(r.f.view({ view: 'background' }).background.length, 0);
   const onDisk = JSON.parse(fs.readFileSync(r.file, 'utf8'));
