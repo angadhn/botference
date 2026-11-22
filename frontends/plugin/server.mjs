@@ -40,6 +40,7 @@ import * as store from './store.mjs';
 import { createChat, hasMention, priorMsgs, commentsDigest, routePrefix, stickyRoute } from './chat.mjs';
 import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
+import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, askForGap, gapMove, canGapMove,
   GAP_LIMITS } from './tkgaps.mjs';
@@ -6319,6 +6320,28 @@ export function handler(req, res) {
         gapExportOf(cfg.gap_export).refused].filter(Boolean).join('; ');
       ok(res, { path: file, mode, logged: logged.logged, log: logged.log, ...(warning ? { warning } : {}),
         ...gapCounts(page) });
+    });
+  }
+  // The 'studio' export target (config.js EXPORT_TARGETS): the same page as
+  // markdown for Blygger Studio's compose screen, RETURNED, not written. The
+  // drawer puts it on the clipboard. Nothing here touches the disk outside
+  // .botference, and nothing goes out on the network: no Studio is asked
+  // about, no token is read, and (unlike /export) the post's own site is not
+  // asked either: the page record's stored check is all it uses.
+  if (req.method === 'POST' && url === '/export-studio') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, data => {
+      const page = pageOf(res, data);
+      if (!page) return;
+      if (store.isLibrary(page.url)) return fail(res, 400, 'the library has nothing to paste into Studio');
+      const mode = exportMode(data.mode);
+      const cfg = store.readConfig();
+      let text;
+      try { text = renderTarget('studio', page, cfg, new Date(), mode, {}); }
+      catch (e) { return fail(res, 500, `could not make the paste: ${e.message}`); }
+      if (!text) return fail(res, 409, 'nothing to copy yet: highlight a passage or write a comment first');
+      const warning = commentOrderOf(cfg.comment_order).refused;
+      ok(res, { text, mode, left_out: studioLeftOut(page, mode), ...(warning ? { warning } : {}), ...gapCounts(page) });
     });
   }
   // Model and effort are the reader's standing PREFERENCES, stored in

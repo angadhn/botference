@@ -228,7 +228,7 @@
     'POST /reply': 'your message', 'POST /thread': 'your comment', 'POST /draft-blog': 'your message',
     'POST /draft-blog/thread': 'your comment', 'POST /edit': 'your edit', 'POST /delete': 'the delete',
     'POST /interrupt': 'the stop', 'POST /resolve': 'resolving the comment', 'POST /tick': 'the tick',
-    'POST /export': 'the export', 'POST /transcribe': 'the dictation', 'POST /run': 'running the code',
+    'POST /export': 'the export', 'POST /export-studio': 'the copy for Blygger Studio', 'POST /transcribe': 'the dictation', 'POST /run': 'running the code',
     'POST /publish': 'the publish', 'POST /send-review': 'sending the review', 'POST /page': 'saving this page',
     'POST /snapshot': 'saving the page text', 'POST /rename-page': 'the rename', 'POST /tag-page': 'the tag',
     'POST /delete-page': 'the delete', 'POST /model': 'the model change', 'POST /effort': 'the effort change',

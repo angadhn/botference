@@ -210,6 +210,22 @@ await test('an ordinary page exports its comment, then its quote closed by its U
   assert.ok(!note.includes('blyg_sources'), note);
 });
 
+await test('POST /export-studio returns the Studio paste: no file written, nobody asked', async () => {
+  const filesBefore = fs.readdirSync(path.join(vault, 'Web Clippings')).sort();
+  const seenBefore = webSeen.length;
+  const r = await POST(B, '/export-studio', { url: PLAIN, mode: 'all' });
+  assert.equal(r.status, 200, r.body);
+  assert.ok(r.json.text.startsWith('a note\n\n> Anything at all\n>\n> — [') && r.json.text.includes(`](${PLAIN})`), r.json.text);
+  assert.ok(!r.json.text.startsWith('---'), 'no front matter');
+  assert.deepEqual(fs.readdirSync(path.join(vault, 'Web Clippings')).sort(), filesBefore, 'nothing is written to the vault');
+  assert.equal(webSeen.length, seenBefore, 'no request leaves the companion');
+  const post = await POST(B, '/export-studio', { url: EXPORT_PAGE, mode: 'all' });
+  assert.equal(post.status, 200, post.body);
+  assert.ok(post.json.text.includes(`![[${ID2} | Another made-up post]]\n> ${PASSAGE}`), post.json.text);
+  assert.equal((await POST(B, '/export-studio', { url: 'bfp://library', mode: 'all' })).status, 400);
+  assert.equal((await POST(B, '/export-studio', { url: `${ORIGIN}no-such-page` })).status, 404);
+});
+
 await test('the reader\'s setting blyg_checks: "off" asks about no page at all', async () => {
   store.saveConfig({ blyg_checks: 'off' });
   try {

@@ -3545,6 +3545,14 @@
         const r = await api('POST', '/gap', { url: URL_NOW, ...body });
         return r.ok ? { ok: true, gap: r.data && r.data.gap } : failure(r);
       },
+      // Copy for Blygger Studio: the companion renders this page as Studio's
+      // markdown and returns it (nothing is written); the drawer copies it
+      onExportStudio: async mode => {
+        const r = await api('POST', '/export-studio', { url: URL_NOW, mode });
+        if (!r.ok) return failure(r);
+        const d = r.data || {};
+        return { ok: true, text: d.text || '', left_out: d.left_out || [], warning: d.warning || '', gaps: d.gaps || null };
+      },
       onExportResponse: async response => {
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);

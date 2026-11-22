@@ -130,6 +130,11 @@
 //                                         on, so the url travels instead of
 //                                         being assumed
 //   onExportPage(url, mode)             → {ok, path}   (POST /export {url, mode})
+//   onExportStudio(mode)                → {ok, text, left_out?, warning?, gaps?}
+//                                         (POST /export-studio) the page as
+//                                         markdown for Blygger Studio, RETURNED
+//                                         for the drawer to copy; nothing is
+//                                         written and nothing leaves the machine
 //   onExportResponse(response)          → {ok}  (POST /export-response) whether the
 //                                         exported note is a response to this
 //                                         page: 'response' | 'not-a-response'
@@ -9628,7 +9633,9 @@ ${bubbleShellHtml()}`;
       ta.addEventListener('copy', e => {
         if (!e.clipboardData) return;
         e.preventDefault();
-        e.clipboardData.setData('text/html', html);
+        // (a null html is plain text only: an empty text/html flavour can make a
+        // rich field paste nothing)
+        if (html != null) e.clipboardData.setData('text/html', html);
         e.clipboardData.setData('text/plain', text);
       });
       const prev = D.shadow.activeElement;
@@ -10530,6 +10537,40 @@ ${bubbleShellHtml()}`;
     // the chooser writes, and the row's tooltip says which one it will use.
     const doExportPage = url => exportFlow(() => cb('onExportPage')(url, D.exportMode));
 
+    // ---- Copy for Blygger Studio ---------------------------------------------
+    // The companion renders the page as Studio's markdown (studio-paste.mjs) and
+    // sends it back; this puts EXACTLY that text on the clipboard and says so in
+    // the footbar. The text is never altered here, and nothing is sent anywhere:
+    // no Studio is asked, no token is held. Plain text only: it is markdown the
+    // person pastes into an editor, and a rich flavour would paste as formatted
+    // text, not as the source.
+    function copyPlain(text) {
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+        return nav.clipboard.writeText(text).then(() => true, () => legacyCopy(null, text));
+      }
+      return Promise.resolve(legacyCopy(null, text));
+    }
+    async function doCopyStudio() {
+      setFootNote('busy', 'copying…');
+      let r = null;
+      try { r = await cb('onExportStudio')(D.exportMode); } catch (_) { r = null; }
+      if (!r || r.ok === false || typeof r.text !== 'string' || !r.text) {
+        setFootNote('error', (r && r.error) || 'could not make the copy for Blygger Studio');
+        return;
+      }
+      if (!await copyPlain(r.text)) {
+        setFootNote('error', 'the browser would not let Discuss use the clipboard; nothing was copied');
+        return;
+      }
+      const g = r.gaps;
+      const left = Array.isArray(r.left_out) ? r.left_out : [];
+      const said = 'copied for Blygger Studio (' + r.text.length + ' characters): paste it into a new draft'
+        + (left.length ? ' · ' + left.join(', ') : '')
+        + (g && g.unfilled ? ` · ${g.unfilled} gap${g.unfilled === 1 ? '' : 's'} not filled, Studio can fill ${g.unfilled === 1 ? 'it' : 'them'}` : '');
+      setFootNote(r.warning || left.length || (g && g.unfilled) ? 'warning' : 'info', r.warning ? said + ' — ' + r.warning : said);
+    }
+
     // ---- which export ------------------------------------------------------
     // Two modes, one click each: the whole conversation, or the reading
     // without it. The last choice is remembered (content.js persists it) and
@@ -10559,6 +10600,16 @@ ${bubbleShellHtml()}`;
             `<button class="xrow" type="button" role="menuitem" data-act="export-run" data-mode="pdf">
                <span class="xname">Annotated copy</span>
                <span class="xwhy">the discussion as Acrobat comments, downloaded</span></button>`
+          : '')
+        // …and the other note that is not for the vault: Markdown for pasting
+        // into Blygger Studio's compose screen. A destination, not a mode, so
+        // like the PDF it is never remembered as the crystal's mode. Not in the
+        // library, which has no page to quote.
+        + (D.page && !isLibraryUrl(D.page.url)
+          ? `<div class="pop-head second">…or into Blygger Studio</div>` +
+            `<button class="xrow" type="button" role="menuitem" data-act="export-run" data-mode="studio">
+               <span class="xname">Copy for Blygger Studio</span>
+               <span class="xwhy">markdown to paste into Studio's compose screen; clipboard only</span></button>`
           : '')
         + responseRowHtml();
       D.el.exportpick.hidden = false;
@@ -10612,6 +10663,8 @@ ${bubbleShellHtml()}`;
       // it is not remembered, and the crystal keeps whatever Obsidian export
       // the reader last chose
       if (mode === 'pdf') { closeExportPick(); doExportPdf(); return; }
+      // …and so is the copy for Blygger Studio: the clipboard, not the vault
+      if (mode === 'studio') { closeExportPick(); doCopyStudio(); return; }
       D.exportMode = mode === 'comments' ? 'comments' : 'all';
       closeExportPick();
       rememberExportMode();
