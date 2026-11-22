@@ -547,6 +547,93 @@ Studio should try these, in this order:
 4. Put `*/` and `[[+ x]]` in a comment in Discuss, copy, paste, and confirm Studio shows them as
    written and does not make a new item or complain of a stray comment.
 
+## Following: a private reading feed
+
+Following is a list of blygs you read, kept by the companion on your own
+computer. It answers "what is new?" in one place: open
+`http://127.0.0.1:4189/following` (the drawer's feed icon, or the link on the
+extension's options page), read an excerpt, and press **Open** to read the
+post on its own site, where Discuss is ready to highlight it. It is the reading
+half of a Blygger client; nothing here publishes, mentions or writes anything.
+
+**Following a blyg.** Paste any address on it (a post, its front page) into
+"Follow a blyg". Discuss finds the blyg's manifest the way the spec's
+resolution does (§12.1) and follows the blyg at its identity origin. To follow
+many at once, use "Import a blogroll": give the address of an OPML file, or
+paste it, or give (or paste) a blygger.com directory (`blygs.json`: a list, or
+an object holding one, of entries with `origin`, `title` and `feed`). Discuss
+shows what would be added and what it could not resolve; nothing is followed
+until you tick it and confirm.
+
+**What it does about new posts.** Every 30 minutes (and on **Refresh now**) the
+companion asks each followed blyg for its manifest and its `items/index.json`,
+compares the index with what it holds (§13.2: the index is the reconciliation
+surface), and fetches only the posts that are new or whose version went up.
+One entry per post, at its newest version, with "N versions" when it has
+more than one. A new version with the same `content_hash` is a maintenance
+version: the post is brought up to date but does not come back as new. A
+version with different words does: a post you had seen or opened is new again
+(one you have answered stays answered). A withdrawn post leaves the list, and
+only a bare marker is kept so it is not fetched again. A post gone from the
+index is dropped. A lower version than the one held is not adopted (§13.3).
+Posts of one blyg published together, where a thread's transclusions name them,
+are shown folded under the thread (§13.7); folding changes only the display,
+every post is still held and the Fragments filter lists them flat. Discuss
+judges "together" by the post's `created` being within ten minutes of the
+thread's `created` or `updated`, which is an approximation of "the same
+publish".
+
+**The list.** Newest first, filtered by All, New, Threads, Fragments or
+Responses to me. "Responses to me" lists posts whose `stub_of`, or whose
+transclusions, point at a blyg listed in the setting `my_origins` (one origin
+per line, on the Following page; empty by default, and a post of one of your
+own blygs is never a response to you). Each entry shows the blyg, author, date,
+kind, version, what it is "in response to", its first heading or an excerpt,
+and Open. Only an excerpt is kept and shown: the page never renders a post in
+full.
+
+**Opening a post.** Open goes to the post's own page in a new tab. Because the
+list already holds the post's blyg, id and version, Discuss does not check the
+page for a manifest again; highlights made there are stamped with that
+identity. If the page's own `<link>` elements name a different blyg or post
+than the list does, the list's word is not used, the normal check runs, and
+the entry says the page disagreed. A highlight made on a followed post is not
+checked against the post's words (§10.2) unless the export, which always asks
+the post's own site, does it. Exporting a note for a followed post marks it
+answered.
+
+**What the states mean.** A followed blyg is *active* (refreshed), *paused*
+(your choice; never asked until you resume it), *unreachable* (it could not be
+asked: asked again after 10 minutes, then 20, doubling up to 6 hours, and
+**Retry** forces it) or *gone* (it answered three times in a row without a
+manifest or index; not asked again until you resume it). A post is *new*,
+*seen* (you marked it), *opened* (you opened it) or *responded* (you exported a
+note for it).
+
+**Limits.** At most 500 blygs; 200 posts kept per blyg and 2000 in all; per
+refresh at most 200 requests and 60 seconds, and 50 post documents per blyg.
+A host that fails three times in a row is not asked for 15 minutes. One
+refresh runs at a time; a second is refused, not queued. These are settings on
+the Following page (in `config.json`: `following_refresh_minutes`,
+`following_max_items_per_blyg`, `following_max_items_total`,
+`following_run_seconds`, `following_run_requests`, `my_origins`); a value
+outside its range is refused and the default is used. With no blyg followed
+there is no timer, and with `"blyg_checks": "off"` Following asks no site
+anything.
+
+**What is stored, and what is not published.** In the companion's data folder
+(`.botference/plugin/following.json`, per profile): the blygs you follow with
+their states, and per post its origin, id, kind, version, dates, title or
+excerpt, the post it answers (`stub_of`), counts of transclusions and links,
+whether it was withdrawn, a clipped plain-text copy for the list (never the
+HTML), and your read state. Nothing about what you follow or read is sent
+anywhere: the requests are the same plain GETs for public files that the page
+check makes (see "What is fetched, and when" below, whose limits apply to every
+one of them: the same guard, the same address rules, no other way out), and
+they carry no cookie, no account and no mention of you. The page is the
+owner's alone: over a tunnel a guest, or a request with no password, is
+refused on every Following route.
+
 ## What is fetched, and when
 
 All fetching is done by the Discuss companion on your own computer, never by

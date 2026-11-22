@@ -594,7 +594,8 @@ test('netguard is the only way out: following.mjs never calls fetch, http, https
     const p = path.join(HERE, '..', f);
     if (!fs.existsSync(p)) continue;
     const c = fs.readFileSync(p, 'utf8');
-    assert.ok(!/\bfetch\s*\(|node:(http|https|net)/.test(c.replace(/<script>[\s\S]*?<\/script>/g, '')), `${f} makes no request`);
+    // (the page's own script, a constant that runs in the reader's browser against the companion, is the one place `fetch` appears)
+    assert.ok(!/\bfetch\s*\(|node:(http|https|net)/.test(c.replace(/const SCRIPT = `[\s\S]*?`;/, '')), `${f} makes no request`);
   }
 });
 
@@ -615,4 +616,12 @@ test('the extension reaches Following: a drawer button, the worker\'s open-here,
   assert.match('/following', /^\/[A-Za-z0-9/_-]*$/);
   assert.match(ext('options.html'), /id="following-link"/);
   assert.match(ext('options.js'), /following-link/);
+});
+
+test('the user docs name every state and every setting', () => {
+  const doc = fs.readFileSync(path.join(HERE, '..', '..', '..', 'docs', 'blygger.md'), 'utf8');
+  const section = doc.slice(doc.indexOf('## Following: a private reading feed'), doc.indexOf('## What is fetched, and when'));
+  assert.ok(section.length > 500, 'the section exists');
+  for (const s of [...F.BLYG_STATES, ...F.READ_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
+  for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins']) assert.ok(section.includes(k), `setting ${k}`);
 });

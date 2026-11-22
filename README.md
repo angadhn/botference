@@ -531,6 +531,14 @@ Load unpacked → `frontends/plugin/extension`. Highlight a passage on any
 article and leave a comment. Done — the terminal council is a separate
 thing you never have to run.
 
+- **Following** (blygs): keep a private list of blygs you read, import a
+  blogroll, and see what is new on them in one place (`/following` on the
+  companion); open a post and highlight it as usual. Read-only: nothing about
+  your reading is sent to any blyg. See [docs/blygger.md](docs/blygger.md).
+- **Blygger posts**: Discuss recognises them, records which version you
+  quoted, and exports quotes by reference.
+- **Export** to one Obsidian note per page, or markdown for Blygger Studio.
+
 Two optional extras: `./botference discuss --install-autostart` (macOS)
 makes the companion start at every login so there is no terminal to
 remember, and `--install-tunnel` gives it a permanent URL for your
