@@ -53,7 +53,7 @@ function companion(first) {
     state.calls.push({ op, body });
     if (state.fail && state.fail[op]) return { ok: false, error: state.fail[op] };
     if (op === 'start') { state.run = run('planning', { steps: [], thread_ids: [body.thread_id], ...(state.confirm ? { confirm: state.confirm } : {}) }); return { ok: true, run: state.run }; }
-    if (op === 'run' || op === 'resume') return { ok: true, run: state.run, confirm: state.confirm || 'always' };
+    if (op === 'run' || op === 'resume') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' } };
     if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', exit: 0, output: 'PLAN' }] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
@@ -92,8 +92,8 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'cancel', 'abandon']);
-  eq('only confirm and retry need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'continue', 'cancel', 'abandon']);
+  eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
 }
 
 // ---- who sees the paper-plane -----------------------------------------------------------------
@@ -169,7 +169,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 {
   const server = companion(); server.confirm = 'never';
   const { q, qa, dlg, view, click, drawer } = await make({ server });
-  eq('(the drawer learned the setting when it opened)', drawer.pub.confirm, 'never');
+  eq('(the drawer learned the setting when it opened)', drawer.pub.run && drawer.pub.run.confirm, 'never');
   click(qa('.thr-pub')[0]);
   ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
   click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();

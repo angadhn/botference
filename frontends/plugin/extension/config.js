@@ -221,6 +221,7 @@
     resume: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [] }),
     confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'] }),
     retry: Object.freeze({ method: 'POST', path: '/blyg-publish/retry', offer: 'needs', body: ['run', 'token'] }),
+    continue: Object.freeze({ method: 'POST', path: '/blyg-publish/continue', offer: 'needs', body: ['run', 'token'] }),
     cancel: Object.freeze({ method: 'POST', path: '/blyg-publish/cancel', offer: 'none', body: ['run', 'token'] }),
     abandon: Object.freeze({ method: 'POST', path: '/blyg-publish/abandon', offer: 'none', body: ['run', 'token'] }),
   });

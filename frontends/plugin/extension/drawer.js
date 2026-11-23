@@ -2564,7 +2564,7 @@
       // Publish as blyg: what the dialog is showing. `view` is one of config.js PUB_VIEWS, changed only by pubGo (which asks
       // config.js pubMove); `run` is the companion's run as last heard (blyg-run.mjs; the drawer never works a run out for
       // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
-      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, confirm: 'always' },
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0 },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -8352,6 +8352,7 @@ ${bubbleShellHtml()}`;
       'pub-confirm': (btn, t, e) => pubAct('confirm', e),
       'pub-cancel': () => pubAct('cancel'),
       'pub-retry': (btn, t, e) => pubAct('retry', e),
+      'pub-continue': (btn, t, e) => pubAct('continue', e),
       'pub-abandon': () => pubAct('abandon'),
       'pub-review': () => pubReview(),
       'pub-close': () => pubClose(),
@@ -10649,14 +10650,14 @@ ${bubbleShellHtml()}`;
     }
     // with confirm 'never' the dialog stays out of the way while a run goes through: the thread carries one line of progress
     const pubQuiet = () => (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
-      && ((D.pub.run && D.pub.run.confirm) || D.pub.confirm) === 'never';
+      && !!D.pub.run && D.pub.run.confirm === 'never';
     const PUB_WORDS = { drafted: 'writing the note', preparing: 'preparing it for your site', planning: 'checking what would change', planned: 'building and testing',
       applying: 'building and testing', applied: 'publishing to your site', publishing: 'publishing to your site' };
     // THE ONE LINE on a thread: what a run that has this thread in it is doing now, then the link to the live post
     function pubLine(t) {
       if (!D.owner || pubPublished(t)) return '';
       const r = D.pub.run;
-      if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.confirm === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
+      if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.run && D.pub.run.confirm === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
       if (!r || r.confirm !== 'never' || (r.thread_ids || []).indexOf(t.id) === -1) return '';
       if (r.mode === 'published') {
         const a = safeHttp((r.published || {}).address);
@@ -10684,16 +10685,16 @@ ${bubbleShellHtml()}`;
       if (!D.owner || !D.mounted || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
-      if (r && r.ok && (r.confirm === 'never' || r.confirm === 'always')) D.pub.confirm = r.confirm;
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
-      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) return;
+      // nothing live: keep what the companion said (an idle run carries the setting in force: confirm), and stay closed
+      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) { D.pub.run = r.run; return; }
       pubGo('waiting', { run: r.run });
     }
     function pubOpen(id) {
       if (!D.owner) return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
       if (!t || !pubThreadOk(t) || pubPublished(t)) return;
-      pubGo('choosing', { thread: id, scope: '', error: '', run: null });
+      pubGo('choosing', { thread: id, scope: '', error: '' });
     }
     // CLICKJACKING. A page can put a top-layer <dialog> or popover over the drawer with `pointer-events:none`, so that a TRUSTED click
     // lands on a drawer button it has disguised. Before anything that publishes or goes on to, the page must have no element in the
@@ -10731,13 +10732,13 @@ ${bubbleShellHtml()}`;
     async function pubAct(op, e) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
-      if (op === 'confirm' || op === 'retry') { const over = pubOverlay(e); if (over) { D.pub.error = over; paintPub(); return; } }
-      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon' }[op];
+      if (op === 'confirm' || op === 'retry' || op === 'continue') { const over = pubOverlay(e); if (over) { D.pub.error = over; paintPub(); return; } }
+      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', continue: 'continue' }[op];
       if (!may || (run.can || []).indexOf(may) === -1) return;
       // the view changes first for the two that start something, so a second click finds nothing to press
       if (op === 'confirm' && !pubGo('running')) return;
-      if (op === 'retry') {
-        // a failed step is tried again by this click, which also opens the one-use offer the worker wants
+      if (op === 'retry' || op === 'continue') {
+        // a failed (or interrupted) step is tried again by this click, which also opens the one-use offer the worker wants
         const res = await cb('onBlygPublish')('resume').catch(() => null);
         if (!res || !res.ok) { pubGo('problem', { error: (res && res.error) || 'could not reach the companion' }); return; }
       }
@@ -10776,9 +10777,9 @@ ${bubbleShellHtml()}`;
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
           const n = pubAbove(P.thread).length;
           return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>
-            <p>${P.confirm === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${P.confirm === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
-            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.confirm === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
+            <p>${(P.run && P.run.confirm) === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${(P.run && P.run.confirm) === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${(P.run && P.run.confirm) === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting': case 'working':
           return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
@@ -10814,7 +10815,7 @@ ${bubbleShellHtml()}`;
           return `<h2>${head}</h2><p class="puberr">${why}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
             <p>Here is what happened. Nothing is tried again by itself. The tool's own words below say how to finish it by hand${interrupted ? '' : ', or you can try that step again'}.</p>
             ${pubStepsHtml(run)}
-            <div class="pubbtns">${can.indexOf('retry') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-retry">Try ${esc(run.failed_step || 'this step')} again</button>` : ''}
+            <div class="pubbtns">${can.indexOf('continue') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-continue">Carry on with ${esc({ applying: 'apply', applied: 'publish', publishing: 'publish' }[run.interrupted_from] || 'the step')}</button>` : ''}${can.indexOf('retry') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-retry">Try ${esc(run.failed_step || 'this step')} again</button>` : ''}
             ${can.indexOf('abandon') !== -1 ? '<button class="pbtn" type="button" data-act="pub-abandon">Abandon this run</button>' : ''}${closeBtn}</div>`;
         }
         default: return '';

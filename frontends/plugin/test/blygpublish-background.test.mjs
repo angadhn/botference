@@ -115,6 +115,15 @@ await test('a refusal from the companion comes back as its own words, and opens 
   assert.equal((await pub(W, 'confirm', { run: 'r', token: 't' })).code, 'offer-lapsed');
 });
 
+await test('continue (an interrupted step carried on) needs the tab\'s one-use offer like confirm and retry, and goes to its own route', async () => {
+  const W = boot();
+  assert.equal((await pub(W, 'continue', { run: 'r1', token: 't1' })).code, 'offer-lapsed');
+  await pub(W, 'resume', {}, 1);
+  assert.equal((await pub(W, 'continue', { run: 'r1', token: 't1' }, 1)).ok, true);
+  assert.deepEqual(W.ours().at(-1).url.replace(/^https?:\/\/[^/]+/, ''), '/blyg-publish/continue');
+  assert.equal((await pub(W, 'continue', { run: 'r1', token: 't1' }, 1)).ok, false, 'spent');
+});
+
 console.log(`${fails.length ? '✗' : '✓'} blygpublish-background — ${pass} passed, ${fails.length} failed`);
 for (const f of fails) console.log('  · ' + f);
 process.exit(fails.length ? 1 : 0);

@@ -4243,7 +4243,7 @@ export function handler(req, res) {
       const v = validateHome(store.readConfig().blyg_home);
       return ok(res, { run: blygPublish.current(), confirm: v.ok ? v.settings.confirm : 'always' });
     }
-    const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
+    const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
     if (req.method === 'POST' && url === '/blyg-publish/start') {
       return readBody(req, res, data => {
         const page = pageOf(req, res, data);

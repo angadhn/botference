@@ -187,7 +187,7 @@ const hosted = await startServer({ root: hroot, args: ['--hosted', '--no-agents'
 const GUEST = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
 const OWNER = { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' };
 const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['POST', '/blyg-home'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'],
-  ['POST', '/blyg-publish/confirm'], ['POST', '/blyg-publish/retry'], ['POST', '/blyg-publish/cancel'], ['POST', '/blyg-publish/abandon']];
+  ['POST', '/blyg-publish/confirm'], ['POST', '/blyg-publish/retry'], ['POST', '/blyg-publish/continue'], ['POST', '/blyg-publish/cancel'], ['POST', '/blyg-publish/abandon']];
 
 await test('hosted: every route is refused to an anonymous caller (401), a wrong password (401) and a guest (403), body or none', async () => {
   const body = { url: PAGE, thread_id: 't', scope: 'one', run: 'x', token: 'y', settings: settingsOf(hrig) };
@@ -264,7 +264,7 @@ await test('hosted: a guest cannot change the settings, start a run, or act on o
   assert.equal(s.status, 200, s.body);
   assert.ok(!JSON.stringify(s.json.run.thread_ids).includes(guestThread));
   const { id, token } = s.json.run;
-  for (const p of ['confirm', 'retry', 'cancel', 'abandon']) assert.equal((await request(hosted.base, 'POST', `/blyg-publish/${p}`, { run: id, token }, GUEST)).status, 403, `guest ${p}`);
+  for (const p of ['confirm', 'retry', 'continue', 'cancel', 'abandon']) assert.equal((await request(hosted.base, 'POST', `/blyg-publish/${p}`, { run: id, token }, GUEST)).status, 403, `guest ${p}`);
   await waitFor(async () => (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, OWNER)).json.run.mode === 'planned', 'planned');
   assert.deepEqual(hrig.calls().map(c => c.step), ['plan']);
   assert.equal(fs.existsSync('/tmp/pwned-by-guest'), false);

@@ -35,8 +35,8 @@ test('the mode table: every move is either listed or refused, the retry is guard
   let legal = 0, illegal = 0;
   for (const from of R.RUN_MODES) {
     for (const to of R.RUN_MODES) {
-      const run = { mode: from, id: 'x', token: 'y', failed_step: 'publish', steps: [] };
-      const want = R.RUN_MOVES[from].includes(to) && !(from === 'failed' && ['preparing', 'planning', 'applying'].includes(to));
+      const run = { mode: from, id: 'x', token: 'y', failed_step: 'publish', interrupted_from: 'publishing', steps: [] };
+      const want = R.RUN_MOVES[from].includes(to) && !(from === 'failed' && ['preparing', 'planning', 'applying'].includes(to)) && !(from === 'interrupted' && to === 'applying');
       assert.equal(R.canMove(from, to, run), want, `${from} → ${to}`);
       const file = path.join(dir, `${from}-${to}.json`);
       fs.writeFileSync(file, JSON.stringify(run));
@@ -46,7 +46,7 @@ test('the mode table: every move is either listed or refused, the retry is guard
       else { assert.throws(() => book.move(to), R.IllegalMove, `${from} → ${to} refused`); assert.equal(book.mode, from, 'and the mode did not change'); illegal++; }
     }
   }
-  assert.ok(legal >= 28 && illegal >= 110, `${legal} legal, ${illegal} illegal`);
+  assert.ok(legal >= 28 && illegal >= 100, `${legal} legal, ${illegal} illegal`);
   assert.throws(() => new R.RunBook({}).move('nonsense'), /no such mode/);
   for (const step of ['prepare', 'plan', 'apply', 'publish']) {
     const to = R.RETRY_FOR[step];
@@ -264,7 +264,7 @@ test('a companion restart mid-run leaves a record that offers only "show what ha
     const v = pub.current();
     assert.equal(v.mode, 'interrupted', mode);
     assert.equal(v.interrupted_from, mode);
-    assert.deepEqual(v.can, ['abandon']);
+    assert.deepEqual(v.can, ['applying', 'applied', 'publishing'].includes(mode) ? ['continue', 'abandon'] : ['abandon'], mode);
     assert.equal(v.steps[0].output, 'seen', 'what happened is still shown');
     assert.equal((await pub.confirm({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.retry({ id: 'abc', token: 'tok' })).status, 409);
@@ -533,4 +533,81 @@ test('the guard rides on every apply and publish, retries included (a failed pub
   await until(() => b.mode() === 'published', 'published after the retry');
   const calls = rig.calls();
   assert.deepEqual(calls.map(c => [c.step, c.argv.includes('--only-note')]), [['plan', true], ['apply', true], ['publish', true], ['publish', true]]);
+});
+
+// ---- an interrupted apply or publish is CONTINUED (a named move), or abandoned through the site's own abandon command -------------
+test('continue is a named move, guarded by the step that was interrupted: only apply and publish, never plan, prepare or a failure', () => {
+  for (const [from, ok] of [['applying', 'applying'], ['applied', 'publishing'], ['publishing', 'publishing'], ['preparing', ''], ['planning', ''], ['planned', ''], ['drafted', ''], ['failed', '']]) {
+    const run = { mode: 'interrupted', interrupted_from: from };
+    for (const to of ['applying', 'publishing', 'planning', 'preparing', 'applied']) assert.equal(R.canMove('interrupted', to, run), to === ok && !!ok, `${from} → ${to}`);
+    assert.ok(R.canMove('interrupted', 'abandoned', run));
+    assert.deepEqual(R.actionsOf(run), ok ? ['continue', 'abandon'] : ['abandon'], from);
+  }
+});
+
+test('the companion is killed mid-publish with the fake command; after a restart the owner continues and the post is published (the same step runs again)', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const mk = () => boot(rig);
+  let b = mk();
+  rig.control({ publish: 'sleep' });
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publish started');
+  // the companion dies: its record says publishing; a new one starts from the file
+  const sleeper = rig.calls().at(-1).pid;
+  const file = path.join(rig.out, 'run.json');
+  const rec = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(rec.mode, 'publishing');
+  b.pub.stopAll();
+  await sleep(100);
+  try { process.kill(sleeper, 'SIGKILL'); } catch { /* gone */ }
+  const pages = b.pages;
+  fs.writeFileSync(file, JSON.stringify(rec));
+  const events = [];
+  const pub2 = R.createPublisher({ file, now: () => NOW, broadcast: e => events.push(e), readConfig: () => ({ blyg_home: rig.home }), readPage: u => pages.get(u), savePage: p => pages.set(p.url, p) });
+  v = pub2.current();
+  assert.deepEqual([v.mode, v.interrupted_from, v.can], ['interrupted', 'publishing', ['continue', 'abandon']]);
+  rig.control({});
+  assert.equal((await pub2.carryOn({ id: v.id, token: 'x'.repeat(v.token.length) })).status, 404, 'with the run\'s own token only');
+  assert.ok((await pub2.carryOn({ id: v.id, token: v.token })).ok);
+  await until(() => pub2.current().mode === 'published', 'published after continuing');
+  assert.equal(rig.calls().filter(c => c.step === 'publish').length, 2, 'the publish step ran again, nothing else did');
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan', 'apply', 'publish', 'publish']);
+  assert.equal(pages.get(b.page.url).threads[0].blyg_published.title.length > 0, true);
+  assert.equal((await pub2.carryOn({ id: v.id, token: v.token })).status, 409, 'once');
+});
+
+test('restart, then abandon after apply: the site\'s own abandon command runs (no hand-editing), the note stays; a failing abandon command is reported and the run stays interrupted', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
+  const rigx = { ...rig, home };
+  const b = boot(rigx);
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  rig.control({ publish: 'sleep' });
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publish started');
+  const rec = JSON.parse(fs.readFileSync(path.join(rig.out, 'run.json'), 'utf8'));
+  b.pub.stopAll(); await sleep(100);
+  const file = path.join(rig.out, 'run2.json');
+  fs.writeFileSync(file, JSON.stringify(rec));
+  const mk = () => R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: () => null, savePage: () => {} });
+  let pub = mk();
+  v = pub.current();
+  assert.equal(v.mode, 'interrupted');
+  rig.control({ abandon: 'fail' });
+  const bad = await pub.abandon({ id: v.id, token: v.token });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /the abandon command failed .*abandon: something broke/s);
+  assert.equal(pub.current().mode, 'interrupted', 'not abandoned while the site\'s own abandon failed');
+  rig.control({});
+  const ok = await pub.abandon({ id: v.id, token: v.token });
+  assert.ok(ok.ok, ok.error);
+  assert.deepEqual(rig.calls().map(c => c.step).slice(-2), ['abandon', 'abandon']);
+  assert.equal(pub.current().mode, 'abandoned');
+  assert.ok(fs.existsSync(path.join(rig.top, v.note_rel)), 'after apply the note is left alone');
+  // a new run may start
+  assert.equal(mk().current().mode, 'abandoned');
 });

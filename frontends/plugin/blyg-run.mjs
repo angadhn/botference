@@ -56,27 +56,37 @@ export const RUN_MOVES = Object.freeze({
   publishing: Object.freeze(['published', 'failed', 'interrupted']),
   // a failed step is tried again only by the owner's click, and only that step
   failed: Object.freeze(['preparing', 'planning', 'applying', 'publishing', 'abandoned', 'interrupted']),
-  interrupted: Object.freeze(['abandoned']),
+  // an interrupted apply or publish may be CONTINUED (the site's own command resumes by running the same step again): see CONTINUE_FOR
+  interrupted: Object.freeze(['applying', 'publishing', 'abandoned']),
   published: Object.freeze(['drafted']),
   cancelled: Object.freeze(['drafted']),
   abandoned: Object.freeze(['drafted']),
 });
 /** Which move re-runs which failed step. */
 export const RETRY_FOR = Object.freeze({ prepare: 'preparing', plan: 'planning', apply: 'applying', publish: 'publishing' });
+/** Which move carries on an interrupted step (by the mode it was interrupted in): only apply and publish, which the site's command resumes. */
+export const CONTINUE_FOR = Object.freeze({ applying: 'applying', applied: 'publishing', publishing: 'publishing' });
+/** The modes before apply: nothing here has touched the site's published state. */
+export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned']);
+/** The modes in which a command of ours is running right now. */
+export const RUNNING_MODES = Object.freeze(['preparing', 'planning', 'applying', 'publishing']);
 export class IllegalMove extends Error {}
+// has this run not reached apply? (derived from the one mode field and the step that failed or was interrupted)
+export const beforeApply = run => (run.mode === 'failed' ? ['prepare', 'plan'].includes(run.failed_step)
+  : run.mode === 'interrupted' ? PRE_APPLY_MODES.includes(run.interrupted_from) : PRE_APPLY_MODES.includes(run.mode));
+// have prepare or plan begun (so a `discard` has something to undo)? never in `drafted`
+const workBegun = run => !(run.mode === 'drafted' || (run.mode === 'interrupted' && run.interrupted_from === 'drafted'));
 /** Is this move allowed for this record? (the table, plus the one guard on a retry) */
 export function canMove(from, to, run = {}) {
   if (!RUN_MOVES[from] || !RUN_MOVES[from].includes(to)) return false;
   if (from === 'failed' && to !== 'abandoned' && to !== 'interrupted') return RETRY_FOR[run.failed_step] === to;
+  if (from === 'interrupted' && to !== 'abandoned') return CONTINUE_FOR[run.interrupted_from] === to;
   return true;
 }
 
 /** What the owner may do in a mode (the drawer draws buttons from this; the routes enforce it by the table). */
-export const ACTIONS = Object.freeze({
-  planned: Object.freeze(['confirm', 'cancel']),
-  failed: Object.freeze(['retry', 'abandon']),
-  interrupted: Object.freeze(['abandon']),
-});
+export const actionsOf = run => (run.mode === 'planned' ? ['confirm', 'cancel'] : run.mode === 'failed' ? ['retry', 'abandon']
+  : run.mode === 'interrupted' ? (CONTINUE_FOR[run.interrupted_from] ? ['continue', 'abandon'] : ['abandon']) : []);
 
 const nowIso = () => new Date().toISOString();
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -128,7 +138,7 @@ export function viewOf(run) {
     failed_step: run.failed_step || '', failed_reason: run.failed_reason || '',
     interrupted_from: run.interrupted_from || '', interrupted_why: run.interrupted_why || '',
     published: run.published || null, cleanup: run.cleanup || null, chained_to: run.chained_to || null,
-    can: ACTIONS[run.mode] || [],
+    can: actionsOf(run),
   };
   return v;
 }
@@ -177,7 +187,7 @@ export function createPublisher(deps) {
   const exec = deps.exec || runCommand;
   const env = deps.env || process.env;
   const clock = () => (deps.now ? deps.now() : new Date());
-  let stopChild = null;
+  let stopHandle = null;   // how to stop the command that is running (meaningful only in RUNNING_MODES)
 
   const settingsNow = () => validateHome(deps.readConfig().blyg_home, { env });
   const fail = (status, error) => ({ ok: false, status, error });
@@ -197,8 +207,7 @@ export function createPublisher(deps) {
     const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
-    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopChild = stop; }, ...extra });
-    stopChild = null;
+    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopHandle = stop; }, ...extra });
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
     const ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
     const reason = r.timedOut ? `${name} did not finish within ${Math.round(TIME_LIMITS_MS[name] / 1000)} seconds and was stopped`
@@ -211,7 +220,8 @@ export function createPublisher(deps) {
   // Step A: the optional prepare, then plan. Each is a step with its own mode; a failure stops there (failed_step names it).
   async function runPlan() {
     const home = settingsNow();
-    if (home.ok && home.settings.commands.prepare && !(book.run.steps || []).some(s => s.step === 'prepare' && s.exit === 0)) {
+    // prepare runs when the run has just been drafted or when prepare itself is what failed; a retried plan does not repeat it
+    if (home.ok && home.settings.commands.prepare && (book.mode === 'drafted' || book.run.failed_step === 'prepare')) {
       book.move('preparing');
       const p = await step('prepare');
       pushStep(p.record);
@@ -289,7 +299,7 @@ export function createPublisher(deps) {
     const run = book.move('drafted', {
       id: crypto.randomBytes(8).toString('hex'), token: crypto.randomBytes(16).toString('hex'),
       page_url: page.url, thread_ids: picked.map(t => t.id), scope, title: rendered.title, slug, permalink: rendered.permalink,
-      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), created: true, settings_fp: fingerprint(S), confirm: S.confirm, steps: [],
+      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), settings_fp: fingerprint(S), confirm: S.confirm, steps: [],
       chained_to: earlier ? { title: earlier.title } : null, day: date,
     });
     // Step A's second half runs in the background; its end is announced by the mode
@@ -346,9 +356,15 @@ export function createPublisher(deps) {
   function confirm({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
     if (book.mode !== 'planned') return fail(409, `this run is ${book.mode}; only a run waiting on the plan can be published`);
-    // the plan must have been seen: a planned record holds a plan step
-    if (!(book.run.steps || []).some(s => s.step === 'plan')) return fail(409, 'this run has no plan to confirm');
     runFrom('apply');
+    return { ok: true, view: viewOf(book.run) };
+  }
+  /** Carry on an interrupted apply or publish (the owner's click): the same step again, which is how the site's command resumes. */
+  function carryOn({ id, token }) {
+    const bad = owned(id, token); if (bad) return bad;
+    const to = book.mode === 'interrupted' ? CONTINUE_FOR[book.run.interrupted_from] : '';
+    if (!to || !canMove('interrupted', to, book.run)) return fail(409, 'only an interrupted apply or publish can be carried on; abandon this run instead');
+    runFrom(to === 'applying' ? 'apply' : 'publish');
     return { ok: true, view: viewOf(book.run) };
   }
   /** Try the failed step again (the owner's click). */
@@ -371,8 +387,8 @@ export function createPublisher(deps) {
     const abs = path.join(S.top, run.note_rel);
     let text = null;
     try { text = fs.readFileSync(abs, 'utf8'); } catch { out.note = 'the note file is already gone'; return out; }
-    if (!run.created || sha(text) !== run.note_sha) { out.note = 'the note was changed after it was written, so it was left where it is'; return out; }
-    if (S.commands.discard && (run.steps || []).some(s => s.step === 'plan' || s.step === 'prepare')) {
+    if (sha(text) !== run.note_sha) { out.note = 'the note was changed after it was written, so it was left where it is'; return out; }
+    if (S.commands.discard && workBegun(run)) {
       const d = await step('discard');
       out.discard = d.record ? d.record.output : '';
       if (!d.ok) { out.note = `the discard command failed (${d.reason}); the note was left where it is`; return out; }
@@ -400,17 +416,30 @@ export function createPublisher(deps) {
   async function abandon({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
     if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, `this run is ${book.mode}; only a failed or interrupted run can be abandoned`);
-    const steps = book.run.steps || [];
-    const beforeApply = !steps.some(s => s.step === 'apply');
-    const cleanup = beforeApply ? await undraft() : { removed: false, discard: '', note: 'the note was left where it is: the publish command keeps its own record of this run, and its output on this page says how to finish it or give it up' };
+    let cleanup;
+    if (beforeApply(book.run)) cleanup = await undraft();
+    else {
+      // after apply the site's command has its own record of this run: the owner's `abandon` command (when set) ends it, so no state needs editing by hand
+      cleanup = { removed: false, discard: '', note: 'the note was left where it is: the publish command keeps its own record of this run, and its output on this page says how to finish it or give it up' };
+      const home = settingsNow();
+      if (home.ok && home.settings.commands.abandon && fingerprint(home.settings) === book.run.settings_fp) {
+        const a = await step('abandon');
+        if (!a.ok) return fail(409, `the abandon command failed (${a.reason}): ${String(a.record && a.record.output || '').slice(-400)}`);
+        cleanup = { ...cleanup, abandon: a.record ? a.record.output : '', note: 'the publish command\'s own abandon was run; the note was left where it is' };
+      }
+    }
     if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, 'the run moved on meanwhile');
     book.move('abandoned', { cleanup });
     return { ok: true, view: viewOf(book.run) };
   }
   /** The owner client resumes: the current run (a client that reloaded asks this). */
-  function current() { return viewOf(book.run); }
+  function current() {
+    const v = viewOf(book.run);
+    if (!v.confirm || v.mode === 'idle') { const h = settingsNow(); v.confirm = h.ok ? h.settings.confirm : 'always'; }   // an idle view says which setting is in force
+    return v;
+  }
   /** Stop whatever is running (the companion is shutting down). */
-  function stopAll() { if (stopChild) { try { stopChild(); } catch { /* gone */ } } }
+  function stopAll() { if (RUNNING_MODES.includes(book.mode) && stopHandle) { try { stopHandle(); } catch { /* gone */ } } }
 
-  return { book, start, confirm, retry, cancel, abandon, current, stopAll, STEPS };
+  return { book, start, confirm, retry, carryOn, cancel, abandon, current, stopAll, STEPS };
 }
