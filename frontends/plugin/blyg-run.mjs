@@ -176,7 +176,7 @@ function permalinksIn(folder) {
 }
 
 /**
- * `deps`: { file (run record), readConfig(), readPage(url), savePage(page), broadcast(ev), now(),
+ * `deps`: { file (run record), readConfig(), readPage(url), savePage(page), broadcast(ev), now(), hook ({beforeWrite, beforeUnlink}: tests only),
  *           exec (default runCommand), env (default process.env) }
  */
 export function createPublisher(deps) {
@@ -288,6 +288,7 @@ export function createPublisher(deps) {
     if (!rendered) return fail(409, 'could not find a free name for this note');
     // the file: inside the folder (real path), never over anything, never through a link
     const target = path.join(S.folder, name);
+    if (deps.hook && deps.hook.beforeWrite) deps.hook.beforeWrite(target);   // (tests only: a race between the name being chosen and the file being written)
     const realParent = fs.realpathSync(path.dirname(target));
     if (realParent !== S.folder || path.dirname(target) !== S.folder) return fail(409, 'the note would land outside the notes folder');
     const rel = path.relative(S.top, target).split(path.sep).join('/');
@@ -393,6 +394,7 @@ export function createPublisher(deps) {
       out.discard = d.record ? d.record.output : '';
       if (!d.ok) { out.note = `the discard command failed (${d.reason}); the note was left where it is`; return out; }
     }
+    if (deps.hook && deps.hook.beforeUnlink) deps.hook.beforeUnlink(abs);   // (tests only: the note changes after the first check)
     try {
       if (fs.existsSync(abs)) {
         if (fs.lstatSync(abs).isSymbolicLink() || sha(fs.readFileSync(abs, 'utf8')) !== run.note_sha) { out.note = 'the note was changed, so it was left where it is'; return out; }

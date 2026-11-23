@@ -13,14 +13,14 @@ import * as H from '../blyg-home.mjs';
 import { makeRig, until, sleep, thread, blygPage, stamp, mine, ID, FAKE } from './blyg-rig.mjs';
 
 const NOW = new Date('2026-11-23T12:00:00Z');
-function boot(rig, { page, config } = {}) {
+function boot(rig, { page, config, hook } = {}) {
   const pages = new Map();
   const events = [];
   const pg = page || blygPage([thread('t1', 'A sentence.', 'First thought about liveness.', { blyg: stamp() })]);
   pages.set(pg.url, pg);
   const file = path.join(rig.out, 'run.json');
   const pub = R.createPublisher({
-    file, now: () => NOW, broadcast: ev => events.push(ev),
+    file, now: () => NOW, broadcast: ev => events.push(ev), hook,
     readConfig: () => ({ blyg_home: config === undefined ? rig.home : config }),
     readPage: url => pages.get(url), savePage: p => pages.set(p.url, p),
   });
@@ -610,4 +610,42 @@ test('restart, then abandon after apply: the site\'s own abandon command runs (n
   assert.ok(fs.existsSync(path.join(rig.top, v.note_rel)), 'after apply the note is left alone');
   // a new run may start
   assert.equal(mk().current().mode, 'abandoned');
+});
+
+// ---- the note file under attack between the check and the write (each of these killed a surviving mutant) ----------------
+test('a file that appears under the chosen name after the choice is never overwritten (O_EXCL), and nothing is run', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const b = boot(rig, { hook: { beforeWrite: target => fs.writeFileSync(target, 'THE OWNER\'S OWN FILE, appeared a moment ago') } });
+  const r = b.start();
+  assert.equal(r.ok, false); assert.equal(r.status, 409);
+  assert.match(r.error, /appeared meanwhile/);
+  assert.equal(fs.readFileSync(path.join(rig.folder, 'first-thought-about-liveness.md'), 'utf8'), 'THE OWNER\'S OWN FILE, appeared a moment ago');
+  assert.deepEqual(rig.calls(), []);
+});
+
+test('the notes folder swapped for a link to somewhere else after validation: nothing is written outside it', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-elsewhere-')); t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
+  const b = boot(rig, { hook: { beforeWrite: () => { fs.renameSync(rig.folder, rig.folder + '-moved'); fs.symlinkSync(elsewhere, rig.folder); } } });
+  const r = b.start();
+  assert.equal(r.ok, false);
+  assert.match(r.error, /outside the notes folder/);
+  assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing landed in the place the link points to');
+});
+
+test('cancel re-checks the note right before removing it: an edit made after the first check keeps the file', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const b = boot(rig, { hook: { beforeUnlink: abs => fs.appendFileSync(abs, '\nthe owner edited this at the last moment\n') } });
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  const v = b.pub.current();
+  const c = await b.pub.cancel({ id: v.id, token: v.token });
+  assert.ok(c.ok);
+  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), true, 'the note is still there');
+  assert.match(c.view.cleanup.note, /changed, so it was left/);
+  // and a link put in its place is never followed or removed as the note
+  const b2 = boot(rig, { hook: { beforeUnlink: abs => { const keep = abs + '.keep'; fs.renameSync(abs, keep); fs.symlinkSync(keep, abs); } } });
+  b2.start(); await until(() => b2.mode() === 'planned', 'planned 2');
+  const v2 = b2.pub.current();
+  await b2.pub.cancel({ id: v2.id, token: v2.token });
+  assert.ok(fs.lstatSync(path.join(rig.top, v2.note_rel)).isSymbolicLink(), 'a link is left, not unlinked as if it were the note');
 });
