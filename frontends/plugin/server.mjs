@@ -2872,6 +2872,10 @@ function readBody(req, res, fn) {
       try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
     }
     // A guest cannot name a page the Hub made (hubread.mjs visibilityOf): it answers as if there were none, for every route
+    // ...and an address is a string: the routes read it as one (String(), readPage), so a list or an object under a name that
+    // carries a page is refused here rather than read two ways
+    const badField = data && typeof data === 'object' ? PAGE_FIELDS.find(k => k in data && !fieldOk(k, data[k])) : null;
+    if (badField) return fail(res, 400, `${badField} must be a string`);
     if (data && typeof data === 'object' && !hosted.isOwner(req) && namesOwnerOnlyPage(Object.values(data))) return fail(res, 404, 'unknown page');
     // A write path that refuses (fsjson.UnreadableJsonError: a record on disk
     // that is not readable JSON, which nothing may overwrite) throws; the
@@ -2901,8 +2905,16 @@ const queryOf = reqUrl => new URLSearchParams(String(reqUrl || '').split('?')[1]
 const queryUrl = reqUrl => queryOf(reqUrl).get('url') || '';
 // Does any of these values name a page only the owner may see (hubread.mjs visibilityOf)? A value may be an address or a page key, under
 // ANY parameter name: a guest cannot name an owner-only page by `url`, `key`, `page`, `page_url` or anything else.
-function namesOwnerOnlyPage(values) {
+const PAGE_FIELDS = Object.freeze(['url', 'key', 'page', 'page_url', 'page_key']);
+// `page` is also a PDF's page NUMBER on a comment, so a plain number is fine there; everywhere else, and for anything else, a string
+const fieldOk = (k, v) => typeof v === 'string' || (k === 'page' && typeof v === 'number' && Number.isFinite(v));
+const NAMES_DEPTH = 6;
+function namesOwnerOnlyPage(values, depth = 0) {
   for (const v of values) {
+    if (v && typeof v === 'object') {
+      if (depth < NAMES_DEPTH && namesOwnerOnlyPage(Array.isArray(v) ? v : Object.values(v), depth + 1)) return true;
+      continue;
+    }
     if (typeof v !== 'string' || !v || v.length > 2100) continue;
     let pg = null;
     try { pg = /^[0-9a-f]{40}$/.test(v) ? store.readPageByKey(v) : store.readPage(v); } catch { pg = null; }
@@ -2918,10 +2930,11 @@ function visibleIndex(req) {
   if (hosted.isOwner(req)) return idx;
   return Object.fromEntries(Object.entries(idx).filter(([, e]) => !e.owner_only));
 }
-function pageOf(res, data) {
+export function pageOf(req, res, data) {
   if (!data.url) { fail(res, 400, 'url required'); return null; }
   const page = store.readPage(data.url) || ensureLibrary(data.url);
-  if (!page) { fail(res, 404, 'unknown page'); return null; }
+  // the page FOUND is what is authorised, whatever shape the address had: an owner-only page answers a guest as a missing one does
+  if (!page || !mayRead(page, hosted.isOwner(req))) { fail(res, 404, 'unknown page'); return null; }
   return page;
 }
 
@@ -3144,11 +3157,11 @@ function authorOf(req, res) {
 // request body says. A card never carries a path, and no request can name one:
 // the reader accepting a proposal on this page can only ever change the file
 // this page renders from.
-function suggestTargetOf(res, data) {
+function suggestTargetOf(req, res, data) {
   // The first six lines were `addressedMsg` character for character — the same
   // page, the same target, the same two 404s in the same words. It calls it
   // now, so the two doors cannot start refusing the same thing differently.
-  const at = addressedMsg(res, data);
+  const at = addressedMsg(req, res, data);
   if (!at) return null;
   const { page, target, found } = at;
   const bg = blogOf(page.url);
@@ -3247,8 +3260,8 @@ const runKey = (page, target, ts, i) => `${store.pageKey(page.url)}|${target}|${
 
 // the message a /run or /run-cancel body is pointing at, or a refusal already
 // written to the response
-function addressedMsg(res, data) {
-  const page = pageOf(res, data);
+function addressedMsg(req, res, data) {
+  const page = pageOf(req, res, data);
   if (!page) return null;
   const target = data.thread_id || store.PAGE_CHAT;
   const msgs = store.msgsOf(page, target);
@@ -3262,10 +3275,10 @@ function addressedMsg(res, data) {
 // it. The same three lines — page, thread, 404 in the same words — were written
 // out at every one of them, which is how a tree ends up with more than one
 // spelling of "unknown thread". Returns null having already answered the
-// request, so a caller's whole prologue is `const at = threadOf(res, data); if
+// request, so a caller's whole prologue is `const at = threadOf(req, res, data); if
 // (!at) return;`.
-function threadOf(res, data) {
-  const page = pageOf(res, data);
+function threadOf(req, res, data) {
+  const page = pageOf(req, res, data);
   if (!page) return null;
   const thread = store.findThread(page, data.thread_id);
   if (!thread) { fail(res, 404, 'unknown thread'); return null; }
@@ -3275,7 +3288,7 @@ function threadOf(res, data) {
 function startRun(req, res) {
   return readBody(req, res, async data => {
     if (!runEnabled()) return fail(res, 409, RUN_OFF);
-    const at = addressedMsg(res, data);
+    const at = addressedMsg(req, res, data);
     if (!at) return;
     const { page, target, found } = at;
     const index = Number(data.block_index);
@@ -3327,7 +3340,7 @@ function startRun(req, res) {
 // "there was nothing to stop" is a true and unalarming thing to say.
 function cancelRun(req, res) {
   return readBody(req, res, data => {
-    const at = addressedMsg(res, data);
+    const at = addressedMsg(req, res, data);
     if (!at) return;
     const index = Number(data.block_index);
     if (!Number.isInteger(index) || index < 0) return fail(res, 400, 'block_index required');
@@ -4276,7 +4289,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/fte-route') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const bg = blogOf(page.url);
       if (!bg || !bg.confirmed || !bg.source_path || bg.kind !== 'jekyll') {
@@ -4359,7 +4372,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/suggest-accept') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = suggestTargetOf(res, data);
+      const at = suggestTargetOf(req, res, data);
       if (!at) return;
       const { page, bg, msg } = at;
       const card = store.findCardIn(msg, data.id);
@@ -4395,7 +4408,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/suggest-preview') {
     if (notOwner(req, res)) return;
     return readBody(req, res, async data => {
-      const at = suggestTargetOf(res, data);
+      const at = suggestTargetOf(req, res, data);
       if (!at) return;
       const card = store.findCardIn(at.msg, data.id);
       if (!card) return fail(res, 404, 'unknown suggestion');
@@ -4410,7 +4423,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/suggest-reject') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = suggestTargetOf(res, data);
+      const at = suggestTargetOf(req, res, data);
       if (!at) return;
       const card = store.findCardIn(at.msg, data.id);
       if (!card) return fail(res, 404, 'unknown suggestion');
@@ -4433,7 +4446,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/suggest-accept-all') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = suggestTargetOf(res, data);
+      const at = suggestTargetOf(req, res, data);
       if (!at) return;
       const { page, bg, msg } = at;
       const open = (msg.suggestions || []).filter(c => c.state === 'open');
@@ -5170,6 +5183,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/page') {
     return readBody(req, res, data => {
       if (!data.url) return fail(res, 400, 'url required');
+      { const known = store.readPage(data.url); if (known && !mayRead(known, hosted.isOwner(req))) return fail(res, 404, 'unknown page'); }
       const page = store.upsertPage(data);
       // the served title is what blog.blogPageFor checks a local site's page
       // against, so a visit that brought a new one answers afresh
@@ -5188,7 +5202,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/export-response') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       if (!RESPONSE_MODES.includes(data.response)) {
         return fail(res, 400, `response must be one of ${RESPONSE_MODES.join(', ')}`);
@@ -5221,7 +5235,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/gap') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
       const msg = findMsg(page, target, data.ts);
@@ -5286,6 +5300,7 @@ export function handler(req, res) {
       const blygAnswer = await blygFor(req, data.url, data.blyg_hints);
       // a highlight can arrive before any /page upsert (fresh tab, fast hands)
       const page = store.readPage(data.url) || store.upsertPage(data);
+      if (!mayRead(page, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
       blygOnto(page, blygAnswer);
       // same person, same words, same highlight, seconds apart: one comment
       // …and the mark is part of what makes it the same comment: striking a
@@ -5570,7 +5585,7 @@ export function handler(req, res) {
       // first highlight does (see /thread). Asked before the page is read.
       const blygAnswer = (data.thread_id || store.PAGE_CHAT) === store.PAGE_CHAT
         ? await blygFor(req, data.url, data.blyg_hints) : undefined;
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       blygOnto(page, blygAnswer);
       const target = data.thread_id || store.PAGE_CHAT;
@@ -5660,7 +5675,7 @@ export function handler(req, res) {
     return readBody(req, res, async data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
       if (!msgs) return fail(res, 404, 'unknown thread');
@@ -5719,7 +5734,7 @@ export function handler(req, res) {
   // character changes, so nothing a bot said can be rewritten this way.
   if (req.method === 'POST' && url === '/tick') {
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const msgs = store.msgsOf(page, data.thread_id || store.PAGE_CHAT);
       if (!msgs) return fail(res, 404, 'unknown thread');
@@ -5745,7 +5760,7 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const target = data.thread_id || store.PAGE_CHAT;
       // one resolution for the permission check AND the delete itself, so the
@@ -5803,7 +5818,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/delete-page') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const sid = page.session_id || null;
       const wanted = !!data.delete_session && !!sid;
@@ -5850,7 +5865,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/rename-page') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       // the library is one conversation with a name of its own, and the
       // choreography renames the chat after it: it is not a row to relabel
@@ -5865,7 +5880,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/tag-page') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       if (store.isLibrary(page.url)) return fail(res, 400, 'the library is not a page you can tag');
       // a form sends one comma-separated field; the drawer sends an array.
@@ -5878,7 +5893,7 @@ export function handler(req, res) {
   }
   if (req.method === 'POST' && url === '/orphan') {
     return readBody(req, res, data => {
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       // Stored, and NOT broadcast. "Can this passage be found?" is a verdict
@@ -5911,7 +5926,7 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       // a form has no booleans — and here ABSENT means true: the reading
@@ -5951,7 +5966,7 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       // a form has no booleans: absent/""/"0"/"false" all mean "not done"
@@ -5991,7 +6006,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/reanchor') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       const r = store.reanchorThread(thread, {
@@ -6035,7 +6050,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/mark') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       const want = store.cleanMark(data.mark);
@@ -6084,7 +6099,7 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread: from } = at;
       if (store.kindOf(page) !== 'pdf') {
@@ -6271,7 +6286,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/question') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const thread = data.thread_id ? store.findThread(page, data.thread_id) : null;
       if (data.thread_id && !thread) return fail(res, 404, 'unknown thread');
@@ -6301,7 +6316,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/question-revise') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       const ts = String(data.from_msg || '');
@@ -6521,7 +6536,7 @@ export function handler(req, res) {
     return readBody(req, res, data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const at = threadOf(res, data);
+      const at = threadOf(req, res, data);
       if (!at) return;
       const { page, thread } = at;
       if (!summarizeThread(page, thread)) return fail(res, 409, 'the agents are off on this companion');
@@ -6540,7 +6555,7 @@ export function handler(req, res) {
       // which version the post is NOW, which the note checks old highlights
       // against. Asked before the page is read, as /thread does.
       const blygAnswer = await blygFor(req, data.url, data.blyg_hints, BLYG_ASK_WAIT_MS, { verify: true });
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       if (blygAnswer && blygMod.applyAnswer(page, blygAnswer)) store.savePage(page);
       const post = blygAnswer && blygAnswer.status === 'blyg'
@@ -6594,7 +6609,7 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/export-studio') {
     if (notOwner(req, res)) return;
     return readBody(req, res, data => {
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       if (store.isLibrary(page.url)) return fail(res, 400, 'the library has nothing to paste into Studio');
       const mode = exportMode(data.mode);
@@ -6709,7 +6724,7 @@ export function handler(req, res) {
     return readBody(req, res, async data => {
       const me = authorOf(req, res);
       if (!me) return;
-      const page = pageOf(res, data);
+      const page = pageOf(req, res, data);
       if (!page) return;
       const thread = data.thread_id ? store.findThread(page, data.thread_id) : null;
       if (data.thread_id && !thread) return fail(res, 404, 'unknown thread');

@@ -676,6 +676,24 @@ await test('a page the Hub made is the owner\'s alone: a guest\'s lists leave it
     assert.equal((await guest('POST', '/thread', body)).status, 404, JSON.stringify(Object.keys(body)));
     assert.equal((await guest('POST', '/reply', { ...body, thread_id: '__page__' })).status, 404);
   }
+  // THE SHAPE OF AN ADDRESS: a list or an object under a name that carries a page is refused for everyone (400), and one that hides an
+  // owner-only address inside is answered like a missing page for a guest; nothing is read through String() or readPage of a non-string
+  const shapes = u => [[u], [[u]], { toString: u }, { a: u }, { a: [u] }, 7, null, true];
+  const PAGE_ROUTES = [['/thread', { quote: 'owner reads', msg: { text: 'x' } }], ['/reply', { thread_id: '__page__', text: 'x' }], ['/page', { title: 'renamed' }], ['/blyg', {}], ['/gap', {}],
+    ['/edit', {}], ['/delete', {}], ['/resolve', {}], ['/mark', {}], ['/rename-page', {}], ['/delete-page', {}], ['/run', {}], ['/export-response', {}], ['/question', {}]];
+  for (const field of ['url', 'key', 'page', 'page_url', 'page_key']) {
+    for (const [route, base] of PAGE_ROUTES) {
+      for (const shape of shapes(pageUrl).filter(x => !(field === 'page' && x === 7))) { // `page` is also a PDF page number: a number is its ordinary value
+        const body = { ...base, [field]: shape };
+        const g = await guest('POST', route, body);
+        assert.ok([400, 403, 404].includes(g.status), `${route} ${field}=${JSON.stringify(shape)}: a guest got ${g.status}`);
+        assert.ok(!g.body.includes('Words only') && !g.body.includes(HV), `${route} ${field}: nothing of the page`);
+        const o = await owner('POST', route, body);
+        assert.equal(o.status, 400, `${route} ${field}=${JSON.stringify(shape)}: the owner is refused a non-string address too (${o.status})`);
+      }
+    }
+  }
+  assert.equal((await owner('GET', '/page?url=' + encodeURIComponent(pageUrl))).json.title.includes('renamed'), false, 'and no shape of address renamed it');
   // EVENTS: a guest's live connection (SSE or WebSocket) never hears of a page the Hub made; the owner's does; ordinary pages reach everyone
   const sse = who => new Promise((resolve, reject) => {
     const events = [];
