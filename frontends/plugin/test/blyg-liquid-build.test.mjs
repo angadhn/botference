@@ -46,6 +46,7 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   cases['liq-gap'] = { url: 'https://news.example.test/gap', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('Intro\n/tk go\nOutro'), gaps: [{ instruction: 'go', mode: 'filled-by-agent',
     text: 'LEAK {% cycle site.title %} {% include_relative zz-private.md %} <script>alert(1)</script> [x](javascript:alert(1)) " onmouseover="x' }] }] }] };
   cases['liq-url'] = { url: 'https://news.example.test/{{ site.title }}/{% cycle site.url %}?q={%25', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('plain')] }] };
+  cases['liq-url-only'] = { url: 'https://news.example.test/urlonly', title: 'S', threads: [{ id: 't', quote: 'before\nhttps://hostile-card.example.test/steal\nafter', msgs: [mine('plain')] }] };
   cases['liq-attr'] = { url: 'https://news.example.test/attr', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('"><script>alert(1)</script> \' onfocus=\'x say "hello" & <b>bold</b>')] }] };
   for (const [slug, page] of Object.entries(cases)) {
     const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug });
@@ -88,5 +89,8 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   assert.match(decode(fs.readFileSync(path.join(site, 'b', 'liq-3.html'), 'utf8')), /\{% raw %\}\{\{ site\.url \}\}\{% endraw %\}/);
   const attr = fs.readFileSync(path.join(site, 'b', 'liq-attr.html'), 'utf8');
   assert.ok(/<meta property="og:title" content="[^"]*&quot;|<meta property="og:title" content="[^"<>]*"/.test(attr), 'og:title is one closed attribute');
+  const urlOnly = fs.readFileSync(path.join(site, 'b', 'liq-url-only.html'), 'utf8');
+  assert.ok(!/link-card|<a [^>]*hostile-card/.test(urlOnly), 'a URL-only passage line is not a link or a card');
+  assert.match(decode(urlOnly), /https:\/\/hostile-card\.example\.test\/steal/, 'and it is shown as text');
   assert.ok(!fs.existsSync(netlog), `a connection was attempted: ${fs.existsSync(netlog) ? fs.readFileSync(netlog, 'utf8') : ''}`);
 });

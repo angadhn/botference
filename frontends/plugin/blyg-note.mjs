@@ -218,6 +218,20 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
 // The page's words, made text in every renderer we know of: markdown specials,
 // raw HTML, wikilinks, Liquid, kramdown attribute lists, math, TK marks.
 export function escapePassage(line, { escape = 'liquid' } = {}) {
+  // A web address in a passage stays TEXT: the site turns a paragraph that is only a URL into a link card (a fetch of that page's
+  // metadata) and a hostile page chooses the URL. So each address is written as a code span (the markup of the passage is
+  // ignored by the text rule of Blygger quotes; the reader sees the same characters), with the characters Liquid and markdown
+  // read inside it written as percent-encodings, and everything between the addresses is escaped as before.
+  const parts = clean(line).split(/(https?:\/\/[^\s]+)/i);
+  return parts.map((seg, i) => {
+    if (i % 2) {
+      const url = seg.replace(/[`{}<>"\\]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+      return `\`${url}\``;
+    }
+    return escapeProse(seg, { escape });
+  }).join('').replace(/\s+/g, ' ').trim();
+}
+function escapeProse(line, { escape }) {
   const s = escapePassageLine(oneLine(line));
   // a TK mark was made a code span by escapePassageLine: that is left exactly as it is
   return s.split(/(`\[\/?TK\]`)/i).map((seg, i) => {

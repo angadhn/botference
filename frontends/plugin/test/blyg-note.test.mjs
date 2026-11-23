@@ -317,3 +317,13 @@ test('an edited-away message (superseded) is not part of the post', () => {
   const r = make(page, page.threads);
   assert.ok(/kept/.test(r.text) && !/set aside/.test(r.text));
 });
+
+test('a passage that is only a URL (or holds one) stays text (a code span): no autolink, no link card; the note\'s own source line is still the card', () => {
+  const page = webPage([thread('t1', 'Intro line\nhttps://hostile.example.test/steal?x=1\nSee HTTP://Other.test/a and http://x.test/', 'words')]);
+  const r = make(page, page.threads);
+  const body = r.text.split('\n---\n').slice(1).join('');
+  assert.ok(!/(^|[^`])\bhttps?:\/\/(hostile|Other|x\.test)/i.test(body.split('\n>\n> https://news.example.test')[0].replace(/`[^`]*`/g, '')), 'every address in the passage is inside a code span: ' + body);
+  assert.match(body, /> `https:\/\/hostile\.example\.test\/steal\?x=1`/, 'a code span: the same characters, never a paragraph that is only a URL');
+  assert.ok(!/\n>\s*https?:\/\/hostile/i.test(body));
+  assert.match(body, /\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n/, 'the source line is a plain bare URL: the card');
+});
