@@ -78,6 +78,9 @@ export class IllegalMove extends Error {}
 // has this run not reached apply? (derived from the one mode field and the step that failed or was interrupted)
 export const beforeApply = run => (run.mode === 'failed' ? ['prepare', 'plan'].includes(run.failed_step)
   : run.mode === 'interrupted' ? PRE_APPLY_MODES.includes(run.interrupted_from) : PRE_APPLY_MODES.includes(run.mode));
+// did this run publish nothing for certain? Before apply, or when APPLY itself failed: the site's apply works in a temporary copy and
+// publish (the one step that pushes) never ran. A failed or interrupted PUBLISH may have pushed, so it is not one of these.
+export const publishedNothing = run => beforeApply(run) || (run.mode === 'failed' && run.failed_step === 'apply');
 // have prepare or plan begun (so a `discard` has something to undo)? never in `drafted`
 const workBegun = run => !(run.mode === 'drafted' || (run.mode === 'interrupted' && run.interrupted_from === 'drafted'));
 /** Is this move allowed for this record? (the table, plus the one guard on a retry) */
@@ -490,7 +493,9 @@ export function createPublisher(deps) {
     book.move('cancelled', { cleanup });
     return { ok: true, view: viewOf(book.run) };
   }
-  /** Give the run up. Before apply started, the draft is taken away too; after, nothing is touched. */
+  /** Give the run up. Before apply started, the draft is taken away too. After apply the site's own `abandon` command (when set) ends its
+   *  record of the run; then, if apply itself is what failed (nothing was published), the draft is taken away as well (discard, then the
+   *  note), so the next run is not refused by a note still staged. After a publish that failed or was interrupted the note is left. */
   async function abandon({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
     if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, `this run is ${book.mode}; only a failed or interrupted run can be abandoned`);
@@ -506,6 +511,11 @@ export function createPublisher(deps) {
         const a = await step('abandon');
         if (!a.ok) return fail(409, `the abandon command failed (${a.reason}): ${String(a.record && a.record.output || '').slice(-400)}`);
         cleanup = { ...cleanup, abandon: a.record ? a.record.output : '', note: 'the publish command\'s own abandon was run; the note was left where it is' };
+      }
+      if (publishedNothing(book.run)) {
+        const u = await undraft();
+        cleanup = { ...u, ...(cleanup.abandon !== undefined ? { abandon: cleanup.abandon } : {}),
+          note: u.removed ? `apply failed, so nothing was published: ${cleanup.abandon !== undefined ? 'the site\'s own abandon was run and ' : ''}the draft was taken away` : u.note };
       }
     }
     if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, 'the run moved on meanwhile');

@@ -487,6 +487,34 @@ test('a restart leaves a failed run failed: its retry is still offered, and aban
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'discard'], 'discard ran (it undoes what prepare did); no abandon of an apply');
 });
 
+// A failed APPLY published nothing (the site applies in a temporary copy; only publish pushes). Abandoning it ends the site's own record
+// (the abandon command) and then takes the draft away like a run before apply, so the next run is not refused by a note still staged.
+// A failed PUBLISH may have pushed: its note is left (the test 'abandon: before apply the draft goes; after apply nothing is touched').
+test('abandon after a failed apply: the site\'s abandon runs, then discard, and the draft goes; without an abandon command, discard alone', async t => {
+  for (const withAbandon of [true, false]) {
+    const rig = makeRig({ prepare: true }); t.after(rig.done);
+    const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+    const home = withAbandon ? { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } } : rig.home;
+    rig.control({ apply: 'fail' });
+    const b = boot(rig, { config: home });
+    assert.ok(b.start().ok);
+    await until(() => b.mode() === 'planned', 'planned');
+    const p = b.pub.current();
+    assert.ok(b.pub.confirm({ id: p.id, token: p.token }).ok);
+    await until(() => b.mode() === 'failed', 'failed at apply');
+    const v = b.pub.current();
+    assert.equal(v.failed_step, 'apply');
+    const note = noteOf(rig, v);
+    const a = await b.pub.abandon({ id: v.id, token: v.token });
+    assert.ok(a.ok, JSON.stringify(a));
+    assert.equal(a.view.mode, 'abandoned');
+    assert.equal(a.view.cleanup.removed, true, `the draft is taken away (${withAbandon})`);
+    assert.ok(!fs.existsSync(note));
+    assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'apply', ...(withAbandon ? ['abandon'] : []), 'discard'], `${withAbandon}`);
+    assert.match(a.view.cleanup.note, withAbandon ? /site's own abandon was run and the draft was taken away/ : /^apply failed, so nothing was published: the draft was taken away$/);
+  }
+});
+
 test('a restart leaves a failed apply failed: retry runs apply again', async t => {
   const rig = makeRig(); t.after(rig.done);
   rig.control({ apply: 'fail' });

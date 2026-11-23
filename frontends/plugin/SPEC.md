@@ -13144,7 +13144,9 @@ post's own origin host (`blygItemOf`, `netguard.urlRefusal`); anything else make
 Step C (confirm, with the run's id and token): `apply`, then `publish`, each step's outcome kept with its
 output; a failure names the step and stops; nothing is retried by itself. Cancel removes the draft only if
 this run made it and it is unchanged (calling `discard` first when one is set). Abandon before apply does
-the same; after apply nothing is touched. The record is a file (`blyg-publish-run.json`, mode 0600); a
+the same. Abandon after apply runs the site's `abandon` command (when set); if APPLY itself failed (nothing was published: the
+site applies in a temporary copy and only publish pushes) the draft is then taken away the same way, so the next run is not refused
+by a note still staged; after a publish that failed or was interrupted the note is left. The record is a file (`blyg-publish-run.json`, mode 0600); a
 companion restart turns every unfinished run except a `failed` one into `interrupted`, which offers "show", "continue" (an
 interrupted apply or publish only) and "abandon"; a `failed` run keeps "retry" and "abandon".
 After `published`, each thread that went in gets `blyg_published: {at, title, permalink, address?}`
