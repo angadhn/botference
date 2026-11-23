@@ -249,6 +249,37 @@ await test('a step that throws after ready ends that turn with an error, and the
   }
 });
 
+// A STEP THAT CANNOT BE SENT (its `before` throws, on a warm child, from submit) used to leave the turn "in flight" for ever: nothing went
+// out, so no `ready` was coming to end it, and the lane read busy until the process was restarted. The turn now ends through readyFailed,
+// the reader is told in that chat, submit does not throw, and the next turn runs.
+await test('a step that cannot be sent releases the lane: the turn ends with an error and the next turn runs', async () => {
+  const seen = [];
+  const realError = console.error;
+  const said = [];
+  console.error = (...a) => { said.push(a.join(' ')); };
+  let armed = false;
+  // the `before` of a project-open step reads proj.id when the step goes out (not while it is planned): that read is the one that throws
+  const c5 = createChat({ onEvent: ev => seen.push(ev), projectOf: () => ({
+    get id() { if (armed && /at Object\.before\b/.test(new Error().stack)) throw new Error('before threw'); return armed ? 'p-armed' : 'p-first'; },
+  }) });
+  const URL3 = 'https://life.test/three';
+  store.upsertPage({ url: URL3, title: 'Three', site: 'life.test' });
+  const ends = () => seen.filter(e => e.kind === 'turn-end' && e.url === URL3).length;
+  try {
+    c5.submit({ url: URL3, target: '__page__', text: '@claude first', title: 'Three' });
+    await waitFor(() => ends() === 1 && c5.lifecycle() === 'idle', 'the first turn');
+    armed = true;
+    assert.doesNotThrow(() => c5.submit({ url: URL3, target: '__page__', text: '@claude second', title: 'Three' }), 'submit does not throw');
+    assert.equal(c5.lifecycle(), 'idle', 'the lane is released, not busy for ever');
+    assert.equal(ends(), 2, 'the turn that could not be sent ended');
+    assert.ok(seen.some(e => e.kind === 'error' && e.url === URL3 && /stopped because of a problem/.test(e.error)), 'and the reader was told');
+    assert.ok(said.some(l => /before threw/.test(l)), 'and it was logged');
+    armed = false;
+    c5.submit({ url: URL3, target: '__page__', text: '@claude third', title: 'Three' });
+    await waitFor(() => ends() === 3, 'the next turn to run');
+  } finally { console.error = realError; c5.stop(); }
+});
+
 // A CHILD THAT STOPS READING its input (it is dying, or wedged) makes the next
 // write fail with EPIPE, as an `error` event on its stdin. With no listener
 // that event is thrown out of the event loop and takes the companion with it.

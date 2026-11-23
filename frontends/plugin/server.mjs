@@ -3535,6 +3535,14 @@ export function crashPolicy(err, { listening }) {
   if (code === 'EADDRINUSE' || code === 'EACCES') return 'exit';
   return 'log';
 }
+// The ONE thing done with an error nothing caught, whichever way it arrived (an uncaught exception or a rejected promise nobody awaited):
+// crashPolicy decides, 'exit' ends the process (logged), 'log' says so and the companion goes on. `exit` and `log` are injectable so a
+// test can see the decision without ending the test process.
+export function crashHandler(what, err, { listening, exit = code => process.exit(code), log = (...a) => console.error(...a) }) {
+  if (crashPolicy(err, { listening }) === 'exit') { log('plugin: fatal:', err && err.stack ? err.stack : err); exit(1); return 'exit'; }
+  log(`plugin: ${what}, still serving:`, err && err.message ? err.message : err);
+  return 'log';
+}
 export function handler(req, res) {
   // BEFORE ANYTHING ELSE, the name this request asked for. 421, and nothing about why in the body.
   if (hostBlocked(req)) { req.resume(); return res.writeHead(421, JSON_HEAD).end('{"ok":false,"error":"misdirected request"}'); }
@@ -6774,13 +6782,8 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   acquireLock();
   store.readConfig(); // materialize defaults on first run
   const server = http.createServer(safeHandler);
-  process.on('uncaughtException', (e) => {
-    if (crashPolicy(e, { listening: server.listening }) === 'exit') { console.error('plugin: fatal:', e && e.stack ? e.stack : e); process.exit(1); }
-    console.error('plugin: an uncaught exception, still serving:', e && e.message ? e.message : e);
-  });
-  process.on('unhandledRejection', (e) => {
-    console.error('plugin: an unhandled rejection, still serving:', e && e.message ? e.message : e);
-  });
+  process.on('uncaughtException', e => crashHandler('an uncaught exception', e, { listening: server.listening }));
+  process.on('unhandledRejection', e => crashHandler('an unhandled rejection', e, { listening: server.listening }));
   attachWs(server, {
     path: '/ws',
     // a browser cannot set headers on an upgrade, so the shared password may

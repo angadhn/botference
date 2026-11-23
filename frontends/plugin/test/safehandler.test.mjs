@@ -44,13 +44,27 @@ test('the crash policy: an error in one request is logged and survived; what mea
 
 test('the policy is installed on the process (uncaught exceptions and unhandled rejections), and the STANDINGS and mayHear of live events are named', () => {
   const src = fs.readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
-  assert.match(src, /process\.on\('uncaughtException', \(e\) => \{\s+if \(crashPolicy\(e, \{ listening: server\.listening \}\) === 'exit'\)/);
-  assert.match(src, /process\.on\('unhandledRejection'/);
+  assert.match(src, /process\.on\('uncaughtException', e => crashHandler\('an uncaught exception', e, \{ listening: server\.listening \}\)\)/);
+  assert.match(src, /process\.on\('unhandledRejection', e => crashHandler\('an unhandled rejection', e, \{ listening: server\.listening \}\)\)/);
   assert.deepEqual(server.STANDINGS, ['owner', 'guest']);
   assert.equal(server.mayHear('guest', true), false);
   assert.equal(server.mayHear('owner', true), true);
   assert.equal(server.mayHear('guest', false), true);
   assert.equal(server.mayHear(undefined, true), false, 'a client with no recorded standing hears nothing hushed');
+});
+
+test('an unhandled rejection takes the same policy as an uncaught exception: fatal before listening or on a bind failure, logged and survived after', () => {
+  for (const what of ['an uncaught exception', 'an unhandled rejection']) {
+    const calls = { exit: [], log: [] };
+    const hook = { exit: c => calls.exit.push(c), log: (...a) => calls.log.push(a.join(' ')) };
+    assert.equal(server.crashHandler(what, new Error('late'), { listening: true, ...hook }), 'log');
+    assert.deepEqual(calls.exit, [], `${what}: a late error does not end the process`);
+    assert.match(calls.log[0], new RegExp(`${what}, still serving`));
+    assert.equal(server.crashHandler(what, new Error('early'), { listening: false, ...hook }), 'exit');
+    assert.deepEqual(calls.exit, [1], `${what}: before listening it is fatal`);
+    assert.equal(server.crashHandler(what, Object.assign(new Error('taken'), { code: 'EADDRINUSE' }), { listening: true, ...hook }), 'exit');
+    assert.deepEqual(calls.exit, [1, 1], `${what}: so is a port that is not ours`);
+  }
 });
 
 test('an ordinary request still gets its ordinary answer through it', () => {

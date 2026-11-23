@@ -1176,7 +1176,8 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
         let ev; try { ev = JSON.parse(line); } catch { continue; }
-        handle(ev);
+        // one event that cannot be handled is logged and the rest of the buffer still is: a `ready` behind it is what ends the turn
+        try { handle(ev); } catch (e) { console.error(`[chat] could not handle a ${ev && ev.type} event from the bot process: ${(e && e.stack) || e}`); }
       }
     });
     child.stderr.on('data', d => console.error(`[bridge] ${String(d).trim().slice(0, 500)}`));
@@ -1850,7 +1851,10 @@ export function createChat({ onEvent, root = ROOT, projectOf = null, writeRoot =
       queue.shift();
       current = { job, agents, steps, i: 0, capturing: false };
       chat(job, { kind: 'turn-start', agents });
-      sendStep();
+      // A step that cannot be sent (its `before` threw) must not leave this turn "in flight" for ever: nothing went out, so no `ready` is
+      // coming to end it, and the companion now survives an error instead of exiting. The turn is ended through readyFailed, the one
+      // way a turn in flight is released when the child is between steps: the reader is told in that chat and the lane moves on.
+      try { sendStep(); } catch (e) { readyFailed(e); }
       return;
     }
   }
