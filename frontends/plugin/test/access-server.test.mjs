@@ -20,7 +20,7 @@ import { ROUTES as FOLLOWING_ROUTES } from '../following.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(TEST, '..', 'server.mjs');
-const H = () => createHarness({ server: SERVER, tag: 'acc', waitMs: 20000, env: { SSE_HEARTBEAT_MS: '150' } });
+const H = () => createHarness({ server: SERVER, tag: 'acc', waitMs: 20000, env: { SSE_HEARTBEAT_MS: '150', PLUGIN_ACCESS_TEST_CERTS: '1' } });
 const key = makeKey('k1');
 const keys = await keyServer([key]);
 const REMOTE = { host: 'annotations.example' };
@@ -301,9 +301,12 @@ try {
       assert.match(r.stderr, want);
       assert.ok(!r.stderr.includes(OWNER) && !r.stderr.includes(AUD), 'no value is echoed');
     }
+    // the key list's address is not ours to change outside a test
+    const noTest = run({ hosted_auth: 'access', ...ACCESS_SETTINGS }, { PLUGIN_ACCESS_TEST_CERTS: '' });
+    assert.equal(noTest.status, 1); assert.match(noTest.stderr, /certs_url_for_tests is not accepted outside tests/);
     // password mode still needs its password; access mode needs none
     assert.equal(run(null).status, 1);
-    assert.match(run({ hosted_auth: 'either', ...ACCESS_SETTINGS }).stderr, /PLUGIN_PASSWORD/);
+    assert.match(run({ hosted_auth: 'either', ...ACCESS_SETTINGS }, { PLUGIN_ACCESS_TEST_CERTS: '1' }).stderr, /PLUGIN_PASSWORD/);
   });
 } finally {
   for (const r of rigs) r.h.cleanup();

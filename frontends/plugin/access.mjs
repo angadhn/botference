@@ -105,7 +105,11 @@ export function buildAccessConfig(raw, { ownerHandle = '' } = {}) {
     people.set(email, { standing: 'guest', handle });
   }
   let certsUrl = `https://${team}/cdn-cgi/access/certs`;
+  // The key list's address is the team's, always, over https. A different one is honoured only when the process was started for a
+  // test (PLUGIN_ACCESS_TEST_CERTS=1): in production the setting is refused, so a changed settings file cannot point the checks at
+  // keys of its own choosing, and never over plain http.
   if (r.certs_url_for_tests !== undefined) {
+    if (process.env.PLUGIN_ACCESS_TEST_CERTS !== '1') throw new AccessConfigError('certs_url_for_tests is not accepted outside tests');
     if (typeof r.certs_url_for_tests !== 'string' || !/^https?:\/\//.test(r.certs_url_for_tests)) throw new AccessConfigError('certs_url_for_tests must be an http(s) address');
     certsUrl = r.certs_url_for_tests;
   }

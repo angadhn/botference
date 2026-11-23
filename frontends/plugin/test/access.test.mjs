@@ -193,6 +193,20 @@ test('a connection record is live until its token expires', () => {
   assert.ok(connectionLive(connectionRecord('owner'), 9e15));
 });
 
+test('the key list address is the team\'s; a different one is refused outside tests', () => {
+  const was = process.env.PLUGIN_ACCESS_TEST_CERTS;
+  try {
+    delete process.env.PLUGIN_ACCESS_TEST_CERTS;
+    assert.equal(buildAccessConfig(RAW).certsUrl, `https://${TEAM}/cdn-cgi/access/certs`);
+    for (const u of ['http://127.0.0.1:9/certs', 'https://keys.example.test/certs']) {
+      assert.throws(() => buildAccessConfig({ ...RAW, certs_url_for_tests: u }), e => e instanceof AccessConfigError && /outside tests/.test(e.message));
+    }
+    process.env.PLUGIN_ACCESS_TEST_CERTS = '1';
+    assert.equal(buildAccessConfig({ ...RAW, certs_url_for_tests: 'http://127.0.0.1:9/certs' }).certsUrl, 'http://127.0.0.1:9/certs');
+    assert.throws(() => buildAccessConfig({ ...RAW, certs_url_for_tests: 'ftp://x' }), AccessConfigError);
+  } finally { if (was === undefined) delete process.env.PLUGIN_ACCESS_TEST_CERTS; else process.env.PLUGIN_ACCESS_TEST_CERTS = was; }
+});
+
 test('settings: what is missing is named, never a value; handles; duplicates', () => {
   assert.throws(() => buildAccessConfig({}), e => e instanceof AccessConfigError && /team/.test(e.message) && /aud/.test(e.message) && /owner_email/.test(e.message) && /extension_ids/.test(e.message));
   const { extension_ids, ...noIds } = RAW;
