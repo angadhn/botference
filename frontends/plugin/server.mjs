@@ -47,7 +47,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
-import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor, hostVerdict, hostRefused } from './hosted.mjs';
+import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
@@ -2316,7 +2316,13 @@ const PUBLIC_HOSTS = [...new Set([
   ...[...MEMORY_HOSTS].map(h => h.replace(/^[^.]+\./, 'plugin.')),
   ...String(process.env.PLUGIN_READING_HOSTNAME || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
 ])];
-const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS });
+// with Access in front: the extension ids come from the access settings (never "any extension"), and a name other than this machine's
+// is trusted only over https
+const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS,
+  extensionIds: ACCESS_CFG ? ACCESS_CFG.extensionIds : null, httpsOnly: HOSTED_AUTH !== 'password' });
+// WHERE THE REQUEST CAME FROM (hosted.mjs sourceVerdict), judged before anything else in every auth mode, for requests, streams and sockets
+const sourceRefused = req => (HOSTED && !isLocalDirect(req)) ? sourceRefusal(req, originOf(req), { tokenAuth: hosted.tokenAuthenticated(req),
+  strictReads: HOSTED_AUTH !== 'password' || String(req.url || '').split('?')[0] === '/events' || /websocket/i.test(String(req.headers.upgrade || '')) }) : null;
 // and the Host check that comes before everything (hosted.mjs hostVerdict): a rebound name is refused.
 const hostBlocked = req => hostRefused(hostVerdict(req, { publicHosts: PUBLIC_HOSTS }), HOSTED);
 // What is served on the vault's hostname, and nothing else is. Everything here
@@ -3591,6 +3597,7 @@ export function handler(req, res) {
     req.resume();
     return fail(res, 403, 'refused: requests from other websites cannot use the companion');
   }
+  { const why = sourceRefused(req); if (why) { req.resume(); return fail(res, 403, why); } }
   // CORS, hosted only: the remote extension is cross-origin against a public
   // hostname. An origin that passed is echoed; a foreign one gets nothing; no
   // Origin keeps the wildcard, which is safe because API auth is a bearer
@@ -6827,7 +6834,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     // every event: the same Origin rule as every HTTP request
     // (a promise when an Access token has to be checked first)
     authorize: req => {
-      const gate = () => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req);
+      const gate = () => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && !sourceRefused(req) && hosted.authorized(req);
       return access && !isLocalDirect(req) ? access.resolve(req).then(gate, () => false) : gate();
     },
     onOpen(ws, req) {

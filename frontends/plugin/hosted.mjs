@@ -72,7 +72,7 @@ export const CORS_HEADERS = {
 // These three are the only answers; nothing else decides it.
 export const ORIGIN_VERDICTS = Object.freeze(['absent', 'trusted', 'foreign']);
 const csv = v => String(v || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-export function originVerdict(req, { publicHosts = [] } = {}) {
+export function originVerdict(req, { publicHosts = [], extensionIds = null, httpsOnly = false } = {}) {
   const raw = req.headers.origin;
   if (raw === undefined || raw === '') return 'absent';
   const o = String(raw).trim().toLowerCase();
@@ -80,7 +80,8 @@ export function originVerdict(req, { publicHosts = [] } = {}) {
     // the companion usually does not know the extension's id (an unpacked
     // install gets a fresh one), so any extension passes unless the owner
     // pins the list — extensions are software the owner installed, not pages
-    const pinned = csv(process.env.PLUGIN_EXTENSION_IDS);
+    // (with Access in front the ids are configured, never 'any': extensionIds comes from the access settings)
+    const pinned = extensionIds ? extensionIds.map(x => String(x).toLowerCase()) : csv(process.env.PLUGIN_EXTENSION_IDS);
     if (!pinned.length) return 'trusted';
     return pinned.includes(o.slice('chrome-extension://'.length).replace(/\/+$/, '')) ? 'trusted' : 'foreign';
   }
@@ -89,7 +90,8 @@ export function originVerdict(req, { publicHosts = [] } = {}) {
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'foreign';
   // the companion's own page, on whatever name it was asked by
   const host = String(req.headers.host || '').toLowerCase();
-  if (host && u.host === host) return 'trusted';
+  // (httpsOnly, with Access: a name other than this machine's is trusted only over https)
+  if (host && u.host === host && (!httpsOnly || u.protocol === 'https:' || ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return 'trusted';
   const lp = req.socket && req.socket.localPort;
   if (lp && u.protocol === 'http:' && String(u.port || '80') === String(lp)
     && (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]')) return 'trusted';
@@ -153,6 +155,44 @@ export function corsFor(req, verdict, { credentials = false } = {}) {
   // no Origin is no browser page: the wildcard is meaningless there, and with Access it is not offered at all
   if (verdict === 'absent') return credentials ? {} : CORS_HEADERS;
   return {};
+}
+
+// --- WHERE A REQUEST CAME FROM, decided once ---------------------------------
+// Origin says which page sent a request; Sec-Fetch-Site/Mode/Dest say how the browser sent it. With Cloudflare Access the
+// browser's own cookie is the credential and Cloudflare turns it into the assertion header for ANY request that carries it,
+// so a page on another website could act as the person unless the request's source is judged first. One list, one function:
+//   'trusted'  the Origin is ours (the companion's own page over https, a configured extension, a configured public name)
+//   'unmarked' no Origin and nothing saying it came from another site: curl, node, the python side, a typed address, a bookmark,
+//              or a top-level navigation (a link followed) to a page
+//   'foreign'  an Origin that is not ours (including "null"), or a browser saying cross-site/same-site with no trusted Origin
+//              (an image, script or frame include; anything but a followed link)
+export const SOURCE_VERDICTS = Object.freeze(['trusted', 'unmarked', 'foreign']);
+export function sourceVerdict(req, origin) {
+  if (origin === 'foreign') return 'foreign';
+  if (origin === 'trusted') return 'trusted';
+  const h = req.headers || {};
+  const site = String(h['sec-fetch-site'] || '');
+  if (site !== 'cross-site' && site !== 'same-site') return 'unmarked';
+  const nav = (req.method === 'GET' || req.method === 'HEAD') && h['sec-fetch-mode'] === 'navigate' && h['sec-fetch-dest'] === 'document';
+  return nav ? 'unmarked' : 'foreign';
+}
+const isJsonCt = ct => /^application\/(?:[\w.+-]*\+)?json\b/i.test(String(ct || ''));
+/**
+ * Whether a request is refused for where it came from: null, or the words. `origin` is originVerdict's answer.
+ *   foreign: every change, socket and stream refused; plain reads too unless strictReads is off (password mode).
+ *   token-authenticated (the Access cookie is what let it in) and changing something: it must come from a TRUSTED origin, or be
+ *     a non-browser caller that says application/json (a cross-site page cannot send that without a preflight).
+ */
+export function sourceRefusal(req, origin, { tokenAuth = false, strictReads = true } = {}) {
+  const v = sourceVerdict(req, origin);
+  const reads = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+  // strictReads: a plain read from a foreign page is refused too (always with Access). In password mode (a bearer is not ambient, and
+  // the page cannot read the answer) only changes, streams and sockets are refused: a read from a foreign page stays as it was.
+  if (v === 'foreign' && (strictReads || !reads)) return 'refused: requests from other websites cannot use the companion';
+  if (tokenAuth && !reads && v === 'unmarked' && !isJsonCt((req.headers || {})['content-type'])) {
+    return 'refused: a change must be sent as application/json';
+  }
+  return null;
 }
 
 // a handle names messages; it is not a credential (the password is)
@@ -500,6 +540,8 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
 
   return {
     hosted, authMode, grantsFile, usageFile,
+    // did an Access token (not a password, not the loopback) let this request in?
+    tokenAuthenticated: req => { const tv = hosted && !isLocalDirect(req) ? tokenVerdict(req) : null; return !!tv && (tv.verdict === 'owner' || tv.verdict === 'guest'); },
     authorized, isOwner, identity, denied, authEndpoint, gatePage,
     grantFor, grantUsed, grantSpend,
     refreshCookies, signOutCookies, ownerPassword: ownerPw,
