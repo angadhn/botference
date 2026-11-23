@@ -46,6 +46,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
   GAP_LIMITS } from './tkgaps.mjs';
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
+import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, corsFor, hostVerdict, hostRefused } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
@@ -103,7 +104,22 @@ const FAVICON = path.join(PLUGIN, 'extension', 'icons', 'icon128.png');
 const PORT = Number(process.env.PORT || 4189);
 const NO_AGENTS = process.argv.includes('--no-agents');
 const HOSTED = process.argv.includes('--hosted');
-if (HOSTED && !process.env.PLUGIN_PASSWORD) {
+// HOSTED_AUTH: how a hosted companion knows who is asking (password | access | either; access.mjs). Read once, here.
+let HOSTED_AUTH = 'password';
+let ACCESS_CFG = null;
+if (HOSTED) {
+  try {
+    const got = loadHostedAuth({ ownerHandle: store.readConfig().author });
+    HOSTED_AUTH = got.mode;
+    ACCESS_CFG = got.config;
+  } catch (e) {
+    if (!(e instanceof AccessConfigError)) throw e;
+    console.error(`--hosted: ${e.message}`);
+    process.exit(1);
+  }
+}
+const access = ACCESS_CFG ? createAccess(ACCESS_CFG) : null;
+if (HOSTED && HOSTED_AUTH !== 'access' && !process.env.PLUGIN_PASSWORD) {
   console.error('--hosted requires PLUGIN_PASSWORD to be set, e.g.  PLUGIN_PASSWORD=… botference plugin --hosted');
   console.error("(or use 'botference plugin --share', which generates one and opens a tunnel for you)");
   process.exit(1);
@@ -116,6 +132,7 @@ const hosted = createHosted({
   ownerHandle: () => store.readConfig().author,
   password: process.env.PLUGIN_PASSWORD || '',
   ownerPassword: process.env.PLUGIN_OWNER_PASSWORD || '',
+  authMode: HOSTED_AUTH,
 });
 const NO_GRANT_REASON = "the owner hasn't granted you bot access";
 // …and when the owner's grants (or the daily count) file is damaged: the bots
@@ -167,7 +184,10 @@ const wsClients = new Set();
 // said on it. Events about no page (models, blog sites) and about ordinary pages go to everyone, as before.
 export const STANDINGS = Object.freeze(['owner', 'guest']);
 const standingOf = new WeakMap();
-const standingFor = req => (hosted.isOwner(req) ? 'owner' : 'guest');
+// ...as a RECORD (access.mjs connectionRecord): the standing and, for a client let in by an Access token, the moment that token
+// expires. A connection never outlives its token: an event is delivered only to a live record, and the heartbeat closes the rest.
+const standingFor = req => connectionRecord(hosted.isOwner(req) ? 'owner' : 'guest',
+  hosted.authMode === 'password' ? Infinity : (verdictOfRequest(req).expiresAt ?? Infinity));
 // the page an event is about, by any field a page can be named in
 const eventNames = ev => [ev.url, ev.page_url, ev.page_key, ev.key, ev.page].filter(v => typeof v === 'string');
 const ownerOnlyEvent = ev => namesOwnerOnlyPage(eventNames(ev));
@@ -176,8 +196,9 @@ export const mayHear = (standing, hush) => !hush || standing === 'owner';
 // in, because once the record is gone nothing can tell what it was
 function broadcast(ev, hush = ownerOnlyEvent(ev)) {
   const json = JSON.stringify(ev);
-  for (const res of sseClients) if (mayHear(standingOf.get(res), hush)) res.write(`data: ${json}\n\n`);
-  for (const ws of wsClients) if (mayHear(standingOf.get(ws), hush)) ws.send(json);
+  const t = Date.now();
+  for (const res of sseClients) { const r = standingOf.get(res); if (connectionLive(r, t) && mayHear(r.standing, hush)) res.write(`data: ${json}\n\n`); }
+  for (const ws of wsClients) { const r = standingOf.get(ws); if (connectionLive(r, t) && mayHear(r.standing, hush)) ws.send(json); }
 }
 // --- the review's decision log, kept in step ------------------------------
 //
@@ -3515,6 +3536,15 @@ function handleFollowing(route, req, res) {
 // A handler that throws must answer 500 and leave the companion running: an exception in a synchronous route, uncaught, would take the
 // whole process (every page, every chat) down with it. Every request goes through here.
 export function safeHandler(req, res) {
+  // A hosted companion that takes Access tokens checks the request's token FIRST, once, before anything is routed
+  // (the routes ask who is asking synchronously). The body is not read meanwhile: nothing has listened to it yet.
+  if (access && HOSTED && !isLocalDirect(req)) {
+    access.resolve(req).then(() => serveRequest(req, res), () => serveRequest(req, res));
+    return;
+  }
+  return serveRequest(req, res);
+}
+function serveRequest(req, res) {
   try { return handler(req, res); }
   catch (e) {
     console.error('plugin: handler threw:', e && e.message ? e.message : e);
@@ -3564,12 +3594,16 @@ export function handler(req, res) {
   // hostname. An origin that passed is echoed; a foreign one gets nothing; no
   // Origin keeps the wildcard, which is safe because API auth is a bearer
   // header — a wildcard can never carry the cookie the browsers use.
-  if (HOSTED) for (const [k, v] of Object.entries(corsFor(req, asker))) res.setHeader(k, v);
+  if (HOSTED) for (const [k, v] of Object.entries(corsFor(req, asker, { credentials: HOSTED_AUTH !== 'password' }))) res.setHeader(k, v);
   if (req.method === 'OPTIONS') {
     if (!HOSTED) return fail(res, 404, 'not found');
     if (asker === 'foreign') return fail(res, 403, 'refused: this website may not call the companion');
     return res.writeHead(204, { 'content-length': '0' }).end();
   }
+  // which way this companion signs people in: the mode's NAME and nothing else, so the extension knows whether to ask for a password
+  if (HOSTED && req.method === 'GET' && url === '/auth-mode') return res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, auth: HOSTED_AUTH }));
+  // the password routes exist only where passwords do
+  if (HOSTED && HOSTED_AUTH === 'access' && (url === '/auth' || url === '/signout')) { req.resume(); return fail(res, 404, 'not found'); }
   if (HOSTED && req.method === 'POST' && url === '/auth') return hosted.authEndpoint(req, res);
   // A session in daily use never expires: past half its life it is re-issued
   // on the way past. setHeader (not writeHead) so every route below still
@@ -6790,7 +6824,11 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     // ride the query string (?auth=…&handle=…); cookies work too
     // a website's page can open a socket to the loopback too, and would hear
     // every event: the same Origin rule as every HTTP request
-    authorize: req => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req),
+    // (a promise when an Access token has to be checked first)
+    authorize: req => {
+      const gate = () => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req);
+      return access && !isLocalDirect(req) ? access.resolve(req).then(gate, () => false) : gate();
+    },
     onOpen(ws, req) {
       ws.send(JSON.stringify({ type: 'hello' }));
       standingOf.set(ws, standingFor(req));
@@ -6822,7 +6860,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     } catch (e) { console.log(`· could not read the project registry: ${e.message}`); }
     if (NO_AGENTS) console.log('--no-agents: bots are off; annotations and export still work');
     if (HOSTED) {
-      console.log('--hosted: remote visitors need the password; localhost stays the owner');
+      console.log(HOSTED_AUTH === 'access' ? '--hosted: remote visitors sign in with Cloudflare Access; localhost stays the owner'
+        : HOSTED_AUTH === 'either' ? '--hosted: Cloudflare Access sign-in OR the password (hosted_auth "either" is a transition: move to "access"); localhost stays the owner'
+        : '--hosted: remote visitors need the password; localhost stays the owner');
       console.log(`  reading room: /pages   agent grants: ${hosted.grantsFile}`);
     }
     // One anonymous "someone started this today", at most once a day, and only
@@ -6835,7 +6875,10 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   });
   // heartbeat: dead extension workers surface, live ones stay warm
   setInterval(() => {
-    for (const res of sseClients) res.write('data: {"type":"ping"}\n\n');
-    for (const ws of wsClients) ws.send('{"type":"ping"}');
+    // a connection whose Access token has expired is closed here (the client reconnects with a fresh one)
+    const t = Date.now();
+    for (const res of [...sseClients]) { if (connectionLive(standingOf.get(res), t)) res.write('data: {"type":"ping"}\n\n'); else { sseClients.delete(res); res.end(); } }
+    for (const ws of [...wsClients]) { if (connectionLive(standingOf.get(ws), t)) ws.send('{"type":"ping"}'); else { wsClients.delete(ws); ws.close(); } }
+    syncWatchers();
   }, HEARTBEAT_MS).unref();
 }

@@ -123,11 +123,23 @@ export function attachWs(server, { path = '/ws', authorize = () => true, onOpen 
       socket.destroy();
       return;
     }
-    if (!authorize(req)) {
-      try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { }
-      socket.destroy();
+    // authorize may answer at once or, when something has to be checked first (a token), with a promise
+    const verdict = authorize(req);
+    if (verdict && typeof verdict.then === 'function') {
+      verdict.then(ok => finish(ok), () => finish(false)).catch(() => { try { socket.destroy(); } catch { } });
       return;
     }
+    finish(verdict);
+    function finish(ok) {
+      if (socket.destroyed) return;
+      if (!ok) {
+        try { socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); } catch { }
+        socket.destroy();
+        return;
+      }
+      open();
+    }
+    function open() {
     const accept = crypto.createHash('sha1').update(key + GUID).digest('base64');
     socket.write(
       'HTTP/1.1 101 Switching Protocols\r\n' +
@@ -136,5 +148,6 @@ export function attachWs(server, { path = '/ws', authorize = () => true, onOpen 
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`);
     socket.setNoDelay(true);
     onOpen(makeWs(socket), req);
+    }
   }
 }

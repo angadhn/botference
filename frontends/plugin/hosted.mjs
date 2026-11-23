@@ -28,6 +28,8 @@ import { deviceSession, ownerPassword as sharedOwnerPassword } from './identity.
 // second copy of a security test is a second thing to get wrong. Re-exported
 // so every call site here (and in server.mjs) reads exactly as it did.
 import { isLocalDirect, PROXY_HEADERS } from '../shared/local.mjs';
+// how a hosted companion knows who is asking: HOSTED_AUTH (password | access | either), access.mjs
+import { verdictOfRequest } from './access.mjs';
 // the atomic write and the constant-time compare, one copy each for the tree
 import { writeJson, safeEqual, readJsonState, warnUnreadable, UnreadableJsonError } from './fsjson.mjs';
 export { isLocalDirect, PROXY_HEADERS };
@@ -141,11 +143,15 @@ export function hostRefused(verdict, hosted) {
 // an origin that passed is echoed back; no Origin at all keeps the wildcard
 // (bearer, never cookies — the argument at the top of this file still holds,
 // since a wildcard cannot carry credentials); a foreign one gets nothing.
-export function corsFor(req, verdict) {
+export function corsFor(req, verdict, { credentials = false } = {}) {
   if (verdict === 'trusted') {
-    return { ...CORS_HEADERS, 'access-control-allow-origin': String(req.headers.origin), vary: 'Origin' };
+    // with Access the browser's cookie IS the credential, so the answer must name the origin (never `*`)
+    // and say credentials are allowed
+    return { ...CORS_HEADERS, 'access-control-allow-origin': String(req.headers.origin), vary: 'Origin',
+      ...(credentials ? { 'access-control-allow-credentials': 'true' } : {}) };
   }
-  if (verdict === 'absent') return CORS_HEADERS;
+  // no Origin is no browser page: the wildcard is meaningless there, and with Access it is not offered at all
+  if (verdict === 'absent') return credentials ? {} : CORS_HEADERS;
   return {};
 }
 
@@ -169,12 +175,15 @@ const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/pa
 
 // hosted = false gives a no-op object: every call answers "owner, always" so
 // the local companion keeps behaving exactly as it did before this file existed.
-export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '' }) {
+export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password' }) {
+  // `access`: only a Cloudflare Access token counts; the password routes, login page and cookie are off.
+  // `either`: a token when one is present, otherwise the password path. See access.mjs.
+  const pwOn = authMode !== 'access';
   const grantsFile = path.join(dir, 'grants.json');
   const usageFile = path.join(dir, 'grant-usage.json');
   const secretFile = path.join(dir, '.auth-secret');
   let secret = '';
-  if (hosted) {
+  if (hosted && pwOn) {
     fs.mkdirSync(dir, { recursive: true });
     try { secret = fs.readFileSync(secretFile, 'utf8').trim(); } catch { }
     if (!secret) {
@@ -190,8 +199,8 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   // Resolved once, at startup rather than on the first remote request: this is
   // the credential the owner will type, so a hosted companion should establish
   // it (and persist a new one, if the hub never has) before it serves anything.
-  const ownerPwMemo = (hosted && !ownerPassword) ? (sharedOwnerPassword() || '') : '';
-  const ownerPw = () => ownerPassword || ownerPwMemo;
+  const ownerPwMemo = (hosted && pwOn && !ownerPassword) ? (sharedOwnerPassword() || '') : '';
+  const ownerPw = () => pwOn ? (ownerPassword || ownerPwMemo) : '';
 
   // --- the cookie: exp + role + HANDLE, signed. Stateless, survives restarts.
   // The handle is inside the signature, not beside it: a guest cookie used to
@@ -225,7 +234,7 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   // cookie is re-issued once it is past half its life, so continued use
   // extends it indefinitely while an abandoned session still expires.
   function refreshCookies(req) {
-    if (!hosted) return null;
+    if (!hosted || !pwOn || tokenVerdict(req)) return null;
     const s = cookieSession(req);
     if (!s) return null;
     const [exp] = String(cookieOf(req, 'plugin_auth')).split('.');
@@ -251,8 +260,18 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
     return queryOf(req).get('auth') || '';
   }
 
+  // What the request's Access token came to (access.mjs ACCESS_VERDICTS), or null when this request is
+  // judged by the password path: always in `password`; in `either`, when it carries no token. A token that
+  // is present decides alone, whatever else rides with it (a password never raises a guest token's standing).
+  function tokenVerdict(req) {
+    if (authMode === 'password') return null;
+    const v = verdictOfRequest(req);
+    return (authMode === 'either' && v.verdict === 'absent') ? null : v;
+  }
   function isOwner(req) {
     if (!hosted || isLocalDirect(req)) return true;
+    const tv = tokenVerdict(req);
+    if (tv) return tv.verdict === 'owner';
     if (approvedDevice(req)) return true;
     const t = tokenOf(req);
     const opw = ownerPw();
@@ -262,6 +281,8 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   }
   function authorized(req) {
     if (!hosted || isLocalDirect(req)) return true;
+    const tv = tokenVerdict(req);
+    if (tv) return tv.verdict === 'owner' || tv.verdict === 'guest';
     if (approvedDevice(req)) return true;
     const t = tokenOf(req);
     if (t) {
@@ -292,6 +313,9 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   function identity(req) {
     if (!hosted || isLocalDirect(req)) return { handle: owner(), owner: true };
     if (isOwner(req)) return { handle: owner(), owner: true };
+    // a verified collaborator is their configured name, never one the request asks for
+    const tv = tokenVerdict(req);
+    if (tv) return tv.verdict === 'guest' ? { handle: tv.handle, owner: false } : { handle: null, owner: false, error: 'not signed in', code: 401 };
     const h = handleOf(req);
     if (!h) return { handle: null, owner: false, error: 'a name is required — send x-plugin-handle', code: 400 };
     if (h === sanitizeHandle(owner())) {
@@ -394,7 +418,22 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   // Unauthenticated: a browser asking for a document gets the gate; anything a
   // script fetches gets flat 401 JSON. No WWW-Authenticate anywhere — that is
   // what pops the browser's own basic-auth dialog.
+  const NOTICE_PAGE = (title, line) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escHtml(title)}</title><style>body{font:16px/1.6 -apple-system,Helvetica,Arial,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem;color:#2a2419;background:#faf7f0}
+@media (prefers-color-scheme:dark){body{color:#e8dfd1;background:#1a1712}}</style></head><body><h1>${escHtml(title)}</h1><p>${escHtml(line)}</p></body></html>`;
+  // The refusal for a request judged by its Access token. A person who is not on this companion's list is
+  // told so plainly (nothing else: no address, no list); no token is a 401; a service token is refused.
+  function deniedByToken(req, res, tv) {
+    const wantsPage = req.method === 'GET' && /text\/html/.test(req.headers.accept || '');
+    const [code, line] = tv.verdict === 'unlisted' ? [403, "this account is not on this companion's list"]
+      : tv.verdict === 'service' ? [403, 'service tokens are not accepted here']
+      : [401, 'sign-in required: open this address in a browser and sign in with Cloudflare Access'];
+    if (wantsPage) { res.writeHead(code, HTML_HEAD).end(NOTICE_PAGE(code === 401 ? 'Sign-in required' : 'Not allowed', line)); return; }
+    res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error: line }));
+  }
   function denied(req, res) {
+    const tv = tokenVerdict(req);
+    if (tv || authMode === 'access') return deniedByToken(req, res, tv || { verdict: 'absent' });
     if (req.method === 'GET' && /text\/html/.test(req.headers.accept || '')) {
       res.writeHead(401, HTML_HEAD).end(gatePage(safeNext(String(req.url || '').split('?')[0]), false));
       return;
@@ -459,7 +498,7 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   }
 
   return {
-    hosted, grantsFile, usageFile,
+    hosted, authMode, grantsFile, usageFile,
     authorized, isOwner, identity, denied, authEndpoint, gatePage,
     grantFor, grantUsed, grantSpend,
     refreshCookies, signOutCookies, ownerPassword: ownerPw,
