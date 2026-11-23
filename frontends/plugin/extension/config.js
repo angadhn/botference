@@ -454,7 +454,7 @@
   // WHO MAY CHANGE THE READER. A web page can reach the drawer's controls (its shadow root is open) and a content script cannot tell a
   // click from a page's pretend one by the message alone, so a reader choice is accepted only for a chooser the background itself offered
   // (answering a click on the feed icon that really was the person's), in that one tab, once, within a few minutes. The options page is
-  // the other way to change it and needs no such offer (it writes storage itself). offers(): offer(tab) · valid(tab) · spend(tab).
+  // the other way to change it and needs no such offer (it writes storage itself). offers(): offer(tab) Â· valid(tab) Â· spend(tab).
   const OFFER_MS = 5 * 60 * 1000;
   function createOffers(now) {
     const clock = typeof now === 'function' ? now : Date.now;
