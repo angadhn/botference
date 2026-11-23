@@ -288,7 +288,7 @@ export function quoteBlock(quote, opts) {
 /** A label for `![[id | label]]`: plain words only, nothing the directive grammar or a renderer reads. */
 export const directiveLabel = text => labelOf(oneLine(text).replace(/[{}<>[\]|\\*_`!#$&~]/g, ' ').replace(/\s+/g, ' ').trim());
 
-const BLYG_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+const BLYG_ID = /^[0-7][0-9a-hjkmnp-tv-z]{25}$/;
 /** The page's Blygger identity, strictly checked; null when anything about it is odd. */
 export function blygItemOf(page) {
   const st = page && page.blyg;
@@ -320,7 +320,7 @@ export function blygIdFrom(bytes) {
   return out;
 }
 export const newBlygId = (random = crypto.randomBytes) => blygIdFrom(random(16));
-export const isBlygId = s => /^[0-9a-hjkmnp-tv-z]{26}$/.test(String(s));
+export const isBlygId = s => /^[0-7][0-9a-hjkmnp-tv-z]{25}$/.test(String(s));
 
 export const DEFAULT_TEMPLATE = [
   // no title: a short blyg is tweet-sized and the site names it by its first words; add `title: ${title}` here for one
