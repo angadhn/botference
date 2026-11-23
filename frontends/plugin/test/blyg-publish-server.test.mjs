@@ -202,12 +202,51 @@ await test('hosted: every route is refused to an anonymous caller (401), a wrong
   assert.equal((await request(hosted.base, 'GET', '/blyg-home', undefined, OWNER)).status, 200);
 });
 
+await test('hosted: a same-site page cannot publish (a present Origin must be trusted, Sec-Fetch-Site must be same-origin or none, a POST must say it is JSON); the real owner page can', async () => {
+  const t = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, {});
+  assert.equal(t.status, 200);
+  await request(hosted.base, 'POST', '/page', { url: PAGE, title: 'A story' }, OWNER);
+  const th = await request(hosted.base, 'POST', '/thread', { url: PAGE, quote: 'Q one passage.', msg: { text: 'A hosted view for the request-rule test.' } }, OWNER);
+  const body = { url: PAGE, thread_id: th.json.thread.id, scope: 'one' };
+  const calls = hrig.calls().length;
+  const sneaky = (extra, ct = 'application/json') => request(hosted.base, 'POST', '/blyg-publish/start', ct === null ? undefined : body, { ...OWNER, ...extra, ...(ct ? {} : {}) }, ct === 'none' ? JSON.stringify(body) : null);
+  const forged = [
+    [{ origin: 'https://evil.botference.com', 'sec-fetch-site': 'same-site' }, 'the reviewer\'s same-parent-domain attack'],
+    [{ origin: 'https://evil.botference.com' }, 'a foreign Origin alone'],
+    [{ origin: 'null' }, 'Origin null'],
+    [{ 'sec-fetch-site': 'same-site' }, 'same-site without an Origin'],
+    [{ 'sec-fetch-site': 'cross-site' }, 'cross-site'],
+    [{ origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop' }, 'an extension nobody pinned'],
+  ];
+  for (const [h, why] of forged) {
+    const r = await request(hosted.base, 'POST', '/blyg-publish/start', body, { ...OWNER, ...h });
+    assert.ok([403, 415].includes(r.status), `${why}: ${r.status} ${r.body}`);
+  }
+  // no content type at all, and a form, and text/plain
+  for (const ct of [undefined, 'text/plain', 'application/x-www-form-urlencoded']) {
+    const r = await new Promise((resolve, reject) => { const u = new URL(hosted.base); const rq = http.request({ host: u.hostname, port: u.port, path: '/blyg-publish/start', method: 'POST', headers: { ...OWNER, ...(ct ? { 'content-type': ct } : {}) } }, res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); rq.on('error', reject); rq.end(JSON.stringify(body)); });
+    assert.equal(r.status, 415, `content-type ${ct}: ${r.body}`);
+  }
+  assert.equal(hrig.calls().length, calls, 'nothing ran for any of them');
+  assert.equal((await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, 'sec-fetch-site': 'same-site' })).status, 403, 'a read is refused too');
+  const good = await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, origin: 'https://discuss.botference.com', 'sec-fetch-site': 'same-origin' });
+  assert.equal(good.status, 200, 'the companion\'s own page, same-origin, is let through');
+  void sneaky;
+});
+
 await test('hosted: a guest cannot change the settings, start a run, or act on one (even with the right id and token, even by naming the page)', async () => {
-  const set = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, OWNER);
+  // the setting is written on the machine (a loopback request with no proxy headers), never by a remote owner session
+  const remoteSet = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, OWNER);
+  assert.equal(remoteSet.status, 403);
+  assert.match(remoteSet.json.error, /only on the machine/);
+  const set = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, {});
   assert.equal(set.status, 200, set.body);
+  const redacted = (await request(hosted.base, 'GET', '/blyg-home', undefined, OWNER)).json;
+  assert.deepEqual([redacted.redacted, redacted.valid, redacted.confirm, 'settings' in redacted, JSON.stringify(redacted).includes(hrig.top)], [true, true, 'always', false, false], 'a remote owner sees a redacted view: no paths, no commands');
+  assert.equal((await request(hosted.base, 'GET', '/blyg-home/page', undefined, OWNER)).status, 403);
   const evil = { ...settingsOf(hrig), commands: { plan: ['/usr/bin/touch', '/tmp/pwned-by-guest', '{note}'], apply: ['/usr/bin/true', '{note}'], publish: ['/usr/bin/true', '{note}'] } };
   assert.equal((await request(hosted.base, 'POST', '/blyg-home', { settings: evil }, GUEST)).status, 403);
-  const after = (await request(hosted.base, 'GET', '/blyg-home', undefined, OWNER)).json;
+  const after = (await request(hosted.base, 'GET', '/blyg-home', undefined, {})).json;
   assert.deepEqual(after.settings.commands.plan, hrig.home.commands.plan, 'unchanged');
   // the owner starts a run; a guest has the run's id and token (worst case) and still cannot touch it
   await request(hosted.base, 'POST', '/page', { url: PAGE, title: 'A story' }, OWNER);

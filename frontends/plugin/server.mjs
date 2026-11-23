@@ -65,9 +65,10 @@ import * as preview from './preview.mjs';
 import * as scratch from './scratch.mjs';
 import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
-import { createPublisher } from './blyg-run.mjs';
+import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
+import { blygRequestRefusal } from './blyg-request.mjs';
 import { DEFAULT_TEMPLATE, DEFAULT_ESCAPE, LIMITS as BLYG_NOTE_LIMITS } from './blyg-note.mjs';
 import { DEFAULT_FILENAME, DEFAULT_CONFIRM, CONFIRMS } from './blyg-home.mjs';
 import * as sites from './sites.mjs';
@@ -4202,13 +4203,24 @@ export function handler(req, res) {
   //   POST /blyg-publish/abandon {run, token}   a failed or interrupted run is given up
   if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
     if (notOwner(req, res)) return;
+    // WHICH REQUESTS may reach these routes (blyg-request.mjs): the one place that rule is called
+    const refused = blygRequestRefusal(req, { originVerdict: originOf, extensionIds: String(process.env.PLUGIN_EXTENSION_IDS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean) });
+    if (refused) { req.resume(); return fail(res, refused.status, refused.error); }
+    // THE COMMAND SET IS SET ON THE MACHINE, never over a tunnel: it decides what gets run here. A remote owner session can use
+    // the feature and read a redacted view (no paths, no commands), but cannot read the page or change the setting.
+    const here = isLocalDirect(req);
     const homeView = () => {
       const raw = store.readConfig().blyg_home;
       const v = validateHome(raw);
       return { settings: storable(raw), valid: v.ok, errors: v.errors,
         defaults: { template: DEFAULT_TEMPLATE, filename: DEFAULT_FILENAME, escape: DEFAULT_ESCAPE, confirm: DEFAULT_CONFIRM, confirms: CONFIRMS }, limits: BLYG_NOTE_LIMITS };
     };
-    if (req.method === 'GET' && url === '/blyg-home') return ok(res, homeView());
+    if (req.method === 'GET' && url === '/blyg-home') {
+      const h = homeView();
+      if (here) return ok(res, h);
+      return ok(res, { redacted: true, valid: h.valid, confirm: (h.settings && h.settings.confirm) || h.defaults.confirm, note: 'The Where my blyg lives setting is read and changed only on the machine the companion runs on.' });
+    }
+    if ((url === '/blyg-home/page' || (req.method === 'POST' && url === '/blyg-home')) && !here) return fail(res, 403, 'the Where my blyg lives setting is read and changed only on the machine the companion runs on');
     if (req.method === 'GET' && url === '/blyg-home/page') {
       const nonce = crypto.randomBytes(16).toString('base64');
       const h = homeView();
@@ -4218,7 +4230,7 @@ export function handler(req, res) {
     }
     if (req.method === 'POST' && url === '/blyg-home') {
       return readBody(req, res, data => {
-        if (blygPublish.book.mode !== 'idle' && !['published', 'cancelled', 'abandoned'].includes(blygPublish.book.mode)) {
+        if (!RUN_FINISHED.includes(blygPublish.book.mode)) {
           return fail(res, 409, 'a publish run is under way; finish or abandon it before changing these settings');
         }
         const v = validateHome(data.settings);
