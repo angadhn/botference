@@ -13007,6 +13007,18 @@ An answer that is not the companion's (a redirect, Cloudflare's page with a 200/
 `signin: true`) is never data: the connection mode (`CONN_MODES`) becomes `signin`, the drawer shows one line and a button
 (a trusted click only) that opens the companion's address in a new tab, and the socket reconnects by itself once the companion
 answers (or the sign-in tab is closed). A signed-in person Cloudflare refuses (its own 403 page) is told so, not asked to sign in.
+What the extension takes a remote companion to use is one list, `COMPANION_MODES`, changed by one function (`companionMove`), one record per address:
+
+| mode | meaning | password sent |
+|---|---|---|
+| unknown | not asked yet | no |
+| asking | `GET /auth-mode` under way, without the password | no |
+| unclear | asked; the answer was not the companion's own (portal, proxy, http hop); `ask` leaves it once the wait (5 s) is over | no |
+| password | the companion itself answered, not Access | yes |
+| access | the companion itself said Access (200 `{auth:"access"}` or its 401 `{signin:true}`) | never |
+
+Moves: `ask` (unknown, unclear to asking), `sayPassword` (asking to password), `sayAccess` (any but access), `unclear` (asking to unclear), `forget` (any to unknown: the person's own Save). Only `access` is written down, for that address.
+
 A password saved on the options page is never sent to a companion that has said it uses Access: the mode is asked first, without the
 password (`GET /auth-mode`, or Cloudflare's sign-in answer); `access` is remembered for that address, and only `access` is ever
 remembered, so no later answer can make the extension send the password again. Saving on the options page forgets it (and asks afresh);

@@ -86,7 +86,7 @@ await test('the options verdict says sign-in, not outage and not wrong password'
 // ---- the worker ---------------------------------------------------------------------------------------------------------
 function boot({ stored: given = {}, fetchImpl }) {
   const stored = { ...given };   // a copy: the stub's storage is written to
-  const sockets = [], sent = [], calls = [], listeners = { message: [], removed: [] }, created = [], written = [];
+  const sockets = [], sent = [], calls = [], listeners = { message: [], removed: [], changed: [] }, created = [], written = [];
   class FakeWS {
     constructor(url) { this.url = url; this.closed = false; sockets.push(this); }
     close() { if (this.closed) return; this.closed = true; setTimeout(() => this.onclose && this.onclose(), 0); }
@@ -99,6 +99,7 @@ function boot({ stored: given = {}, fetchImpl }) {
       if (pathName === 'chrome.tabs' && k === 'query') return () => Promise.resolve([{ id: 1 }]);
       if (pathName === 'chrome.tabs' && k === 'create') return o => { created.push(o); return Promise.resolve({ id: 77 }); };
       if (pathName === 'chrome.tabs.onRemoved' && k === 'addListener') return f => listeners.removed.push(f);
+      if (pathName === 'chrome.storage.onChanged' && k === 'addListener') return f => listeners.changed.push(f);
       if (pathName === 'chrome.runtime.onMessage' && k === 'addListener') return f => listeners.message.push(f);
       if (pathName === 'chrome.storage.local' && k === 'set') return (o, cb) => { written.push(o); Object.assign(stored, o); if (typeof cb === 'function') cb(); return Promise.resolve(); };
       if (/^chrome\.storage\.\w+$/.test(pathName) && k === 'get') return (_keys, cb) => { if (typeof cb === 'function') cb(stored); return Promise.resolve(stored); };
@@ -173,7 +174,10 @@ await test('password mode is unchanged: a bearer header, the old words for a ref
   W.run('ensureSocket()'); await tick(10);
   assert.match(W.sockets[0].url, /auth=pw/, 'and the socket carries it, as before');
 });
+// the options page saves: storage changes and the worker's listener hears it
+const changed = async (W, patch) => { Object.assign(W.stored, patch); for (const k of Object.keys(patch)) if (patch[k] === undefined) delete W.stored[k]; await W.listeners.changed[0](Object.fromEntries(Object.keys(patch).map(k => [k, {}])), 'local'); await tick(10); };
 const asked = W => W.calls.filter(c => /auth-mode$/.test(c.url)).length;
+const _unused = W => W.calls.filter(c => /auth-mode$/.test(c.url)).length;
 const bearers = W => W.calls.filter(c => c.init.headers && c.init.headers.Authorization);
 await test('a companion that itself says "access" is remembered, and the password is never sent to it: not in a header, not on the socket', async () => {
   for (const [name, table] of [['/auth-mode says access', { '/auth-mode': authModeReply('access') }],
@@ -193,11 +197,11 @@ await test('a captive portal, proxy or http hop is NOT the companion: at first c
     const W = boot({ stored: { ...REMOTE, 'bfp:password': 'pw' }, fetchImpl: async (url, init) => (portal ? bare() : route({ '/auth-mode': authModeReply('password'), '/health': () => json(200, { ok: true }) })(url, init)) });
     await W.run("api('GET', '/health')");
     assert.equal(bearers(W).length, 0, 'withheld while the answer is not the companion\'s');
-    assert.equal(W.run('companion.mode'), 'unknown');
+    assert.equal(W.run('companion.mode'), 'unclear', 'asked, and the answer was not the companion\'s: a named wait, not a guess');
     assert.ok(!W.written.some(o => 'bfp:learned-auth' in o), 'nothing was written down');
     await W.run("api('GET', '/health')");
     assert.equal(asked(W), 1, 'not asked again at once');
-    portal = false; W.run('companion.askedAt = 0');
+    portal = false; W.run('companion.since = 0');
     await W.run("api('GET', '/health')");
     assert.equal(W.run('companion.mode'), 'password');
     assert.equal(bearers(W).length, 1, 'the password is sent now');
@@ -219,12 +223,59 @@ await test('a captive portal in the middle of a session changes nothing: the pas
   W.run('ensureSocket()'); await tick(10);
   assert.ok(W.sockets.some(k => /auth=pw/.test(k.url)));
 });
+await test('a companion marked password that later answers Access stops getting the password at once (its own 401 {signin:true})', async () => {
+  let access = false;
+  const W = boot({ stored: { ...REMOTE, 'bfp:password': 'pw' }, fetchImpl: route({ '/auth-mode': authModeReply('password'), '/health': () => (access ? json(401, { ok: false, error: 'sign-in required', signin: true }) : json(200, { ok: true })) }) });
+  await W.run("api('GET', '/health')");
+  assert.equal(W.run('companion.mode'), 'password'); const had = bearers(W).length; assert.ok(had >= 1);
+  access = true;
+  const r = await W.run("api('GET', '/health')");
+  assert.equal(r.signin, true); assert.equal(W.run('companion.mode'), 'access', 'the companion said so itself');
+  assert.ok(W.written.some(o => 'bfp:learned-auth' in o));
+  access = false;
+  const before = bearers(W).length;
+  await W.run("api('GET', '/health')");
+  assert.equal(bearers(W).length, before, 'and no password is sent after that');
+  assert.ok(had <= before);
+});
+await test('the person\'s own Save on the options page forgets a remembered Access answer, and the companion is asked afresh', async () => {
+  const W = boot({ stored: { ...REMOTE, 'bfp:password': 'pw', 'bfp:learned-auth': { base: BASE, mode: 'access' } }, fetchImpl: route({ '/auth-mode': authModeReply('password') }) });
+  await W.run("api('GET', '/health')");
+  assert.equal(W.run('companion.mode'), 'access'); assert.equal(bearers(W).length, 0);
+  await changed(W, { 'bfp:learned-auth': undefined });          // Save: forgetAccess removes it
+  assert.ok(asked(W) >= 1, 'forgotten: the companion was asked afresh (the worker re-reads and refreshes at once)');
+  await W.run("api('GET', '/health')");
+  assert.equal(W.run('companion.mode'), 'password', 'asked again: ' + W.run('companion.mode')); assert.equal(bearers(W).length >= 1, true, 'asked afresh, and it said password');
+  // …whereas a change that is not a forget leaves what was learned
+  const K = boot({ stored: { ...REMOTE, 'bfp:password': 'pw', 'bfp:learned-auth': { base: BASE, mode: 'access' } }, fetchImpl: route({}) });
+  await K.run("api('GET', '/health')");
+  await changed(K, { 'bfp:handle': 'ada' });
+  assert.equal(K.run('companion.mode'), 'access');
+});
+await test('a late answer for the previous address is not applied to the new one', async () => {
+  let release; const gate = new Promise(r => { release = r; });
+  const OTHER = 'https://other.example.test';
+  const W = boot({ stored: { ...REMOTE, 'bfp:password': 'pw' }, fetchImpl: async (url, init) => {
+    if (/hub\.example\.test\/auth-mode$/.test(url)) { await gate; return authModeReply('access')(); }
+    if (/other\.example\.test\/auth-mode$/.test(url)) return authModeReply('password')();
+    return json(200, { ok: true });
+  } });
+  const first = W.run("api('GET', '/health')");          // asking hub.example.test: the answer is slow
+  await tick(10);
+  assert.equal(W.run('companion.mode'), 'asking');
+  await changed(W, { 'bfp:companion': OTHER });            // the setting moves to another address
+  release();
+  await first; await tick(10);
+  assert.notEqual(W.run('companion.base'), BASE);
+  assert.notEqual(W.run('companion.mode'), 'access', 'the old address\'s answer was not applied to the new one');
+  assert.ok(!W.written.some(o => 'bfp:learned-auth' in o && o['bfp:learned-auth'].base === BASE), 'and was not written down');
+});
 await test('the mode is one list with one move function: illegal moves are refused, only access is written, forget is the person\'s', async () => {
-  assert.deepEqual(CFG.COMPANION_MODES, ['unknown', 'asking', 'password', 'access']);
+  assert.deepEqual(CFG.COMPANION_MODES, ['unknown', 'asking', 'unclear', 'password', 'access']);
   assert.equal(CFG.companionMove('unknown', 'ask'), 'asking'); assert.equal(CFG.companionMove('asking', 'sayPassword'), 'password');
-  assert.equal(CFG.companionMove('password', 'sayAccess'), 'access'); assert.equal(CFG.companionMove('asking', 'unclear'), 'unknown');
+  assert.equal(CFG.companionMove('password', 'sayAccess'), 'access'); assert.equal(CFG.companionMove('asking', 'unclear'), 'unclear'); assert.equal(CFG.companionMove('unclear', 'ask'), 'asking');
   for (const m of CFG.COMPANION_MODES) assert.equal(CFG.companionMove(m, 'forget'), 'unknown');
-  for (const [mode, move] of [['access', 'sayPassword'], ['access', 'unclear'], ['access', 'ask'], ['password', 'ask'], ['unknown', 'sayPassword'], ['unknown', 'unclear']]) {
+  for (const [mode, move] of [['access', 'sayPassword'], ['access', 'unclear'], ['access', 'ask'], ['password', 'ask'], ['unknown', 'sayPassword'], ['unknown', 'unclear'], ['unclear', 'sayPassword'], ['unclear', 'unclear']]) {
     assert.throws(() => CFG.companionMove(mode, move), /cannot/, `${move} while ${mode}`);
   }
   assert.throws(() => CFG.companionMove('unknown', 'nonsense'), /no such move/);

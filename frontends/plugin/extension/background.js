@@ -237,15 +237,16 @@ function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsStat
 // moves it (a captive portal's redirect or page changes nothing: the password is then withheld for that request and the question is
 // asked again a little later). 'access' alone is written down.
 const ASK_AGAIN_MS = 5000;
-let companion = { base: '', mode: 'unknown', askedAt: 0, pending: null };
+// `since` is when the mode was entered (a fact: how long an 'unclear' has waited); `wait` is the question under way, present only while 'asking'.
+let companion = { base: '', mode: 'unknown', since: 0, wait: null };
 function companionNow() {
-  if (companion.base !== CONF.base) companion = { base: CONF.base, mode: CONF.auth_learned === 'access' ? 'access' : 'unknown', askedAt: 0, pending: null };
+  if (companion.base !== CONF.base) companion = { base: CONF.base, mode: CONF.auth_learned === 'access' ? 'access' : 'unknown', since: Date.now(), wait: null };
   return companion;
 }
 function moveCompanion(move) {
   const was = companionNow();
   const mode = CFG.companionMove(was.mode, move);
-  companion = { ...was, mode };
+  companion = { ...was, mode, since: Date.now(), wait: mode === 'asking' ? was.wait : null };
   if (mode === 'access' && was.mode !== 'access') CFG.rememberAccess(was.base);
   return mode;
 }
@@ -260,12 +261,11 @@ async function askCompanion() {
   if (!CONF.password || CFG.isLocal(CONF.base)) return;
   const c = companionNow();
   if (c.mode === 'password' || c.mode === 'access') return;
-  if (c.mode === 'asking') return c.pending;
-  if (c.askedAt && Date.now() - c.askedAt < ASK_AGAIN_MS) return;       // an unclear answer: not again at once
+  if (c.mode === 'asking') return c.wait;
+  if (c.mode === 'unclear' && Date.now() - c.since < ASK_AGAIN_MS) return;   // an unclear answer: not again at once
   moveCompanion('ask');
-  companion.askedAt = Date.now();
   const base = CONF.base;
-  companion.pending = (async () => {
+  companion.wait = (async () => {
     let answer = 'unclear';
     try {
       const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
@@ -274,7 +274,7 @@ async function askCompanion() {
     if (companion.base !== base || companion.mode !== 'asking') return;   // the setting changed meanwhile
     moveCompanion(answer === 'access' ? 'sayAccess' : answer === 'password' ? 'sayPassword' : 'unclear');
   })();
-  await companion.pending;
+  await companion.wait;
 }
 function denySocket() {
   if (!CFG.canConnMove(wsState, 'deny')) return;

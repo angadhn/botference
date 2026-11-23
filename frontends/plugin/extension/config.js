@@ -526,19 +526,21 @@
   }
   const showPasswordField = mode => mode !== 'access';
   // WHAT THIS COMPANION USES, and so whether the saved password may be sent to it: ONE list, one move function, one record per address.
-  //   unknown   not asked yet, or the answer was not the companion's own (a captive portal, a proxy, an http hop): no password is sent
+  //   unknown   not asked yet: no password is sent
   //   asking    GET /auth-mode is under way (without a password)
+  //   unclear   asked, and the answer was not the companion's own (a captive portal, a proxy, an http hop): no password is sent; it is
+  //             asked again once the wait is over (`ask` leaves this mode; the worker says when)
   //   password  the companion itself answered, and it is not Access (password or either): the password is sent
   //   access    the companion itself said Access: the password is never sent again
   // Only an answer the companion gave ITSELF moves the mode (companionAnswer): JSON from the companion, never a bare redirect or a page.
   // 'access' is the only mode written down (KEYS.learned, for that address) and no answer lowers it: it is left only by `forget`, which
   // is the person's own Save on the options page. A password companion is therefore never locked out by something in the way.
-  const COMPANION_MODES = Object.freeze(['unknown', 'asking', 'password', 'access']);
+  const COMPANION_MODES = Object.freeze(['unknown', 'asking', 'unclear', 'password', 'access']);
   const COMPANION_MOVES = Object.freeze({
-    ask: { from: ['unknown'], to: 'asking' },
+    ask: { from: ['unknown', 'unclear'], to: 'asking' },
     sayPassword: { from: ['asking'], to: 'password' },
-    sayAccess: { from: ['unknown', 'asking', 'password'], to: 'access' },
-    unclear: { from: ['asking'], to: 'unknown' },
+    sayAccess: { from: ['unknown', 'asking', 'unclear', 'password'], to: 'access' },
+    unclear: { from: ['asking'], to: 'unclear' },
     forget: { from: COMPANION_MODES, to: 'unknown' },
   });
   const canCompanionMove = (mode, move) => !!COMPANION_MOVES[move] && COMPANION_MOVES[move].from.indexOf(mode) !== -1;
