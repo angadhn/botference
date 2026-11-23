@@ -79,7 +79,7 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.deepEqual(rig.calls().map(c => c.step), ['plan'], 'only plan has run');
   assert.ok(fs.existsSync(noteOf(rig, v)), 'the note is written');
   assert.equal(v.note_rel, 'my notes/first-thought-about-liveness.md');
-  assert.match(v.note_text, /^---\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\npermalink: \/b\/first-thought-about-liveness\n/);
+  assert.match(v.note_text, /^---\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\nblyg_id: "([0-9a-hjkmnp-tv-z]{26})"\npermalink: \/b\/\1\n/);
   assert.match(v.steps[0].output, /plan: ok for my notes\/first-thought-about-liveness\.md\nWould notify: nobody/);
   assert.deepEqual(v.can, ['confirm', 'cancel']);
   const plan = rig.calls()[0];
@@ -100,8 +100,9 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.deepEqual(rig.calls().map(c2 => c2.step), ['plan', 'apply', 'publish']);
   const done = b.pub.current();
   assert.deepEqual(done.steps.map(s => [s.step, s.exit]), [['plan', 0], ['apply', 0], ['publish', 0]]);
-  assert.equal(done.published.address, 'https://site.example.test/b/first-thought-about-liveness');
-  assert.equal(done.published.permalink, '/b/first-thought-about-liveness');
+  const bid = /\nblyg_id: "(\S+)"\n/.exec(v.note_text)[1];
+  assert.equal(done.published.address, `https://site.example.test/b/${bid}`);
+  assert.equal(done.published.permalink, `/b/${bid}`);
   const marked = b.pages.get(b.page.url).threads[0].blyg_published;
   assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title'], 'only what a reader of the page may know');
   assert.equal(marked.address, done.published.address);
@@ -138,7 +139,7 @@ test('scope "this and the ones above" is one post of the owner\'s earlier unpubl
   const next = b.start('t3', 'one');
   assert.ok(next.ok, next.error);
   await until(() => b.mode() === 'planned', 'planned again');
-  assert.match(b.pub.current().note_text, /\n\nEarlier: \[Nothing to do with it\]\(https:\/\/site\.example\.test\/b\/nothing-to-do-with-it\)\n$/);
+  assert.match(b.pub.current().note_text, /\n\nEarlier: \[Nothing to do with it\]\(https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}\)\n$/);
   assert.equal(b.pub.current().chained_to.title, 'Nothing to do with it');
 });
 
@@ -366,7 +367,7 @@ test('the note file: never overwrites, never follows a link out, never leaves th
   const r = b.start();
   assert.ok(r.ok, r.error);
   const v = r.view;
-  assert.equal(v.note_rel, '_notes/first-thought-about-liveness-4.md', 'past a file, a symlink and a taken permalink');
+  assert.equal(v.note_rel, '_notes/first-thought-about-liveness-3.md', 'past a file and a symlink; the file name is only the first words, the address is the id');
   assert.equal(fs.readFileSync(path.join(rig.folder, 'first-thought-about-liveness.md'), 'utf8'), 'an existing note');
   assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'untouched', 'nothing was written through the link');
   assert.equal(R.addressFrom('see https://a.test/b/x/ and https://a.test/other', '/b/x'), 'https://a.test/b/x/');

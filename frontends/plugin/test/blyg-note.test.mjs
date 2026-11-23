@@ -22,6 +22,7 @@ const NOW = new Date('2026-11-23T12:00:00Z');
 const ID = '0123456789abcdefghjkmnpqrs';
 const ORIGIN = 'https://blyg.example.test/notes/';
 const POST = `${ORIGIN}t/${ID}/`;
+const BID = '0000000000000000000000000z';
 const PASSAGE = 'A sentence that the post really says.';
 const mine = (text, extra = {}) => ({ author: 'owner', ts: '2026-11-22T10:00:00Z', text, provenance: 'owner-typed', ...extra });
 const thread = (id, quote, text, extra = {}) => ({ id, quote, msgs: [mine(text)], ...extra });
@@ -29,7 +30,7 @@ const stamp = (extra = {}) => ({ status: 'blyg', id: ID, version: 2, origin: ORI
 const blygPage = (threads, extra = {}) => ({ url: POST, title: 'A made-up post', blyg: { status: 'blyg', item: { origin: ORIGIN, id: ID, version: 2, page: POST } }, threads, ...extra });
 const webPage = (threads, extra = {}) => ({ url: 'https://news.example.test/a/story?id=7', title: 'A story', threads, ...extra });
 const HOME = { template: N.DEFAULT_TEMPLATE, escape: 'liquid', timezone: 'Europe/London' };
-const make = (page, threads, extra = {}) => N.renderShortNote({ page, threads, home: HOME, now: NOW, slug: 'on-liveness', ...extra });
+const make = (page, threads, extra = {}) => N.renderShortNote({ page, threads, home: HOME, now: NOW, slug: 'on-liveness', id: BID, ...extra });
 
 test('a Blygger page: the quote by reference, the response, the sources, today as released, no essays tag', () => {
   const page = blygPage([thread('t1', PASSAGE, 'I agree, and the smoothness is the point.', { blyg: stamp() })]);
@@ -39,7 +40,8 @@ test('a Blygger page: the quote by reference, the response, the sources, today a
 created: 2026-11-23
 released: "2026-11-23"
 blyg: true
-permalink: /b/on-liveness
+blyg_id: "${BID}"
+permalink: /b/${BID}
 blyg_sources:
   - "${POST}"
 blyg_stub_of:
@@ -47,20 +49,20 @@ blyg_stub_of:
   id: ${ID}
   version: 2
 ---
+I agree, and the smoothness is the point.
+
 ![[${ID} | A made-up post]]
 > A sentence that the post really says.
-
-I agree, and the smoothness is the point.
 `);
   assert.ok(!/essays/.test(r.text));
-  assert.equal(r.permalink, '/b/on-liveness');
+  assert.equal(r.permalink, `/b/${BID}`);
 });
 
 test('an ordinary page: the plain web quote whose last paragraph is the bare URL; no stub unless the owner said response', () => {
   const page = webPage([thread('t1', 'Hiring is slowing for junior roles.', 'This matches what I see.')]);
   const r = make(page, page.threads);
   assert.ok(r.ok, r.error);
-  assert.match(r.text, /\n---\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n\nThis matches what I see\.\n$/);
+  assert.match(r.text, /\n---\nThis matches what I see\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n$/);
   assert.ok(!/blyg_stub_of|blyg_sources/.test(r.text));
   const resp = make({ ...page, export_response: 'response' }, page.threads);
   assert.match(resp.text, /blyg_stub_of:\n {2}url: "https:\/\/news\.example\.test\/a\/story\?id=7"\n---/);
@@ -72,8 +74,11 @@ rb('front matter round-trips through a real YAML parser, for both kinds of page'
   const pg = blygPage([thread('t1', PASSAGE, 'Hello there: a "quoted" # thing', { blyg: stamp() })]);
   const doc = yamlOf(make(pg, pg.threads).text);
   assert.deepEqual([doc.title, doc.blyg, doc.released, doc.permalink, doc.blyg_sources, doc.blyg_stub_of],
-    [undefined, true, '2026-11-23', '/b/on-liveness', [POST], { origin: ORIGIN, id: ID, version: 2 }]);
+    [undefined, true, '2026-11-23', `/b/${BID}`, [POST], { origin: ORIGIN, id: ID, version: 2 }]);
   assert.ok(!('tags' in doc));
+  assert.equal(doc.blyg_id, BID, 'the id is read back as the string it is');
+  const digits = yamlOf(make(pg, pg.threads, { id: '12345678901234567890123456' }).text);
+  assert.equal(digits.blyg_id, '12345678901234567890123456', 'an id of only digits is still a string (it is quoted)');
   const w = webPage([thread('t1', 'x', 'plain words')], { export_response: 'response' });
   assert.deepEqual(yamlOf(make(w, w.threads).text).blyg_stub_of, { url: w.url });
 });
@@ -96,8 +101,9 @@ test('hostile QUOTE: nothing in it can leave its blockquote or run (markdown, HT
   assert.ok(r.ok, r.error);
   const body = r.text.split('\n---\n').slice(1).join('\n---\n');
   const lines = body.split('\n');
-  assert.equal(lines[0], `![[${ID} | A made-up post]]`, 'the one directive is the real one');
-  const quote = lines.slice(1, lines.indexOf('')).filter(l => l !== '>');
+  assert.equal(lines[0], 'My words.', 'the owner\'s first comment comes first');
+  assert.equal(lines[2], `![[${ID} | A made-up post]]`, 'the one directive is the real one');
+  const quote = lines.slice(3).filter(l => l !== '>' && l !== '');
   assert.ok(quote.length >= 15 && quote.every(l => l.startsWith('> ')), 'every quoted line stays inside the blockquote');
   for (const l of quote) {
     const bare = l.slice(2).replace(/\\./g, '');       // what a renderer would still READ as syntax
@@ -110,7 +116,7 @@ test('hostile QUOTE: nothing in it can leave its blockquote or run (markdown, HT
   assert.ok(!/(^|\n)\[\/?TK\]/i.test(body.replace(/`\[\/?TK\]`/gi, '')), 'a TK mark is only ever code');
   assert.ok(!/(^|\n)---(\n|$)/.test(body), 'no front-matter-looking line in the body');
   assert.equal(r.text.match(/^---$/gm).length, 2, 'exactly the two fences');
-  assert.ok(/\n\nMy words\.\n$/.test(r.text));
+  assert.ok(/\n---\nMy words\.\n\n/.test(r.text));
 });
 
 test('hostile PAGE fields: title, URL, and a Blygger post\'s id, origin and version cannot reach the front matter or the directive', () => {
@@ -206,7 +212,7 @@ test('who may publish: only a thread whose first message the owner typed, addres
   const page = webPage([{ id: 't1', quote: 'q', msgs: [mine('My view.'), { author: 'claude', ts: 'b', text: 'Agent view.' }, mine('More from me.')] }]);
   const r = make(page, page.threads);
   assert.ok(r.ok);
-  assert.ok(!/Agent view/.test(r.text) && /My view\.\n\nMore from me\./.test(r.text));
+  assert.ok(!/Agent view/.test(r.text) && /My view\.\n\n> q\n>\n> [^\n]*\n\nMore from me\./.test(r.text), 'first comment, quote, then the rest of the thread');
 });
 
 test('scope: several comments are one post in order, with each quote above its own words; a chain link only for one comment', () => {
@@ -216,7 +222,7 @@ test('scope: several comments are one post in order, with each quote above its o
   ]);
   const r = make(page, page.threads);
   assert.ok(r.ok);
-  assert.match(r.text, /First thought\.\n\n!\[\[[^\n]*\n> [^\n]*\n\nSecond thought\.\n$/);
+  assert.match(r.text, /First thought\.\n\n!\[\[[^\n]*\n> [^\n]*\n\nSecond thought\.\n\n!\[\[[^\n]*\n> [^\n]*\n$/);
   assert.equal((r.text.match(/blyg_sources:/g) || []).length, 1);
   const chained = make(page, [page.threads[1]], { earlier: { title: 'The first [one] {{x}}', link: '/b/the-first' } });
   assert.match(chained.text, /\n\nEarlier: \[The first one x\]\(\/b\/the-first\)\n$/);
@@ -344,4 +350,17 @@ test('short posts are text: raw HTML in the owner\'s own and an adopted text is 
   assert.equal((body.match(/\[h\]\(https:\/\/ok\.example\.test\)/g) || []).length, 2, 'an https link is kept');
   // a stray bar never becomes a table; a wikilink keeps its own
   assert.equal(N.neutraliseHtml('a | b\n- | -\nsee [[x | y]]'), 'a \\| b\n- \\| -\nsee [[x | y]]');
+});
+
+test('a short blyg\'s id: 128 bits encoded exactly as the blog\'s Blygger.new_id (vectors made by that Ruby function); the default template addresses /b/<id>', () => {
+  const vec = [['00000000000000000000000000000001', '00000000000000000000000001'], ['ffffffffffffffffffffffffffffffff', '7zzzzzzzzzzzzzzzzzzzzzzzzz'],
+    ['0123456789abcdeffedcba9876543210', '014d2pf2dbsqqzxq5tk1v58cgg'], ['80000000000000000000000000000000', '40000000000000000000000000']];
+  for (const [hex, id] of vec) assert.equal(N.blygIdFrom(Buffer.from(hex, 'hex')), id);
+  assert.ok(N.isBlygId(N.newBlygId()) && N.newBlygId() !== N.newBlygId());
+  assert.equal(N.newBlygId(() => Buffer.alloc(16, 255)), '7zzzzzzzzzzzzzzzzzzzzzzzzz');
+  assert.ok(!N.isBlygId('../x') && !N.isBlygId('A'.repeat(26)));
+  const page = webPage([thread('t1', 'x', 'plain words')]);
+  const r = make(page, page.threads, { id: '' });                // no id handed in: one is made
+  assert.match(r.text, /\nblyg_id: "([0-9a-hjkmnp-tv-z]{26})"\npermalink: \/b\/\1\n/);
+  assert.equal(make(page, page.threads, { id: '../evil' }).permalink.startsWith('/b/../'), false, 'a bad id is never used');
 });

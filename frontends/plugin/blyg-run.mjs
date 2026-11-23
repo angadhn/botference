@@ -36,7 +36,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheckSync, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
-import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, newBlygId, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
 export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
@@ -189,8 +189,11 @@ function permalinksIn(folder) {
       const k = fs.readSync(fd, buf, 0, 8192, 0); fs.closeSync(fd);
       const head = buf.slice(0, k).toString('utf8');
       if (!head.startsWith('---')) continue;
-      const m = /^permalink:\s*["']?([^\s"']+)["']?\s*$/m.exec(head.split(/\n---\s*\n/)[0]);
+      const fm = head.split(/\n---\s*\n/)[0];
+      const m = /^permalink:\s*["']?([^\s"']+)["']?\s*$/m.exec(fm);
       if (m) seen.add(m[1].replace(/\/+$/, ''));
+      const bid = /^blyg_id:\s*["']?([^\s"']+)["']?\s*$/m.exec(fm);
+      if (bid) seen.add(`id:${bid[1]}`);   // an id another note already declares
     } catch { /* unreadable: not a note we can compare */ }
   }
   return seen;
@@ -334,13 +337,14 @@ export function createPublisher(deps) {
     let slug = base;
     for (let n = 0; n < 60 && !rendered; n++) {
       const trySlug = n ? `${base.slice(0, LIMITS.slugChars - 4)}-${n + 1}` : base;
-      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, earlier });
+      const id = newBlygId();   // the address is made of it; the FILE keeps the first-words slug
+      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id, earlier });
       if (!r.ok) return fail(409, r.error);
       let fileName;
       try { fileName = filenameFor(S.filename, { slug: trySlug, date }); } catch (e) { return fail(409, e.message); }
       let exists = false;
       try { fs.lstatSync(path.join(S.folder, fileName)); exists = true; } catch { /* free */ }
-      const clash = exists || (r.permalink && taken.has(r.permalink.replace(/\/+$/, '')));
+      const clash = exists || taken.has(`id:${id}`) || (r.permalink && taken.has(r.permalink.replace(/\/+$/, '')));
       if (!clash) { rendered = r; name = fileName; slug = trySlug; }
     }
     if (!rendered) return fail(409, 'could not find a free name for this note');

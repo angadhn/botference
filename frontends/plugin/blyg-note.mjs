@@ -23,6 +23,7 @@
 // example consumer): `![[<id> | label]]` with the passage as `> ` lines directly
 // under it, `blyg_sources`, `blyg_stub_of`; an ordinary page's passage is the
 // plain web quote whose last paragraph is the bare URL.
+import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { isWebUrl } from './blyg.mjs';
 import { isBotAuthor, hasMention } from './chat.mjs';
@@ -308,15 +309,29 @@ export function blygItemOf(page) {
 // ---- the template (front matter) ----------------------------------------------
 export const ESCAPES = Object.freeze(['liquid', 'none']);
 export const DEFAULT_ESCAPE = 'liquid';
+// A short blyg's address is made of its Blygger id, like the reference blyg's `/blyg/t/<id>/`. The id is 128 random bits from crypto, encoded
+// exactly as the blog's `Blygger.new_id` does (26 digits of 5 bits, most significant first, from Crockford's lowercase base32 without
+// i, l, o, u): the same value gives the same id in both languages (the tests hold vectors made by the Ruby function).
+export const ID_ALPHABET = '0123456789abcdefghjkmnpqrstvwxyz';
+export function blygIdFrom(bytes) {
+  let v = BigInt('0x' + Buffer.from(bytes).toString('hex'));
+  let out = '';
+  for (let i = 0; i < 26; i++) { out = ID_ALPHABET[Number(v & 31n)] + out; v >>= 5n; }
+  return out;
+}
+export const newBlygId = (random = crypto.randomBytes) => blygIdFrom(random(16));
+export const isBlygId = s => /^[0-9a-hjkmnp-tv-z]{26}$/.test(String(s));
+
 export const DEFAULT_TEMPLATE = [
   // no title: a short blyg is tweet-sized and the site names it by its first words; add `title: ${title}` here for one
   'created: ${created}',
   'released: "${released}"',
   'blyg: true',
-  'permalink: /b/${slug}',
+  'blyg_id: "${id}"',   // quoted: an id of digits and one e would be read as a number
+  'permalink: /b/${id}',
   '${blyg_keys}',
 ].join('\n');
-const PLACEHOLDERS = Object.freeze(['title', 'created', 'released', 'slug', 'blyg_keys']);
+const PLACEHOLDERS = Object.freeze(['title', 'created', 'released', 'slug', 'id', 'blyg_keys']);
 const KEY = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 // a value the template may carry: a plain scalar (no indicator first, no `: `, no ` #`), a one-line
 // JSON-quoted string, or a one-line list of plain words
@@ -350,10 +365,10 @@ export function checkTemplate(text) {
       const v = map[3] === undefined ? '' : map[3];
       if (v.includes('${title}') && v !== '${title}') return { ok: false, error: `${at}: \${title} must be the whole value` };
       if (v === '${title}') continue;
-      if (!valueOk(v.replace(/\$\{(created|released|slug)\}/g, 'x'))) return { ok: false, error: `${at}: the value is not a plain word, a quoted string or a one-line list` };
+      if (!valueOk(v.replace(/\$\{(created|released|slug|id)\}/g, 'x'))) return { ok: false, error: `${at}: the value is not a plain word, a quoted string or a one-line list` };
     } else if (item) {
       if (item[2].includes('${title}') && item[2] !== '${title}') return { ok: false, error: `${at}: \${title} must be the whole value` };
-      if (item[2] !== '${title}' && !valueOk(item[2].replace(/\$\{(created|released|slug)\}/g, 'x'))) return { ok: false, error: `${at}: the list item is not a plain word or a quoted string` };
+      if (item[2] !== '${title}' && !valueOk(item[2].replace(/\$\{(created|released|slug|id)\}/g, 'x'))) return { ok: false, error: `${at}: the list item is not a plain word or a quoted string` };
     } else return { ok: false, error: `${at} is not “key: value”, “  - item” or a comment` };
   }
   return { ok: true, error: '' };
@@ -383,7 +398,8 @@ export function renderFront(template, v) {
       .replace(/\$\{title\}/g, () => yamlString(v.title))
       .replace(/\$\{created\}/g, () => v.created)
       .replace(/\$\{released\}/g, () => v.released)
-      .replace(/\$\{slug\}/g, () => v.slug));
+      .replace(/\$\{slug\}/g, () => v.slug)
+      .replace(/\$\{id\}/g, () => v.id));
   }
   return out;
 }
@@ -413,7 +429,7 @@ const linkText = s => oneLine(s).replace(/[\\[\]*_`<>{}|!]/g, ' ').replace(/\s+/
  *   earlier      { title, link } when the post chains to an earlier one (scope 'one' only), else null
  * → { ok, text, title, slug, permalink, sources } | { ok: false, error }
  */
-export function renderShortNote({ page, threads, home, now, slug, earlier = null }) {
+export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null }) {
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   const opts = { escape };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
@@ -429,17 +445,19 @@ export function renderShortNote({ page, threads, home, now, slug, earlier = null
   for (const t of threads) {
     const el = eligibleThread(t);
     if (!el.ok) return { ok: false, error: el.why };
-    const parts = [];
+    // One thread reads: the FIRST comment, then the QUOTED PASSAGE, then the thread's remaining comments (the owner's order: what I said
+    // about it comes first, the passage is what I was looking at). A thread with one comment is that comment, then the quote.
+    let quoteBlockText = '';
     const quote = clean(t.quote);
     if (quote.trim()) {
       if (quote.length > LIMITS.quoteChars) return { ok: false, error: `a quoted passage is longer than ${LIMITS.quoteChars} characters` };
       const st = t.blyg;
       if (item && st && st.id === item.id && byReference(st, { current: null })) {
-        parts.push(`![[${item.id}${label ? ` | ${label}` : ''}]]\n${quoteBlock(quote, opts)}`);
+        quoteBlockText = `![[${item.id}${label ? ` | ${label}` : ''}]]\n${quoteBlock(quote, opts)}`;
         sources.push(item.page);
       } else {
         const from = item ? item.page : webPage;
-        parts.push(quoteBlock(quote, opts) + (from ? `\n>\n> ${from}` : ''));
+        quoteBlockText = quoteBlock(quote, opts) + (from ? `\n>\n> ${from}` : '');
       }
     }
     const words = [];
@@ -451,8 +469,7 @@ export function renderShortNote({ page, threads, home, now, slug, earlier = null
     if (!words.length && !blocked.length) return { ok: false, error: 'that comment has no words to publish' };
     if (!titleSource && words.length) titleSource = words[0];
     if (!words.length) continue;
-    parts.push(words.join('\n\n'));
-    blocks.push(parts.join('\n\n'));
+    blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
   }
   if (blocked.length) return { ok: false, error: [...new Set(blocked)].join('; '), blocked: [...new Set(blocked)] };
   let body = blocks.join('\n\n');
@@ -466,7 +483,7 @@ export function renderShortNote({ page, threads, home, now, slug, earlier = null
   if (stubOf && item) sources.push(item.page);
   const day = dayOf(now, home && home.timezone);
   const front = renderFront((home && home.template) || DEFAULT_TEMPLATE, {
-    title: oneLine(title).replace(/[<>{}]/g, ''), created: day, released: day, slug, keyLines: blygKeyLines({ sources, stubOf }),
+    title: oneLine(title).replace(/[<>{}]/g, ''), created: day, released: day, slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf }),
   });
   const text = `---\n${front.join('\n')}\n---\n${body}\n`;
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };

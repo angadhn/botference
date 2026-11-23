@@ -81,7 +81,7 @@ await test('start forwards exactly url, thread_id and scope; an odd scope or ope
   const W = boot();
   const r = await pub(W, 'start', { thread_id: 't9', scope: 'above', extra_field: 'ignored', run: 'x' });
   assert.equal(r.ok, true);
-  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above' }]]);
+  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '' }]]);
   for (const bad of [{ op: 'start', scope: 'everything' }, { op: 'nope' }, { op: '__proto__' }, { op: 'constructor' }, { op: undefined }]) {
     assert.equal((await pub(W, bad.op, { scope: bad.scope, thread_id: 't' })).ok, false, JSON.stringify(bad));
   }

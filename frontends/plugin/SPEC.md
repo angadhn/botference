@@ -13053,8 +13053,8 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 - **`/tk` placeholders.** A filled one counts as the owner's text (an agent's fill loses live wikilinks);
   one that is pending, failed or unknown, or a leftover `[TK]` mark outside code, blocks publishing
   with a plain sentence.
-- **The post** (`blyg-note.mjs`): front matter from the owner's template, then for each thread the quoted
-  passage and the owner's words. A page that is a Blygger post (strictly validated id, origin, version):
+- **The post** (`blyg-note.mjs`): front matter from the owner's template, then for each thread the owner's first
+  comment, the quoted passage, and the thread's remaining comments (the words come first). A page that is a Blygger post (strictly validated id, origin, version):
   the passage as `![[<id> | label]]` with `> ` lines directly under it when it passes the post's check,
   `blyg_sources`, and `blyg_stub_of` (origin, id, the version read) when the page is a response. An
   ordinary web page: the plain web quote whose last paragraph is the bare URL (and `blyg_stub_of: {url}`
@@ -13062,7 +13062,9 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
   the slug is `[a-z0-9-]`, never a reserved name, made unique against the folder's files and
   permalinks. For one comment, an earlier published post from the same page is linked ("Earlier: …").
 - **The default template** (editable) produces `title`, `created`, `released` (today, in the owner's
-  zone), `blyg: true`, no tags, `permalink: /b/<slug>`, then `${blyg_keys}`.
+  zone), `blyg: true`, `blyg_id: "${id}"`, no tags, `permalink: /b/${id}`, then `${blyg_keys}`. `${id}` is 128 random bits made by
+  the companion, encoded as the blog's `Blygger.new_id` does (26 characters of lowercase Crockford base32 without i, l, o, u);
+  the file name stays the first words.
 
 ### One click (amendment, same day; hardened after review)
 

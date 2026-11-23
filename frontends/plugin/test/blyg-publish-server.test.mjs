@@ -44,7 +44,7 @@ await test('unset: every route refuses to act, a start writes nothing, and the s
   assert.equal(s.status, 200);
   assert.equal(s.json.valid, false);
   assert.match(s.json.errors.join(' '), /not set up/);
-  assert.match(s.json.defaults.template, /permalink: \/b\/\$\{slug\}/);
+  assert.match(s.json.defaults.template, /blyg_id: "\$\{id\}"\npermalink: \/b\/\$\{id\}/);
   const tid = await comment(B, 'My view on this story.');
   const r = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(r.status, 409);
@@ -100,7 +100,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
   assert.match(planned.note_text, /^---\ncreated: \d{4}-\d\d-\d\d\n/);
-  assert.match(planned.note_text, /\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n\nA third view on this story, which is the one I will publish\.\n$/);
+  assert.match(planned.note_text, /\nA third view on this story, which is the one I will publish\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n$/);
   assert.ok(!JSON.stringify(planned).includes(rig.top), 'no absolute path of the work tree in what the client is shown');
   assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' })).status, 404);
   assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'one run at a time');
@@ -108,7 +108,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.equal(c.status, 200, c.body);
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published');
   assert.deepEqual(rig.calls().map(x => x.step), ['plan', 'apply', 'publish']);
-  assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/a-third-view/);
+  assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}$/);
   const page = (await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json;
   const th = (page.page || page).threads.find(x => x.id === tid);
   assert.equal(th.blyg_published.address, done.published.address);
@@ -149,7 +149,7 @@ await test('confirm never (with a guard): one start is the publish, end to end, 
   assert.ok(rig.calls()[before].argv.includes('--only-note'), 'the plan carried the guard flag');
   assert.ok(rig.calls()[before + 1].argv.includes('--only-note') && rig.calls()[before + 2].argv.includes('--only-note'), 'apply and publish carry it too');
   assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: [] } })).status, 400, 'never without a guard is refused when saving');
-  assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/a-fifth-view/);
+  assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}$/);
   assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: ['not-a-flag'] } })).status, 400);
   const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: 'always' });
   assert.equal(stale.status, 409, 'a drawer that showed the other wording is refused');
