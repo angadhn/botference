@@ -2561,6 +2561,10 @@
       // when the asking began, `info` the answer's site and post (blyg and
       // blyg-site only). See askBlyg.
       blyg: { mode: 'unknown', url: '', since: '', info: null },
+      // Publish as blyg: what the dialog is showing. `view` is one of config.js PUB_VIEWS, changed only by pubGo (which asks
+      // config.js pubMove); `run` is the companion's run as last heard (blyg-run.mjs; the drawer never works a run out for
+      // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0 },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -3062,6 +3066,7 @@
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
         light: shadow.querySelector('.lightbox'),
+        pubdlg: shadow.querySelector('.pubdlg'),
         grip: shadow.querySelector('.grip'),
         bconn: shadow.querySelector('.bconn'),
       };
@@ -3208,6 +3213,7 @@ ${markPickHtml()}
   <div class="footbar"></div>
 </aside>
 <div class="lightbox" role="dialog" aria-label="figure" aria-modal="true" hidden></div>
+<div class="pubdlg" role="dialog" aria-label="Publish as blyg" aria-modal="true" hidden></div>
 ${bubbleShellHtml()}`;
     }
 
@@ -5139,7 +5145,7 @@ ${bubbleShellHtml()}`;
         ? `<div class="confirm">delete thread?
              <button class="rebtn yes" data-act="del-thread-yes" data-target="${esc(t.id)}" type="button">yes</button>
              <button class="rebtn" data-act="del-thread-no" type="button">no</button></div>`
-        : `${questionBtn(t)}${markBtn(t)}${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
+        : `${pubBtn(t)}${questionBtn(t)}${markBtn(t)}${resolveBtn(t)}${ready ? notDoneBtn(t) : ''}<button class="rebtn thr-del" data-act="del-thread" data-target="${esc(t.id)}" type="button" title="delete this thread" aria-label="delete thread">✕</button>`;
       // The badge says WHICH bot claimed it and leaves the verdict to the
       // reader — "ready for review", never "done". It rides the quote row, the
       // one line of the card that is always visible however long the thread.
@@ -8339,6 +8345,15 @@ ${bubbleShellHtml()}`;
         loadMemory();
       },
       'export-run': (btn) => pickExport(btn.dataset.mode),
+      // ---- Publish as blyg (every one of these runs only on a trusted click: the delegated handler above) ----
+      'pub-open': (btn, target) => pubOpen(target),
+      'pub-scope': btn => pubStart(btn.dataset.scope),
+      'pub-confirm': () => pubAct('confirm'),
+      'pub-cancel': () => pubAct('cancel'),
+      'pub-retry': () => pubAct('retry'),
+      'pub-abandon': () => pubAct('abandon'),
+      'pub-review': () => pubReview(),
+      'pub-close': () => pubClose(),
       'export-response': () => toggleResponse(),
       'gap': (btn) => gapAction(btn),
       'gap-save': (btn) => gapSave(btn),
@@ -10569,6 +10584,202 @@ ${bubbleShellHtml()}`;
     // the chooser writes, and the row's tooltip says which one it will use.
     const doExportPage = url => exportFlow(() => cb('onExportPage')(url, D.exportMode));
 
+    // ---- Publish as blyg ---------------------------------------------------------
+    // The owner turns their own comment(s) on this page into a short post on their own site, from the thread's paper-plane.
+    // The RUN lives on the companion (blyg-run.mjs): it writes the note, runs the owner's `plan` command, and only after
+    // the owner's Publish click runs `apply` and `publish`. This is the dialog for it. It never decides anything about a
+    // run: it sends one of a few named operations (onBlygPublish → the worker's 'blyg-publish' message), draws what comes
+    // back, and every button is a data-act that only a trusted click reaches (the delegated handler). The view it is in is
+    // D.pub.view, one of config.js PUB_VIEWS, changed ONLY by pubGo.
+    const PUB_POLL_MS = 2000;
+    const pubOwnWords = m => !!m && m.provenance === 'owner-typed' && !m.origin && !m.route && !m.agent && m.kind !== 'tools'
+      && !isBot(m.author) && !/@(claude|codex|all)\b/i.test(String(m.text || ''));
+    // the first message is the owner's own, addressed to no agent, and it is not a struck passage (the companion decides again)
+    function pubThreadOk(t) {
+      if (!t || t.mark === 'strike') return false;
+      const first = (t.msgs || []).find(m => m && m.kind !== 'tools');
+      return !!first && pubOwnWords(first) && !!String(first.text || '').trim();
+    }
+    const pubPublished = t => !!(t && t.blyg_published && t.blyg_published.at);
+    // the owner's earlier comments on this page that "this and the ones above" would add, in page order
+    function pubAbove(id) {
+      const list = (D.page && D.page.threads) || [];
+      const at = list.findIndex(t => t && t.id === id);
+      return at < 0 ? [] : list.slice(0, at).filter(t => pubThreadOk(t) && !pubPublished(t));
+    }
+    function pubBtn(t) {
+      if (!D.owner) return '';
+      if (pubPublished(t)) {
+        const a = safeHttp(t.blyg_published.address);
+        return `<span class="pubdone" title="published as a blyg${t.blyg_published.title ? ': ' + esc(t.blyg_published.title) : ''}">${a ? `<a href="${esc(a)}" target="_blank" rel="noopener noreferrer">published</a>` : 'published'}</span>`;
+      }
+      if (!pubThreadOk(t)) return '';
+      return `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish as blyg: turn this comment into a short post on your site"`
+        + ` aria-label="publish this comment as a blyg"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M14.5 1.5 1.5 7l4.2 1.9L7.6 14.5l2.4-4 4.5-9z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.7 8.9 14.5 1.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>`;
+    }
+    // an address is a link only when it is plainly http(s)
+    function safeHttp(u) {
+      try { const x = new URL(String(u || '')); return (x.protocol === 'https:' || x.protocol === 'http:') && !x.username && !x.password ? x.href : ''; } catch (_) { return ''; }
+    }
+    // THE ONE FUNCTION THAT CHANGES THE VIEW. A move the table does not list is refused (and says so), never made.
+    function pubGo(next, patch) {
+      if (!CFG || !CFG.canPubMove(D.pub.view, next)) return false;
+      CFG.pubMove(D.pub.view, next);
+      D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
+      if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
+      paintPub();
+      return true;
+    }
+    function pubPollStop() { if (D.pub.poll) { clearTimeout(D.pub.poll); D.pub.poll = 0; } }
+    function pubPollSoon() {
+      pubPollStop();
+      if (typeof setTimeout !== 'function') return;
+      D.pub.poll = setTimeout(() => { D.pub.poll = 0; pubRefresh(); }, PUB_POLL_MS);
+    }
+    // what the companion says the run is now → the view it is shown in (only a move the table allows is made)
+    function pubApply(run) {
+      if (!run) return;
+      const target = CFG.pubViewOf(run.mode);
+      D.pub.run = run;
+      if (target === D.pub.view) { paintPub(); if (target === 'working' || target === 'running') pubPollSoon(); return; }
+      if (!pubGo(target, { run })) paintPub();
+    }
+    async function pubRefresh() {
+      if (!D.mounted || !D.owner) return;
+      if (D.pub.view !== 'working' && D.pub.view !== 'running') return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (D.pub.view !== 'working' && D.pub.view !== 'running') return;
+      if (r && r.ok && r.run) pubApply(r.run); else pubPollSoon();
+    }
+    // a move of the run was announced (owner clients only): look again
+    function blygPublishMoved() {
+      if (!D.owner || !D.mounted) return D;
+      if (D.pub.view === 'working' || D.pub.view === 'running') pubRefresh();
+      return D;
+    }
+    // opening the drawer: is a run under way that this drawer did not start (a reload, another tab)? Offered, never forced.
+    async function askPub() {
+      if (!D.owner || !D.mounted || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
+      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) return;
+      pubGo('waiting', { run: r.run });
+    }
+    function pubOpen(id) {
+      if (!D.owner) return;
+      const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
+      if (!t || !pubThreadOk(t) || pubPublished(t)) return;
+      pubGo('choosing', { thread: id, scope: '', error: '', run: null });
+    }
+    async function pubStart(scope) {
+      if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
+      const thread = D.pub.thread;
+      if (!pubGo('starting', { scope })) return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope }); } catch (_) { r = null; }
+      if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'the publish did not start', run: null }); return; }
+      pubApply(r.run);
+    }
+    // the buttons that act on the run (confirm, retry, cancel, abandon), each carrying the run's own id and token
+    async function pubAct(op) {
+      const run = D.pub.run;
+      if (!D.owner || !run || !run.id) return;
+      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon' }[op];
+      if (!may || (run.can || []).indexOf(may) === -1) return;
+      // the view changes first for the two that start something, so a second click finds nothing to press
+      if (op === 'confirm' && !pubGo('running')) return;
+      if (op === 'retry') {
+        // a failed step is tried again by this click, which also opens the one-use offer the worker wants
+        const res = await cb('onBlygPublish')('resume').catch(() => null);
+        if (!res || !res.ok) { pubGo('problem', { error: (res && res.error) || 'could not reach the companion' }); return; }
+      }
+      let r = null;
+      try { r = await cb('onBlygPublish')(op, { run: run.id, token: run.token }); } catch (_) { r = null; }
+      if (!r || !r.ok || !r.run) {
+        const said = (r && r.error) || 'the companion did not answer';
+        if (!pubGo('problem', { error: said })) { D.pub.error = said; paintPub(); }
+        return;
+      }
+      D.pub.error = '';
+      pubApply(r.run);
+    }
+    async function pubReview() {
+      if (D.pub.view !== 'waiting' || !D.owner) return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('resume'); } catch (_) { r = null; }
+      if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'could not reach the companion', run: D.pub.run }); return; }
+      pubApply(r.run);
+    }
+    function pubClose() { pubGo('closed', { error: '' }); }
+    const pubStepWords = s => (s.timed_out ? 'timed out' : s.spawn_error ? 'could not start' : s.signal ? 'stopped (' + esc(s.signal) + ')' : s.exit === 0 ? 'done' : 'failed (exit ' + esc(s.exit) + ')');
+    function pubStepsHtml(run) {
+      const steps = (run && run.steps) || [];
+      if (!steps.length) return '';
+      return '<ol class="pubsteps">' + steps.map(s => `<li class="${s.exit === 0 && !s.timed_out && !s.spawn_error && !s.signal ? 'ok' : 'bad'}"><b>${esc(s.step)}</b> ${pubStepWords(s)}`
+        + (s.output ? `<details${s.exit === 0 ? '' : ' open'}><summary>what it printed</summary><pre>${esc(s.output)}</pre></details>` : '') + '</li>').join('') + '</ol>';
+    }
+    function pubBody() {
+      const P = D.pub;
+      const run = P.run || {};
+      const closeBtn = '<button class="pbtn" type="button" data-act="pub-close">Close</button>';
+      switch (P.view) {
+        case 'choosing': {
+          const t = ((D.page && D.page.threads) || []).find(x => x && x.id === P.thread);
+          const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+          const n = pubAbove(P.thread).length;
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>
+            <p>Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">Just this comment</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">This and the ${n} above</button>` : ''}${closeBtn}</div>`;
+        }
+        case 'starting': case 'working':
+          return `<h2>Preparing your post…</h2><p>Writing the note and asking your publish tool what it would do. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+        case 'waiting':
+          return `<h2>A publish is waiting</h2><p>${run.title ? '“' + esc(run.title) + '” is ' : 'A blyg post is '}${esc(run.mode || 'under way')}. Review it to carry on.</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-review">Review</button>${closeBtn}</div>`;
+        case 'confirming': {
+          const plan = ((run.steps || []).filter(s => s.step === 'plan').pop() || {}).output || '';
+          return `<h2>Publish this?</h2>
+            <p class="pubwhere">Written to <code>${esc(run.note_rel || '')}</code></p>
+            <h3>The note, as it will be published</h3><pre class="pubnote">${esc(run.note_text || '')}</pre>
+            <h3>What your publish tool says it will do</h3><pre class="pubplan">${esc(plan || '(it printed nothing)')}</pre>
+            <p class="pubwarn">Publish puts this on your live site and cannot be undone from here. The plan lists who will be told and anything irreversible; read it first.</p>
+            ${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">Publish</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button></div>`;
+        }
+        case 'running':
+          return `<h2>Publishing…</h2><p>${esc({ applying: 'Preparing, building and testing (apply).', applied: 'Applied. Publishing next.', publishing: 'Publishing. This can take several minutes while the site is rebuilt.' }[run.mode] || 'Working.')}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+        case 'done': {
+          const pub = run.published || {};
+          const a = safeHttp(pub.address);
+          return `<h2>Published</h2><p>${esc(pub.title || run.title || 'Your post')} is live${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : pub.permalink ? ' at <code>' + esc(pub.permalink) + '</code> on your site' : ''}.</p>
+            ${pub.record_error ? `<p class="puberr">${esc(pub.record_error)}</p>` : ''}${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+        }
+        case 'problem': {
+          if (!run.id) return `<h2>Could not publish</h2><p class="puberr">${esc(P.error || 'something went wrong')}</p><div class="pubbtns">${closeBtn}</div>`;
+          const interrupted = run.mode === 'interrupted';
+          const head = interrupted ? 'The companion stopped while this was under way' : 'The ' + esc(run.failed_step || 'last') + ' step did not finish';
+          const why = interrupted ? esc(run.interrupted_why || '') : esc(run.failed_reason || '');
+          const can = run.can || [];
+          return `<h2>${head}</h2><p class="puberr">${why}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
+            <p>Here is what happened. Nothing is tried again by itself. The tool's own words below say how to finish it by hand${interrupted ? '' : ', or you can try that step again'}.</p>
+            ${pubStepsHtml(run)}
+            <div class="pubbtns">${can.indexOf('retry') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-retry">Try ${esc(run.failed_step || 'this step')} again</button>` : ''}
+            ${can.indexOf('abandon') !== -1 ? '<button class="pbtn" type="button" data-act="pub-abandon">Abandon this run</button>' : ''}${closeBtn}</div>`;
+        }
+        default: return '';
+      }
+    }
+    function paintPub() {
+      const el = D.el && D.el.pubdlg;
+      if (!D.mounted || !el) return;
+      if (D.pub.view === 'closed') { el.hidden = true; el.innerHTML = ''; return; }
+      el.innerHTML = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
+      el.hidden = false;
+    }
+
     // ---- Copy for Blygger Studio ---------------------------------------------
     // The companion renders the page as Studio's markdown (studio-paste.mjs) and
     // sends it back; this puts EXACTLY that text on the clipboard and says so in
@@ -12131,6 +12342,8 @@ ${bubbleShellHtml()}`;
       // …and whether this page is a Blygger post: once per page, the first
       // time the drawer is opened on it (askBlyg does nothing after that)
       askBlyg();
+      // …and whether a Publish-as-blyg run is under way (a reload, another tab): offered, never forced
+      askPub();
       // a caller that asks for Comments on a page that cannot have any (the
       // boot path asks for the remembered tab, which may be stale) gets chat
       if (tab === 'comments' && !CAPS.highlights) tab = 'chat';
@@ -13895,7 +14108,7 @@ ${bubbleShellHtml()}`;
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, noteTimeout, setTheme, setWarning, setAuthor,
-      setExportMode, setOwner, setProject, setRound, setBlog, blogRoot,
+      setExportMode, setOwner, setProject, setRound, setBlog, blogRoot, blygPublishMoved,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
       // switch flips in place.
@@ -14109,6 +14322,8 @@ ${bubbleShellHtml()}`;
         // key then reaches the drawer's own listener with nothing left open,
         // which would close the drawer — so the event is marked as used up.
         if (popIs('help')) { closeHelp(); if (ev) escUsed.add(ev); return true; }
+        // …then the Publish-as-blyg dialog (closing it leaves the run where it is; the companion keeps it)
+        if (D.pub.view !== 'closed' && pubGo('closed', { error: '' })) { if (ev) escUsed.add(ev); return true; }
         if (!D.light) return false; closeLight(); return true;
       },
       // the library's record, handed in the way setPage hands the page's

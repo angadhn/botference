@@ -76,6 +76,10 @@
 //                                     `is_owner` is the standing, not the name:
 //                                     it gates the pages list's rename and tag
 //                                     controls (both owner-only routes)
+//   {t:'blyg-publish', op, …}         Publish as blyg: ONE OF config.js BLYG_PUBLISH_OPS (start, run, resume, confirm,
+//                                     retry, cancel, abandon) and nothing else; confirm and retry are forwarded only while
+//                                     this tab holds a one-use offer that a start or resume from it opened
+//        → {ok:true, run:{…}} | {ok:false, error, code?}
 //   {t:'badge', count:N}              set this tab's badge (N=0 clears it)
 //        → {ok:true}
 //   {t:'reconnect'}                   user-visible "retry" affordance
@@ -157,6 +161,9 @@ if (chrome.tabs && chrome.tabs.onRemoved) chrome.tabs.onRemoved.addListener(id =
   ensureSocket();
 });
 const readerOffers = CFG.createOffers();
+// Publish as blyg: a tab may confirm (or retry) a run only while it holds a one-use offer, which a start or a resume from that
+// tab opened (see blygPublish below)
+const blygOffers = CFG.createOffers();
 let identityCache = null;      // {handle, base} once /health has been asked
 
 // Every request waits for the first storage read — a fetch fired against the
@@ -1037,6 +1044,31 @@ function fteLedger(msg) {
   return run;
 }
 
+// ---- Publish as blyg ---------------------------------------------------------
+// The drawer asks for named operations (config.js BLYG_PUBLISH_OPS) and nothing else reaches the companion's publish
+// routes. A page cannot send this message at all (only this extension's own scripts can message the worker); inside the
+// extension the drawer sends it only on a trusted click in its closed shadow root. On top of that, the two operations that
+// act on a run (confirm, retry) are forwarded only while THIS tab holds a one-use offer, opened by a start or a resume
+// from this tab and spent by the act: the shape reader-choice has (readerOffers). The companion checks the owner, the run
+// id and the run's own token again.
+async function blygPublish(msg, tabId) {
+  await configReady;
+  const op = String((msg && msg.op) || '');
+  const spec = Object.prototype.hasOwnProperty.call(CFG.BLYG_PUBLISH_OPS, op) ? CFG.BLYG_PUBLISH_OPS[op] : null;
+  if (!spec) return { ok: false, error: 'no such operation' };
+  if (spec.offer === 'needs') {
+    if (!blygOffers.valid(tabId)) return { ok: false, code: 'offer-lapsed', error: 'Review the publish again to continue.' };
+    blygOffers.spend(tabId);
+  }
+  const body = {};
+  for (const k of spec.body) body[k] = msg[k] === undefined ? '' : String(msg[k]);
+  if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
+  const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body);
+  if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout };
+  if (spec.offer === 'grants') blygOffers.offer(tabId);
+  return { ok: true, run: (r.data && r.data.run) || null };
+}
+
 // ---- message router ------------------------------------------------------
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = sender && sender.tab ? sender.tab.id : null;
@@ -1065,6 +1097,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true, index: indexCache, socket: wsState };
       }
       case 'api': {
+        // The publish routes and the settings are not reachable through this general door: a publish goes through
+        // 'blyg-publish' below (named operations, an offer for the ones that act), and the settings are the companion's
+        // own page, never the extension's.
+        if (/^\/blyg-(publish|home)(\/|$)/.test(String(msg.path || '').split('?')[0])) {
+          return { ok: false, error: 'not available here' };
+        }
         const r = await api(msg.method, msg.path, msg.body);
         if (r.ok && /^\/(thread|reply|delete|delete-page|edit|orphan|page|tick)$/.test(String(msg.path).split('?')[0])) {
           refreshIndexSoon();
@@ -1079,6 +1117,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         forceReconnect();
         return { ok: true };
       }
+      case 'blyg-publish': return blygPublish(msg, tabId);
       case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'pdf-bypass': return pdfBypass(msg.url);

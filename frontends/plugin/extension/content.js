@@ -3589,6 +3589,12 @@
         const d = r.data || {};
         return { ok: true, text: d.text || '', left_out: d.left_out || [], warning: d.warning || '', gaps: d.gaps || null };
       },
+      // Publish as blyg: the drawer's named operations (config.js BLYG_PUBLISH_OPS), sent to the worker as ONE message type. The
+      // worker, not this script, decides whether confirm and retry may go through (a one-use offer per tab).
+      onBlygPublish: async (op, body) => {
+        const r = await bg({ t: 'blyg-publish', op, url: URL_NOW, ...(body || {}) });
+        return r && r.ok ? { ok: true, run: r.run || null } : { ok: false, error: (r && r.error) || 'the publish did not go through', code: (r && r.code) || '' };
+      },
       onExportResponse: async response => {
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
@@ -4228,6 +4234,9 @@
           // markdown behind THIS page was rewritten, jekyll has rebuilt it by
           // now, and the tab is looking at the old rendering
           onBlogFiles(ev);
+        } else if (ev.type === 'blyg-publish') {
+          // a move of the publish run (owner clients only hear it): the drawer asks the companion what the run is now
+          if (drawer && drawer.blygPublishMoved) drawer.blygPublishMoved();
         } else if (ev.type === 'blog-root') {
           // the reader answered the confirmation in another tab
           loadBlog();

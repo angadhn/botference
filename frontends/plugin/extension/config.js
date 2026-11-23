@@ -175,6 +175,55 @@
     return to;
   }
 
+  // ── Publish as blyg: what the DRAWER is showing ───────────────────────────
+  // One field (D.pub.view), one of PUB_VIEWS, moved only by pubMove's table. The RUN itself lives on the companion
+  // (blyg-run.mjs RUN_MODES: drafted, planning, planned, applying, applied, publishing, published, failed, cancelled,
+  // abandoned, interrupted); this list is the drawer's own, and pubViewOf says which view a run's mode is shown in.
+  //   closed      nothing is open
+  //   choosing    the owner is choosing a scope ("just this comment", "this and the ones above")
+  //   starting    the start request is out (the note is being written)
+  //   waiting     a run was found that this drawer did not start (a reload, another tab): one button to review it
+  //   working     plan is running
+  //   confirming  the note and the plan are on screen; Publish or Cancel
+  //   running     apply, then publish, are running
+  //   done        published
+  //   problem     a refusal, a failed step, or an interrupted run: what happened, and what may be done
+  const PUB_VIEWS = Object.freeze(['closed', 'choosing', 'starting', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']);
+  const PUB_MOVES = Object.freeze({
+    closed: Object.freeze(['choosing', 'waiting']),
+    choosing: Object.freeze(['starting', 'closed']),
+    starting: Object.freeze(['working', 'problem']),
+    waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
+    working: Object.freeze(['confirming', 'problem', 'closed']),
+    confirming: Object.freeze(['running', 'problem', 'closed']),
+    running: Object.freeze(['done', 'problem', 'closed']),
+    done: Object.freeze(['closed']),
+    problem: Object.freeze(['closed', 'working', 'running']),
+  });
+  const canPubMove = (from, to) => !!PUB_MOVES[from] && PUB_MOVES[from].indexOf(to) !== -1;
+  function pubMove(from, to) {
+    if (PUB_VIEWS.indexOf(to) === -1) throw new Error('publish view: no such view ' + to);
+    if (!canPubMove(from, to)) throw new Error('publish view: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
+  // the companion's run mode → the view it is shown in
+  const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', planning: 'working', planned: 'confirming', applying: 'running',
+    applied: 'running', publishing: 'running', published: 'done', failed: 'problem', interrupted: 'problem', cancelled: 'closed', abandoned: 'closed' });
+  const pubViewOf = mode => PUB_VIEW_OF[mode] || 'problem';
+  // The operations the drawer may ask of the companion for a publish, and nothing else: the worker forwards these and only
+  // these (the generic `api` message refuses every /blyg-publish and /blyg-home path). `offer`: 'grants' = a successful answer
+  // opens this tab's one-use offer; 'needs' = the worker forwards it only while the tab holds an offer, and spends it.
+  const BLYG_PUBLISH_OPS = Object.freeze({
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'grants', body: ['url', 'thread_id', 'scope'] }),
+    run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [] }),
+    resume: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [] }),
+    confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'] }),
+    retry: Object.freeze({ method: 'POST', path: '/blyg-publish/retry', offer: 'needs', body: ['run', 'token'] }),
+    cancel: Object.freeze({ method: 'POST', path: '/blyg-publish/cancel', offer: 'none', body: ['run', 'token'] }),
+    abandon: Object.freeze({ method: 'POST', path: '/blyg-publish/abandon', offer: 'none', body: ['run', 'token'] }),
+  });
+  const BLYG_PUBLISH_SCOPES = Object.freeze(['one', 'above']);
+
   // ── whether an exported note is a RESPONSE to its page ─────────────────
   // Blygger's "stub" (spec §10.6). One field on the page record,
   // export_response, one of RESPONSE_MODES. The reader's explicit choice, once
@@ -630,6 +679,7 @@
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
+    PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
