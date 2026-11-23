@@ -161,10 +161,22 @@ function acquireLock() {
 // --- live events --------------------------------------------------------
 const sseClients = new Set();
 const wsClients = new Set();
+// WHO IS LISTENING. A client's standing is recorded when it connects, one of STANDINGS (the owner/guest notion hosted.mjs has always had:
+// hosted.isOwner), and an event is delivered by ONE function that knows it. An event about a page only the owner may see (a page the
+// Hub made: hubread.mjs visibilityOf) reaches owner clients only: a guest's socket must not learn that page's address, or what was
+// said on it. Events about no page (models, blog sites) and about ordinary pages go to everyone, as before.
+export const STANDINGS = Object.freeze(['owner', 'guest']);
+const standingOf = new WeakMap();
+const standingFor = req => (hosted.isOwner(req) ? 'owner' : 'guest');
+// the page an event is about, by any field a page can be named in
+const eventNames = ev => [ev.url, ev.page_url, ev.page_key, ev.key, ev.page].filter(v => typeof v === 'string');
+const ownerOnlyEvent = ev => namesOwnerOnlyPage(eventNames(ev));
+export const mayHear = (standing, hush) => !hush || standing === 'owner';
 function broadcast(ev) {
   const json = JSON.stringify(ev);
-  for (const res of sseClients) res.write(`data: ${json}\n\n`);
-  for (const ws of wsClients) ws.send(json);
+  const hush = ownerOnlyEvent(ev);
+  for (const res of sseClients) if (mayHear(standingOf.get(res), hush)) res.write(`data: ${json}\n\n`);
+  for (const ws of wsClients) if (mayHear(standingOf.get(ws), hush)) ws.send(json);
 }
 // --- the review's decision log, kept in step ------------------------------
 //
@@ -2860,11 +2872,7 @@ function readBody(req, res, fn) {
       try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
     }
     // A guest cannot name a page the Hub made (hubread.mjs visibilityOf): it answers as if there were none, for every route
-    if (data && data.url && !hosted.isOwner(req)) {
-      let named = null;
-      try { named = store.readPage(String(data.url)); } catch { named = null; }
-      if (named && !mayRead(named, false)) return fail(res, 404, 'unknown page');
-    }
+    if (data && typeof data === 'object' && !hosted.isOwner(req) && namesOwnerOnlyPage(Object.values(data))) return fail(res, 404, 'unknown page');
     // A write path that refuses (fsjson.UnreadableJsonError: a record on disk
     // that is not readable JSON, which nothing may overwrite) throws; the
     // reader is told which file and why, and the companion stays up. Anything
@@ -2886,12 +2894,22 @@ const backTo = (data, page, hash, notice) => {
   return base + (notice ? `?notice=${encodeURIComponent(notice)}` : '') + (hash ? `#${hash}` : '');
 };
 const seeOther = (res, location) => res.writeHead(303, { location, 'cache-control': 'no-store' }).end();
-const queryUrl = reqUrl => {
-  const q = String(reqUrl || '').split('?')[1] || '';
-  const m = /(?:^|&)url=([^&]*)/.exec(q);
-  if (!m) return '';
-  try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch { return ''; } // a malformed escape names no page
-};
+// ONE parser for the query of every request (URLSearchParams: names and values decoded the one way): the address a request names is the
+// one `url` it carries, and a request that carries `url` more than once is refused before it is routed (see handler). A malformed
+// escape is not a throw (URLSearchParams keeps it as written) and names no page.
+const queryOf = reqUrl => new URLSearchParams(String(reqUrl || '').split('?')[1] || '');
+const queryUrl = reqUrl => queryOf(reqUrl).get('url') || '';
+// Does any of these values name a page only the owner may see (hubread.mjs visibilityOf)? A value may be an address or a page key, under
+// ANY parameter name: a guest cannot name an owner-only page by `url`, `key`, `page`, `page_url` or anything else.
+function namesOwnerOnlyPage(values) {
+  for (const v of values) {
+    if (typeof v !== 'string' || !v || v.length > 2100) continue;
+    let pg = null;
+    try { pg = /^[0-9a-f]{40}$/.test(v) ? store.readPageByKey(v) : store.readPage(v); } catch { pg = null; }
+    if (pg && !mayRead(pg, false)) return true;
+  }
+  return false;
+}
 // every mutation route needs "the page, or a 404" — except the ones that may
 // legitimately create it
 // The page index as THIS request may see it: a guest's leaves out the pages the Hub made
@@ -3336,6 +3354,7 @@ function runFigure(req, res) {
   if (!/^[0-9a-f]{40}$/.test(key) || !run.isRunId(id) || !run.isFigureName(name)) {
     return fail(res, 400, 'bad figure address');
   }
+  { const owner = store.readPageByKey(key); if (owner && !mayRead(owner, hosted.isOwner(req))) return fail(res, 404, 'unknown page'); }
   const file = path.join(store.runDir(key, id), name);
   fs.readFile(file, (err, buf) => {
     if (err) return fail(res, 404, 'no such figure');
@@ -3491,9 +3510,22 @@ export function safeHandler(req, res) {
     } catch { /* the socket is gone: nothing more to say */ }
   }
 }
+// What happens to an error nothing caught. The companion serves one person's pages and runs their bots: an error in ONE request (a route
+// that throws asynchronously, a rejected promise from a bot turn or a fetch) must not stop it, so it is logged and the process goes on.
+// What is FATAL is what means it cannot serve at all: anything before it is listening, and a failure to bind (the port is taken, or not
+// ours to take). One list, one function; out-of-memory and a killed process are not catchable and are not covered.
+export const CRASH_ACTIONS = Object.freeze(['log', 'exit']);
+export function crashPolicy(err, { listening }) {
+  const code = err && err.code;
+  if (!listening) return 'exit';
+  if (code === 'EADDRINUSE' || code === 'EACCES') return 'exit';
+  return 'log';
+}
 export function handler(req, res) {
   // BEFORE ANYTHING ELSE, the name this request asked for. 421, and nothing about why in the body.
   if (hostBlocked(req)) { req.resume(); return res.writeHead(421, JSON_HEAD).end('{"ok":false,"error":"misdirected request"}'); }
+  // one `url` or none: two of them are two parsers' worth of disagreement waiting to happen
+  if (queryOf(req.url).getAll('url').length > 1) { req.resume(); return fail(res, 400, 'url given more than once'); }
   let url = req.url.split('?')[0];
   const draftCommandOnly = req.method === 'POST' && (url === '/draft-blog' || url === '/draft-blog/thread');
   if (draftCommandOnly) url = url === '/draft-blog/thread' ? '/thread' : '/reply';
@@ -3545,12 +3577,7 @@ export function handler(req, res) {
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
   // and a guest cannot read one by naming its address either
-  if (req.method === 'GET' && !hosted.isOwner(req)) {
-    const named = new URLSearchParams(req.url.split('?')[1] || '').get('url');
-    let pg = null;
-    try { pg = named ? store.readPage(named) : null; } catch { pg = null; }
-    if (pg && !mayRead(pg, false)) return fail(res, 404, 'unknown page');
-  }
+  if (!hosted.isOwner(req) && namesOwnerOnlyPage(queryOf(req.url).values())) return fail(res, 404, 'unknown page');
 
   // --- Following: the reader's private list of blygs (following.mjs) ------
   // Every route is in followingMod.ROUTES, behind the gate above, and the
@@ -4951,7 +4978,10 @@ export function handler(req, res) {
     if (!u) return fail(res, 400, 'url required');
     // a project artifact's mirror of a council chat is brought level with the
     // session file first, if the council has written since it was last read
-    const page = freshenMirror(store.readPage(u));
+    // (the gate refuses a guest here already; this route says it for itself too)
+    const named = store.readPage(u);
+    if (named && !mayRead(named, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
+    const page = freshenMirror(named);
     // auto-threads written in markdown before the diff spoke the page's words
     // (collateral.renderAnchors): given their rendered form, once, on a page
     // whose source is markdown
@@ -4974,6 +5004,7 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/events') {
     sseOpen(res);
     res.write(`data: ${JSON.stringify({ type: 'hello' })}\n\n`);
+    standingOf.set(res, standingFor(req));
     sseClients.add(res);
     // a connected tab is what buys a session watcher; the last one to leave
     // closes them (syncWatchers)
@@ -6724,6 +6755,13 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   acquireLock();
   store.readConfig(); // materialize defaults on first run
   const server = http.createServer(safeHandler);
+  process.on('uncaughtException', (e) => {
+    if (crashPolicy(e, { listening: server.listening }) === 'exit') { console.error('plugin: fatal:', e && e.stack ? e.stack : e); process.exit(1); }
+    console.error('plugin: an uncaught exception, still serving:', e && e.message ? e.message : e);
+  });
+  process.on('unhandledRejection', (e) => {
+    console.error('plugin: an unhandled rejection, still serving:', e && e.message ? e.message : e);
+  });
   attachWs(server, {
     path: '/ws',
     // a browser cannot set headers on an upgrade, so the shared password may
@@ -6731,8 +6769,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     // a website's page can open a socket to the loopback too, and would hear
     // every event: the same Origin rule as every HTTP request
     authorize: req => !hostBlocked(req) && !(originOf(req) === 'foreign' && isLocalDirect(req)) && hosted.authorized(req),
-    onOpen(ws) {
+    onOpen(ws, req) {
       ws.send(JSON.stringify({ type: 'hello' }));
+      standingOf.set(ws, standingFor(req));
       wsClients.add(ws);
       syncWatchers();
       ws.onclose = () => { wsClients.delete(ws); syncWatchers(); };

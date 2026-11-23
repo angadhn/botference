@@ -663,6 +663,62 @@ await test('a page the Hub made is the owner\'s alone: a guest\'s lists leave it
     assert.equal((await guest('POST', route, body)).status, 404, route);
   }
   assert.equal((await owner('GET', '/page?url=' + encodeURIComponent(pageUrl))).json.title.includes('renamed'), false, 'and nothing of it reached the record');
+  // ONE query parser everywhere, and any parameter name: a guest cannot reach it by an encoded name, a second value, or another parameter
+  const enc = encodeURIComponent(pageUrl);
+  for (const [q, want] of [[`/page?%75rl=${enc}`, 404], [`/page?%75rl=https%3A%2F%2Fx.test%2F&url=${enc}`, 400], [`/page?url=${enc}&url=https%3A%2F%2Fx.test%2F`, 400],
+    [`/page?url=https%3A%2F%2Fplain.web.test%2Fshared&other=${enc}`, 404], [`/page?page=${enc}&url=https%3A%2F%2Fplain.web.test%2Fshared`, 404],
+    [`/run-figure?key=${pkey}&run=r-1&name=a.png`, 404], [`/run-figure?url=${enc}&run=r-1&name=a.png`, 404], [`/page?key=${pkey}&url=https%3A%2F%2Fplain.web.test%2Fshared`, 404]]) {
+    assert.equal((await guest('GET', q)).status, want, q);
+  }
+  assert.equal((await owner('GET', `/page?%75rl=${enc}`)).status, 200, 'the owner is served by an encoded name too: it is the same parameter');
+  assert.equal((await owner('GET', `/page?url=${enc}&url=https%3A%2F%2Fx.test%2F`)).status, 400, 'and a second url is refused for everyone');
+  for (const body of [{ page_url: pageUrl, quote: 'q', msg: { text: 'a' } }, { key: pkey, text: 'a' }, { page: pageUrl, text: 'a' }, { url: 'https://plain.web.test/shared', page_url: pageUrl, text: 'a' }]) {
+    assert.equal((await guest('POST', '/thread', body)).status, 404, JSON.stringify(Object.keys(body)));
+    assert.equal((await guest('POST', '/reply', { ...body, thread_id: '__page__' })).status, 404);
+  }
+  // EVENTS: a guest's live connection (SSE or WebSocket) never hears of a page the Hub made; the owner's does; ordinary pages reach everyone
+  const sse = who => new Promise((resolve, reject) => {
+    const events = [];
+    const rq = http.request(hosted.base + '/events', { headers: who }, res => {
+      res.on('data', c => { for (const m of String(c).matchAll(/data: (.*)\n/g)) { try { events.push(JSON.parse(m[1])); } catch { /* partial */ } } });
+      resolve({ events, close: () => rq.destroy() });
+    });
+    rq.on('error', reject); rq.end();
+  });
+  const wsc = who => new Promise((resolve, reject) => {
+    const u = new URL(hosted.base);
+    const events = [];
+    const sock = net.connect(Number(u.port), u.hostname, () => sock.write(['GET /ws HTTP/1.1', `Host: ${who.host}`, 'Upgrade: websocket', 'Connection: Upgrade',
+      'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', `Authorization: ${who.authorization}`, '', ''].join('\r\n')));
+    let buf = Buffer.alloc(0), headDone = false;
+    sock.on('data', c => {
+      buf = Buffer.concat([buf, c]);
+      if (!headDone) { const i = buf.indexOf('\r\n\r\n'); if (i < 0) return; if (!/^HTTP\/1\.1 101/.test(buf.toString('latin1', 0, 12))) return reject(new Error('no upgrade')); headDone = true; buf = buf.slice(i + 4); resolve({ events, close: () => sock.destroy() }); }
+      while (buf.length >= 2) {
+        let len = buf[1] & 0x7f, off = 2;
+        if (len === 126) { if (buf.length < 4) break; len = buf.readUInt16BE(2); off = 4; }
+        if (buf.length < off + len) break;
+        if ((buf[0] & 0x0f) === 1) { try { events.push(JSON.parse(buf.slice(off, off + len).toString())); } catch { /* not json */ } }
+        buf = buf.slice(off + len);
+      }
+    });
+    sock.on('error', reject);
+  });
+  const listeners = { ownerSse: await sse(OWNER), guestSse: await sse(GUEST), ownerWs: await wsc(OWNER), guestWs: await wsc(GUEST) };
+  assert.equal((await owner('POST', '/thread', { url: pageUrl, quote: 'owner reads', msg: { text: 'the owner comments on the hub page' } })).status, 200);
+  await owner('POST', '/page', { url: 'https://plain.web.test/shared', title: 'A shared page, retitled' });
+  await new Promise(r => setTimeout(r, 400));
+  const about = (list, needle) => list.filter(e => JSON.stringify(e).includes(needle));
+  for (const k of ['ownerSse', 'ownerWs']) {
+    assert.ok(about(listeners[k].events, HV).length >= 1, `${k} hears of the Hub page`);
+    assert.ok(about(listeners[k].events, 'plain.web.test/shared').length >= 1, `${k} hears of the ordinary page`);
+  }
+  for (const k of ['guestSse', 'guestWs']) {
+    assert.deepEqual(about(listeners[k].events, HV), [], `${k} hears nothing of the Hub page: not its address, not what was said`);
+    assert.ok(about(listeners[k].events, 'plain.web.test/shared').length >= 1, `${k} still hears of ordinary pages`);
+    assert.ok(!JSON.stringify(listeners[k].events).includes('the owner comments on the hub page'));
+  }
+  for (const l of Object.values(listeners)) l.close();
   // an ordinary annotated page is still shared
   await owner('POST', '/page', { url: 'https://plain.web.test/shared', title: 'A shared page' });
   assert.ok(Object.values((await guest('GET', '/index')).json).some(e => e.title === 'A shared page'));

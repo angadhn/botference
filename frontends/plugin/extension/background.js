@@ -148,6 +148,7 @@ const KEEPALIVE = 'bfp-keepalive';
 // remote https companion needs no new host permission: it answers the CORS
 // preflight itself, and that is what grants this fetch.
 let CONF = { base: CFG.DEFAULT_BASE, password: '', handle: '' };
+const readerOffers = CFG.createOffers();
 let identityCache = null;      // {handle, base} once /health has been asked
 
 // Every request waits for the first storage read — a fetch fired against the
@@ -993,7 +994,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try { const h = await api('GET', '/health'); if (h.ok && h.data && Number.isInteger(h.data.hub_follows)) followed = h.data.hub_follows; } catch { /* not asked: open the Hub */ }
         }
         const action = CFG.readerAction(CONF, followed);
-        if (action === 'choose') return { ok: true, action, chooser: true };
+        // the offer: the one thing that makes a reader choice acceptable from a tab (config.js createOffers)
+        if (action === 'choose') { readerOffers.offer(tabId); return { ok: true, action, chooser: true }; }
         const url = action === 'open-external' ? CFG.readerTarget(CONF).url : CFG.httpUrl(CONF.base, '/hub');
         const tab = await chrome.tabs.create({ url, active: true });
         return { ok: true, action, tabId: tab && tab.id };
@@ -1001,6 +1003,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // The answer to that question. 'hub' uses the built-in Hub; 'external' saves an address, after validating it.
       case 'reader-choice': {
         await configReady;
+        // only for a chooser this worker offered to THIS tab, once: a page that clicks the drawer's buttons on its own has no offer
+        if (!readerOffers.valid(tabId)) return { ok: false, error: 'No chooser is open. Use the feed icon, or the options page.' };
         let next;
         if (msg.choice === 'hub') next = { reader_url: '', reader_onboarding: CFG.onboardingMove(CONF.reader_onboarding, 'choose-hub') };
         else if (msg.choice === 'external') {
@@ -1008,6 +1012,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (!v.value) return { ok: false, error: 'That is not an address I can open: use https (http only for this computer).' };
           next = { reader_url: v.value, reader_onboarding: CFG.onboardingMove(CONF.reader_onboarding, 'choose-external') };
         } else return { ok: false, error: 'no such choice' };
+        readerOffers.spend(tabId);
         await CFG.writeConfig({ ...CONF, ...next });
         CONF = await CFG.readConfig();
         const url = CFG.readerTarget(CONF).url;

@@ -451,6 +451,20 @@
     const ext = readerUrlOf(cfg && cfg.reader_url).value;
     return ext ? { mode: 'external', url: ext } : { mode: 'companion-hub', url: httpUrl((cfg && cfg.base) || DEFAULT_BASE, '/hub') };
   }
+  // WHO MAY CHANGE THE READER. A web page can reach the drawer's controls (its shadow root is open) and a content script cannot tell a
+  // click from a page's pretend one by the message alone, so a reader choice is accepted only for a chooser the background itself offered
+  // (answering a click on the feed icon that really was the person's), in that one tab, once, within a few minutes. The options page is
+  // the other way to change it and needs no such offer (it writes storage itself). offers(): offer(tab) · valid(tab) · spend(tab).
+  const OFFER_MS = 5 * 60 * 1000;
+  function createOffers(now) {
+    const clock = typeof now === 'function' ? now : Date.now;
+    const open = new Map();   // tab id -> the moment its offer lapses
+    return {
+      offer: tab => { if (tab !== null && tab !== undefined) open.set(tab, clock() + OFFER_MS); },
+      valid: tab => open.has(tab) && open.get(tab) > clock(),
+      spend: tab => { const ok = open.has(tab) && open.get(tab) > clock(); open.delete(tab); return ok; },
+    };
+  }
   // What the options page saves for what was typed in the reader box: an address is the external reader (and was chosen), an empty box
   // is the companion's Hub (and was chosen); anything else is refused and nothing changes. â†’ { ok, reader_url, reader_onboarding, error }
   function readerChoiceFrom(raw, onboarding) {
@@ -516,7 +530,7 @@
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
-    READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction,
+    READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };

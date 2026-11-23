@@ -826,7 +826,12 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       noteFailure(b, 'absent', 'it has no manifest at its origin'); tally.absent++; return;
     }
     b.title = cleanText(man.json.title, 200) || b.title;
-    b.item_template = typeof man.json.item === 'string' ? cleanText(man.json.item, 300) : '';
+    // the item template says where the blyg keeps its item documents, and a post's page record may be kept under that address:
+    // a template that leads outside the blyg's own origin is refused (named), and the default is used instead
+    let templateRefused = false;
+    const template = typeof man.json.item === 'string' ? cleanText(man.json.item, 300) : '';
+    if (template && !within(b.origin, itemUrlFor({ item: template }, b.origin, '0'.repeat(26)))) { b.item_template = ''; delete man.json.item; templateRefused = true; tally.refused++; }
+    else b.item_template = template;
     b.author = cleanText(man.json.author && man.json.author.name, 200) || b.author;
     let indexUrl;
     try { indexUrl = new URL(typeof man.json.items === 'string' && man.json.items ? man.json.items : 'items/index.json', b.origin).href; } catch { indexUrl = ''; }
@@ -839,7 +844,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (idx.status !== 'ok' || !Array.isArray(idx.json.items)) { noteFailure(b, 'absent', 'it has no items index'); tally.absent++; return; }
     // the manifest and the index answered: this blyg is reachable and present
     if (canMoveBlyg(b, 'recover')) moveBlyg(b, 'recover');
-    b.failures = 0; b.absent_runs = 0; b.retry_after = 0; b.last_error = ''; b.last_ok = now();
+    b.failures = 0; b.absent_runs = 0; b.retry_after = 0; b.last_error = templateRefused ? REFUSALS.item : ''; b.last_ok = now();
 
     const entries = [];
     for (const e of idx.json.items.slice(0, LIMITS.indexEntries)) {
@@ -1075,7 +1080,9 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const recordUrlOf = rec => {
     if (within(rec.origin, rec.page)) return rec.page;
     const b = load().blygs[rec.origin];
-    return itemUrlFor({ item: b && b.item_template }, rec.origin, rec.id) || rec.page;
+    // (re-checked here, not only when the manifest was read: what is stored is not trusted either) '' = no address a record may be kept under
+    const u = itemUrlFor({ item: b && b.item_template }, rec.origin, rec.id);
+    return u && within(rec.origin, u) ? u : '';
   };
   /**
    * The post's own item document, fetched again through the same guarded getter and the same origin rule (its URL and
@@ -1130,6 +1137,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (!b) throw new Error('that blyg is not followed');
     const html = readBodyHtml(rec.key);
     if (!html.trim()) throw new Error('no text is held for that post yet: use Read here');
+    if (!recordUrlOf(rec)) throw new Error(REFUSALS.item);
     const pinned = pinnedOf(rec);
     return {
       key: rec.key, page_url: recordUrlOf(rec), display_page: rec.page, title: rec.title || rec.excerpt || 'A post', html, text_state: rec.body_state,

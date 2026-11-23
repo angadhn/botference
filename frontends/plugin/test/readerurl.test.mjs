@@ -96,7 +96,7 @@ eq('…an address that cannot be opened is refused and changes nothing', C.reade
 // ---- the drawer's chooser -----------------------------------------------------------------------------
 {
   const asked = [];
-  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+  const drawer = D.create({ cssText: '.panel{}', isTrusted: () => true, onModels: async () => ({ ok: true, current: {}, options: {} }),
     onReaderChoice: async c => { asked.push(c); return c.choice === 'external' && !/^https:/.test(c.url) ? { ok: false, error: 'That is not an address I can open' } : { ok: true }; } });
   drawer.setConn(true); drawer.setAuthor('reader');
   drawer.setPage({ url: 'https://example.com/a', title: 'T', threads: [], page_chat: [] });
@@ -117,11 +117,40 @@ eq('…an address that cannot be opened is refused and changes nothing', C.reade
   eq('the pop-overs, named (the chooser is one of them)', D.POPOVERS.includes('reader'), true);
 }
 
+// ---- a page cannot choose for you ------------------------------------------------------------------------------
+{
+  // the drawer: a click a page made up (isTrusted false: every event a script dispatches) does not open a reader or change which one
+  const asked = []; const opened = [];
+  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+    onOpenFollowing: () => opened.push('icon'), onReaderChoice: async c => { asked.push(c); return { ok: true }; } });
+  drawer.setConn(true); drawer.setAuthor('reader');
+  drawer.setPage({ url: 'https://example.com/a', title: 'T', threads: [], page_chat: [] });
+  drawer.open('comments'); await tick(5);
+  drawer.openReaderChooser();
+  const root = drawer.shadow;
+  const click = sel => root.querySelector(sel).dispatchEvent(new w.Event('click', { bubbles: true, composed: true }));
+  eq('the events a script dispatches are not trusted (the browser says so)', new w.Event('click').isTrusted === true, false);
+  root.querySelector('.reader-input').value = STUDIO;
+  click('[data-act="reader-ext"]'); click('[data-act="reader-hub"]'); click('[data-act="following"]'); await tick(5);
+  eq('a made-up click on the chooser\'s buttons or the feed icon does nothing', [asked.length, opened.length, drawer.readerChooserOpen()], [0, 0, true]);
+  const offers = C.createOffers(() => 1000);
+  ok('background: no offer, refused', !offers.valid(7) && offers.spend(7) === false);
+  offers.offer(7);
+  ok('offered to a tab: valid for that tab only', offers.valid(7) && !offers.valid(8));
+  ok('spent once: the second use is refused', offers.spend(7) === true && offers.spend(7) === false && !offers.valid(7));
+  let t = 0; const timed = C.createOffers(() => t);
+  timed.offer(3); t = C.OFFER_MS - 1; ok('valid until it lapses', timed.valid(3)); t = C.OFFER_MS + 1; ok('...and not after', !timed.valid(3) && timed.spend(3) === false);
+  ok('a tab with no id gets no offer', (() => { const o = C.createOffers(() => 1); o.offer(null); o.offer(undefined); return !o.valid(null) && !o.valid(undefined); })());
+  const bgs = ext('background.js');
+  ok('background: a choice needs a valid offer for this tab, and spends it on success', /case 'reader-choice':[\s\S]*if \(!readerOffers\.valid\(tabId\)\) return \{ ok: false[\s\S]*readerOffers\.spend\(tabId\);[\s\S]*CFG\.writeConfig/.test(bgs));
+  ok('background: the offer is made only when the answer is "choose"', /if \(action === 'choose'\) \{ readerOffers\.offer\(tabId\); return/.test(bgs));
+}
+
 // ---- the wiring ---------------------------------------------------------------------------------------------------
 {
   const bg = ext('background.js'), content = ext('content.js'), options = ext('options.js'), html = ext('options.html');
   ok('background: the feed icon is decided by readerAction', /case 'open-reader':[\s\S]*CFG\.readerAction\(CONF, followed\)/.test(bg));
-  ok('background: the chooser is offered only when the action says choose', /if \(action === 'choose'\) return \{ ok: true, action, chooser: true \}/.test(bg));
+  ok('background: the chooser is offered only when the action says choose', /if \(action === 'choose'\) \{ readerOffers\.offer\(tabId\); return \{ ok: true, action, chooser: true \}; \}/.test(bg));
   ok('background: an external reader opens at readerTarget', /action === 'open-external' \? CFG\.readerTarget\(CONF\)\.url/.test(bg));
   ok('background: the answer is validated and remembered through the named moves', /case 'reader-choice':[\s\S]*CFG\.readerUrlOf\(msg\.url\)[\s\S]*CFG\.onboardingMove\(CONF\.reader_onboarding, 'choose-external'\)[\s\S]*CFG\.writeConfig/.test(bg));
   ok('content: the icon asks the background, and shows the chooser only when told to', /onOpenFollowing: async \(\) => \{ const r = await bg\(\{ t: 'open-reader' \}\); if \(r && r\.chooser\) drawer\.openReaderChooser\(\); \}/.test(content));

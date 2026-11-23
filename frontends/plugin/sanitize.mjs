@@ -192,11 +192,13 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, 
   let dropped = 0;
   let size = 0;
   let tooBig = false;
+  // → whether it was written (a piece that would cross the limit is not, and nothing after it is)
   const push = (s) => {
-    if (tooBig) return;
+    if (tooBig) return false;
     size += s.length;
-    if (size > max) { tooBig = true; return; }
+    if (size > max) { tooBig = true; return false; }
     out.push(s);
+    return true;
   };
   const close = (name) => { if (truncate) out.push(`</${name}>`); else push(`</${name}>`); };
   const popTo = (n) => { while (stack.length > n) close(stack.pop()); };
@@ -208,7 +210,8 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, 
     }
     return -1;
   };
-  const open = (name, attrs) => { push(`<${name}${attrs}>`); stack.push(name); };
+  // the stack holds only what was WRITTEN: a start tag refused for the size limit is not on it, so its end tag is never written alone
+  const open = (name, attrs) => { if (push(`<${name}${attrs}>`)) stack.push(name); };
   // text or any non-table element directly inside a table, a section or a row would be moved out of it by a browser: give it a cell
   const intoCell = () => {
     if (top() === 'colgroup') close(stack.pop());

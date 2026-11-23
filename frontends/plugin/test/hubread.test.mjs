@@ -226,10 +226,13 @@ test('fetches stay origin-scoped and counted; fetching off fetches nothing', asy
   const k2 = f2.keyFor(A, idOf(5));
   assert.ok(k2, 'the post is held');
   mode = 'template';
+  const before = r.web.requests.length;
   await f2.refresh();
+  assert.match(f2.listBlygs()[0].last_error, /outside the blyg's own origin/, 'a template that leads outside the origin is refused, with the reason');
+  assert.ok(!r.web.requests.slice(before).some(u => u.startsWith('https://third.web.test')), 'nothing outside the origin was asked');
   const third = r.web.requests.length;
-  await assert.rejects(() => f2.fetchPost(k2), /outside the blyg's own origin/);
-  assert.equal(r.web.requests.length, third, 'nothing outside the origin was asked');
+  assert.equal((await f2.fetchPost(k2)).meta.id, idOf(5), 'the default address (inside the origin) is used instead');
+  assert.ok(!r.web.requests.slice(third).some(u => u.startsWith('https://third.web.test')), 'and still nothing outside it');
   // served from somewhere else after a redirect
   mode = 'normal';
   await f2.refresh();
@@ -540,5 +543,40 @@ test('holding a post from the Hub\'s own text makes ZERO outbound requests; a ca
   const k2 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...post, page_url: page }, replace: true });
   assert.equal(k2.text_from, 'item-document');
   assert.match(store.readSnapshot(store.pageKey(page)), /Some invented words/);
+  r.done();
+});
+
+test('a manifest cannot move where a post\'s record is kept: an item template leading outside the origin is refused, when read and when used', async () => {
+  const r = rig();
+  const VICTIM = 'https://victim.web.test/blyg/';
+  const site = r.web.add(A, { title: 'Squatter' });
+  const id = idOf(1);
+  site.put(doc(id, { title: 'Squat', page: 'https://elsewhere.web.test/permalink' }));   // a page outside the origin: the record needs the item address
+  const orig = r.web.get;
+  let template = `${VICTIM}items/{id}.json`;
+  const f = F.createFollowing({ file: path.join(r.dir, 'sq.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
+    get: async (u, o) => (u === `${A}blyg.json` ? { status: 200, url: u, text: JSON.stringify({ blyg: '0.4', title: 't', item: template }) }
+      : u.startsWith(A + 'items/') ? orig(u, o) : orig(u, o)) });
+  f.confirmImport([{ origin: A }]);
+  const s = await f.refresh();
+  assert.ok(s.refused >= 1);
+  assert.match(f.listBlygs()[0].last_error, /outside the blyg's own origin/, 'the template is refused, with a named reason');
+  const stored = JSON.parse(fs.readFileSync(path.join(r.dir, 'sq.json'), 'utf8'));
+  assert.equal(stored.blygs[A].item_template, '', 'and not kept');
+  // with the template refused, the default (inside the origin) is used: the post is held, and its record is under ITS OWN document address
+  const key = f.keyFor(A, id);
+  assert.ok(key);
+  assert.equal(f.recordUrlOf(f.itemByKey(key)), `${A}items/${id}.json`);
+  assert.ok(!f.heldPost(key).page_url.startsWith(VICTIM));
+  // a template already stored by an older version is not trusted either
+  stored.blygs[A].item_template = `${VICTIM}items/{id}.json`;
+  fs.writeFileSync(path.join(r.dir, 'sq.json'), JSON.stringify(stored));
+  const again = F.createFollowing({ file: path.join(r.dir, 'sq.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} }, get: orig });
+  const k2 = again.keyFor(A, id);
+  assert.equal(again.recordUrlOf(again.itemByKey(k2)), '', 'no address a record may be kept under');
+  assert.throws(() => again.heldPost(k2), /outside the blyg's own origin/);
+  assert.equal(again.view().entries.find(e => e.head.id === id).head.record_url, '');
+  // a template inside the origin is fine
+  template = 'docs/{id}.json';
   r.done();
 });

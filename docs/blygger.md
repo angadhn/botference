@@ -765,7 +765,11 @@ move an element of the page around it. A real browser's parser is run over a cor
 (`test/sanitize-browser.test.mjs`; it is skipped, with a message, when no Chrome or Brave is found).
 
 **Who sees it.** A page the Hub made is the owner's alone: a guest's page lists leave it out, its address answers as if there were nothing
-there, and nothing may be written to it. So is the theme folder's address.
+there, and nothing may be written to it, whichever parameter names it (an address or a page key, in a query or a body); a request that
+carries `url` twice is refused. Live events about it (the event streams a page keeps open) reach the owner's connections only. So is the
+theme folder's address.
+
+An error nothing caught is logged and the companion goes on serving; only a failure before it is listening, or to bind its port, is fatal.
 
 **What is stored, and for whom.** The sanitised text of every followed post (at most 40 KB each, with "Read here for the
 rest" when it was longer) is kept in a file of its own in the companion's data folder (`following-bodies/`), removed with

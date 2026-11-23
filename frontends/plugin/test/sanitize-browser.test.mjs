@@ -71,6 +71,34 @@ test('a raw-text element ignores a slash, as a browser does: <script/> runs on t
   assert.equal(sanitizeArticle('a<iframe/>x</iframe>b').html, 'ab');
 });
 
+test('truncating at the size limit never writes an end tag whose start tag was not written', () => {
+  const t = (h, max) => sanitizeArticle(h, { max, truncate: true }).html;
+  assert.equal(t('<p>aaaa</p><div>bbbb</div>', 10), '<p>aaaa</p>');
+  assert.equal(t('<p>aaaa</p><div>bbbb</div>', 40), '<p>aaaa</p><div>bbbb</div>');
+  for (let max = 0; max < 60; max++) {
+    for (const src of ['<p>aaaa</p><div>bbbb</div>', '<ul><li>a<li>b</ul><table><tr><td>x</table>', '<div><p>one<p>two</div><blockquote><p>q</p></blockquote>']) {
+      const out = t(src, max);
+      // balanced: every end tag closes the element most recently opened
+      const seen = [];
+      for (const m of out.matchAll(/<(\/?)([a-z0-9]+)[^>]*>/g)) {
+        const name = m[2];
+        if (['br', 'hr', 'img', 'wbr', 'col'].includes(name)) continue;
+        if (m[1]) assert.equal(seen.pop(), name, `${JSON.stringify(src)} max ${max}: ${out}`); else seen.push(name);
+      }
+      assert.deepEqual(seen, [], `${JSON.stringify(src)} max ${max}: ${out}`);
+    }
+  }
+});
+
+test('anything but a table part inside a table, a section or a row is given a cell (a browser would move it out of the table)', () => {
+  const s = h => sanitizeArticle(h, { landmarks: false }).html;
+  assert.equal(s('<table><div>X</div><tr><td>y</td></tr></table>Z'), '<table><tr><td><div>X</div></td></tr><tr><td>y</td></tr></table>Z');
+  assert.equal(s('<table><tr><span>x</span></tr></table>'), '<table><tr><td><span>x</span></td></tr></table>');
+  assert.equal(s('<table><tbody><a href=https://a.test/>l</a></tbody></table>').replace(/ rel="noreferrer noopener" target="_blank"/, ''), '<table><tbody><tr><td><a href="https://a.test/">l</a></td></tr></tbody></table>');
+  assert.equal(s('<table><colgroup><col><p>t</p></colgroup></table>'), '<table><colgroup><col></colgroup><tr><td><p>t</p></td></tr></table>');
+  assert.equal(s('<table><td>a</td></table>'), '<table><tr><td>a</td></tr></table>');
+});
+
 test('HTML\'s implied end tags are applied by the sanitiser itself: li, dt/dd, p, headings, tables, links', () => {
   const s = h => sanitizeArticle(h, { landmarks: false }).html;
   assert.equal(s('<ul><li><div><li>x</div></li></ul>AFTER'), '<ul><li><div></div></li><li>x</li></ul>AFTER');

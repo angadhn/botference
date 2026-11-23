@@ -1930,6 +1930,8 @@
   // closes whichever was — so which one is a single named value (POPOVERS),
   // kept in D.popover and changed only by setPopover. (It was four yes/no
   // flags, and two of them could be up at once.)
+  // drawer actions that only a real click may do (a page can dispatch clicks into the open shadow root); see isTrustedEvent
+  const TRUSTED_ONLY = new Set(['following', 'reader-hub', 'reader-ext']);
   const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects', 'reader']);
   // A BUTTON THAT DOES ONE THING AND SAYS HOW IT WENT — send review, make
   // artifact, publish (which ask first) and continue in council (which does
@@ -2440,6 +2442,9 @@
   function create(opts) {
     opts = opts || {};
     const cb = name => (...args) => (typeof opts[name] === 'function' ? opts[name](...args) : undefined);
+    // Was this click the person's? The browser says so (isTrusted) and a page's dispatchEvent cannot. A test harness has no real clicks and
+    // passes its own answer (opts.isTrusted).
+    const isTrustedEvent = e => (typeof opts.isTrusted === 'function' ? !!opts.isTrusted(e) : !!(e && e.isTrusted === true));
     // the companion's origin, for the one kind of link that names a file on it
     if (opts.filesBase) FILES_BASE = String(opts.filesBase).replace(/\/+$/, '');
 
@@ -8625,6 +8630,8 @@ ${bubbleShellHtml()}`;
         if (act === 'mention') { insertMention(btn.dataset.handle); return; }
         const target = btn.dataset.target;
         const doAct = ACTS[act];
+        // a click a page made up is not the person's: the actions that open a reader or change which one, refuse it
+        if (TRUSTED_ONLY.has(act) && !isTrustedEvent(e)) return;
         if (doAct) { doAct(btn, target, e); return; }
         // …and the arms that are NOT a name and a call, which is why they are
         // still written out: an optimistic switch that renders before it
