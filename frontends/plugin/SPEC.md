@@ -13033,3 +13033,94 @@ third-party cookie blocking (Brave's default; Chrome with the setting on) may st
 an option the owner may choose and not a default, a Cloudflare service token held by the extension. That is a long-lived
 password under another name, and the companion refuses service tokens as it stands, so choosing it also means a policy change
 there. Nothing in this amendment implements it.
+
+## Amendment (2026-11-23): Publish as blyg
+
+The owner turns their own comment(s) on a page into a short post on their own site, from one
+action on the thread. It exists so that a comment written while reading can be a published short
+note without leaving the page, and it is built so that a hostile page cannot put anything into the
+note, a guest cannot reach any of it, and nothing goes live without an explicit click.
+
+### Who, what, where
+
+- **On** a thread whose first message the OWNER typed in the drawer (`provenance: 'owner-typed'`, set
+  by the companion), addressed to no agent (no `route`, no `@claude`/`@codex`/`@all`), not a struck
+  passage. A paper-plane button on the card; a published thread shows "published" (a link when the
+  companion recorded an address) instead, and is never offered again (publishing it as an edit is not
+  available: the companion refuses with a message).
+- **Two scopes.** `one`: just this thread. `above`: this thread and the owner's earlier unpublished
+  eligible threads on the same page, in page order, as one post (at most 12).
+- **`/tk` placeholders.** A filled one counts as the owner's text (an agent's fill loses live wikilinks);
+  one that is pending, failed or unknown, or a leftover `[TK]` mark outside code, blocks publishing
+  with a plain sentence.
+- **The post** (`blyg-note.mjs`): front matter from the owner's template, then for each thread the quoted
+  passage and the owner's words. A page that is a Blygger post (strictly validated id, origin, version):
+  the passage as `![[<id> | label]]` with `> ` lines directly under it when it passes the post's check,
+  `blyg_sources`, and `blyg_stub_of` (origin, id, the version read) when the page is a response. An
+  ordinary web page: the plain web quote whose last paragraph is the bare URL (and `blyg_stub_of: {url}`
+  only when the owner marked the page a response). The title is the first eight words of the comment;
+  the slug is `[a-z0-9-]`, never a reserved name, made unique against the folder's files and
+  permalinks. For one comment, an earlier published post from the same page is linked ("Earlier: …").
+- **The default template** (editable) produces `title`, `created`, `released` (today, in the owner's
+  zone), `blyg: true`, no tags, `permalink: /b/<slug>`, then `${blyg_keys}`.
+
+### The setting: "Where my blyg lives" (owner only, on the companion)
+
+`blyg_home` in config.json, edited at `GET /blyg-home/page` (or by hand): `folder` (absolute, exists,
+inside a git work tree, not in `.git`), `filename` (pattern with `${slug}` and `${date}`, ending in
+`.md`), `template`, `escape` (`liquid` default, or `none`), `timezone`, `env_pass` (names), and
+`commands`: `plan`, `apply`, `publish` and an optional `discard` (undo what plan staged), each an argv
+list with `{note}` (the note's path relative to the work tree, ONE argument; `{note_abs}` is the
+absolute path). Run in the work tree, never through a shell, in their own process group, with stdin
+closed, a time limit (plan 120 s, apply 900 s, publish 1800 s, discard 60 s), a minimal environment
+(PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR when set; TERM=dumb, NO_COLOR=1, CI=1,
+GIT_TERMINAL_PROMPT=0; plus the owner's `env_pass`), and captured output (stopped past 4 MiB, kept to
+64 KiB, ANSI and control characters removed). A shell, `env`, `sudo` or `xargs` as the program is
+refused. Nothing runs unless all of it is valid; it is validated when saved and before every step, and a
+change after a run started stops that run's next step.
+
+### The run (`blyg-run.mjs`)
+
+One field, `run.mode`, one of `RUN_MODES`, changed only by `RunBook#move`, which refuses a move the table
+does not list:
+
+```
+idle → drafted → planning → planned → applying → applied → publishing → published
+          \         \          \         \          \           \
+           cancelled  failed    cancelled failed     failed      failed       (any live mode → interrupted on restart)
+failed → planning | applying | publishing (only the step that failed, by the owner's click) | abandoned
+interrupted → abandoned          published | cancelled | abandoned → drafted (a new run)
+```
+
+One run at a time for the whole companion (a second start is refused, not queued). Step A (start): the note
+is written inside the notes folder (real path inside it; never over an existing file; never through a link;
+`O_EXCL|O_NOFOLLOW`), `plan` runs, nothing else is touched. Step B: the drawer shows the note and the plan.
+Step C (confirm, with the run's id and token): `apply`, then `publish`, each step's outcome kept with its
+output; a failure names the step and stops; nothing is retried by itself. Cancel removes the draft only if
+this run made it and it is unchanged (calling `discard` first when one is set). Abandon before apply does
+the same; after apply nothing is touched. The record is a file (`blyg-publish-run.json`, mode 0600); a
+companion restart turns every unfinished run into `interrupted`, which offers only "show" and "abandon".
+After `published`, each thread that went in gets `blyg_published: {at, title, permalink, address?}`
+(`address` only if the command printed a URL whose path is the post's permalink).
+
+### Routes and events (all owner-only; a guest gets 403, an anonymous caller 401)
+
+`GET /blyg-home`, `GET /blyg-home/page`, `POST /blyg-home`, `GET /blyg-publish/run`,
+`POST /blyg-publish/{start,confirm,retry,cancel,abandon}`. JSON only (a form or `text/plain` body is 415);
+the Origin and Host rules at the top of the handler apply. `confirm`, `retry`, `cancel` and `abandon` need
+the run's id and token, which only the owner's client was ever handed. The event `{type:'blyg-publish',
+run:{id, mode}}` is in `OWNER_ONLY_EVENTS`: a guest's SSE and WebSocket never carry it.
+
+### Extension
+
+`config.js` names the drawer's own views (`PUB_VIEWS`, moved by `pubMove`) and the worker's operations
+(`BLYG_PUBLISH_OPS`). The worker's `blyg-publish` message forwards only those; the general `api` message
+refuses every `/blyg-publish` and `/blyg-home` path; `confirm` and `retry` go through only while the tab
+holds a one-use offer opened by a start or a resume from that tab (the shape `reader-choice` has). Every
+dialog button is a `data-act` reached only by a trusted click inside the closed shadow root.
+
+### Tests
+
+`test/blyg-note.test.mjs`, `test/blyg-home.test.mjs`, `test/blyg-run.test.mjs`,
+`test/blyg-publish-server.test.mjs` (local and hosted, SSE and WebSocket), `test/blygpublish-drawer.test.mjs`,
+`test/blygpublish-background.test.mjs`; the fake command set is `test/fixtures/blyg-fake-cmd.mjs`.
