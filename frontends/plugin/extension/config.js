@@ -525,12 +525,42 @@
     try { const a = JSON.parse(String(text)).auth; return a === 'password' || a === 'access' || a === 'either' ? a : ''; } catch (_) { return ''; }
   }
   const showPasswordField = mode => mode !== 'access';
-  // WHICH PASSWORD, IF ANY, IS SENT. A host that has answered "access" (Cloudflare's sign-in, or GET /auth-mode saying so) is remembered
-  // for that address (KEYS.learned) and is never sent the stored password again, in a header or on the socket's address. Only 'access' is
-  // ever remembered, so no later answer can lower it: a host that once said access stays one until the person changes the setting by
-  // hand on the options page (its Save forgets it, and the page asks the companion afresh).
+  // WHAT THIS COMPANION USES, and so whether the saved password may be sent to it: ONE list, one move function, one record per address.
+  //   unknown   not asked yet, or the answer was not the companion's own (a captive portal, a proxy, an http hop): no password is sent
+  //   asking    GET /auth-mode is under way (without a password)
+  //   password  the companion itself answered, and it is not Access (password or either): the password is sent
+  //   access    the companion itself said Access: the password is never sent again
+  // Only an answer the companion gave ITSELF moves the mode (companionAnswer): JSON from the companion, never a bare redirect or a page.
+  // 'access' is the only mode written down (KEYS.learned, for that address) and no answer lowers it: it is left only by `forget`, which
+  // is the person's own Save on the options page. A password companion is therefore never locked out by something in the way.
+  const COMPANION_MODES = Object.freeze(['unknown', 'asking', 'password', 'access']);
+  const COMPANION_MOVES = Object.freeze({
+    ask: { from: ['unknown'], to: 'asking' },
+    sayPassword: { from: ['asking'], to: 'password' },
+    sayAccess: { from: ['unknown', 'asking', 'password'], to: 'access' },
+    unclear: { from: ['asking'], to: 'unknown' },
+    forget: { from: COMPANION_MODES, to: 'unknown' },
+  });
+  const canCompanionMove = (mode, move) => !!COMPANION_MOVES[move] && COMPANION_MOVES[move].from.indexOf(mode) !== -1;
+  function companionMove(mode, move) {
+    if (!COMPANION_MOVES[move]) throw new Error('companion: no such move ' + move);
+    if (!canCompanionMove(mode, move)) throw new Error('companion: cannot ' + move + ' while ' + mode);
+    return COMPANION_MOVES[move].to;
+  }
+  // what an answer says the companion uses: 'access' | 'password' | 'unclear'. Only the companion's own JSON counts.
+  function companionAnswer(res, text) {
+    const status = Number(res && res.status) || 0;
+    if (!/application\/json/i.test(String((res && res.contentType) || '')) || status >= 500 || status < 200) return 'unclear';
+    let d = null;
+    try { d = JSON.parse(String(text)); } catch (_) { return 'unclear'; }
+    if (!d || typeof d !== 'object') return 'unclear';
+    if (status === 401 && d.signin === true) return 'access';
+    if (status === 200 && d.auth === 'access') return 'access';
+    return 'password';   // its own answer, and not Access (password, either, or an older companion that has no /auth-mode)
+  }
   const learnedOf = (rec, base) => (rec && rec.mode === 'access' && rec.base === (normalizeBase(base) || DEFAULT_BASE) ? 'access' : '');
-  const passwordFor = cfg => (cfg && cfg.auth_learned === 'access' ? '' : clean(cfg && cfg.password));
+  // the password that may be sent: this machine's companion gets it as always; a remote one only once it has said it uses one
+  const passwordToSend = (cfg, mode) => ((cfg && isLocal(cfg.base)) || mode === 'password' ? clean(cfg && cfg.password) : '');
 
   const httpUrl = (base, path) =>
     (normalizeBase(base) || DEFAULT_BASE) + String(path == null ? '' : path);
@@ -591,7 +621,8 @@
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,
     commandRoute, commandError,
-    REPLY_KINDS, requestInit, replyKind, authModeOf, showPasswordField, passwordFor, learnedOf, rememberAccess, forgetAccess,
+    REPLY_KINDS, requestInit, replyKind, authModeOf, showPasswordField, passwordToSend, learnedOf, rememberAccess, forgetAccess,
+    COMPANION_MODES, COMPANION_MOVES, canCompanionMove, companionMove, companionAnswer,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,

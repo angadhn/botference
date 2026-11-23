@@ -183,7 +183,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (before.pdf !== CONF.pdf) applyPdfRules(CONF.pdf !== false);
     if (before.base === CONF.base && before.password === CONF.password &&
         before.handle === CONF.handle && before.auth_learned === CONF.auth_learned) return CONF;
-    if (before.base !== CONF.base) modeProbe = null;
+    // the person's own Save on the options page forgets what was learned about this companion
+    if (before.auth_learned === 'access' && CONF.auth_learned !== 'access' && companionNow().mode === 'access') moveCompanion('forget');
     identityCache = null;
     indexCache = {};
     indexAt = 0;
@@ -232,29 +233,50 @@ function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsStat
 // the password, which way it signs people in (GET /auth-mode, or Cloudflare's sign-in answer); "access" is remembered
 // (config.js passwordFor) and the password is not sent to it again. The answer is only ever used to WITHHOLD: nothing it says can make
 // the extension send a password it had learned not to.
-let modeProbe = null;          // { base, p } : the one question asked for this address
-async function learnAccess() {
-  if (CONF.auth_learned === 'access') return;
-  CONF = { ...CONF, auth_learned: 'access' };
-  await CFG.rememberAccess(CONF.base);
+// The record is one per address; its mode is one of CFG.COMPANION_MODES, changed only by moveCompanion. Only the companion's OWN answer
+// moves it (a captive portal's redirect or page changes nothing: the password is then withheld for that request and the question is
+// asked again a little later). 'access' alone is written down.
+const ASK_AGAIN_MS = 5000;
+let companion = { base: '', mode: 'unknown', askedAt: 0, pending: null };
+function companionNow() {
+  if (companion.base !== CONF.base) companion = { base: CONF.base, mode: CONF.auth_learned === 'access' ? 'access' : 'unknown', askedAt: 0, pending: null };
+  return companion;
 }
-async function settleMode() {
+function moveCompanion(move) {
+  const was = companionNow();
+  const mode = CFG.companionMove(was.mode, move);
+  companion = { ...was, mode };
+  if (mode === 'access' && was.mode !== 'access') CFG.rememberAccess(was.base);
+  return mode;
+}
+// a reply that is the companion's own and says Access (its 401 {signin:true}, or /auth-mode saying so)
+function noteCompanionAnswer(res, text) {
+  const answer = CFG.companionAnswer({ status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
+  if (answer === 'access' && CFG.canCompanionMove(companionNow().mode, 'sayAccess')) moveCompanion('sayAccess');
+  return answer;
+}
+async function askCompanion() {
   await configReady;
-  if (!CONF.password || CFG.isLocal(CONF.base) || CONF.auth_learned === 'access') return;
-  if (!modeProbe || modeProbe.base !== CONF.base) {
-    const base = CONF.base;
-    modeProbe = { base, p: (async () => {
-      try {
-        const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
-        const text = await res.text().catch(() => '');
-        if (CFG.authModeOf({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text) === 'access') await learnAccess();
-      } catch { /* unreachable: the request itself will say so */ }
-    })() };
-  }
-  await modeProbe.p;
+  if (!CONF.password || CFG.isLocal(CONF.base)) return;
+  const c = companionNow();
+  if (c.mode === 'password' || c.mode === 'access') return;
+  if (c.mode === 'asking') return c.pending;
+  if (c.askedAt && Date.now() - c.askedAt < ASK_AGAIN_MS) return;       // an unclear answer: not again at once
+  moveCompanion('ask');
+  companion.askedAt = Date.now();
+  const base = CONF.base;
+  companion.pending = (async () => {
+    let answer = 'unclear';
+    try {
+      const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
+      answer = CFG.companionAnswer({ status: res.status, contentType: res.headers && res.headers.get('content-type') }, await res.text().catch(() => ''));
+    } catch { /* unreachable: the request itself will say so */ }
+    if (companion.base !== base || companion.mode !== 'asking') return;   // the setting changed meanwhile
+    moveCompanion(answer === 'access' ? 'sayAccess' : answer === 'password' ? 'sayPassword' : 'unclear');
+  })();
+  await companion.pending;
 }
 function denySocket() {
-  learnAccess();
   if (!CFG.canConnMove(wsState, 'deny')) return;
   const was = wsState;
   moveSocket('deny');
@@ -358,8 +380,8 @@ async function api(method, path, body) {
   path = CFG.commandRoute(method, path, body);
   // a remote companion: the browser's cookies ride along (Cloudflare Access), and a redirect is reported, never followed
   const init = { method: method || 'GET', cache: 'no-store', ...CFG.requestInit(CONF.base) };
-  await settleMode();   // before any password leaves: does this companion use one?
-  const headers = CFG.authHeaders(CFG.passwordFor(CONF), CONF.handle);
+  await askCompanion();   // before any password leaves: does this companion use one?
+  const headers = CFG.authHeaders(CFG.passwordToSend(CONF, companionNow().mode), CONF.handle);
   if (body !== undefined && body !== null) {
     headers['content-type'] = 'application/json';
     init.body = JSON.stringify(body);
@@ -396,7 +418,7 @@ async function api(method, path, body) {
   // (only a remote companion can be behind Access: the one on this machine answers for itself)
   const kind = CFG.isLocal(CONF.base) ? 'data'
     : CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
-  if (kind === 'signin') { denySocket(); return { ok: false, signin: true, status: res.status, error: CFG.CONN_NOTICE.signin }; }
+  if (kind === 'signin') { noteCompanionAnswer(res, text); denySocket(); return { ok: false, signin: true, status: res.status, error: CFG.CONN_NOTICE.signin }; }
   if (kind === 'refused') return { ok: false, status: res.status, error: 'refused — this account is not allowed on this companion' };
   if (wsState === 'signin') resumeAfterSignin();   // the companion answered: whatever signed in worked
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
@@ -499,9 +521,9 @@ async function openSocket() {
   // disconnected and schedule a second retry on top of the live one.
   let sock;
   try {
-    await settleMode();
+    await askCompanion();
     if (ws) return;
-    sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CFG.passwordFor(CONF), CONF.handle));
+    sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CFG.passwordToSend(CONF, companionNow().mode), CONF.handle));
   } catch {
     moveSocket('fail');
     scheduleRetry();

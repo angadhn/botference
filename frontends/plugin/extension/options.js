@@ -126,8 +126,8 @@
   // UNSAVED values is the whole point.
   async function health(cfg) {
     // (a password typed for a companion that says "access" is not sent to it: the mode is asked first, without it)
-    const mode = await paintAuthMode(CFG.normalizeBase(cfg.base) || CFG.DEFAULT_BASE);
-    const headers = CFG.authHeaders(mode === 'access' ? '' : cfg.password, cfg.handle);
+    const { answer } = await paintAuthMode(CFG.normalizeBase(cfg.base) || CFG.DEFAULT_BASE);
+    const headers = CFG.authHeaders(CFG.passwordToSend({ base: cfg.base, password: cfg.password }, answer === 'password' ? 'password' : answer), cfg.handle);
     let res;
     try {
       res = await fetch(CFG.httpUrl(cfg.base, '/health'),
@@ -149,14 +149,18 @@
   // else; Cloudflare's own sign-in answer means Access is in front). Access: there is no password to type, so the box is hidden.
   async function paintAuthMode(base) {
     let mode = '';
+    let answer = 'unclear';
     try {
       const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
-      mode = CFG.authModeOf({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, await res.text().catch(() => ''));
+      const text = await res.text().catch(() => '');
+      const r = { type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') };
+      mode = CFG.authModeOf(r, text);                // a hint for what to show (a sign-in page counts as "access" here)
+      answer = CFG.companionAnswer(r, text);          // what the companion itself said: the only thing that is remembered
     } catch { mode = ''; }
     const box = el('password-field');
     if (box) box.hidden = !CFG.showPasswordField(mode);
     // an Access companion is remembered, so the saved password is withheld from it (config.js passwordFor); the person may clear it
-    if (mode === 'access' && !CFG.isLocal(base)) await CFG.rememberAccess(base);
+    if (answer === 'access' && !CFG.isLocal(base)) await CFG.rememberAccess(base);
     const stale = el('clear-password');
     if (stale) stale.hidden = !(mode === 'access' && el('password').value);
     const note = el('access-note');
@@ -168,7 +172,7 @@
     }
     const so = el('signin-open');
     if (so) so.hidden = mode !== 'access' && mode !== 'either';
-    return mode;
+    return { mode, answer };
   }
 
   async function load() {
@@ -287,7 +291,9 @@
   // as configured — a 403 here is the feature working, and says so.
   async function keysApi(method, path, body) {
     const cfg = await CFG.readConfig();
-    const headers = CFG.authHeaders(CFG.passwordFor(cfg), cfg.handle);
+    // the mode is asked first, here too: a password goes only to a companion that has said it uses one (or to this machine's)
+    const asked = CFG.isLocal(cfg.base) ? { answer: 'password' } : await paintAuthMode(CFG.normalizeBase(cfg.base) || CFG.DEFAULT_BASE);
+    const headers = CFG.authHeaders(CFG.passwordToSend(cfg, asked.answer), cfg.handle);
     const init = { method, cache: 'no-store', ...CFG.requestInit(cfg.base) };
     if (body) {
       init.body = JSON.stringify(body);
