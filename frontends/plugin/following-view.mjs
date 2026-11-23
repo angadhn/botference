@@ -45,6 +45,10 @@ nav.filters a[aria-current=page]{background:var(--acc);color:var(--bg);border-co
 article.entry{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .9rem;margin:.6rem 0}
 .meta{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.title{font-weight:600;margin:.3rem 0;font-size:1.05rem}
 .title a{color:inherit;text-decoration:none}.title a:hover{text-decoration:underline}
+.tick,.untick{width:1.15rem;height:1.15rem;margin:0 .1rem 0 0;cursor:pointer;accent-color:var(--acc);flex:none}
+.aline{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem;padding:.4rem .2rem;border-bottom:1px solid var(--line)}
+.aline .title{margin:0;font-size:1em;flex:1 1 14rem}
+.caught-up{padding:.8rem 1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--card)}
 .dot{display:inline-block;width:.55rem;height:.55rem;border-radius:50%;background:var(--new)}
 .kind{font-size:.7em;letter-spacing:.06em;text-transform:uppercase;padding:0 .4rem;border:1px solid var(--line);border-radius:.3rem;color:var(--mut)}
 .vlines{margin:.3rem 0;font-size:.88em;color:var(--mut)}.vlines div{margin:.1rem 0}
@@ -78,7 +82,8 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 }
 `;
 
-const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background' });
+const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background', archive: 'Archive' });
+const BACKFILL_WORDS = Object.freeze({ unknown: '', more: 'more to fetch', caught_up: 'caught up', stopped: 'stopped: too many read posts to keep track of, nothing more is fetched' });
 const INBOX_WORDS = Object.freeze({ off: 'no inbox is set', pending: 'not asked yet', ok: 'up to date', unauthorised: 'the inbox refused the token', unreachable: 'the inbox could not be reached', paused: 'paused: Blygger checks are off', unreadable: 'the inbox answered something this page cannot read' });
 const openBtn = (key, label = 'Open') => `<button type="button" class="btn" data-act="open" data-key="${escHtml(key)}">${escHtml(label)}</button>`;
 
@@ -116,13 +121,32 @@ function entry(e) {
   const pins = (h.pinned_list || []).length ? `<div class="mut">pinned: ${h.pinned_list.map(n => `v${Number(n)}`).join(', ')}</div>` : '';
   const k = escHtml(h.key);
   const title = h.title ? `<div class="title hub-entry-title"><a href="#e-${k}" data-act="read" data-key="${k}">${t(h.title, 200)}</a></div>` : '';
-  const menu = `<details class="menu"><summary aria-label="more actions">\u22ef</summary><div class="pop">${h.read === 'new' ? `<button type="button" data-act="see" data-key="${k}">Mark seen</button>` : `<button type="button" data-act="renew" data-key="${k}">Mark new</button>`}</div></details>`;
+  const menu = h.read === 'opened' ? `<details class="menu"><summary aria-label="more actions">\u22ef</summary><div class="pop"><button type="button" data-act="renew" data-key="${k}">Mark new</button></div></details>` : '';
+  const edited = h.edited_after_read ? `<span class="badge" title="you had ticked version ${Number(h.edited_after_read)}">edited since you read it</span>` : '';
   return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}">
-    <div class="meta mut hub-entry-meta">${h.read === 'new' ? '<span class="dot" title="unread"></span>' : ''}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
+    <div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="${k}" aria-label="Read: move to Archive" title="Read: move to Archive">${h.read === 'new' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
       <span>${day(h.shown_at || h.updated || h.created)}</span><span>${t(h.reading || '', 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>${h.maintenance ? `<span>${Number(h.maintenance)} maintenance</span>` : ''}</div>
     ${versions(h)}${pins}${title}${resp}${bodyOf(h)}${ident}${folded}
     <div class="src">${h.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="open the original">${addr(h.page)}</button>` : ''}${h.opens_on ? ` <span class="mut">(on ${t(h.opens_on, 80)})</span>` : ''}</div>
     <div class="acts right hub-entry-actions"><button type="button" data-act="respond" data-key="${k}">Respond</button><button type="button" data-act="read" data-key="${k}">Read here</button><button type="button" data-act="open" data-key="${k}">Open original</button>${menu}</div></article>`;
+}
+
+// An Archive line: kind, blyg, title or first words, dates, Open original, and a checked box that puts it back in the Feed. NO text of the post.
+function archiveLine(l) {
+  const k = escHtml(l.key);
+  return `<div class="aline hub-archive-line" data-key="${k}"><input type="checkbox" class="untick" checked data-key="${k}" aria-label="Unread again: move back to the Feed" title="Unread again: move back to the Feed">
+    <span class="kind">${t(l.kind, 20)}</span><strong>${t(l.blyg_label || l.origin, 160)}</strong>
+    <span class="title">${l.title ? t(l.title, 200) : '<span class="mut">(no title)</span>'}</span>
+    <span class="mut">${day(l.updated || l.created)}${l.archived_at ? `, read ${day(l.archived_at)}` : ''}</span>
+    ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}</div>`;
+}
+function archivePane(data) {
+  const q = data.archive_query || '';
+  const more = data.archive_total > data.archive.length
+    ? `<p class="mut">${data.archive.length} of ${Number(data.archive_total)} shown. <a href="/hub?view=archive&amp;${q ? `q=${encodeURIComponent(q)}&amp;` : ''}n=${Math.min(1000, data.archive.length + 50)}">show more</a></p>` : '';
+  return `<p class="mut">Posts you ticked as read. Only a small record of each is kept, not its text; untick one to bring it back to the Feed (it is fetched again).</p>
+    <form method="get" action="/hub" role="search"><input type="hidden" name="view" value="archive"><input type="search" name="q" value="${escHtml(q)}" placeholder="search titles and blygs" aria-label="search the Archive"></form>
+    <section aria-label="archive" id="hub-archive">${data.archive.length ? data.archive.map(archiveLine).join('') : `<p class="mut">${q ? 'Nothing in the Archive matches that.' : 'Nothing archived yet. Tick a post in the Feed when you have read it.'}</p>`}</section>${more}`;
 }
 
 function backgroundEntry(b) {
@@ -213,8 +237,10 @@ const SCRIPT = `
         if(r&&r.ok&&r.url){location.href=r.url+(resp?'#respond':'');}else say((r&&r.error)||'failed',true);});}
     if(a==='more'){var box=b.closest('.hub-entry-body');if(box)setMore(box,box.dataset.more==='expanded'?'collapsed':'expanded');return;}
     if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
-    if(a==='see')return post('/following/read',{key:b.dataset.key,move:'see'}).then(function(r){done(r);});
-    if(a==='seen-all')return post('/following/read',{all:true}).then(function(r){done(r);});
+    if(a==='tick-all'){var keys=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)keys.push(e.dataset.key);});
+      if(!keys.length)return;
+      if(!confirm('Move the '+keys.length+' post'+(keys.length===1?'':'s')+' shown to the Archive?'))return;
+      return post('/following/read',{keys:keys}).then(function(r){done(r,'archived');});}
     if(a==='mention-seen')return post('/following/mention-read',{key:b.dataset.key}).then(function(r){done(r);});
     if(a==='mention-seen-all')return post('/following/mention-read',{all:true}).then(function(r){done(r);});
     if(a==='pause'||a==='resume')return post('/following/state',{origin:b.dataset.origin,move:a}).then(function(r){done(r);});
@@ -223,6 +249,20 @@ const SCRIPT = `
     if(a==='refresh'){say('refreshing…');b.disabled=true;return post('/following/refresh',{}).then(function(r){b.disabled=false;
       if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
   });
+  // The tick (Feed) and the untick (Archive): a checkbox each, handled here and nowhere else. A post's own text is inert and
+  // cannot hold one (the sanitiser removes inputs, ids and classes), and a control inside a post's text is ignored anyway.
+  function count(name,d){document.querySelectorAll('[data-n="'+name+'"]').forEach(function(n){n.textContent=String(Math.max(0,(Number(n.textContent)||0)+d));});}
+  document.addEventListener('change',function(ev){
+    var c=ev.target;if(!c||!c.matches||!c.matches('input.tick,input.untick')||c.closest('.hub-entry-body'))return;
+    var un=c.classList.contains('untick'),row=c.closest('article,.aline');
+    c.disabled=true;if(un)say('putting it back in the Feed…');
+    post('/following/read',{key:c.dataset.key,move:un?'untick':'tick'}).then(function(r){
+      if(!(r&&r.ok)){c.disabled=false;c.checked=un;say((r&&r.error)||'failed',true);return;}
+      if(row)row.remove();count('feed',un?1:-1);count('archive',un?-1:1);say(un?'back in the Feed':'');
+      // the Feed fell below its target and a blyg has more to read: one refresh tops it up (a second one while it runs is refused, not queued)
+      if(!un&&r.topup){say('reading further back…');post('/following/refresh',{}).then(function(r2){
+        if(r2&&r2.ok&&r2.started&&Number(r2.new)>0)location.reload();else say('');});}
+    });});
   var search=document.getElementById('hub-search');
   if(search)search.addEventListener('input',function(){var q=search.value.trim().toLowerCase();
     document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){e.hidden=!!q&&e.textContent.toLowerCase().indexOf(q)<0;});});
@@ -304,26 +344,30 @@ const SCRIPT = `
 export function followingPage({ data, settings, refused = [], notice = '', nonce = '', locale = 'en-US', theme = { state: 'none', reason: '' } }) {
   LOCALE = locale;
   const tabs = VIEWS.map(v => {
-    const n = v === 'feed' ? data.tabs.feed : v === 'mentions' ? data.tabs.mentions : data.tabs.background;
+    const n = data.tabs[v];
     const extra = v === 'mentions' && data.tabs.mentions_unseen ? ` <span class="badge">${Number(data.tabs.mentions_unseen)} unseen</span>` : '';
-    return `<a href="/hub${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])} (${Number(n) || 0})${extra}</a>`;
+    return `<a href="/hub${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])} (<span data-n="${escHtml(v)}">${Number(n) || 0}</span>)${extra}</a>`;
   }).join('');
   const nav = FILTERS.map(f => `<a href="/hub${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
   const last = data.last_run;
-  const lastLine = last ? `Last refresh ${when(last.at)}: ${Number(last.new)} new, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
+  const lastLine = last ? `Last refresh ${when(last.at)}: ${Number(last.new)} new${last.backfilled ? ` (${Number(last.backfilled)} read back from earlier)` : ''}, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
   const blygs = data.blygs.map(b => `<tr><td class="b-name">${t(b.title || b.origin, 160)}<div class="mut">${addr(b.origin, 60)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
-      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}</td><td class="b-posts">${Number(b.items)}</td>
+      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}${BACKFILL_WORDS[b.backfill] ? `<div class="mut">${escHtml(BACKFILL_WORDS[b.backfill])}</div>` : ''}</td><td class="b-posts">${Number(b.items)} unread${b.archived ? `<div class="mut">${Number(b.archived)} archived</div>` : ''}</td>
       <td class="b-acts">${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
         ${b.state === 'active' || b.state === 'unreachable' ? `<button type="button" data-act="pause" data-origin="${escHtml(b.origin)}">Pause</button>` : ''}
         <button type="button" data-act="unfollow" data-origin="${escHtml(b.origin)}">Unfollow</button></td></tr>`).join('');
   const nums = Object.entries(FOLLOWING_NUMBERS).map(([k, spec]) => `<label>${escHtml(spec.what)} <input type="number" data-num name="${escHtml(k)}" min="${spec.min}" max="${spec.max}" value="${Number(settings[k])}"> <span class="mut">(${spec.min} to ${spec.max})</span></label>`).join('');
   const pane = data.view === 'mentions' ? mentionsPane(data)
+    : data.view === 'archive' ? archivePane(data)
     : data.view === 'background'
       ? `<p class="mut">What should not interrupt reading: withdrawn posts, posts folded into a burst, versions with no new words, posts of paused blygs, and notices (links and reposts) from your inbox. A post comes back to the Feed when it gets a real new version.</p>
          ${data.background.length ? data.background.map(backgroundEntry).join('') : '<p class="mut">Nothing here.</p>'}`
       : `<nav class="filters" aria-label="filter">${nav}</nav>
          <input type="search" id="hub-search" placeholder="search every word" aria-label="search every word on this page">
-         <section aria-label="posts" id="hub-posts">${data.entries.length ? data.entries.map(entry).join('') : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
+         <section aria-label="posts" id="hub-posts">${data.entries.length ? data.entries.map(entry).join('')
+           : data.read_all ? '<p class="caught-up" role="status">You have read everything from the blygs you follow.</p>'
+           : data.blygs.length ? '<p class="mut">Nothing unread here. A refresh reads further back in the blygs you follow.</p>'
+           : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
          ${data.entry_total > data.entries.length ? `<p class="mut">${data.entries.length} of ${Number(data.entry_total)} shown (search covers these). <a href="/hub?${data.filter === 'all' ? '' : `filter=${escHtml(data.filter)}&amp;`}n=${Math.min(1000, (Number(data.limit) || 100) + 100)}">show more</a></p>` : ''}
          ${data.tabs.background ? `<p class="mut"><a href="/hub?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -332,7 +376,7 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
 <h1>Hub</h1>
 <p class="mut">Blygs you read. Only you see this, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer.'}</p>
 ${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p class="warn">These settings were not valid and the defaults are used: ${t(refused.join(', '), 300)}.</p>` : ''}
-<div class="acts"><button type="button" data-act="refresh">Refresh now</button><button type="button" data-act="seen-all">Mark all seen</button><span id="msg" role="status"></span></div>
+<div class="acts"><button type="button" data-act="refresh">Refresh now</button>${data.view === 'feed' && data.entries.length ? '<button type="button" data-act="tick-all">Tick all shown</button>' : ''}<span id="msg" role="status"></span></div>
 <nav class="filters hub-tabs" aria-label="views">${tabs}</nav>
 ${pane}
 <h2>Following</h2>
@@ -353,7 +397,7 @@ ${data.inbox.token_warning ? `<p class="warn">${t(data.inbox.token_warning, 300)
 <label>Theme folder (an absolute path to a folder with hub.css and, if you like, fonts) <input type="text" name="hub_theme_dir" size="48" value="${escHtml(settings.hub_theme_dir || '')}"></label>
 <p class="mut">Theme: ${t(theme.state, 20)}${theme.reason ? ` (${t(theme.reason, 200)})` : ''}</p>
 <button type="submit">Save settings</button></form>
-<p class="mut">Read states: ${READ_STATES.map(s => escHtml(s)).join(', ')}. Inbox states: ${INBOX_STATES.map(s => escHtml(s)).join(', ')}.</p>
+<p class="mut">Where a post is: ${READ_STATES.map(s => escHtml(s)).join(', ')}. Inbox states: ${INBOX_STATES.map(s => escHtml(s)).join(', ')}.</p>
 </main>${data.view === 'feed' ? `<script type="application/json" id="hub-threads" nonce="${escHtml(nonce)}">${JSON.stringify(Object.fromEntries(data.entries.map(e => [e.head.key, e.head.threads || []]))).replace(/</g, String.fromCharCode(92) + 'u003c')}</script>
 <script src="/assets/anchor.js" nonce="${escHtml(nonce)}"></script>` : ''}<script nonce="${escHtml(nonce)}">${SCRIPT}</script></body></html>`;
 }
