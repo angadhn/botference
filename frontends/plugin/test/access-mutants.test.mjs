@@ -92,7 +92,7 @@ await test('the options page\'s Sign-in button acts on a trusted click only', as
 
 await test('the options page asks which way a companion signs in BEFORE sending it the saved password (keys, profiles, test), and withholds it from Access', async () => {
   const run = async (answer, stored) => {
-    const calls = [];
+    const calls = []; const sets = [];
     const stub = id => new Proxy({ value: '', checked: true, hidden: false, style: {}, classList: { toggle() {}, add() {}, remove() {} }, dataset: {},
       addEventListener() {}, setAttribute() {}, querySelector() { return null; }, querySelectorAll() { return []; }, appendChild() {}, remove() {} },
     { get: (t, k) => (k in t ? t[k] : (typeof k === 'string' ? () => { } : undefined)), set: (t, k, v) => { t[k] = v; return true; } });
@@ -101,9 +101,11 @@ await test('the options page asks which way a companion signs in BEFORE sending 
       console, Promise, JSON, URL, setTimeout, clearTimeout, Map, Set,
       document: { getElementById: id => (els[id] ||= stub(id)), addEventListener() {}, querySelectorAll: () => [], querySelector: () => null, createElement: () => stub('x'), body: stub('body') },
       open() {}, navigator: {},
-      chrome: { storage: { local: { get: (_k, cb) => cb(stored), set: (_o, cb) => cb && cb(), remove: (_k, cb) => cb && cb() }, onChanged: { addListener() {} } }, extension: {}, runtime: {} },
+      chrome: { storage: { local: { get: (_k, cb) => cb(stored), set: (o, cb) => { sets.push(o); if (cb) cb(); }, remove: (_k, cb) => cb && cb() }, onChanged: { addListener() {} } }, extension: {}, runtime: {} },
       fetch: async (url, init) => {
         calls.push({ url: String(url), headers: (init && init.headers) || {} });
+        // '' = a captive portal / sign-in page: Cloudflare-shaped, not the companion
+        if (/auth-mode$/.test(url) && answer === '') return { ok: false, status: 0, type: 'opaqueredirect', headers: { get: () => null }, text: async () => '' };
         const body = /auth-mode$/.test(url) ? answer : '{"ok":true,"keys":{}}';
         return { ok: true, status: /auth-mode$/.test(url) && answer.signin ? 401 : 200, type: 'basic', headers: { get: () => 'application/json' }, text: async () => body };
       },
@@ -113,6 +115,7 @@ await test('the options page asks which way a companion signs in BEFORE sending 
     vm.runInContext(fs.readFileSync(path.join(EXT, 'config.js'), 'utf8'), ctx, { filename: 'config.js' });
     vm.runInContext(fs.readFileSync(path.join(EXT, 'options.js'), 'utf8'), ctx, { filename: 'options.js' });
     await sleep(60);
+    calls.sets = sets;
     return calls;
   };
   const stored = { 'bfp:companion': 'https://hub.example.test', 'bfp:password': 'pw', 'bfp:handle': 'ada' };
@@ -125,6 +128,8 @@ await test('the options page asks which way a companion signs in BEFORE sending 
   const k = password.find(c => /\/keys$/.test(c.url));
   assert.equal(k.headers.Authorization, 'Bearer pw', 'a password companion gets it');
   const portal = await run('', stored);   // not JSON: not the companion
+  assert.ok(!portal.sets.some(o => 'bfp:learned-auth' in o), 'a sign-in page is NOT remembered as Access (a captive portal must not lock the password out)');
+  assert.ok(access.sets.some(o => 'bfp:learned-auth' in o && o['bfp:learned-auth'].mode === 'access'), 'the companion\'s own Access answer is');
   for (const c of portal) assert.ok(!c.headers.Authorization, `nothing that is not the companion's own answer unlocks the password: ${c.url}`);
   const local = await run('{"ok":true,"auth":"access"}', { 'bfp:password': 'pw' });
   assert.ok(local.find(c => /\/keys$/.test(c.url)).headers.Authorization === 'Bearer pw', 'this machine\'s companion is as before');
