@@ -13056,7 +13056,8 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 - **The post** (`blyg-note.mjs`): front matter from the owner's template, then for each thread the owner's first
   comment, the quoted passage, and the thread's remaining comments (the words come first). A page that is a Blygger post (strictly validated id, origin, version):
   the passage as `![[<id> | label]]` with `> ` lines directly under it when it passes the post's check,
-  `blyg_sources`, and `blyg_stub_of` (origin, id, the version read) when the page is a response. An
+  `blyg_sources`, and `blyg_stub_of` (origin, id, the version read; the id written as a quoted string, since a page may choose an
+  id such as `0x…` that a YAML 1.1 reader would take for a number) when the page is a response. An
   ordinary web page: the plain web quote whose last paragraph is the bare URL (and `blyg_stub_of: {url}`
   only when the owner marked the page a response). The title is the first eight words of the comment;
   the slug is `[a-z0-9-]`, never a reserved name, made unique against the folder's files and
@@ -13102,17 +13103,19 @@ the bare URL that makes the card. A message an edit set aside (`superseded`) is 
 
 An interrupted apply or publish may be CONTINUED (`interrupted -> applying | publishing`, only the step that was interrupted,
 the owner's click, the same step again, which is how the site's command resumes), or abandoned. An optional `abandon` command
-(example site: `scripts/blyg-publish --abandon`, no `{note}`) is run on abandon after apply, so no state needs hand-editing.
+(example site: `scripts/blyg-publish --abandon {note}`; it carries `{note}` so it ends only this note's run) is run on abandon after
+apply, so no state needs hand-editing. A `failed` run is not interrupted by a restart: nothing of it is running, so it keeps its
+`failed_step`, its retry and its abandon (an abandon of a run that failed before apply still discards and removes the draft).
 
 ### The setting: "Where my blyg lives" (owner only, on the companion)
 
 `blyg_home` in config.json, edited at `GET /blyg-home/page` (or by hand): `folder` (absolute, exists,
 inside a git work tree, not in `.git`), `filename` (pattern with `${slug}` and `${date}`, ending in
 `.md`), `template`, `escape` (`liquid` default, or `none`), `timezone`, `env_pass` (names), and
-`commands`: `plan`, `apply`, `publish` and two optional ones, `prepare` (runs after the note is written and before `plan`: stage the note, fetch what it quotes; 300 s) and `discard` (undo what prepare or plan did, on cancel or abandon before apply), each an argv
+`commands`: `plan`, `apply`, `publish` and four optional ones, `check` (the pre-flight, no `{note}`, 15 s), `prepare` (runs after the note is written and before `plan`: stage the note, fetch what it quotes; 300 s; needs `discard`), `discard` (undo what prepare or plan did, on cancel or abandon before apply) and `abandon` (the site's own end-of-run, on abandon after apply), each an argv
 list with `{note}` (the note's path relative to the work tree, ONE argument; `{note_abs}` is the
 absolute path). Run in the work tree, never through a shell, in their own process group, with stdin
-closed, a time limit (plan 120 s, apply 900 s, publish 1800 s, discard 60 s), a minimal environment
+closed, a time limit (plan 120 s, apply 1800 s, publish 1800 s, discard and abandon 60 s), a minimal environment
 (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR when set; TERM=dumb, NO_COLOR=1, CI=1,
 GIT_TERMINAL_PROMPT=0; plus the owner's `env_pass`), and captured output (stopped past 4 MiB, kept to
 64 KiB, ANSI and control characters removed). A shell, `env`, `sudo` or `xargs` as the program is
@@ -13127,9 +13130,10 @@ does not list:
 ```
 idle → drafted → [preparing →] planning → planned → applying → applied → publishing → published
    (preparing only when a `prepare` command is set; drafted → planning otherwise)
-   drafted/planned → cancelled; any running mode → failed; any live mode → interrupted on restart
+   drafted/planned → cancelled; any running mode → failed; any live mode but failed → interrupted on restart
 failed → preparing | planning | applying | publishing (only the step that failed, by the owner's click) | abandoned
-interrupted → abandoned          published | cancelled | abandoned → drafted (a new run)
+interrupted → applying | publishing (continue: only the step that was interrupted) | abandoned
+published | cancelled | abandoned → drafted (a new run)
 ```
 
 One run at a time for the whole companion (a second start is refused, not queued). Step A (start): the note
@@ -13141,7 +13145,8 @@ Step C (confirm, with the run's id and token): `apply`, then `publish`, each ste
 output; a failure names the step and stops; nothing is retried by itself. Cancel removes the draft only if
 this run made it and it is unchanged (calling `discard` first when one is set). Abandon before apply does
 the same; after apply nothing is touched. The record is a file (`blyg-publish-run.json`, mode 0600); a
-companion restart turns every unfinished run into `interrupted`, which offers only "show" and "abandon".
+companion restart turns every unfinished run except a `failed` one into `interrupted`, which offers "show", "continue" (an
+interrupted apply or publish only) and "abandon"; a `failed` run keeps "retry" and "abandon".
 After `published`, each thread that went in gets `blyg_published: {at, title, permalink, address?}`
 (`address` only if the command printed a URL whose path is the post's permalink).
 
