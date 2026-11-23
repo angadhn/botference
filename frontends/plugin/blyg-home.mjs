@@ -100,6 +100,7 @@ export function filenameFor(pattern, { slug, date }) {
   return name;
 }
 
+// `{note}` is required in every command that is about a note; `abandon` (the site's own end-the-run command) is about the run, not a note
 function checkArgv(key, argv, top, errors) {
   const at = `command “${key}”`;
   if (!Array.isArray(argv) || !argv.length) { errors.push(`${at} is not set (an argv list, for example ["scripts/publish", "{note}"])`); return null; }
@@ -109,7 +110,7 @@ function checkArgv(key, argv, top, errors) {
   }
   if (!argv[0].trim()) { errors.push(`${at}: the program is empty`); return null; }
   if (argv[0].includes(NOTE_TOKEN) || argv[0].includes(NOTE_ABS_TOKEN)) { errors.push(`${at}: the program itself may not hold {note}`); return null; }
-  if (!argv.slice(1).some(a => a.includes(NOTE_TOKEN) || a.includes(NOTE_ABS_TOKEN))) { errors.push(`${at} must have {note} in one of its arguments`); return null; }
+  if (key !== 'abandon' && !argv.slice(1).some(a => a.includes(NOTE_TOKEN) || a.includes(NOTE_ABS_TOKEN))) { errors.push(`${at} must have {note} in one of its arguments`); return null; }
   if (SHELLS.has(path.basename(argv[0]).toLowerCase())) { errors.push(`${at}: a shell (or env, sudo, xargs) is not accepted as the program: name the program itself`); return null; }
   if (argv[0].includes('/')) {
     const abs = path.isAbsolute(argv[0]) ? argv[0] : path.resolve(top, argv[0]);
