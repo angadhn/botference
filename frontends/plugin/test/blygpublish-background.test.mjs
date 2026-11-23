@@ -67,6 +67,16 @@ await test('the general api door is shut on every publish route and on the setti
   assert.equal(fine.ok, true, 'other routes are untouched by the rule');
 });
 
+await test('the api door is shut on every SPELLING of a blyg route (the fetch\'s own URL parser decides), and still open for ordinary paths', async () => {
+  const W = boot();
+  for (const p of ['/blyg-home#x', '/./blyg-home', '\\blyg-home', '/x/../blyg-home', '/%2e/blyg-home', '/blyg-home/../blyg-home', '//blyg-publish/start', '/BLYG-HOME', '/blyg-publish%2Fconfirm', '/a/%2e%2e/blyg-publish/run', '/blyg-home?x=1#y', '%5cblyg-home']) {
+    const r = await W.send({ t: 'api', method: 'POST', path: p, body: {} });
+    assert.equal(r.ok, false, p);
+  }
+  assert.deepEqual(W.ours(), [], 'nothing reached the companion');
+  for (const p of ['/page?url=https%3A%2F%2Fa.test%2Fblyg-home', '/index', '/files/a%20b.png']) assert.equal((await W.send({ t: 'api', method: 'GET', path: p })).ok, true, p);
+});
+
 await test('start forwards exactly url, thread_id and scope; an odd scope or operation goes nowhere', async () => {
   const W = boot();
   const r = await pub(W, 'start', { thread_id: 't9', scope: 'above', extra_field: 'ignored', run: 'x' });

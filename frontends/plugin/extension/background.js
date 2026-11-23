@@ -1044,6 +1044,23 @@ function fteLedger(msg) {
   return run;
 }
 
+// Is this path one of the Publish-as-blyg routes, however it is spelled? The URL parser the fetch will use decides: its pathname is
+// what is checked, and a spelling that does not round-trip (a dot segment, a backslash, an escaped dot or slash, a fragment, a
+// repeated slash) and still names a blyg route is refused too, so '/./blyg-home', '/x/../blyg-home', '\\blyg-home', '/blyg-home#x' all fail.
+function isBlygPath(raw) {
+  const text = String(raw == null ? '' : raw);
+  let pathname = '';
+  try { pathname = new URL(text, 'http://companion.invalid').pathname; } catch (_) { return true; }   // unparsable: not forwarded
+  const route = /^\/blyg-(publish|home)(\/|$)/i;
+  if (route.test(pathname)) return true;
+  let flat = text;
+  try { flat = decodeURIComponent(text); } catch (_) { /* keep as typed */ }
+  flat = flat.replace(/\\/g, '/');
+  let flatPath = '';
+  try { flatPath = new URL(flat, 'http://companion.invalid').pathname; } catch (_) { return true; }
+  return route.test(flatPath) || (/blyg-(publish|home)/i.test(flat.split('?')[0]) && text.split('?')[0] !== pathname);
+}
+
 // ---- Publish as blyg ---------------------------------------------------------
 // The drawer asks for named operations (config.js BLYG_PUBLISH_OPS) and nothing else reaches the companion's publish
 // routes. A page cannot send this message at all (only this extension's own scripts can message the worker); inside the
@@ -1100,9 +1117,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // The publish routes and the settings are not reachable through this general door: a publish goes through
         // 'blyg-publish' below (named operations, an offer for the ones that act), and the settings are the companion's
         // own page, never the extension's.
-        if (/^\/blyg-(publish|home)(\/|$)/.test(String(msg.path || '').split('?')[0])) {
-          return { ok: false, error: 'not available here' };
-        }
+        if (isBlygPath(msg.path)) return { ok: false, error: 'not available here' };
         const r = await api(msg.method, msg.path, msg.body);
         if (r.ok && /^\/(thread|reply|delete|delete-page|edit|orphan|page|tick)$/.test(String(msg.path).split('?')[0])) {
           refreshIndexSoon();
