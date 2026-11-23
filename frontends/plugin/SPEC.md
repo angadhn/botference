@@ -13164,3 +13164,31 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
 `test/blyg-note.test.mjs`, `test/blyg-home.test.mjs`, `test/blyg-run.test.mjs`,
 `test/blyg-publish-server.test.mjs` (local and hosted, SSE and WebSocket), `test/blygpublish-drawer.test.mjs`,
 `test/blygpublish-background.test.mjs`; the fake command set is `test/fixtures/blyg-fake-cmd.mjs`.
+
+### Round-2 review (amendment)
+
+- **Request rule.** `extensionIdsInForce()` in server.mjs is the ONE helper for the extension ids (the access settings' list when Access is
+  configured, else `PLUGIN_EXTENSION_IDS`); the global origin rule and the blyg routes both use it. `blygRequestRefusal` is a thin layer
+  over `sourceRefusal`: the global verdict first (strict reads), then only what the blyg routes add (an extension needs explicit ids; the
+  settings write refuses any extension Origin, pinned or not; `Sec-Fetch-Site` same-origin or none; explicit `application/json`).
+- **Done marker.** `published_marker` (optional, e.g. `State: merged_back`): a publish step that exits 0 without it as its LAST `State:` line
+  ends `failed(publish)` (output shown, Retry offered), nothing is stamped. The example site's `--push` also exits 2 (not 0) when it did
+  not push. Without a marker the exit code decides.
+- **Settings write and a stale menu.** The drawer asks the setting in force every time the menu opens, shows that wording, and sends it as
+  `confirm` in the start body; the companion refuses (409, nothing started) when it differs from the setting in force.
+- **The record on disk is not trusted.** On every read of a live run and before every step: `note_rel` must resolve (real path) inside the
+  configured folder, exist, and match `note_sha`; otherwise the run offers only "abandon", which runs nothing and removes nothing. A step's
+  process group is recorded (`child: {pgid, lstart}`); `interrupted -> continue` is refused while it lives, and offers "stop it and carry
+  on" as the owner's explicit choice (`stop: 'yes'`).
+- **Progress.** While a step runs the run view carries `running: {step, elapsed_ms, last_line}` (owner only; a remote owner's view has paths
+  scrubbed and no `note_rel`); the thread line and the dialog show it. `apply` has 1800 s, like `publish`.
+- **Pre-flight.** An optional `check` command (no `{note}`; 15 s) runs once, synchronously, before anything is written; its own plain
+  sentences refuse the start. The example site's is `scripts/blyg-publish --preflight`.
+- **Environment (documented, not configured here).** The companion's launch environment must put a Ruby that satisfies the site's
+  `.ruby-version` first on PATH and pass `BLYG_CHECKER` through `env_pass`.
+- **Example settings now.** confirm `never`; plan_guard `["--only-note","--quick"]`; published_marker `State: merged_back`; env_pass
+  `["BLYG_CHECKER"]`; check `["scripts/blyg-publish","--preflight"]`; prepare `["scripts/blyg-publish","{note}","--prepare-note"]`; plan
+  `["scripts/blyg-publish","{note}"]`; apply `[…,"{note}","--apply"]`; publish `[…,"{note}","--push"]`; discard `[…,"{note}","--unstage-note"]`;
+  abandon `["scripts/blyg-publish","--abandon","{note}"]`. (The guard flags are appended to plan, apply and publish.)
+- **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
+  destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.
