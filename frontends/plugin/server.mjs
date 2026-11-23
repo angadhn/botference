@@ -6903,6 +6903,8 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
         : HOSTED_AUTH === 'either' ? '--hosted: Cloudflare Access sign-in OR the password (hosted_auth "either" is a transition: move to "access"); localhost stays the owner'
         : '--hosted: remote visitors need the password; localhost stays the owner');
       console.log(`  reading room: /pages   agent grants: ${hosted.grantsFile}`);
+      // what this companion trusts, said once at start (no secrets, no emails): the sign-in mode, the public names, the memorizer's name
+      console.log(`  sign-in: ${HOSTED_AUTH}   trusted names: ${PUBLIC_HOSTS.join(', ') || '(none)'}   memorizer: ${[...MEMORY_HOSTS].join(', ') || '(none)'}`);
     }
     // One anonymous "someone started this today", at most once a day, and only
     // if this build was given an api secret at all (beacon.mjs). Deliberately

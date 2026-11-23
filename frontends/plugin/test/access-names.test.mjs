@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHarness, request, GET } from './harness.mjs';
 import { makeKey, mint, keyServer, TEAM, AUD, OWNER, EXT_ID } from './access-fake.mjs';
@@ -26,7 +27,7 @@ async function boot(mode, env) {
   const h = createHarness({ server: SERVER, tag: 'nam', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', PLUGIN_PUBLIC_HOSTNAMES: '', PLUGIN_READING_HOSTNAME: '', PLUGIN_MEMORY_HOSTNAME: '', ...env } });
   if (mode !== 'password') fs.writeFileSync(path.join(h.SECRETS, 'plugin-access.json'), JSON.stringify(SETTINGS(mode)));
   const srv = await h.startServer({ root: h.tmp('root'), args: ['--hosted', '--no-agents'], env: {} });
-  return { h, base: srv.base, port: new URL(srv.base).port };
+  return { h, base: srv.base, port: new URL(srv.base).port, out: srv.out };
 }
 const started = (mode, env) => {
   const h = createHarness({ server: SERVER, tag: 'nam' });
@@ -108,6 +109,31 @@ try {
     assert.equal((await GET(I.base, '/index', { ...tunnel('quick-tunnel.example.test'), ...bearer })).status, 200);
     assert.equal((await GET(I.base, '/index', { ...tunnel('quick-tunnel.example.test') })).status, 401);
     I.h.cleanup();
+  });
+  await test('at start, in hosted mode, the companion says its sign-in mode, the names it trusts and its memorizer name (and nothing secret)', async () => {
+    const M = await boot('either', { PLUGIN_PUBLIC_HOSTNAMES: 'pub.example.test', PLUGIN_MEMORY_HOSTNAME: 'memo.example.test' });
+    const log = M.out();
+    assert.match(log, /sign-in: either +trusted names: memo\.example\.test, pub\.example\.test +memorizer: memo\.example\.test/);
+    for (const bad of [OWNER, AUD, 'guest-pw', 'owner-pw', TEAM]) assert.ok(!log.includes(bad), 'the log carries no ' + bad);
+    assert.match(A.out(), /sign-in: access +trusted names: annotations\.example\.test +memorizer: \(none\)/);
+    assert.match(P.out(), /sign-in: password +trusted names: \(none\) +memorizer: \(none\)/);
+    M.h.cleanup();
+  });
+  await test('the launcher exports the public names and the memorizer name from the names it routes the tunnel to (its snippet, run with placeholder names)', () => {
+    const src = fs.readFileSync(path.join(TEST, '..', '..', '..', 'lib', 'plugin.sh'), 'utf8');
+    const start = src.indexOf('# --- the names the companion trusts');
+    const end = src.indexOf('export PLUGIN_MEMORY_HOSTNAME=', start);
+    assert.ok(start > 0 && end > start, 'the snippet is in lib/plugin.sh');
+    const snippet = src.slice(start, src.indexOf('\n', end));
+    const run = (vars, unset = []) => spawnSync('bash', ['-c', `${unset.map(u => `unset ${u};`).join('')} f() { ${snippet}
+      printf '%s|%s' "$PLUGIN_PUBLIC_HOSTNAMES" "\${PLUGIN_MEMORY_HOSTNAME-UNSET}"; }; f`], { encoding: 'utf8', env: { PATH: process.env.PATH, ...vars } }).stdout;
+    const T = { PLUGIN_TUNNEL_HOSTNAME: 'room.example.test', PLUGIN_TUNNEL_LEGACY_HOSTNAME: 'old.example.test', PLUGIN_TUNNEL_MEMORY_HOSTNAME: 'memo.example.test' };
+    assert.equal(run(T), 'room.example.test,old.example.test,memo.example.test|memo.example.test');
+    assert.equal(run({ ...T, PLUGIN_TUNNEL_LEGACY_HOSTNAME: '' }), 'room.example.test,memo.example.test|memo.example.test', 'a dropped legacy name is not trusted');
+    assert.equal(run({ ...T, PLUGIN_TUNNEL_MEMORY_HOSTNAME: '' }), 'room.example.test,old.example.test|', 'a dropped memorizer name is dropped');
+    assert.equal(run({ ...T, PLUGIN_PUBLIC_HOSTNAMES: 'mine.example.test' }), 'mine.example.test|memo.example.test', 'names already set are kept');
+    assert.equal(run({ ...T, PLUGIN_MEMORY_HOSTNAME: '' }), 'room.example.test,old.example.test,memo.example.test|', 'a memorizer name set empty stays empty');
+    assert.equal(run({ ...T, PLUGIN_MEMORY_HOSTNAME: 'other.example.test' }), 'room.example.test,old.example.test,memo.example.test|other.example.test');
   });
   A.h.cleanup(); E.h.cleanup(); P.h.cleanup();
 } finally { await keys.close(); }
