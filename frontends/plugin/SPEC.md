@@ -13064,6 +13064,18 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 - **The default template** (editable) produces `title`, `created`, `released` (today, in the owner's
   zone), `blyg: true`, no tags, `permalink: /b/<slug>`, then `${blyg_keys}`.
 
+### One click (amendment, same day)
+
+`confirm` in the setting is `never` (the default) or `always`. With `never`, choosing "Publish as blyg" and a
+scope IS the publish: the run goes prepare, plan, apply, publish without stopping, the thread carries one line
+of progress and then the link, and the dialog appears only if something fails (the step, its output, retry or
+abandon). `always` keeps the confirmation. `plan_guard` is a list of flags added to the `plan` command only when
+`confirm` is `never` (each must start with `-`); the site's own command refuses with exit 1 a plan that would
+change more than the note and its own imports (an example site's `--only-note`); the companion never parses the
+plan's prose. A plan that exits non-zero, an unfilled `[TK]` or `/tk` placeholder, the caps and eligibility
+all still stop the run by themselves. The default template writes no `title:` (a short blyg is named by its first
+words; `${title}` is still available in a template).
+
 ### The setting: "Where my blyg lives" (owner only, on the companion)
 
 `blyg_home` in config.json, edited at `GET /blyg-home/page` (or by hand): `folder` (absolute, exists,
