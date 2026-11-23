@@ -13064,17 +13064,43 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 - **The default template** (editable) produces `title`, `created`, `released` (today, in the owner's
   zone), `blyg: true`, no tags, `permalink: /b/<slug>`, then `${blyg_keys}`.
 
-### One click (amendment, same day)
+### One click (amendment, same day; hardened after review)
 
-`confirm` in the setting is `never` (the default) or `always`. With `never`, choosing "Publish as blyg" and a
-scope IS the publish: the run goes prepare, plan, apply, publish without stopping, the thread carries one line
-of progress and then the link, and the dialog appears only if something fails (the step, its output, retry or
-abandon). `always` keeps the confirmation. `plan_guard` is a list of flags added to the `plan` command only when
-`confirm` is `never` (each must start with `-`); the site's own command refuses with exit 1 a plan that would
-change more than the note and its own imports (an example site's `--only-note`); the companion never parses the
-plan's prose. A plan that exits non-zero, an unfilled `[TK]` or `/tk` placeholder, the caps and eligibility
-all still stop the run by themselves. The default template writes no `title:` (a short blyg is named by its first
-words; `${title}` is still available in a template).
+`confirm` in the setting is `always` (the default) or `never`. `never` is accepted only with a non-empty `plan_guard`.
+With `never`, choosing "Publish as blyg" and a scope IS the publish: the run goes prepare, plan, apply, publish without
+stopping, the thread carries one line of progress and then the link, and the dialog appears only if something fails (the
+step, its output, retry or abandon). `always` keeps the confirmation. `plan_guard` is a list of flags (each starting with
+`-`) added to the `plan`, `apply` AND `publish` commands, every time they run (retries and resumes too), when `confirm` is
+`never`; the site's own command refuses with exit 1 a plan that would change more than the note and its own imports (an
+example site's `--only-note`, which is enforced again at apply and push against the plan made then); the companion never
+parses the plan's prose. A plan that exits non-zero, an unfilled `[TK]` or `/tk` placeholder, the caps and eligibility
+all still stop the run by themselves. `prepare` needs a `discard`. The default template writes no `title:` (a short blyg is
+named by its first words; `${title}` is still available in a template).
+
+### Which requests may reach the routes, and who may set the command set
+
+`blyg-request.mjs` (`blygRequestRefusal`, called once, at the top of the blyg block in server.mjs, after the owner check)
+applies in EVERY mode to `/blyg-publish/*` and `/blyg-home*`: a present Origin must be trusted; a chrome-extension Origin is
+accepted only when `PLUGIN_EXTENSION_IDS` is set and names it (the feature is off for an extension until then);
+`Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (a pinned extension's worker may be `cross-site`); a POST must
+say `content-type: application/json`. Another branch's companion-wide request rule can replace that one function.
+The command set is read and written only by a LOCAL-DIRECT request (`isLocalDirect`: on the machine, no tunnel): a remote owner
+session can use the feature and sees a redacted `GET /blyg-home` (valid, confirm; no paths, no commands), and cannot open
+`/blyg-home/page` or `POST /blyg-home`. The owner sets it at `http://127.0.0.1:<port>/blyg-home/page` on that machine.
+
+### Text that goes into the note
+
+Liquid and kramdown attribute lists are made inert with character references (`&#123;`), never a backslash. A passage, an
+agent's or owner-edited `/tk` fill, and a label are escaped as plain text; only an ADOPTED gap and the owner's own comment are the
+owner's markdown (a `{{`/`{%` inside the owner's code span is refused with a message). A web address inside a passage is a code span
+(never a paragraph that is only a URL, so no link card is made from a hostile page's URL); the note's own source line is
+the bare URL that makes the card. A message an edit set aside (`superseded`) is not part of the post.
+
+### An interrupted run
+
+An interrupted apply or publish may be CONTINUED (`interrupted -> applying | publishing`, only the step that was interrupted,
+the owner's click, the same step again, which is how the site's command resumes), or abandoned. An optional `abandon` command
+(example site: `scripts/blyg-publish --abandon`, no `{note}`) is run on abandon after apply, so no state needs hand-editing.
 
 ### The setting: "Where my blyg lives" (owner only, on the companion)
 
