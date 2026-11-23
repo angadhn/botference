@@ -180,6 +180,22 @@ try {
     assert.equal((await GET(P.base, '/whoami', { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' })).json.handle, 'ada');
   });
 
+  await test('sign-out is a POST: a GET only shows the button, and a page of another site cannot sign anyone out', async () => {
+    for (const rig of [P, E]) {
+      const cookie = (await FORM(rig.base, '/auth', { password: OPW, next: '/pages' }, REMOTE)).headers['set-cookie'].map(c => c.split(';')[0]).join('; ');
+      const get = await request(rig.base, 'GET', '/signout', undefined, { ...REMOTE, cookie, accept: 'text/html' });
+      assert.equal(get.status, 200); assert.match(get.body, /<form method="POST" action="\/signout">/); assert.ok(!(get.headers['set-cookie'] || []).length, 'a GET signs nobody out');
+      for (const m of ['PUT', 'DELETE']) assert.equal((await request(rig.base, m, '/signout', undefined, { ...REMOTE, cookie })).status, 403);
+      const img = await request(rig.base, 'GET', '/signout', undefined, { ...REMOTE, cookie, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' });
+      assert.equal(img.status, 403);
+      const evil = await request(rig.base, 'POST', '/signout', undefined, { ...REMOTE, cookie, origin: 'https://evil.example.test', 'sec-fetch-site': 'cross-site' });
+      assert.equal(evil.status, 403); assert.ok(!(evil.headers['set-cookie'] || []).length);
+      const ok = await request(rig.base, 'POST', '/signout', undefined, { ...REMOTE, cookie, origin: 'https://annotations.example', 'sec-fetch-site': 'same-origin' });
+      assert.equal(ok.status, 303); assert.match(ok.headers['set-cookie'].join(';'), /Max-Age=0/);
+    }
+    assert.equal((await request(A.base, 'POST', '/signout', undefined, REMOTE)).status, 404, 'access mode has no sign-out of its own');
+  });
+
   await test('local requests on the loopback stay the owner in every mode and never ask for a token', async () => {
     for (const r of rigs) assert.equal((await GET(r.base, '/whoami')).json.owner, true);
   });

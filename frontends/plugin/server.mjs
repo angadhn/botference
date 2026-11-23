@@ -3644,8 +3644,15 @@ export function handler(req, res) {
     const fresh = hosted.refreshCookies(req);
     if (fresh) res.setHeader('set-cookie', fresh);
   }
+  // Signing out CHANGES something, so it is a POST (from a page of ours, with a trusted Origin: the source check above has already refused
+  // any other). A GET only shows the page with the button, so an <img> or a link cannot sign anybody out.
   if (HOSTED && url === '/signout') {
-    return res.writeHead(303, { 'set-cookie': hosted.signOutCookies(), location: '/pages' }).end();
+    if (req.method === 'POST') { req.resume(); return res.writeHead(303, { 'set-cookie': hosted.signOutCookies(), location: '/pages' }).end(); }
+    if (req.method !== 'GET' && req.method !== 'HEAD') { req.resume(); return fail(res, 405, 'sign out with a POST'); }
+    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(
+      '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign out</title></head>'
+      + '<body style="font:16px/1.6 -apple-system,Helvetica,Arial,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem">'
+      + '<h1>Sign out?</h1><form method="POST" action="/signout"><button type="submit">Sign out</button></form> <a href="/pages">Back</a></body></html>');
   }
   // The tab icon, AHEAD of the gate on purpose. Browsers ask for /favicon.ico
   // whether or not a page linked one, and a gated one is a 401 in the network
