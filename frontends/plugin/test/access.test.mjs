@@ -11,9 +11,9 @@ import {
   checkAccessToken, verifyAccessToken, verdictFor, newKeyCache, keyCacheState, createAccess, verdictOfRequest, connectionRecord, connectionLive,
   JWKS_TTL_MS, JWKS_REFETCH_MIN_MS, JWKS_STALE_OK_MS,
 } from '../access.mjs';
-import { makeKey, mint, TEAM, AUD, OWNER, ADA, NOBODY } from './access-fake.mjs';
+import { makeKey, mint, TEAM, AUD, OWNER, ADA, NOBODY, EXT_ID } from './access-fake.mjs';
 
-const RAW = { hosted_auth: 'access', team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA] };
+const RAW = { hosted_auth: 'access', team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], extension_ids: [EXT_ID] };
 const cfg = () => buildAccessConfig(RAW);
 const key = makeKey('k1');
 // a fetch that answers from memory and counts
@@ -194,7 +194,12 @@ test('a connection record is live until its token expires', () => {
 });
 
 test('settings: what is missing is named, never a value; handles; duplicates', () => {
-  assert.throws(() => buildAccessConfig({}), e => e instanceof AccessConfigError && /team/.test(e.message) && /aud/.test(e.message) && /owner_email/.test(e.message));
+  assert.throws(() => buildAccessConfig({}), e => e instanceof AccessConfigError && /team/.test(e.message) && /aud/.test(e.message) && /owner_email/.test(e.message) && /extension_ids/.test(e.message));
+  const { extension_ids, ...noIds } = RAW;
+  assert.throws(() => buildAccessConfig(noIds), e => e instanceof AccessConfigError && /extension_ids/.test(e.message), 'no list of extension ids: refused');
+  assert.throws(() => buildAccessConfig({ ...RAW, extension_ids: [] }), AccessConfigError);
+  assert.throws(() => buildAccessConfig({ ...RAW, extension_ids: ['short'] }), AccessConfigError);
+  assert.deepEqual(buildAccessConfig({ ...RAW, extension_ids: [EXT_ID.toUpperCase(), EXT_ID] }).extensionIds, [EXT_ID]);
   assert.throws(() => buildAccessConfig({ ...RAW, team: 'https://team.example.test/' }), AccessConfigError);
   assert.throws(() => buildAccessConfig({ ...RAW, aud: 'short' }), AccessConfigError);
   assert.throws(() => buildAccessConfig({ ...RAW, owner_email: 'not an email' }), AccessConfigError);

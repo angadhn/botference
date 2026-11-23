@@ -7,6 +7,7 @@ export const TEAM = 'team.example.test';
 export const AUD = 'aud-tag-0123456789abcdef';
 export const OWNER = 'owner@example.test';
 export const ADA = 'ada@example.test';
+export const EXT_ID = 'abcdefghijklmnopabcdefghijklmnop';   // a configured extension id
 export const NOBODY = 'stranger@example.test';
 
 const b64 = v => Buffer.from(typeof v === 'string' ? v : JSON.stringify(v)).toString('base64url');

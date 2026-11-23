@@ -83,6 +83,10 @@ export function buildAccessConfig(raw, { ownerHandle = '' } = {}) {
   const ownerEmail = typeof r.owner_email === 'string' ? asciiLower(r.owner_email) : '';
   if (!ownerEmail) missing.push("owner_email (the owner's email)");
   else if (!EMAIL.test(ownerEmail)) throw new AccessConfigError('owner_email is not a plain ASCII email address');
+  // the browser extension's id(s): with Access the browser's cookie is the credential, so which extensions may call is never "any"
+  const ids = Array.isArray(r.extension_ids) ? r.extension_ids.map(x => asciiLower(String(x).trim())) : [];
+  if (!ids.length) missing.push("extension_ids (the extension's id from the browser's extensions page; a list)");
+  else if (!ids.every(x => /^[a-p]{32}$/.test(x))) throw new AccessConfigError('extension_ids must be 32-letter extension ids');
   if (missing.length) throw new AccessConfigError(`Cloudflare Access sign-in needs: ${missing.join('; ')}`);
   const list = r.collaborators === undefined ? [] : r.collaborators;
   if (!Array.isArray(list)) throw new AccessConfigError('collaborators must be a list');
@@ -105,7 +109,7 @@ export function buildAccessConfig(raw, { ownerHandle = '' } = {}) {
     if (typeof r.certs_url_for_tests !== 'string' || !/^https?:\/\//.test(r.certs_url_for_tests)) throw new AccessConfigError('certs_url_for_tests must be an http(s) address');
     certsUrl = r.certs_url_for_tests;
   }
-  return { team, aud, owner: ownerEmail, people, certsUrl };
+  return { team, aud, owner: ownerEmail, people, certsUrl, extensionIds: [...new Set(ids)] };
 }
 
 /**

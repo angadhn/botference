@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createHarness, request, GET, POST, FORM, sleep } from './harness.mjs';
-import { makeKey, mint, keyServer, TEAM, AUD, OWNER, ADA, NOBODY } from './access-fake.mjs';
+import { makeKey, mint, keyServer, TEAM, AUD, OWNER, ADA, NOBODY, EXT_ID } from './access-fake.mjs';
 import { ROUTES as FOLLOWING_ROUTES } from '../following.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
@@ -46,7 +46,7 @@ const SKIP = new Set(['GET /events', 'GET /auth-mode', 'POST /auth']);
 const ROUTE_LIST = [...found].filter(r => !SKIP.has(r)).sort().map(r => r.split(' '));
 
 const writeSettings = (h, obj) => fs.writeFileSync(path.join(h.SECRETS, 'plugin-access.json'), JSON.stringify(obj));
-const ACCESS_SETTINGS = { team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], certs_url_for_tests: keys.url };
+const ACCESS_SETTINGS = { team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], extension_ids: [EXT_ID], certs_url_for_tests: keys.url };
 async function boot(mode) {
   const h = H();
   const root = h.tmp('root');
@@ -170,19 +170,24 @@ try {
   await test('the Host allow-list and Origin rules are as they were', async () => {
     // a foreign Origin on the loopback is refused; a trusted extension origin gets credentials-aware CORS in access mode
     assert.equal((await request(A.base, 'GET', '/whoami', undefined, { origin: 'https://evil.example.test' })).status, 403);
-    const pre = await request(A.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'chrome-extension://abcdefghijklmnop', 'access-control-request-method': 'POST' });
+    const pre = await request(A.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'chrome-extension://' + EXT_ID, 'access-control-request-method': 'POST' });
     assert.equal(pre.status, 204);
-    assert.equal(pre.headers['access-control-allow-origin'], 'chrome-extension://abcdefghijklmnop');
+    assert.equal(pre.headers['access-control-allow-origin'], 'chrome-extension://' + EXT_ID);
     assert.equal(pre.headers['access-control-allow-credentials'], 'true');
     const noOrigin = await request(A.base, 'OPTIONS', '/thread', undefined, REMOTE);
     assert.equal(noOrigin.headers['access-control-allow-origin'], undefined, 'no wildcard beside credentials');
     const foreign = await request(A.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'https://evil.example.test' });
     assert.equal(foreign.status, 403); assert.equal(foreign.headers['access-control-allow-origin'], undefined);
-    const pw = await request(P.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'chrome-extension://abcdefghijklmnop' });
+    // an extension that is not on the configured list is a foreign origin, and a name over plain http is too
+    const other = await request(A.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'chrome-extension://' + 'b'.repeat(32) });
+    assert.equal(other.status, 403); assert.equal(other.headers['access-control-allow-origin'], undefined);
+    const plain = await request(A.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'http://' + REMOTE.host });
+    assert.equal(plain.status, 403, 'http is not our own origin in access mode');
+    const pw = await request(P.base, 'OPTIONS', '/thread', undefined, { ...REMOTE, origin: 'chrome-extension://' + EXT_ID });
     assert.equal(pw.headers['access-control-allow-credentials'], undefined, 'password mode is as it was');
     assert.equal((await request(P.base, 'OPTIONS', '/thread', undefined, REMOTE)).headers['access-control-allow-origin'], '*');
     // an answer to an extension's authenticated GET carries the CORS headers too
-    const get = await request(A.base, 'GET', '/whoami', undefined, { ...REMOTE, ...T.owner(), origin: 'chrome-extension://abcdefghijklmnop' });
+    const get = await request(A.base, 'GET', '/whoami', undefined, { ...REMOTE, ...T.owner(), origin: 'chrome-extension://' + EXT_ID });
     assert.equal(get.headers['access-control-allow-credentials'], 'true');
   });
 
@@ -285,6 +290,7 @@ try {
     for (const [bad, want] of [
       [{ hosted_auth: 'access' }, /team.*aud.*owner_email/s],
       [{ hosted_auth: 'access', team: TEAM, aud: AUD }, /owner_email/],
+      [{ hosted_auth: 'access', team: TEAM, aud: AUD, owner_email: OWNER }, /extension_ids/],
       [{ hosted_auth: 'either', team: TEAM, owner_email: OWNER }, /aud/],
       [{ hosted_auth: 'sso', team: TEAM, aud: AUD, owner_email: OWNER }, /hosted_auth must be one of password, access, either/],
       ['{ not json', /could not be read/],
