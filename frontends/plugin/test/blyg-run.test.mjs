@@ -649,3 +649,36 @@ test('cancel re-checks the note right before removing it: an edit made after the
   await b2.pub.cancel({ id: v2.id, token: v2.token });
   assert.ok(fs.lstatSync(path.join(rig.top, v2.note_rel)).isSymbolicLink(), 'a link is left, not unlinked as if it were the note');
 });
+
+test('published_marker: a publish that exits 0 without the done marker is failed(publish) with its output, nothing is stamped, and Retry is offered; with the marker it publishes', async t => {
+  const rig = makeRig({ confirm: 'always', extra: { published_marker: 'State: merged_back' } }); t.after(rig.done);
+  const cmd = args => [process.execPath, '-e', `console.log("some output");console.log(${JSON.stringify(args)})`, 'x', '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, publish: cmd('State: applied') } };
+  const b = boot(rig, { config: home });
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  const v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => b.mode() === 'failed', 'failed at publish');
+  const f = b.pub.current();
+  assert.equal(f.failed_step, 'publish');
+  assert.match(f.failed_reason, /exited 0 but did not finish \(it ended at “State: applied”, not “State: merged_back”\): nothing was published/);
+  assert.match(f.steps.at(-1).output, /State: applied/);
+  assert.equal(b.pages.get(b.page.url).threads[0].blyg_published, undefined, 'the thread is not stamped');
+  assert.deepEqual(f.can, ['retry', 'abandon']);
+  // no marker line at all, an earlier marker followed by another State line: also not done
+  for (const out of ['no state line here', 'State: merged_back\nState: planned']) {
+    const rig2 = makeRig({ confirm: 'always', extra: { published_marker: 'State: merged_back' } }); t.after(rig2.done);
+    const c2 = o => [process.execPath, '-e', `console.log(${JSON.stringify(o)})`, 'x', '{note}'];
+    const b2 = boot(rig2, { config: { ...rig2.home, commands: { ...rig2.home.commands, publish: c2(out) } } });
+    b2.start(); await until(() => b2.mode() === 'planned', 'p'); const v2 = b2.pub.current();
+    await b2.pub.confirm({ id: v2.id, token: v2.token }); await until(() => b2.mode() === 'failed', 'f');
+  }
+  const okcmd = [process.execPath, '-e', 'console.log("State: merged_back")', 'x', '{note}'];
+  const rig3 = makeRig({ confirm: 'always', extra: { published_marker: 'State: merged_back' } }); t.after(rig3.done);
+  const b3 = boot(rig3, { config: { ...rig3.home, commands: { ...rig3.home.commands, publish: okcmd } } });
+  b3.start(); await until(() => b3.mode() === 'planned', 'p3'); const v3 = b3.pub.current();
+  await b3.pub.confirm({ id: v3.id, token: v3.token }); await until(() => b3.mode() === 'published', 'published with the marker');
+  assert.ok(b3.pages.get(b3.page.url).threads[0].blyg_published);
+  assert.match(H.validateHome({ ...rig.home, published_marker: 'a\nb' }).errors.join(), /published_marker must be one line/);
+  assert.equal(H.validateHome({ ...rig.home, published_marker: undefined }).settings.published_marker, '', 'without it the exit code decides');
+});

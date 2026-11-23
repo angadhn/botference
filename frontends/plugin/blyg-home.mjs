@@ -166,6 +166,10 @@ export function validateHome(raw, { env = process.env } = {}) {
     && guardRaw.every(a => typeof a === 'string' && /^-[A-Za-z0-9=_.:-]*$/.test(a) && a.length <= PLAN_GUARD.maxArgChars);
   if (confirm === 'never' && guardOk && guardRaw.length === 0) errors.push('confirm “never” (one click publishes) needs a plan_guard: flags that make your site\'s plan refuse anything but this one note; set one, or use “always”');
   if (!guardOk) errors.push(`plan_guard must be a list (at most ${PLAN_GUARD.maxArgs}) of flags, each starting with “-” and holding only letters, digits and = _ . : -`);
+  // `published_marker`: the line the publish command prints (as its LAST `State:` line) when it is really done, e.g. `State: merged_back`.
+  // With it, a publish that exits 0 without it (the site's command applied afresh and stopped) is a failure, not a publish.
+  const marker = r.published_marker === undefined || r.published_marker === null ? '' : r.published_marker;
+  if (typeof marker !== 'string' || marker.length > 80 || /[\n\r\u0000]/.test(marker)) errors.push('published_marker must be one line of at most 80 characters (for example “State: merged_back”)');
   const passRaw = r.env_pass === undefined ? [] : r.env_pass;
   const pass = Array.isArray(passRaw) && passRaw.every(n => typeof n === 'string' && ENV_NAME.test(n) && !ENV_REFUSED.test(n)) && passRaw.length <= 16 ? passRaw.slice() : null;
   if (!pass) errors.push('env_pass must be a list (at most 16) of upper-case variable names, none of PATH, HOME, LD_*, DYLD_*, NODE_OPTIONS, GIT_* paths and the like');
@@ -181,17 +185,17 @@ export function validateHome(raw, { env = process.env } = {}) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }
   if (errors.length) return { ok: false, errors, settings: null };
-  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice() } };
+  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker } };
 }
 
 /** What is stored: only the fields the owner set, not the derived paths. */
 export const storable = raw => {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard };
+  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };
-export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands, s.confirm, s.plan_guard])).digest('hex');
+export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands, s.confirm, s.plan_guard, s.published_marker])).digest('hex');
 
 /** `{note}` made into one argument each: → the argv to run. */
 export function expandArgv(argv, { rel, abs }) {

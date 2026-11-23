@@ -209,8 +209,14 @@ export function createPublisher(deps) {
     const at = nowIso();
     const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopHandle = stop; }, ...extra });
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
-    const ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
-    const reason = r.timedOut ? `${name} did not finish within ${Math.round(TIME_LIMITS_MS[name] / 1000)} seconds and was stopped`
+    let ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
+    // a publish that exits 0 is a publish only when its LAST `State:` line is the site command's done marker (when one is set)
+    let unfinished = '';
+    if (ok && name === 'publish' && home.settings.published_marker) {
+      const last = (r.output.split('\n').filter(l => /^State:/.test(l)).pop() || '').trim();
+      if (last !== home.settings.published_marker) { ok = false; unfinished = last || 'no State line'; }
+    }
+    const reason = unfinished ? `publish exited 0 but did not finish (it ended at “${unfinished}”, not “${home.settings.published_marker}”): nothing was published` : r.timedOut ? `${name} did not finish within ${Math.round(TIME_LIMITS_MS[name] / 1000)} seconds and was stopped`
       : r.spawnError ? `${name} could not be started (${r.spawnError})` : r.signal ? `${name} was stopped by ${r.signal}` : `${name} exited with code ${r.exit}`;
     return { ok, record, reason };
   }
