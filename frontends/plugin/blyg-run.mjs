@@ -18,12 +18,12 @@
 //   failed       a step failed (`failed_step` says which: prepare, plan, apply or publish); nothing is retried by itself
 //   cancelled    the owner cancelled at the confirmation; the draft was taken away
 //   abandoned    the owner gave the run up
-//   interrupted  the companion stopped mid-run; the record only offers "show" and "abandon"
+//   interrupted  the companion stopped mid-run; the record offers "continue" (an interrupted apply or publish) and "abandon"
 //
 // ONE RUN AT A TIME for the whole companion: while any run is not finished a second
 // request is REFUSED (never queued). A run survives a drawer reload (it lives here and
 // in a file, not in the page) and a companion restart turns every unfinished run into
-// `interrupted`.
+// `interrupted`, except a `failed` one (nothing of it was running; it keeps its retry and abandon).
 //
 // WHAT RUNS WHEN. Step A (start): write the note file inside the notes folder, run `plan`.
 // No other file is touched and nothing leaves this machine. Step B: the owner sees the
@@ -56,7 +56,8 @@ export const RUN_MOVES = Object.freeze({
   applied: Object.freeze(['publishing', 'failed', 'interrupted']),
   publishing: Object.freeze(['published', 'failed', 'interrupted']),
   // a failed step is tried again only by the owner's click, and only that step
-  failed: Object.freeze(['preparing', 'planning', 'applying', 'publishing', 'abandoned', 'interrupted']),
+  // (a restart leaves a failed run as it is: no step of it is running, and `failed_step` must survive for retry and for abandon)
+  failed: Object.freeze(['preparing', 'planning', 'applying', 'publishing', 'abandoned']),
   // an interrupted apply or publish may be CONTINUED (the site's own command resumes by running the same step again): see CONTINUE_FOR
   interrupted: Object.freeze(['applying', 'publishing', 'abandoned']),
   published: Object.freeze(['drafted']),
@@ -71,6 +72,8 @@ export const CONTINUE_FOR = Object.freeze({ applying: 'applying', applied: 'publ
 export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned']);
 /** The modes in which a command of ours is running right now. */
 export const RUNNING_MODES = Object.freeze(['preparing', 'planning', 'applying', 'publishing']);
+/** Unfinished modes a companion restart does NOT turn into `interrupted`: nothing of the run is in flight and the owner acts next. */
+export const RESTART_KEEPS = Object.freeze(['failed', 'interrupted']);
 export class IllegalMove extends Error {}
 // has this run not reached apply? (derived from the one mode field and the step that failed or was interrupted)
 export const beforeApply = run => (run.mode === 'failed' ? ['prepare', 'plan'].includes(run.failed_step)
@@ -80,7 +83,7 @@ const workBegun = run => !(run.mode === 'drafted' || (run.mode === 'interrupted'
 /** Is this move allowed for this record? (the table, plus the one guard on a retry) */
 export function canMove(from, to, run = {}) {
   if (!RUN_MOVES[from] || !RUN_MOVES[from].includes(to)) return false;
-  if (from === 'failed' && to !== 'abandoned' && to !== 'interrupted') return RETRY_FOR[run.failed_step] === to;
+  if (from === 'failed' && to !== 'abandoned') return RETRY_FOR[run.failed_step] === to;
   if (from === 'interrupted' && to !== 'abandoned') return CONTINUE_FOR[run.interrupted_from] === to;
   return true;
 }
@@ -105,12 +108,12 @@ export class RunBook {
     this.load();
   }
   get mode() { return this.run.mode; }
-  /** Read the record; a run that was unfinished when the companion stopped becomes `interrupted`. */
+  /** Read the record; a run that was unfinished when the companion stopped becomes `interrupted` (unless RESTART_KEEPS its mode). */
   load() {
     const got = this.file ? readJsonState(this.file) : { state: 'missing' };
     if (got.state !== 'ok' || !got.value || !RUN_MODES.includes(got.value.mode)) return;
     this.run = got.value;
-    if (RUN_LIVE.includes(this.run.mode) && this.run.mode !== 'interrupted') {
+    if (RUN_LIVE.includes(this.run.mode) && !RESTART_KEEPS.includes(this.run.mode)) {
       this.move('interrupted', { interrupted_from: this.run.mode, interrupted_why: 'the companion stopped while this run was under way' });
     }
   }

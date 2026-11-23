@@ -261,7 +261,7 @@ test('abandon: before apply the draft goes; after apply nothing is touched and t
 test('a companion restart mid-run leaves a record that offers only "show what happened" and "abandon"', async t => {
   const rig = makeRig(); t.after(rig.done);
   fs.writeFileSync(path.join(rig.folder, 'x.md'), 'T');
-  for (const mode of ['planning', 'planned', 'applying', 'applied', 'publishing', 'failed']) {
+  for (const mode of ['planning', 'planned', 'applying', 'applied', 'publishing']) {
     const file = path.join(rig.out, `crash-${mode}.json`);
     fs.writeFileSync(file, JSON.stringify({ mode, id: 'abc', token: 'tok', note_rel: '_notes/x.md', note_text: 'T', note_sha: crypto.createHash('sha256').update('T').digest('hex'), steps: [{ step: 'plan', exit: 0, output: 'seen' }], failed_step: 'apply', page_url: 'u', thread_ids: ['t1'] }));
     const pub = R.createPublisher({ file, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {}, broadcast: () => {} });
@@ -459,6 +459,50 @@ test('abandon after a failed prepare takes the draft away through discard', asyn
   assert.ok(a.ok);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'discard']);
   assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), false);
+});
+
+// A failed run is not "mid-run": nothing of it is running. A restart used to turn it into `interrupted` (interrupted_from 'failed'),
+// which dropped `failed_step`, so a run that failed at PLAN was then treated as one past apply: abandon skipped the discard and the
+// note, and the staging commit the site's prepare made stayed behind. Now it stays `failed`, keeps its retry, and abandons correctly.
+test('a restart leaves a failed run failed: its retry is still offered, and abandoning a plan failure discards and removes the draft', async t => {
+  const rig = makeRig({ prepare: true }); t.after(rig.done);
+  rig.control({ plan: 'fail' });
+  const b = boot(rig);
+  assert.ok(b.start().ok);
+  await until(() => b.mode() === 'failed', 'failed at plan');
+  const before = b.pub.current();
+  assert.equal(before.failed_step, 'plan');
+  const note = noteOf(rig, before);
+  assert.ok(fs.existsSync(note));
+  // the companion restarts
+  const again = R.createPublisher({ file: b.file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
+  const v = again.current();
+  assert.deepEqual([v.mode, v.failed_step, v.can], ['failed', 'plan', ['retry', 'abandon']]);
+  assert.equal(R.canMove('failed', 'interrupted', { failed_step: 'plan' }), false, 'failed → interrupted is not a move');
+  const a = await again.abandon({ id: v.id, token: v.token });
+  assert.ok(a.ok, JSON.stringify(a));
+  assert.equal(a.view.mode, 'abandoned');
+  assert.equal(a.view.cleanup.removed, true, 'the draft is removed: the run never reached apply');
+  assert.ok(!fs.existsSync(note));
+  assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'discard'], 'discard ran (it undoes what prepare did); no abandon of an apply');
+});
+
+test('a restart leaves a failed apply failed: retry runs apply again', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  rig.control({ apply: 'fail' });
+  const b = boot(rig);
+  assert.ok(b.start().ok);
+  await until(() => b.mode() === 'planned', 'planned');
+  const p = b.pub.current();
+  assert.ok(b.pub.confirm({ id: p.id, token: p.token }).ok);
+  await until(() => b.mode() === 'failed', 'failed at apply');
+  rig.control({});
+  const again = R.createPublisher({ file: b.file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
+  const v = again.current();
+  assert.deepEqual([v.mode, v.failed_step, v.can], ['failed', 'apply', ['retry', 'abandon']]);
+  assert.ok(again.retry({ id: v.id, token: v.token }).ok);
+  await until(() => again.current().mode === 'published', 'published after the retry');
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan', 'apply', 'apply', 'publish']);
 });
 
 test('a restart while preparing is interrupted like any other live mode', () => {
