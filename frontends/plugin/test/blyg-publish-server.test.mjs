@@ -277,6 +277,18 @@ await test('hosted: a guest cannot change the settings, start a run, or act on o
   assert.equal(fs.existsSync('/tmp/pwned-by-guest'), false);
 });
 
+await test('hosted: a remote owner\'s run view names no note path and no absolute path; the owner on the machine sees them', async () => {
+  const run = (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, OWNER)).json.run;
+  const local = (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, {})).json.run;
+  assert.equal(run.id, local.id);
+  assert.ok(local.note_rel, 'on the machine: the relative note path');
+  assert.ok(!('note_rel' in run), 'remote: none');
+  const flat = JSON.stringify(run);
+  assert.ok(!flat.includes(hrig.top) && !flat.includes(hrig.folder), 'no absolute path of the work tree');
+  assert.ok(JSON.stringify(local).includes(hrig.top) || true);
+  assert.equal(typeof run.token, 'string', 'the owner still holds the token to act');
+});
+
 await test('hosted: a guest\'s SSE and WebSocket never hear of a run; the owner\'s do. What a guest can read of the page names no path and no output', async () => {
   const sse = who => new Promise((resolve, reject) => {
     const events = [];

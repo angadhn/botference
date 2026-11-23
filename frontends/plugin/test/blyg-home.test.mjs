@@ -84,17 +84,18 @@ test('the file name pattern and the names it makes', () => {
 });
 
 test('the limits are the ones stated', () => {
-  assert.deepEqual(H.TIME_LIMITS_MS, { prepare: 300000, plan: 120000, apply: 900000, publish: 1800000, discard: 60000, abandon: 60000 });
+  assert.deepEqual(H.TIME_LIMITS_MS, { check: 15000, prepare: 300000, plan: 120000, apply: 1800000, publish: 1800000, discard: 60000, abandon: 60000 });
   assert.deepEqual([H.OUTPUT.maxBuffer, H.OUTPUT.kept, H.ARGV.maxArgs, H.ARGV.maxArgChars], [4194304, 65536, 32, 400]);
 });
 
-test('a command\'s life is one named list in one field: every move listed or refused, and `exited` is left by nothing', () => {
+test('a command\'s life is one named list in one field: every move listed or refused, an ending is left by nothing, and the ending says how it ended (no separate cause)', () => {
   for (const from of H.CMD_STATES) for (const to of H.CMD_STATES) {
     const cmd = { state: from };
     if (H.CMD_MOVES[from].includes(to)) { H.moveCmd(cmd, to); assert.equal(cmd.state, to, `${from} → ${to}`); }
     else { assert.throws(() => H.moveCmd(cmd, to), /cannot go from/, `${from} → ${to}`); assert.equal(cmd.state, from); }
   }
-  assert.deepEqual(H.CMD_MOVES.exited, []);
+  for (const end of ['done', 'timed-out', 'flooded', 'failed-to-start']) assert.deepEqual(H.CMD_MOVES[end], [], `${end} is left by nothing`);
+  assert.deepEqual(Object.keys(H.CMD_ENDING).sort(), ['flooding', 'running', 'spawn-failing', 'timing-out'], 'each way of ending has exactly one ending');
   assert.throws(() => H.moveCmd({ state: 'running' }, 'settled'), /no such state/);
   const src = fs.readFileSync(new URL('../blyg-home.mjs', import.meta.url), 'utf8');
   assert.ok(!/\b(timedOut|flooded|settled)\s*=/.test(src.slice(src.indexOf('export function runCommand'))), 'no boolean flags standing in for the lifecycle');

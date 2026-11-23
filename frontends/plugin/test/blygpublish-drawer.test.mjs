@@ -195,9 +195,9 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('planned', { confirm: 'never', thread_ids: ['t1'], steps: [{ step: 'plan', exit: 0, output: 'P' }] });
   drawer.blygPublishMoved(); await tick(5);
   eq('planned is NOT a confirmation when nobody has to confirm: no buttons, still running', [view(), dlg().hidden, qa('[data-act="pub-confirm"]').length], ['running', true, 0]);
-  server.run = server.make('publishing', { confirm: 'never', thread_ids: ['t1'] });
+  server.run = server.make('publishing', { confirm: 'never', thread_ids: ['t1'], running: { step: 'publish', elapsed_ms: 192000, last_line: 'waiting for the deploy of 3f2a91c <b>x</b>' } });
   drawer.blygPublishMoved(); await tick(5);
-  eq('publishing is on the line', q('.publine').textContent, 'Publishing as a blyg… publishing to your site');
+  eq('publishing is on the line, with the step, how long and the last line it printed (as text)', [q('.publine').textContent, qa('.publine b').length], ['Publishing as a blyg… publishing to your site (publish, 3 min 12 s · waiting for the deploy of 3f2a91c <b>x</b>)', 0]);
   server.run = server.make('published', { confirm: 'never', thread_ids: ['t1'], published: { title: 't', permalink: '/b/t', address: 'https://site.example.test/b/t' } });
   drawer.blygPublishMoved(); await tick(5);
   eq('published: the link on the thread, the view free again', [view(), q('.publine.done a').getAttribute('href'), dlg().hidden], ['closed', 'https://site.example.test/b/t', true]);

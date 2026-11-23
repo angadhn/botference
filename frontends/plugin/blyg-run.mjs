@@ -35,7 +35,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
-import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
+import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheckSync, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
 import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
@@ -208,6 +208,7 @@ export function createPublisher(deps) {
   const exec = deps.exec || runCommand;
   const env = deps.env || process.env;
   const clock = () => (deps.now ? deps.now() : new Date());
+  let live = null;         // the running step as far as a client needs to see it: { step, started, last }
   let stopHandle = null;   // how to stop the command that is running (meaningful only in RUNNING_MODES)
 
   const settingsNow = () => validateHome(deps.readConfig().blyg_home, { env });
@@ -247,7 +248,9 @@ export function createPublisher(deps) {
     const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
-    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
+    live = { step: name, started: Date.now(), last: '' };
+    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onLine: l => { if (live) live.last = l; }, onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
+    live = null;
     if (book.run.child) { delete book.run.child; book.persist(); }
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
     let ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
@@ -294,6 +297,11 @@ export function createPublisher(deps) {
     const home = settingsNow();
     if (!home.ok) return fail(409, `Publish as blyg is not set up: ${home.errors[0]}. Set “Where my blyg lives” on the companion first.`);
     const S = home.settings;
+    // THE PRE-FLIGHT, before anything is written: a broken environment fails here, in about a second, with the check's own sentence
+    if (S.commands.check) {
+      const c = (deps.check || runCheckSync)({ argv: S.commands.check, cwd: S.top, env: minimalEnv(S.env_pass, env) });
+      if (!c.ok) return fail(409, `Publish as blyg cannot start: ${c.message}`);
+    }
     // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
     // first when one click publishes, or the reverse)
     if (shown !== S.confirm) return fail(409, `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${S.confirm}” is in force (${S.confirm === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`);
@@ -500,6 +508,8 @@ export function createPublisher(deps) {
   /** The owner client resumes: the current run (a client that reloaded asks this). */
   function current() {
     const v = viewOf(book.run);
+    // while a step runs: which one, how long, and the last line it printed (owner only, like everything here)
+    if (live && RUNNING_MODES.includes(book.mode)) v.running = { step: live.step, elapsed_ms: Date.now() - live.started, last_line: live.last };
     const taint = taintOf(book.run);
     if (taint) { v.can = ['abandon']; v.tainted = taint; }
     else if (book.mode === 'interrupted' && childAlive(book.run.child)) { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }

@@ -811,3 +811,43 @@ test('childAlive: a group that does not exist, a malformed record, and (where ps
   let ps = false; try { ps = !!execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { ps = false; }
   if (ps) assert.equal(R.childAlive({ pgid: process.pid, lstart: 'Mon Jan  1 00:00:00 2001' }), false, 'same number, different start time: another process');
 });
+
+test('F10: while a step runs the view says which step, how long it has gone and the last line it printed (never a silent half hour); nothing of it after', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const slow = [process.execPath, '-e', 'console.log("first line");console.log("building page 3 of 9\\u001b[31m");setTimeout(()=>{},1200)', 'x', '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, apply: slow } };
+  const b = boot(rig, { config: home });
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  const v = b.pub.current();
+  assert.equal(v.running, undefined, 'nothing running while it waits for the owner');
+  await b.pub.confirm({ id: v.id, token: v.token });
+  const seen = await until(() => { const c = b.pub.current(); return c.running && c.running.last_line.includes('page 3') ? c : null; }, 'a progress line');
+  assert.deepEqual([seen.running.step, seen.mode, seen.running.last_line], ['apply', 'applying', 'building page 3 of 9'], 'the last line, with control codes removed');
+  await sleep(300);
+  assert.ok(b.pub.current().running.elapsed_ms >= 250, 'elapsed time grows');
+  await until(() => b.mode() === 'published', 'published');
+  assert.equal(b.pub.current().running, undefined);
+  assert.equal(H.TIME_LIMITS_MS.apply, 1_800_000);
+});
+
+test('the pre-flight check runs before anything is written; its own sentence refuses the start; no check set: no change', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const bad = [process.execPath, '-e', 'console.log("ruby 2.6.10 is on PATH, 3.2 needed");console.log("BLYG_CHECKER is not set");process.exit(1)'];
+  const b = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: bad } } });
+  const r = b.start();
+  assert.equal(r.ok, false); assert.equal(r.status, 409);
+  assert.match(r.error, /^Publish as blyg cannot start: ruby 2\.6\.10 is on PATH, 3\.2 needed\nBLYG_CHECKER is not set$/);
+  assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing written');
+  assert.deepEqual(rig.calls(), []); assert.equal(b.mode(), 'idle');
+  // a check that hangs is cut at its limit; one that cannot be started is a plain message
+  const missing = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: ['no-such-check-xyz'] } } });
+  assert.match(missing.start().error, /The check could not be started \(ENOENT\)/);
+  // a passing check lets the run go on, and gets no {note} (the environment, not a note)
+  const ok = [process.execPath, '-e', 'console.log("all good")'];
+  const b2 = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: ok } } });
+  assert.ok(b2.start().ok);
+  await until(() => b2.mode() === 'planned', 'planned');
+  assert.ok(H.validateHome({ ...rig.home, commands: { ...rig.home.commands, check: ok } }).ok);
+  assert.match(H.validateHome({ ...rig.home, commands: { ...rig.home.commands, check: ['/bin/sh', '-c', 'x'] } }).errors.join(), /shell/);
+  assert.equal(H.TIME_LIMITS_MS.check, 15000);
+});

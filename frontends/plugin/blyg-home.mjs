@@ -23,15 +23,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone } from './blyg-note.mjs';
 
 // ---- the limits, stated once ---------------------------------------------------
 export const STEPS = Object.freeze(['plan', 'apply', 'publish']);
 // `prepare` (optional) runs before `plan`, after the note is written: for a site that has to stage the note or fetch what it
 // quotes first. `discard` (optional) undoes whatever prepare or plan did, when the owner cancels or abandons before apply.
-export const COMMAND_KEYS = Object.freeze(['prepare', ...STEPS, 'discard', 'abandon']);
-export const TIME_LIMITS_MS = Object.freeze({ prepare: 300_000, plan: 120_000, apply: 900_000, publish: 1_800_000, discard: 60_000, abandon: 60_000 });
+export const COMMAND_KEYS = Object.freeze(['check', 'prepare', ...STEPS, 'discard', 'abandon']);
+export const TIME_LIMITS_MS = Object.freeze({ check: 15_000, prepare: 300_000, plan: 120_000, apply: 1_800_000, publish: 1_800_000, discard: 60_000, abandon: 60_000 });
 export const OUTPUT = Object.freeze({
   maxBuffer: 4 * 1024 * 1024,   // a command that prints more than this is stopped
   kept: 64 * 1024,              // what is stored and shown: the first 8 KiB and the last 56 KiB
@@ -102,7 +102,7 @@ export function filenameFor(pattern, { slug, date }) {
 
 // `{note}` is required in every command, `abandon` too: the site's own end-the-run command is told WHICH note's run to end, so it
 // cannot end a run the owner started by hand for another note
-function checkArgv(key, argv, top, errors) {
+function checkArgv(key, argv, top, errors, { needNote = true } = {}) {
   const at = `command “${key}”`;
   if (!Array.isArray(argv) || !argv.length) { errors.push(`${at} is not set (an argv list, for example ["scripts/publish", "{note}"])`); return null; }
   if (argv.length > ARGV.maxArgs) { errors.push(`${at} has more than ${ARGV.maxArgs} arguments`); return null; }
@@ -111,7 +111,7 @@ function checkArgv(key, argv, top, errors) {
   }
   if (!argv[0].trim()) { errors.push(`${at}: the program is empty`); return null; }
   if (argv[0].includes(NOTE_TOKEN) || argv[0].includes(NOTE_ABS_TOKEN)) { errors.push(`${at}: the program itself may not hold {note}`); return null; }
-  if (!argv.slice(1).some(a => a.includes(NOTE_TOKEN) || a.includes(NOTE_ABS_TOKEN))) { errors.push(`${at} must have {note} in one of its arguments`); return null; }
+  if (needNote && !argv.slice(1).some(a => a.includes(NOTE_TOKEN) || a.includes(NOTE_ABS_TOKEN))) { errors.push(`${at} must have {note} in one of its arguments`); return null; }
   if (SHELLS.has(path.basename(argv[0]).toLowerCase())) { errors.push(`${at}: a shell (or env, sudo, xargs) is not accepted as the program: name the program itself`); return null; }
   if (argv[0].includes('/')) {
     const abs = path.isAbsolute(argv[0]) ? argv[0] : path.resolve(top, argv[0]);
@@ -185,6 +185,8 @@ export function validateHome(raw, { env = process.env } = {}) {
   for (const k of ['prepare', 'discard', 'abandon']) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }
+  // `check` (optional): the pre-flight, run before ANYTHING is written; about the environment, so it has no {note}
+  if (cmds.check !== undefined && cmds.check !== null) { const a = checkArgv('check', cmds.check, top || process.cwd(), errors, { needNote: false }); if (a) commands.check = a; }
   if (errors.length) return { ok: false, errors, settings: null };
   return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker } };
 }
@@ -212,21 +214,24 @@ export function capOutput(text) {
   return { text: `${s.slice(0, OUTPUT.head)}\n… ${s.length - OUTPUT.kept} characters cut …\n${s.slice(-tail)}`, truncated: true };
 }
 
-// A command's life, as ONE named list in ONE field (`cmd.state`), changed only by `moveCmd`, which refuses a move the table does
-// not list. `exited` is the only state that resolves the promise, and nothing leaves it, so the result can be given exactly once.
-//   running       started (or about to be)
-//   timed-out     its time limit passed: its process group was told to stop
-//   flooded       it printed more than OUTPUT.maxBuffer: its process group was told to stop
-//   spawn-failed  the program could not be started
-//   exited        done: the one state the result is made in
-export const CMD_STATES = Object.freeze(['running', 'timed-out', 'flooded', 'spawn-failed', 'exited']);
+// A command's life, as ONE named list in ONE field (`cmd.state`), changed only by `moveCmd`, which refuses a move the table does not
+// list. The state it ENDS in says how it ended, so there is nothing else to remember; the result is made only on the move into an
+// ending state, which nothing leaves, so it is made exactly once.
+//   running       started
+//   timing-out    its time limit passed: its process group was told to stop
+//   flooding      it printed more than OUTPUT.maxBuffer: its process group was told to stop
+//   spawn-failing the program could not be started
+//   done | timed-out | flooded | failed-to-start     the four endings
+export const CMD_STATES = Object.freeze(['running', 'timing-out', 'flooding', 'spawn-failing', 'done', 'timed-out', 'flooded', 'failed-to-start']);
 export const CMD_MOVES = Object.freeze({
-  running: Object.freeze(['timed-out', 'flooded', 'spawn-failed', 'exited']),
-  'timed-out': Object.freeze(['exited']),
-  flooded: Object.freeze(['exited']),
-  'spawn-failed': Object.freeze(['exited']),
-  exited: Object.freeze([]),
+  running: Object.freeze(['timing-out', 'flooding', 'spawn-failing', 'done']),
+  'timing-out': Object.freeze(['timed-out']),
+  flooding: Object.freeze(['flooded']),
+  'spawn-failing': Object.freeze(['failed-to-start']),
+  done: Object.freeze([]), 'timed-out': Object.freeze([]), flooded: Object.freeze([]), 'failed-to-start': Object.freeze([]),
 });
+/** The ending each state reaches when the process is gone. */
+export const CMD_ENDING = Object.freeze({ running: 'done', 'timing-out': 'timed-out', flooding: 'flooded', 'spawn-failing': 'failed-to-start' });
 export function moveCmd(cmd, to) {
   if (!CMD_STATES.includes(to)) throw new Error(`command: no such state ${String(to).slice(0, 20)}`);
   if (!CMD_MOVES[cmd.state].includes(to)) throw new Error(`command: cannot go from ${cmd.state} to ${to}`);
@@ -241,11 +246,10 @@ export function moveCmd(cmd, to) {
  * and stopped past OUTPUT.maxBuffer. Never rejects.
  * → { exit, signal, timedOut, spawnError, output, truncated, ms }. `onChild(stop)` hands the caller a way to stop it.
  */
-export function runCommand({ argv, cwd, env, limitMs, onChild }) {
+export function runCommand({ argv, cwd, env, limitMs, onChild, onLine }) {
   return new Promise(resolve => {
     const t0 = Date.now();
     const cmd = { state: 'running' };
-    let cause = 'running';          // the state it was in when it exited
     let spawnCode = '';
     let timer = null;
     let killer = null;
@@ -255,33 +259,48 @@ export function runCommand({ argv, cwd, env, limitMs, onChild }) {
     let child = null;
     const killGroup = sig => { try { process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch { /* gone */ } } };
     const stop = to => { moveCmd(cmd, to); killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); };
-    // THE one place a result is made: only a move to `exited` gets here, and a command can leave `exited` never
+    // THE one place a result is made: only a move into an ending gets here, and nothing leaves an ending
     const finish = (code, signal) => {
-      cause = cmd.state;
-      if (cause === 'exited') return;
-      moveCmd(cmd, 'exited');
+      if (!CMD_ENDING[cmd.state]) return;
+      moveCmd(cmd, CMD_ENDING[cmd.state]);
       clearTimeout(timer); clearTimeout(killer);
       const stdout = Buffer.concat(out).toString('utf8');
       const stderr = Buffer.concat(err).toString('utf8');
-      const capped = capOutput(`${stdout}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}${cause === 'flooded' ? '\n[stopped: the command printed more than it may]' : ''}`);
-      resolve({ exit: typeof code === 'number' && cause !== 'flooded' ? code : null, signal: signal || '', timedOut: cause === 'timed-out',
-        spawnError: cause === 'spawn-failed' ? (spawnCode || 'SPAWN') : (cause === 'flooded' ? 'OUTPUT_LIMIT' : ''),
-        output: capped.text, truncated: capped.truncated || cause === 'flooded', ms: Date.now() - t0 });
+      const capped = capOutput(`${stdout}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}${cmd.state === 'flooded' ? '\n[stopped: the command printed more than it may]' : ''}`);
+      resolve({ exit: typeof code === 'number' && cmd.state !== 'flooded' ? code : null, signal: signal || '', timedOut: cmd.state === 'timed-out',
+        spawnError: cmd.state === 'failed-to-start' ? (spawnCode || 'SPAWN') : (cmd.state === 'flooded' ? 'OUTPUT_LIMIT' : ''),
+        output: capped.text, truncated: capped.truncated || cmd.state === 'flooded', ms: Date.now() - t0 });
     };
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, env, shell: false, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) { moveCmd(cmd, 'spawn-failed'); spawnCode = 'SPAWN'; err.push(Buffer.from(String((e && e.message) || e))); return finish(null, ''); }
+    } catch (e) { moveCmd(cmd, 'spawn-failing'); spawnCode = 'SPAWN'; err.push(Buffer.from(String((e && e.message) || e))); return finish(null, ''); }
+    let partial = '';
     const take = list => chunk => {
       if (cmd.state !== 'running') return;
+      if (typeof onLine === 'function') { partial += chunk.toString('utf8'); const ls = partial.split('\n'); partial = ls.pop().slice(-400); for (const l of ls) if (l.trim()) { try { onLine(l.replace(ANSI, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '').trim().slice(0, 200)); } catch { /* a bad listener never stops the command */ } } }
       size += chunk.length;
-      if (size > OUTPUT.maxBuffer) { stop('flooded'); return; }
+      if (size > OUTPUT.maxBuffer) { stop('flooding'); return; }
       list.push(chunk);
     };
     child.stdout.on('data', take(out));
     child.stderr.on('data', take(err));
-    child.on('error', e => { if (cmd.state === 'running') { moveCmd(cmd, 'spawn-failed'); spawnCode = (e && e.code) || 'SPAWN'; } finish(null, ''); });
+    child.on('error', e => { if (cmd.state === 'running') { moveCmd(cmd, 'spawn-failing'); spawnCode = (e && e.code) || 'SPAWN'; } finish(null, ''); });
     child.on('close', (code, signal) => finish(code, signal));
-    timer = setTimeout(() => { if (cmd.state === 'running') stop('timed-out'); }, limitMs);
+    timer = setTimeout(() => { if (cmd.state === 'running') stop('timing-out'); }, limitMs);
     if (typeof onChild === 'function') onChild(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); }, child.pid);
   });
+}
+
+/**
+ * The pre-flight: run the owner's `check` command ONCE, synchronously, before a run writes anything (it is about the environment and
+ * should answer in about a second; the limit is TIME_LIMITS_MS.check, so the companion is never held longer than that).
+ * → { ok, message }: `message` is the command's own plain words (the tail of what it printed), or why it could not run.
+ */
+export function runCheckSync({ argv, cwd, env }) {
+  const r = spawnSync(argv[0], argv.slice(1), { cwd, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'], timeout: TIME_LIMITS_MS.check, maxBuffer: 256 * 1024, encoding: 'utf8', windowsHide: true });
+  const text = capOutput(`${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`).text.trim();
+  if (r.error && r.error.code === 'ETIMEDOUT') return { ok: false, message: `The check did not answer within ${TIME_LIMITS_MS.check / 1000} seconds.` };
+  if (r.error) return { ok: false, message: `The check could not be started (${r.error.code || r.error.message}).` };
+  if (r.status !== 0) return { ok: false, message: text.split('\n').slice(-8).join('\n') || `The check failed (exit ${r.status}).` };
+  return { ok: true, message: text };
 }

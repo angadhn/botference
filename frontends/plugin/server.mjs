@@ -4213,6 +4213,20 @@ export function handler(req, res) {
     // THE COMMAND SET IS SET ON THE MACHINE, never over a tunnel: it decides what gets run here. A remote owner session can use
     // the feature and read a redacted view (no paths, no commands), but cannot read the page or change the setting.
     const here = isLocalDirect(req);
+    // A REMOTE owner session sees the run without where it is on this machine: no note path, and absolute paths in what the commands
+    // printed are replaced (the owner on the machine sees everything).
+    const scrub = t => String(t == null ? '' : t).replace(/(?<![\w:/.-])(?:\/[^\s/"'<>()\[\]]+){2,}\/?/g, '<path>');
+    const runFor = v => {
+      if (here || !v) return v;
+      const c = { ...v };
+      delete c.note_rel;
+      c.steps = (v.steps || []).map(s => ({ ...s, output: scrub(s.output) }));
+      c.failed_reason = scrub(v.failed_reason); c.interrupted_why = scrub(v.interrupted_why);
+      if (v.tainted) c.tainted = scrub(v.tainted);
+      if (v.cleanup) c.cleanup = Object.fromEntries(Object.entries(v.cleanup).map(([k, x]) => [k, typeof x === 'string' ? scrub(x) : x]));
+      if (v.running) c.running = { ...v.running, last_line: scrub(v.running.last_line) };
+      return c;
+    };
     const homeView = () => {
       const raw = store.readConfig().blyg_home;
       const v = validateHome(raw);
@@ -4245,7 +4259,7 @@ export function handler(req, res) {
     }
     if (req.method === 'GET' && url === '/blyg-publish/run') {
       const v = validateHome(store.readConfig().blyg_home);
-      return ok(res, { run: blygPublish.current(), confirm: v.ok ? v.settings.confirm : 'always' });
+      return ok(res, { run: runFor(blygPublish.current()), confirm: v.ok ? v.settings.confirm : 'always' });
     }
     const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
     if (req.method === 'POST' && url === '/blyg-publish/start') {
@@ -4254,13 +4268,13 @@ export function handler(req, res) {
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
         const r = blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || '') });
-        return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
+        return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
       });
     }
     if (req.method === 'POST' && acts[url]) {
       return readBody(req, res, async data => {
         const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes' });
-        return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
+        return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
       });
     }
     return fail(res, 404, 'not found');

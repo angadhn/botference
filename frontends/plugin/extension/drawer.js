@@ -10655,6 +10655,9 @@ ${bubbleShellHtml()}`;
     const PUB_WORDS = { drafted: 'writing the note', preparing: 'preparing it for your site', planning: 'checking what would change', planned: 'building and testing',
       applying: 'building and testing', applied: 'publishing to your site', publishing: 'publishing to your site' };
     // THE ONE LINE on a thread: what a run that has this thread in it is doing now, then the link to the live post
+    const pubElapsed = ms => { const s = Math.max(0, Math.round((ms || 0) / 1000)); return s < 60 ? s + ' s' : Math.floor(s / 60) + ' min ' + (s % 60) + ' s'; };
+    // the current step, how long it has been going, and the last line it printed: a long step is never silent
+    const pubProgress = r => (r && r.running ? ' (' + esc(r.running.step) + ', ' + pubElapsed(r.running.elapsed_ms) + (r.running.last_line ? ' · ' + esc(r.running.last_line) : '') + ')' : '');
     function pubLine(t) {
       if (!D.owner || pubPublished(t)) return '';
       const r = D.pub.run;
@@ -10664,7 +10667,7 @@ ${bubbleShellHtml()}`;
         const a = safeHttp((r.published || {}).address);
         return `<div class="publine done" role="status">Published${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : (r.published && r.published.permalink ? ' at <code>' + esc(r.published.permalink) + '</code>' : '')}</div>`;
       }
-      if (PUB_WORDS[r.mode]) return `<div class="publine" role="status">Publishing as a blyg… ${esc(PUB_WORDS[r.mode])}</div>`;
+      if (PUB_WORDS[r.mode]) return `<div class="publine" role="status">Publishing as a blyg… ${esc(PUB_WORDS[r.mode])}${pubProgress(r)}</div>`;
       return '';
     }
     async function pubRefresh() {
@@ -10836,7 +10839,7 @@ ${bubbleShellHtml()}`;
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.shown === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting': case 'working':
-          return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+          return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.${pubProgress(run)}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
         case 'waiting':
           return `<h2>A publish is waiting</h2><p>${run.title ? '“' + esc(run.title) + '” is ' : 'A blyg post is '}${esc(run.mode || 'under way')}. Review it to carry on.</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-review">Review</button>${closeBtn}</div>`;
@@ -10853,7 +10856,7 @@ ${bubbleShellHtml()}`;
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">Publish</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button></div>`;
         }
         case 'running':
-          return `<h2>Publishing…</h2><p>${esc({ applying: 'Preparing, building and testing (apply).', applied: 'Applied. Publishing next.', publishing: 'Publishing. This can take several minutes while the site is rebuilt.' }[run.mode] || 'Working.')}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+          return `<h2>Publishing…</h2><p>${esc({ applying: 'Preparing, building and testing (apply).', applied: 'Applied. Publishing next.', publishing: 'Publishing. This can take several minutes while the site is rebuilt.' }[run.mode] || 'Working.')}${pubProgress(run)}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
         case 'done': {
           const pub = run.published || {};
           const a = safeHttp(pub.address);
