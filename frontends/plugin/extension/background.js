@@ -265,7 +265,8 @@ function denySocket() {
 function resumeAfterSignin() {
   if (wsState !== 'signin') return;
   forceReconnect();
-  ensureSocket();
+  moveSocket('retry');
+  openSocket();
 }
 // A closed socket to a remote companion may be Cloudflare turning the upgrade away: ask the one cheap route, with the cookie, and
 // let the answer's kind decide (a sign-in answer moves the mode, anything else leaves it to the retry)
@@ -276,8 +277,9 @@ async function probeSignin() {
     const res = await fetch(CFG.httpUrl(CONF.base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(CONF.base) });
     const text = await res.text().catch(() => '');
     const kind = CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
-    if (kind === 'signin') denySocket(); else if (wsState === 'signin' && res.ok) resumeAfterSignin();
+    if (kind === 'signin') denySocket(); else if (wsState === 'signin' && kind === 'data') resumeAfterSignin();
   } catch { /* unreachable is the retry's business */ }
+  if (wsState === 'signin') scheduleRetry();   // still waiting for the sign-in: ask again later
 }
 // The socket is long-lived, so it has no time limit of its own; its heartbeat
 // is the check instead. The companion pings every 15s (server.mjs
@@ -479,11 +481,16 @@ function refreshIndexSoon() {
 // exactly as it was — only the address is now a function of the settings.
 async function ensureSocket() {
   if (wsState === 'connected' || wsState === 'connecting') return;
-  // from 'signin' the mode stays put while the socket is tried (a failed try is not an outage; it opening is 'reach')
-  if (wsState !== 'signin') moveSocket('retry');
+  // While sign-in is needed NO socket is tried (Cloudflare would only turn it away): the mode is left by asking, and a good answer is
+  // the move 'retry' that opens one (resumeAfterSignin). So 'signin' never hides an attempt in progress.
+  if (wsState === 'signin') return probeSignin();
+  moveSocket('retry');
+  return openSocket();
+}
+async function openSocket() {
   await configReady;
   // a second caller may have won the race while we awaited the config
-  if (wsState !== 'connecting' && wsState !== 'signin') return;
+  if (wsState !== 'connecting') return;
   if (ws) return;
   // `sock` is THIS socket. Every handler below acts only while it is still
   // the current one: forceReconnect() drops a socket and opens another at

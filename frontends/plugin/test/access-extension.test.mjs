@@ -225,20 +225,23 @@ await test('after sign-in the socket comes back by itself: the next answer from 
   assert.equal(W.run('wsState'), 'connected');
   assert.ok(W.sent.some(m => m.t === 'conn' && m.socket === 'connected'));
 });
-await test('a socket turned away by Cloudflare is read from the probe: sign-in needed, not offline; and it stays so while it retries', async () => {
-  const W = boot({ stored: REMOTE, fetchImpl: async () => redirect() });
+await test('a socket turned away by Cloudflare is read from the probe: sign-in needed, not offline; while it is, no socket is tried; a good answer opens one', async () => {
+  let signedIn = false;
+  const W = boot({ stored: REMOTE, fetchImpl: async () => (signedIn ? json(200, { ok: true, auth: 'access' }) : redirect()) });
   W.run('ensureSocket()'); await tick(5);
   W.sockets[0].onclose(); await tick(10);
   assert.equal(W.run('wsState'), 'signin');
   assert.ok(W.calls.some(c => c.url === BASE + '/auth-mode' && c.init.credentials === 'include'));
-  // the retry opens another socket; it failing again does not drop the mode to offline
-  W.run('forceReconnect()'); W.run('ensureSocket()'); await tick(5);
-  assert.equal(W.run('wsState'), 'signin');
-  W.sockets[W.sockets.length - 1].onclose(); await tick(10);
-  assert.equal(W.run('wsState'), 'signin');
-  // …and it opening is the way out
-  W.run('ensureSocket()'); await tick(5);
-  W.sockets[W.sockets.length - 1].onopen();
+  // each try while sign-in is needed is a question, never a socket, and the mode does not move
+  for (let i = 0; i < 3; i++) { W.run('forceReconnect()'); W.run('ensureSocket()'); await tick(10); }
+  assert.equal(W.sockets.length, 1, 'no socket was tried while sign-in was needed');
+  assert.equal(W.run('wsState'), 'signin'); assert.equal(W.run('ws'), null);
+  assert.notEqual(W.run('retryTimer'), null, 'and it will ask again');
+  // signed in: the next question is answered by the companion, which is the move that opens a socket
+  signedIn = true;
+  W.run('forceReconnect()'); W.run('ensureSocket()'); await tick(10);
+  assert.equal(W.sockets.length, 2); assert.equal(W.run('wsState'), 'connecting');
+  W.sockets[1].onopen();
   assert.equal(W.run('wsState'), 'connected');
 });
 await test('a local companion\'s closed socket is never probed for sign-in', async () => {
@@ -247,14 +250,16 @@ await test('a local companion\'s closed socket is never probed for sign-in', asy
   assert.ok(!W.calls.some(c => /auth-mode/.test(c.url)), 'the probe was not asked'); assert.notEqual(W.run('wsState'), 'signin');
 });
 await test('the sign-in button opens the companion\'s own address only; closing that tab tries the socket again', async () => {
-  const W = boot({ stored: REMOTE, fetchImpl: async () => redirect() });
+  let signedIn = false;
+  const W = boot({ stored: REMOTE, fetchImpl: async () => (signedIn ? json(200, { ok: true }) : redirect()) });
   await W.run("api('GET', '/health')");
   const r = await W.message({ t: 'open-signin', url: 'https://evil.example.test/' });
   assert.equal(r.ok, true); assert.equal(W.created.length, 1); assert.equal(W.created[0].url, BASE + '/');
   const before = W.sockets.length;
   W.listeners.removed[0](12345); await tick(5);
   assert.equal(W.sockets.length, before, 'another tab closing means nothing');
-  W.listeners.removed[0](77); await tick(5);
+  signedIn = true;
+  W.listeners.removed[0](77); await tick(15);
   assert.equal(W.sockets.length, before + 1, 'the sign-in tab closing opens the socket again');
   const L = boot({ stored: {}, fetchImpl: async () => json(200, {}) });
   assert.equal((await L.message({ t: 'open-signin' })).ok, false, 'nothing to sign in to on this machine');
