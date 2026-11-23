@@ -148,6 +148,19 @@ const BLOG_UNCONFIRMED_REASON = 'this page is served from a repo you have not co
 const BLOG_UNCONFIRMED_ERROR = 'confirm the blog repo in the drawer before the bots can edit this draft';
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
+// THE HEADERS OF A STORED FILE. Anything whose bytes come from disk (the workspace's files, a run's figures, the owner's theme files) is
+// whatever somebody put there: a prompt-injected bot, a script in a site's sources. Served on the companion's own origin it would run
+// as the companion's own page, which is TRUSTED (hosted.mjs sourceVerdict) and may POST. So it is served inert: `sandbox` (no scripts,
+// and an opaque origin whose requests say Origin: null, which are foreign), no sniffing into another type, and what is not a known
+// type as a download. A PDF is not given the sandbox (the browser's viewer does not run inside one, and its script never runs at our
+// origin); it is still not sniffed. Routes: GET /files/, GET /run-figure, GET /hub/theme/. (GET /a/ is the companion's own page over a
+// sanitized snapshot, with its own CSP; the other file reads answer JSON, never the bytes.)
+const storedFileHead = (mime, extra = {}) => ({
+  'content-type': mime, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+  ...(mime === 'application/pdf' ? {} : { 'content-security-policy': 'sandbox' }),
+  ...(mime === 'application/octet-stream' ? { 'content-disposition': 'attachment' } : {}),
+  ...extra,
+});
 // article_text rides along with mentions, and a .docx may ride with them too —
 // base64 of an 8MB document is ~11MB of request body, so the wire limit sits
 // above the document limit, not at it
@@ -3405,7 +3418,7 @@ function runFigure(req, res) {
     if (q.get('as') === 'json') {
       return ok(res, { mime, name, data_url: `data:${mime};base64,${buf.toString('base64')}` });
     }
-    res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-store' }).end(buf);
+    res.writeHead(200, storedFileHead(mime)).end(buf);
   });
 }
 
@@ -3658,7 +3671,7 @@ export function handler(req, res) {
     try { name = decodeURIComponent(url.slice('/hub/theme/'.length)); } catch { return fail(res, 404, 'not found'); } // a malformed escape is not a file name
     const got = hubTheme.readThemeFile(followingMod.followingSettingsOf(store.readConfig()).settings.hub_theme_dir, name, THEME_FORBIDDEN);
     if (got.refused) return fail(res, 404, 'not found');
-    return res.writeHead(200, { 'content-type': got.type, 'cache-control': 'private, no-cache', 'x-content-type-options': 'nosniff', 'content-length': String(got.body.length) }).end(got.body);
+    return res.writeHead(200, storedFileHead(got.type, { 'cache-control': 'private, no-cache', 'content-length': String(got.body.length) })).end(got.body);
   }
   const followingRoute = followingMod.routeOf(req.method, url);
   if (followingRoute) {
@@ -5172,7 +5185,7 @@ export function handler(req, res) {
         return ok(res, { mime, name: path.basename(hit), bytes: buf.length,
           data_url: `data:${mime};base64,${buf.toString('base64')}` });
       }
-      res.writeHead(200, { 'content-type': mime, 'cache-control': 'no-store' }).end(buf);
+      res.writeHead(200, storedFileHead(mime)).end(buf);
     });
   }
   // the article view's two scripts: the extension's own anchoring code (so the
