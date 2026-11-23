@@ -306,7 +306,7 @@ export function createPublisher(deps) {
   function finish(output) {
     const run = book.run;
     const address = addressFrom(output, run.permalink);
-    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), run: run.id };
+    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}) };
     try {
       const page = deps.readPage(run.page_url);
       if (page) {

@@ -101,7 +101,8 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.equal(done.published.address, 'https://site.example.test/b/first-thought-about-liveness');
   assert.equal(done.published.permalink, '/b/first-thought-about-liveness');
   const marked = b.pages.get(b.page.url).threads[0].blyg_published;
-  assert.deepEqual([marked.title, marked.address, marked.run], ['First thought about liveness', done.published.address, v.id]);
+  assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title'], 'only what a reader of the page may know');
+  assert.equal(marked.address, done.published.address);
   assert.ok(b.events.some(e => e.type === 'page'), 'the page is announced');
   assert.ok(b.events.filter(e => e.type === 'blyg-publish').length >= 6, 'every move is announced');
   // …and the same comment is not offered again

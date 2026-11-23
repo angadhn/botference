@@ -9,8 +9,8 @@
 //   template   the front matter (blyg-note.mjs checkTemplate), and `escape`
 //              ('liquid' | 'none'): whether Jekyll's Liquid is made inert in the body
 //   commands   `plan`, `apply`, `publish` (and an optional `discard`): argv arrays
-//              with a `{note}` placeholder, run with execFile — never a shell —
-//              in the work tree, each under a time limit, with a minimal environment
+//              with a `{note}` placeholder, run with execFile semantics (argv, shell: false),
+//              never a shell, in the work tree, each under a time limit, with a minimal environment
 //
 // NOTHING RUNS UNLESS THESE ARE SET, and they are checked when they are saved
 // (POST /blyg-home) and again every time a run starts and before every step
