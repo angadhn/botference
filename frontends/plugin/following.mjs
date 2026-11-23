@@ -19,7 +19,9 @@
 // WHAT IS NAMED, each as ONE list with ONE field and ONE function that moves it
 // and refuses a move that is not in the table:
 //   BLYG_STATES     a followed blyg's standing:           moveBlyg
-//   READ_STATES     a post's read state:                  moveRead
+//   READ_STATES     where a post is: in the Feed (new,
+//                   opened, responded) or in the Archive:  moveRead
+//   BACKFILL_MODES  how far back one blyg has been read:   moveBackfill
 //   RUN_STATES      whether a reconciliation is going:    moveRun
 //   BREAKER_STATES  a host's circuit breaker:             moveBreaker
 //   SCHEDULE_MODES  whether the refresh timer is armed:   moveSchedule
@@ -88,20 +90,51 @@ export const canMoveBlyg = (b, ev) => blygMachine.can(b.state, ev);
 /** The one way a followed blyg's state changes. Throws for a move the table does not allow. */
 export function moveBlyg(b, ev) { b.state = blygMachine.to(b.state, ev); return b.state; }
 
-// A post's read state. `responded` is set when a note for the post is exported.
-export const READ_STATES = Object.freeze(['new', 'seen', 'opened', 'responded']);
+// Where a post is, in ONE field: the Feed holds the unread posts (new, opened, responded), the Archive the ones the
+// owner ticked. There is no separate "archived" flag.
+//   new        — in the Feed, not opened
+//   opened     — in the Feed; its original (or its text here) was opened. Opening never archives it.
+//   responded  — in the Feed; a note for it was exported
+//   archived   — ticked by the owner (and only by the owner's own tick); it keeps a small record and no text
+// There used to be a `seen` state (the dot only; the post stayed in the Feed). A Feed of unread posts has no use for it:
+// the tick is the one mark that a post is read. A stored `seen` is loaded as `new`.
+//
+//   tick      the owner's tick: Feed → Archive                       (the text is deleted, a small record stays)
+//   untick    the owner's untick: Archive → Feed, as `new`            (the post is fetched again: its text is gone)
+//   reopen    a new version of an archived post whose words may have changed (see changeOf) → Feed, as `new`
+//   open      the original was opened
+//   respond   a note for the post was exported (an archived post is not moved by one: only a tick or an untick moves it)
+//   resurface a real edit to a post that was opened → new
+//   renew     the owner's own "mark new" on an opened post
+export const READ_STATES = Object.freeze(['new', 'opened', 'responded', 'archived']);
 export const READ_MOVES = Object.freeze({
-  see: { new: 'seen' },
-  open: { new: 'opened', seen: 'opened', opened: 'opened' },
-  respond: { new: 'responded', seen: 'responded', opened: 'responded', responded: 'responded' },
-  // an edit that changes the words (not a maintenance version) puts a read post back
-  resurface: { seen: 'new', opened: 'new' },
-  // the reader's own "mark new"
-  renew: { seen: 'new', opened: 'new' },
+  open: { new: 'opened', opened: 'opened' },
+  respond: { new: 'responded', opened: 'responded', responded: 'responded' },
+  resurface: { opened: 'new' },
+  renew: { opened: 'new' },
+  tick: { new: 'archived', opened: 'archived', responded: 'archived' },
+  untick: { archived: 'new' },
+  reopen: { archived: 'new' },
 });
 const readMachine = machine('read state', READ_STATES, READ_MOVES);
 export const canMoveRead = (rec, ev) => readMachine.can(rec.read, ev);
 export function moveRead(rec, ev) { rec.read = readMachine.to(rec.read, ev); return rec.read; }
+
+// How far back one blyg has been read into the Feed (the backfill's own progress, kept per blyg beside its archived ids).
+//   unknown   — its index has not been read since it was followed
+//   more      — its index lists posts that are neither held, archived nor withdrawn: more to fetch (deferred: not an error)
+//   caught_up — nothing in its index is left to fetch: everything is held (unread), archived or withdrawn
+//   stopped   — a bound was reached (the archived ids of this blyg, or the documents it served that cannot be used): nothing new
+//               is fetched from it any more, so a post whose id could not be remembered can never come back as unread.
+//               It ends only when the blyg is unfollowed.
+export const BACKFILL_MODES = Object.freeze(['unknown', 'more', 'caught_up', 'stopped']);
+export const BACKFILL_MOVES = Object.freeze({
+  remain: { unknown: 'more', more: 'more', caught_up: 'more' },
+  finish: { unknown: 'caught_up', more: 'caught_up', caught_up: 'caught_up' },
+  stop: { unknown: 'stopped', more: 'stopped', caught_up: 'stopped', stopped: 'stopped' },
+});
+const backfillMachine = machine('backfill', BACKFILL_MODES, BACKFILL_MOVES);
+export function moveBackfill(led, ev) { led.backfill = backfillMachine.to(led.backfill, ev); return led.backfill; }
 
 // Whether a reconciliation is in flight. Never more than one.
 export const RUN_STATES = Object.freeze(['idle', 'running']);
@@ -214,6 +247,13 @@ export const LIMITS = Object.freeze({
   mentionsKept: 500, versionsKept: 100, noteChars: 200,
   bodyBytes: 40 * 1024,       // sanitised HTML kept per post, in a file of its own
   feedEntries: 100,           // entries (with their text) one page of the Feed carries
+  archivePage: 50,            // lines one page of the Archive shows ("show more" adds this many, up to archiveShownMax)
+  archiveShownMax: 1000,
+  archiveRecords: 2000,       // archive records kept for display (~0.5 KB each); beyond it the oldest-ticked are dropped
+  archiveTitleChars: 120,     // a record's title, or the first words of the post
+  archiveIdsPerBlyg: 10000,   // archived ids remembered per blyg (26 characters each, ~0.3 MB at the bound)
+  archiveIdsTotal: 50000,     // ... and in all blygs together
+  badPerBlyg: 100,            // ids whose document could not be used, remembered per blyg (with the version the index gave)
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
@@ -450,9 +490,9 @@ export function changeOf(held, rec, percent) {
 // ---- placement: which view an entry belongs to, and why ----------------------------
 // ONE function decides it, for a post and for a mention, and names the reason shown on
 // the entry. An entry moves between views only because this function says so.
-export const PLACEMENTS = Object.freeze(['feed', 'mentions', 'background', 'hidden']);
+export const PLACEMENTS = Object.freeze(['feed', 'mentions', 'background', 'archive', 'hidden']);
 export const REASONS = Object.freeze({
-  notFollowed: 'not followed', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
+  notFollowed: 'not followed', archived: 'ticked as read', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
   burst: 'part of a burst', maintenance: 'no new words', minor: 'barely changed',
   response: 'response', unknown: 'class unknown', plain: 'plain mention (lower class)',
   linked: 'linked from', reposted: 'reposted by',
@@ -472,6 +512,7 @@ export function placementOf(entry) {
   }
   const p = entry.post;
   if (!entry.blyg) return { placement: 'hidden', reason: REASONS.notFollowed };
+  if (p.read === 'archived') return { placement: 'archive', reason: REASONS.archived };
   if (isWithdrawn(p)) return { placement: 'background', reason: (entry.mine || []).includes(p.origin) ? REASONS.withdrawnOwn : REASONS.withdrawn };
   if (entry.blyg.state === 'paused') return { placement: 'background', reason: REASONS.paused };
   if (entry.burstHead) return { placement: 'background', reason: REASONS.burst };
@@ -481,7 +522,7 @@ export function placementOf(entry) {
 }
 
 // ---- the view (pure) ----------------------------------------------------------
-export const VIEWS = Object.freeze(['feed', 'mentions', 'background']);
+export const VIEWS = Object.freeze(['feed', 'mentions', 'background', 'archive']);
 export const viewOf = v => (VIEWS.includes(v) ? v : 'feed');
 export const FILTERS = Object.freeze(['all', 'new', 'threads', 'fragments', 'responses']);
 export const FILTER_LABELS = Object.freeze({ all: 'All', new: 'New', threads: 'Threads', fragments: 'Fragments', responses: 'Responses to me' });
@@ -524,11 +565,12 @@ export function foldBursts(items) {
 /**
  * Everything the console shows, from what is held. Pure. → {
  *   feed: { entries: [{ head, members }], counts, filter }, background: [{ type, post|mention, reason }],
- *   mentions: [mention + reason], tabs: { feed, mentions, mentions_unseen, background } }
+ *   mentions: [mention + reason], archive: [post], tabs: { feed (the unread count), mentions, mentions_unseen, background, archive } }
  */
 export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all' }) {
   const posts = items.filter(i => blygs[i.origin]);
-  const live = posts.filter(i => !isWithdrawn(i));
+  // an archived post is never folded into (or under) a burst: the Archive lists it on its own
+  const live = posts.filter(i => !isWithdrawn(i) && i.read !== 'archived');
   // A burst folds its members only under a head that is itself in the Feed. A head that goes elsewhere (a barely
   // changed thread you have read) must not take an unread post with it: each member then stands on its own.
   const alone = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine, burstHead: null });
@@ -561,8 +603,10 @@ export function buildView({ items, blygs, mentions = [], mine = [], filter = 'al
     ...withReason.filter(m => m.placement === 'background').map(m => ({ type: 'mention', mention: m, reason: m.reason })),
   ].sort((a, b) => (b.post ? sortTime(b.post) : Date.parse(b.mention.at) || 0) - (a.post ? sortTime(a.post) : Date.parse(a.mention.at) || 0));
   const inMentions = withReason.filter(m => m.placement === 'mentions').sort((a, b) => (Date.parse(b.at) || 0) - (Date.parse(a.at) || 0));
-  return { feed: { entries, counts, filter: filterOf(filter) }, background, mentions: inMentions,
-    tabs: { feed: counts.all, mentions: inMentions.length, mentions_unseen: inMentions.filter(m => m.read === 'unseen').length, background: background.length } };
+  // the Archive: newest ticked first
+  const archive = at('archive').sort((a, b) => (Date.parse(b.archived_at) || 0) - (Date.parse(a.archived_at) || 0) || (a.key < b.key ? -1 : 1));
+  return { feed: { entries, counts, filter: filterOf(filter) }, background, mentions: inMentions, archive,
+    tabs: { feed: counts.all, mentions: inMentions.length, mentions_unseen: inMentions.filter(m => m.read === 'unseen').length, background: background.length, archive: archive.length } };
 }
 
 // ---- budget, breaker, getter -----------------------------------------------------
@@ -582,28 +626,64 @@ function newBudget(settings, now) {
 export function createFollowing({ file, get = netGet, now = Date.now, getSettings = () => followingSettingsOf({}).settings,
   mayFetch = () => true, readToken = readTokenFile, tokenWarning = tokenFileWarning, tokenForbidden = [],
   timers = { set: (fn, ms) => setInterval(fn, ms), clear: h => clearInterval(h) }, onChange = () => {} } = {}) {
-  let state = null; // { blygs, items (by identOf), last_run, inbox }
+  let state = null; // { blygs, items (by identOf), ledgers (by origin), last_run, inbox }
   const emptyInbox = () => ({ state: 'off', fetched_at: 0, generated_at: '', count: 0, error: '', never_verified: [], never_verified_count: 0, blocked_count: 0, mentions: [] });
   // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
-  const prune = st => { for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k]; };
+  // (and so with its ledger: unfollowing forgets what was read from it, as the confirmation says)
+  const prune = st => {
+    for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k];
+    for (const o of Object.keys(st.ledgers)) if (!st.blygs[o]) delete st.ledgers[o];
+  };
+  // A blyg's ledger: the ids of its posts the owner ticked (so a post that left the Archive's list is never fetched again as
+  // unread), the ids whose document could not be used (with the index's version, so they are not asked for again until it
+  // changes), and its backfill mode. Read as untrusted: a hand-edited file is cleaned, bounded and de-duplicated.
+  const cleanLedger = raw => {
+    const r = raw && typeof raw === 'object' ? raw : {};
+    const ids = [...new Set((Array.isArray(r.ids) ? r.ids : []).filter(x => typeof x === 'string' && ID_RE.test(x)))].slice(0, LIMITS.archiveIdsPerBlyg);
+    const bad = {};
+    if (r.bad && typeof r.bad === 'object' && !Array.isArray(r.bad)) {
+      for (const [id, v] of Object.entries(r.bad)) {
+        if (Object.keys(bad).length >= LIMITS.badPerBlyg) break;
+        if (ID_RE.test(id) && Number.isInteger(v) && v >= 1) bad[id] = v;
+      }
+    }
+    return { ids, bad, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+  };
+  const ledgerOf = origin => {
+    const st = load();
+    if (!st.ledgers[origin]) st.ledgers[origin] = cleanLedger(null);
+    return st.ledgers[origin];
+  };
+  // The oldest-ticked archive records beyond the cap are dropped. Their ids stay in their ledgers: that is what keeps them read.
+  const trimArchive = st => {
+    const arch = Object.entries(st.items).filter(([, i]) => i.read === 'archived');
+    if (arch.length <= LIMITS.archiveRecords) return 0;
+    arch.sort((a, b) => (Date.parse(a[1].archived_at) || 0) - (Date.parse(b[1].archived_at) || 0));
+    const drop = arch.slice(0, arch.length - LIMITS.archiveRecords);
+    for (const [k] of drop) delete st.items[k];
+    return drop.length;
+  };
   const load = () => {
     if (state) return state;
     const got = readJsonState(file);
     if (got.state === 'unreadable') warnUnreadable(file, got.error);
     const v = got.state === 'ok' && got.value && typeof got.value === 'object' ? got.value : {};
     state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {},
+      ledgers: v.ledgers && typeof v.ledgers === 'object' ? v.ledgers : {},
       last_run: v.last_run || null, inbox: { ...emptyInbox(), ...(v.inbox && typeof v.inbox === 'object' ? v.inbox : {}) } };
     // a hand-edited record never makes the engine fetch something the reader paused
     for (const b of Object.values(state.blygs)) if (!BLYG_STATES.includes(b.state)) b.state = 'paused';
     for (const i of Object.values(state.items)) {
-      if (!READ_STATES.includes(i.read)) i.read = 'seen';
+      if (i.read === 'seen' || !READ_STATES.includes(i.read)) i.read = 'new'; // a document from before the Archive: `seen` posts stay in the Feed
       if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
       if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
       if (!i.key) i.key = randomKey();
     }
+    for (const o of Object.keys(state.blygs)) state.ledgers[o] = cleanLedger(state.ledgers[o]);
     if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
     prune(state);
+    trimArchive(state);
     queueMicrotask(() => { try { sweepBodies(); } catch { /* nothing to sweep */ } });
     return state;
   };
@@ -612,6 +692,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   // body is written atomically), named by the record's random key, and is swept away with its post.
   const bodiesDir = path.join(path.dirname(file), 'following-bodies');
   const bodyFile = key => path.join(bodiesDir, `${String(key).replace(/[^0-9a-f]/g, '')}.html`);
+  const hasBody = key => fs.existsSync(bodyFile(key));
+  const deleteBody = key => { try { fs.unlinkSync(bodyFile(key)); } catch { /* none to delete */ } };
   let bodiesDirMade = false; // the folder is made once, not once per post
   const writeBody = (key, html) => {
     if (!bodiesDirMade) { fs.mkdirSync(bodiesDir, { recursive: true }); bodiesDirMade = true; }
@@ -628,7 +710,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   function sweepBodies() {
     let names = [];
     try { names = fs.readdirSync(bodiesDir); } catch { return 0; }
-    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn').map(i => `${i.key}.html`));
+    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn' && i.read !== 'archived').map(i => `${i.key}.html`));
     let n = 0;
     for (const f of names) if (!keep.has(f)) { try { fs.unlinkSync(path.join(bodiesDir, f)); n++; } catch { /* gone already */ } }
     return n;
@@ -734,7 +816,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     save(); onChange();
     return b.state;
   }
-  const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: itemsOf(b.origin).filter(i => !isWithdrawn(i)).length }));
+  const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: unreadOf(b.origin),
+    archived: itemsOf(b.origin).filter(i => i.read === 'archived').length, backfill: ledgerOf(b.origin).backfill }));
 
   // ---- importing a blogroll or directory ----
   /** What WOULD be added from OPML or a directory document (a URL, or pasted text). Adds nothing. */
@@ -800,10 +883,15 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     b.retry_after = now() + backoffMs(b.failures);
   }
   const tombstone = (held, e) => ({ key: held.key || randomKey(), origin: held.origin, id: held.id, kind: 'withdrawn', version: e.version, index_version: e.version,
-    created: held.created, updated: e.updated || held.updated, fetched_at: now(), page: held.page, content_hash: held.content_hash, read: held.read || 'seen',
+    created: held.created, updated: e.updated || held.updated, fetched_at: now(), page: held.page, content_hash: held.content_hash, read: held.read || 'new',
     identity: held.identity || 'unverified', last_change: 'new-words', stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [],
     title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [], first_seen: held.first_seen, maintenance: 0 });
-  const totalItems = () => Object.values(load().items).filter(i => !isWithdrawn(i)).length;
+  // What the caps and the target count: UNREAD held posts. A withdrawn marker costs nothing; an archived record is not held text.
+  const isUnreadHeld = i => !isWithdrawn(i) && i.read !== 'archived';
+  const totalItems = () => Object.values(load().items).filter(isUnreadHeld).length;
+  const unreadOf = origin => itemsOf(origin).filter(isUnreadHeld).length;
+  /** The Feed's count: what the Feed tab shows (bursts folded, paused blygs and Background left out). */
+  const unreadCount = () => { const st = load(); return buildView({ items: Object.values(st.items), blygs: st.blygs }).tabs.feed; };
   const itemUrlFor = (manifest, origin, id) => {
     const t = typeof manifest.item === 'string' && manifest.item ? manifest.item : 'items/{id}.json';
     try { return new URL(t.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(k === 'id' ? id : '')), origin).href; } catch { return ''; }
@@ -813,9 +901,85 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (r.kind === 'limit' || r.kind === 'breaker' || r.kind === 'off') { tally.deferred++; return; }
     noteFailure(b, 'trouble', r.message); tally.unreachable++;
   }
+  const NOT_THE_BLYGS_FAULT = ['limit', 'breaker', 'off'];
+
+  /**
+   * Fetch ONE item document and check it as every document is checked: inside the blyg's own origin (also after redirects), its
+   * id and origin the ones asked for, a kind and a page this code knows. → { out: 'ok', doc, rec, body } or { out }, `out` being
+   * 'unusable' (answered, and cannot be used), 'trouble' (could not be asked, or out of budget: try again later) or 'aborted'
+   * (the reader unfollowed the blyg meanwhile).
+   */
+  async function pull(b, id, g, tally, alive) {
+    const url = itemUrlFor({ item: b.item_template }, b.origin, id);
+    if (!isWebUrl(url)) { tally.invalid++; return { out: 'unusable' }; }
+    if (!within(b.origin, url)) { b.last_error = REFUSALS.item; tally.refused++; return { out: 'unusable' }; }
+    const r = await fetchJson(g, url, LIMITS.itemBytes);
+    if (!alive()) { tally.aborted++; return { out: 'aborted' }; }
+    if (r.status === 'trouble') { if (NOT_THE_BLYGS_FAULT.includes(r.kind)) tally.deferred++; else tally.errors++; return { out: 'trouble', message: r.message }; }
+    if (r.status === 'ok' && !within(b.origin, r.url)) { b.last_error = REFUSALS.redirect; tally.refused++; return { out: 'unusable' }; }
+    const doc = r.json;
+    if (r.status !== 'ok' || docRefusal(doc, { id, origin: b.origin })) { tally.invalid++; return { out: 'unusable' }; }
+    const rec = recordFromDoc(doc, b.origin, b);
+    if (rec.invalid) { tally.invalid++; return { out: 'unusable' }; }
+    return { out: 'ok', doc, rec, body: bodyOf(doc) };
+  }
+  const iso = () => new Date(now()).toISOString();
+  const dropArchivedId = (origin, id) => { const led = ledgerOf(origin); const i = led.ids.indexOf(id); if (i >= 0) led.ids.splice(i, 1); };
+  /** A document that cannot be used is remembered (with the version the index gave) so it is not asked for again until the index changes. At the bound the blyg is stopped. */
+  function markBad(led, e) {
+    if (led.bad[e.id] === undefined && Object.keys(led.bad).length >= LIMITS.badPerBlyg) { moveBackfill(led, 'stop'); return; }
+    led.bad[e.id] = e.version;
+  }
+  /**
+   * Fetch one post's document and put it in the list. `held` is what is held for it (a post in the Feed, an archive record, a
+   * withdrawn marker) or undefined. → 'stored' | 'kept' | 'unusable' | 'trouble' | 'aborted'
+   */
+  async function ingest(b, e, held, cfg, g, tally, alive) {
+    const st = load();
+    const ident = identOf(b.origin, e.id);
+    const got = await pull(b, e.id, g, tally, alive);
+    if (got.out !== 'ok') return got.out;
+    const { doc, rec, body } = got;
+    if (held && rec.version < held.version) { tally.regressions++; return 'kept'; }
+    if (doc.version !== e.version) tally.mismatched++;
+    rec.body_state = body.state;
+    const common = { index_version: e.version, fetched_at: now() };
+    const mismatch = doc.version === e.version ? {} : { index_mismatch: { index: e.version, document: doc.version } };
+    const archived = held && held.read === 'archived';
+    if (isWithdrawn(rec)) {
+      if (archived) { held.index_version = e.version; return 'kept'; } // read, and stays in the Archive
+      st.items[ident] = { ...tombstone(held || { ...rec, key: randomKey() }, rec), index_version: e.version }; tally.withdrawn++; return 'stored';
+    }
+    const change = changeOf(held, rec, cfg.following_barely_changed_percent);
+    if (!held || isWithdrawn(held)) {
+      st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words', ...mismatch };
+      tally.new++;
+    } else if (archived) {
+      if (change === 'maintenance') { // the same words: it stays read
+        Object.assign(held, { version: rec.version, ...common }); tally.maintenance++; return 'stored';
+      }
+      // The words may have changed and no text is kept to measure by, so it is not "barely changed" (changeOf): back to the Feed.
+      const back = { ...rec, ...common, key: held.key, read: held.read, identity: 'unverified', first_seen: iso(), last_change: 'new-words', maintenance: 0,
+        edited_after_read: held.version, ...mismatch };
+      moveRead(back, 'reopen');
+      st.items[ident] = back; dropArchivedId(b.origin, e.id); tally.edited++;
+    } else {
+      const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
+        maintenance: (held.maintenance || 0) + (change === 'maintenance' ? 1 : 0) };
+      if (doc.version === e.version) delete next.index_mismatch; else next.index_mismatch = { index: e.version, document: doc.version };
+      st.items[ident] = next;
+      if (change === 'maintenance') tally.maintenance++;
+      else if (change === 'minor') tally.minor++;
+      else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
+    }
+    // the body is kept with the post: rewritten when the words changed, or when it is not there
+    const bk = st.items[ident].key;
+    if (change !== 'maintenance' || !hasBody(bk)) writeBody(bk, body.html);
+    return 'stored';
+  }
 
   /** One blyg: manifest, index, diff, changed documents. Stops, leaving no trace, if the reader unfollows it meanwhile. */
-  async function reconcileBlyg(b, g, cfg, tally) {
+  async function reconcileBlyg(b, g, cfg, tally) { // → the plan for the backfill, or undefined
     const st = load();
     const alive = () => load().blygs[b.origin] === b;
     b.last_try = now();
@@ -846,72 +1010,106 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (canMoveBlyg(b, 'recover')) moveBlyg(b, 'recover');
     b.failures = 0; b.absent_runs = 0; b.retry_after = 0; b.last_error = templateRefused ? REFUSALS.item : ''; b.last_ok = now();
 
-    const entries = [];
-    for (const e of idx.json.items.slice(0, LIMITS.indexEntries)) {
-      if (e && ID_RE.test(String(e.id || '')) && KINDS.includes(e.kind) && Number.isInteger(e.version) && e.version >= 1) {
-        entries.push({ id: e.id, kind: e.kind, version: e.version, created: cleanText(e.created, 40), updated: cleanText(e.updated, 40) });
+    // What is read out of the index (hostile input): at most `indexEntries` entries, a well-formed 26-character id (a string, not
+    // something that prints as one), a kind and a version this code knows. An id listed twice is ONE post, at its highest version.
+    // Nothing of the index is stored: only what is fetched from it, so what is kept per blyg is bounded by the caps below and by the ledger.
+    const led = ledgerOf(b.origin);
+    const raw = idx.json.items;
+    const byId = new Map();
+    for (const x of raw.slice(0, LIMITS.indexEntries)) {
+      if (x && typeof x.id === 'string' && ID_RE.test(x.id) && KINDS.includes(x.kind) && Number.isInteger(x.version) && x.version >= 1) {
+        const prev = byId.get(x.id);
+        if (!prev || x.version > prev.version) byId.set(x.id, { id: x.id, kind: x.kind, version: x.version, created: cleanText(x.created, 40), updated: cleanText(x.updated, 40) });
       }
     }
-    entries.sort((a, c) => (Date.parse(c.updated) || 0) - (Date.parse(a.updated) || 0));
-    // the window: the newest `perBlyg` live posts; withdrawn ones cost nothing to hold
-    let live = 0;
-    const window = entries.filter(e => e.kind === 'withdrawn' || live++ < cfg.following_max_items_per_blyg);
-    const inWindow = new Set(window.map(e => identOf(b.origin, e.id)));
-    // A held post that is not in the window is dropped: either it is gone from the index entirely
-    // (the index lists every post ever published, §6.2) or it is older than the per-blyg cap.
-    for (const i of itemsOf(b.origin)) if (!inWindow.has(identOf(i.origin, i.id))) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
-
-    let docs = 0;
-    for (const e of window) {
+    // newest first: a blyg is read backwards in time
+    const entries = [...byId.values()].sort((a, c) => (Date.parse(c.updated) || 0) - (Date.parse(a.updated) || 0) || (a.id < c.id ? -1 : a.id > c.id ? 1 : 0));
+    const inIndex = new Set(entries.map(e => e.id));
+    const archivedIds = new Set(led.ids);
+    // A held unread post the index no longer lists is dropped (the index lists every post ever published, §6.2), unless the index was
+    // cut at `indexEntries`, when its absence proves nothing. An archive record stays: it is the owner's record of having read it.
+    if (raw.length <= LIMITS.indexEntries) {
+      for (const i of itemsOf(b.origin)) if (i.read !== 'archived' && !inIndex.has(i.id)) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
+    }
+    // The newest entry that is already known (held, archived, or an unusable document) bounds what is FRESH (newer than it:
+    // published since, fetched now, within the caps); what lies beyond it is BACKFILL, fetched only while the Feed is short.
+    const known = e => !!st.items[identOf(b.origin, e.id)] || archivedIds.has(e.id) || led.bad[e.id] !== undefined;
+    let edge = -1;
+    entries.forEach((e, i) => { if (known(e)) edge = i; });
+    const plan = { b, led, backfill: [], left: 0, docs: 0 };
+    for (const [n, e] of entries.entries()) {
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
-      // what the INDEX said last time we looked: a document that disagrees with its index entry
-      // (an index that lies about versions) is not fetched again until the entry changes
-      const known = held ? (held.index_version ?? held.version) : 0;
-      if (held && e.version === known && (e.kind === 'withdrawn') === isWithdrawn(held)) continue;
-      if (held && e.version < known) { tally.regressions++; continue; } // §13.3: a lower version is not adopted
-      if (e.kind === 'withdrawn') {
-        if (held) { st.items[ident] = tombstone(held, e); if (!isWithdrawn(held)) tally.withdrawn++; }
+      if (!held) {
+        // withdrawn items are never fetched; ticked ones are read; an unusable one waits for the index to name a new version
+        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || led.bad[e.id] === e.version || led.backfill === 'stopped') continue;
+        if (n > edge) { plan.backfill.push(e); continue; }
+        if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
+        if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
+        plan.docs++;
+        const out = await ingest(b, e, undefined, cfg, g, tally, alive);
+        if (out === 'aborted') return;
+        if (out === 'unusable') markBad(led, e); else if (out === 'trouble') plan.left++;
         continue;
       }
-      if (!held && totalItems() >= cfg.following_max_items_total) { tally.capped++; continue; }
-      if (docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
-      const url = itemUrlFor(man.json, b.origin, e.id);
-      if (!isWebUrl(url)) { tally.invalid++; continue; }
-      if (!within(b.origin, url)) { b.last_error = REFUSALS.item; tally.refused++; continue; }
-      docs++;
-      const r = await fetchJson(g, url, LIMITS.itemBytes);
-      if (!alive()) { tally.aborted++; return; }
-      if (r.status === 'trouble') { tally.errors++; if (r.kind === 'limit' || r.kind === 'off') tally.deferred++; continue; }
-      if (r.status === 'ok' && !within(b.origin, r.url)) { b.last_error = REFUSALS.redirect; tally.refused++; continue; }
-      const doc = r.json;
-      if (r.status !== 'ok' || docRefusal(doc, { id: e.id, origin: b.origin })) { tally.invalid++; continue; }
-      const rec = recordFromDoc(doc, b.origin, b);
-      if (rec.invalid) { tally.invalid++; continue; }
-      if (held && rec.version < held.version) { tally.regressions++; continue; }
-      if (doc.version !== e.version) tally.mismatched++;
-      const body = bodyOf(doc);
-      rec.body_state = body.state;
-      const common = { index_version: e.version, fetched_at: now() };
-      if (isWithdrawn(rec)) { st.items[ident] = { ...tombstone(held || { ...rec, key: randomKey() }, rec), index_version: e.version }; tally.withdrawn++; continue; }
-      const change = changeOf(held, rec, cfg.following_barely_changed_percent);
-      if (!held || isWithdrawn(held)) {
-        st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: new Date(now()).toISOString(), maintenance: 0, last_change: 'new-words',
-          ...(doc.version === e.version ? {} : { index_mismatch: { index: e.version, document: doc.version } }) };
-        tally.new++;
-      } else {
-        const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
-          maintenance: (held.maintenance || 0) + (change === 'maintenance' ? 1 : 0) };
-        if (doc.version === e.version) delete next.index_mismatch; else next.index_mismatch = { index: e.version, document: doc.version };
-        st.items[ident] = next;
-        if (change === 'maintenance') tally.maintenance++;
-        else if (change === 'minor') tally.minor++;
-        else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
+      // what the INDEX said last time we looked: a document that disagrees with its index entry
+      // (an index that lies about versions) is not fetched again until the entry changes
+      const was = held.index_version ?? held.version;
+      if (e.version === was && (e.kind === 'withdrawn') === isWithdrawn(held)) continue;
+      if (e.version < was) { tally.regressions++; continue; } // §13.3: a lower version is not adopted
+      if (e.kind === 'withdrawn') {
+        if (held.read === 'archived') { held.index_version = e.version; continue; } // read: it stays in the Archive
+        st.items[ident] = tombstone(held, e); if (!isWithdrawn(held)) tally.withdrawn++;
+        continue;
       }
-      // the body is kept with the post: rewritten when the words changed, or when it is not there
-      const bk = st.items[ident].key;
-      if (change !== 'maintenance' || !fs.existsSync(bodyFile(bk))) writeBody(bk, body.html);
+      if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      plan.docs++;
+      if (await ingest(b, e, held, cfg, g, tally, alive) === 'aborted') return;
     }
+    return plan;
+  }
+
+  /**
+   * The backfill: while the Feed holds fewer than `following_unread_target` unread posts, fetch the posts the blygs' indexes list that are
+   * neither held, archived, withdrawn nor unusable. ORDER: round-robin over the blygs (the one backfilled longest ago goes first, so the
+   * odd one out moves on from run to run), ONE post per blyg per round, and within a blyg its newest not yet fetched first, so each blyg
+   * is read backwards in time. It stops when the target is met EXACTLY, when the run's budget is spent, or when the caps are reached;
+   * what is left waits for the next refresh (no error, nothing marked against the blyg). All requests go through the run's one getter.
+   */
+  async function backfill(plans, g, cfg, tally) {
+    const turn = plans.filter(p => load().blygs[p.b.origin] === p.b && p.led.backfill !== 'stopped' && p.backfill.length)
+      .sort((a, c) => (a.b.last_backfill || 0) - (c.b.last_backfill || 0));
+    let unread = unreadCount(), moved = true;
+    rounds: while (moved && unread < cfg.following_unread_target && !g.budget.spent()) {
+      moved = false;
+      for (const p of turn) {
+        if (unread >= cfg.following_unread_target || g.budget.spent()) break rounds;
+        if (p.led.backfill === 'stopped' || !p.backfill.length || p.docs >= LIMITS.docsPerBlygRun) continue;
+        if (totalItems() >= cfg.following_max_items_total) break rounds;
+        if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg) continue;
+        const e = p.backfill.shift();
+        p.b.last_backfill = now();
+        p.docs++;
+        moved = true;
+        const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
+        if (out === 'aborted') p.backfill = [];
+        else if (out === 'unusable') markBad(p.led, e);
+        else if (out === 'trouble') p.left++;
+        else tally.backfilled++;
+        unread = unreadCount();
+      }
+    }
+    // What is left is deferred, not failed: counted by why it was left (the run's budget or per-blyg document cap; or a holding cap).
+    for (const p of turn) {
+      if (!p.backfill.length || p.led.backfill === 'stopped') continue;
+      if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) tally.capped += p.backfill.length;
+      else if (unread < cfg.following_unread_target) tally.deferred += p.backfill.length;
+    }
+  }
+  /** A blyg's backfill mode after a run: more to fetch, or caught up. (A stopped blyg stays stopped.) */
+  function settle(plan) {
+    if (plan.led.backfill === 'stopped' || load().blygs[plan.b.origin] !== plan.b) return;
+    moveBackfill(plan.led, plan.backfill.length + plan.left > 0 ? 'remain' : 'finish');
   }
 
   // ---- the mentions inbox ----
@@ -971,16 +1169,20 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget;
     const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, blygs: 0, skipped: 0, requests: 0 };
+      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
+    const plans = [];
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
       tally.skipped = Object.keys(load().blygs).length - todo.length;
       for (const b of todo) {
         if (budget.spent()) { tally.deferred++; continue; }
-        try { await reconcileBlyg(b, g, cfg, tally); tally.blygs++; }
+        try { const plan = await reconcileBlyg(b, g, cfg, tally); if (plan) plans.push(plan); tally.blygs++; }
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
         save();
       }
+      try { await backfill(plans, g, cfg, tally); } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
+      for (const p of plans) settle(p);
+      save();
       try { await refreshInbox(getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now)), cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
       tally.requests = budget.requests;
       load().last_run = { ...tally, at: new Date(now()).toISOString() };
@@ -1009,25 +1211,88 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
 
   // ---- reading state, identity ----
+  /** The small record an archived post keeps: no text, no body. ≤ ~0.5 KB. */
+  const archiveRecordOf = rec => ({
+    key: rec.key, origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, index_version: rec.index_version ?? rec.version,
+    created: rec.created, updated: rec.updated, fetched_at: rec.fetched_at, page: cleanText(rec.page, 500), content_hash: rec.content_hash,
+    title: cleanText(plainText(rec.title) || plainText(rec.excerpt), LIMITS.archiveTitleChars), text: '', text_chars: 0, read: rec.read, archived_at: iso(),
+  });
+  /** The owner's tick: the post leaves the Feed (its text is deleted, a small record stays) and its id is remembered in its blyg's ledger. */
+  function tickRec(rec) {
+    const st = load();
+    const next = archiveRecordOf(rec);
+    moveRead(next, 'tick'); // refuses a post that is archived already
+    st.items[identOf(rec.origin, rec.id)] = next;
+    deleteBody(rec.key);
+    const led = ledgerOf(rec.origin);
+    if (!led.ids.includes(rec.id)) {
+      const all = Object.values(st.ledgers).reduce((n, l) => n + l.ids.length, 0);
+      // At the bound the id cannot be remembered, so the blyg is STOPPED: nothing new is fetched from it, which is what keeps this post read.
+      if (led.ids.length >= LIMITS.archiveIdsPerBlyg || all >= LIMITS.archiveIdsTotal) moveBackfill(led, 'stop');
+      else led.ids.push(rec.id);
+    }
+    trimArchive(st);
+  }
   function readMove(key, ev) {
     const rec = byKey(key);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
-    moveRead(rec, ev); save(); onChange();
-    return rec.read;
+    if (ev === 'tick') tickRec(rec); else moveRead(rec, ev);
+    save(); onChange();
+    return load().items[identOf(rec.origin, rec.id)].read;
   }
-  function markAllSeen(origin = '') {
+  /** Tick every post named (the page's "Tick all shown" names the keys it shows); a key that cannot be ticked is skipped. → how many were. */
+  function tickMany(keys) {
     let n = 0;
-    for (const i of Object.values(load().items)) {
-      if (isWithdrawn(i) || (origin && i.origin !== origin) || !canMoveRead(i, 'see')) continue;
-      moveRead(i, 'see'); n++;
+    for (const k of (Array.isArray(keys) ? keys : []).slice(0, LIMITS.archiveShownMax)) {
+      const rec = byKey(String(k));
+      if (!rec || isWithdrawn(rec) || !canMoveRead(rec, 'tick')) continue;
+      tickRec(rec); n++;
     }
     if (n) { save(); onChange(); }
     return n;
   }
-  /** A note for this post was exported: its read state becomes `responded`. → false when the post is not on the list. */
+  /**
+   * The owner's untick: the post goes back to the Feed as `new`. Its text was deleted when it was ticked, so it is fetched again (one
+   * request, through the same guarded getter and the same checks); if that fails the post stays in the Archive and the error says why.
+   */
+  async function untick(key) {
+    const rec = byKey(key);
+    if (!rec) throw new Error('no such post');
+    if (!canMoveRead(rec, 'untick')) throw new Error('that post is not in the Archive');
+    if (!mayFetch()) throw new Error('fetching is off (blyg_checks), so the post cannot be fetched again');
+    const b = load().blygs[rec.origin];
+    if (!b) throw new Error('that blyg is not followed');
+    const tally = { deferred: 0, errors: 0, invalid: 0, refused: 0, aborted: 0 };
+    const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
+    const got = await pull(b, rec.id, g, tally, () => load().items[identOf(rec.origin, rec.id)] === rec);
+    if (got.out === 'trouble') throw new Error(`could not fetch the post: ${got.message}`);
+    if (got.out !== 'ok') throw new Error('the blyg does not serve that post as it was, so it stays in the Archive');
+    if (isWithdrawn(got.rec)) throw new Error('that post has been withdrawn');
+    const next = { ...got.rec, body_state: got.body.state, index_version: got.rec.version, fetched_at: now(), key: rec.key, read: rec.read,
+      identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words' };
+    moveRead(next, 'untick');
+    load().items[identOf(rec.origin, rec.id)] = next;
+    dropArchivedId(rec.origin, rec.id);
+    writeBody(next.key, got.body.html);
+    save(); onChange();
+    return next.read;
+  }
+  /** Is the Feed below its target while some blyg that is not paused has more to read (or has not been read yet)? Worked out, not stored. */
+  const wantsTopUp = () => mayFetch() && unreadCount() < settings().following_unread_target
+    && Object.values(load().blygs).some(b => b.state === 'active' && ['unknown', 'more'].includes(ledgerOf(b.origin).backfill));
+  /** What the page may ask of /following/read: tick (one post, or the keys it shows), untick, or the owner's own "mark new". */
+  async function readRequest(data) {
+    const d = data && typeof data === 'object' ? data : {};
+    if (Array.isArray(d.keys)) { const n = tickMany(d.keys); return { archived: n, unread: unreadCount(), target: settings().following_unread_target }; }
+    const move = String(d.move || '');
+    if (!['tick', 'untick', 'renew'].includes(move)) throw new Error('move must be tick, untick or renew');
+    const read = move === 'untick' ? await untick(String(d.key || '')) : readMove(String(d.key || ''), move);
+    return { read, unread: unreadCount(), target: settings().following_unread_target, topup: wantsTopUp() };
+  }
+  /** A note for this post was exported: its read state becomes `responded`. → false when the post is not on the list, or is archived (only a tick or an untick moves that). */
   function markResponded(origin, id) {
     const rec = heldItem(String(origin), String(id));
-    if (!rec || isWithdrawn(rec)) return false;
+    if (!rec || isWithdrawn(rec) || !canMoveRead(rec, 'respond')) return false;
     moveRead(rec, 'respond'); save(); onChange();
     return true;
   }
@@ -1044,7 +1309,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     return n;
   }
   /** The post a mention's source address is, when it is on the list. */
-  const feedItemFor = m => (m.source_url ? Object.values(load().items).find(i => !isWithdrawn(i) && i.page && samePage(i.page, m.source_url)) || null : null);
+  const feedItemFor = m => (m.source_url ? Object.values(load().items).find(i => isUnreadHeld(i) && i.page && samePage(i.page, m.source_url)) || null : null);
   /**
    * Open a post or a mention: the one path. A post becomes `opened`; a mention becomes `seen` (and the post of
    * the list its source is, if any, `opened`). → { url }, the ORIGINAL page. The caller opens it, and Discuss
@@ -1135,8 +1400,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     const b = load().blygs[rec.origin];
     if (!b) throw new Error('that blyg is not followed');
-    const html = readBodyHtml(rec.key);
-    if (!html.trim()) throw new Error('no text is held for that post yet: use Read here');
+    const html = rec.read === 'archived' ? '' : readBodyHtml(rec.key);
+    if (!html.trim()) throw new Error(rec.read === 'archived' ? 'that post is in the Archive, and no text is kept for it' : 'no text is held for that post yet: use Read here');
     if (!recordUrlOf(rec)) throw new Error(REFUSALS.item);
     const pinned = pinnedOf(rec);
     return {
@@ -1174,7 +1439,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
    * detection runs and the entry says so. `result`, for `agrees`, has the shape blyg.detect answers, source 'from-list'.
    */
   function identityFor(url, hints) {
-    const claimants = Object.values(load().items).filter(i => !isWithdrawn(i) && i.page && samePage(i.page, url) && load().blygs[i.origin]);
+    const claimants = Object.values(load().items).filter(i => isUnreadHeld(i) && i.page && samePage(i.page, url) && load().blygs[i.origin]);
     if (!claimants.length) return { verdict: 'none' };
     const h = cleanHints(hints) || { blyg: '', json: '' };
     const judge = rec => {
@@ -1215,7 +1480,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
 
   // ---- what the page shows ----
-  function view({ view: tab = 'feed', filter = 'all', mine = [], limit = LIMITS.feedEntries } = {}) {
+  function view({ view: tab = 'feed', filter = 'all', mine = [], limit = LIMITS.feedEntries, q = '' } = {}) {
     const st = load();
     const v = buildView({ items: Object.values(st.items), blygs: st.blygs, mentions: st.inbox.mentions, mine, filter });
     const titleOf = o => (st.blygs[o] && st.blygs[o].title) || '';
@@ -1234,8 +1499,19 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         in_response_to: responseOf(i.stub_of) };
     };
     const mention = m => { const p = feedItemFor(m); return { ...copy(m), feed_key: p ? p.key : '' }; };
+    // An Archive line: a light record, never any text of the post.
+    const line = i => ({ key: i.key, kind: i.kind, origin: i.origin, blyg_title: titleOf(i.origin), blyg_label: mine.includes(i.origin) ? 'you' : titleOf(i.origin),
+      title: cleanText(plainText(i.title), LIMITS.archiveTitleChars), version: i.version, created: i.created, updated: i.updated, archived_at: i.archived_at,
+      page: i.page, opens_on: i.page && hostOf(i.page) !== hostOf(i.origin) ? hostOf(i.page) : '' });
+    const needle = cleanText(String(q || ''), 100).toLowerCase();
+    const archiveAll = viewOf(tab) === 'archive' ? v.archive.map(line).filter(l => !needle || `${l.title} ${l.blyg_title} ${l.origin}`.toLowerCase().includes(needle)) : [];
+    const archiveLimit = Math.max(1, Math.min(Number(limit) || LIMITS.archivePage, LIMITS.archiveShownMax));
+    const active = Object.values(st.blygs).filter(b => b.state !== 'paused');
     const box = syncInbox(settings());
-    return { view: viewOf(tab), filter: v.feed.filter, counts: v.feed.counts, tabs: v.tabs,
+    return { view: viewOf(tab), filter: v.feed.filter, counts: v.feed.counts, tabs: v.tabs, target: cfg.following_unread_target,
+      // Said only when it is true of every blyg that is not paused: reachable, and its index read to the end. A value worked out here, not a mode.
+      read_all: v.tabs.feed === 0 && active.length > 0 && active.every(b => b.state === 'active' && ledgerOf(b.origin).backfill === 'caught_up'),
+      archive: archiveAll.slice(0, archiveLimit), archive_total: archiveAll.length, archive_query: needle,
       run: { ...run }, schedule: { ...schedule }, last_run: copy(st.last_run), blygs: listBlygs(),
       // the Feed carries each entry's text, so at most `limit` entries at a time (the rest is `entry_total` minus that)
       entry_total: v.feed.entries.length, limit,
@@ -1251,8 +1527,8 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   }
   const itemByKey = key => copy(byKey(key));
 
-  return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove, markAllSeen,
-    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
+  return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove,
+    markResponded, tickMany, untick, readRequest, unreadCount, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
     breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },
@@ -1266,7 +1542,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
 // applied to each entry (a reader's list is the owner's, not a guest's), and the auth
 // test walks this table.
 export const ROUTES = Object.freeze([
-  { method: 'GET', path: '/hub', what: 'the page (the Hub: Feed, Mentions, Background, and the list of blygs followed)' },
+  { method: 'GET', path: '/hub', what: 'the page (the Hub: Feed, Mentions, Background, Archive, and the list of blygs followed)' },
   { method: 'GET', path: '/following', what: 'the same page, under its older address' },
   { method: 'GET', path: '/following/data', what: 'the console as JSON' },
   { method: 'POST', path: '/following/open', what: 'open a post or mention (marks it, answers with the original address)' },
@@ -1278,7 +1554,7 @@ export const ROUTES = Object.freeze([
   { method: 'POST', path: '/following/import-preview', what: 'what a blogroll or directory would add' },
   { method: 'POST', path: '/following/import-confirm', what: 'add what was confirmed' },
   { method: 'POST', path: '/following/refresh', what: 'refresh now' },
-  { method: 'POST', path: '/following/read', what: 'move a post\'s read state' },
+  { method: 'POST', path: '/following/read', what: 'tick a post (or the posts shown) into the Archive, untick one, or mark an opened one new' },
   { method: 'POST', path: '/following/mention-read', what: 'mark a mention (or all) seen' },
   { method: 'POST', path: '/following/settings', what: 'refresh interval, caps, my_origins, inbox' },
 ]);

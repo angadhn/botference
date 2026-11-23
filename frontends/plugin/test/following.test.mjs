@@ -34,6 +34,8 @@ function rig({ settings = {}, clock = { t: Date.parse('2026-11-10T12:00:00Z') } 
 }
 const follow = async (r, origin) => r.f.confirmImport([{ origin, title: 'x' }]);
 const items = r => r.f.view({ filter: 'all' }).entries.flatMap(e => [e.head, ...e.members]);
+// what the old "mark all seen" did for these tests: every post the Feed holds has been opened
+const openAll = r => { for (const i of items(r)) r.f.readMove(i.key, 'open'); };
 const inBackground = r => r.f.view({ view: 'background' }).background;
 
 test('follow by any URL on a blyg resolves its origin; unfollow forgets it and its posts; list', async () => {
@@ -144,7 +146,7 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   assert.equal(s.new, 4);
   assert.equal(r.web.itemRequests().length, 4);
   const key = id => r.f.keyFor(A, id);
-  for (const id of [i1, i2, i3, i4]) r.f.readMove(key(id), 'see');
+  for (const id of [i1, i2, i3, i4]) r.f.readMove(key(id), 'open');
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.equal(r.web.itemRequests().length, 0, 'nothing changed: no document is fetched');
@@ -166,7 +168,7 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   assert.ok(!(i2 in got), 'a maintenance version (same content_hash) does not put it back on top of the feed: it is in Background');
   const m2 = inBackground(r).find(b => b.type === 'post' && b.post.id === i2);
   assert.equal(m2.reason, 'no new words');
-  assert.equal(m2.post.read, 'seen', 'and it is not resurfaced as new');
+  assert.equal(m2.post.read, 'opened', 'and it is not resurfaced as new');
   assert.equal(m2.post.version, 2);
   assert.equal(m2.post.maintenance, 1);
   assert.ok(!(i3 in got), 'a withdrawn post leaves the list');
@@ -278,7 +280,7 @@ test('filters: New, Threads, Fragments, Responses to me (stub_of or a transclusi
   assert.deepEqual(r.f.view({ filter: 'responses', mine: [] }).entries, [], 'with my_origins empty nothing is a response to me');
   assert.deepEqual(names('threads').sort(), [stub, quoter].sort());
   assert.deepEqual(names('fragments'), [plain]);
-  r.f.readMove(r.f.keyFor(A, plain), 'see');
+  r.f.readMove(r.f.keyFor(A, plain), 'open');
   assert.equal(names('new').includes(plain), false);
   assert.equal(names('new').length, 2);
   // the response entry says what it answers
@@ -289,7 +291,7 @@ test('filters: New, Threads, Fragments, Responses to me (stub_of or a transclusi
 });
 
 test('caps: per-blyg and total', async () => {
-  const r = rig({ settings: { following_max_items_per_blyg: 10, following_max_items_total: 50 } });
+  const r = rig({ settings: { following_max_items_per_blyg: 10, following_max_items_total: 50, following_unread_target: 500 } });
   const site = r.web.add(A);
   for (let n = 1; n <= 15; n++) site.put(makeDoc({ id: idOf(n), origin: A, title: `P${n}`, created: `2026-11-${String(n).padStart(2, '0')}T10:00:00Z` }));
   await follow(r, A);
@@ -301,7 +303,7 @@ test('caps: per-blyg and total', async () => {
   await r.f.refresh();
   assert.equal(r.web.itemRequests().length, 0);
   r.done();
-  const t = rig({ settings: { following_max_items_per_blyg: 50, following_max_items_total: 50 } });
+  const t = rig({ settings: { following_max_items_per_blyg: 50, following_max_items_total: 50, following_unread_target: 500 } });
   for (const [o, n0] of [[A, 0], [Bo, 100]]) {
     const s = t.web.add(o);
     for (let n = 1; n <= 30; n++) s.put(makeDoc({ id: idOf(n0 + n), origin: o, title: `P${n}`, created: `2026-11-${String(n).padStart(2, '0')}T10:00:00Z` }));
@@ -314,7 +316,7 @@ test('caps: per-blyg and total', async () => {
 });
 
 test('per-run request cap and time budget stop the run (and carry on next time)', async () => {
-  const r = rig({ settings: { following_run_requests: 8 } });
+  const r = rig({ settings: { following_run_requests: 8, following_unread_target: 500 } });
   const site = r.web.add(A);
   for (let n = 1; n <= 20; n++) site.put(makeDoc({ id: idOf(n), origin: A, created: `2026-11-${String(n).padStart(2, '0')}T10:00:00Z` }));
   await follow(r, A);
@@ -478,42 +480,52 @@ test('settings: named, validated, defaults kept for what is refused; my_origins 
 });
 
 test('read state: one function moves it, and refuses a move the table does not allow', () => {
-  assert.deepEqual(F.READ_STATES, ['new', 'seen', 'opened', 'responded']);
+  assert.deepEqual(F.READ_STATES, ['new', 'opened', 'responded', 'archived']);
   const rec = read => ({ read });
   const go = (from, ev) => F.moveRead(rec(from), ev);
-  assert.equal(go('new', 'see'), 'seen');
-  assert.equal(go('new', 'open'), 'opened');
-  assert.equal(go('seen', 'open'), 'opened');
-  assert.equal(go('opened', 'open'), 'opened');
-  for (const from of ['new', 'seen', 'opened', 'responded']) assert.equal(go(from, 'respond'), 'responded');
-  assert.equal(go('seen', 'resurface'), 'new');
-  assert.equal(go('opened', 'resurface'), 'new');
-  for (const [from, ev] of [['seen', 'see'], ['opened', 'see'], ['responded', 'see'], ['responded', 'open'],
-    ['new', 'resurface'], ['responded', 'resurface']]) assert.throws(() => go(from, ev), /cannot/, `${from} ${ev}`);
+  // every legal move, from every state it names
+  const legal = [
+    ['new', 'open', 'opened'], ['opened', 'open', 'opened'],
+    ['new', 'respond', 'responded'], ['opened', 'respond', 'responded'], ['responded', 'respond', 'responded'],
+    ['opened', 'resurface', 'new'], ['opened', 'renew', 'new'],
+    ['new', 'tick', 'archived'], ['opened', 'tick', 'archived'], ['responded', 'tick', 'archived'],
+    ['archived', 'untick', 'new'], ['archived', 'reopen', 'new'],
+  ];
+  for (const [from, ev, to] of legal) assert.equal(go(from, ev), to, `${from} ${ev}`);
+  // and every other (state, move) pair is refused, with the table as the only judge
+  const allowed = new Set(legal.map(([f, e]) => `${f} ${e}`));
+  for (const from of F.READ_STATES) for (const ev of Object.keys(F.READ_MOVES)) {
+    if (!allowed.has(`${from} ${ev}`)) assert.throws(() => go(from, ev), /cannot/, `${from} ${ev}`);
+  }
+  assert.throws(() => go('new', 'see'), /no such move/, 'there is no "seen" any more');
+  assert.throws(() => go('seen', 'open'), /no such state/);
   assert.throws(() => go('new', 'bury'), /no such move/);
-  assert.throws(() => go('read', 'see'), /no such state/);
   assert.equal(F.canMoveRead(rec('responded'), 'open'), false);
+  assert.equal(F.canMoveRead(rec('archived'), 'open'), false, 'opening the original never moves an archived post');
+  assert.equal(F.canMoveRead(rec('archived'), 'respond'), false);
+  assert.equal(F.canMoveRead(rec('archived'), 'tick'), false, 'ticking twice is refused');
+  assert.equal(F.canMoveRead(rec('new'), 'untick'), false);
 });
 
-test('read state through the engine: see, open, markResponded; withdrawn and unknown posts refuse', async () => {
+test('read state through the engine: open, markResponded; withdrawn and unknown posts refuse', async () => {
   const r = rig();
   const site = r.web.add(A);
   site.put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
   await r.f.refresh();
   const key = r.f.keyFor(A, idOf(1));
-  assert.equal(r.f.readMove(key, 'see'), 'seen');
-  assert.throws(() => r.f.readMove(key, 'see'), /cannot see while seen/);
+  assert.equal(r.f.readMove(key, 'open'), 'opened');
+  assert.equal(r.f.readMove(key, 'open'), 'opened');
+  assert.throws(() => r.f.readMove(key, 'see'), /no such move/);
   assert.equal(r.f.markResponded(A, idOf(1)), true);
   assert.equal(r.f.itemByKey(key).read, 'responded');
   assert.throws(() => r.f.readMove(key, 'open'), /cannot open while responded/);
   assert.equal(r.f.markResponded(A, idOf(99)), false, 'a post not on the list is not touched');
-  assert.throws(() => r.f.readMove('nope', 'see'), /no such post/);
+  assert.throws(() => r.f.readMove('nope', 'open'), /no such post/);
   // a responded post is not put back to new by a maintenance bump or an edit
   site.put(makeDoc({ id: idOf(1), origin: A, body: 'changed', version: 2, updated: '2026-11-09T10:00:00Z' }));
   await r.f.refresh();
   assert.equal(r.f.itemByKey(key).read, 'responded');
-  assert.equal(r.f.markAllSeen(), 0);
   r.done();
 });
 
@@ -873,7 +885,7 @@ test('open: a post becomes opened and the answer is its ORIGINAL address; withdr
   await r.f.refresh();
   assert.throws(() => r.f.open(k2), /no such post/);
   assert.throws(() => r.f.open('nope'), /no such post or mention/);
-  assert.throws(() => r.f.readMove(k2, 'see'), /no such post/);
+  assert.throws(() => r.f.readMove(k2, 'open'), /no such post/);
   r.done();
 });
 
@@ -896,7 +908,7 @@ test('clock skew: a post dated in the future cannot sit on top (ordering uses at
 });
 
 test('the per-blyg document cap per run: at most docsPerBlygRun documents, the rest next run', async () => {
-  const r = rig({ settings: { following_run_requests: 2000, following_max_items_per_blyg: 2000, following_max_items_total: 20000 } });
+  const r = rig({ settings: { following_run_requests: 2000, following_max_items_per_blyg: 2000, following_max_items_total: 20000, following_unread_target: 500 } });
   const site = r.web.add(A);
   const N = F.LIMITS.docsPerBlygRun + 10;
   for (let n = 1; n <= N; n++) site.put(makeDoc({ id: idOf(n), origin: A, created: `2026-10-${String(1 + (n % 28)).padStart(2, '0')}T10:00:00Z` }));
@@ -919,8 +931,8 @@ test('placement: one function says which view a post or mention belongs to, with
   assert.deepEqual(at(post({ kind: 'withdrawn' }), { mine: [A] }), { placement: 'background', reason: 'withdrawn (your own)' });
   assert.deepEqual(at(post({}), { blyg: { state: 'paused' } }), { placement: 'background', reason: 'paused blyg' });
   assert.deepEqual(at(post({}), { burstHead: post({ kind: 'thread' }) }), { placement: 'background', reason: 'part of a burst' });
-  assert.deepEqual(at(post({ read: 'seen', last_change: 'maintenance' })), { placement: 'background', reason: 'no new words' });
-  assert.deepEqual(at(post({ read: 'seen', last_change: 'minor' })), { placement: 'background', reason: 'barely changed' });
+  assert.deepEqual(at(post({ read: 'opened', last_change: 'maintenance' })), { placement: 'background', reason: 'no new words' });
+  assert.deepEqual(at(post({ read: 'opened', last_change: 'minor' })), { placement: 'background', reason: 'barely changed' });
   assert.deepEqual(at(post({ read: 'new', last_change: 'maintenance' })), { placement: 'feed', reason: '' }, 'a post never read is still new to the reader');
   assert.deepEqual(at(post({}), { blyg: null }), { placement: 'hidden', reason: 'not followed' });
   const m = (klass, action = '') => F.placementOf({ type: 'mention', mention: { class: klass, action } });
@@ -943,7 +955,7 @@ test('Background: maintenance and barely-changed versions, burst members, withdr
   site.put(makeDoc({ id: gone, origin: A, title: 'Soon gone', created: '2026-11-02T10:00:00Z' }));
   await follow(r, A);
   await r.f.refresh();
-  r.f.markAllSeen();
+  openAll(r);
   site.put(makeDoc({ id: maint, origin: A, title: 'Maint', body, version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   site.put(makeDoc({ id: minor, origin: A, title: 'Minor', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   site.put(makeDoc({ id: edited, origin: A, title: 'Edited', body: 'something else entirely, rewritten from the ground up. '.repeat(8), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
@@ -1017,7 +1029,7 @@ test('an unread post is never hidden: a burst folds its members only under a hea
   await follow(r, A);
   await r.f.refresh();
   r.f.readMove(r.f.keyFor(A, th), 'open');          // the reader opened the thread...
-  r.f.readMove(r.f.keyFor(A, old), 'see');
+  r.f.readMove(r.f.keyFor(A, old), 'open');
   // ...and it is republished barely changed, now transcluding a NEW fragment
   site.put(makeDoc({ id: fresh, origin: A, title: 'Fresh fragment', created: '2026-11-08T10:00:00Z' }));
   site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-05T10:01:00Z',
@@ -1033,7 +1045,7 @@ test('an unread post is never hidden: a burst folds its members only under a hea
   assert.equal(bg[th], 'barely changed');
   assert.ok(!(fresh in bg));
   // when the head IS in the Feed, its members fold under it as before
-  r.f.markAllSeen();
+  openAll(r);
   const pure = F.buildView({ items: [{ origin: A, id: th, kind: 'thread', read: 'new', last_change: 'new-words', created: '2026-11-05T10:01:00Z', updated: '2026-11-05T10:01:00Z',
     refs: [{ origin: A, id: old }], key: 'h' }, { origin: A, id: old, kind: 'fragment', read: 'new', last_change: 'new-words', created: '2026-11-05T10:00:00Z', updated: '2026-11-05T10:00:00Z', refs: [], key: 'm' }],
     blygs: { [A]: { state: 'active' } } });
@@ -1046,7 +1058,7 @@ test('placement: a post that is still new to the reader never goes to Background
   const at = p => F.placementOf({ type: 'post', post: p, blyg: { state: 'active' }, mine: [], burstHead: null });
   assert.deepEqual(at(post), { placement: 'feed', reason: '' });
   assert.deepEqual(at({ ...post, last_change: 'maintenance' }), { placement: 'feed', reason: '' });
-  for (const read of ['seen', 'opened', 'responded']) {
+  for (const read of ['opened', 'responded']) {
     assert.equal(at({ ...post, read }).placement, 'background', `${read}: a minor change is background`);
   }
 });

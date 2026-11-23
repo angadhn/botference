@@ -552,11 +552,12 @@ Studio should try these, in this order:
 The Hub is one console for what you read and what answers you. It is kept by
 the companion on your own computer. Open `http://127.0.0.1:4189/hub` (the
 drawer's feed icon, or the link on the extension's options page; `/following`
-opens the same page). It has three views, side by side:
+opens the same page). It has four views, side by side:
 
-- **Feed**: what is new on the blygs you follow.
+- **Feed**: the posts of the blygs you follow that you have not read. The count on its tab is the number unread.
 - **Mentions**: responses to your own posts, from your own site's inbox.
 - **Background**: what should not interrupt reading.
+- **Archive**: the posts you ticked as read (see "The Archive and the unread target" below).
 
 Below them is **Following**, the list of blygs you follow, where you add one,
 import a blogroll and change the settings. The Hub is the reading half of a
@@ -677,10 +678,12 @@ Exporting a note for a followed post marks it answered.
 choice; never asked until you resume it), *unreachable* (it could not be asked:
 asked again after 10 minutes, then 20, doubling up to 6 hours, and **Retry**
 forces it) or *gone* (it answered three times in a row without a manifest or
-index; not asked again until you resume it). A post is *new*, *seen* (you marked
-it), *opened* (you opened it) or *responded* (you exported a note for it).
+index; not asked again until you resume it). A post is *new*, *opened* (you opened
+it), *responded* (you exported a note for it) or *archived* (you ticked it as read).
+The first three are in the Feed; opening a post never archives it, only your own tick
+does. (Older versions also had *seen*; a post stored that way is loaded as *new*.)
 
-**Limits.** At most 500 blygs; 200 posts kept per blyg and 2000 in all; per
+**Limits.** At most 500 blygs; 200 unread posts held per blyg and 2000 in all (archived posts do not count); per
 refresh at most 200 requests and 60 seconds, and 50 post documents per blyg.
 A blyg's index and every post document must come from inside the blyg's own
 origin (same scheme, host and port, under its path), also after redirects: a
@@ -688,7 +691,7 @@ manifest that points elsewhere is refused and the reason is shown beside the
 blyg. A host that fails three times in a row is not asked for 15 minutes. One
 refresh runs at a time; a second is refused, not queued. These are settings on
 the Hub's Following section (in `config.json`: `following_refresh_minutes`,
-`following_max_items_per_blyg`, `following_max_items_total`,
+`following_max_items_per_blyg`, `following_max_items_total`, `following_unread_target`,
 `following_run_seconds`, `following_run_requests`,
 `following_barely_changed_percent`, `following_feed_clip_words`, `my_origins`, `inbox_api_url`,
 `inbox_token_file`); a value outside its range is refused and the default is
@@ -712,13 +715,38 @@ guest, or a request with no password, is refused on every Hub route, and
 so is a request a browser says came from another site. The page is never framed
 and runs one script and one style under a Content-Security-Policy.
 
+**The Archive and the unread target.** Tick the box at the start of a post's line and the post moves to the Archive: it
+leaves the Feed, its text is deleted from the companion, and a small record stays (its blyg, kind, title or first words
+up to 120 characters, version read, dates and page address, about half a kilobyte). The Archive tab lists those records,
+newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each with "Open original" and an untick box;
+its search box filters the records by title and blyg. Unticking puts the post back in the Feed as *new*, fetching its text
+again (one request), so it needs the blyg to be reachable; if it cannot be fetched the post stays archived. "Tick all
+shown" archives exactly the posts the Feed is showing, after a confirmation. At most 2000 archive records are kept; past
+that the oldest ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also
+remembers the ids (26 characters each) of the posts you ticked, up to 10,000 per blyg and 50,000 in all, and the Hub
+never fetches an id on that list as a new post. If a blyg reaches that bound, nothing more is fetched from it (the list
+of blygs says "stopped") rather than risk showing you posts you read again; that ends only when you unfollow it, which
+also forgets what was read from it. A blyg whose posts have all been fetched or ticked is *caught up*; when every blyg
+you follow (other than paused ones) is and the Feed is empty, the Feed says "You have read everything from the blygs you
+follow."
+
+A refresh keeps the Feed stocked: while it holds fewer unread posts than `following_unread_target` (default 50, 1 to 500)
+it also reads further back in each blyg's index, going round the blygs one post at a time (the one read back longest ago
+first) and within a blyg from its newest post that is not yet fetched to its oldest, so each blyg is read backwards in
+time. It stops at the target, at the refresh's request and time limits, or at the holding caps, and carries on at the
+next refresh: running out of budget is not an error and counts against nobody. Withdrawn posts are never fetched. A post
+that was published since the last refresh is always fetched, target or not. Ticking a post when the Feed then holds fewer
+than the target asks for a refresh straight away. A new version of an archived post whose content differs brings it back
+to the Feed as *new*, marked "edited since you read it" (nothing of its text was kept, so a small change cannot be told
+from a large one); a version with identical content stays archived.
+
 ## Reading in the Hub
 
 Each post in the Feed is shown in place: a meta line (an unread dot, THREAD or FRAGMENT, the blyg's name, or "you" for
 a blyg in `my_origins`, the date in your own style, and a reading time at 220 words a minute), up to its three most
 recent versions as lines ("V4 Nov 20, 2026: the changelog note", with "and N earlier, in history" for the rest), its
 title, its text, its address (shortened; the whole of it on hover) and the actions **Respond**, **Read here**, **Open
-original** and a "..." menu (Mark seen / Mark new). A post of at most `following_feed_clip_words` words (default 300) is
+original**, a "..." menu (Mark new, for a post you opened) and, at the start of the line, a checkbox, "Read: move to Archive". A post of at most `following_feed_clip_words` words (default 300) is
 shown whole, a fragment always, and a longer one is cut at a paragraph, quote or list boundary, with "more" opening the
 rest in place. The search box above the list ("search every word") filters what is loaded on the page by substring,
 ignoring case, over the text, title, author and blyg; it asks nothing of anyone. The Feed carries at most 100 entries

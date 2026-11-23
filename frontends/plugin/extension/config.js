@@ -223,8 +223,9 @@
   // trailing slash, anything that is not an http(s) address is refused.
   const FOLLOWING_NUMBERS = Object.freeze({
     following_refresh_minutes: Object.freeze({ dflt: 30, min: 5, max: 1440, what: 'minutes between refreshes' }),
-    following_max_items_per_blyg: Object.freeze({ dflt: 200, min: 10, max: 2000, what: 'items kept per blyg' }),
-    following_max_items_total: Object.freeze({ dflt: 2000, min: 50, max: 20000, what: 'items kept in all' }),
+    following_max_items_per_blyg: Object.freeze({ dflt: 200, min: 10, max: 2000, what: 'unread items held per blyg' }),
+    following_max_items_total: Object.freeze({ dflt: 2000, min: 50, max: 20000, what: 'unread items held in all' }),
+    following_unread_target: Object.freeze({ dflt: 50, min: 1, max: 500, what: 'unread posts a refresh tries to have in the Feed (it reads further back in each blyg to reach it)' }),
     following_run_seconds: Object.freeze({ dflt: 60, min: 5, max: 600, what: 'seconds one refresh may take' }),
     following_run_requests: Object.freeze({ dflt: 200, min: 5, max: 2000, what: 'requests one refresh may make' }),
     following_feed_clip_words: Object.freeze({ dflt: 300, min: 50, max: 2000, what: 'words a post may have before the Feed clips it (a fragment is never clipped)' }),

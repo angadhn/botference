@@ -194,15 +194,18 @@ await test('exporting a note for a followed post sets it responded', async () =>
   assert.equal((await dataOf()).entries.find(e => e.head.id === EID).head.read, 'responded');
 });
 
-await test('read: see, see-all; illegal moves are refused', async () => {
+await test('read: only tick, untick and renew are asked of this route; illegal moves are refused', async () => {
   const key = await keyOfPost(ID1);
   let r = await POST(B, '/following/read', { key, move: 'see' });
-  assert.equal(r.status, 400, 'an opened post cannot be "seen"');
-  assert.match(r.json.error, /cannot see while opened/);
+  assert.equal(r.status, 400, 'there is no "seen" any more');
+  assert.match(r.json.error, /tick, untick or renew/);
   r = await POST(B, '/following/read', { key, move: 'respond' });
   assert.equal(r.status, 400, 'responded is set by the export alone');
   r = await POST(B, '/following/read', { all: true });
-  assert.equal(r.status, 200);
+  assert.equal(r.status, 400, 'no "all": the page names the posts it shows');
+  r = await POST(B, '/following/read', { key, move: 'untick' });
+  assert.equal(r.status, 400, 'a post in the Feed cannot be unticked');
+  assert.match(r.json.error, /not in the Archive/);
 });
 
 await test('settings are validated; my_origins drives "Responses to me"', async () => {
@@ -354,7 +357,7 @@ await test('Open refuses a withdrawn post', async () => {
   const r = await POST(B, '/following/open', { key });
   assert.equal(r.status, 400);
   assert.match(r.json.error, /no such post/);
-  assert.equal((await POST(B, '/following/read', { key, move: 'see' })).status, 400);
+  assert.equal((await POST(B, '/following/read', { key, move: 'tick' })).status, 400, 'a withdrawn post is not ticked');
   const bg = await dataOf('?view=background');
   assert.equal(bg.background.find(b => b.post && b.post.id === wid).reason, 'withdrawn');
 });

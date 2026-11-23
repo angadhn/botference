@@ -3481,7 +3481,8 @@ function handleFollowing(route, req, res) {
     return v;
   };
   const viewOf = () => withThreads(following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
-    limit: Math.max(1, Math.min(Number(q.get('n')) || followingMod.LIMITS.feedEntries, 1000)) }));
+    limit: Math.max(1, Math.min(Number(q.get('n')) || (q.get('view') === 'archive' ? followingMod.LIMITS.archivePage : followingMod.LIMITS.feedEntries), 1000)),
+    q: q.get('q') || '' }));
   const say = fn => async data => {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };
@@ -3531,11 +3532,7 @@ function handleFollowing(route, req, res) {
         return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };
       case '/following/import-confirm': return following.confirmImport(data.entries);
       case '/following/refresh': return await following.refresh({ reason: 'demand' });
-      case '/following/read': {
-        if (!['see', 'open', 'renew'].includes(data.move || 'see')) throw new Error('move must be see, open or renew');
-        if (data.all) return { seen: following.markAllSeen(String(data.origin || '')) };
-        return { read: following.readMove(String(data.key || ''), data.move || 'see') };
-      }
+      case '/following/read': return await following.readRequest(data); // tick, untick or renew (following.mjs names the moves)
       case '/following/mention-read':
         if (data.all) return { seen: following.allMentionsSeen() };
         return { read: following.mentionSeen(String(data.key || '')) };
