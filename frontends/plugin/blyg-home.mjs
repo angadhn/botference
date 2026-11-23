@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { execFile, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone } from './blyg-note.mjs';
 
 // ---- the limits, stated once ---------------------------------------------------
@@ -182,36 +182,49 @@ export function capOutput(text) {
 }
 
 /**
- * Run one command with execFile (no shell), in its own process group so a time limit stops
- * its children too. Never rejects. → { exit, signal, timedOut, spawnError, output, truncated, ms }.
- * `onChild(stop)` hands the caller a function that stops it.
+ * Run one command: the program and its argv, `shell: false`, so no string of ours or the page's is ever parsed by a shell
+ * (this is execFile's guarantee; `spawn` is used because execFile cannot start a process group, and a time limit has to
+ * stop a command's children too). In its own process group; stdin closed (nothing can prompt); output read as it comes
+ * and stopped past OUTPUT.maxBuffer. Never rejects.
+ * → { exit, signal, timedOut, spawnError, output, truncated, ms }. `onChild(stop)` hands the caller a way to stop it.
  */
 export function runCommand({ argv, cwd, env, limitMs, onChild }) {
   return new Promise(resolve => {
     const t0 = Date.now();
     let timedOut = false;
+    let flooded = false;
+    let settled = false;
     let timer = null;
     let killer = null;
+    let spawnError = '';
+    const out = [];
+    const err = [];
+    let size = 0;
     let child = null;
     const killGroup = sig => { try { process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch { /* gone */ } } };
-    const done = (err, stdout, stderr) => {
+    const finish = (code, signal) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer); clearTimeout(killer);
-      const spawnError = err && typeof err.code === 'string' ? err.code : '';
-      const out = capOutput(`${stdout || ''}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}`);
-      resolve({
-        exit: err ? (typeof err.code === 'number' ? err.code : null) : 0,
-        signal: (err && err.signal) || '',
-        timedOut,
-        spawnError,
-        output: out.text,
-        truncated: out.truncated,
-        ms: Date.now() - t0,
-      });
+      const stdout = Buffer.concat(out).toString('utf8');
+      const stderr = Buffer.concat(err).toString('utf8');
+      const capped = capOutput(`${stdout}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}${flooded ? '\n[stopped: the command printed more than it may]' : ''}`);
+      resolve({ exit: typeof code === 'number' && !flooded ? code : (flooded ? null : null), signal: signal || '', timedOut, spawnError: spawnError || (flooded ? 'OUTPUT_LIMIT' : ''),
+        output: capped.text, truncated: capped.truncated || flooded, ms: Date.now() - t0 });
     };
     try {
-      child = execFile(argv[0], argv.slice(1), { cwd, env, encoding: 'utf8', maxBuffer: OUTPUT.maxBuffer, shell: false, detached: true, windowsHide: true }, done);
-    } catch (e) { return done({ code: 'SPAWN' }, '', String((e && e.message) || e)); }
-    try { child.stdin.end(); } catch { /* no stdin */ }
+      child = spawn(argv[0], argv.slice(1), { cwd, env, shell: false, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) { spawnError = 'SPAWN'; err.push(Buffer.from(String((e && e.message) || e))); return finish(null, ''); }
+    const take = list => chunk => {
+      if (flooded) return;
+      size += chunk.length;
+      if (size > OUTPUT.maxBuffer) { flooded = true; killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); return; }
+      list.push(chunk);
+    };
+    child.stdout.on('data', take(out));
+    child.stderr.on('data', take(err));
+    child.on('error', e => { spawnError = (e && e.code) || 'SPAWN'; finish(null, ''); });
+    child.on('close', (code, signal) => finish(code, signal));
     timer = setTimeout(() => { timedOut = true; killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); }, limitMs);
     if (typeof onChild === 'function') onChild(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); });
   });
