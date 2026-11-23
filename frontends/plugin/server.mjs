@@ -69,7 +69,7 @@ import { createPublisher } from './blyg-run.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
 import { DEFAULT_TEMPLATE, DEFAULT_ESCAPE, LIMITS as BLYG_NOTE_LIMITS } from './blyg-note.mjs';
-import { DEFAULT_FILENAME } from './blyg-home.mjs';
+import { DEFAULT_FILENAME, DEFAULT_CONFIRM, CONFIRMS } from './blyg-home.mjs';
 import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
 import * as lasso from './lasso.mjs';
@@ -4206,7 +4206,7 @@ export function handler(req, res) {
       const raw = store.readConfig().blyg_home;
       const v = validateHome(raw);
       return { settings: storable(raw), valid: v.ok, errors: v.errors,
-        defaults: { template: DEFAULT_TEMPLATE, filename: DEFAULT_FILENAME, escape: DEFAULT_ESCAPE }, limits: BLYG_NOTE_LIMITS };
+        defaults: { template: DEFAULT_TEMPLATE, filename: DEFAULT_FILENAME, escape: DEFAULT_ESCAPE, confirm: DEFAULT_CONFIRM, confirms: CONFIRMS }, limits: BLYG_NOTE_LIMITS };
     };
     if (req.method === 'GET' && url === '/blyg-home') return ok(res, homeView());
     if (req.method === 'GET' && url === '/blyg-home/page') {
@@ -4227,7 +4227,10 @@ export function handler(req, res) {
         return ok(res, homeView());
       });
     }
-    if (req.method === 'GET' && url === '/blyg-publish/run') return ok(res, { run: blygPublish.current() });
+    if (req.method === 'GET' && url === '/blyg-publish/run') {
+      const v = validateHome(store.readConfig().blyg_home);
+      return ok(res, { run: blygPublish.current(), confirm: v.ok ? v.settings.confirm : 'always' });
+    }
     const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
     if (req.method === 'POST' && url === '/blyg-publish/start') {
       return readBody(req, res, data => {

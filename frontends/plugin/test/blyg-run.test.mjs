@@ -77,7 +77,7 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.deepEqual(rig.calls().map(c => c.step), ['plan'], 'only plan has run');
   assert.ok(fs.existsSync(noteOf(rig, v)), 'the note is written');
   assert.equal(v.note_rel, 'my notes/first-thought-about-liveness.md');
-  assert.match(v.note_text, /^---\ntitle: "First thought about liveness"\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\npermalink: \/b\/first-thought-about-liveness\n/);
+  assert.match(v.note_text, /^---\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\npermalink: \/b\/first-thought-about-liveness\n/);
   assert.match(v.steps[0].output, /plan: ok for my notes\/first-thought-about-liveness\.md\nWould notify: nobody/);
   assert.deepEqual(v.can, ['confirm', 'cancel']);
   const plan = rig.calls()[0];
@@ -463,4 +463,57 @@ test('a restart while preparing is interrupted like any other live mode', () => 
   fs.writeFileSync(file, JSON.stringify({ mode: 'preparing', id: 'a', token: 't' }));
   assert.equal(new R.RunBook({ file }).mode, 'interrupted');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---- confirm: 'never' (the default): choosing Publish IS the publish -------------------------------------------
+test('confirm never: prepare, plan, apply, publish run without stopping and the thread is marked; the plan gets the guard flags, apply and publish do not', async t => {
+  const rig = makeRig({ prepare: true, confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  const b = boot(rig);
+  const modes = [];
+  b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
+  assert.ok(b.start().ok);
+  await until(() => b.mode() === 'published', 'published');
+  assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published']);
+  const calls = rig.calls();
+  assert.deepEqual(calls.map(c => c.step), ['prepare', 'plan', 'apply', 'publish']);
+  assert.equal(calls[1].argv.at(-1), '--only-note', 'the guard flag rides on the plan');
+  assert.ok(![0, 2, 3].some(i => calls[i].argv.includes('--only-note')), 'and on nothing else');
+  const v = b.pub.current();
+  assert.equal(v.confirm, 'never');
+  assert.ok(b.pages.get(b.page.url).threads[0].blyg_published);
+});
+
+test('confirm never: a plan that exits non-zero (the guard refusing, or anything else) stops the run before apply; nothing is applied or published', async t => {
+  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  rig.control({ plan: 'fail' });
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'failed', 'failed');
+  assert.equal(b.pub.current().failed_step, 'plan');
+  await sleep(250);
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
+  assert.equal(b.pages.get(b.page.url).threads[0].blyg_published, undefined);
+});
+
+test('confirm always: the guard is not added and the run waits at planned for the click', async t => {
+  const rig = makeRig({ confirm: 'always', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  await sleep(250);
+  assert.equal(b.mode(), 'planned', 'it waits');
+  assert.ok(!rig.calls()[0].argv.includes('--only-note'));
+  assert.equal(b.pub.current().confirm, 'always');
+});
+
+test('confirm and plan_guard are validated; the default is never; a settings change after the start is still refused', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const base = { ...rig.home }; delete base.confirm;
+  assert.equal(H.validateHome(base).settings.confirm, 'never');
+  assert.equal(H.validateHome(base).settings.plan_guard.length, 0);
+  assert.deepEqual(H.CONFIRMS, ['never', 'always']);
+  for (const bad of ['sometimes', 'NEVER', 5]) assert.match(H.validateHome({ ...base, confirm: bad }).errors.join(), /confirm must be one of/, String(bad));
+  for (const bad of ['--only-note', ['only-note'], ['/bin/rm'], ['--x y'], ['--x;rm'], [5], ['--a', '--b', '--c', '--d', '--e', '--f', '--g', '--h', '--i'], ['-' + 'x'.repeat(90)]]) {
+    assert.match(H.validateHome({ ...base, plan_guard: bad }).errors.join(), /plan_guard must be a list/, JSON.stringify(bad));
+  }
+  assert.ok(H.validateHome({ ...base, plan_guard: ['--only-note', '-x=1'] }).ok);
+  assert.notEqual(H.fingerprint(H.validateHome({ ...base, confirm: 'never' }).settings), H.fingerprint(H.validateHome({ ...base, confirm: 'always' }).settings), 'changing it mid-run stops the next step');
 });

@@ -16,7 +16,7 @@ export async function until(pred, what, ms = 8000) {
 const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'ignore', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } });
 
 /** → { top, folder, log, ctl, home, calls(), control(obj), done() }. `folder` is `<top>/_notes` unless `sub` says otherwise. */
-export function makeRig({ sub = '_notes', discard = false, prepare = false, extra = {} } = {}) {
+export function makeRig({ sub = '_notes', discard = false, prepare = false, confirm = 'always', extra = {} } = {}) {
   const top = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-blygrig-')));
   git(top, 'init', '-q'); git(top, 'config', 'user.email', 'o@example.test'); git(top, 'config', 'user.name', 'Owner');
   const folder = path.join(top, sub);
@@ -28,7 +28,7 @@ export function makeRig({ sub = '_notes', discard = false, prepare = false, extr
   const ctl = path.join(out, 'control.json');
   fs.writeFileSync(ctl, '{}');
   const cmd = step => [process.execPath, FAKE, log, ctl, step, '{note}'];
-  const home = { folder, filename: '${slug}.md', timezone: 'Europe/London', escape: 'liquid',
+  const home = { folder, filename: '${slug}.md', timezone: 'Europe/London', escape: 'liquid', confirm,
     commands: { ...(prepare ? { prepare: cmd('prepare') } : {}), plan: cmd('plan'), apply: cmd('apply'), publish: cmd('publish'), ...(discard ? { discard: cmd('discard') } : {}) }, ...extra };
   return {
     top, folder, log, ctl, home, out,

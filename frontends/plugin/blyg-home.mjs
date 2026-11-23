@@ -48,6 +48,17 @@ const ENV_REFUSED = /^(PATH|HOME|PWD|OLDPWD|SHELL|IFS|LD_.*|DYLD_.*|NODE_OPTIONS
 
 export const DEFAULT_FILENAME = '${slug}.md';
 
+// Does the owner look at the note and the plan before anything goes live?
+//   never   (default) choosing "Publish as blyg" IS the publish: prepare, plan, apply, publish without stopping. The run still
+//           stops by itself on a plan that exits non-zero, and `plan_guard` (below) can make the plan refuse anything but this note.
+//   always  the run stops at `planned` and waits for an explicit, trusted Publish click (the confirmation)
+export const CONFIRMS = Object.freeze(['never', 'always']);
+export const DEFAULT_CONFIRM = 'never';
+// `plan_guard`: extra FLAGS (each starts with `-`) added to the plan command when confirm is `never`, so that the site's own
+// command can refuse a plan that would change or publish more than this one note (an example site's `--only-note`). Never
+// parsed here: the plan's exit code is the verdict.
+export const PLAN_GUARD = Object.freeze({ maxArgs: 8, maxArgChars: 80 });
+
 /**
  * The environment a command gets. EXACTLY these, and nothing else of the companion's:
  *   PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR   copied when set (a git or a ruby needs them)
@@ -145,6 +156,12 @@ export function validateHome(raw, { env = process.env } = {}) {
   if (!ESCAPES.includes(escape)) errors.push(`escape must be one of ${ESCAPES.join(', ')}`);
   const timezone = r.timezone === undefined ? '' : r.timezone;
   if (typeof timezone !== 'string' || !validTimezone(timezone)) errors.push('the time zone is not a known IANA name (for example Europe/London)');
+  const confirm = r.confirm === undefined || r.confirm === '' ? DEFAULT_CONFIRM : r.confirm;
+  if (!CONFIRMS.includes(confirm)) errors.push(`confirm must be one of ${CONFIRMS.join(', ')}`);
+  const guardRaw = r.plan_guard === undefined || r.plan_guard === null ? [] : r.plan_guard;
+  const guardOk = Array.isArray(guardRaw) && guardRaw.length <= PLAN_GUARD.maxArgs
+    && guardRaw.every(a => typeof a === 'string' && /^-[A-Za-z0-9=_.:-]*$/.test(a) && a.length <= PLAN_GUARD.maxArgChars);
+  if (!guardOk) errors.push(`plan_guard must be a list (at most ${PLAN_GUARD.maxArgs}) of flags, each starting with “-” and holding only letters, digits and = _ . : -`);
   const passRaw = r.env_pass === undefined ? [] : r.env_pass;
   const pass = Array.isArray(passRaw) && passRaw.every(n => typeof n === 'string' && ENV_NAME.test(n) && !ENV_REFUSED.test(n)) && passRaw.length <= 16 ? passRaw.slice() : null;
   if (!pass) errors.push('env_pass must be a list (at most 16) of upper-case variable names, none of PATH, HOME, LD_*, DYLD_*, NODE_OPTIONS, GIT_* paths and the like');
@@ -159,17 +176,17 @@ export function validateHome(raw, { env = process.env } = {}) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }
   if (errors.length) return { ok: false, errors, settings: null };
-  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands } };
+  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice() } };
 }
 
 /** What is stored: only the fields the owner set, not the derived paths. */
 export const storable = raw => {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands };
+  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };
-export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands])).digest('hex');
+export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands, s.confirm, s.plan_guard])).digest('hex');
 
 /** `{note}` made into one argument each: → the argv to run. */
 export function expandArgv(argv, { rel, abs }) {

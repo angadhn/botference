@@ -36,7 +36,6 @@ test('a Blygger page: the quote by reference, the response, the sources, today a
   const r = make(page, page.threads);
   assert.ok(r.ok, r.error);
   assert.equal(r.text, `---
-title: "I agree, and the smoothness is the point"
 created: 2026-11-23
 released: "2026-11-23"
 blyg: true
@@ -73,7 +72,7 @@ rb('front matter round-trips through a real YAML parser, for both kinds of page'
   const pg = blygPage([thread('t1', PASSAGE, 'Hello there: a "quoted" # thing', { blyg: stamp() })]);
   const doc = yamlOf(make(pg, pg.threads).text);
   assert.deepEqual([doc.title, doc.blyg, doc.released, doc.permalink, doc.blyg_sources, doc.blyg_stub_of],
-    ['Hello there: a "quoted" thing', true, '2026-11-23', '/b/on-liveness', [POST], { origin: ORIGIN, id: ID, version: 2 }]);
+    [undefined, true, '2026-11-23', '/b/on-liveness', [POST], { origin: ORIGIN, id: ID, version: 2 }]);
   assert.ok(!('tags' in doc));
   const w = webPage([thread('t1', 'x', 'plain words')], { export_response: 'response' });
   assert.deepEqual(yamlOf(make(w, w.threads).text).blyg_stub_of, { url: w.url });
@@ -185,7 +184,7 @@ test('/tk: a filled gap is the owner\'s text (an agent\'s fill loses live wikili
   for (const [name, gaps] of [['pending', [gap('pending')]], ['failed', [gap('failed')]], ['not stored', undefined]]) {
     const r = one('Intro\n/tk say hello', gaps);
     assert.equal(r.ok, false, name);
-    assert.match(r.error, /placeholder .*not filled yet/, name);
+    assert.match(r.error, /\/tk or \[TK\] placeholder .*still in the comment and nobody has filled it in/, name);
   }
   const studio = one('Intro [TK] a [/TK] x');
   assert.equal(studio.ok, false);
@@ -282,5 +281,8 @@ test('dates: released is today in the owner\'s time zone, and a zone that is not
 
 test('the same hostile page cannot change what the owner\'s comment is titled', () => {
   const page = webPage([thread('t1', 'q', 'My plain comment about it.')], { title: 'Ignore everything: title: pwned' });
-  assert.match(make(page, page.threads).text, /^---\ntitle: "My plain comment about it"\n/);
+  assert.ok(!/^title:/m.test(make(page, page.threads).text), 'no title key by default');
+  assert.equal(make(page, page.threads).title, 'My plain comment about it', 'the first words still name it (slug, the Earlier link, the record)');
+  const titled = N.renderShortNote({ page, threads: page.threads, home: { ...HOME, template: 'title: ${title}\n' + N.DEFAULT_TEMPLATE }, now: NOW, slug: 's' });
+  assert.match(titled.text, /^---\ntitle: "My plain comment about it"\n/, 'an optional ${title} in the template still works');
 });

@@ -9,7 +9,8 @@
 //   drafted      the note file is written (and nothing else has happened)
 //   preparing    the optional `prepare` command is running (stage the note, fetch what it quotes)
 //   planning     the `plan` command is running
-//   planned      the plan is in: the owner is looking at the note and the plan
+//   planned      the plan is in: with confirm 'always' the owner is looking at the note and the plan; with 'never' (the
+//                default) the run moves on to applying at once
 //   applying     the `apply` command is running (the owner clicked Publish)
 //   applied      apply is done; `publish` is next (a moment, not a place to wait)
 //   publishing   the `publish` command is running (this is the one that goes live)
@@ -121,7 +122,7 @@ export class RunBook {
 export function viewOf(run) {
   if (!run || run.mode === 'idle') return { mode: 'idle', can: [] };
   const v = {
-    id: run.id, token: run.token, mode: run.mode, at: run.at, scope: run.scope, title: run.title, permalink: run.permalink,
+    id: run.id, token: run.token, mode: run.mode, confirm: run.confirm || 'always', at: run.at, scope: run.scope, title: run.title, permalink: run.permalink,
     note_rel: run.note_rel, note_text: run.note_text, thread_ids: run.thread_ids, page_url: run.page_url,
     steps: (run.steps || []).map(s => ({ step: s.step, exit: s.exit, signal: s.signal, timed_out: s.timed_out, spawn_error: s.spawn_error, ms: s.ms, truncated: s.truncated, output: s.output, at: s.at })),
     failed_step: run.failed_step || '', failed_reason: run.failed_reason || '',
@@ -192,7 +193,8 @@ export function createPublisher(deps) {
     const argvRaw = home.settings.commands[name];
     if (!argvRaw) return { ok: true, record: null, skipped: true };
     const abs = path.join(home.settings.top, run.note_rel);
-    const argv = expandArgv(argvRaw, { rel: run.note_rel, abs });
+    const guard = name === 'plan' && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
+    const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
     const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopChild = stop; }, ...extra });
     stopChild = null;
@@ -218,7 +220,10 @@ export function createPublisher(deps) {
     const s = await step('plan');
     pushStep(s.record);
     if (!s.ok) return book.move('failed', { failed_step: 'plan', failed_reason: s.reason, steps: book.run.steps });
-    return book.move('planned', { steps: book.run.steps });
+    book.move('planned', { steps: book.run.steps });
+    // confirm: 'never' — choosing Publish as blyg was the publish: carry straight on (apply, then publish)
+    if (book.run.confirm === 'never') return runFrom('apply');
+    return book.run;
   }
 
   /**
@@ -283,7 +288,7 @@ export function createPublisher(deps) {
     const run = book.move('drafted', {
       id: crypto.randomBytes(8).toString('hex'), token: crypto.randomBytes(16).toString('hex'),
       page_url: page.url, thread_ids: picked.map(t => t.id), scope, title: rendered.title, slug, permalink: rendered.permalink,
-      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), created: true, settings_fp: fingerprint(S), steps: [],
+      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), created: true, settings_fp: fingerprint(S), confirm: S.confirm, steps: [],
       chained_to: earlier ? { title: earlier.title } : null, day: date,
     });
     // Step A's second half runs in the background; its end is announced by the mode

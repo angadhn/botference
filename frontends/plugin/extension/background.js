@@ -1066,7 +1066,7 @@ async function blygPublish(msg, tabId) {
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body);
   if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout };
   if (spec.offer === 'grants') blygOffers.offer(tabId);
-  return { ok: true, run: (r.data && r.data.run) || null };
+  return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '' };
 }
 
 // ---- message router ------------------------------------------------------

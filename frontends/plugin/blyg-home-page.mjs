@@ -43,6 +43,9 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
 <input type="text" id="publish" value="${cmd('publish')}">
 <label for="discard">Command: discard (optional)<small>Undoes what plan staged, when you cancel at the confirmation.</small></label>
 <input type="text" id="discard" value="${cmd('discard')}">
+<label for="confirm">Before it goes live<select id="confirm">${(defaults.confirms || ['never', 'always']).map(v => `<option value="${v}"${(s.confirm || defaults.confirm) === v ? ' selected' : ''}>${v === 'never' ? 'never ask: choosing Publish as blyg is the publish' : 'always ask: show the note and the plan first, then wait for a Publish click'}</option>`).join('')}</select></label>
+<label for="plan_guard">Plan guard flags (optional)<small>Flags added to the plan command when you never ask, so your site's own command can refuse a plan that would change or publish more than this one note. One per line, each starting with “-”.</small></label>
+<textarea id="plan_guard" style="min-height:3.5rem">${esc((s.plan_guard || []).join('\n'))}</textarea>
 <label for="env_pass">Environment names to pass on (optional)<small>Upper-case names, one per line. A command gets only PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR and a few fixed variables, plus these.</small></label>
 <textarea id="env_pass" style="min-height:3.5rem">${esc((s.env_pass || []).join('\n'))}</textarea>
 <button type="submit">Save</button>
@@ -58,7 +61,7 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
     var body;
     try{
       var commands={plan:cmd('plan'),apply:cmd('apply'),publish:cmd('publish')};var d=cmd('discard');if(d)commands.discard=d;var pp=cmd('prepare');if(pp)commands.prepare=pp;
-      body={settings:{folder:$('folder').value.trim(),filename:$('filename').value.trim(),timezone:$('timezone').value.trim(),escape:$('escape').value,
+      body={settings:{folder:$('folder').value.trim(),filename:$('filename').value.trim(),timezone:$('timezone').value.trim(),escape:$('escape').value,confirm:$('confirm').value,plan_guard:$('plan_guard').value.split(/\\s+/).filter(Boolean),
         template:$('template').value,commands:commands,env_pass:$('env_pass').value.split(/\\s+/).filter(Boolean)}};
     }catch(err){out.className='bad';out.textContent='A command is not a JSON list: '+err.message;return}
     fetch('/blyg-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})

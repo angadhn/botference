@@ -52,8 +52,8 @@ function companion(first) {
   state.onBlygPublish = async (op, body) => {
     state.calls.push({ op, body });
     if (state.fail && state.fail[op]) return { ok: false, error: state.fail[op] };
-    if (op === 'start') { state.run = run('planning', { steps: [] }); return { ok: true, run: state.run }; }
-    if (op === 'run' || op === 'resume') return { ok: true, run: state.run };
+    if (op === 'start') { state.run = run('planning', { steps: [], thread_ids: [body.thread_id], ...(state.confirm ? { confirm: state.confirm } : {}) }); return { ok: true, run: state.run }; }
+    if (op === 'run' || op === 'resume') return { ok: true, run: state.run, confirm: state.confirm || 'always' };
     if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', exit: 0, output: 'PLAN' }] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
@@ -90,6 +90,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   ok('the table has legal and illegal moves', legal >= 20 && illegal >= 40, `${legal}/${illegal}`);
   eq('server modes → views', ['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published', 'failed', 'interrupted', 'cancelled', 'abandoned'].map(CFG.pubViewOf),
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'closed', 'closed']);
+  eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
   eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'cancel', 'abandon']);
   eq('only confirm and retry need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry']);
@@ -162,6 +163,31 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('published', { published: { title: 't', permalink: '/b/t', address: 'javascript:alert(1)' } });
   click(q('[data-act="pub-close"]'));
   eq('closed', view(), 'closed');
+}
+
+// ---- confirm 'never': one click is the publish; one line on the thread; no dialog ------------------------------------
+{
+  const server = companion(); server.confirm = 'never';
+  const { q, qa, dlg, view, click, drawer } = await make({ server });
+  eq('(the drawer learned the setting when it opened)', drawer.pub.confirm, 'never');
+  click(qa('.thr-pub')[0]);
+  ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
+  click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one' } }, true, 'working']);
+  eq('the thread carries ONE line of progress', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking what would change']);
+  server.run = server.make('planned', { confirm: 'never', thread_ids: ['t1'], steps: [{ step: 'plan', exit: 0, output: 'P' }] });
+  drawer.blygPublishMoved(); await tick(5);
+  eq('planned is NOT a confirmation when nobody has to confirm: no buttons, still running', [view(), dlg().hidden, qa('[data-act="pub-confirm"]').length], ['running', true, 0]);
+  server.run = server.make('publishing', { confirm: 'never', thread_ids: ['t1'] });
+  drawer.blygPublishMoved(); await tick(5);
+  eq('publishing is on the line', q('.publine').textContent, 'Publishing as a blyg… publishing to your site');
+  server.run = server.make('published', { confirm: 'never', thread_ids: ['t1'], published: { title: 't', permalink: '/b/t', address: 'https://site.example.test/b/t' } });
+  drawer.blygPublishMoved(); await tick(5);
+  eq('published: the link on the thread, the view free again', [view(), q('.publine.done a').getAttribute('href'), dlg().hidden], ['closed', 'https://site.example.test/b/t', true]);
+  server.run = server.make('failed', { confirm: 'never', thread_ids: ['t1'], failed_step: 'plan', failed_reason: 'plan exited with code 1', steps: [{ step: 'plan', exit: 1, output: 'Refused: this plan would change more than the note' }] });
+  drawer.pub.view = 'running'; drawer.pub.run = server.run;
+  drawer.blygPublishMoved(); await tick(5);
+  eq('a failure brings the dialog back, with the step, the output and the choices', [view(), dlg().hidden, /Refused: this plan would change more than the note/.test(dlg().textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', false, true, ['pub-retry', 'pub-abandon', 'pub-close']]);
 }
 
 // ---- what prepare did is shown with the plan -----------------------------------------------------------------

@@ -20,7 +20,7 @@ const SERVER = path.join(TEST, '..', 'server.mjs');
 const { test, waitFor, tmp, startServer, cleanup, passed, failures } = createHarness({ server: SERVER, tag: 'blygpub', waitMs: 15000 });
 
 const PAGE = 'https://notes.web.test/post';
-const settingsOf = rig => ({ folder: rig.folder, filename: '${slug}.md', timezone: 'Europe/London', commands: rig.home.commands });
+const settingsOf = rig => ({ folder: rig.folder, filename: '${slug}.md', timezone: 'Europe/London', confirm: 'always', commands: rig.home.commands });
 const rigs = [];
 const newRig = (o) => { const r = makeRig(o); rigs.push(r); return r; };
 const comment = async (base, text, headers) => {
@@ -97,7 +97,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.ok(['drafted', 'planning', 'planned'].includes(s.json.run.mode));
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
-  assert.match(planned.note_text, /^---\ntitle: "A third view on this story, which is"\n/);
+  assert.match(planned.note_text, /^---\ncreated: \d{4}-\d\d-\d\d\n/);
   assert.match(planned.note_text, /\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n\nA third view on this story, which is the one I will publish\.\n$/);
   assert.ok(!JSON.stringify(planned).includes(rig.top), 'no absolute path of the work tree in what the client is shown');
   assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' })).status, 404);
@@ -129,6 +129,25 @@ await test('a settings change is refused while a run is under way', async () => 
   assert.equal(cancel.status, 200);
   assert.deepEqual(fs.readdirSync(rig.folder).filter(f => f.startsWith('a-fourth')), [], 'the draft is gone');
   assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'and the settings can change again');
+});
+
+await test('confirm never (the default): one start is the publish, end to end, with no confirm call; GET /blyg-publish/run says which setting is in force', async () => {
+  rig.control({});
+  const never = { ...settingsOf(rig), confirm: 'never', plan_guard: ['--only-note'] };
+  assert.equal((await POST(B, '/blyg-home', { settings: never })).status, 200);
+  assert.equal((await GET(B, '/blyg-publish/run')).json.confirm, 'never');
+  const before = rig.calls().length;
+  const tid = await comment(B, 'A fifth view, published with one click and no other step.');
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  assert.equal(s.status, 200, s.body);
+  assert.equal(s.json.run.confirm, 'never');
+  const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published without a confirm');
+  assert.deepEqual(rig.calls().slice(before).map(c => c.step), ['plan', 'apply', 'publish']);
+  assert.ok(rig.calls()[before].argv.includes('--only-note'), 'the plan carried the guard flag');
+  assert.ok(!rig.calls()[before + 1].argv.includes('--only-note'));
+  assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/a-fifth-view/);
+  assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: ['not-a-flag'] } })).status, 400);
+  assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'back to confirming for the rest of the suite');
 });
 
 // ---- crash and restart ------------------------------------------------------------------------------

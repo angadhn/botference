@@ -2564,7 +2564,7 @@
       // Publish as blyg: what the dialog is showing. `view` is one of config.js PUB_VIEWS, changed only by pubGo (which asks
       // config.js pubMove); `run` is the companion's run as last heard (blyg-run.mjs; the drawer never works a run out for
       // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
-      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0 },
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, confirm: 'always' },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -5159,6 +5159,7 @@ ${bubbleShellHtml()}`;
           ${quoteHtml(t, orph, badge)}
           ${head}
         </div>
+        ${pubLine(t)}
         ${whereHtml(t)}${blygPassageHtml(t)}
         ${fromDiscussionHtml(t)}
         ${broodHtml(t)}
@@ -10639,10 +10640,30 @@ ${bubbleShellHtml()}`;
     // what the companion says the run is now → the view it is shown in (only a move the table allows is made)
     function pubApply(run) {
       if (!run) return;
-      const target = CFG.pubViewOf(run.mode);
+      const target = CFG.pubViewOf(run.mode, run.confirm);
       D.pub.run = run;
       if (target === D.pub.view) { paintPub(); if (target === 'working' || target === 'running') pubPollSoon(); return; }
-      if (!pubGo(target, { run })) paintPub();
+      if (!pubGo(target, { run })) { paintPub(); return; }
+      // confirm 'never': a published run needs no dialog; the thread says so (one line, with the link) and the view is free again
+      if (target === 'done' && run.confirm === 'never') pubGo('closed');
+    }
+    // with confirm 'never' the dialog stays out of the way while a run goes through: the thread carries one line of progress
+    const pubQuiet = () => (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
+      && ((D.pub.run && D.pub.run.confirm) || D.pub.confirm) === 'never';
+    const PUB_WORDS = { drafted: 'writing the note', preparing: 'preparing it for your site', planning: 'checking what would change', planned: 'building and testing',
+      applying: 'building and testing', applied: 'publishing to your site', publishing: 'publishing to your site' };
+    // THE ONE LINE on a thread: what a run that has this thread in it is doing now, then the link to the live post
+    function pubLine(t) {
+      if (!D.owner || pubPublished(t)) return '';
+      const r = D.pub.run;
+      if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.confirm === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
+      if (!r || r.confirm !== 'never' || (r.thread_ids || []).indexOf(t.id) === -1) return '';
+      if (r.mode === 'published') {
+        const a = safeHttp((r.published || {}).address);
+        return `<div class="publine done" role="status">Published${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : (r.published && r.published.permalink ? ' at <code>' + esc(r.published.permalink) + '</code>' : '')}</div>`;
+      }
+      if (PUB_WORDS[r.mode]) return `<div class="publine" role="status">Publishing as a blyg… ${esc(PUB_WORDS[r.mode])}</div>`;
+      return '';
     }
     async function pubRefresh() {
       if (!D.mounted || !D.owner) return;
@@ -10663,6 +10684,7 @@ ${bubbleShellHtml()}`;
       if (!D.owner || !D.mounted || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (r && r.ok && (r.confirm === 'never' || r.confirm === 'always')) D.pub.confirm = r.confirm;
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
       if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) return;
       pubGo('waiting', { run: r.run });
@@ -10730,9 +10752,9 @@ ${bubbleShellHtml()}`;
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
           const n = pubAbove(P.thread).length;
           return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>
-            <p>Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">Just this comment</button>
-            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">This and the ${n} above</button>` : ''}${closeBtn}</div>`;
+            <p>${P.confirm === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${P.confirm === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.confirm === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting': case 'working':
           return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
@@ -10777,9 +10799,10 @@ ${bubbleShellHtml()}`;
     function paintPub() {
       const el = D.el && D.el.pubdlg;
       if (!D.mounted || !el) return;
-      if (D.pub.view === 'closed') { el.hidden = true; el.innerHTML = ''; return; }
+      if (D.pub.view === 'closed' || pubQuiet()) { el.hidden = true; el.innerHTML = ''; if (typeof render === 'function') render(); return; }
       el.innerHTML = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
       el.hidden = false;
+      if (typeof render === 'function') render();
     }
 
     // ---- Copy for Blygger Studio ---------------------------------------------

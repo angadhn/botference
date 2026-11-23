@@ -194,7 +194,7 @@
     choosing: Object.freeze(['starting', 'closed']),
     starting: Object.freeze(['working', 'problem']),
     waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
-    working: Object.freeze(['confirming', 'problem', 'closed']),
+    working: Object.freeze(['confirming', 'running', 'problem', 'closed']),
     confirming: Object.freeze(['running', 'problem', 'closed']),
     running: Object.freeze(['done', 'problem', 'closed']),
     done: Object.freeze(['closed']),
@@ -209,7 +209,9 @@
   // the companion's run mode → the view it is shown in
   const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', preparing: 'working', planning: 'working', planned: 'confirming', applying: 'running',
     applied: 'running', publishing: 'running', published: 'done', failed: 'problem', interrupted: 'problem', cancelled: 'closed', abandoned: 'closed' });
-  const pubViewOf = mode => PUB_VIEW_OF[mode] || 'problem';
+  // `confirm` ('never' | 'always', the companion's setting as carried on the run): with 'never' the run does not stop at
+  // `planned`, so that moment is still "running", not a confirmation to press
+  const pubViewOf = (mode, confirm) => (mode === 'planned' && confirm === 'never' ? 'running' : (PUB_VIEW_OF[mode] || 'problem'));
   // The operations the drawer may ask of the companion for a publish, and nothing else: the worker forwards these and only
   // these (the generic `api` message refuses every /blyg-publish and /blyg-home path). `offer`: 'grants' = a successful answer
   // opens this tab's one-use offer; 'needs' = the worker forwards it only while the tab holds an offer, and spends it.

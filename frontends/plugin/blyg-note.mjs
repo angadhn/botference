@@ -178,13 +178,13 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
     if (g && g.mode === 'removed') return;
     if (g && g.mode === 'adopted-by-reader') { out += clean(g.text); return; }
     if (g && (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader')) { out += defuse(clean(g.text)); return; }
-    blocked.push(`a /tk placeholder (“${oneLine(f.instruction).slice(0, 40)}”) is not filled yet: fill it, adopt it or remove it`);
+    blocked.push(`a /tk or [TK] placeholder (“${oneLine(f.instruction).slice(0, 40)}”) is still in the comment and nobody has filled it in: fill it, adopt it or remove it, then publish`);
   });
   out += Grammar.unescape(src.slice(at));
   out = out.replace(/\n{3,}/g, '\n\n').trim();
   const mask = Grammar.codeMask(out);
   for (const m of out.matchAll(TK_MARK)) {
-    if (!mask[m.index]) { blocked.push('a [TK] marker is left in the text: Blygger Studio’s grammar cannot be published here'); break; }
+    if (!mask[m.index]) { blocked.push('a [TK] marker is still in the comment and nobody has filled it in: fill it or remove it (write `[TK]` as code to mean the letters), then publish'); break; }
   }
   if (escape === 'liquid') {
     if (codeHasLiquid(out)) blocked.push('a code span or block in the comment holds “{{” or “{%”, which a Jekyll build would run: change it, or tell the settings the site is not Jekyll');
@@ -236,7 +236,7 @@ export function blygItemOf(page) {
 export const ESCAPES = Object.freeze(['liquid', 'none']);
 export const DEFAULT_ESCAPE = 'liquid';
 export const DEFAULT_TEMPLATE = [
-  'title: ${title}',
+  // no title: a short blyg is tweet-sized and the site names it by its first words; add `title: ${title}` here for one
   'created: ${created}',
   'released: "${released}"',
   'blyg: true',
