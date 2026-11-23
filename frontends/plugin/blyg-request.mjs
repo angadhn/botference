@@ -1,28 +1,31 @@
 // blyg-request.mjs — WHICH REQUESTS may reach the Publish-as-blyg routes (`/blyg-publish/*` and `/blyg-home*`), in every mode.
 //
-// ONE small exported function, so a companion-wide request-source rule (another branch) can replace this file's body at merge
-// without touching the routes. It is called in exactly one place: server.mjs, at the top of the blyg route block, right after
-// the owner check and before any body is read. The rules are stricter than the rest of the companion's, because these routes
-// end in a push to a live site:
-//   1. an Origin that is present must be trusted (hosted.originVerdict: the companion's own page, a configured public host, or a
-//      pinned extension): `https://evil.<same parent domain>` is not;
-//   2. a chrome-extension Origin is accepted only when the owner pinned extension ids (PLUGIN_EXTENSION_IDS) and this id is one:
-//      the feature is off for an extension until they are set;
-//   3. Sec-Fetch-Site, when sent, must be `same-origin` or `none`; `same-site` and `cross-site` are refused (a pinned extension's
-//      own worker is the one exception: its requests are cross-site by nature);
-//   4. a POST must say `content-type: application/json` (no content type, a form and text/plain are refused: a page can send
-//      those without a preflight).
-// → null when the request may proceed, else { status, error }.
-export function blygRequestRefusal(req, { originVerdict, extensionIds = [] } = {}) {
-  const origin = String(req.headers.origin || '').trim().toLowerCase();
-  const site = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
-  const isExt = origin.startsWith('chrome-extension://');
-  if (isExt) {
-    const id = origin.slice('chrome-extension://'.length).replace(/\/+$/, '');
-    if (!extensionIds.length) return { status: 403, error: 'refused: Publish as blyg is off for the extension until the companion is told which extension may use it (PLUGIN_EXTENSION_IDS)' };
-    if (!extensionIds.includes(id)) return { status: 403, error: 'refused: this extension is not one the companion was told to trust' };
-  } else if (origin && (typeof originVerdict !== 'function' || originVerdict(req) !== 'trusted')) {
+// A THIN LAYER over the companion-wide rule (hosted.mjs `sourceRefusal`, which judges where a request came from): the blyg routes
+// first get that verdict, applied in every mode with reads strict, and then ONLY what they need on top, because they end in a push
+// to a live site and the settings are code that runs:
+//   1. an extension Origin is accepted only when extension ids are in force (the ONE helper server.mjs `extensionIdsInForce`: the
+//      access settings' ids, else PLUGIN_EXTENSION_IDS) and names it: the feature is off for an extension until ids are set;
+//   2. the settings WRITE (the command set) never accepts an extension Origin at all, pinned or not: only the companion's own page on
+//      this machine (or no Origin: a person's own curl);
+//   3. Sec-Fetch-Site, when sent, must be `same-origin` or `none` (a pinned extension's own worker may say `cross-site`);
+//   4. a POST must say `content-type: application/json`.
+// ONE exported function, called once, at the top of the blyg block in server.mjs (right after the owner check, before any body is
+// read). → null when the request may proceed, else { status, error }.
+export function blygRequestRefusal(req, { origin = 'absent', extensionIds = [], sourceRefusal = null, writesSettings = false } = {}) {
+  if (typeof sourceRefusal === 'function') {
+    const why = sourceRefusal(req, origin, { strictReads: true });
+    if (why) return { status: 403, error: why };
+  } else if (origin === 'foreign') {
     return { status: 403, error: 'refused: requests from other websites cannot use Publish as blyg' };
+  }
+  const rawOrigin = String(req.headers.origin || '').trim().toLowerCase();
+  const site = String(req.headers['sec-fetch-site'] || '').trim().toLowerCase();
+  const isExt = rawOrigin.startsWith('chrome-extension://');
+  if (isExt) {
+    const id = rawOrigin.slice('chrome-extension://'.length).replace(/\/+$/, '');
+    if (writesSettings) return { status: 403, error: 'refused: the Where my blyg lives setting is changed only from the companion\'s own page on this machine, never by an extension' };
+    if (!extensionIds.length) return { status: 403, error: 'refused: Publish as blyg is off for the extension until the companion is told which extension may use it (PLUGIN_EXTENSION_IDS, or the access settings\' extension ids)' };
+    if (!extensionIds.includes(id)) return { status: 403, error: 'refused: this extension is not one the companion was told to trust' };
   }
   if (site && site !== 'same-origin' && site !== 'none' && !(isExt && site === 'cross-site')) {
     return { status: 403, error: 'refused: Publish as blyg answers only this site\'s own pages' };

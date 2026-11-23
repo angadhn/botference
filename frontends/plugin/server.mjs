@@ -2357,8 +2357,11 @@ if (STRICT_NAMES && !PUBLIC_HOSTS.length) {
 }
 // ...and the extension ids come from the access settings (never "any extension"). A request that did not arrive on this machine
 // directly is judged strictly; one that did (the owner's own pages and extension on the loopback) as it always was.
+// THE extension ids in force: the access settings' list when Access is configured, else the PLUGIN_EXTENSION_IDS list. One helper, used
+// by the global origin rule below AND by the Publish-as-blyg routes (blyg-request.mjs), so the two can never disagree.
+export const extensionIdsInForce = () => (ACCESS_CFG ? ACCESS_CFG.extensionIds : String(process.env.PLUGIN_EXTENSION_IDS || '').split(',')).map(x => String(x).trim().toLowerCase()).filter(Boolean);
 const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS,
-  extensionIds: ACCESS_CFG ? ACCESS_CFG.extensionIds : null, strict: STRICT_NAMES && !isLocalDirect(req) });
+  extensionIds: extensionIdsInForce(), strict: STRICT_NAMES && !isLocalDirect(req) });
 // WHERE THE REQUEST CAME FROM (hosted.mjs sourceVerdict), judged before anything else in every auth mode, for requests, streams and sockets
 const sourceRefused = req => (HOSTED && !isLocalDirect(req)) ? sourceRefusal(req, originOf(req), { tokenAuth: hosted.tokenAuthenticated(req),
   strictReads: HOSTED_AUTH !== 'password' || String(req.url || '').split('?')[0] === '/events' || /websocket/i.test(String(req.headers.upgrade || '')) }) : null;
@@ -4204,7 +4207,8 @@ export function handler(req, res) {
   if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
     if (notOwner(req, res)) return;
     // WHICH REQUESTS may reach these routes (blyg-request.mjs): the one place that rule is called
-    const refused = blygRequestRefusal(req, { originVerdict: originOf, extensionIds: String(process.env.PLUGIN_EXTENSION_IDS || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean) });
+    const refused = blygRequestRefusal(req, { origin: originOf(req), extensionIds: extensionIdsInForce(), sourceRefusal,
+      writesSettings: req.method === 'POST' && url === '/blyg-home' });
     if (refused) { req.resume(); return fail(res, refused.status, refused.error); }
     // THE COMMAND SET IS SET ON THE MACHINE, never over a tunnel: it decides what gets run here. A remote owner session can use
     // the feature and read a redacted view (no paths, no commands), but cannot read the page or change the setting.

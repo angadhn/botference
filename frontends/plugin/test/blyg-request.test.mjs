@@ -1,31 +1,36 @@
-// blyg-request.test.mjs — which requests may reach the Publish-as-blyg routes (blyg-request.mjs): every rule, each refused alone.
+// blyg-request.test.mjs — the blyg routes' request rule: a thin layer over hosted.mjs sourceRefusal, each added rule refused alone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { blygRequestRefusal as refuse } from '../blyg-request.mjs';
+import { sourceRefusal } from '../hosted.mjs';
 
-const own = req => (req.headers.origin === 'https://discuss.example.test' ? 'trusted' : 'foreign');
 const rq = (method, headers = {}) => ({ method, headers: { ...(method === 'POST' ? { 'content-type': 'application/json' } : {}), ...headers } });
 const EXT = 'abcdefghijklmnopabcdefghijklmnop';
+const o = (origin, extra = {}) => ({ origin, extensionIds: [EXT], sourceRefusal, ...extra });
 
-test('a plain request, a same-origin page and a pinned extension pass; every deviation is refused on its own', () => {
-  const o = { originVerdict: own, extensionIds: [EXT] };
-  assert.equal(refuse(rq('POST'), o), null, 'no Origin (the Node side, curl): as everywhere else');
-  assert.equal(refuse(rq('POST', { origin: 'https://discuss.example.test', 'sec-fetch-site': 'same-origin' }), o), null);
-  assert.equal(refuse(rq('GET', { 'sec-fetch-site': 'none' }), o), null);
-  assert.equal(refuse(rq('POST', { origin: `chrome-extension://${EXT}`, 'sec-fetch-site': 'cross-site' }), o), null, 'a pinned extension\'s own worker is cross-site by nature');
-  const no = [
-    [rq('POST', { origin: 'https://evil.example.test' }), 403], [rq('POST', { origin: 'null' }), 403],
-    [rq('POST', { origin: 'https://discuss.example.test', 'sec-fetch-site': 'same-site' }), 403],
-    [rq('POST', { 'sec-fetch-site': 'cross-site' }), 403], [rq('GET', { 'sec-fetch-site': 'same-site' }), 403],
-    [rq('POST', { origin: 'chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' }), 403],
-    [rq('POST', { 'content-type': 'text/plain' }), 415], [rq('POST', { 'content-type': 'application/x-www-form-urlencoded' }), 415],
-    [{ method: 'POST', headers: {} }, 415], [rq('POST', { 'content-type': 'application/jsonx' }), 415],
-  ];
-  for (const [req, status] of no) assert.equal(refuse(req, o)?.status, status, JSON.stringify(req.headers));
+test('the global rule is applied first: a foreign origin, and a browser saying same-site with no Origin, are refused by sourceRefusal\'s own words', () => {
+  assert.match(refuse(rq('POST'), o('foreign')).error, /other websites cannot use the companion/);
+  assert.match(refuse(rq('POST', { 'sec-fetch-site': 'same-site', origin: 'https://x.test' }), o('foreign')).error, /other websites/);
+  assert.match(refuse(rq('GET', { 'sec-fetch-site': 'cross-site' }), o('absent')).error, /other websites/);
+  assert.equal(refuse({ method: 'PUT', headers: {} }, o('absent')).error, 'refused: unsupported method');
 });
 
-test('with no extension ids pinned the feature is off for every extension; with none and no verdict function a present Origin is refused', () => {
-  assert.match(refuse(rq('POST', { origin: `chrome-extension://${EXT}` }), { originVerdict: own, extensionIds: [] }).error, /PLUGIN_EXTENSION_IDS/);
-  assert.equal(refuse(rq('POST', { origin: 'https://discuss.example.test' }), {})?.status, 403);
-  assert.equal(refuse(rq('POST'), {}), null);
+test('what the blyg routes add: JSON, Sec-Fetch-Site same-origin or none, extension ids required', () => {
+  assert.equal(refuse(rq('POST'), o('absent')), null);
+  assert.equal(refuse(rq('POST', { origin: 'https://discuss.example.test', 'sec-fetch-site': 'same-origin' }), o('trusted')), null);
+  assert.equal(refuse(rq('GET', { 'sec-fetch-site': 'none' }), o('absent')), null);
+  assert.equal(refuse(rq('POST', { origin: `chrome-extension://${EXT}`, 'sec-fetch-site': 'cross-site' }), o('trusted')), null, 'a pinned extension\'s own worker');
+  for (const [req, origin, status] of [
+    [rq('POST', { 'content-type': 'text/plain' }), 'absent', 415], [rq('POST', { 'content-type': 'application/x-www-form-urlencoded' }), 'absent', 415],
+    [{ method: 'POST', headers: {} }, 'absent', 415], [rq('POST', { 'content-type': 'application/jsonx' }), 'absent', 415],
+    [rq('POST', { origin: 'https://discuss.example.test', 'sec-fetch-site': 'same-site' }), 'trusted', 403],
+    [rq('POST', { origin: 'chrome-extension://zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz' }), 'trusted', 403],
+  ]) assert.equal(refuse(req, o(origin))?.status, status, JSON.stringify(req.headers));
+});
+
+test('with no extension ids in force the feature is off for every extension; a settings write refuses an extension Origin even when pinned', () => {
+  assert.match(refuse(rq('POST', { origin: `chrome-extension://${EXT}` }), o('trusted', { extensionIds: [] })).error, /off for the extension/);
+  assert.match(refuse(rq('POST', { origin: `chrome-extension://${EXT}` }), o('trusted', { writesSettings: true })).error, /only from the companion's own page on this machine, never by an extension/);
+  assert.equal(refuse(rq('POST', { origin: 'http://127.0.0.1:4189' }), o('trusted', { writesSettings: true })), null, 'the companion\'s own page');
+  assert.equal(refuse(rq('POST'), o('absent', { writesSettings: true })), null, 'a person\'s own curl on the machine');
 });
