@@ -8,7 +8,7 @@
 //   filename   a pattern for the note's file name: `${slug}` and `${date}`, ending in `.md`
 //   template   the front matter (blyg-note.mjs checkTemplate), and `escape`
 //              ('liquid' | 'none'): whether Jekyll's Liquid is made inert in the body
-//   commands   `plan`, `apply`, `publish` (and an optional `prepare` and `discard`): argv arrays
+//   commands   `plan`, `apply`, `publish` (and optional `prepare`, `discard` and `abandon`): argv arrays
 //              with a `{note}` placeholder, run with execFile semantics (argv, shell: false),
 //              never a shell, in the work tree, each under a time limit, with a minimal environment
 //
@@ -30,8 +30,8 @@ import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone
 export const STEPS = Object.freeze(['plan', 'apply', 'publish']);
 // `prepare` (optional) runs before `plan`, after the note is written: for a site that has to stage the note or fetch what it
 // quotes first. `discard` (optional) undoes whatever prepare or plan did, when the owner cancels or abandons before apply.
-export const COMMAND_KEYS = Object.freeze(['prepare', ...STEPS, 'discard']);
-export const TIME_LIMITS_MS = Object.freeze({ prepare: 300_000, plan: 120_000, apply: 900_000, publish: 1_800_000, discard: 60_000 });
+export const COMMAND_KEYS = Object.freeze(['prepare', ...STEPS, 'discard', 'abandon']);
+export const TIME_LIMITS_MS = Object.freeze({ prepare: 300_000, plan: 120_000, apply: 900_000, publish: 1_800_000, discard: 60_000, abandon: 60_000 });
 export const OUTPUT = Object.freeze({
   maxBuffer: 4 * 1024 * 1024,   // a command that prints more than this is stopped
   kept: 64 * 1024,              // what is stored and shown: the first 8 KiB and the last 56 KiB
@@ -176,7 +176,7 @@ export function validateHome(raw, { env = process.env } = {}) {
   const commands = {};
   for (const k of STEPS) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   if (cmds.prepare && !cmds.discard) errors.push('a prepare command needs a discard command, so that cancelling undoes what prepare did');
-  for (const k of ['prepare', 'discard']) {
+  for (const k of ['prepare', 'discard', 'abandon']) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }
   if (errors.length) return { ok: false, errors, settings: null };
@@ -206,6 +206,28 @@ export function capOutput(text) {
   return { text: `${s.slice(0, OUTPUT.head)}\n… ${s.length - OUTPUT.kept} characters cut …\n${s.slice(-tail)}`, truncated: true };
 }
 
+// A command's life, as ONE named list in ONE field (`cmd.state`), changed only by `moveCmd`, which refuses a move the table does
+// not list. `exited` is the only state that resolves the promise, and nothing leaves it, so the result can be given exactly once.
+//   running       started (or about to be)
+//   timed-out     its time limit passed: its process group was told to stop
+//   flooded       it printed more than OUTPUT.maxBuffer: its process group was told to stop
+//   spawn-failed  the program could not be started
+//   exited        done: the one state the result is made in
+export const CMD_STATES = Object.freeze(['running', 'timed-out', 'flooded', 'spawn-failed', 'exited']);
+export const CMD_MOVES = Object.freeze({
+  running: Object.freeze(['timed-out', 'flooded', 'spawn-failed', 'exited']),
+  'timed-out': Object.freeze(['exited']),
+  flooded: Object.freeze(['exited']),
+  'spawn-failed': Object.freeze(['exited']),
+  exited: Object.freeze([]),
+});
+export function moveCmd(cmd, to) {
+  if (!CMD_STATES.includes(to)) throw new Error(`command: no such state ${String(to).slice(0, 20)}`);
+  if (!CMD_MOVES[cmd.state].includes(to)) throw new Error(`command: cannot go from ${cmd.state} to ${to}`);
+  cmd.state = to;
+  return cmd;
+}
+
 /**
  * Run one command: the program and its argv, `shell: false`, so no string of ours or the page's is ever parsed by a shell
  * (this is execFile's guarantee; `spawn` is used because execFile cannot start a process group, and a time limit has to
@@ -216,41 +238,44 @@ export function capOutput(text) {
 export function runCommand({ argv, cwd, env, limitMs, onChild }) {
   return new Promise(resolve => {
     const t0 = Date.now();
-    let timedOut = false;
-    let flooded = false;
-    let settled = false;
+    const cmd = { state: 'running' };
+    let cause = 'running';          // the state it was in when it exited
+    let spawnCode = '';
     let timer = null;
     let killer = null;
-    let spawnError = '';
     const out = [];
     const err = [];
     let size = 0;
     let child = null;
     const killGroup = sig => { try { process.kill(-child.pid, sig); } catch { try { child.kill(sig); } catch { /* gone */ } } };
+    const stop = to => { moveCmd(cmd, to); killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); };
+    // THE one place a result is made: only a move to `exited` gets here, and a command can leave `exited` never
     const finish = (code, signal) => {
-      if (settled) return;
-      settled = true;
+      cause = cmd.state;
+      if (cause === 'exited') return;
+      moveCmd(cmd, 'exited');
       clearTimeout(timer); clearTimeout(killer);
       const stdout = Buffer.concat(out).toString('utf8');
       const stderr = Buffer.concat(err).toString('utf8');
-      const capped = capOutput(`${stdout}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}${flooded ? '\n[stopped: the command printed more than it may]' : ''}`);
-      resolve({ exit: typeof code === 'number' && !flooded ? code : (flooded ? null : null), signal: signal || '', timedOut, spawnError: spawnError || (flooded ? 'OUTPUT_LIMIT' : ''),
-        output: capped.text, truncated: capped.truncated || flooded, ms: Date.now() - t0 });
+      const capped = capOutput(`${stdout}${stderr ? `${stdout ? '\n' : ''}[stderr]\n${stderr}` : ''}${cause === 'flooded' ? '\n[stopped: the command printed more than it may]' : ''}`);
+      resolve({ exit: typeof code === 'number' && cause !== 'flooded' ? code : null, signal: signal || '', timedOut: cause === 'timed-out',
+        spawnError: cause === 'spawn-failed' ? (spawnCode || 'SPAWN') : (cause === 'flooded' ? 'OUTPUT_LIMIT' : ''),
+        output: capped.text, truncated: capped.truncated || cause === 'flooded', ms: Date.now() - t0 });
     };
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, env, shell: false, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) { spawnError = 'SPAWN'; err.push(Buffer.from(String((e && e.message) || e))); return finish(null, ''); }
+    } catch (e) { moveCmd(cmd, 'spawn-failed'); spawnCode = 'SPAWN'; err.push(Buffer.from(String((e && e.message) || e))); return finish(null, ''); }
     const take = list => chunk => {
-      if (flooded) return;
+      if (cmd.state !== 'running') return;
       size += chunk.length;
-      if (size > OUTPUT.maxBuffer) { flooded = true; killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); return; }
+      if (size > OUTPUT.maxBuffer) { stop('flooded'); return; }
       list.push(chunk);
     };
     child.stdout.on('data', take(out));
     child.stderr.on('data', take(err));
-    child.on('error', e => { spawnError = (e && e.code) || 'SPAWN'; finish(null, ''); });
+    child.on('error', e => { if (cmd.state === 'running') { moveCmd(cmd, 'spawn-failed'); spawnCode = (e && e.code) || 'SPAWN'; } finish(null, ''); });
     child.on('close', (code, signal) => finish(code, signal));
-    timer = setTimeout(() => { timedOut = true; killGroup('SIGTERM'); killer = setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS); }, limitMs);
+    timer = setTimeout(() => { if (cmd.state === 'running') stop('timed-out'); }, limitMs);
     if (typeof onChild === 'function') onChild(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); });
   });
 }

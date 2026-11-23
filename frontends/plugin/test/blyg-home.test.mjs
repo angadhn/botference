@@ -84,6 +84,30 @@ test('the file name pattern and the names it makes', () => {
 });
 
 test('the limits are the ones stated', () => {
-  assert.deepEqual(H.TIME_LIMITS_MS, { prepare: 300000, plan: 120000, apply: 900000, publish: 1800000, discard: 60000 });
+  assert.deepEqual(H.TIME_LIMITS_MS, { prepare: 300000, plan: 120000, apply: 900000, publish: 1800000, discard: 60000, abandon: 60000 });
   assert.deepEqual([H.OUTPUT.maxBuffer, H.OUTPUT.kept, H.ARGV.maxArgs, H.ARGV.maxArgChars], [4194304, 65536, 32, 400]);
+});
+
+test('a command\'s life is one named list in one field: every move listed or refused, and `exited` is left by nothing', () => {
+  for (const from of H.CMD_STATES) for (const to of H.CMD_STATES) {
+    const cmd = { state: from };
+    if (H.CMD_MOVES[from].includes(to)) { H.moveCmd(cmd, to); assert.equal(cmd.state, to, `${from} → ${to}`); }
+    else { assert.throws(() => H.moveCmd(cmd, to), /cannot go from/, `${from} → ${to}`); assert.equal(cmd.state, from); }
+  }
+  assert.deepEqual(H.CMD_MOVES.exited, []);
+  assert.throws(() => H.moveCmd({ state: 'running' }, 'settled'), /no such state/);
+  const src = fs.readFileSync(new URL('../blyg-home.mjs', import.meta.url), 'utf8');
+  assert.ok(!/\b(timedOut|flooded|settled)\s*=/.test(src.slice(src.indexOf('export function runCommand'))), 'no boolean flags standing in for the lifecycle');
+});
+
+test('each way a command can end gives one result, once: exit, timeout, flood and a program that does not exist', async () => {
+  const d = tmp();
+  const one = async argv => H.runCommand({ argv, cwd: d, env: H.minimalEnv(), limitMs: 400 });
+  assert.deepEqual((({ exit, timedOut, spawnError }) => ({ exit, timedOut, spawnError }))(await one([process.execPath, '-e', 'process.exit(3)'])), { exit: 3, timedOut: false, spawnError: '' });
+  const slow = await one([process.execPath, '-e', 'setTimeout(()=>{},30000)']);
+  assert.deepEqual([slow.timedOut, slow.exit], [true, null]);
+  assert.equal((await one([path.join(d, 'nope')])).spawnError, 'ENOENT');
+  const flood = await H.runCommand({ argv: [process.execPath, '-e', "process.stdout.write('x'.repeat(5*1024*1024))"], cwd: d, env: H.minimalEnv(), limitMs: 20000 });
+  assert.deepEqual([flood.spawnError, flood.exit, flood.timedOut], ['OUTPUT_LIMIT', null, false]);
+  fs.rmSync(d, { recursive: true, force: true });
 });
