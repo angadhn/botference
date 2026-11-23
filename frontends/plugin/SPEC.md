@@ -13186,11 +13186,57 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
   scrubbed and no `note_rel`); the thread line and the dialog show it. `apply` has 1800 s, like `publish`.
 - **Pre-flight.** An optional `check` command (no `{note}`; 15 s) runs once, synchronously, before anything is written; its own plain
   sentences refuse the start. The example site's is `scripts/blyg-publish --preflight`.
-- **Environment (documented, not configured here).** The companion's launch environment must put a Ruby that satisfies the site's
-  `.ruby-version` first on PATH and pass `BLYG_CHECKER` through `env_pass`.
-- **Example settings now.** confirm `never`; plan_guard `["--only-note","--quick"]`; published_marker `State: merged_back`; env_pass
-  `["BLYG_CHECKER"]`; check `["scripts/blyg-publish","--preflight"]`; prepare `["scripts/blyg-publish","{note}","--prepare-note"]`; plan
-  `["scripts/blyg-publish","{note}"]`; apply `[…,"{note}","--apply"]`; publish `[…,"{note}","--push"]`; discard `[…,"{note}","--unstage-note"]`;
-  abandon `["scripts/blyg-publish","--abandon","{note}"]`. (The guard flags are appended to plan, apply and publish.)
+- **Environment (documented, not configured here).** See "Owner setup for Publish as blyg" below.
 - **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
   destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.
+
+### Owner setup for Publish as blyg
+
+Three things in the companion's LAUNCH environment (the shell, launch agent or service file that starts `server.mjs`), then the
+`blyg_home` setting. The companion changes none of these for you.
+
+1. **A Ruby that can run the publisher, first on PATH.** The site pins its version in `.ruby-version`. The macOS system `ruby` is too
+   old. With rbenv, put the shims directory before `/usr/bin`, e.g. `PATH="$HOME/.rbenv/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"`.
+   The steps run with a minimal environment that keeps `PATH`, so they find the same Ruby (and `node`, `git`, `bundle`, `netlify`). Also needed
+   on that PATH: `node` (the conformance checker runs on it) and the signed-in `netlify` command.
+2. **`BLYG_CHECKER`**, the folder of the conformance checker (`blygger-spec/conformance/schemas/lib`), set in the launch environment AND
+   listed in `blyg_home.env_pass`, because the steps get nothing else from the companion's environment. The pre-flight loads
+   `<BLYG_CHECKER>/check-site.mjs` with node and needs a `checkSite` function: a folder that exists but cannot load (missing
+   `node_modules`) is refused in one second, not at the end of a 15-minute apply.
+3. **The extension's id pinned**: `PLUGIN_EXTENSION_IDS` (comma list of 32-letter ids from the browser's extensions page) in the launch
+   environment; when Access (hosted mode) is configured, its `extension_ids` list is the one in force instead. Until one of them names the
+   extension, Publish as blyg is off for it (403, "which extension may use it").
+
+The setting (`blyg_home` in config.json, or `/blyg-home/page` on the machine), the way the example blog uses it. `folder` is the blog's
+`_notes` in a checkout that is on its `wip` branch:
+
+```json
+"blyg_home": {
+  "folder": "/path/to/blog/_notes",
+  "filename": "${slug}.md",
+  "timezone": "Europe/London",
+  "confirm": "never",
+  "plan_guard": ["--only-note", "--quick"],
+  "published_marker": "State: merged_back",
+  "env_pass": ["BLYG_CHECKER"],
+  "commands": {
+    "check":   ["scripts/blyg-publish", "--preflight"],
+    "prepare": ["scripts/blyg-publish", "{note}", "--prepare-note"],
+    "plan":    ["scripts/blyg-publish", "{note}"],
+    "apply":   ["scripts/blyg-publish", "{note}", "--apply"],
+    "publish": ["scripts/blyg-publish", "{note}", "--push"],
+    "discard": ["scripts/blyg-publish", "{note}", "--unstage-note"],
+    "abandon": ["scripts/blyg-publish", "--abandon", "{note}"]
+  }
+}
+```
+
+- `confirm: "never"` publishes on the one click; it needs a `plan_guard`, which is appended to plan, apply and publish. `--only-note`
+  makes the site's plan refuse anything but this note and the import files of the posts it quotes; `--quick` (only valid with it) skips the
+  code-level test files (the build, the generated-site test, the checker and the live check still run), taking a publish from about 15
+  minutes to about half a minute. Use `["--only-note"]` alone to run every test file.
+- `published_marker` makes a publish step that exits 0 without `State: merged_back` as its last `State:` line a failure.
+- `abandon` carries `{note}`: it ends the recorded run only if it is this note's.
+- Commands are argv lists (no shell), run in the work tree that holds `folder`, so `scripts/blyg-publish` is relative to the blog checkout.
+- Check before the first use: start the companion the way you will always start it and press Publish on a throwaway thread with
+  `confirm: "always"`; the check command names what is missing in plain words.
