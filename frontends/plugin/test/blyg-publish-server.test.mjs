@@ -119,6 +119,32 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   events.close();
 });
 
+// The command set is code that runs on this machine: only the companion's OWN page (its own origin) or no Origin at all (the owner's
+// curl) may write it. A page served on another loopback port (a local dev server, another tool), a sibling name, or any extension
+// (pinned or not) is refused, and nothing is stored.
+await test('the settings write accepts only the companion\'s own page (or no Origin): another loopback port, a same-site page or an extension is refused', async () => {
+  const port = new URL(B).port;
+  const other = String(Number(port) === 4000 ? 4001 : 4000);
+  const changed = { ...settingsOf(rig), filename: 'changed-${slug}.md' };
+  const refusedBy = [
+    { origin: `http://127.0.0.1:${other}`, 'sec-fetch-site': 'cross-site' },
+    { origin: `http://localhost:${other}`, 'sec-fetch-site': 'same-site' },
+    { origin: `http://localhost:${other}` },
+    { origin: 'null' },
+    { origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop', 'sec-fetch-site': 'cross-site' },
+    { origin: B, 'sec-fetch-site': 'same-site' },
+  ];
+  for (const h of refusedBy) {
+    const r = await request(B, 'POST', '/blyg-home', { settings: changed }, { 'content-type': 'application/json', ...h });
+    assert.equal(r.status, 403, JSON.stringify(h));
+  }
+  assert.equal((await GET(B, '/blyg-home')).json.settings.filename, '${slug}.md', 'nothing was stored');
+  const own = await request(B, 'POST', '/blyg-home', { settings: changed }, { 'content-type': 'application/json', origin: B, 'sec-fetch-site': 'same-origin' });
+  assert.equal(own.status, 200, own.body);
+  assert.equal((await GET(B, '/blyg-home')).json.settings.filename, 'changed-${slug}.md', 'the companion\'s own page may');
+  assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'and no Origin (a curl on this machine) may');
+});
+
 await test('a settings change is refused while a run is under way', async () => {
   rig.control({});
   const tid = await comment(B, 'A fourth view that will sit at the confirmation.');
