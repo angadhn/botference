@@ -102,7 +102,8 @@ export function buildAccessConfig(raw, { ownerHandle = '' } = {}) {
     if (!handle || (!given && taken.has(handle))) handle = `${handle || 'guest'}-${createHash('sha256').update(email).digest('hex').slice(0, 4)}`;
     if (taken.has(handle)) throw new AccessConfigError('two people would share one handle in the access settings');
     taken.add(handle);
-    people.set(email, { standing: 'guest', handle });
+    // `alt`: the name used instead if the owner ever takes this one (a rename after start-up)
+    people.set(email, { standing: 'guest', handle, alt: `${handle}-${createHash('sha256').update(email).digest('hex').slice(0, 4)}` });
   }
   let certsUrl = `https://${team}/cdn-cgi/access/certs`;
   // The key list's address is the team's, always, over https. A different one is honoured only when the process was started for a
@@ -250,7 +251,7 @@ export function verdictFor(checked, config) {
   if (checked.why !== 'ok') return { verdict: 'invalid' };
   const person = config.people.get(asciiLower(checked.claims.email));
   if (!person) return { verdict: 'unlisted' };
-  return { verdict: person.standing, handle: person.handle, expiresAt: checked.claims.exp * 1000 };
+  return { verdict: person.standing, handle: person.handle, alt: person.alt, expiresAt: checked.claims.exp * 1000 };
 }
 
 // ---- the verifier a hosted companion holds ---------------------------------

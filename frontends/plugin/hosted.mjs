@@ -215,7 +215,7 @@ const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/pa
 
 // hosted = false gives a no-op object: every call answers "owner, always" so
 // the local companion keeps behaving exactly as it did before this file existed.
-export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password' }) {
+export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password', reservedHandles = () => [] }) {
   // `access`: only a Cloudflare Access token counts; the password routes, login page and cookie are off.
   // `either`: a token when one is present, otherwise the password path. See access.mjs.
   const pwOn = authMode !== 'access';
@@ -353,19 +353,28 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   function identity(req) {
     if (!hosted || isLocalDirect(req)) return { handle: owner(), owner: true };
     if (isOwner(req)) return { handle: owner(), owner: true };
-    // a verified collaborator is their configured name, never one the request asks for
+    // a verified collaborator is their configured name, never one the request asks for (and never the owner's, if the owner has since
+    // taken it: then the name made for that case)
     const tv = tokenVerdict(req);
-    if (tv) return tv.verdict === 'guest' ? { handle: tv.handle, owner: false } : { handle: null, owner: false, error: 'not signed in', code: 401 };
+    if (tv) return tv.verdict === 'guest' ? { handle: tv.handle === sanitizeHandle(owner()) ? tv.alt : tv.handle, owner: false } : { handle: null, owner: false, error: 'not signed in', code: 401 };
     const h = handleOf(req);
     if (!h) return { handle: null, owner: false, error: 'a name is required — send x-plugin-handle', code: 400 };
     if (h === sanitizeHandle(owner())) {
       return { handle: null, owner: false, error: "that name is the owner's here — pick another", code: 403 };
+    }
+    // …nor the name of a collaborator signed in with Access (case does not matter: handles are lower-cased), which would let a password
+    // guest write as them. Asked at every request, so a rename of the owner or a new collaborator is felt at once.
+    if (reservedNames().has(h)) {
+      return { handle: null, owner: false, error: 'that name belongs to someone else here — pick another', code: 403 };
     }
     // A cookie-borne name is signed, so it cannot be swapped; a header-borne
     // one is only as good as the bearer token beside it, which is the shared
     // guest password. Both land here as the same kind of guest.
     return { handle: h, owner: false };
   }
+
+  // every name an Access collaborator can appear under, and the owner's: none of them may be taken by a password guest
+  const reservedNames = () => new Set([sanitizeHandle(owner()), ...reservedHandles().map(sanitizeHandle)]);
 
   // --- the gate ---------------------------------------------------------
   function gatePage(next, bad, handle) {
@@ -449,6 +458,10 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
       if (handle === sanitizeHandle(owner())) {
         res.writeHead(401, HTML_HEAD).end(gatePage(next,
           `“${handle}” is the owner's name here — please pick another`, ''));
+        return;
+      }
+      if (reservedNames().has(handle)) {
+        res.writeHead(401, HTML_HEAD).end(gatePage(next, `“${handle}” belongs to someone else here — please pick another`, ''));
         return;
       }
       res.writeHead(303, { 'set-cookie': setCookies(req, 'guest', handle), location: next }).end();

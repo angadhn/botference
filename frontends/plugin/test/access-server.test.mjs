@@ -35,7 +35,7 @@ const T = {
   bad: () => ({ 'cf-access-jwt-assertion': tokenFor(OWNER, { exp: 5 }) }),
   forged: () => ({ 'cf-access-jwt-assertion': mint(makeKey('k1'), { email: OWNER }) }),
 };
-const BEARER = { guest: { authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' }, owner: { authorization: `Bearer ${OPW}` }, wrong: { authorization: 'Bearer nope', 'x-plugin-handle': 'ada' } };
+const BEARER = { guest: { authorization: `Bearer ${PW}`, 'x-plugin-handle': 'visitor' }, owner: { authorization: `Bearer ${OPW}` }, wrong: { authorization: 'Bearer nope', 'x-plugin-handle': 'visitor' } };
 
 // ---- the route table, from the source --------------------------------------------------------------------------
 const src = fs.readFileSync(SERVER, 'latin1');
@@ -161,6 +161,23 @@ try {
     assert.equal((await GET(E.base, '/whoami', { ...REMOTE, cookie })).json.owner, true);
     assert.equal((await GET(E.base, '/whoami', { ...REMOTE, cookie, ...T.guest() })).json.owner, false);
     assert.equal((await GET(E.base, '/whoami', { ...REMOTE, cookie, ...T.guest() })).json.handle, 'ada');
+  });
+
+  await test('either: a password guest cannot take the name of an Access collaborator or of the owner (any case), by header, query or login form', async () => {
+    const ownerName = (await GET(E.base, '/whoami')).json.handle;
+    assert.ok(ownerName);
+    for (const name of ['ada', 'ADA', 'Ada', ownerName.toUpperCase(), ownerName]) {
+      const r = await POST(E.base, '/thread', { url: 'https://x.web.test/a', quote: 'q', prefix: '', suffix: '', msg: { text: 'hi' } }, { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': name });
+      assert.equal(r.status, 403, name); assert.match(r.json.error, /owner's here|belongs to someone else/);
+      assert.equal((await GET(E.base, `/whoami?auth=${PW}&handle=${encodeURIComponent(name)}`, REMOTE)).json.handle, null, name);
+      const login = await FORM(E.base, '/auth', { password: PW, handle: name, next: '/pages' }, REMOTE);
+      assert.equal(login.status, 401, 'the login form: ' + name);
+    }
+    // a name that is nobody's still works, and the real collaborator is still themselves by token
+    assert.equal((await GET(E.base, '/whoami', { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'visitor' })).json.handle, 'visitor');
+    assert.equal((await GET(E.base, '/whoami', { ...REMOTE, ...T.guest() })).json.handle, 'ada');
+    // password mode has no collaborators to protect: its names are as they were
+    assert.equal((await GET(P.base, '/whoami', { ...REMOTE, authorization: `Bearer ${PW}`, 'x-plugin-handle': 'ada' })).json.handle, 'ada');
   });
 
   await test('local requests on the loopback stay the owner in every mode and never ask for a token', async () => {

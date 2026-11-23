@@ -133,6 +133,8 @@ const hosted = createHosted({
   password: process.env.PLUGIN_PASSWORD || '',
   ownerPassword: process.env.PLUGIN_OWNER_PASSWORD || '',
   authMode: HOSTED_AUTH,
+  // the names Access collaborators appear under: a password guest may not take them (hosted.mjs identity)
+  reservedHandles: () => (ACCESS_CFG ? [...ACCESS_CFG.people.values()].flatMap(p => (p.handle ? [p.handle, p.alt] : [])) : []),
 });
 const NO_GRANT_REASON = "the owner hasn't granted you bot access";
 // …and when the owner's grants (or the daily count) file is damaged: the bots

@@ -271,3 +271,23 @@ test('the key list is bounded by bytes while it is read (a declared size, an und
     assert.ok(sent < 2 * 1024 * 1024, 'it stopped reading near the limit: ' + sent);
   } finally { srv.closeAllConnections?.(); await new Promise(r => srv.close(r)); }
 });
+
+test('an Access collaborator whose name the owner has since taken appears under the name made for that case', async () => {
+  const { createHosted } = await import('../hosted.mjs');
+  const r = rig();
+  let ownerName = 'mira';
+  const c = buildAccessConfig({ ...RAW, collaborators: ['ada@example.test'] }, { ownerHandle: ownerName });
+  const access = createAccess(c, { now: r.now, get: r.get });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-alt-'));
+  try {
+    const hosted = createHosted({ hosted: true, dir, ownerHandle: () => ownerName, authMode: 'access', reservedHandles: () => [...c.people.values()].flatMap(p => (p.handle ? [p.handle, p.alt] : [])) });
+    const req = () => ({ method: 'GET', url: '/', headers: { host: 'annotations.example', 'cf-access-jwt-assertion': mintAt(r, { email: ADA }) }, socket: { remoteAddress: '203.0.113.9' } });
+    const q1 = req(); await access.resolve(q1);
+    assert.equal(hosted.identity(q1).handle, 'ada');
+    ownerName = 'Ada';                       // the owner renames themselves to the collaborator's name
+    const q2 = req(); await access.resolve(q2);
+    const h = hosted.identity(q2).handle;
+    assert.notEqual(h, 'ada'); assert.match(h, /^ada-[0-9a-f]{4}$/);
+    assert.equal(hosted.identity(q2).owner, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
