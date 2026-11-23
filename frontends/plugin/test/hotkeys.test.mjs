@@ -48,7 +48,7 @@ const calls = { transcribe: 0, saved: [], tidy: [] };
 // what whisper "hears" next, and what the tidy bot answers
 let heard = 'spoken words';
 let tidied = { ok: true, text: 'Terse.' };
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   capabilities: { highlights: true, strike: true },
   onTranscribeStatus: async () => ({ ok: true, model: 'm' }),

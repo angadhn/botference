@@ -42,7 +42,7 @@ function withClipboard(impl) { Object.defineProperty(globalThis.navigator, 'clip
 
 function make(extra = {}) {
   const calls = { studio: [], export: [] };
-  const drawer = D.create({
+  const drawer = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onModels: async () => ({ ok: true, current: {}, options: {} }),
     onBlygCheck: async () => ({ ok: true, status: 'not-a-blyg' }),

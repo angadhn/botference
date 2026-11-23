@@ -87,7 +87,7 @@ const page = (chat, threads) => ({
   ],
 });
 
-const drawer = D.create({ cssText: '.panel{}' });
+const drawer = D.create({ isTrusted: () => true, cssText: '.panel{}' });
 drawer.setConn(true);
 drawer.open('chat');
 drawer.setPage(page(conv(10, 'chat')));

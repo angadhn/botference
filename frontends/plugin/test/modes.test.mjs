@@ -118,7 +118,7 @@ const calls = [];
 let archiveAnswer = { ok: true, archive: [{ index: 0, title: 'An older chat', archived_at: '2026-11-01T10:00:00Z', count: 3 }] };
 let openAnswer = { ok: false, error: 'that chat is gone' };
 let newAnswer = { ok: true };
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onPages: async () => ({ ok: true, index: Object.fromEntries(PAGES.map(p => [p.url, p])) }),
   onLibrary: async () => ({ ok: true, page: { url: 'bfp://library', page_chat: [] } }),

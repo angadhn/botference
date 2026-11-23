@@ -77,7 +77,7 @@ await test('a request that ran out of time is named in plain words', () => {
 
 // ---- 2. the drawer -----------------------------------------------------------
 let reconnects = 0;
-const drawer = DR.create({ cssText: '.panel{}', onReconnect: () => { reconnects++; } });
+const drawer = DR.create({ isTrusted: () => true, cssText: '.panel{}', onReconnect: () => { reconnects++; } });
 drawer.open('chat');
 drawer.setPage({ url: 'https://example.com/article', title: 'Article', page_chat: [], threads: [] });
 await tick(10);

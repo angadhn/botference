@@ -4421,6 +4421,11 @@ window.chrome = {
 <script src="../extension/config.js"></script>
 <script src="../extension/tkgrammar.js"></script>
 <script src="../extension/drawer.js"></script>
+<script>
+// The drawer acts only on a click the browser made (isTrusted); this page drives it with script-made clicks, so the harness, and only
+// the harness, says every event is the person's. The shipped extension passes nothing here.
+(() => { const make = window.BFPDrawer.create; window.BFPDrawer.create = o => make(Object.assign({}, o, { isTrusted: () => true })); })();
+</script>
 <script src="../extension/content.js"></script>
 
 <script>

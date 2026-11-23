@@ -63,7 +63,7 @@ globalThis.MediaRecorder = w.MediaRecorder = FakeRecorder;
 
 const calls = { status: 0, transcribe: [] };
 let statusOk = true;
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onTranscribeStatus: async () => { calls.status++; return statusOk ? { ok: true, model: 'm' } : { ok: false, reason: 'no model' }; },
   onTranscribe: async body => { calls.transcribe.push(body); return { ok: true, text: 'dictated words' }; },

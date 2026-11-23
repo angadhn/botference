@@ -24,7 +24,7 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
 const URL_ = 'https://example.com/article';
 const asked = [];
-const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+const drawer = D.create({ isTrusted: () => true, cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
   onBlygCheck: async () => ({ ok: true, status: 'not-a-blyg' }),
   onGap: async body => { asked.push(body); return { ok: true }; } });
 drawer.setConn(true); drawer.setAuthor('reader');

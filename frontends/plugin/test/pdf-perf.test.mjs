@@ -368,7 +368,9 @@ ok('a repaint leaves every thread painted and none orphaned',
 // From the click to the reader's own words being IN the thread. The drawer
 // appends optimistically, so this is the drawer's redraw at 250 threads and
 // nothing else — which is exactly the thing that must not grow with the book.
-const sent = await evaluate(`(async () => {
+// The click is a REAL one, sent through the browser's input pipeline (CDP Input.dispatchMouseEvent): the drawer acts only on a trusted
+// click, and a script's btn.click() is not one.
+const sendPrep = await evaluate(`(async () => {
   const b = window.__bfp, d = b.drawer, sh = d.shadow;
   d.open('comments');
   await new Promise(r => setTimeout(r, 400));
@@ -381,14 +383,26 @@ const sent = await evaluate(`(async () => {
   ta.dispatchEvent(new Event('input', { bubbles: true }));
   const btn = ta.closest('.composer').querySelector('button[data-act="send"], .send');
   if (!btn) return { err: 'no send button' };
-  const t0 = performance.now();
-  btn.click();
-  for (let i = 0; i < 600; i++) {
-    await new Promise(r => setTimeout(r, 5));
-    if (sh.textContent.indexOf(WORDS) >= 0) return { ms: +(performance.now() - t0).toFixed(1) };
-  }
-  return { err: 'the message never appeared' };
+  btn.scrollIntoView({ block: 'center' });
+  sh.addEventListener('click', () => { window.__sendT0 = performance.now(); }, true);
+  const r = btn.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 })()`);
+let sent = sendPrep;
+if (!sendPrep.err) {
+  const at = { x: sendPrep.x, y: sendPrep.y, button: 'left', clickCount: 1 };
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: at.x, y: at.y });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at });
+  sent = await evaluate(`(async () => {
+    const sh = window.__bfp.drawer.shadow, WORDS = 'A timed reply, written into the middle of a long book.';
+    for (let i = 0; i < 600; i++) {
+      await new Promise(r => setTimeout(r, 5));
+      if (sh.textContent.indexOf(WORDS) >= 0) return { ms: +(performance.now() - (window.__sendT0 || performance.now())).toFixed(1) };
+    }
+    return { err: 'the message never appeared' };
+  })()`);
+}
 ok('a Send on a 250-thread page puts the words in the thread', !sent.err, sent.err || '');
 if (!sent.err) under('Send → the reader sees their own comment filed', sent.ms, MAX.send);
 

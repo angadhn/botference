@@ -36,7 +36,7 @@ ok('a changed mind is a new answer', D.setRootAnswer(x, 'yes') === true && x.sta
 
 // ---- a project page: the reader says no -----------------------------------
 const said = [];
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onConfirmRoot: async yes => { said.push(['root', yes]); return { ok: true, state: yes ? 'yes' : 'no' }; },
   onConfirmBlogRoot: async yes => { said.push(['blog', yes]); return { ok: true, state: yes ? 'yes' : 'no' }; },

@@ -79,7 +79,7 @@ const page = (url, threadMsgs) => ({
 });
 const edits = [];
 let editAnswer = { ok: true };
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onEdit: async (target, ts, text) => { edits.push({ target, ts, text }); return editAnswer; },
 });

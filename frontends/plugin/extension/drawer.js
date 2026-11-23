@@ -1930,8 +1930,6 @@
   // closes whichever was — so which one is a single named value (POPOVERS),
   // kept in D.popover and changed only by setPopover. (It was four yes/no
   // flags, and two of them could be up at once.)
-  // drawer actions that only a real click may do (a page can dispatch clicks into the open shadow root); see isTrustedEvent
-  const TRUSTED_ONLY = new Set(['following', 'reader-hub', 'reader-ext']);
   const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects', 'reader']);
   // A BUTTON THAT DOES ONE THING AND SAYS HOW IT WENT — send review, make
   // artifact, publish (which ask first) and continue in council (which does
@@ -2974,7 +2972,9 @@
       styleGate = gate;
 
       const PAGE_KEY_EVENTS = ['keydown', 'keypress', 'keyup'];
-      const shadow = host.attachShadow({ mode: 'open' });
+      // CLOSED: the page's own script can reach `host` but not what is inside it (host.shadowRoot is null), so it cannot read the drawer
+      // or plant a button in it. The drawer keeps the root in D.shadow, on the drawer object and nowhere a page can look.
+      const shadow = host.attachShadow({ mode: 'closed' });
       // KaTeX's own stylesheet goes in FIRST so drawer.css keeps the last word
       // on anything the two both style. Its @font-face rules are inert in here
       // — a shadow root does not register fonts — which is why content.js also
@@ -8507,6 +8507,7 @@ ${bubbleShellHtml()}`;
       // the click reports WHICH tool by the button's own `data-mark`.
       D.el.selpill.addEventListener('mousedown', e => e.preventDefault());
       D.el.selpill.addEventListener('click', e => {
+        if (!isTrustedEvent(e)) return;
         const b = e.target && e.target.closest && e.target.closest('.selbtn');
         if (!b) return;
         e.preventDefault();
@@ -8518,6 +8519,7 @@ ${bubbleShellHtml()}`;
       // menu: the reader may have arrived here from the keyboard.
       D.el.markpick.addEventListener('mousedown', e => e.preventDefault());
       D.el.markpick.addEventListener('click', e => {
+        if (!isTrustedEvent(e)) return;
         const r = e.target && e.target.closest && e.target.closest('.pickrow');
         if (!r) return;
         e.preventDefault();
@@ -8535,7 +8537,7 @@ ${bubbleShellHtml()}`;
 
       // resize handle
       D.el.grip.addEventListener('mousedown', beginDrag);
-      D.el.grip.addEventListener('dblclick', e => { e.preventDefault(); applyWidth(W_DEFAULT); rememberWidth(); });
+      D.el.grip.addEventListener('dblclick', e => { if (!isTrustedEvent(e)) return; e.preventDefault(); applyWidth(W_DEFAULT); rememberWidth(); });
       window.addEventListener('resize', onWinResize);
 
       // popover: any in-drawer click outside it dismisses it (the gear's own
@@ -8558,6 +8560,7 @@ ${bubbleShellHtml()}`;
         closeModels();
       }, true);
       D.el.pop.addEventListener('change', e => {
+        if (!isTrustedEvent(e)) return;
         const sel = e.target;
         if (!sel || sel.tagName !== 'SELECT' || sel.disabled) return;
         if (sel.value === NOPICK) return;      // the placeholder is not a choice
@@ -8584,12 +8587,16 @@ ${bubbleShellHtml()}`;
       // toggles count too — and the box has already moved by the time we get
       // here, which is exactly the optimistic state we want to keep or undo.
       D.shadow.addEventListener('change', e => {
+        if (!isTrustedEvent(e)) return;
         const box = e.target;
         if (!box || !box.classList || !box.classList.contains('md-tick')) return;
         doTick(box);
       });
 
       D.shadow.addEventListener('click', e => {
+        // a click a page made up is not the person's (isTrusted is the browser's word and a script's dispatchEvent cannot say it): none
+        // of the drawer's actions is taken on one. The root is closed besides, so a page cannot reach a button to click.
+        if (!isTrustedEvent(e)) return;
         // TOUCHING A BUBBLE BRINGS IT FORWARD, whatever was touched and
         // whatever it does — a dozen cards over an article have to be
         // reachable, and the one you just pointed at is the one you mean.
@@ -8630,8 +8637,6 @@ ${bubbleShellHtml()}`;
         if (act === 'mention') { insertMention(btn.dataset.handle); return; }
         const target = btn.dataset.target;
         const doAct = ACTS[act];
-        // a click a page made up is not the person's: the actions that open a reader or change which one, refuse it
-        if (TRUSTED_ONLY.has(act) && !isTrustedEvent(e)) return;
         if (doAct) { doAct(btn, target, e); return; }
         // …and the arms that are NOT a name and a call, which is why they are
         // still written out: an optimistic switch that renders before it
@@ -8667,6 +8672,7 @@ ${bubbleShellHtml()}`;
       });
 
       D.el.tabs.addEventListener('click', e => {
+        if (!isTrustedEvent(e)) return;
         const t = e.target.closest && e.target.closest('.tab');
         if (!t || t.disabled) return;
         holdOff();          // another tab is the reader doing something else
@@ -8732,7 +8738,7 @@ ${bubbleShellHtml()}`;
         }, { passive: true });
       }
 
-      D.el.conn.addEventListener('click', () => { if (D.conn === 'offline') reconnect(); });
+      D.el.conn.addEventListener('click', e => { if (isTrustedEvent(e) && D.conn === 'offline') reconnect(); });
 
       // the caret moved or the text changed: the @-menu follows both
       D.shadow.addEventListener('input', e => {
@@ -8788,6 +8794,8 @@ ${bubbleShellHtml()}`;
 
       // Enter/⌘↩ send rules live below; see the comment at the send branch
       D.shadow.addEventListener('keydown', e => {
+        // a key a page made up is not the person's either: Enter here saves, sends and renames
+        if (!isTrustedEvent(e)) return;
         // A key pressed while choosing a character with an input method is the
         // input method's: Enter there picks the character, it never sends, and
         // Esc there drops the half-made character, it never closes anything.
@@ -8887,7 +8895,7 @@ ${bubbleShellHtml()}`;
             // …and Esc in a message being edited there is about the EDIT: it
             // puts the message back as it was and leaves the bubble up
             const ed = e.target.closest('.composer[data-target="__edit__"]');
-            if (ed && !e.shiftKey) { const c = ed.querySelector('.cancel'); if (c) c.click(); return; }
+            if (ed && !e.shiftKey) { cancelEdit(); return; }
             // Shift+Esc means "all of them" wherever Esc means "this one" —
             // the same pair content.js's own handler offers
             if (e.shiftKey) hideAllBubbles();
@@ -8930,7 +8938,7 @@ ${bubbleShellHtml()}`;
         e.preventDefault();
         // the inline edit composer has its own save handler; ⌘↩ must hit that,
         // not post a fresh reply to a thread called "__edit__"
-        if (target === '__edit__') { const b = c.querySelector('.send'); if (b) b.click(); return; }
+        if (target === '__edit__') { saveEdit(); return; }
         doSend(target);
       });
     }
@@ -13462,6 +13470,7 @@ ${bubbleShellHtml()}`;
       // no wiring of its own.
       D.shadow.addEventListener('pointerdown', onBubbleDown);
       D.shadow.addEventListener('dblclick', e => {
+        if (!isTrustedEvent(e)) return;
         const grip = e.target && e.target.closest && e.target.closest('.bubble .bsize');
         if (!grip) return;
         e.preventDefault();
@@ -14072,12 +14081,12 @@ ${bubbleShellHtml()}`;
       // document listener runs first, and only sees the shadow host as the
       // target — so the real one is read off the composed path).
       cancelBubbleEdit: (ev) => {
-        const t = ev && typeof ev.composedPath === 'function' ? ev.composedPath()[0] : null;
+        // the root is closed, so a listener outside it sees only the host in the event's path: the focused element is read from inside
+        const t = D.mounted ? D.shadow.activeElement : null;
         const ed = t && t.closest && t.closest('.bubble .composer[data-target="__edit__"]');
-        const c = ed && ed.querySelector('.cancel');
-        if (!c) return false;
+        if (!ed || editMode(D.edit) !== 'open') return false;
         escUsed.add(ev);
-        c.click();
+        cancelEdit();
         return true;
       },
       escape: (ev) => {

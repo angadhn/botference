@@ -220,7 +220,7 @@ const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({
   author: i % 2 ? 'claude' : 'reader', text: `${tag} message ${i}`,
 }));
 const pending = [];
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onResolve: () => new Promise(r => pending.push(r)),
 });

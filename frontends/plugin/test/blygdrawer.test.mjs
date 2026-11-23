@@ -33,7 +33,7 @@ const ANSWER = { ok: true, status: 'blyg', site: { origin: 'https://venkateshrao
 function make(answers) {
   const asked = [];
   const pending = [];
-  const drawer = D.create({
+  const drawer = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onModels: async () => ({ ok: true, current: {}, options: {} }),
     onBlygCheck: () => { asked.push(drawer.page && drawer.page.url); const a = answers.shift();
@@ -148,7 +148,7 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
 // ---- marking the note as a response ------------------------------------------------------
 {
   const said = [];
-  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+  const drawer = D.create({ isTrusted: () => true, cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
     onBlygCheck: async () => (drawer.page && drawer.page.url === POST_URL ? ANSWER : { ok: true, status: 'not-a-blyg' }), onExportResponse: async r => { said.push(r); return { ok: true }; } });
   drawer.setConn(true); drawer.setAuthor('reader');
   drawer.open('comments');
@@ -187,7 +187,7 @@ for (const status of ['not-a-blyg', 'blyg-site', 'check-failed']) {
 {
   const answers = [{ ok: true, path: '/vault/Note.md', warning: 'quote_style "x" is not one of url-card, plain; wrote plain quotes' },
     { ok: true, path: '/vault/Note.md' }, { ok: false, error: 'export failed: disk full' }];
-  const drawer = D.create({ cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
+  const drawer = D.create({ isTrusted: () => true, cssText: '.panel{}', onModels: async () => ({ ok: true, current: {}, options: {} }),
     onBlygCheck: async () => ({ ok: true, status: 'not-a-blyg' }), onExport: async () => answers.shift() });
   drawer.setConn(true); drawer.setAuthor('reader');
   drawer.open('comments');

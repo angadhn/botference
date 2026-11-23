@@ -33,7 +33,7 @@ const eq = (name, got, want) => ok(name, JSON.stringify(got) === JSON.stringify(
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
 const URL_ = 'https://example.com/article';
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onModels: async () => ({ ok: true, current: { claude: 'x' }, options: { claude: ['x'] } }),
   onProjects: async () => ({ projects: [], filed: [], roots: [] }),
@@ -106,7 +106,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 // ---- 2b. …in the drawer: send review, a refused second click while working --
 {
   let release;
-  const d2 = D.create({
+  const d2 = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onSendReview: () => new Promise(r => { release = r; }),
   });
@@ -159,7 +159,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 // ---- 3b. …in the drawer: the project picker's first read -------------------
 {
   let answer;
-  const d3 = D.create({
+  const d3 = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onProjects: () => new Promise((res, rej) => { answer = { res, rej }; }),
   });
@@ -197,7 +197,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 // ---- 4b. …in the drawer: a refused send, then a retry ------------------------
 {
   const answers = [];
-  const d4 = D.create({
+  const d4 = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onReply: () => new Promise(r => answers.push(r)),
   });
@@ -244,7 +244,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 
   const calls = [];
   const held = {};
-  const d5 = D.create({
+  const d5 = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onResolve: (id, on) => { calls.push('resolve'); return new Promise(r => { held.resolve = r; }); },
     onNotDone: id => { calls.push('not-done'); return new Promise(r => { held.notDone = r; }); },
@@ -289,7 +289,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 
   // the model picker: a failed read says so in red; the next good one clears it
   let answer = { ok: false, error: 'made-up: no companion' };
-  const d6 = D.create({ cssText: '.panel{}', onModels: async () => answer });
+  const d6 = D.create({ isTrusted: () => true, cssText: '.panel{}', onModels: async () => answer });
   d6.setConn(true); d6.setAuthor('reader'); d6.open('comments');
   d6.setPage({ url: URL_, title: 'Article', page_chat: [], threads: [] });
   await tick(20);
@@ -308,7 +308,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 
   // the library: a failed read in red; an export that worked, plain
   let lib = { ok: false, error: 'made-up: library unreadable' };
-  const d7 = D.create({
+  const d7 = D.create({ isTrusted: () => true,
     cssText: '.panel{}',
     onPages: async () => ({ ok: true, pages: [] }),
     onLibrary: async () => lib,

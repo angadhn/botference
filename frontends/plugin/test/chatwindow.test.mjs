@@ -79,7 +79,7 @@ const page = (chat, url, thr) => ({
   threads: [{ id: THR, quote: 'a long passage', msgs: thr || conv(10, 'thread') }],
 });
 
-const drawer = DR.create({ cssText: '.panel{}' });
+const drawer = DR.create({ isTrusted: () => true, cssText: '.panel{}' });
 drawer.setConn(true);
 drawer.open('chat');
 drawer.setPage(page(conv(60, 'chat')));

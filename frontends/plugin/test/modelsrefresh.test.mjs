@@ -42,7 +42,7 @@ const answer = () => ({
   ok: true, current: { claude: 'made-model-a', codex: 'made-codex-1' },
   options: { claude: offer.slice(), codex: ['made-codex-1'] }, status: null, bridge: 'running',
 });
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onModels: () => {
     asked++;

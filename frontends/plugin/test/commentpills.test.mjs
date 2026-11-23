@@ -98,7 +98,7 @@ const PAGE = {
     T('t-bot-done', [{ author: 'reader', ts: '7', text: '@claude ok?' }, { author: 'claude', ts: '8', text: 'ok' }], { status: 'resolved', summary: 'fine' }),
   ],
 };
-const d = D.create({ cssText: '.panel{}' });
+const d = D.create({ isTrusted: () => true, cssText: '.panel{}' });
 d.setConn(true); d.setAuthor('reader'); d.open('comments');
 d.setPage(clone(PAGE));
 await tick(20);

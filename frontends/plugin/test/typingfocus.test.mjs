@@ -60,7 +60,7 @@ const PAGES = [
   { url: 'https://example.com/a', title: 'Page A', updated_at: '2026-11-10T10:00:00Z', threads: 1 },
   { url: 'https://example.com/b', title: 'Page B', updated_at: '2026-11-09T10:00:00Z', threads: 0 },
 ];
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onPages: async () => ({ ok: true, index: Object.fromEntries(PAGES.map(p => [p.url, p])) }),
   onLibrary: async () => ({ ok: true, page: { url: 'bfp://library', page_chat: [] } }),

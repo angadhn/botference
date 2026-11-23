@@ -64,7 +64,7 @@ const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({
   author: i % 2 ? 'claude' : 'reader', text: `${tag} message ${i}`,
 }));
 const sent = [];
-const drawer = D.create({
+const drawer = D.create({ isTrusted: () => true,
   cssText: '.panel{}',
   onReply: async (target, text) => { sent.push({ target, text }); return { ok: true }; },
 });

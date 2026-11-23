@@ -140,7 +140,7 @@ const PAGE = {
 };
 let interrupt = { ok: true };
 let stops = 0;
-const drawer = DR.create({ cssText: '.panel{}', onInterrupt: async () => { stops++; return interrupt; } });
+const drawer = DR.create({ isTrusted: () => true, cssText: '.panel{}', onInterrupt: async () => { stops++; return interrupt; } });
 drawer.setConn(true);
 drawer.open('chat');
 drawer.setPage(PAGE);
@@ -245,7 +245,7 @@ await test('back in touch, the record says what became of it', () => {
 });
 
 await test('a page reloaded (or a second tab) mid-turn comes back working', async () => {
-  const fresh = DR.create({ cssText: '.panel{}' });
+  const fresh = DR.create({ isTrusted: () => true, cssText: '.panel{}' });
   fresh.setConn(true);
   fresh.open('comments');
   fresh.setPage(PAGE);

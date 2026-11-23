@@ -57,7 +57,7 @@ const msgs = (n, tag) => Array.from({ length: n }, (_, i) => ({
   ts: `2026-11-11T10:${String(i).padStart(2, '0')}:00.000Z`,
   author: i % 2 ? 'claude' : 'reader', text: `${tag} message ${i}`,
 }));
-const drawer = D.create({ cssText: '.panel{}' });
+const drawer = D.create({ isTrusted: () => true, cssText: '.panel{}' });
 drawer.setConn(true);
 drawer.setAuthor('reader');
 drawer.open('chat');
