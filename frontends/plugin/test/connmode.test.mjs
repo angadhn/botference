@@ -39,7 +39,7 @@ const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 
 // ---- 1. config.js ------------------------------------------------------------
 await test('the modes are named in one list, each with its words', () => {
-  assert.deepEqual(CFG.CONN_MODES, ['connecting', 'connected', 'offline', 'reload']);
+  assert.deepEqual(CFG.CONN_MODES, ['connecting', 'connected', 'offline', 'reload', 'signin']);
   assert.deepEqual(Object.keys(CFG.CONN_WORDS).sort(), [...CFG.CONN_MODES].sort());
   for (const m of CFG.CONN_MODES) assert.ok(CFG.CONN_WORDS[m], m);
   assert.match(CFG.CONN_NOTICE.offline, new RegExp('^' + CFG.CONN_WORDS.offline, 'i'),

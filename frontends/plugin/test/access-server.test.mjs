@@ -119,6 +119,10 @@ try {
     const page = await request(A.base, 'GET', '/pages', undefined, { ...REMOTE, ...T.unlisted(), accept: 'text/html' });
     assert.equal(page.status, 403); assert.match(page.body, /not on this companion&#39;s list/);
     for (const r of [un, page, await GET(A.base, '/health', REMOTE)]) assert.ok(!r.body.includes('example.test') && !r.body.includes(AUD), 'no address, team or tag');
+    const noTok = await GET(A.base, '/health', REMOTE);
+    assert.equal(noTok.json.signin, true, 'a 401 says it is a sign-in matter');
+    assert.equal(un.json.signin, undefined);
+    assert.equal((await GET(P.base, '/health', REMOTE)).json.signin, undefined, 'a password refusal is as it was');
     assert.equal((await GET(A.base, '/health', { ...REMOTE, ...T.service() })).json.error, 'service tokens are not accepted here');
   });
 

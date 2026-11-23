@@ -691,7 +691,9 @@
     }).catch(() => { /* not asked: not honoured */ });
   }
   const api = (method, path, body) => bg({ t: 'api', method, path, body }).then(r => {
-    if (r && r.timeout) {
+    if (r && r.signin) {
+      if (drawer) drawer.setConn('deny');   // Cloudflare's sign-in, not an outage: one line and a button (drawer.js offlineHtml)
+    } else if (r && r.timeout) {
       if (drawer) drawer.noteTimeout(r.error);
       if (!/^\/page\?/.test(String(path))) connHttp(false);   // loadPage reports its own
     } else if (r && r.ok && drawer) drawer.noteTimeout(null);
@@ -2090,6 +2092,7 @@
   // worker's own mode for it, in the same list.
   function connSocket(socket) {
     if (socket === 'connected') { connFails = 0; connRetries = 0; if (drawer) drawer.setConn('reach'); }
+    else if (socket === 'signin') { if (drawer) drawer.setConn('deny'); }
   }
 
   // ---- what this page is CALLED --------------------------------------------
@@ -2117,7 +2120,7 @@
     const r = await api('GET', '/page?url=' + encodeURIComponent(URL_NOW));
     // reaching the companion at all is the connection signal the user cares
     // about; the WS `conn` broadcasts only ever confirm it (see connHttp)
-    connHttp(!!r.ok);
+    if (!r.signin) connHttp(!!r.ok);
     if (!r.ok) return null;
     const rec = (r.data && r.data.page !== undefined) ? r.data.page : r.data;
     // which of this page's chats the bots are answering right now — the
@@ -3746,6 +3749,7 @@
       // Retry: the socket, and the page — whose answer is what moves the
       // drawer's 'connecting…' on to connected or back to offline
       onReconnect: () => { bg({ t: 'reconnect' }); return active ? loadPage() : null; },
+      onSignin: () => bg({ t: 'open-signin' }),
       // The quote clicked: go to the mark. On a PDF the mark may be on a page
       // that has not been rendered yet — a strikeout minted for page 2 out of a
       // discussion on page 13 — and then there is nothing painted to scroll to.

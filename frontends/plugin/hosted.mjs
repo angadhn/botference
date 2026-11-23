@@ -429,7 +429,8 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
       : tv.verdict === 'service' ? [403, 'service tokens are not accepted here']
       : [401, 'sign-in required: open this address in a browser and sign in with Cloudflare Access'];
     if (wantsPage) { res.writeHead(code, HTML_HEAD).end(NOTICE_PAGE(code === 401 ? 'Sign-in required' : 'Not allowed', line)); return; }
-    res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error: line }));
+    // `signin` tells the extension this is a sign-in matter (not a wrong password, not an outage)
+    res.writeHead(code, JSON_HEAD).end(JSON.stringify(code === 401 ? { ok: false, error: line, signin: true } : { ok: false, error: line }));
   }
   function denied(req, res) {
     const tv = tokenVerdict(req);

@@ -5252,7 +5252,13 @@ ${bubbleShellHtml()}`;
     // perfectly and nothing in this tab can reach it — telling that reader to
     // go and start a server they already started is a wild goose chase. One
     // sentence, no steps, no retry button (there is nothing to retry).
-    const offlineHtml = () => D.conn === 'reload'
+    // Sign-in needed is neither: the companion is up and Cloudflare Access is asking this browser to sign in. One line and one
+    // button; the button opens the companion's address in a tab (content.js onSignin) and everything resumes once signed in.
+    const offlineHtml = () => D.conn === 'signin'
+      ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.signin)}</b>` +
+        `<div class="sub">sign in once in the tab it opens (an emailed code); this drawer reconnects by itself</div>` +
+        `<button data-act="signin" type="button">Sign in</button></div>`
+      : D.conn === 'reload'
       ? `<div class="notice"><b>${esc(CFG.CONN_NOTICE.reload)}</b>` +
         `<div class="sub">the companion is fine; this tab's copy of the extension is not</div></div>`
       : D.conn === 'offline'
@@ -7164,7 +7170,7 @@ ${bubbleShellHtml()}`;
 
     function paintConn() {
       if (!D.mounted) return;
-      D.el.conn.classList.toggle('off', D.conn === 'offline' || D.conn === 'reload');
+      D.el.conn.classList.toggle('off', D.conn === 'offline' || D.conn === 'reload' || D.conn === 'signin');
       D.el.conn.classList.toggle('pending', D.conn === 'connecting');
       // the same words everywhere (config.js CONN_WORDS); offline is a button
       D.el.conn.querySelector('.ctext').textContent =
@@ -8405,6 +8411,7 @@ ${bubbleShellHtml()}`;
       'tasks-jump': () => jumpToTasks(),
       'interrupt': (btn) => doInterrupt(btn),
       'retry': () => reconnect(),
+      'signin': () => cb('onSignin')(),
       'warn-dismiss': () => setWarning(''),
       'copy': (btn) => doCopy(btn),
       'edit': (btn) => startEdit(btn),
@@ -12508,7 +12515,7 @@ ${bubbleShellHtml()}`;
       D.conn = CFG.connMove(was, m);
       // a turn under way can no longer be vouched for; the next record that
       // arrives says what became of it (setTurns)
-      if (D.conn === 'offline' || D.conn === 'reload') loseTurns();
+      if (D.conn === 'offline' || D.conn === 'reload' || D.conn === 'signin') loseTurns();
       // …and the library's own record is only read while it is open
       if (D.conn === 'connected' && was !== 'connected' && turnOf(LIBRARY_TARGET) === 'lost' && D.view === 'pages') loadLibrary();
       if (D.mounted) {

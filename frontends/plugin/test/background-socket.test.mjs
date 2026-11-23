@@ -127,7 +127,7 @@ await test('the CURRENT socket closing still reports offline and retries, exactl
 
 await test("the socket's state is the connection's one list, and every tab hears it as is", async () => {
   const W = boot();
-  assert.deepEqual([...W.run('CFG.CONN_MODES')], ['connecting', 'connected', 'offline', 'reload']);
+  assert.deepEqual([...W.run('CFG.CONN_MODES')], ['connecting', 'connected', 'offline', 'reload', 'signin']);
   W.run("registerTab(7, 'https://example.com/a')");   // one tab to tell
   W.run('ensureSocket()');
   await tick(); await tick();

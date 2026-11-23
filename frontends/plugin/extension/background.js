@@ -148,6 +148,14 @@ const KEEPALIVE = 'bfp-keepalive';
 // remote https companion needs no new host permission: it answers the CORS
 // preflight itself, and that is what grants this fetch.
 let CONF = { base: CFG.DEFAULT_BASE, password: '', handle: '' };
+let signinTabId = null;       // the tab the sign-in button opened; closing it means "try again now"
+if (chrome.tabs && chrome.tabs.onRemoved) chrome.tabs.onRemoved.addListener(id => {
+  if (id !== signinTabId) return;
+  signinTabId = null;
+  forceReconnect();
+  refreshIndex(true);
+  ensureSocket();
+});
 const readerOffers = CFG.createOffers();
 let identityCache = null;      // {handle, base} once /health has been asked
 
@@ -217,6 +225,33 @@ let ws = null;
 // a tab's). Nothing but moveSocket writes it, and every tab hears it as is.
 let wsState = 'offline';
 function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsState; }
+// The answer was Cloudflare's sign-in: say so to every tab (once), and let the retry timer keep looking, so that the socket
+// comes back by itself once the person has signed in.
+function denySocket() {
+  if (!CFG.canConnMove(wsState, 'deny')) return;
+  const was = wsState;
+  moveSocket('deny');
+  if (was !== wsState) broadcastAll({ t: 'conn', socket: wsState });
+  scheduleRetry();
+}
+// …and an HTTP answer from the companion itself proves the sign-in worked: connect the socket now
+function resumeAfterSignin() {
+  if (wsState !== 'signin') return;
+  forceReconnect();
+  ensureSocket();
+}
+// A closed socket to a remote companion may be Cloudflare turning the upgrade away: ask the one cheap route, with the cookie, and
+// let the answer's kind decide (a sign-in answer moves the mode, anything else leaves it to the retry)
+async function probeSignin() {
+  await configReady;
+  if (CFG.isLocal(CONF.base)) return;
+  try {
+    const res = await fetch(CFG.httpUrl(CONF.base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(CONF.base) });
+    const text = await res.text().catch(() => '');
+    const kind = CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
+    if (kind === 'signin') denySocket(); else if (wsState === 'signin' && res.ok) resumeAfterSignin();
+  } catch { /* unreachable is the retry's business */ }
+}
 // The socket is long-lived, so it has no time limit of its own; its heartbeat
 // is the check instead. The companion pings every 15s (server.mjs
 // HEARTBEAT_MS), so a 'connected' socket that has heard NOTHING for three of
@@ -292,7 +327,8 @@ const AUTH_FAIL = 'auth required — check the password on the extension’s opt
 async function api(method, path, body) {
   await configReady;
   path = CFG.commandRoute(method, path, body);
-  const init = { method: method || 'GET', cache: 'no-store' };
+  // a remote companion: the browser's cookies ride along (Cloudflare Access), and a redirect is reported, never followed
+  const init = { method: method || 'GET', cache: 'no-store', ...CFG.requestInit(CONF.base) };
   const headers = CFG.authHeaders(CONF.password, CONF.handle);
   if (body !== undefined && body !== null) {
     headers['content-type'] = 'application/json';
@@ -326,6 +362,13 @@ async function api(method, path, body) {
   const text = await Promise.race([res.text().catch(() => ''), expiry]);
   clearTimeout(limit);
   if (timedOut) return late();
+  // an answer that is Cloudflare's and not the companion's is never data: the socket's mode says sign-in is needed
+  // (only a remote companion can be behind Access: the one on this machine answers for itself)
+  const kind = CFG.isLocal(CONF.base) ? 'data'
+    : CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
+  if (kind === 'signin') { denySocket(); return { ok: false, signin: true, status: res.status, error: CFG.CONN_NOTICE.signin }; }
+  if (kind === 'refused') return { ok: false, status: res.status, error: 'refused — this account is not allowed on this companion' };
+  if (wsState === 'signin') resumeAfterSignin();   // the companion answered: whatever signed in worked
   try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
   if (!res.ok) {
     const err = res.status === 401 ? AUTH_FAIL
@@ -408,10 +451,12 @@ function refreshIndexSoon() {
 // exactly as it was — only the address is now a function of the settings.
 async function ensureSocket() {
   if (wsState === 'connected' || wsState === 'connecting') return;
-  moveSocket('retry');
+  // from 'signin' the mode stays put while the socket is tried (a failed try is not an outage; it opening is 'reach')
+  if (wsState !== 'signin') moveSocket('retry');
   await configReady;
   // a second caller may have won the race while we awaited the config
-  if (wsState !== 'connecting') return;
+  if (wsState !== 'connecting' && wsState !== 'signin') return;
+  if (ws) return;
   // `sock` is THIS socket. Every handler below acts only while it is still
   // the current one: forceReconnect() drops a socket and opens another at
   // once, and the dropped one's onclose lands AFTER that — it used to null
@@ -454,6 +499,7 @@ async function ensureSocket() {
     }
     ws = null;
     scheduleRetry();
+    probeSignin();
   };
   sock.onerror = () => { try { sock.close(); } catch { /* onclose handles it */ } };
 }
@@ -1027,6 +1073,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true, tabId: tab && tab.id };
       }
       case 'open-options': return openOptions(msg.agent);
+      // The drawer's sign-in button: the companion's own address in a new tab, where Cloudflare asks for the emailed code. Nothing
+      // else is opened (a content script cannot make this worker open an address of its own choosing). When that tab is closed the
+      // socket is tried again at once.
+      case 'open-signin': {
+        await configReady;
+        if (CFG.isLocal(CONF.base)) return { ok: false, error: 'this companion is on this computer: there is nothing to sign in to' };
+        const tab = await chrome.tabs.create({ url: CFG.httpUrl(CONF.base, '/'), active: true });
+        signinTabId = tab && tab.id;
+        return { ok: true, tabId: signinTabId };
+      }
       // The figure-edit bridge's ledger (content.js, "figure edits from the
       // reader's own local preview"): batch_id -> what became of it, so a
       // batch sent, then the tab reloaded, then sent again is answered with

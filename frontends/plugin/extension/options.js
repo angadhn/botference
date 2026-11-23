@@ -28,6 +28,10 @@
   //   200 + bridge/queue      → connected, and the whole truth in one line
   const W = CFG.CONN_WORDS;
   function healthVerdict(r) {
+    // Cloudflare Access answered instead of the companion: not an outage, not a wrong password: this browser is not signed in
+    if (r && r.signin) {
+      return { mode: 'signin', cls: 'err', text: W.signin + ' — use “Sign in” to open the companion, then test again' };
+    }
     if (!r || r.ok === false) {
       if (r && r.status === 401) {
         return { mode: 'connected', cls: 'err', text: W.connected + ' — but the password was rejected' };
@@ -125,7 +129,7 @@
     let res;
     try {
       res = await fetch(CFG.httpUrl(cfg.base, '/health'),
-        { cache: 'no-store', headers: Object.keys(headers).length ? headers : undefined });
+        { cache: 'no-store', ...CFG.requestInit(cfg.base), headers: Object.keys(headers).length ? headers : undefined });
     } catch (e) {
       return { ok: false, error: 'could not reach ' + (CFG.normalizeBase(cfg.base) || CFG.DEFAULT_BASE) +
         ' (' + ((e && e.message) || e) + ')' };
@@ -133,12 +137,37 @@
     let data = null;
     const text = await res.text().catch(() => '');
     try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    const kind = CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text);
+    if (kind === 'signin') return { ok: false, signin: true, status: res.status, error: W.signin };
     if (!res.ok) return { ok: false, status: res.status, data, error: (data && data.error) || '' };
     return { ok: true, status: res.status, data };
   }
 
+  // How this companion signs people in, from its one information-free route (GET /auth-mode answers the mode's NAME and nothing
+  // else; Cloudflare's own sign-in answer means Access is in front). Access: there is no password to type, so the box is hidden.
+  async function paintAuthMode(base) {
+    let mode = '';
+    try {
+      const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
+      mode = CFG.authModeOf({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, await res.text().catch(() => ''));
+    } catch { mode = ''; }
+    const box = el('password-field');
+    if (box) box.hidden = !CFG.showPasswordField(mode);
+    const note = el('access-note');
+    if (note) {
+      note.hidden = mode !== 'access' && mode !== 'either';
+      note.textContent = mode === 'either'
+        ? 'This companion accepts Cloudflare Access sign-in or the password. Signing in with Access is the way forward: the password is a temporary way in.'
+        : 'This companion signs you in with Cloudflare Access (an emailed code). There is no password: sign in once in a tab and this extension uses that sign-in.';
+    }
+    const so = el('signin-open');
+    if (so) so.hidden = mode !== 'access' && mode !== 'either';
+    return mode;
+  }
+
   async function load() {
     const cfg = await CFG.readConfig();
+    paintAuthMode(cfg.base);
     el('base').value = cfg.base;
     el('password').value = cfg.password;
     el('handle').value = cfg.handle;
@@ -207,9 +236,18 @@
   el('test').addEventListener('click', async () => {
     el('test').disabled = true;
     say({ cls: '', text: CFG.CONN_WORDS.connecting });
-    say(healthVerdict(await health(fields())));
+    const now = fields();
+    say(healthVerdict(await health(now)));
+    paintAuthMode(CFG.normalizeBase(now.base) || CFG.DEFAULT_BASE);
     el('test').disabled = false;
   });
+  // the button opens the companion's own address (Cloudflare asks for the emailed code there); a click made by a page cannot press it
+  const so = el('signin-open');
+  if (so) so.addEventListener('click', e => {
+    if (e.isTrusted !== true) return;
+    try { window.open(CFG.httpUrl(CFG.normalizeBase(el('base').value) || CFG.DEFAULT_BASE, '/'), '_blank', 'noopener'); } catch { /* a popup blocker */ }
+  });
+  el('base').addEventListener('change', () => { paintAuthMode(CFG.normalizeBase(el('base').value) || CFG.DEFAULT_BASE); });
 
   // ---- API keys ----------------------------------------------------------
   // Write-only by design: this page can set a key and remove one, and the only
@@ -236,7 +274,7 @@
   async function keysApi(method, path, body) {
     const cfg = await CFG.readConfig();
     const headers = CFG.authHeaders(cfg.password, cfg.handle);
-    const init = { method, cache: 'no-store' };
+    const init = { method, cache: 'no-store', ...CFG.requestInit(cfg.base) };
     if (body) {
       init.body = JSON.stringify(body);
       init.headers = { ...headers, 'content-type': 'application/json' };
@@ -252,6 +290,9 @@
     let data = null;
     const text = await res.text().catch(() => '');
     try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+    if (CFG.replyKind({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text) === 'signin') {
+      return { ok: false, signin: true, error: W.signin + ' — use “Sign in” above' };
+    }
     if (!res.ok) {
       // a companion from before this feature has no such route at all, which
       // is worth saying plainly rather than reporting as "not found"

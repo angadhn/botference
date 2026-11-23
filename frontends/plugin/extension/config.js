@@ -53,27 +53,36 @@
   //                  the drawer; the socket simply closed, for the worker)
   //   'reload'     — the extension was updated under this tab: nothing here
   //                  can reach the companion until the tab is reloaded. Final.
-  const CONN_MODES = Object.freeze(['connecting', 'connected', 'offline', 'reload']);
+  //   'signin'     — the companion sits behind Cloudflare Access and this browser has not
+  //                  signed in (or its sign-in ran out): the answer was Cloudflare's, not the
+  //                  companion's. Not an outage: the drawer offers one button that opens the
+  //                  companion's address in a tab, and everything resumes once signed in.
+  const CONN_MODES = Object.freeze(['connecting', 'connected', 'offline', 'reload', 'signin']);
   // …the words shown for each (the header dot), and the two notices built on them
   const CONN_WORDS = Object.freeze({
     connecting: 'connecting…', connected: 'connected', offline: 'companion offline', reload: 'reload this tab',
+    signin: 'sign-in needed',
   });
   const CONN_NOTICE = Object.freeze({
     offline: 'Companion offline — the plugin needs its local server:',
     reload: 'Discuss was updated — reload this tab to reconnect.',
+    signin: 'Sign-in needed — this companion asks you to sign in first.',
   });
   // …and every way it changes, with the modes each move may start from:
   //   retry  — connecting|connected|offline → connecting (a fresh try)
   //   reach  — connecting|connected|offline → connected
   //   fail   — connecting|connected → offline
   //   unload — any → reload
+  //   deny   — anything but reload → signin (the answer was Cloudflare's sign-in, not the companion's)
+  //   (a signin tab is also left by retry and reach; a dropped socket does not leave it, so fail does not start from it)
   const CONN_MOVES = Object.freeze({
-    retry: ['connecting', 'connected', 'offline'],
-    reach: ['connecting', 'connected', 'offline'],
+    retry: ['connecting', 'connected', 'offline', 'signin'],
+    reach: ['connecting', 'connected', 'offline', 'signin'],
     fail: ['connecting', 'connected'],
+    deny: ['connecting', 'connected', 'offline', 'signin'],
     unload: CONN_MODES,
   });
-  const CONN_TO = { retry: 'connecting', reach: 'connected', fail: 'offline', unload: 'reload' };
+  const CONN_TO = { retry: 'connecting', reach: 'connected', fail: 'offline', deny: 'signin', unload: 'reload' };
   const canConnMove = (mode, move) => !!CONN_MOVES[move] && CONN_MOVES[move].indexOf(mode) !== -1;
   // Pure: (mode, move) → mode. An unknown move, or one from a mode it does not
   // start from, throws — callers that hear from the outside world ask
@@ -479,6 +488,44 @@
     return 'open-hub';
   }
 
+  // ── a companion behind Cloudflare Access ──────────────────────────────────
+  // The person signs in once in an ordinary tab at the companion's address; Cloudflare sets its cookie for that host and the
+  // browser sends it on the extension's requests when they say credentials 'include' (the manifest's host permission is what lets
+  // the worker do that). A request that is not signed in is answered by Cloudflare with a redirect to its login page, which a
+  // manual-redirect fetch reports as 'opaqueredirect': never followed, never read.
+  //   requestInit(base)  the fetch options a remote companion needs; none for this machine
+  //   replyKind(...)     what an answer IS, one of REPLY_KINDS:
+  //     'data'    the companion's own answer (also its own refusals, which have words of their own)
+  //     'signin'  not the companion's: a redirect, Cloudflare's page, or the companion's own "sign-in required" (401 with signin:true)
+  //     'refused' signed in but not allowed (Cloudflare's own 403 page): signing in again will not help
+  const REPLY_KINDS = Object.freeze(['data', 'signin', 'refused']);
+  const requestInit = base => (isLocal(base) ? {} : { credentials: 'include', redirect: 'manual' });
+  function replyKind(res, text) {
+    const status = Number(res && res.status) || 0;
+    if (res && (res.type === 'opaqueredirect' || (status >= 300 && status < 400))) return 'signin';
+    const ctype = String((res && res.contentType) || '').toLowerCase();
+    const body = String(text == null ? '' : text);
+    const htmlBody = /^\s*<(?:!doctype|html|head|body)/i.test(body);
+    if (ctype.indexOf('application/json') !== -1) {
+      if (status === 401) { try { if (JSON.parse(body).signin === true) return 'signin'; } catch (_) { /* not ours */ } }
+      return 'data';
+    }
+    // not JSON: the companion's API never answers an API call with a page. Cloudflare does.
+    if (ctype.indexOf('text/html') !== -1 || htmlBody) {
+      if (status === 403) return 'refused';
+      if (status === 200 || status === 401) return 'signin';
+    }
+    return 'data';
+  }
+  // what GET /auth-mode said: 'password' | 'access' | 'either', or '' when unknown. A sign-in answer means Access is in front.
+  function authModeOf(res, text) {
+    const kind = replyKind(res, text);
+    if (kind === 'signin') return 'access';
+    if (kind !== 'data' || Number(res && res.status) !== 200) return '';
+    try { const a = JSON.parse(String(text)).auth; return a === 'password' || a === 'access' || a === 'either' ? a : ''; } catch (_) { return ''; }
+  }
+  const showPasswordField = mode => mode !== 'access';
+
   const httpUrl = (base, path) =>
     (normalizeBase(base) || DEFAULT_BASE) + String(path == null ? '' : path);
 
@@ -525,6 +572,7 @@
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,
     commandRoute, commandError,
+    REPLY_KINDS, requestInit, replyKind, authModeOf, showPasswordField,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
