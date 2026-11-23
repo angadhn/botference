@@ -46,7 +46,7 @@ blyg_sources:
   - "${POST}"
 blyg_stub_of:
   origin: "${ORIGIN}"
-  id: ${ID}
+  id: "${ID}"
   version: 2
 ---
 I agree, and the smoothness is the point.
@@ -56,6 +56,20 @@ I agree, and the smoothness is the point.
 `);
   assert.ok(!/essays/.test(r.text));
   assert.equal(r.permalink, `/b/${BID}`);
+});
+
+// A Blygger id is 26 characters of [0-9a-hjkmnp-tv-z] with the first 0-7, so a page can name one that YAML 1.1 (Ruby's Psych, the
+// site's reader) takes for a number: 0x + hex, 0b + binary, 0 + octal digits. The note writes it quoted, so the site reads the string.
+test('blyg_stub_of.id is a quoted string, so an id a YAML 1.1 reader would take for a number (0x…, 0b…, octal) stays the id', () => {
+  for (const id of ['0x1234567890abcdef12345678', '0b111111111111111111111111', '01234567012345670123456701']) {
+    assert.ok(N.isBlygId(id), id);
+    const page = { ...blygPage([]), blyg: { status: 'blyg', item: { origin: ORIGIN, id, version: 2, page: POST } } };
+    page.threads = [thread('t1', PASSAGE, 'A reply.', { blyg: stamp({ id }) })];
+    const r = make(page, page.threads);
+    assert.ok(r.ok, r.error);
+    assert.match(r.text, new RegExp(`\\nblyg_stub_of:\\n  origin: "${ORIGIN.replace(/[.]/g, '\\.')}"\\n  id: "${id}"\\n  version: 2\\n`), id);
+    assert.ok(!r.text.includes(`id: ${id}`), 'never bare');
+  }
 });
 
 test('an ordinary page: the plain web quote whose last paragraph is the bare URL; no stub unless the owner said response', () => {

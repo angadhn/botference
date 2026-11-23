@@ -380,7 +380,9 @@ export function blygKeyLines({ sources = [], stubOf = null } = {}) {
   const list = [...new Set(sources.filter(Boolean))];
   if (list.length) out.push('blyg_sources:', ...list.map(u => `  - ${yamlString(u)}`));
   if (stubOf && stubOf.id) {
-    out.push('blyg_stub_of:', `  origin: ${yamlString(stubOf.origin)}`, `  id: ${stubOf.id}`, `  version: ${Number(stubOf.version)}`);
+    // the id QUOTED, like blyg_id: the page chose it, and an id such as `0x…`, `0b…` or `0` followed by digits 0-7 is a valid Blygger
+    // id that a YAML 1.1 reader (the site's Ruby) would otherwise read as a NUMBER, and the build would then refuse the note
+    out.push('blyg_stub_of:', `  origin: ${yamlString(stubOf.origin)}`, `  id: ${yamlString(stubOf.id)}`, `  version: ${Number(stubOf.version)}`);
   } else if (stubOf && stubOf.url) {
     out.push('blyg_stub_of:', `  url: ${yamlString(stubOf.url)}`);
   }
