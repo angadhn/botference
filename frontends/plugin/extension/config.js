@@ -333,7 +333,7 @@
   // the browser's. Stored the same way as the rest because it is read in the
   // same two places — the worker, which installs the redirect rule, and the
   // options page, which is where it is turned off.
-  const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle',
+  const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle', learned: 'bfp:learned-auth',
                  pdf: 'bfp:pdf', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding' };
   // absent means on: an extension installed before this existed should still
   // open PDFs in the viewer, because that is the feature
@@ -525,6 +525,12 @@
     try { const a = JSON.parse(String(text)).auth; return a === 'password' || a === 'access' || a === 'either' ? a : ''; } catch (_) { return ''; }
   }
   const showPasswordField = mode => mode !== 'access';
+  // WHICH PASSWORD, IF ANY, IS SENT. A host that has answered "access" (Cloudflare's sign-in, or GET /auth-mode saying so) is remembered
+  // for that address (KEYS.learned) and is never sent the stored password again, in a header or on the socket's address. Only 'access' is
+  // ever remembered, so no later answer can lower it: a host that once said access stays one until the person changes the setting by
+  // hand on the options page (its Save forgets it, and the page asks the companion afresh).
+  const learnedOf = (rec, base) => (rec && rec.mode === 'access' && rec.base === (normalizeBase(base) || DEFAULT_BASE) ? 'access' : '');
+  const passwordFor = cfg => (cfg && cfg.auth_learned === 'access' ? '' : clean(cfg && cfg.password));
 
   const httpUrl = (base, path) =>
     (normalizeBase(base) || DEFAULT_BASE) + String(path == null ? '' : path);
@@ -532,16 +538,17 @@
   // ---- storage (the only chrome.* in this file) ---------------------------
   function readConfig(area) {
     const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
-    const fallback = { base: DEFAULT_BASE, password: '', handle: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' };
+    const fallback = { base: DEFAULT_BASE, password: '', handle: '', auth_learned: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' };
     if (!store) return Promise.resolve(fallback);
     return new Promise(resolve => {
       try {
-        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding], r => {
+        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.learned, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding], r => {
           const got = r || {};
           resolve({
             base: normalizeBase(got[KEYS.base]) || DEFAULT_BASE,
             password: clean(got[KEYS.password]),
             handle: sanitizeHandle(got[KEYS.handle]),
+            auth_learned: learnedOf(got[KEYS.learned], got[KEYS.base]),
             pdf: readBool(got[KEYS.pdf], true),
             reader_url: readerUrlOf(got[KEYS.readerUrl]).value,
             reader_onboarding: onboardingOf(got[KEYS.onboarding]),
@@ -567,12 +574,24 @@
     });
   }
 
+  function rememberAccess(base, area) {
+    const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
+    const rec = { base: normalizeBase(base) || DEFAULT_BASE, mode: 'access' };
+    if (!store) return Promise.resolve(rec);
+    return new Promise(resolve => { try { store.set({ [KEYS.learned]: rec }, () => resolve(rec)); } catch { resolve(rec); } });
+  }
+  function forgetAccess(area) {
+    const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
+    if (!store) return Promise.resolve();
+    return new Promise(resolve => { try { store.remove(KEYS.learned, () => resolve()); } catch { resolve(); } });
+  }
+
   const api = {
     DEFAULT_BASE, KEYS, HANDLE_MAX,
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,
     commandRoute, commandError,
-    REPLY_KINDS, requestInit, replyKind, authModeOf, showPasswordField,
+    REPLY_KINDS, requestInit, replyKind, authModeOf, showPasswordField, passwordFor, learnedOf, rememberAccess, forgetAccess,
     CONN_MODES, CONN_WORDS, CONN_NOTICE, CONN_MOVES, connMove, canConnMove,
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,

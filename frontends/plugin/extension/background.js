@@ -182,7 +182,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     // never drags the socket down with it
     if (before.pdf !== CONF.pdf) applyPdfRules(CONF.pdf !== false);
     if (before.base === CONF.base && before.password === CONF.password &&
-        before.handle === CONF.handle) return CONF;
+        before.handle === CONF.handle && before.auth_learned === CONF.auth_learned) return CONF;
+    if (before.base !== CONF.base) modeProbe = null;
     identityCache = null;
     indexCache = {};
     indexAt = 0;
@@ -227,7 +228,33 @@ let wsState = 'offline';
 function moveSocket(move) { wsState = CFG.connMove(wsState, move); return wsState; }
 // The answer was Cloudflare's sign-in: say so to every tab (once), and let the retry timer keep looking, so that the socket
 // comes back by itself once the person has signed in.
+// WHAT THIS COMPANION USES, before any password is sent to it. A remote companion with a password saved is asked once, without
+// the password, which way it signs people in (GET /auth-mode, or Cloudflare's sign-in answer); "access" is remembered
+// (config.js passwordFor) and the password is not sent to it again. The answer is only ever used to WITHHOLD: nothing it says can make
+// the extension send a password it had learned not to.
+let modeProbe = null;          // { base, p } : the one question asked for this address
+async function learnAccess() {
+  if (CONF.auth_learned === 'access') return;
+  CONF = { ...CONF, auth_learned: 'access' };
+  await CFG.rememberAccess(CONF.base);
+}
+async function settleMode() {
+  await configReady;
+  if (!CONF.password || CFG.isLocal(CONF.base) || CONF.auth_learned === 'access') return;
+  if (!modeProbe || modeProbe.base !== CONF.base) {
+    const base = CONF.base;
+    modeProbe = { base, p: (async () => {
+      try {
+        const res = await fetch(CFG.httpUrl(base, '/auth-mode'), { cache: 'no-store', ...CFG.requestInit(base) });
+        const text = await res.text().catch(() => '');
+        if (CFG.authModeOf({ type: res.type, status: res.status, contentType: res.headers && res.headers.get('content-type') }, text) === 'access') await learnAccess();
+      } catch { /* unreachable: the request itself will say so */ }
+    })() };
+  }
+  await modeProbe.p;
+}
 function denySocket() {
+  learnAccess();
   if (!CFG.canConnMove(wsState, 'deny')) return;
   const was = wsState;
   moveSocket('deny');
@@ -329,7 +356,8 @@ async function api(method, path, body) {
   path = CFG.commandRoute(method, path, body);
   // a remote companion: the browser's cookies ride along (Cloudflare Access), and a redirect is reported, never followed
   const init = { method: method || 'GET', cache: 'no-store', ...CFG.requestInit(CONF.base) };
-  const headers = CFG.authHeaders(CONF.password, CONF.handle);
+  await settleMode();   // before any password leaves: does this companion use one?
+  const headers = CFG.authHeaders(CFG.passwordFor(CONF), CONF.handle);
   if (body !== undefined && body !== null) {
     headers['content-type'] = 'application/json';
     init.body = JSON.stringify(body);
@@ -464,7 +492,9 @@ async function ensureSocket() {
   // disconnected and schedule a second retry on top of the live one.
   let sock;
   try {
-    sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CONF.password, CONF.handle));
+    await settleMode();
+    if (ws) return;
+    sock = ws = new WebSocket(CFG.wsUrlFor(CONF.base, CFG.passwordFor(CONF), CONF.handle));
   } catch {
     moveSocket('fail');
     scheduleRetry();

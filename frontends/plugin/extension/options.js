@@ -125,7 +125,9 @@
   // answers the CORS preflight, so no proxy hop is needed — and testing the
   // UNSAVED values is the whole point.
   async function health(cfg) {
-    const headers = CFG.authHeaders(cfg.password, cfg.handle);
+    // (a password typed for a companion that says "access" is not sent to it: the mode is asked first, without it)
+    const mode = await paintAuthMode(CFG.normalizeBase(cfg.base) || CFG.DEFAULT_BASE);
+    const headers = CFG.authHeaders(mode === 'access' ? '' : cfg.password, cfg.handle);
     let res;
     try {
       res = await fetch(CFG.httpUrl(cfg.base, '/health'),
@@ -153,6 +155,10 @@
     } catch { mode = ''; }
     const box = el('password-field');
     if (box) box.hidden = !CFG.showPasswordField(mode);
+    // an Access companion is remembered, so the saved password is withheld from it (config.js passwordFor); the person may clear it
+    if (mode === 'access' && !CFG.isLocal(base)) await CFG.rememberAccess(base);
+    const stale = el('clear-password');
+    if (stale) stale.hidden = !(mode === 'access' && el('password').value);
     const note = el('access-note');
     if (note) {
       note.hidden = mode !== 'access' && mode !== 'either';
@@ -227,6 +233,7 @@
     const cfg = fields();
     el('save').disabled = true;
     const stored = await CFG.writeConfig(cfg);
+    await CFG.forgetAccess();   // saved by hand: what the companion uses is asked afresh (load -> paintAuthMode)
     await load();
     el('save').disabled = false;
     say({ cls: 'ok', text: describeSaved({ base: stored[CFG.KEYS.base],
@@ -238,8 +245,15 @@
     say({ cls: '', text: CFG.CONN_WORDS.connecting });
     const now = fields();
     say(healthVerdict(await health(now)));
-    paintAuthMode(CFG.normalizeBase(now.base) || CFG.DEFAULT_BASE);
     el('test').disabled = false;
+  });
+  const clearPw = el('clear-password');
+  if (clearPw) clearPw.addEventListener('click', async e => {
+    if (e.isTrusted !== true) return;
+    el('password').value = '';
+    await CFG.writeConfig(fields());
+    clearPw.hidden = true;
+    say({ cls: 'ok', text: 'the saved password is cleared' });
   });
   // the button opens the companion's own address (Cloudflare asks for the emailed code there); a click made by a page cannot press it
   const so = el('signin-open');
@@ -273,7 +287,7 @@
   // as configured — a 403 here is the feature working, and says so.
   async function keysApi(method, path, body) {
     const cfg = await CFG.readConfig();
-    const headers = CFG.authHeaders(cfg.password, cfg.handle);
+    const headers = CFG.authHeaders(CFG.passwordFor(cfg), cfg.handle);
     const init = { method, cache: 'no-store', ...CFG.requestInit(cfg.base) };
     if (body) {
       init.body = JSON.stringify(body);
