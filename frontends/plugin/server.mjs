@@ -158,7 +158,8 @@ const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-sto
 const storedFileHead = (mime, extra = {}) => ({
   'content-type': mime, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
   ...(mime === 'application/pdf' ? {} : { 'content-security-policy': 'sandbox' }),
-  ...(mime === 'application/octet-stream' ? { 'content-disposition': 'attachment' } : {}),
+  // an unknown type, and a PDF (which is not sandboxed: a bot-written one opened at our own address could submit a form with the cookie), is a download
+  ...(mime === 'application/octet-stream' || mime === 'application/pdf' ? { 'content-disposition': 'attachment' } : {}),
   ...extra,
 });
 // article_text rides along with mentions, and a .docx may ride with them too —
