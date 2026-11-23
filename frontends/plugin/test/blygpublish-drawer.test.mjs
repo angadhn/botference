@@ -46,7 +46,7 @@ const PAGE = () => ({ url: 'https://example.com/article', title: 'An article', p
 function companion(first) {
   const state = { run: first || { mode: 'idle', can: [] }, calls: [] };
   const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', note_rel: '_notes/my-first-thought.md', note_text: '---\ntitle: x\n---\nBody <img src=x onerror=alert(1)> {{ x }}\n',
-    steps: [], can: { planned: ['confirm', 'cancel'], failed: ['retry', 'abandon'], interrupted: ['abandon'] }[mode] || [], ...extra });
+    steps: [], can: { planned: ['confirm', 'cancel'], failed: ['retry', 'abandon'], interrupted: ['continue', 'abandon'] }[mode] || [], ...extra });
   state.run = first || run('idle');
   state.make = run;
   state.onBlygPublish = async (op, body) => {
@@ -212,10 +212,11 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // element, and elementsFromPoint returning something above the drawer's host. What it cannot: a real top layer, real hit-testing,
 // real pointer-events:none; those are the browser's, so the checks are asked of exactly the DOM calls a browser answers.
 {
-  const real = { q: document.querySelector.bind(document), efp: document.elementsFromPoint, fs: Object.getOwnPropertyDescriptor(document, 'fullscreenElement') };
+  const BIG = { left: 0, top: 0, right: 5000, bottom: 5000, width: 5000, height: 5000 };
+  const real = { qa: document.querySelectorAll.bind(document), q: document.querySelector.bind(document), efp: document.elementsFromPoint, fs: Object.getOwnPropertyDescriptor(document, 'fullscreenElement') };
   const cases = [
-    ['a modal dialog in the top layer', () => { document.querySelector = sel => (sel === ':modal' ? { tagName: 'DIALOG' } : real.q(sel)); }],
-    ['a popover in the top layer', () => { document.querySelector = sel => (sel === ':popover-open' ? { tagName: 'DIV' } : real.q(sel)); }],
+    ['a modal dialog in the top layer', () => { document.querySelectorAll = sel => (sel === ':modal' ? [{ tagName: 'DIALOG', getBoundingClientRect: () => BIG }] : real.qa(sel)); }],
+    ['a popover in the top layer', () => { document.querySelectorAll = sel => (sel === ':popover-open' ? [{ tagName: 'DIV', getBoundingClientRect: () => BIG }] : real.qa(sel)); }],
     ['a fullscreen element', () => { Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => ({ tagName: 'DIV' }) }); }],
     ['something above the drawer at the click\'s point', () => { document.elementsFromPoint = () => [{ tagName: 'DIV', id: 'cover' }]; }],
   ];
@@ -228,7 +229,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     const ev = new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
     q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev); await tick();
     eq(name + ': nothing is started, and the owner is told what to do', [server.calls.some(c => c.op === 'start'), view(), /Close the page's overlay and try again/.test(dlg().textContent)], [false, 'problem', true]);
-    document.querySelector = real.q; document.elementsFromPoint = real.efp; delete document.fullscreenElement;
+    document.querySelector = real.q; document.querySelectorAll = real.qa; document.elementsFromPoint = real.efp; delete document.fullscreenElement;
     void drawer;
   }
   // …and when the point is the drawer's own host, it goes through
@@ -239,6 +240,94 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
   eq('with the drawer on top and no top layer, the start goes out', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
   document.elementsFromPoint = real.efp;
+}
+
+// ---- F8: the stronger check, on every action that publishes or carries on ----------------------------------------------------------
+// Unverifiable without a real browser: that IntersectionObserver v2's isVisible really turns false under a page's overlay/filter/frame
+// (here its callback is fed by hand), real top-layer and hit-testing behaviour, and real computed style across a page's own stylesheets.
+{
+  const BIG = { left: 0, top: 0, right: 5000, bottom: 5000, width: 5000, height: 5000 };
+  const FAR = { left: 4000, top: 4000, right: 4100, bottom: 4100, width: 100, height: 100 };
+  const MINE = { left: 0, top: 0, right: 300, bottom: 400, width: 300, height: 400 };
+  const real = { qa: document.querySelectorAll.bind(document), efp: document.elementsFromPoint };
+  const ev = () => new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
+  // a top-layer element that does NOT meet the drawer's box is none of our business (it must not block)
+  {
+    const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]); await tick();
+    drawer.shadow.querySelector('.pubdlg').getBoundingClientRect = () => MINE;
+    document.querySelectorAll = sel => (sel === ':modal' ? [{ getBoundingClientRect: () => FAR }] : real.qa(sel));
+    document.elementsFromPoint = () => [drawer.host];
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq('a modal far from the drawer does not block', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
+    document.querySelectorAll = real.qa;
+    // …but one over it does
+    const s2 = companion(); const x = await make({ server: s2 });
+    x.click(x.qa('.thr-pub')[0]); await tick();
+    x.drawer.shadow.querySelector('.pubdlg').getBoundingClientRect = () => MINE;
+    document.querySelectorAll = sel => (sel === ':popover-open' ? [{ getBoundingClientRect: () => BIG }] : real.qa(sel));
+    document.elementsFromPoint = () => [x.drawer.host];
+    x.q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq('a popover over the drawer blocks', [s2.calls.some(c => c.op === 'start'), x.view()], [false, 'problem']);
+    document.querySelectorAll = real.qa; document.elementsFromPoint = real.efp;
+  }
+  // the host's style chain
+  for (const [name, set] of [['opacity', h => { h.style.opacity = '0.4'; }], ['filter', h => { h.style.filter = 'blur(2px)'; }], ['clip-path', h => { h.style.clipPath = 'inset(0 50% 0 0)'; }], ['visibility', h => { h.style.visibility = 'hidden'; }], ['transform on the host', h => { h.style.transform = 'scale(0.1)'; }], ['opacity on an ancestor', h => { h.parentElement.style.opacity = '0.5'; }]]) {
+    const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]); await tick();
+    const h = drawer.host; set(h);
+    document.elementsFromPoint = () => [h];
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq(`the host's ${name}: blocked`, [server.calls.some(c => c.op === 'start'), view()], [false, 'problem']);
+    h.style.opacity = ''; h.style.filter = ''; h.style.clipPath = ''; h.style.visibility = ''; h.style.transform = ''; if (h.parentElement) h.parentElement.style.opacity = '';
+    document.elementsFromPoint = real.efp;
+  }
+  // confirm, retry and continue each get the same check (a mutant that dropped it from one of them survived)
+  for (const [mode, act, op, extra] of [['planned', 'pub-confirm', 'confirm', {}], ['failed', 'pub-retry', 'retry', { failed_step: 'publish', failed_reason: 'x' }], ['interrupted', 'pub-continue', 'continue', { interrupted_from: 'publishing', interrupted_why: 'x' }]]) {
+    const server = companion();
+    server.run = server.make(mode, { steps: [{ step: 'plan', exit: 0, output: 'P' }], ...extra });
+    const { q, view, click, drawer } = await make({ server });
+    await tick(10); click(q('[data-act="pub-review"]')); await tick();
+    const before = server.calls.length;
+    document.elementsFromPoint = () => [{ id: 'cover' }];
+    q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
+    eq(`${op}: an overlay at the click point stops it (nothing sent)`, [server.calls.slice(before).some(c => c.op === op || c.op === 'resume'), /Close the page's overlay and try again/.test(drawer.shadow.querySelector('.pubdlg').textContent)], [false, true]);
+    document.elementsFromPoint = () => [drawer.host];
+    q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
+    eq(`${op}: and goes through when the drawer is on top`, server.calls.slice(before).some(c => c.op === op), true);
+    document.elementsFromPoint = real.efp;
+  }
+  // IntersectionObserver v2, where it exists: act only if isVisible was true
+  {
+    const seen = []; let cb = null;
+    globalThis.IntersectionObserverEntry = class { get isVisible() { return true; } };
+    globalThis.IntersectionObserver = class { constructor(f) { cb = f; } observe(el) { seen.push(el); } disconnect() {} };
+    w.IntersectionObserver = globalThis.IntersectionObserver; w.IntersectionObserverEntry = globalThis.IntersectionObserverEntry;
+    const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]); await tick();
+    ok('the buttons are watched with v2', seen.length >= 2 && seen.every(b => b.classList && b.classList.contains('pbtn')));
+    const btn = q('[data-act="pub-scope"][data-scope="one"]');
+    document.elementsFromPoint = () => [drawer.host];
+    // no report yet that it is visible: refused (the browser has not vouched for it)
+    btn.dispatchEvent(ev()); await tick();
+    eq('v2 has not said visible: refused', [server.calls.some(c => c.op === 'start'), view()], [false, 'problem']);
+    const s2 = companion(); const y = await make({ server: s2 });
+    y.click(y.qa('.thr-pub')[0]); await tick();
+    const b2 = y.q('[data-act="pub-scope"][data-scope="one"]');
+    cb([{ target: b2, isVisible: false, intersectionRatio: 1 }]);
+    document.elementsFromPoint = () => [y.drawer.host];
+    b2.dispatchEvent(ev()); await tick();
+    eq('v2 says NOT visible (covered or filtered): refused', [s2.calls.some(c => c.op === 'start'), y.view()], [false, 'problem']);
+    const s3 = companion(); const z = await make({ server: s3 });
+    z.click(z.qa('.thr-pub')[0]); await tick();
+    const b3 = z.q('[data-act="pub-scope"][data-scope="one"]');
+    cb([{ target: b3, isVisible: true, intersectionRatio: 1 }]);
+    document.elementsFromPoint = () => [z.drawer.host];
+    b3.dispatchEvent(ev()); await tick();
+    eq('v2 says visible: it goes through', [s3.calls.some(c => c.op === 'start'), z.view()], [true, 'working']);
+    delete globalThis.IntersectionObserver; delete globalThis.IntersectionObserverEntry; delete w.IntersectionObserver; delete w.IntersectionObserverEntry;
+    document.elementsFromPoint = real.efp;
+  }
 }
 
 // ---- what prepare did is shown with the plan -----------------------------------------------------------------
@@ -290,7 +379,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('Review resumes (which is what opens the worker\'s one-use offer) and continues from the run\'s own mode', [server.calls.at(-1).op, view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['resume', 'confirming', ['pub-confirm', 'pub-cancel']]);
   void drawer;
 }
-for (const [mode, buttons] of [['failed', ['pub-retry', 'pub-abandon', 'pub-close']], ['interrupted', ['pub-abandon', 'pub-close']]]) {
+for (const [mode, buttons] of [['failed', ['pub-retry', 'pub-abandon', 'pub-close']], ['interrupted', ['pub-continue', 'pub-abandon', 'pub-close']]]) {
   const server = companion();
   server.run = server.make(mode, { failed_step: 'publish', failed_reason: 'publish exited with code 1', interrupted_why: 'the companion stopped while this run was under way',
     steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 1, output: 'boom\nrun the same --push again, or --abandon' }] });

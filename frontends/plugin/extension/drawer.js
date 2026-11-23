@@ -10707,21 +10707,63 @@ ${bubbleShellHtml()}`;
       }
       pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm });
     }
-    // CLICKJACKING. A page can put a top-layer <dialog> or popover over the drawer with `pointer-events:none`, so that a TRUSTED click
-    // lands on a drawer button it has disguised. Before anything that publishes or goes on to, the page must have no element in the
-    // top layer (:modal, :popover-open, a fullscreen element), and the element at the click's own point must be the drawer's host.
-    // → '' when it is clear, else the sentence to show. (A browser without these selectors cannot be asked; that part is skipped.)
+    // CLICKJACKING. A page can cover the drawer with something it controls (a top-layer <dialog> or popover with `pointer-events:none`, an
+    // opaque/filtered/clipped host, a frame) so that a TRUSTED click lands on a drawer button it has disguised. Before anything that
+    // publishes or carries on, ALL of these must hold; any failure shows the same sentence and nothing is sent:
+    //   1. where the browser has IntersectionObserver v2 (`trackVisibility`), the button was reported VISIBLE (isVisible) at the click:
+    //      the browser's own answer to "is something covering, filtering or transforming this?"; where it has not, 2-5 are what is left;
+    //   2. the host's computed style chain has no opacity < 1, filter, clip-path or visibility:hidden, and the host itself no transform
+    //      or pointer-events:none (a page's rule on the host element reaches it from outside the closed root);
+    //   3. the drawer's panel and the clicked button are on screen (a box that intersects the viewport);
+    //   4. no top-layer element (:modal, :popover-open) whose box intersects the drawer's box, and no fullscreen element that does not
+    //      contain the drawer (a top-layer element elsewhere on the page is none of our business);
+    //   5. the element at the click's own point is the drawer's host.
     const PUB_OVERLAY_SAY = 'The page has something laid over the drawer. Close the page\'s overlay and try again.';
-    function pubOverlay(e) {
+    const ioV2 = () => typeof IntersectionObserver === 'function' && typeof IntersectionObserverEntry === 'function' && 'isVisible' in IntersectionObserverEntry.prototype;
+    const PUB_SEEN = typeof WeakSet === 'function' ? new WeakSet() : null;   // buttons IntersectionObserver v2 last reported visible
+    let pubIO = null;
+    function pubWatchButtons() {
+      if (!ioV2() || !D.el || !D.el.pubdlg) return;
       try {
-        if (typeof document === 'undefined') return '';
-        for (const sel of [':modal', ':popover-open']) {
-          let hit = null;
-          try { hit = document.querySelector(sel); } catch (_) { hit = null; }
-          if (hit) return PUB_OVERLAY_SAY;
+        if (!pubIO) {
+          pubIO = new IntersectionObserver(entries => { for (const en of entries) { if (en.isVisible && en.intersectionRatio >= 0.99) PUB_SEEN.add(en.target); else PUB_SEEN.delete(en.target); } },
+            { threshold: [0, 0.99, 1], trackVisibility: true, delay: 100 });
         }
-        if (document.fullscreenElement) return PUB_OVERLAY_SAY;
-        if (typeof document.elementsFromPoint === 'function' && e && typeof e.clientX === 'number' && D.host) {
+        D.el.pubdlg.querySelectorAll('.pbtn').forEach(b => pubIO.observe(b));
+      } catch (_) { pubIO = null; }
+    }
+    const boxesMeet = (a, b) => !!a && !!b && a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0 && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    function pubOverlay(e, btn) {
+      try {
+        if (typeof document === 'undefined' || !D.host) return '';
+        // 1. the browser's own visibility answer (IntersectionObserver v2), where there is one
+        if (ioV2() && PUB_SEEN && btn && pubIO && !PUB_SEEN.has(btn)) return PUB_OVERLAY_SAY;
+        // 2. the host's style chain
+        for (let el = D.host; el && el.nodeType === 1; el = el.parentElement) {
+          const cs = getComputedStyle(el);
+          if (!cs) continue;
+          if (parseFloat(cs.opacity) < 1 || (cs.filter && cs.filter !== 'none') || (cs.clipPath && cs.clipPath !== 'none') || cs.visibility === 'hidden') return PUB_OVERLAY_SAY;
+          if (el === D.host && cs.transform && cs.transform !== 'none') return PUB_OVERLAY_SAY;
+        }
+        // 3. on screen
+        const panel = D.el && (D.el.pubdlg && !D.el.pubdlg.hidden ? D.el.pubdlg : D.el.panel);
+        const view = { left: 0, top: 0, right: window.innerWidth || 1e6, bottom: window.innerHeight || 1e6, width: window.innerWidth || 1e6, height: window.innerHeight || 1e6 };
+        const pr = panel && panel.getBoundingClientRect ? panel.getBoundingClientRect() : null;
+        if (pr && pr.width > 0 && !boxesMeet(pr, view)) return PUB_OVERLAY_SAY;
+        if (btn && btn.getBoundingClientRect) { const br = btn.getBoundingClientRect(); if (br.width > 0 && !boxesMeet(br, view)) return PUB_OVERLAY_SAY; }
+        // 4. top layer that is over the drawer
+        for (const sel of [':modal', ':popover-open']) {
+          let hits = [];
+          try { hits = Array.from(document.querySelectorAll(sel)); } catch (_) { hits = []; }
+          for (const hit of hits) {
+            const hr = hit && hit.getBoundingClientRect ? hit.getBoundingClientRect() : null;
+            if (!pr || pr.width === 0 || !hr || boxesMeet(hr, pr)) return PUB_OVERLAY_SAY;   // (a drawer box that cannot be measured is not proof of no overlap)
+          }
+        }
+        const fs = document.fullscreenElement;
+        if (fs && !(fs.contains && fs.contains(D.host))) return PUB_OVERLAY_SAY;
+        // 5. what is at the click's point
+        if (typeof document.elementsFromPoint === 'function' && e && typeof e.clientX === 'number') {
           const at = document.elementsFromPoint(e.clientX, e.clientY);
           if (Array.isArray(at) && at.length && at[0] !== D.host) return PUB_OVERLAY_SAY;
         }
@@ -10730,7 +10772,7 @@ ${bubbleShellHtml()}`;
     }
     async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
-      const over = pubOverlay(e);
+      const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null);
       if (over) { pubGo('problem', { error: over, run: null }); return; }
       const thread = D.pub.thread;
       if (!pubGo('starting', { scope })) return;
@@ -10743,7 +10785,7 @@ ${bubbleShellHtml()}`;
     async function pubAct(op, e) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
-      if (op === 'confirm' || op === 'retry' || op === 'continue') { const over = pubOverlay(e); if (over) { D.pub.error = over; paintPub(); return; } }
+      if (op === 'confirm' || op === 'retry' || op === 'continue') { const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null); if (over) { D.pub.error = over; paintPub(); return; } }
       const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', continue: 'continue' }[op];
       if (!may || (run.can || []).indexOf(may) === -1) return;
       // the view changes first for the two that start something, so a second click finds nothing to press
@@ -10838,6 +10880,7 @@ ${bubbleShellHtml()}`;
       if (D.pub.view === 'closed' || pubQuiet()) { el.hidden = true; el.innerHTML = ''; if (typeof render === 'function') render(); return; }
       el.innerHTML = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
       el.hidden = false;
+      pubWatchButtons();
       if (typeof render === 'function') render();
     }
 
