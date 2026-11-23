@@ -282,6 +282,6 @@ export function runCommand({ argv, cwd, env, limitMs, onChild }) {
     child.on('error', e => { if (cmd.state === 'running') { moveCmd(cmd, 'spawn-failed'); spawnCode = (e && e.code) || 'SPAWN'; } finish(null, ''); });
     child.on('close', (code, signal) => finish(code, signal));
     timer = setTimeout(() => { if (cmd.state === 'running') stop('timed-out'); }, limitMs);
-    if (typeof onChild === 'function') onChild(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); });
+    if (typeof onChild === 'function') onChild(() => { killGroup('SIGTERM'); setTimeout(() => killGroup('SIGKILL'), KILL_GRACE_MS).unref(); }, child.pid);
   });
 }

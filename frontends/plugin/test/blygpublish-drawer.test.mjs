@@ -330,6 +330,30 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   }
 }
 
+// ---- F9: an earlier step still running, and a record that cannot be trusted ----------------------------------------------------------
+{
+  const server = companion();
+  server.run = server.make('interrupted', { interrupted_from: 'publishing', interrupted_why: 'x', earlier_step_running: true, steps: [{ step: 'apply', exit: 0, output: 'A' }] });
+  server.run.can = ['stop-and-continue', 'abandon'];
+  const { q, qa, view, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  eq('the earlier step is still running: no plain Carry on, a choice to stop it first', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act), /still running on this machine/.test(q('.pubdlg').textContent)], ['problem', ['pub-stop-continue', 'pub-abandon', 'pub-close'], true]);
+  const before = server.calls.length;
+  document.elementsFromPoint = () => [{ id: 'x' }];
+  click(q('[data-act="pub-stop-continue"]')); await tick();
+  document.elementsFromPoint = undefined; delete document.elementsFromPoint;
+  click(q('[data-act="pub-stop-continue"]')); await tick();
+  eq('the owner\'s choice sends continue with stop: yes', server.calls.slice(before).filter(c => c.op === 'continue').map(c => c.body), [{ run: 'r1', token: 'tok1', stop: 'yes' }]);
+}
+{
+  const server = companion();
+  server.run = server.make('interrupted', { interrupted_from: 'publishing', interrupted_why: 'x', tainted: 'This run\'s record names a note outside the notes folder, so nothing will be run or removed with it.', steps: [] });
+  server.run.can = ['abandon'];
+  const { q, qa, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  eq('a tainted record: its words, and only abandon', [/names a note outside the notes folder/.test(q('.pubdlg').textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], [true, ['pub-abandon', 'pub-close']]);
+}
+
 // ---- what prepare did is shown with the plan -----------------------------------------------------------------
 {
   const server = companion();

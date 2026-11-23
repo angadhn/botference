@@ -6,6 +6,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import * as R from '../blyg-run.mjs';
@@ -178,7 +180,7 @@ test('cancel at the confirmation removes the draft only if this run made it and 
   const c2 = await b2.pub.cancel({ id: v.id, token: v.token });
   assert.ok(c2.ok);
   assert.equal(fs.existsSync(noteOf(rig, v)), true, 'the owner\'s edit is not thrown away');
-  assert.match(c2.view.cleanup.note, /changed after it was written/);
+  assert.match(c2.view.cleanup.note, /changed since this run wrote it.*left where it is/);
   assert.equal(c2.view.cleanup.removed, false);
 });
 
@@ -257,9 +259,10 @@ test('abandon: before apply the draft goes; after apply nothing is touched and t
 // ---- crash and restart ---------------------------------------------------------------------
 test('a companion restart mid-run leaves a record that offers only "show what happened" and "abandon"', async t => {
   const rig = makeRig(); t.after(rig.done);
+  fs.writeFileSync(path.join(rig.folder, 'x.md'), 'T');
   for (const mode of ['planning', 'planned', 'applying', 'applied', 'publishing', 'failed']) {
     const file = path.join(rig.out, `crash-${mode}.json`);
-    fs.writeFileSync(file, JSON.stringify({ mode, id: 'abc', token: 'tok', note_rel: '_notes/x.md', note_text: 'T', steps: [{ step: 'plan', exit: 0, output: 'seen' }], failed_step: 'apply', page_url: 'u', thread_ids: ['t1'] }));
+    fs.writeFileSync(file, JSON.stringify({ mode, id: 'abc', token: 'tok', note_rel: '_notes/x.md', note_text: 'T', note_sha: crypto.createHash('sha256').update('T').digest('hex'), steps: [{ step: 'plan', exit: 0, output: 'seen' }], failed_step: 'apply', page_url: 'u', thread_ids: ['t1'] }));
     const pub = R.createPublisher({ file, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {}, broadcast: () => {} });
     const v = pub.current();
     assert.equal(v.mode, 'interrupted', mode);
@@ -735,4 +738,76 @@ test('F7: a start whose shown setting is not the one in force is refused with a 
   const r2 = b2.start('t1', 'one', 'never');
   assert.match(r2.error, /“always” is in force \(you will see the note first\)/);
   assert.ok(b2.start('t1', 'one', 'always').ok);
+});
+
+// ---- F9: the record on disk is not trusted -------------------------------------------------------------------------------------------
+test('a crafted or damaged record is shown as interrupted with only "abandon": nothing runs, and abandon neither passes nor deletes its path', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const sha256 = x => crypto.createHash('sha256').update(x).digest('hex');
+  const canary = path.join(rig.out, 'canary.txt'); fs.writeFileSync(canary, 'DO NOT TOUCH');
+  const real = path.join(rig.folder, 'real.md'); fs.writeFileSync(real, 'REAL');
+  fs.symlinkSync(canary, path.join(rig.folder, 'link.md'));
+  const outside = path.join(rig.top, 'outside.md'); fs.writeFileSync(outside, 'ELSEWHERE IN THE TREE');
+  const cases = {
+    'a path that climbs out': { note_rel: path.relative(rig.top, canary), note_sha: sha256('DO NOT TOUCH') },
+    '/etc/hosts': { note_rel: '/etc/hosts', note_sha: sha256('x') },
+    'a dot-dot spelling': { note_rel: '_notes/../outside.md', note_sha: sha256('ELSEWHERE IN THE TREE') },
+    'a file in the tree but outside the notes folder': { note_rel: 'outside.md', note_sha: sha256('ELSEWHERE IN THE TREE') },
+    'a link inside the folder to a file outside it': { note_rel: '_notes/link.md', note_sha: sha256('DO NOT TOUCH') },
+    'a note whose hash is not the recorded one': { note_rel: '_notes/real.md', note_sha: sha256('WHAT WAS SHOWN') },
+    'a note that is gone': { note_rel: '_notes/nothing-here.md', note_sha: sha256('x') },
+    'no path at all': { note_rel: 5, note_sha: 'x' },
+  };
+  for (const [name, bad] of Object.entries(cases)) {
+    for (const mode of ['applying', 'publishing']) {
+      const file = path.join(rig.out, `taint-${mode}.json`);
+      fs.writeFileSync(file, JSON.stringify({ mode, id: 'abc', token: 'tok', steps: [{ step: 'apply', exit: 0, output: 'A' }], settings_fp: 'x', thread_ids: ['t1'], page_url: 'u', ...bad }));
+      const pub = R.createPublisher({ file, readConfig: () => ({ blyg_home: { ...rig.home, commands: { ...rig.home.commands, abandon: [process.execPath, FAKE, rig.log, rig.ctl, 'abandon', '{note}'] } } }), readPage: () => null, savePage: () => {}, broadcast: () => {} });
+      const v = pub.current();
+      assert.deepEqual([v.mode, v.can], ['interrupted', ['abandon']], `${name} (${mode})`);
+      assert.ok(v.tainted, name);
+      for (const act of ['carryOn', 'retry', 'confirm']) assert.equal((await pub[act]({ id: 'abc', token: 'tok' })).status, 409, `${name}: ${act}`);
+      const a = await pub.abandon({ id: 'abc', token: 'tok' });
+      assert.ok(a.ok, name);
+      assert.match(a.view.cleanup.note, /Nothing was run or removed/);
+    }
+  }
+  assert.deepEqual(rig.calls(), [], 'no command was ever run with any of those paths');
+  assert.equal(fs.readFileSync(canary, 'utf8'), 'DO NOT TOUCH'); assert.ok(fs.existsSync(real) && fs.existsSync(outside));
+});
+
+test('a step whose process outlived the companion is never run twice: Continue is refused while it lives, and runs only after the owner chooses to stop it', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  rig.control({ publish: 'sleep' });
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publish running');
+  const sleeper = rig.calls().at(-1).pid;
+  const rec = JSON.parse(fs.readFileSync(path.join(rig.out, 'run.json'), 'utf8'));
+  assert.equal(rec.child.pgid, sleeper, 'the record keeps the step\'s process group');
+  // the companion dies without taking the step with it: a new one reads the file
+  const file = path.join(rig.out, 'run5.json'); fs.writeFileSync(file, JSON.stringify(rec));
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: rig.home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
+  v = pub.current();
+  assert.deepEqual([v.mode, v.can, v.earlier_step_running], ['interrupted', ['stop-and-continue', 'abandon'], true]);
+  const refused = await pub.carryOn({ id: v.id, token: v.token });
+  assert.equal(refused.status, 409);
+  assert.match(refused.error, /The earlier step is still running/);
+  assert.equal(rig.calls().filter(c => c.step === 'publish').length, 1, 'no second copy was started');
+  rig.control({});
+  const go = await pub.carryOn({ id: v.id, token: v.token, stop: true });
+  assert.ok(go.ok, go.error);
+  await until(() => pub.current().mode === 'published', 'published');
+  assert.equal(R.childAlive({ pgid: sleeper }), false, 'the earlier copy is gone');
+  assert.equal(rig.calls().filter(c => c.step === 'publish').length, 2);
+  b.pub.stopAll();
+});
+
+test('childAlive: a group that does not exist, a malformed record, and (where ps can be run) a pid that now belongs to another process are all "not running"', () => {
+  assert.equal(R.childAlive(null), false); assert.equal(R.childAlive({ pgid: 'x' }), false); assert.equal(R.childAlive({ pgid: 1 }), false);
+  assert.equal(R.childAlive({ pgid: 2 ** 22 - 3 }), false);
+  let ps = false; try { ps = !!execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { ps = false; }
+  if (ps) assert.equal(R.childAlive({ pgid: process.pid, lstart: 'Mon Jan  1 00:00:00 2001' }), false, 'same number, different start time: another process');
 });

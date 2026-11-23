@@ -4259,7 +4259,7 @@ export function handler(req, res) {
     }
     if (req.method === 'POST' && acts[url]) {
       return readBody(req, res, async data => {
-        const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || '') });
+        const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes' });
         return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
       });
     }

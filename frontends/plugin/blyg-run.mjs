@@ -33,6 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
 import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, SCOPES, LIMITS } from './blyg-note.mjs';
@@ -121,11 +122,31 @@ export class RunBook {
     const base = RUN_FINISHED.includes(from) ? {} : this.run;
     this.run = { ...base, ...facts, mode: to, at: this.now() };
     if (to !== 'failed') { delete this.run.failed_step; delete this.run.failed_reason; }
-    if (this.file) writeJson(this.file, this.run, { mode: 0o600 });
+    this.persist();
     this.onChange(this.run);
     return this.run;
   }
+  /** Write the record as it is (facts about a running step: not a change of mode). */
+  persist() { if (this.file) writeJson(this.file, this.run, { mode: 0o600 }); }
 }
+
+// ---- a step's process, across a companion restart ----------------------------------------------------------------
+// The record keeps the process group of the step that is running (`child: { pgid, lstart }`), so that after a restart the owner is never
+// offered a second copy of a step whose first copy is still going. `lstart` is the process's start time as `ps` says (when ps can be run).
+const lstartOf = pid => { try { return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+export function childAlive(child) {
+  if (!child || !Number.isInteger(child.pgid) || child.pgid <= 1) return false;
+  try { process.kill(-child.pgid, 0); } catch (e) { if (!(e && e.code === 'EPERM')) return false; }
+  if (child.lstart) { const now = lstartOf(child.pgid); if (now && now !== child.lstart) return false; }   // the number now belongs to another process
+  return true;
+}
+const stopGroup = async child => {
+  for (const sig of ['SIGTERM', 'SIGKILL']) {
+    try { process.kill(-child.pgid, sig); } catch { return true; }
+    for (let i = 0; i < 30; i++) { await new Promise(r => setTimeout(r, 100)); if (!childAlive(child)) return true; }
+  }
+  return !childAlive(child);
+};
 
 // ---- the owner's view of a run -----------------------------------------------------
 /** What an owner client may see: the record with the work tree's absolute path kept out, plus what it may do. */
@@ -192,10 +213,29 @@ export function createPublisher(deps) {
   const settingsNow = () => validateHome(deps.readConfig().blyg_home, { env });
   const fail = (status, error) => ({ ok: false, status, error });
 
+  // THE RECORD ON DISK IS NOT TRUSTED. A live run's note must still be a file INSIDE the configured notes folder (real path) with the
+  // hash this run wrote it with; otherwise nothing runs with its path and nothing deletes it: the run offers only "abandon".
+  function taintOf(run) {
+    if (!run || RUN_FINISHED.includes(run.mode)) return '';
+    const home = settingsNow();
+    if (!home.ok) return '';
+    const rel = run.note_rel;
+    if (typeof rel !== 'string' || !rel || path.isAbsolute(rel) || rel.includes('\0') || rel.split(/[\\/]/).includes('..')) return 'This run\'s record names a note path that is not a path inside the notes folder, so nothing will be run or removed with it.';
+    let real = '';
+    try { real = fs.realpathSync(path.join(home.settings.top, rel)); } catch { return 'The note this run was started with is gone, so it cannot be carried on.'; }
+    if (!(real === home.settings.folder || real.startsWith(home.settings.folder + path.sep))) return 'This run\'s record names a note outside the notes folder, so nothing will be run or removed with it.';
+    let text = '';
+    try { text = fs.readFileSync(real, 'utf8'); } catch { return 'The note this run was started with cannot be read, so it cannot be carried on.'; }
+    if (sha(text) !== run.note_sha) return 'The note has changed since this run wrote it, so what you were shown is not what would be published.';
+    return '';
+  }
+
   /** Run one step; record it; → the step record. Re-checks the settings first and refuses if they changed. */
   async function step(name, extra = {}) {
     const run = book.run;
     const home = settingsNow();
+    const tainted = taintOf(run);
+    if (tainted) return { ok: false, record: { step: name, exit: null, spawn_error: 'TAINTED', output: tainted, at: nowIso() }, reason: tainted };
     if (!home.ok) return { ok: false, record: { step: name, exit: null, spawn_error: 'SETTINGS', output: home.errors.join('\n'), at: nowIso() }, reason: `the settings no longer pass: ${home.errors[0]}` };
     if (fingerprint(home.settings) !== run.settings_fp) {
       return { ok: false, record: { step: name, exit: null, spawn_error: 'SETTINGS', output: 'The “Where my blyg lives” settings changed after this run started.', at: nowIso() }, reason: 'the settings changed after this run started' };
@@ -207,7 +247,8 @@ export function createPublisher(deps) {
     const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
-    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopHandle = stop; }, ...extra });
+    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
+    if (book.run.child) { delete book.run.child; book.persist(); }
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
     let ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
     // a publish that exits 0 is a publish only when its LAST `State:` line is the site command's done marker (when one is set)
@@ -365,21 +406,31 @@ export function createPublisher(deps) {
   /** The owner's "Publish": Step C. */
   function confirm({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
+    { const t = taintOf(book.run); if (t) return fail(409, t); }
     if (book.mode !== 'planned') return fail(409, `this run is ${book.mode}; only a run waiting on the plan can be published`);
     runFrom('apply');
     return { ok: true, view: viewOf(book.run) };
   }
   /** Carry on an interrupted apply or publish (the owner's click): the same step again, which is how the site's command resumes. */
-  function carryOn({ id, token }) {
+  async function carryOn({ id, token, stop = false }) {
     const bad = owned(id, token); if (bad) return bad;
+    { const t = taintOf(book.run); if (t) return fail(409, t); }
     const to = book.mode === 'interrupted' ? CONTINUE_FOR[book.run.interrupted_from] : '';
     if (!to || !canMove('interrupted', to, book.run)) return fail(409, 'only an interrupted apply or publish can be carried on; abandon this run instead');
+    // never two copies of a step: the earlier one may have outlived the companion
+    if (childAlive(book.run.child)) {
+      if (!stop) return fail(409, 'The earlier step is still running (process group ' + book.run.child.pgid + '). Wait for it, or choose to stop it and carry on.');
+      if (!await stopGroup(book.run.child)) return fail(409, 'The earlier step would not stop; nothing was started.');
+      delete book.run.child; book.persist();
+    }
+    if (!canMove(book.mode, to, book.run)) return fail(409, 'the run moved on meanwhile');
     runFrom(to === 'applying' ? 'apply' : 'publish');
     return { ok: true, view: viewOf(book.run) };
   }
   /** Try the failed step again (the owner's click). */
   function retry({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
+    { const t = taintOf(book.run); if (t) return fail(409, t); }
     const to = book.mode === 'failed' ? RETRY_FOR[book.run.failed_step] : '';
     if (!to || !canMove('failed', to, book.run)) return fail(409, 'there is no failed step to try again');
     if (to === 'planning' || to === 'preparing') runPlan().catch(() => {});
@@ -391,6 +442,7 @@ export function createPublisher(deps) {
   async function undraft() {
     const run = book.run;
     const out = { removed: false, discard: '', note: '' };
+    { const t = taintOf(run); if (t) { out.note = t + ' The note was left where it is.'; return out; } }
     const home = settingsNow();
     if (!home.ok || fingerprint(home.settings) !== run.settings_fp) { out.note = 'the settings changed, so the draft was left where it is'; return out; }
     const S = home.settings;
@@ -428,7 +480,9 @@ export function createPublisher(deps) {
     const bad = owned(id, token); if (bad) return bad;
     if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, `this run is ${book.mode}; only a failed or interrupted run can be abandoned`);
     let cleanup;
-    if (beforeApply(book.run)) cleanup = await undraft();
+    const tainted = taintOf(book.run);
+    if (tainted) cleanup = { removed: false, discard: '', note: tainted + ' Nothing was run or removed.' };
+    else if (beforeApply(book.run)) cleanup = await undraft();
     else {
       // after apply the site's command has its own record of this run: the owner's `abandon` command (when set) ends it, so no state needs editing by hand
       cleanup = { removed: false, discard: '', note: 'the note was left where it is: the publish command keeps its own record of this run, and its output on this page says how to finish it or give it up' };
@@ -446,6 +500,9 @@ export function createPublisher(deps) {
   /** The owner client resumes: the current run (a client that reloaded asks this). */
   function current() {
     const v = viewOf(book.run);
+    const taint = taintOf(book.run);
+    if (taint) { v.can = ['abandon']; v.tainted = taint; }
+    else if (book.mode === 'interrupted' && childAlive(book.run.child)) { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }
     if (!v.confirm || v.mode === 'idle') { const h = settingsNow(); v.confirm = h.ok ? h.settings.confirm : 'always'; }   // an idle view says which setting is in force
     return v;
   }
