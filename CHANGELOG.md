@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-23
+
+- **Hub: tick a post as read and it moves to an Archive; the Feed only shows what you have not read, and tops itself up.** *Behaviour change.* Each post has a checkbox ("Read: move to Archive"); ticking it removes the post's text and keeps a small record in the new **Archive** tab (untick brings it back, fetched again). "Mark seen" is gone (a stored *seen* post loads as *new*) and "Mark all seen" is now "Tick all shown", after a confirmation. A refresh reads further back in each blyg's index, round-robin and newest first, while fewer than `following_unread_target` (default 50, 1 to 500) posts are unread; the holding caps count unread posts only; each blyg remembers the ids you ticked, so a post never comes back as unread; when every blyg is read to its end the Feed says so. See "The Archive and the unread target" in `docs/blygger.md`.
+
 ## 2026-11-21
 
 - **Discuss: a link you lasso is fetched the same guarded way as a Blygger check.** The name is resolved once, every address it answers is checked, and the connection goes to that checked address only, with no proxy from the environment, so a name that answers differently a moment later cannot point the fetch at this computer or its network. Redirects are still followed by hand, each hop checked. An IPv6 address that carries an IPv4 one in the translated form (`::ffff:0:a.b.c.d`) is now unwrapped and checked like the other forms.

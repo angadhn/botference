@@ -37,6 +37,19 @@
 // transclusions and links, and the sanitised plain text the list needs (clipped). One
 // record per post at its newest version (the rollup, §13.1). A withdrawn post
 // (kind 'withdrawn') is a bare marker, so it is not fetched again (§13.4).
+//
+// THE ARCHIVE. The owner's own tick moves a post from the Feed to the Archive (read state `archived`): its text and body file
+// are deleted and a small record stays (key, origin, id, kind, version read, index version, created, updated, fetched_at, page,
+// content_hash, a title or first words of at most 120 characters, archived_at: about half a kilobyte; at most 2000 are kept,
+// the oldest ticked dropped first). Beside the records, each blyg has a LEDGER: the ids of the posts ticked (10,000 per blyg,
+// 50,000 in all), the ids whose documents could not be used (100, each with the index's version), and its backfill mode. The
+// ledger is what keeps a post read after its record is gone. The caps (`following_max_items_*`) count unread held posts only.
+//
+// THE BACKFILL. A refresh reads each blyg's index (hostile input: at most 20,000 entries, well-formed string ids, an id listed
+// twice is one post at its highest version; none of it is stored) and fetches, within the run's one budget: (1) documents of
+// posts already held whose version moved; (2) FRESH posts, those newer than the newest post already known, up to the caps;
+// (3) BACKFILL, only while the Feed holds fewer unread posts than `following_unread_target`: round-robin over the blygs, one
+// post per blyg per round, a blyg's newest unfetched post first. What is left is deferred, never an error.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
