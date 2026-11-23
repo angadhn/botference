@@ -30,7 +30,7 @@ import { stripMore } from './more.mjs';
 import { withRuns } from './export.mjs';
 import { ownerTyped } from './tkgaps.mjs';
 import { urlRefusal } from './netguard.mjs';
-import { escapePassageLine, byReference, labelOf, readVersion, responseOf, canRespond, defuse, TK_MARK } from './note-quotes.mjs';
+import { escapePassageLine, byReference, labelOf, readVersion, responseOf, canRespond, TK_MARK } from './note-quotes.mjs';
 
 const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 
@@ -125,7 +125,8 @@ export function uniqueSlug(base, taken) {
 // ---- the owner's own words, as the note's text ------------------------------------
 // A comment is publishable when the OWNER typed it in the drawer (the server stamped
 // it, tkgaps.ownerTyped), no agent was addressed, and it is not a tool summary.
-export const isPublishableMsg = m => !!m && ownerTyped(m) && m.kind !== 'tools' && !m.agent && !m.route
+// (a message an edit set aside — `superseded`, store.supersedeAfter — is the owner's earlier words, not part of the post)
+export const isPublishableMsg = m => !!m && ownerTyped(m) && m.kind !== 'tools' && !m.agent && !m.route && !m.superseded
   && !isBotAuthor(m.author) && !hasMention(m.text);
 export const isPublishedThread = t => !!(t && t.blyg_published && t.blyg_published.at);
 /** May this thread be published at all? → { ok, why } (the first message must be the owner's own, untagged). */
@@ -138,15 +139,30 @@ export function eligibleThread(t) {
   return { ok: true, why: '' };
 }
 
-// escape Liquid and kramdown's attribute lists: every `{` that opens `{{`, `{%` or is part of such a pair,
-// and every `{:`; written as `\{`, which markdown reads as the character
+// LIQUID AND KRAMDOWN ATTRIBUTE LISTS are made inert with CHARACTER REFERENCES, never a backslash (Liquid does not read a
+// backslash: `\{%` still runs). Every `{` that opens or sits in `{{`, `{%` or `{:`, and every `}` that closes `}}` or
+// `%}`, is written `&#123;` / `&#125;`, which a markdown renderer shows as the same character and Liquid never sees as a tag.
+// Inside a code span or block a reference would show as its letters, so there the owner's own text that holds `{{` or `{%`
+// is REFUSED (a plain message), and a passage or an agent's words never has a code span at all (the backtick is escaped).
+export function liquidEntities(text) {
+  const t = String(text);
+  let out = '';
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (c === '{' && (t[i + 1] === '{' || t[i + 1] === '%' || t[i + 1] === ':' || t[i - 1] === '{')) out += '&#123;';
+    else if (c === '}' && (t[i + 1] === '}' || t[i - 1] === '}' || t[i - 1] === '%')) out += '&#125;';
+    else out += c;
+  }
+  return out;
+}
 const liquidOutsideCode = text => {
   const mask = Grammar.codeMask(text);
   let out = '';
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
-    const braceRun = c === '{' && (text[i + 1] === '{' || text[i + 1] === '%' || text[i + 1] === ':' || text[i - 1] === '{');
-    out += braceRun && !mask[i] ? '\\{' : c;
+    const open = c === '{' && (text[i + 1] === '{' || text[i + 1] === '%' || text[i + 1] === ':' || text[i - 1] === '{');
+    const close = c === '}' && (text[i + 1] === '}' || text[i - 1] === '}' || text[i - 1] === '%');
+    out += !mask[i] && open ? '&#123;' : !mask[i] && close ? '&#125;' : c;
   }
   return out;
 };
@@ -160,7 +176,7 @@ const codeHasLiquid = text => {
 /**
  * One of the owner's messages as plain text for the post.
  * → { text, blocked: [sentence…] }. `/tk` gaps count as the owner's text once filled (an
- * agent's fill is still defused of wikilinks, which are never the owner's act); a gap
+ * agent's fill is escaped as a passage is, so it is only ever text); a gap
  * that is pending, failed or unknown BLOCKS, and so does any `[TK]` mark left outside code.
  */
 export function ownText(msg, { escape = 'liquid' } = {}) {
@@ -177,7 +193,12 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
     at = f.end;
     if (g && g.mode === 'removed') return;
     if (g && g.mode === 'adopted-by-reader') { out += clean(g.text); return; }
-    if (g && (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader')) { out += defuse(clean(g.text)); return; }
+    // Only an ADOPTED gap is the owner's own markdown. What an agent wrote, or the owner only edited, is escaped exactly as a
+    // passage is, so it is shown as plain text: it is shaped by a hostile page's passage (the agent was shown it).
+    if (g && (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader')) {
+      out += clean(g.text).split('\n').map(l => escapePassage(l, { escape })).join('\n');
+      return;
+    }
     blocked.push(`a /tk or [TK] placeholder (“${oneLine(f.instruction).slice(0, 40)}”) is still in the comment and nobody has filled it in: fill it, adopt it or remove it, then publish`);
   });
   out += Grammar.unescape(src.slice(at));
@@ -202,7 +223,7 @@ export function escapePassage(line, { escape = 'liquid' } = {}) {
   return s.split(/(`\[\/?TK\]`)/i).map((seg, i) => {
     if (i % 2) return seg;
     let t = seg.replace(/[$\]|]/g, '\\$&');
-    if (escape === 'liquid') t = t.replace(/[{}]/g, '\\$&');
+    if (escape === 'liquid') t = liquidEntities(t);
     return t;
   }).join('');
 }

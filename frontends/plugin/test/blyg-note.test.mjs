@@ -173,12 +173,12 @@ test('the owner\'s own words: trusted as content, but Liquid is made inert, fron
   assert.ok(N.renderShortNote({ page: code, threads: code.threads, home: { ...HOME, escape: 'none' }, now: NOW, slug: 's' }).ok);
 });
 
-test('/tk: a filled gap is the owner\'s text (an agent\'s fill loses live wikilinks, an adopted one keeps them); an unfilled, failed, unknown or leftover [TK] BLOCKS with a plain message', () => {
+test('/tk: a filled gap is the owner\'s text, escaped as a passage (an adopted one is the owner\'s own markdown); an unfilled, failed, unknown or leftover [TK] BLOCKS with a plain message', () => {
   const gap = (mode, text) => ({ instruction: 'say hello', mode, ...(text ? { text } : {}) });
   const one = (text, gaps) => { const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine(text), gaps }] }]); return make(p, p.threads); };
   const filled = one('Intro\n/tk say hello\nAfter', [gap('filled-by-agent', 'Hello, reader. [[x]]')]);
   assert.ok(filled.ok);
-  assert.match(filled.text, /Intro\nHello, reader\. \\\[\\\[x\]\]\nAfter\n$/);
+  assert.match(filled.text, /Intro\nHello, reader\. \\\[\\\[x\\\]\\\]\nAfter\n$/, 'an agent\'s fill is escaped as a passage is');
   assert.ok(!/\/tk|TK/.test(filled.text));
   assert.match(one('Intro /tk(say hello) after', [gap('adopted-by-reader', 'Mine [[x]]')]).text, /Intro Mine \[\[x\]\] after/);
   for (const [name, gaps] of [['pending', [gap('pending')]], ['failed', [gap('failed')]], ['not stored', undefined]]) {
@@ -285,4 +285,35 @@ test('the same hostile page cannot change what the owner\'s comment is titled', 
   assert.equal(make(page, page.threads).title, 'My plain comment about it', 'the first words still name it (slug, the Earlier link, the record)');
   const titled = N.renderShortNote({ page, threads: page.threads, home: { ...HOME, template: 'title: ${title}\n' + N.DEFAULT_TEMPLATE }, now: NOW, slug: 's' });
   assert.match(titled.text, /^---\ntitle: "My plain comment about it"\n/, 'an optional ${title} in the template still works');
+});
+
+test('LIQUID is made inert with character references (a backslash does nothing to Liquid), in every place text can come from', () => {
+  assert.equal(N.liquidEntities('a {% cycle x %} b {{ y }} c {%- z -%} {: .k} lone { and } ok'), 'a &#123;% cycle x %&#125; b &#123;&#123; y &#125;&#125; c &#123;%- z -%&#125; &#123;: .k} lone { and } ok');
+  const evil = '{% include_relative X.md %} {{ site.url }} {% raw %}{% endraw %} {%- cycle a -%} {{- b -}} split {%\ncycle x\n%}';
+  const page = webPage([thread('t1', evil, 'Mine: ' + evil)], { title: evil });
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  const body = r.text.split('\n---\n').slice(1).join('');
+  assert.ok(!/\{[{%]/.test(body), 'no Liquid opener anywhere in the body: ' + body);
+  assert.ok(!/\\\{/.test(body), 'and no backslash standing in for the protection');
+  assert.match(body, /&#123;% include_relative X\.md %&#125;/);
+  // an agent's fill and an owner-edited one are escaped as a passage; only an adopted one is the owner's markdown
+  const gap = (mode, text) => ({ instruction: 'say hello', mode, text });
+  for (const mode of ['filled-by-agent', 'edited-by-reader']) {
+    const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Before\n/tk say hello\nAfter'), gaps: [gap(mode, 'X {% cycle site.title %} <script>alert(1)</script> [a](javascript:alert(1)) "q" # head')] }] }]);
+    const t = make(p, p.threads).text;
+    assert.ok(!/\{[{%]/.test(t) && !/(^|[^\\])<script/.test(t) && !/[^\\]\]\(javascript/.test(t), mode + ': ' + t);
+    assert.match(t, /\\<script>|&lt;script/, mode);
+  }
+  const adopted = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Before\n/tk say hello\nAfter'), gaps: [gap('adopted-by-reader', 'Mine **bold** [[x]]')] }] }]);
+  assert.match(make(adopted, adopted.threads).text, /Mine \*\*bold\*\* \[\[x\]\]/);
+  // a code span with Liquid in it is refused, with a message (a reference would show as its letters there)
+  const code = webPage([thread('t1', '', 'See `{% cycle a %}` here')]);
+  assert.match(make(code, code.threads).error, /code span or block/);
+});
+
+test('an edited-away message (superseded) is not part of the post', () => {
+  const page = webPage([{ id: 't1', quote: 'q', msgs: [mine('The words I kept.'), mine('Old words set aside.', { superseded: '1' })] }]);
+  const r = make(page, page.threads);
+  assert.ok(/kept/.test(r.text) && !/set aside/.test(r.text));
 });
