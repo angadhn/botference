@@ -112,3 +112,40 @@ test('each way a command can end gives one result, once: exit, timeout, flood an
   assert.deepEqual([flood.spawnError, flood.exit, flood.timedOut], ['OUTPUT_LIMIT', null, false]);
   fs.rmSync(d, { recursive: true, force: true });
 });
+
+// ---- the settings page: a save from it must keep every stored key ---------------------------------------------------------------
+// POST /blyg-home REPLACES the setting with what is sent (storable keeps only those keys), so a field the page lacks is dropped by
+// the first save from it. This runs the page's OWN script against the page's own field values (a stub DOM built from the markup)
+// and checks that what it posts is the whole setting, `check`, `abandon` and `published_marker` included.
+test('the settings page has a field for every stored key and command, and its Save posts the whole setting back unchanged', async () => {
+  const { blygHomePage, FORM_KEYS, FORM_COMMANDS } = await import('../blyg-home-page.mjs');
+  const vm = await import('node:vm');
+  const all = Object.fromEntries(['folder', 'filename', 'template', 'escape', 'timezone', 'env_pass', 'commands', 'confirm', 'plan_guard', 'published_marker', 'extra'].map(k => [k, 1]));
+  assert.deepEqual(Object.keys(H.storable(all)).sort(), [...FORM_KEYS].sort(), 'the form edits exactly what is stored');
+  assert.deepEqual([...FORM_COMMANDS].sort(), [...H.COMMAND_KEYS].sort(), 'and has a field for every command');
+  const settings = {
+    folder: '/w/site/_notes', filename: '${slug}.md', template: 'created: ${created}\nblyg: true\n${blyg_keys}', escape: 'liquid', timezone: 'Europe/London',
+    env_pass: ['BLYG_CHECKER'], confirm: 'never', plan_guard: ['--only-note', '--quick'], published_marker: 'State: merged_back',
+    commands: { check: ['scripts/blyg-publish', '--preflight'], prepare: ['scripts/blyg-publish', '{note}', '--prepare-note'], plan: ['scripts/blyg-publish', '{note}'],
+      apply: ['scripts/blyg-publish', '{note}', '--apply'], publish: ['scripts/blyg-publish', '{note}', '--push'], discard: ['scripts/blyg-publish', '{note}', '--unstage-note'],
+      abandon: ['scripts/blyg-publish', '--abandon', '{note}'] },
+  };
+  const html = blygHomePage({ settings, errors: [], defaults: { template: 't', filename: '${slug}.md', escape: 'liquid', confirm: 'always', confirms: ['never', 'always'] }, nonce: 'n' });
+  const unesc = v => v.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  const values = {};
+  for (const m of html.matchAll(/<input type="text" id="([^"]+)" value="([^"]*)">/g)) values[m[1]] = unesc(m[2]);
+  for (const m of html.matchAll(/<textarea id="([^"]+)"[^>]*>([^<]*)<\/textarea>/g)) values[m[1]] = unesc(m[2]);
+  for (const m of html.matchAll(/<select id="([^"]+)">([\s\S]*?)<\/select>/g)) values[m[1]] = (/<option value="([^"]+)" selected>/.exec(m[2]) || [])[1];
+  let submit = null;
+  let posted = null;
+  const els = {};
+  const el = id => (els[id] = els[id] || { value: values[id] === undefined ? '' : values[id], style: {}, className: '', textContent: '',
+    addEventListener: (ev, fn) => { if (ev === 'submit') submit = fn; } });
+  const script = /<script nonce="n">([\s\S]*?)<\/script>/.exec(html)[1];
+  vm.runInNewContext(script, { document: { getElementById: el }, JSON,
+    fetch: (url, opts) => { posted = { url, opts }; return Promise.resolve({ json: () => ({ ok: true }) }); } });
+  submit({ preventDefault() {} });
+  assert.equal(els.out.className, '', els.out.textContent);
+  assert.equal(posted.url, '/blyg-home');
+  assert.deepEqual(JSON.parse(posted.opts.body).settings, settings, 'a save from the page keeps every field, check, abandon and published_marker included');
+});

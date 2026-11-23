@@ -1,8 +1,15 @@
 // blyg-home-page.mjs — the companion's own page for "Where my blyg lives".
 // Owner only (server.mjs GET /blyg-home/page). One small form; its script (under a nonce) reads and
 // saves through /blyg-home, which validates everything again. Nothing from the settings is put into
-// the markup except through esc().
+// the markup except through esc(). A save REPLACES the whole setting (storable keeps only what is sent), so the form has a field for
+// every stored key (FORM_KEYS, checked by a test against blyg-home.mjs storable) and sends them all: a key the form left out would
+// be silently dropped by the first save from this page.
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/** The stored keys this form edits and sends (a test holds it equal to what blyg-home.mjs `storable` keeps). */
+export const FORM_KEYS = Object.freeze(['folder', 'filename', 'template', 'escape', 'timezone', 'env_pass', 'commands', 'confirm', 'plan_guard', 'published_marker']);
+/** The commands it has a field for (all of blyg-home.mjs COMMAND_KEYS). */
+export const FORM_COMMANDS = Object.freeze(['check', 'prepare', 'plan', 'apply', 'publish', 'discard', 'abandon']);
 
 export function blygHomePage({ settings, errors, defaults, nonce }) {
   const s = settings || {};
@@ -34,17 +41,23 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
 <label for="escape">Escaping in the body<select id="escape">${['liquid', 'none'].map(v => `<option value="${v}"${(s.escape || defaults.escape) === v ? ' selected' : ''}>${v === 'liquid' ? 'liquid (a Jekyll site: {{ }} and {% %} are made inert)' : 'none (the site is not Jekyll)'}</option>`).join('')}</select></label>
 <label for="template">Front matter template<small>Lines of “key: value”. Placeholders: \${title} (a quoted string, as the whole value), \${created}, \${released}, \${slug}, and \${blyg_keys} on a line of its own (the quote’s sources and the post it responds to).</small></label>
 <textarea id="template">${esc(s.template || defaults.template)}</textarea>
+<label for="check">Command: check (optional)<small>The pre-flight: runs once before anything is written, and its own words refuse the start if the environment is not ready. A JSON list, no {note} (example: ["scripts/blyg-publish", "--preflight"]).</small></label>
+<input type="text" id="check" value="${cmd('check')}">
 <label for="prepare">Command: prepare (optional)<small>Runs after the note is written and before plan: for a site that must commit the note or fetch what it quotes first. A JSON list with {note}.</small></label>
 <input type="text" id="prepare" value="${cmd('prepare')}">
 <label for="plan">Command: plan<small>A JSON list, one argument each; {note} becomes the note’s path inside the work tree, as ONE argument. Run in the work tree, never through a shell.</small></label>
 <input type="text" id="plan" value="${cmd('plan')}">
 <label for="apply">Command: apply</label><input type="text" id="apply" value="${cmd('apply')}">
-<label for="publish">Command: publish<small>This is the one that goes live. It runs only after you press Publish on the confirmation.</small></label>
+<label for="publish">Command: publish<small>This is the one that goes live: right after apply when you never ask, otherwise only after you press Publish on the confirmation.</small></label>
 <input type="text" id="publish" value="${cmd('publish')}">
-<label for="discard">Command: discard (optional)<small>Undoes what plan staged, when you cancel at the confirmation.</small></label>
+<label for="discard">Command: discard (optional; needed with prepare)<small>Undoes what prepare or plan did, when you cancel, or abandon a run before apply.</small></label>
 <input type="text" id="discard" value="${cmd('discard')}">
+<label for="abandon">Command: abandon (optional)<small>Your site's own way to end a run that stopped after apply, when you press Abandon. A JSON list with {note}.</small></label>
+<input type="text" id="abandon" value="${cmd('abandon')}">
+<label for="published_marker">Done marker (optional)<small>The last “State:” line the publish command prints when it is really finished (example: State: merged_back). With it, a publish that exits 0 without it counts as failed.</small></label>
+<input type="text" id="published_marker" value="${esc(s.published_marker || '')}">
 <label for="confirm">Before it goes live<select id="confirm">${(defaults.confirms || ['never', 'always']).map(v => `<option value="${v}"${(s.confirm || defaults.confirm) === v ? ' selected' : ''}>${v === 'never' ? 'never ask: choosing Publish as blyg is the publish' : 'always ask: show the note and the plan first, then wait for a Publish click'}</option>`).join('')}</select></label>
-<label for="plan_guard">Plan guard flags (optional)<small>Flags added to the plan command when you never ask, so your site's own command can refuse a plan that would change or publish more than this one note. One per line, each starting with “-”.</small></label>
+<label for="plan_guard">Plan guard flags (optional)<small>Flags added to the plan, apply and publish commands when you never ask, so your site's own command can refuse a plan that would change or publish more than this one note. One per line, each starting with “-”.</small></label>
 <textarea id="plan_guard" style="min-height:3.5rem">${esc((s.plan_guard || []).join('\n'))}</textarea>
 <label for="env_pass">Environment names to pass on (optional)<small>Upper-case names, one per line. A command gets only PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR and a few fixed variables, plus these.</small></label>
 <textarea id="env_pass" style="min-height:3.5rem">${esc((s.env_pass || []).join('\n'))}</textarea>
@@ -60,9 +73,9 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
     e.preventDefault();var out=$('out');out.className='';out.textContent='Saving…';
     var body;
     try{
-      var commands={plan:cmd('plan'),apply:cmd('apply'),publish:cmd('publish')};var d=cmd('discard');if(d)commands.discard=d;var pp=cmd('prepare');if(pp)commands.prepare=pp;
+      var commands={plan:cmd('plan'),apply:cmd('apply'),publish:cmd('publish')};['check','prepare','discard','abandon'].forEach(function(k){var v=cmd(k);if(v)commands[k]=v});
       body={settings:{folder:$('folder').value.trim(),filename:$('filename').value.trim(),timezone:$('timezone').value.trim(),escape:$('escape').value,confirm:$('confirm').value,plan_guard:$('plan_guard').value.split(/\\s+/).filter(Boolean),
-        template:$('template').value,commands:commands,env_pass:$('env_pass').value.split(/\\s+/).filter(Boolean)}};
+        template:$('template').value,commands:commands,env_pass:$('env_pass').value.split(/\\s+/).filter(Boolean),published_marker:$('published_marker').value.trim()}};
     }catch(err){out.className='bad';out.textContent='A command is not a JSON list: '+err.message;return}
     fetch('/blyg-home',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
       .then(function(r){return r.json()}).then(function(j){
