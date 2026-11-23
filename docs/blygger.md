@@ -851,7 +851,9 @@ companion refuses (HTTP 421) every request whose `Host` is not `127.0.0.1`,
 `localhost` or `[::1]` on the port it listens on, or a public hostname you have
 configured. Public names come from `PLUGIN_PUBLIC_HOSTNAMES` (a comma-separated
 list) and the reading room's and memorizer's names (`PLUGIN_READING_HOSTNAME`,
-`PLUGIN_MEMORY_HOSTNAME`). A companion started with `--hosted` also answers other
+`PLUGIN_MEMORY_HOSTNAME`): there are no built-in names, so a name that was not configured is a foreign one (`botference plugin`, the launcher,
+passes the names it routes the tunnel to). A companion that signs people in with Cloudflare Access refuses to start with none, and then
+refuses (421) any request through the tunnel that asks for another name. A companion started with `--hosted` also answers other
 names (its tunnel carries its public name, or `localhost` when the tunnel rewrites
 the Host line), but only to a request that passes the password. A request with no
 `Host` at all is always refused.

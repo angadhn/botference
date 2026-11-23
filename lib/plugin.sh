@@ -1047,6 +1047,14 @@ run_plugin_mode() {
   fi
   if $hosted; then export PLUGIN_PASSWORD; fi
 
+  # --- the names the companion trusts (server.mjs has no built-in ones): the ones the tunnel is routed to, unless set already ---
+  local _names=""
+  for _n in "$PLUGIN_TUNNEL_HOSTNAME" "$PLUGIN_TUNNEL_LEGACY_HOSTNAME" "$PLUGIN_TUNNEL_MEMORY_HOSTNAME"; do
+    [ -n "$_n" ] && _names="${_names:+$_names,}$_n"
+  done
+  export PLUGIN_PUBLIC_HOSTNAMES="${PLUGIN_PUBLIC_HOSTNAMES:-$_names}"
+  export PLUGIN_MEMORY_HOSTNAME="${PLUGIN_MEMORY_HOSTNAME-$PLUGIN_TUNNEL_MEMORY_HOSTNAME}"
+
   # --- --share --service: re-run this exact share detached, under the managed
   # service lifecycle; print the "share this:" line, then return ---
   if $service && $share; then

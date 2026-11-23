@@ -12951,7 +12951,20 @@ Password mode: a foreign page's change, stream or socket is now refused too; a p
 page cannot read the answer). No GET changes anything the person chose: `GET /page` only writes derived, idempotent rendering of anchors, so a
 followed link cannot change state.
 
-Unchanged: the Host allow-list, body rules, every owner-only refusal, and the loopback being the owner.
+**Which names are trusted.** Only names that were configured, never built-in ones: `PLUGIN_PUBLIC_HOSTNAMES` (comma list), `PLUGIN_READING_HOSTNAME`,
+`PLUGIN_MEMORY_HOSTNAME`. `botference plugin` (lib/plugin.sh) passes the names it routes the tunnel to, unless these are already set, so an install
+started by the launcher needs nothing added. With Access (`access`/`either`) the companion refuses to start with none; a request that arrived through
+the tunnel must ask for one of them (else 421, the rebinding answer); and "our own page" is an https page at one of them: not the name the request
+happened to ask for (a tunnel may rewrite Host to localhost), and not a page on the machine's loopback. A request that arrived on the loopback
+directly is judged as it always was. Password mode keeps its reach (a quick tunnel's random name, a rewritten Host, still meet the password gate), and
+no longer derives `discuss.`/`plugin.` names from the memorizer's.
+
+**Stored files are served inert.** Whatever a bot or a site's sources put in work/, projects/ or sites/ (and a run's figures) is not trusted: `GET /files/`,
+`GET /run-figure` and `GET /hub/theme/` send `Content-Security-Policy: sandbox` (no scripts; an opaque origin whose requests say `Origin: null`, which are
+foreign), `X-Content-Type-Options: nosniff`, and an unknown type as an attachment. A PDF is not sandboxed (the viewer does not run in one) but is not
+sniffed. `GET /a/` is the companion's own page over a sanitized snapshot, with its own CSP; the other file reads answer JSON.
+
+Unchanged: body rules, every owner-only refusal, and the loopback being the owner.
 CORS: in `access` and `either` an allowed origin is echoed with `access-control-allow-credentials: true`, and no wildcard is
 offered at all (a wildcard cannot carry credentials).
 

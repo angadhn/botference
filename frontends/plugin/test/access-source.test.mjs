@@ -38,7 +38,7 @@ for (const r of FOLLOWING_ROUTES) if (r.method === 'POST') found.add(r.path);
 const POSTS = [...found].filter(p => p !== '/auth').sort();
 
 async function boot(mode) {
-  const h = createHarness({ server: SERVER, tag: 'src', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
+  const h = createHarness({ server: SERVER, tag: 'src', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PUBLIC_HOSTNAMES: HOST, PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
   if (mode !== 'password') fs.writeFileSync(path.join(h.SECRETS, 'plugin-access.json'), JSON.stringify({ hosted_auth: mode, team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], extension_ids: [EXT_ID], certs_url_for_tests: keys.url }));
   const srv = await h.startServer({ root: h.tmp('root'), args: ['--hosted', '--no-agents'], env: {} });
   return { h, base: srv.base, mode };

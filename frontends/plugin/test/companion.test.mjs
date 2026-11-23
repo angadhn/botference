@@ -55,7 +55,8 @@ const store_hasSnapshot = (dir, key) => fs.existsSync(path.join(dir, 'snapshots'
 const {
   test, waitFor, tmp: tmpRoot, startServer, cleanup, spawned, SECRETS, passed, failures,
 } = createHarness({
-  server: SERVER, tag: 'x', waitMs: 8000, env: { PLUGIN_BRIDGE_POOL: '1' },
+  // (PLUGIN_MEMORY_HOSTNAME, PLUGIN_PUBLIC_HOSTNAMES: the names an install configures; there are no built-in ones)
+  server: SERVER, tag: 'x', waitMs: 8000, env: { PLUGIN_BRIDGE_POOL: '1', PLUGIN_MEMORY_HOSTNAME: 'memorizer.botference.com', PLUGIN_PUBLIC_HOSTNAMES: 'discuss.botference.com,plugin.botference.com' },
 });
 
 

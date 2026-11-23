@@ -122,7 +122,7 @@ await test('being local needs no proxy header: each one alone makes a "localhost
 // ---- servers for 4 (over the wire), 5 and 6 ---------------------------------------------------------------------------------------
 const key = makeKey('k1');
 async function boot(keysState, env = {}) {
-  const h = createHarness({ server: SERVER, tag: 'mut', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', ...env } });
+  const h = createHarness({ server: SERVER, tag: 'mut', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PUBLIC_HOSTNAMES: 'annotations.example', ...env } });
   fs.writeFileSync(path.join(h.SECRETS, 'plugin-access.json'), JSON.stringify({ hosted_auth: 'access', team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], extension_ids: [EXT_ID], certs_url_for_tests: keysState.url }));
   const srv = await h.startServer({ root: h.tmp('root'), args: ['--hosted', '--no-agents'], env: {} });
   return { h, base: srv.base };
@@ -135,7 +135,7 @@ const A = await boot(keysA);
 await test('a tunnelled request that names localhost is not the owner in access mode', async () => {
   const port = new URL(A.base).port;
   assert.equal((await GET(A.base, '/whoami', { host: `127.0.0.1:${port}` })).json.owner, true, 'the real loopback is');
-  for (const h of PROXY_HEADERS) assert.equal((await GET(A.base, '/health', { host: `127.0.0.1:${port}`, [h]: '203.0.113.9' })).status, 401, h);
+  for (const h of PROXY_HEADERS) assert.equal((await GET(A.base, '/health', { host: `127.0.0.1:${port}`, [h]: '203.0.113.9' })).status, 421, h + ' (a tunnel that rewrites Host to localhost is not on the list of names)');
 });
 await keysA.close(); A.h.cleanup();
 
@@ -183,7 +183,7 @@ await test('a request already hung up when its token check finishes reaches no r
   const keys = await keyServer([key]);
   const secrets = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-mut-ip-')); const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-mut-ipr-'));
   fs.writeFileSync(path.join(secrets, 'plugin-access.json'), JSON.stringify({ hosted_auth: 'access', team: TEAM, aud: AUD, owner_email: OWNER, extension_ids: [EXT_ID], certs_url_for_tests: keys.url }));
-  Object.assign(process.env, { PLUGIN_NO_LISTEN: '1', PLUGIN_ACCESS_TEST_CERTS: '1', BOTFERENCE_SECRETS_DIR: secrets, BOTFERENCE_PROJECT_ROOT: root, PLUGIN_BRIDGE_CMD: '["true"]' });
+  Object.assign(process.env, { PLUGIN_NO_LISTEN: '1', PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PUBLIC_HOSTNAMES: 'annotations.example', BOTFERENCE_SECRETS_DIR: secrets, BOTFERENCE_PROJECT_ROOT: root, PLUGIN_BRIDGE_CMD: '["true"]' });
   process.argv.push('--hosted', '--no-agents');
   const server = await import('../server.mjs');
   const fake = destroyed => ({ method: 'GET', url: '/health', destroyed, headers: { host: 'annotations.example', 'cf-access-jwt-assertion': mint(key, { email: OWNER }) }, socket: { remoteAddress: '203.0.113.9' }, resume() { }, on() { } });

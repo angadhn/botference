@@ -20,7 +20,7 @@ import { ROUTES as FOLLOWING_ROUTES } from '../following.mjs';
 
 const TEST = path.dirname(fileURLToPath(import.meta.url));
 const SERVER = path.join(TEST, '..', 'server.mjs');
-const H = () => createHarness({ server: SERVER, tag: 'acc', waitMs: 20000, env: { SSE_HEARTBEAT_MS: '150', PLUGIN_ACCESS_TEST_CERTS: '1' } });
+const H = () => createHarness({ server: SERVER, tag: 'acc', waitMs: 20000, env: { SSE_HEARTBEAT_MS: '150', PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PUBLIC_HOSTNAMES: 'annotations.example' } });
 const key = makeKey('k1');
 const keys = await keyServer([key]);
 const REMOTE = { host: 'annotations.example' };

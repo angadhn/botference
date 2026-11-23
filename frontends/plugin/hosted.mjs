@@ -72,7 +72,7 @@ export const CORS_HEADERS = {
 // These three are the only answers; nothing else decides it.
 export const ORIGIN_VERDICTS = Object.freeze(['absent', 'trusted', 'foreign']);
 const csv = v => String(v || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
-export function originVerdict(req, { publicHosts = [], extensionIds = null, httpsOnly = false } = {}) {
+export function originVerdict(req, { publicHosts = [], extensionIds = null, strict = false } = {}) {
   const raw = req.headers.origin;
   if (raw === undefined || raw === '') return 'absent';
   const o = String(raw).trim().toLowerCase();
@@ -90,8 +90,13 @@ export function originVerdict(req, { publicHosts = [], extensionIds = null, http
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'foreign';
   // the companion's own page, on whatever name it was asked by
   const host = String(req.headers.host || '').toLowerCase();
-  // (httpsOnly, with Access: a name other than this machine's is trusted only over https)
-  if (host && u.host === host && (!httpsOnly || u.protocol === 'https:' || ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname))) return 'trusted';
+  // strict (a request that came through the tunnel, with Access in front): ONLY a configured public name, over https, is "our own page".
+  // Not the name the request happened to ask for (a tunnel may rewrite Host to localhost), and not a page on this machine's loopback.
+  if (strict) {
+    const names = new Set([...publicHosts.map(h => String(h).toLowerCase()), ...csv(process.env.PLUGIN_PUBLIC_HOSTNAMES)]);
+    return u.protocol === 'https:' && names.has(u.hostname) ? 'trusted' : 'foreign';
+  }
+  if (host && u.host === host) return 'trusted';
   const lp = req.socket && req.socket.localPort;
   if (lp && u.protocol === 'http:' && String(u.port || '80') === String(lp)
     && (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '[::1]')) return 'trusted';

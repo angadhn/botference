@@ -2318,28 +2318,36 @@ function quizSession(req) {
 // gate, the owner-only checks and the hub's device cookie (scoped to the
 // PARENT domain, so an approved phone arrives already the owner) know nothing
 // about hostnames and are not asked to learn.
-const MEMORY_HOSTS = new Set(String(process.env.PLUGIN_MEMORY_HOSTNAME ?? 'memorizer.botference.com')
-  .split(',').map(h => h.trim().toLowerCase()).filter(Boolean));
+// NO BUILT-IN NAMES: a name is trusted only if it was configured (PLUGIN_MEMORY_HOSTNAME, PLUGIN_READING_HOSTNAME, PLUGIN_PUBLIC_HOSTNAMES;
+// the launcher, lib/plugin.sh, passes the names it routes the tunnel to).
+const csvNames = v => String(v || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean);
+const MEMORY_HOSTS = new Set(csvNames(process.env.PLUGIN_MEMORY_HOSTNAME));
 const hostOf = req => String((req && req.headers && req.headers.host) || '').split(':')[0].toLowerCase();
 export const isMemoryHost = req => MEMORY_HOSTS.has(hostOf(req));
 // Every public name this companion answers on, for the Origin check
 // (hosted.mjs originVerdict): the memorizer's, the reading room it links to,
 // and whatever PLUGIN_READING_HOSTNAME / PLUGIN_PUBLIC_HOSTNAMES add.
-const PUBLIC_HOSTS = [...new Set([
-  ...MEMORY_HOSTS,
-  ...[...MEMORY_HOSTS].map(h => h.replace(/^[^.]+\./, 'discuss.')),
-  ...[...MEMORY_HOSTS].map(h => h.replace(/^[^.]+\./, 'plugin.')),
-  ...String(process.env.PLUGIN_READING_HOSTNAME || '').split(',').map(h => h.trim().toLowerCase()).filter(Boolean),
-])];
-// with Access in front: the extension ids come from the access settings (never "any extension"), and a name other than this machine's
-// is trusted only over https
+const PUBLIC_HOSTS = [...new Set([...MEMORY_HOSTS, ...csvNames(process.env.PLUGIN_READING_HOSTNAME), ...csvNames(process.env.PLUGIN_PUBLIC_HOSTNAMES)])];
+// With Access in front the names are the whole of what is trusted: a request through the tunnel must ask for one of them (else 421),
+// and "our own page" is an https page at one of them. So Access refuses to start with none. (Password mode keeps its old reach: a tunnel
+// that rewrites Host, or a quick tunnel's random name, still meets the password gate.)
+const STRICT_NAMES = HOSTED && HOSTED_AUTH !== 'password';
+if (STRICT_NAMES && !PUBLIC_HOSTS.length) {
+  console.error('--hosted: Cloudflare Access sign-in needs the companion\'s public name(s): set PLUGIN_PUBLIC_HOSTNAMES (comma-separated, e.g. annotations.example.test)');
+  process.exit(1);
+}
+// ...and the extension ids come from the access settings (never "any extension"). A request that did not arrive on this machine
+// directly is judged strictly; one that did (the owner's own pages and extension on the loopback) as it always was.
 const originOf = req => originVerdict(req, { publicHosts: PUBLIC_HOSTS,
-  extensionIds: ACCESS_CFG ? ACCESS_CFG.extensionIds : null, httpsOnly: HOSTED_AUTH !== 'password' });
+  extensionIds: ACCESS_CFG ? ACCESS_CFG.extensionIds : null, strict: STRICT_NAMES && !isLocalDirect(req) });
 // WHERE THE REQUEST CAME FROM (hosted.mjs sourceVerdict), judged before anything else in every auth mode, for requests, streams and sockets
 const sourceRefused = req => (HOSTED && !isLocalDirect(req)) ? sourceRefusal(req, originOf(req), { tokenAuth: hosted.tokenAuthenticated(req),
   strictReads: HOSTED_AUTH !== 'password' || String(req.url || '').split('?')[0] === '/events' || /websocket/i.test(String(req.headers.upgrade || '')) }) : null;
 // and the Host check that comes before everything (hosted.mjs hostVerdict): a rebound name is refused.
-const hostBlocked = req => hostRefused(hostVerdict(req, { publicHosts: PUBLIC_HOSTS }), HOSTED);
+const hostBlocked = req => {
+  const v = hostVerdict(req, { publicHosts: PUBLIC_HOSTS });
+  return hostRefused(v, HOSTED) || (STRICT_NAMES && !isLocalDirect(req) && v !== 'allowed');
+};
 // What is served on the vault's hostname, and nothing else is. Everything here
 // is either the quiz, the session (so the sign-in the reading room uses works
 // unchanged on this host too) or an answer a script asks for.

@@ -37,6 +37,9 @@ const {
   // every server in this file: one bridge child, the mock in place of python,
   // and a turn slow enough that a pending card is visible before it settles
   env: {
+    // the names an install configures (there are no built-in ones)
+    PLUGIN_MEMORY_HOSTNAME: 'memorizer.botference.com',
+    PLUGIN_PUBLIC_HOSTNAMES: 'discuss.botference.com,plugin.botference.com',
     PLUGIN_BRIDGE_POOL: '1',
     PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, MOCK]),
     MOCK_TURN_DELAY_MS: '40',

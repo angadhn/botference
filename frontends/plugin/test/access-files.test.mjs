@@ -30,7 +30,7 @@ const EVIL_SVG = '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/run",{
 const FILES = { 'x.html': EVIL_HTML, 'x.htm': EVIL_HTML, 'x.svg': EVIL_SVG, 'x.pdf': '%PDF-1.4', 'x.txt': 'hello', 'x.json': '{}', 'x.csv': 'a,b', 'x.png': 'png', 'x.bin': '\u0001\u0002', 'x.xhtml': EVIL_HTML };
 
 async function boot(mode) {
-  const h = createHarness({ server: SERVER, tag: 'fil', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
+  const h = createHarness({ server: SERVER, tag: 'fil', waitMs: 20000, env: { PLUGIN_ACCESS_TEST_CERTS: '1', PLUGIN_PUBLIC_HOSTNAMES: 'annotations.example', PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
   if (mode !== 'password') fs.writeFileSync(path.join(h.SECRETS, 'plugin-access.json'), JSON.stringify({ hosted_auth: mode, team: TEAM, aud: AUD, owner_email: OWNER, collaborators: [ADA], extension_ids: [EXT_ID], certs_url_for_tests: keys.url }));
   const root = h.tmp('root');
   fs.mkdirSync(path.join(root, 'work'), { recursive: true });
