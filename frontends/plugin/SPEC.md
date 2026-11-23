@@ -12867,3 +12867,110 @@ whether its words pass the check.
 - `test/blygdrawer.test.mjs`, `test/export.test.mjs`, `test/draft.test.mjs`.
 - Fixtures: `test/fixtures/blyg/` (`sources.json` says where each came from).
   Other authors' posts are kept only as short excerpts.
+
+## Amendment (2026-11-23): a hosted companion signs people in with Cloudflare Access
+
+How a hosted companion knows who is asking is one named setting, `hosted_auth`, one of `password`, `access`, `either`
+(`access.mjs` HOSTED_AUTH). It lives in one file, `plugin-access.json`, in the secrets folder (the same folder as the other
+secrets: `~/.botference`, or `BOTFERENCE_SECRETS_DIR`), never in the repo; it is read once at start and its values are never
+logged or sent to a client. No file means `password`. A broken file, an unknown mode, or a missing key for `access`/`either`
+refuses to start with a plain message that names what is missing (never its value). Local mode (no `--hosted`) never reads it
+and never asks for a token.
+
+| mode | who gets in | the password routes, login page, `hub_device` and `plugin_auth` cookies | `PLUGIN_PASSWORD` needed |
+|---|---|---|---|
+| `password` | today's behaviour, unchanged | on | yes |
+| `access` | only a valid Cloudflare Access token | off (`/auth` and `/signout` are 404, the login page is never served, a Bearer password or `?auth=` is ignored) | no |
+| `either` | a valid token when one is present, otherwise the password path | on, but only for a request with no token | yes |
+
+`either` is a **temporary** mode for moving over without locking the owner out. Move on to `access`.
+
+Settings (all required for `access` and `either`):
+
+```json
+{
+  "hosted_auth": "access",
+  "team": "myteam.cloudflareaccess.com",
+  "aud": "<the application's AUD tag>",
+  "owner_email": "owner@example.test",
+  "collaborators": ["ada@example.test", { "email": "bo@example.test", "handle": "bo" }]
+}
+```
+
+`certs_url_for_tests` (optional) points the key fetch at a local fake; it exists for the test suite only.
+
+### Standing
+
+Every request is judged by one function (`access.mjs` verdictFor) into one of ACCESS_VERDICTS:
+`absent` (no token: 401 in `access`), `invalid` (any failed check: 401), `service` (a valid service token, which names no person
+and carries `common_name`: 403, service tokens are not accepted, since a long-lived token in a client is a password under another
+name), `unlisted` (a valid person whose email is neither the owner's nor a collaborator's: 403, "this account is not on this
+companion's list"; Cloudflare's policy should already have stopped them, this is the second lock), `owner`, `guest`.
+The owner's email is the owner; a collaborator's email is a guest, shown to others by the part before `@` unless a `handle` is
+configured. The email itself is never stored on a message, broadcast, or put in any answer. A guest's name comes from the
+token, never from `x-plugin-handle` or `?handle=`. Emails are compared exactly: printable ASCII only, only A-Z folded, no
+trimming, so no space or look-alike character is ever "the same".
+
+The token (`Cf-Access-Jwt-Assertion`) is checked on every request that is not on the loopback: RS256 only (never taken from the
+token), key id looked up in the team's key list (cached 10 minutes, one fetch shared by a crowd, an unknown key id refetches at
+most every 30 seconds, held keys keep verifying for up to a day if Cloudflare's list is down, then it fails closed), `exp` strict,
+`nbf` and `iat` with 60 seconds of skew, `iss` = `https://<team>`, `aud` contains the application's AUD tag, `type` = `app`, no
+`common_name`, a non-empty `identity_nonce`. Public by design, and the only things served without a token: the tab icon,
+CORS preflights, and `GET /auth-mode` (the mode's name and nothing else).
+
+In `either`, a token that is present decides alone: a guest token plus the owner password is a guest (no privilege mixing), and a
+token that is present but refused is not rescued by a password.
+
+**Long-lived connections.** The SSE stream and the WebSocket are judged once, at connect, and that judgement is a record
+(`connectionRecord`: standing and the moment the token expires). An event is delivered only to a live record, and the heartbeat
+closes the rest, so a stream or socket never outlives the token that opened it; the client reconnects with a fresh one (or, if
+Cloudflare's session has ended, is asked to sign in).
+
+Unchanged: the Host allow-list, Origin checks, body rules, every owner-only refusal, and the loopback being the owner.
+CORS: in `access` and `either` an allowed origin is echoed with `access-control-allow-credentials: true`, and no wildcard is
+offered at all (a wildcard cannot carry credentials).
+
+### What the owner sets in Cloudflare
+
+1. Zero Trust > Access > Applications > add a **Self-hosted** application for the companion's public host name (the tunnel's).
+2. A policy `Allow` with an `Emails` selector listing the owner and each collaborator. Login method: One-time PIN.
+3. Session duration: as long as the person is willing to go without an emailed code (24 hours is Cloudflare's default).
+   Streams are closed at the token's expiry, so a shorter session means more reconnects, never a stale sign-in.
+4. Advanced settings > Cross-Origin Resource Sharing (CORS): turn on **Bypass options requests to origin**, so preflights reach
+   the companion, which answers them itself. (Otherwise Cloudflare answers a preflight, which carries no cookie, with a 403.)
+5. Cookie settings: leave HttpOnly as it is and SameSite at its default (None for the application's own cookie); do not set
+   SameSite to Strict (Cloudflare warns of redirect loops) and do not turn on the binding cookie.
+6. Copy the application's **Audience (AUD) tag** and the team domain into `plugin-access.json`.
+
+### Moving a live companion over without a lockout
+
+1. Create the Access application and policy with the owner's email; check a browser signs in and reaches the companion.
+2. Write `plugin-access.json` with `hosted_auth: "either"`. Restart the companion. Check that a request through Access shows you
+   as the owner (`GET /whoami`) and that the old password still works.
+3. Add collaborators' emails to the Access policy and to `collaborators`; restart. Check each one's standing.
+4. Change to `hosted_auth: "access"`. Restart. The password stops working at once.
+5. Check from outside that a request without a token is refused: `curl -i https://<host>/health` should be Cloudflare's sign-in
+   redirect; to see the companion's own second lock, a request that reaches it without a token (around Cloudflare) gets 401
+   `{"ok":false,"error":"sign-in required: ...","signin":true}`.
+To go back, set `hosted_auth` to `password` (or delete the file) and restart.
+
+### The extension
+
+The extension reaches a companion behind Access with the browser's own sign-in. The person signs in once, in an ordinary tab,
+at the companion's address (Cloudflare's page, an emailed code), which sets Cloudflare's `CF_Authorization` cookie for that host.
+The worker's and options page's requests to a remote companion say `credentials: 'include'` (the manifest's all-hosts
+permission lets them) and `redirect: 'manual'`, and Cloudflare adds `Cf-Access-Jwt-Assertion` itself when the cookie is valid.
+An answer that is not the companion's (a redirect, Cloudflare's page with a 200/401, or the companion's own 401 with
+`signin: true`) is never data: the connection mode (`CONN_MODES`) becomes `signin`, the drawer shows one line and a button
+(a trusted click only) that opens the companion's address in a new tab, and the socket reconnects by itself once the companion
+answers (or the sign-in tab is closed). A signed-in person Cloudflare refuses (its own 403 page) is told so, not asked to sign in.
+The options page asks `GET /auth-mode` (or reads Cloudflare's sign-in answer as `access`) and hides the password box for an
+`access` companion; password companions keep it.
+
+Not settled by a test here: that every browser sends the cookie on a WebSocket handshake and on a worker `fetch`. Chrome documents
+that an extension's request to a host it holds permission for counts as same-site, but that exception stops applying when
+third-party cookies are blocked (Brave's default; Chrome with the setting on). If the cookie is not sent, the symptom is the
+`signin` mode even after signing in. The fallbacks are, in order: allow cookies for the companion's host in the browser; or, as
+an option the owner may choose and not a default, a Cloudflare service token held by the extension. That is a long-lived
+password under another name, and the companion refuses service tokens as it stands, so choosing it also means a policy change
+there. Nothing in this amendment implements it.
