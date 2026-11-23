@@ -92,7 +92,10 @@ export function ownerPassword() {
 // Returns { id } for an approved browser, else null.
 export function deviceSession(cookieValue, secret = deviceSecret()) {
   if (!secret) return null;
-  const raw = decodeURIComponent(String(cookieValue || ''));
+  // a cookie is whatever the browser (or anyone) sent: a malformed escape is no session, never a throw (this runs before any login,
+  // on the WebSocket upgrade path too, where nothing catches)
+  let raw;
+  try { raw = decodeURIComponent(String(cookieValue || '')); } catch { return null; }
   const m = /^(\d+)\.([0-9a-f]+)\.([0-9a-f]+)$/.exec(raw);
   if (!m || Date.now() > Number(m[1])) return null;
   const mac = crypto.createHmac('sha256', secret).update(`${m[1]}.${m[2]}`).digest('hex');

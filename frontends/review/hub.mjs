@@ -278,7 +278,8 @@ function cookieOf(req, name) {
 }
 // hub_auth = exp.handle.slug,slug….mac — which papers this login validated on
 function session(req) {
-  const raw = decodeURIComponent(cookieOf(req, 'hub_auth') || '');
+  let raw;
+  try { raw = decodeURIComponent(cookieOf(req, 'hub_auth') || ''); } catch { return null; } // a malformed escape is no session
   const m = /^(\d+)\.([\w-]*)\.([\w,*-]*)\.([0-9a-f]+)$/.exec(raw);
   if (!m || Date.now() > Number(m[1])) return null;
   const mac = crypto.createHmac('sha256', SECRET).update(`${m[1]}.${m[2]}.${m[3]}`).digest('hex');
@@ -304,7 +305,8 @@ function sessionCookie(handle, slugs, req, cfg) {
 }
 // hub_device = exp.deviceId.mac — an approved browser IS the owner, no password
 function deviceSession(req) {
-  const raw = decodeURIComponent(cookieOf(req, 'hub_device') || '');
+  let raw;
+  try { raw = decodeURIComponent(cookieOf(req, 'hub_device') || ''); } catch { return null; }
   const m = /^(\d+)\.([0-9a-f]+)\.([0-9a-f]+)$/.exec(raw);
   if (!m || Date.now() > Number(m[1])) return null;
   const mac = crypto.createHmac('sha256', DEVICE_SECRET).update(`${m[1]}.${m[2]}`).digest('hex');

@@ -283,7 +283,7 @@ function who(req) {
   // trusting every open tab to have picked up the client-side repair.
   if (isLocalDirect(req)) return HANDLE;
   const h = sanitizeHandle(req.headers['x-review-handle'])
-    || sanitizeHandle(decodeURIComponent(cookieOf(req, 'review_handle') || ''));
+    || sanitizeHandle((() => { try { return decodeURIComponent(cookieOf(req, 'review_handle') || ''); } catch { return ''; } })());
   if (!h) return null;
   if (h === HANDLE && !isOwner(req)) return null; // nobody impersonates the owner's handle
   return h;
@@ -1185,7 +1185,8 @@ export function handler(req, res) {
     });
     return;
   }
-  const p = url === '/' ? '/index.html' : decodeURIComponent(url);
+  let p;
+  try { p = url === '/' ? '/index.html' : decodeURIComponent(url); } catch { res.writeHead(404).end('not found'); return; } // a malformed escape is not a path
   const figDir = FIG_DIRS.find(d => p.includes(`/${d}/`));
   const figBase = figDir && path.resolve(ROOT, figDir);
   const file = figDir

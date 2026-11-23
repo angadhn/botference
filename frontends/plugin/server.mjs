@@ -2889,7 +2889,8 @@ const seeOther = (res, location) => res.writeHead(303, { location, 'cache-contro
 const queryUrl = reqUrl => {
   const q = String(reqUrl || '').split('?')[1] || '';
   const m = /(?:^|&)url=([^&]*)/.exec(q);
-  return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : '';
+  if (!m) return '';
+  try { return decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch { return ''; } // a malformed escape names no page
 };
 // every mutation route needs "the page, or a 404" — except the ones that may
 // legitimately create it
