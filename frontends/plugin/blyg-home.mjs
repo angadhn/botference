@@ -49,14 +49,16 @@ const ENV_REFUSED = /^(PATH|HOME|PWD|OLDPWD|SHELL|IFS|LD_.*|DYLD_.*|NODE_OPTIONS
 export const DEFAULT_FILENAME = '${slug}.md';
 
 // Does the owner look at the note and the plan before anything goes live?
-//   never   (default) choosing "Publish as blyg" IS the publish: prepare, plan, apply, publish without stopping. The run still
+//   never   choosing "Publish as blyg" IS the publish: prepare, plan, apply, publish without stopping. The run still
 //           stops by itself on a plan that exits non-zero, and `plan_guard` (below) can make the plan refuse anything but this note.
 //   always  the run stops at `planned` and waits for an explicit, trusted Publish click (the confirmation)
 export const CONFIRMS = Object.freeze(['never', 'always']);
-export const DEFAULT_CONFIRM = 'never';
-// `plan_guard`: extra FLAGS (each starts with `-`) added to the plan command when confirm is `never`, so that the site's own
-// command can refuse a plan that would change or publish more than this one note (an example site's `--only-note`). Never
-// parsed here: the plan's exit code is the verdict.
+// The default is `always` until a `plan_guard` is set: `never` is accepted only with one (validateHome refuses it otherwise).
+export const DEFAULT_CONFIRM = 'always';
+// `plan_guard`: extra FLAGS (each starts with `-`) added to the plan, apply and publish commands (every time they run,
+// retries and resumes included) when confirm is `never`, so that the site's own command can refuse, with a non-zero exit, a
+// plan that would change or publish more than this one note (an example site's `--only-note`). Never parsed here: the exit
+// code is the verdict. `confirm: 'never'` is refused without one.
 export const PLAN_GUARD = Object.freeze({ maxArgs: 8, maxArgChars: 80 });
 
 /**
@@ -161,6 +163,7 @@ export function validateHome(raw, { env = process.env } = {}) {
   const guardRaw = r.plan_guard === undefined || r.plan_guard === null ? [] : r.plan_guard;
   const guardOk = Array.isArray(guardRaw) && guardRaw.length <= PLAN_GUARD.maxArgs
     && guardRaw.every(a => typeof a === 'string' && /^-[A-Za-z0-9=_.:-]*$/.test(a) && a.length <= PLAN_GUARD.maxArgChars);
+  if (confirm === 'never' && guardOk && guardRaw.length === 0) errors.push('confirm “never” (one click publishes) needs a plan_guard: flags that make your site\'s plan refuse anything but this one note; set one, or use “always”');
   if (!guardOk) errors.push(`plan_guard must be a list (at most ${PLAN_GUARD.maxArgs}) of flags, each starting with “-” and holding only letters, digits and = _ . : -`);
   const passRaw = r.env_pass === undefined ? [] : r.env_pass;
   const pass = Array.isArray(passRaw) && passRaw.every(n => typeof n === 'string' && ENV_NAME.test(n) && !ENV_REFUSED.test(n)) && passRaw.length <= 16 ? passRaw.slice() : null;
@@ -172,6 +175,7 @@ export function validateHome(raw, { env = process.env } = {}) {
   if (extra.length) errors.push(`unknown command ${JSON.stringify(extra[0]).slice(0, 30)}: the commands are ${COMMAND_KEYS.join(', ')}`);
   const commands = {};
   for (const k of STEPS) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
+  if (cmds.prepare && !cmds.discard) errors.push('a prepare command needs a discard command, so that cancelling undoes what prepare did');
   for (const k of ['prepare', 'discard']) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }

@@ -466,7 +466,7 @@ test('a restart while preparing is interrupted like any other live mode', () => 
 });
 
 // ---- confirm: 'never' (the default): choosing Publish IS the publish -------------------------------------------
-test('confirm never: prepare, plan, apply, publish run without stopping and the thread is marked; the plan gets the guard flags, apply and publish do not', async t => {
+test('confirm never: prepare, plan, apply, publish run without stopping and the thread is marked; the guard flags ride on plan, apply AND publish (not on prepare or discard)', async t => {
   const rig = makeRig({ prepare: true, confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   const b = boot(rig);
   const modes = [];
@@ -476,8 +476,7 @@ test('confirm never: prepare, plan, apply, publish run without stopping and the 
   assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published']);
   const calls = rig.calls();
   assert.deepEqual(calls.map(c => c.step), ['prepare', 'plan', 'apply', 'publish']);
-  assert.equal(calls[1].argv.at(-1), '--only-note', 'the guard flag rides on the plan');
-  assert.ok(![0, 2, 3].some(i => calls[i].argv.includes('--only-note')), 'and on nothing else');
+  assert.deepEqual(calls.map(c => c.argv.includes('--only-note')), [false, true, true, true], 'prepare has none; plan, apply and publish all carry the guard');
   const v = b.pub.current();
   assert.equal(v.confirm, 'never');
   assert.ok(b.pages.get(b.page.url).threads[0].blyg_published);
@@ -504,10 +503,15 @@ test('confirm always: the guard is not added and the run waits at planned for th
   assert.equal(b.pub.current().confirm, 'always');
 });
 
-test('confirm and plan_guard are validated; the default is never; a settings change after the start is still refused', async t => {
+test('confirm and plan_guard are validated; the default is always, and never needs a guard; a settings change after the start is still refused', async t => {
   const rig = makeRig(); t.after(rig.done);
   const base = { ...rig.home }; delete base.confirm;
-  assert.equal(H.validateHome(base).settings.confirm, 'never');
+  assert.equal(H.validateHome(base).settings.confirm, 'always');
+  assert.match(H.validateHome({ ...base, confirm: 'never' }).errors.join(), /needs a plan_guard/, 'never without a guard is refused');
+  assert.match(H.validateHome({ ...base, confirm: 'never', plan_guard: [] }).errors.join(), /needs a plan_guard/);
+  assert.ok(H.validateHome({ ...base, confirm: 'never', plan_guard: ['--only-note'] }).ok);
+  const noDiscard = { ...base, commands: { ...base.commands, prepare: base.commands.plan } };
+  assert.match(H.validateHome(noDiscard).errors.join(), /prepare command needs a discard command/);
   assert.equal(H.validateHome(base).settings.plan_guard.length, 0);
   assert.deepEqual(H.CONFIRMS, ['never', 'always']);
   for (const bad of ['sometimes', 'NEVER', 5]) assert.match(H.validateHome({ ...base, confirm: bad }).errors.join(), /confirm must be one of/, String(bad));
@@ -515,5 +519,18 @@ test('confirm and plan_guard are validated; the default is never; a settings cha
     assert.match(H.validateHome({ ...base, plan_guard: bad }).errors.join(), /plan_guard must be a list/, JSON.stringify(bad));
   }
   assert.ok(H.validateHome({ ...base, plan_guard: ['--only-note', '-x=1'] }).ok);
-  assert.notEqual(H.fingerprint(H.validateHome({ ...base, confirm: 'never' }).settings), H.fingerprint(H.validateHome({ ...base, confirm: 'always' }).settings), 'changing it mid-run stops the next step');
+  assert.notEqual(H.fingerprint(H.validateHome({ ...base, confirm: 'never', plan_guard: ['--g'] }).settings), H.fingerprint(H.validateHome({ ...base, confirm: 'always' }).settings), 'changing it mid-run stops the next step');
+});
+
+test('the guard rides on every apply and publish, retries included (a failed publish retried by the owner carries it again)', async t => {
+  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  rig.control({ publish: 'fail' });
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'failed', 'failed at publish');
+  const v = b.pub.current();
+  rig.control({});
+  await b.pub.retry({ id: v.id, token: v.token });
+  await until(() => b.mode() === 'published', 'published after the retry');
+  const calls = rig.calls();
+  assert.deepEqual(calls.map(c => [c.step, c.argv.includes('--only-note')]), [['plan', true], ['apply', true], ['publish', true], ['publish', true]]);
 });

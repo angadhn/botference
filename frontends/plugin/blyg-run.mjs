@@ -193,7 +193,8 @@ export function createPublisher(deps) {
     const argvRaw = home.settings.commands[name];
     if (!argvRaw) return { ok: true, record: null, skipped: true };
     const abs = path.join(home.settings.top, run.note_rel);
-    const guard = name === 'plan' && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
+    // the guard rides on plan, apply and publish, every time they run (retries and resumes too), when nobody is looking
+    const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
     const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onChild: stop => { stopChild = stop; }, ...extra });

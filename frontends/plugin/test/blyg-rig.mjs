@@ -29,7 +29,7 @@ export function makeRig({ sub = '_notes', discard = false, prepare = false, conf
   fs.writeFileSync(ctl, '{}');
   const cmd = step => [process.execPath, FAKE, log, ctl, step, '{note}'];
   const home = { folder, filename: '${slug}.md', timezone: 'Europe/London', escape: 'liquid', confirm,
-    commands: { ...(prepare ? { prepare: cmd('prepare') } : {}), plan: cmd('plan'), apply: cmd('apply'), publish: cmd('publish'), ...(discard ? { discard: cmd('discard') } : {}) }, ...extra };
+    commands: { ...(prepare ? { prepare: cmd('prepare') } : {}), plan: cmd('plan'), apply: cmd('apply'), publish: cmd('publish'), ...(discard || prepare ? { discard: cmd('discard') } : {}) }, ...extra };
   return {
     top, folder, log, ctl, home, out,
     calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []),

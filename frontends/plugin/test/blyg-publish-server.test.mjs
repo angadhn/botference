@@ -131,7 +131,7 @@ await test('a settings change is refused while a run is under way', async () => 
   assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'and the settings can change again');
 });
 
-await test('confirm never (the default): one start is the publish, end to end, with no confirm call; GET /blyg-publish/run says which setting is in force', async () => {
+await test('confirm never (with a guard): one start is the publish, end to end, with no confirm call; GET /blyg-publish/run says which setting is in force', async () => {
   rig.control({});
   const never = { ...settingsOf(rig), confirm: 'never', plan_guard: ['--only-note'] };
   assert.equal((await POST(B, '/blyg-home', { settings: never })).status, 200);
@@ -144,7 +144,8 @@ await test('confirm never (the default): one start is the publish, end to end, w
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published without a confirm');
   assert.deepEqual(rig.calls().slice(before).map(c => c.step), ['plan', 'apply', 'publish']);
   assert.ok(rig.calls()[before].argv.includes('--only-note'), 'the plan carried the guard flag');
-  assert.ok(!rig.calls()[before + 1].argv.includes('--only-note'));
+  assert.ok(rig.calls()[before + 1].argv.includes('--only-note') && rig.calls()[before + 2].argv.includes('--only-note'), 'apply and publish carry it too');
+  assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: [] } })).status, 400, 'never without a guard is refused when saving');
   assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/a-fifth-view/);
   assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: ['not-a-flag'] } })).status, 400);
   assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'back to confirming for the rest of the suite');
