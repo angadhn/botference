@@ -190,6 +190,40 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('a failure brings the dialog back, with the step, the output and the choices', [view(), dlg().hidden, /Refused: this plan would change more than the note/.test(dlg().textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', false, true, ['pub-retry', 'pub-abandon', 'pub-close']]);
 }
 
+// ---- clickjacking: a page's overlay over the drawer --------------------------------------------------------------------
+// What happy-dom CAN simulate: a top-layer element (document.querySelector(':modal') / ':popover-open' answering), a fullscreen
+// element, and elementsFromPoint returning something above the drawer's host. What it cannot: a real top layer, real hit-testing,
+// real pointer-events:none; those are the browser's, so the checks are asked of exactly the DOM calls a browser answers.
+{
+  const real = { q: document.querySelector.bind(document), efp: document.elementsFromPoint, fs: Object.getOwnPropertyDescriptor(document, 'fullscreenElement') };
+  const cases = [
+    ['a modal dialog in the top layer', () => { document.querySelector = sel => (sel === ':modal' ? { tagName: 'DIALOG' } : real.q(sel)); }],
+    ['a popover in the top layer', () => { document.querySelector = sel => (sel === ':popover-open' ? { tagName: 'DIV' } : real.q(sel)); }],
+    ['a fullscreen element', () => { Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => ({ tagName: 'DIV' }) }); }],
+    ['something above the drawer at the click\'s point', () => { document.elementsFromPoint = () => [{ tagName: 'DIV', id: 'cover' }]; }],
+  ];
+  for (const [name, set] of cases) {
+    const server = companion();
+    const { q, qa, view, click, dlg, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]);
+    eq(name + ': (set up: choosing)', view(), 'choosing');
+    set();
+    const ev = new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev); await tick();
+    eq(name + ': nothing is started, and the owner is told what to do', [server.calls.some(c => c.op === 'start'), view(), /Close the page's overlay and try again/.test(dlg().textContent)], [false, 'problem', true]);
+    document.querySelector = real.q; document.elementsFromPoint = real.efp; delete document.fullscreenElement;
+    void drawer;
+  }
+  // …and when the point is the drawer's own host, it goes through
+  const server = companion();
+  const { q, qa, view, click, drawer } = await make({ server });
+  click(qa('.thr-pub')[0]);
+  document.elementsFromPoint = () => [drawer.host];
+  q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
+  eq('with the drawer on top and no top layer, the start goes out', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
+  document.elementsFromPoint = real.efp;
+}
+
 // ---- what prepare did is shown with the plan -----------------------------------------------------------------
 {
   const server = companion();

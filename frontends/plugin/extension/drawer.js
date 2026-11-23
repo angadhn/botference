@@ -8348,10 +8348,10 @@ ${bubbleShellHtml()}`;
       'export-run': (btn) => pickExport(btn.dataset.mode),
       // ---- Publish as blyg (every one of these runs only on a trusted click: the delegated handler above) ----
       'pub-open': (btn, target) => pubOpen(target),
-      'pub-scope': btn => pubStart(btn.dataset.scope),
-      'pub-confirm': () => pubAct('confirm'),
+      'pub-scope': (btn, t, e) => pubStart(btn.dataset.scope, e),
+      'pub-confirm': (btn, t, e) => pubAct('confirm', e),
       'pub-cancel': () => pubAct('cancel'),
-      'pub-retry': () => pubAct('retry'),
+      'pub-retry': (btn, t, e) => pubAct('retry', e),
       'pub-abandon': () => pubAct('abandon'),
       'pub-review': () => pubReview(),
       'pub-close': () => pubClose(),
@@ -10695,8 +10695,31 @@ ${bubbleShellHtml()}`;
       if (!t || !pubThreadOk(t) || pubPublished(t)) return;
       pubGo('choosing', { thread: id, scope: '', error: '', run: null });
     }
-    async function pubStart(scope) {
+    // CLICKJACKING. A page can put a top-layer <dialog> or popover over the drawer with `pointer-events:none`, so that a TRUSTED click
+    // lands on a drawer button it has disguised. Before anything that publishes or goes on to, the page must have no element in the
+    // top layer (:modal, :popover-open, a fullscreen element), and the element at the click's own point must be the drawer's host.
+    // → '' when it is clear, else the sentence to show. (A browser without these selectors cannot be asked; that part is skipped.)
+    const PUB_OVERLAY_SAY = 'The page has something laid over the drawer. Close the page\'s overlay and try again.';
+    function pubOverlay(e) {
+      try {
+        if (typeof document === 'undefined') return '';
+        for (const sel of [':modal', ':popover-open']) {
+          let hit = null;
+          try { hit = document.querySelector(sel); } catch (_) { hit = null; }
+          if (hit) return PUB_OVERLAY_SAY;
+        }
+        if (document.fullscreenElement) return PUB_OVERLAY_SAY;
+        if (typeof document.elementsFromPoint === 'function' && e && typeof e.clientX === 'number' && D.host) {
+          const at = document.elementsFromPoint(e.clientX, e.clientY);
+          if (Array.isArray(at) && at.length && at[0] !== D.host) return PUB_OVERLAY_SAY;
+        }
+      } catch (_) { return ''; }
+      return '';
+    }
+    async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
+      const over = pubOverlay(e);
+      if (over) { pubGo('problem', { error: over, run: null }); return; }
       const thread = D.pub.thread;
       if (!pubGo('starting', { scope })) return;
       let r = null;
@@ -10705,9 +10728,10 @@ ${bubbleShellHtml()}`;
       pubApply(r.run);
     }
     // the buttons that act on the run (confirm, retry, cancel, abandon), each carrying the run's own id and token
-    async function pubAct(op) {
+    async function pubAct(op, e) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
+      if (op === 'confirm' || op === 'retry') { const over = pubOverlay(e); if (over) { D.pub.error = over; paintPub(); return; } }
       const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon' }[op];
       if (!may || (run.can || []).indexOf(may) === -1) return;
       // the view changes first for the two that start something, so a second click finds nothing to press

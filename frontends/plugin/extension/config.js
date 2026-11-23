@@ -191,7 +191,7 @@
   const PUB_VIEWS = Object.freeze(['closed', 'choosing', 'starting', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']);
   const PUB_MOVES = Object.freeze({
     closed: Object.freeze(['choosing', 'waiting']),
-    choosing: Object.freeze(['starting', 'closed']),
+    choosing: Object.freeze(['starting', 'problem', 'closed']),
     starting: Object.freeze(['working', 'problem']),
     waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
     working: Object.freeze(['confirming', 'running', 'problem', 'closed']),
