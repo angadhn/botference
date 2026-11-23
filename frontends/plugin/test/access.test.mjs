@@ -6,8 +6,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import {
-  HOSTED_AUTH, ACCESS_VERDICTS, KEY_CACHE_STATES, parseHostedAuth, buildAccessConfig, loadHostedAuth, AccessConfigError,
+  defaultGet, HOSTED_AUTH, ACCESS_VERDICTS, KEY_CACHE_STATES, parseHostedAuth, buildAccessConfig, loadHostedAuth, AccessConfigError,
   checkAccessToken, verifyAccessToken, verdictFor, newKeyCache, keyCacheState, createAccess, verdictOfRequest, connectionRecord, connectionLive,
   JWKS_TTL_MS, JWKS_REFETCH_MIN_MS, JWKS_STALE_OK_MS,
 } from '../access.mjs';
@@ -248,4 +249,25 @@ test('loading: no file is password mode; a broken file or an unknown mode refuse
     put(RAW); assert.equal(loadHostedAuth({ dir }).config.owner, OWNER);
     put({ ...RAW, hosted_auth: 'either' }); assert.equal(loadHostedAuth({ dir }).mode, 'either');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the key list is bounded by bytes while it is read (a declared size, an undeclared stream, multi-byte text)', async () => {
+  let sent = 0;
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/declared') return res.writeHead(200, { 'content-length': '100000' }).end('x'.repeat(100000));
+    if (req.url === '/small') return res.writeHead(200).end('{"keys":[]}');
+    if (req.url === '/wide') return res.writeHead(200).end('\u20ac'.repeat(30000)); // 30000 characters, 90000 bytes
+    res.writeHead(200);   // chunked, no length, never ends
+    const t = setInterval(() => { sent += 16384; if (!res.write('y'.repeat(16384))) return; }, 1);
+    res.on('close', () => clearInterval(t));
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const u = p => `http://127.0.0.1:${srv.address().port}${p}`;
+  try {
+    assert.equal((await defaultGet(u('/small'), { maxBytes: 1024 })).text, '{"keys":[]}');
+    await assert.rejects(defaultGet(u('/declared'), { maxBytes: 1024 }), /too large/);
+    await assert.rejects(defaultGet(u('/wide'), { maxBytes: 65536 }), /too large/, 'bytes, not characters');
+    await assert.rejects(defaultGet(u('/endless'), { maxBytes: 65536 }), /too large/);
+    assert.ok(sent < 2 * 1024 * 1024, 'it stopped reading near the limit: ' + sent);
+  } finally { srv.closeAllConnections?.(); await new Promise(r => srv.close(r)); }
 });

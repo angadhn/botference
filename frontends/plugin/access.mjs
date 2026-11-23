@@ -136,9 +136,22 @@ export function loadHostedAuth({ dir = secretsDir(), ownerHandle = '' } = {}) {
 // ---- the team's signing keys ---------------------------------------------
 export async function defaultGet(url, { timeoutMs = JWKS_TIMEOUT_MS, maxBytes = JWKS_MAX_BYTES } = {}) {
   const res = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(timeoutMs), headers: { accept: 'application/json' } });
-  const text = await res.text();
-  if (text.length > maxBytes) throw new Error('key list too large');
-  return { status: res.status, text };
+  // bounded by BYTES, while reading: a body is never read whole before its size is known (nor trusted to say how big it is)
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) { try { await res.body?.cancel(); } catch { } throw new Error('key list too large'); }
+  const chunks = [];
+  let total = 0;
+  if (res.body) {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) { try { await reader.cancel(); } catch { } throw new Error('key list too large'); }
+      chunks.push(value);
+    }
+  }
+  return { status: res.status, text: Buffer.concat(chunks).toString('utf8') };
 }
 export async function fetchKeys(url, { get = defaultGet } = {}) {
   const res = await get(url, { timeoutMs: JWKS_TIMEOUT_MS, maxBytes: JWKS_MAX_BYTES });
