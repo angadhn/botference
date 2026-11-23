@@ -1930,7 +1930,7 @@
   // closes whichever was — so which one is a single named value (POPOVERS),
   // kept in D.popover and changed only by setPopover. (It was four yes/no
   // flags, and two of them could be up at once.)
-  const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects']);
+  const POPOVERS = Object.freeze(['none', 'help', 'models', 'export', 'projects', 'reader']);
   // A BUTTON THAT DOES ONE THING AND SAYS HOW IT WENT — send review, make
   // artifact, publish (which ask first) and continue in council (which does
   // not). Each keeps ONE value, `mode`, one of ACT_MODES, changed only by
@@ -3051,6 +3051,7 @@
         exportpick: shadow.querySelector('.popover.exportpick'),
         projpick: shadow.querySelector('.popover.projpick'),
         helppop: shadow.querySelector('.popover.helppop'),
+        readerpick: shadow.querySelector('.popover.readerpick'),
         madefrom: shadow.querySelector('.hdr .madefrom'),
         blyg: shadow.querySelector('.hdr .blyg'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
@@ -3183,6 +3184,7 @@ ${markPickHtml()}
   <div class="popover exportpick" role="menu" aria-label="Export to Obsidian" hidden></div>
   <div class="popover projpick" role="menu" aria-label="File in a council project" hidden></div>
   <div class="popover helppop" role="dialog" aria-label="Commands" hidden></div>
+  <div class="popover readerpick" role="dialog" aria-label="Where you read blygs" hidden></div>
   <nav class="tabs">
     <button class="tab on" data-tab="comments" type="button">Comments<span class="count">0</span></button>
     <button class="tab" data-tab="chat" type="button">Page chat</button>
@@ -7913,6 +7915,9 @@ ${bubbleShellHtml()}`;
         if (D.mounted && D.el.exportpick) { D.el.exportpick.hidden = true; D.el.exportpick.innerHTML = ''; }
         if (typeof document !== 'undefined') document.removeEventListener('mousedown', onExportDown, true);
       },
+      reader: () => {
+        if (D.mounted && D.el.readerpick) { D.el.readerpick.hidden = true; D.el.readerpick.innerHTML = ''; }
+      },
       projects: () => {
         if (D.mounted && D.el.projpick) { D.el.projpick.hidden = true; D.el.projpick.innerHTML = ''; }
         if (typeof document !== 'undefined') document.removeEventListener('mousedown', onProjDown, true);
@@ -8296,6 +8301,8 @@ ${bubbleShellHtml()}`;
       'q-note-x': () => { D.questions.note = null; render(); },
       'quiz': () => cb('onOpenQuiz')(),
       'following': () => cb('onOpenFollowing')(),
+      'reader-hub': () => chooseReader('hub'),
+      'reader-ext': () => chooseReader('external'),
       // ---- the Memorize tab -------------------------------------------
       'mem-scope': (btn) => { D.memory.scope = btn.dataset.scope || 'page'; loadMemory(); },
       'mem-answer': (btn) => answerMemory(Number(btn.dataset.choice)),
@@ -10650,6 +10657,35 @@ ${bubbleShellHtml()}`;
       // stored either way: once chosen, the default no longer applies
       D.page.export_response = next;
       if (popIs('export')) paintExportPick();
+    }
+    // ---- the feed icon's first use: which reader? (config.js readerAction says "choose") -------------------------------------
+    // Nothing is set, nothing was chosen, and the Hub follows no blyg: rather than open an empty page, ask. The built-in Hub, or an
+    // address the person already reads at (saved as reader_url after the background validates it). Either is changeable later on the
+    // options page. The answer goes through the page's callback (content.js onReaderChoice -> the background), which opens the tab.
+    function paintReaderChooser(err) {
+      if (!D.mounted || !D.el.readerpick) return;
+      D.el.readerpick.innerHTML =
+        `<div class="pop-head">Where do you read blygs?</div>` +
+        `<button class="xrow" type="button" data-act="reader-hub"><span class="xname">Use the built-in Hub</span>` +
+        `<span class="xwhy">on this companion; follow a blyg there to start</span></button>` +
+        `<div class="pop-head second">I already read blygs somewhere</div>` +
+        `<label class="reader-url"><span class="xwhy">Paste its address</span>` +
+        `<input type="url" class="reader-input" placeholder="https://" spellcheck="false" autocomplete="off"></label>` +
+        `<button class="xrow" type="button" data-act="reader-ext"><span class="xname">Use that reader</span>` +
+        `<span class="xwhy">the feed icon will open it from now on</span></button>` +
+        (err ? `<div class="reader-err" role="alert">${esc(err)}</div>` : '');
+      D.el.readerpick.hidden = false;
+    }
+    function openReaderChooser() {
+      if (!D.mounted) return;
+      setPopover('reader');
+      paintReaderChooser('');
+    }
+    async function chooseReader(choice) {
+      const input = D.el.readerpick && D.el.readerpick.querySelector('.reader-input');
+      const r = await cb('onReaderChoice')({ choice, url: input ? input.value : '' });
+      if (r && r.ok) { if (popIs('reader')) setPopover('none'); return; }
+      paintReaderChooser((r && r.error) || 'That did not work.');
     }
     function openExportPick() {
       if (!D.mounted) return;
@@ -13905,6 +13941,8 @@ ${bubbleShellHtml()}`;
                               revised: { ...D.questions.revised },
                               threads: { ...D.questions.threads } }),
       beginNew, cancelNew, showSel, hideSel, onEvent, focus, scrollToThread, note,
+      // the feed icon's first-use question (content.js asks when the background says "choose")
+      openReaderChooser, readerChooserOpen: () => popIs('reader'),
       // the page's own C/S/A while the microphone records (content.js): stop
       // it, wherever the focus went. True when there was a recording to stop.
       stopDictation: () => micStop('finish'),

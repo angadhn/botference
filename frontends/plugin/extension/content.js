@@ -714,7 +714,10 @@
     const h = sel.hub;
     const held = await api('POST', '/following/hold', { origin: h.origin, id: h.id });
     if (!held.ok) return failure(held);
-    const body = { url: h.page, quote, prefix, suffix, msg: { text }, ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
+    // the address the COMPANION keeps the post's record under (it answers it), never the one the page's markup states
+    const url = held.data && held.data.url;
+    if (!url) return failure({ ok: false, error: 'the companion did not say where the post is kept' });
+    const body = { url, quote, prefix, suffix, msg: { text }, ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
     const r = await api('POST', '/thread', body);
     if (!r.ok) return failure(r);
     const thread = (r.data && r.data.thread) || null;
@@ -3200,7 +3203,9 @@
       // reader reviews on a phone, and this drawer cannot follow them there.
       // So the button is a door, and this opens it.
       onOpenQuiz: () => { bg({ t: 'open-here', path: '/quiz' }); },
-      onOpenFollowing: () => { bg({ t: 'open-here', path: '/hub' }); },
+      // the feed icon: the background decides where it goes (config.js readerAction); with nothing set and nothing followed it asks first
+      onOpenFollowing: async () => { const r = await bg({ t: 'open-reader' }); if (r && r.chooser) drawer.openReaderChooser(); },
+      onReaderChoice: ({ choice, url }) => bg({ t: 'reader-choice', choice, url }),
       // "not done" — the reader's answer to a thread the bots claimed handled.
       // Only the clearing direction exists here: marking a thread ADDRESSED is
       // what a bot's reply landing in it does, server-side, and is never a

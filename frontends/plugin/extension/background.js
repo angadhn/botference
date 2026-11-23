@@ -984,6 +984,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // content script asking the worker to open arbitrary urls is a hole.
       // The companion addresses this extension is configured with, so a Hub page can be told from any other website (hubbind.js)
       case 'companion-bases': { await configReady; return { ok: true, bases: [CONF.base] }; }
+      // The feed icon: where it goes is CFG.readerAction's to say (config.js): an external reader if one is set, the companion's Hub,
+      // or (nothing set, nothing chosen, nothing followed) a question the drawer asks first
+      case 'open-reader': {
+        await configReady;
+        let followed = null;
+        if (CFG.readerTarget(CONF).mode !== 'external') {
+          try { const h = await api('GET', '/health'); if (h.ok && h.data && Number.isInteger(h.data.hub_follows)) followed = h.data.hub_follows; } catch { /* not asked: open the Hub */ }
+        }
+        const action = CFG.readerAction(CONF, followed);
+        if (action === 'choose') return { ok: true, action, chooser: true };
+        const url = action === 'open-external' ? CFG.readerTarget(CONF).url : CFG.httpUrl(CONF.base, '/hub');
+        const tab = await chrome.tabs.create({ url, active: true });
+        return { ok: true, action, tabId: tab && tab.id };
+      }
+      // The answer to that question. 'hub' uses the built-in Hub; 'external' saves an address, after validating it.
+      case 'reader-choice': {
+        await configReady;
+        let next;
+        if (msg.choice === 'hub') next = { reader_url: '', reader_onboarding: CFG.onboardingMove(CONF.reader_onboarding, 'choose-hub') };
+        else if (msg.choice === 'external') {
+          const v = CFG.readerUrlOf(msg.url);
+          if (!v.value) return { ok: false, error: 'That is not an address I can open: use https (http only for this computer).' };
+          next = { reader_url: v.value, reader_onboarding: CFG.onboardingMove(CONF.reader_onboarding, 'choose-external') };
+        } else return { ok: false, error: 'no such choice' };
+        await CFG.writeConfig({ ...CONF, ...next });
+        CONF = await CFG.readConfig();
+        const url = CFG.readerTarget(CONF).url;
+        await chrome.tabs.create({ url, active: true });
+        return { ok: true, mode: CFG.readerTarget(CONF).mode };
+      }
       case 'open-here': {
         await configReady;
         const path = String(msg.path || '/').replace(/^\/*/, '/');

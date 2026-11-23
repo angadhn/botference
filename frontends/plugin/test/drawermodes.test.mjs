@@ -49,7 +49,7 @@ const shown = sel => { const e = root.querySelector(sel); return !!e && !e.hidde
 
 // ---- 1. the pop-overs: one open at a time -----------------------------------
 {
-  eq('the pop-overs, named', D.POPOVERS, ['none', 'help', 'models', 'export', 'projects']);
+  eq('the pop-overs, named', D.POPOVERS, ['none', 'help', 'models', 'export', 'projects', 'reader']);
   eq('none open to begin with', drawer.popover, 'none');
   ok('the models button is there', click('models'));
   await tick(10);

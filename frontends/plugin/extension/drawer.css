@@ -740,6 +740,10 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 /* Twelve projects, each with a peek of its chats and files, is taller than a
    phone or a laptop drawer. A popover that cannot scroll is clipped by the panel,
    and the row that matters most — "+ new project" — sits at the bottom of it. */
+.popover.readerpick { min-width: 262px; max-width: 340px; padding: 9px 9px 10px }
+.popover.readerpick .reader-url { display: block; margin: 4px 0 6px }
+.popover.readerpick .reader-input { width: 100%; box-sizing: border-box; font: 13px/1.3 var(--sans); padding: 6px 8px; margin-top: 3px }
+.popover.readerpick .reader-err { color: var(--bad, #b4361b); font: 12px/1.35 var(--sans); margin-top: 6px }
 .popover.projpick { min-width: 262px; max-width: 340px; padding: 9px 9px 10px;
   max-height: calc(100vh - 72px); overflow-y: auto; -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain }

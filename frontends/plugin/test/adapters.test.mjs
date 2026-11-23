@@ -839,11 +839,11 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
   // PDF opens in Discuss's own viewer). Absent means ON, so a browser
   // configured before it existed still gets the feature.
   eq('storage: what comes back is what the wire will use',
-    back, { base: 'https://companion.example.com/plugin', password: 's3cret', handle: 'mira-k', pdf: true });
+    back, { base: 'https://companion.example.com/plugin', password: 's3cret', handle: 'mira-k', pdf: true, reader_url: '', reader_onboarding: 'unasked' });
 
   const empty = await C.readConfig(mk());
   eq('storage: a browser that has never been configured gets the local defaults',
-    empty, { base: C.DEFAULT_BASE, password: '', handle: '', pdf: true });
+    empty, { base: C.DEFAULT_BASE, password: '', handle: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' });
 
   const junk = mk();
   junk.data[C.KEYS.base] = 'file:///etc/passwd';
@@ -853,7 +853,7 @@ const O = require(path.join(here, '..', 'extension', 'options.js'));
 
   const throws = { get: () => { throw new Error('no storage'); }, set: () => { throw new Error('no storage'); } };
   eq('storage: a storage area that throws still yields a usable config',
-    await C.readConfig(throws), { base: C.DEFAULT_BASE, password: '', handle: '', pdf: true });
+    await C.readConfig(throws), { base: C.DEFAULT_BASE, password: '', handle: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' });
 }
 
 // ---- 16. options.js: what the “test connection” button says -----------------

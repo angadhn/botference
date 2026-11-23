@@ -325,7 +325,7 @@
   // same two places — the worker, which installs the redirect rule, and the
   // options page, which is where it is turned off.
   const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle',
-                 pdf: 'bfp:pdf' };
+                 pdf: 'bfp:pdf', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding' };
   // absent means on: an extension installed before this existed should still
   // open PDFs in the viewer, because that is the feature
   const readBool = (v, dflt) => (v === undefined || v === null ? !!dflt : !!v);
@@ -406,23 +406,84 @@
     return out;
   }
 
+  // ── which reader the feed icon opens ───────────────────────────────────────
+  // `reader_url` (bfp:reader-url): empty, or an absolute https address (http only for this machine: localhost, 127.0.0.1, [::1]). Empty,
+  // the default, means the companion's own Hub (/hub on the configured companion address); set, it is a reader the person already has
+  // (a Blygger Studio's reading page, say) and the feed icon and the options link open THAT in a new tab.
+  //   READER_MODES  companion-hub — the Hub on the companion
+  //                 external      — the address in reader_url
+  // …decided in one function, readerTarget. Which of them was CHOSEN is remembered as a named onboarding state:
+  //   ONBOARDING    unasked  — nothing chosen yet (the default)
+  //                 hub      — "use the built-in Hub" was chosen
+  //                 external — "I already read blygs somewhere" was chosen (and an address saved)
+  // …moved only by onboardingMove. What the icon does on a click is one of READER_ACTIONS, worked out by readerAction:
+  //   choose        — nothing is set, nothing chosen, and the Hub follows no blyg yet: ask which reader, rather than open an empty page
+  //   open-hub      — open the companion's Hub
+  //   open-external — open reader_url
+  const READER_MODES = Object.freeze(['companion-hub', 'external']);
+  const ONBOARDING = Object.freeze(['unasked', 'hub', 'external']);
+  const ONBOARDING_MOVES = Object.freeze({
+    'choose-hub': Object.freeze({ unasked: 'hub', hub: 'hub', external: 'hub' }),
+    'choose-external': Object.freeze({ unasked: 'external', hub: 'external', external: 'external' }),
+    forget: Object.freeze({ unasked: 'unasked', hub: 'unasked', external: 'unasked' }),
+  });
+  const READER_ACTIONS = Object.freeze(['choose', 'open-hub', 'open-external']);
+  // → { value, refused }: value '' for empty or refused
+  function readerUrlOf(raw) {
+    const s = clean(raw);
+    if (!s) return { value: '', refused: false };
+    let u;
+    try { u = new URL(s); } catch { return { value: '', refused: true }; }
+    if (u.username || u.password) return { value: '', refused: true };
+    if (u.protocol === 'https:') return { value: u.href, refused: false };
+    if (u.protocol === 'http:' && LOCAL_HOSTS.indexOf(u.hostname.toLowerCase()) !== -1) return { value: u.href, refused: false };
+    return { value: '', refused: true };
+  }
+  const onboardingOf = v => (ONBOARDING.indexOf(v) === -1 ? 'unasked' : v);
+  function onboardingMove(state, move) {
+    const table = ONBOARDING_MOVES[move];
+    if (!table) throw new Error('reader onboarding: no such move ' + move);
+    if (ONBOARDING.indexOf(state) === -1 || !Object.prototype.hasOwnProperty.call(table, state)) throw new Error('reader onboarding: cannot ' + move + ' while ' + state);
+    return table[state];
+  }
+  // → { mode, url }: where the feed icon (and the options page's link) goes
+  function readerTarget(cfg) {
+    const ext = readerUrlOf(cfg && cfg.reader_url).value;
+    return ext ? { mode: 'external', url: ext } : { mode: 'companion-hub', url: httpUrl((cfg && cfg.base) || DEFAULT_BASE, '/hub') };
+  }
+  // What the options page saves for what was typed in the reader box: an address is the external reader (and was chosen), an empty box
+  // is the companion's Hub (and was chosen); anything else is refused and nothing changes. → { ok, reader_url, reader_onboarding, error }
+  function readerChoiceFrom(raw, onboarding) {
+    const v = readerUrlOf(raw);
+    if (v.refused) return { ok: false, error: 'That is not an address I can open: use https (http only for this computer), or leave it empty for the built-in Hub.' };
+    return { ok: true, reader_url: v.value, reader_onboarding: onboardingMove(onboardingOf(onboarding), v.value ? 'choose-external' : 'choose-hub') };
+  }
+  // `followed`: how many blygs the companion's Hub follows (null when it could not be asked)
+  function readerAction(cfg, followed) {
+    if (readerTarget(cfg).mode === 'external') return 'open-external';
+    if (onboardingOf(cfg && cfg.reader_onboarding) === 'unasked' && followed === 0) return 'choose';
+    return 'open-hub';
+  }
+
   const httpUrl = (base, path) =>
     (normalizeBase(base) || DEFAULT_BASE) + String(path == null ? '' : path);
 
   // ---- storage (the only chrome.* in this file) ---------------------------
   function readConfig(area) {
     const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
-    const fallback = { base: DEFAULT_BASE, password: '', handle: '', pdf: true };
+    const fallback = { base: DEFAULT_BASE, password: '', handle: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' };
     if (!store) return Promise.resolve(fallback);
     return new Promise(resolve => {
       try {
-        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.pdf], r => {
+        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding], r => {
           const got = r || {};
           resolve({
             base: normalizeBase(got[KEYS.base]) || DEFAULT_BASE,
             password: clean(got[KEYS.password]),
             handle: sanitizeHandle(got[KEYS.handle]),
             pdf: readBool(got[KEYS.pdf], true),
+            reader_url: readerUrlOf(got[KEYS.readerUrl]).value,
+            reader_onboarding: onboardingOf(got[KEYS.onboarding]),
           });
         });
       } catch { resolve(fallback); }
@@ -436,6 +497,8 @@
       [KEYS.password]: clean(cfg && cfg.password),
       [KEYS.handle]: sanitizeHandle(cfg && cfg.handle),
       [KEYS.pdf]: readBool(cfg && cfg.pdf, true),
+      [KEYS.readerUrl]: readerUrlOf(cfg && cfg.reader_url).value,
+      [KEYS.onboarding]: onboardingOf(cfg && cfg.reader_onboarding),
     };
     if (!store) return Promise.resolve(out);
     return new Promise(resolve => {
@@ -453,6 +516,7 @@
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
+    READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,
   };

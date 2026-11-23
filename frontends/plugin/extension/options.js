@@ -105,7 +105,11 @@
     password: el('password').value,
     handle: el('handle').value,
     pdf: el('pdf').checked,
+    // the reader the feed icon opens (config.js): kept as it was by every save that is not about it
+    reader_url: readerNow.url,
+    reader_onboarding: readerNow.onboarding,
   });
+  let readerNow = { url: '', onboarding: 'unasked' };
   function say(v) {
     const s = el('status');
     s.className = (v && v.cls) || '';
@@ -139,8 +143,12 @@
     el('password').value = cfg.password;
     el('handle').value = cfg.handle;
     el('pdf').checked = cfg.pdf !== false;
+    readerNow = { url: cfg.reader_url, onboarding: cfg.reader_onboarding };
+    const rb = el('reader-url');
+    if (rb) rb.value = cfg.reader_url;
+    const target = CFG.readerTarget(cfg);
     const fl = el('following-link');
-    if (fl) fl.href = CFG.httpUrl(cfg.base, '/hub');
+    if (fl) { fl.href = target.url; fl.textContent = target.mode === 'external' ? 'Open your reader' : 'Open the Hub'; }
   }
 
   // Asked here on every visit, and the answer written down for the service
@@ -180,6 +188,13 @@
   });
 
   el('save').addEventListener('click', async () => {
+    // the reader box first: an address that cannot be opened stops the save, and says so
+    const rb = el('reader-url');
+    if (rb) {
+      const pick = CFG.readerChoiceFrom(rb.value, readerNow.onboarding);
+      if (!pick.ok) { say({ cls: 'err', text: pick.error }); return; }
+      readerNow = { url: pick.reader_url, onboarding: pick.reader_onboarding };
+    }
     const cfg = fields();
     el('save').disabled = true;
     const stored = await CFG.writeConfig(cfg);
