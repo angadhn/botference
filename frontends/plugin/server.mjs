@@ -172,9 +172,10 @@ const standingFor = req => (hosted.isOwner(req) ? 'owner' : 'guest');
 const eventNames = ev => [ev.url, ev.page_url, ev.page_key, ev.key, ev.page].filter(v => typeof v === 'string');
 const ownerOnlyEvent = ev => namesOwnerOnlyPage(eventNames(ev));
 export const mayHear = (standing, hush) => !hush || standing === 'owner';
-function broadcast(ev) {
+// `hush` is decided from the page's record when the event is made; a caller whose act REMOVES the record decides it first and passes it
+// in, because once the record is gone nothing can tell what it was
+function broadcast(ev, hush = ownerOnlyEvent(ev)) {
   const json = JSON.stringify(ev);
-  const hush = ownerOnlyEvent(ev);
   for (const res of sseClients) if (mayHear(standingOf.get(res), hush)) res.write(`data: ${json}\n\n`);
   for (const ws of wsClients) if (mayHear(standingOf.get(ws), hush)) ws.send(json);
 }
@@ -5852,8 +5853,11 @@ export function handler(req, res) {
       }
       try { projectNetwork.forgetSource(page.url); }
       catch (e) { return fail(res, 503, 'Could not remove the project-index copy; the page was retained. Retry deletion.'); }
+      // decided BEFORE the record goes: afterwards ownerOnlyEvent cannot find it, and a guest would be told the address of a page it
+      // never could name
+      const hush = !mayRead(page, false);
       store.deletePage(page.url);
-      broadcast({ type: 'page', url: page.url });
+      broadcast({ type: 'page', url: page.url }, hush);
       ok(res, { session_deleted });
     });
   }

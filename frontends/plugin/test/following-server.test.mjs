@@ -736,6 +736,22 @@ await test('a page the Hub made is the owner\'s alone: a guest\'s lists leave it
     assert.ok(about(listeners[k].events, 'plain.web.test/shared').length >= 1, `${k} still hears of ordinary pages`);
     assert.ok(!JSON.stringify(listeners[k].events).includes('the owner comments on the hub page'));
   }
+  // DELETING the page: the record is gone before the event goes out, so whether it was owner-only is decided first. A guest's SSE and
+  // WebSocket hear nothing of a deleted Hub page's address; the owner's hear it; an ordinary page's deletion reaches everyone.
+  await owner('POST', '/page', { url: 'https://plain.web.test/doomed', title: 'A doomed page' });
+  const seen0 = Object.fromEntries(Object.entries(listeners).map(([k, l]) => [k, l.events.length]));
+  assert.equal((await owner('POST', '/delete-page', { url: pageUrl })).status, 200);
+  assert.equal((await owner('POST', '/delete-page', { url: 'https://plain.web.test/doomed' })).status, 200);
+  await new Promise(r => setTimeout(r, 400));
+  const after = k => listeners[k].events.slice(seen0[k]);
+  for (const k of ['ownerSse', 'ownerWs']) {
+    assert.ok(about(after(k), HV).length >= 1, `${k} hears the Hub page was deleted`);
+    assert.ok(about(after(k), 'plain.web.test/doomed').length >= 1, `${k} hears of the ordinary page going`);
+  }
+  for (const k of ['guestSse', 'guestWs']) {
+    assert.deepEqual(about(after(k), HV), [], `${k} is not told the address of a deleted Hub page`);
+    assert.ok(about(after(k), 'plain.web.test/doomed').length >= 1, `${k} still hears an ordinary page was deleted`);
+  }
   for (const l of Object.values(listeners)) l.close();
   // an ordinary annotated page is still shared
   await owner('POST', '/page', { url: 'https://plain.web.test/shared', title: 'A shared page' });
