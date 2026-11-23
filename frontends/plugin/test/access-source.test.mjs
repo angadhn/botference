@@ -80,6 +80,48 @@ try {
     assert.notEqual(sourceRefusal({ method: 'POST', headers: {} }, 'foreign', { strictReads: false }), null);
   });
 
+  await test('same-site with no Origin is foreign (a sibling subdomain\'s subresource), and a method that is not GET/HEAD/OPTIONS/POST is refused, whatever the Origin', () => {
+    const v = (h, o = 'absent', method = 'GET') => sourceVerdict({ method, headers: h }, o);
+    assert.equal(v({ 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' }), 'foreign');
+    assert.equal(v({ 'sec-fetch-site': 'same-site' }, 'absent', 'POST'), 'foreign');
+    assert.equal(v({ 'sec-fetch-site': 'same-origin' }), 'unmarked'); assert.equal(v({ 'sec-fetch-site': 'none' }), 'unmarked');
+    for (const method of ['PUT', 'PATCH', 'DELETE', 'TRACE', 'CONNECT', 'PROPFIND']) {
+      for (const origin of ['trusted', 'absent']) {
+        for (const opts of [{ tokenAuth: true }, { strictReads: false }, {}]) {
+          assert.match(sourceRefusal({ method, headers: { 'content-type': 'application/json' } }, origin, opts) || '', /unsupported method/, `${method} ${origin} ${JSON.stringify(opts)}`);
+        }
+      }
+    }
+    for (const method of ['GET', 'HEAD', 'OPTIONS']) assert.equal(sourceRefusal({ method, headers: {} }, 'trusted'), null);
+  });
+  await test('PUT, PATCH and DELETE are refused on the wire in every mode, even from a trusted origin with a token', async () => {
+    for (const mode of ['access', 'either', 'password']) {
+      const h = { ...REMOTE, ...(mode === 'password' ? { authorization: 'Bearer guest-pw', 'x-plugin-handle': 'visitor' } : WHO.owner()), origin: `https://${HOST}`, 'content-type': 'application/json', 'content-length': '2' };
+      for (const method of ['PUT', 'PATCH', 'DELETE']) assert.equal((await send(B[mode].base, method, '/page', h, '{}')).status, 403, `${mode} ${method}`);
+    }
+  });
+  await test('password mode: a subresource from a sibling subdomain or another site (no Origin, fetch metadata) is refused; a followed link is not', async () => {
+    const bearer = { authorization: 'Bearer guest-pw', 'x-plugin-handle': 'visitor' };
+    for (const site of ['same-site', 'cross-site']) {
+      for (const dest of ['image', 'script', 'iframe', 'style']) {
+        const r = await send(B.password.base, 'GET', '/index', { ...REMOTE, ...bearer, 'sec-fetch-site': site, 'sec-fetch-mode': dest === 'iframe' ? 'navigate' : 'no-cors', 'sec-fetch-dest': dest });
+        assert.equal(r.status, 403, `${site} ${dest}`);
+      }
+    }
+    assert.equal((await send(B.password.base, 'GET', '/index', { ...REMOTE, ...bearer, 'sec-fetch-site': 'cross-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document' })).status, 200);
+    assert.equal((await send(B.password.base, 'GET', '/index', { ...REMOTE, ...bearer, 'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors' })).status, 200);
+  });
+  await test('password mode: a WebSocket from a foreign Origin is refused (as a stream is); the configured extension and no-Origin callers are not', async () => {
+    const b = B.password; const bearerQ = '?auth=guest-pw&handle=visitor';
+    const ws = origin => new Promise(resolve => {
+      const s = net.connect(Number(new URL(b.base).port), '127.0.0.1', () => s.write(`GET /ws${bearerQ} HTTP/1.1\r\nHost: ${HOST}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n${origin ? `Origin: ${origin}\r\n` : ''}\r\n`));
+      let out = ''; s.on('data', d => { out += d.toString('latin1'); }); s.on('error', () => { });
+      setTimeout(() => { s.destroy(); resolve(out); }, 300);
+    });
+    for (const o of [EVIL, 'null', 'http://evil.example.test']) assert.match(await ws(o), /^HTTP\/1.1 401/, o);
+    assert.match(await ws('chrome-extension://' + 'd'.repeat(32)), /^HTTP\/1.1 101/); assert.match(await ws(''), /^HTTP\/1.1 101/);
+  });
+
   for (const mode of ['access', 'either']) {
     for (const who of ['owner', 'guest']) {
       await test(`${mode}/${who}: every changing route, under every cross-site trick, is refused and nothing is changed or run`, async () => {

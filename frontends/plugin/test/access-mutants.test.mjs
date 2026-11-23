@@ -90,6 +90,46 @@ await test('the options page\'s Sign-in button acts on a trusted click only', as
   assert.equal(opened.length, 1); assert.equal(opened[0][0], 'https://hub.example.test/');
 });
 
+await test('the options page asks which way a companion signs in BEFORE sending it the saved password (keys, profiles, test), and withholds it from Access', async () => {
+  const run = async (answer, stored) => {
+    const calls = [];
+    const stub = id => new Proxy({ value: '', checked: true, hidden: false, style: {}, classList: { toggle() {}, add() {}, remove() {} }, dataset: {},
+      addEventListener() {}, setAttribute() {}, querySelector() { return null; }, querySelectorAll() { return []; }, appendChild() {}, remove() {} },
+    { get: (t, k) => (k in t ? t[k] : (typeof k === 'string' ? () => { } : undefined)), set: (t, k, v) => { t[k] = v; return true; } });
+    const els = {};
+    const ctx = {
+      console, Promise, JSON, URL, setTimeout, clearTimeout, Map, Set,
+      document: { getElementById: id => (els[id] ||= stub(id)), addEventListener() {}, querySelectorAll: () => [], querySelector: () => null, createElement: () => stub('x'), body: stub('body') },
+      open() {}, navigator: {},
+      chrome: { storage: { local: { get: (_k, cb) => cb(stored), set: (_o, cb) => cb && cb(), remove: (_k, cb) => cb && cb() }, onChanged: { addListener() {} } }, extension: {}, runtime: {} },
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), headers: (init && init.headers) || {} });
+        const body = /auth-mode$/.test(url) ? answer : '{"ok":true,"keys":{}}';
+        return { ok: true, status: /auth-mode$/.test(url) && answer.signin ? 401 : 200, type: 'basic', headers: { get: () => 'application/json' }, text: async () => body };
+      },
+    };
+    ctx.self = ctx; ctx.window = ctx; ctx.globalThis = ctx; vm.createContext(ctx);
+    const EXT = path.join(TEST, '..', 'extension');
+    vm.runInContext(fs.readFileSync(path.join(EXT, 'config.js'), 'utf8'), ctx, { filename: 'config.js' });
+    vm.runInContext(fs.readFileSync(path.join(EXT, 'options.js'), 'utf8'), ctx, { filename: 'options.js' });
+    await sleep(60);
+    return calls;
+  };
+  const stored = { 'bfp:companion': 'https://hub.example.test', 'bfp:password': 'pw', 'bfp:handle': 'ada' };
+  const access = await run('{"ok":true,"auth":"access"}', stored);
+  const keysAt = access.findIndex(c => /\/keys$/.test(c.url));
+  assert.ok(keysAt > 0, 'the keys request was made');
+  assert.ok(access.slice(0, keysAt).some(c => /auth-mode$/.test(c.url)), 'the mode was asked first');
+  for (const c of access) assert.ok(!c.headers.Authorization, `no password to an Access companion: ${c.url}`);
+  const password = await run('{"ok":true,"auth":"password"}', stored);
+  const k = password.find(c => /\/keys$/.test(c.url));
+  assert.equal(k.headers.Authorization, 'Bearer pw', 'a password companion gets it');
+  const portal = await run('', stored);   // not JSON: not the companion
+  for (const c of portal) assert.ok(!c.headers.Authorization, `nothing that is not the companion's own answer unlocks the password: ${c.url}`);
+  const local = await run('{"ok":true,"auth":"access"}', { 'bfp:password': 'pw' });
+  assert.ok(local.find(c => /\/keys$/.test(c.url)).headers.Authorization === 'Bearer pw', 'this machine\'s companion is as before');
+});
+
 // ---- 3. no password machinery in access mode --------------------------------------------------------------------------------
 await test('access mode: no secret file, no owner password, no cookie, no bearer; password and either keep theirs', () => {
   const secrets = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-mut-s-')); const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-mut-d-'));

@@ -12947,8 +12947,9 @@ that carries it, including one a page on another website makes. So before anythi
 | no Origin but `Sec-Fetch-Site: cross-site` or `same-site` (an image, script, frame or form post) | foreign | 403 |
 
 Sibling subdomains are same-site: neither SameSite nor the Origin of a sibling can be trusted, so the Origin check is the real lock.
-Password mode: a foreign page's change, stream or socket is now refused too; a plain foreign read is as it was (a bearer is not ambient and the
-page cannot read the answer). No GET changes anything the person chose: `GET /page` only writes derived, idempotent rendering of anchors, so a
+Password mode: a foreign page's change, stream or socket is now refused too, and so is a request a browser marks cross-site or same-site with no Origin
+(an image, script or frame include, a sibling subdomain's subresource: nothing meant sends one, and the hub's approved-device cookie is ambient); a plain
+foreign-Origin read is as it was (a bearer is not ambient and the page cannot read the answer). A method other than GET, HEAD, OPTIONS or POST is refused in every mode. No GET changes anything the person chose: `GET /page` only writes derived, idempotent rendering of anchors, so a
 followed link cannot change state.
 
 **Which names are trusted.** Only names that were configured, never built-in ones: `PLUGIN_PUBLIC_HOSTNAMES` (comma list), `PLUGIN_READING_HOSTNAME`,

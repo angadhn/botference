@@ -191,9 +191,14 @@ const isJsonCt = ct => /^application\/(?:[\w.+-]*\+)?json\b/i.test(String(ct || 
 export function sourceRefusal(req, origin, { tokenAuth = false, strictReads = true } = {}) {
   const v = sourceVerdict(req, origin);
   const reads = req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
-  // strictReads: a plain read from a foreign page is refused too (always with Access). In password mode (a bearer is not ambient, and
-  // the page cannot read the answer) only changes, streams and sockets are refused: a read from a foreign page stays as it was.
-  if (v === 'foreign' && (strictReads || !reads)) return 'refused: requests from other websites cannot use the companion';
+  // the companion answers GET, HEAD, OPTIONS and POST; any other method (PUT, PATCH, DELETE, ...) is not a read and is refused here
+  if (!reads && req.method !== 'POST') return 'refused: unsupported method';
+  if (v === 'foreign') {
+    // A browser that says "cross-site" or "same-site" with no Origin (an image, a script, a frame include, a sibling subdomain's
+    // subresource) is refused in every mode: nothing that is meant sends that. A foreign ORIGIN on a plain read is refused when
+    // strictReads (always with Access); in password mode that one stays as it was (a bearer is not ambient and the page cannot read the answer).
+    if (origin !== 'foreign' || strictReads || !reads) return 'refused: requests from other websites cannot use the companion';
+  }
   if (tokenAuth && !reads && v === 'unmarked' && !isJsonCt((req.headers || {})['content-type'])) {
     return 'refused: a change must be sent as application/json';
   }

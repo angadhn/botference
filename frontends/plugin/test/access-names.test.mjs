@@ -82,6 +82,15 @@ try {
     }
     M.h.cleanup();
   });
+  await test('a configured name over plain http is not trusted, in password mode as well (and one configured name is not another\'s own page)', async () => {
+    const I = await boot('password', { PLUGIN_PUBLIC_HOSTNAMES: 'pub.example.test,other.example.test' });
+    const pre = (host, origin) => request(I.base, 'OPTIONS', '/thread', undefined, { ...tunnel(host), origin });
+    assert.equal((await pre('pub.example.test', 'https://other.example.test')).headers['access-control-allow-origin'], 'https://other.example.test', 'https: trusted');
+    assert.equal((await pre('pub.example.test', 'http://other.example.test')).status, 403, 'http: not');
+    const trustedHttpName = await pre('other.example.test', 'http://pub.example.test');
+    assert.equal(trustedHttpName.status, 403, 'a configured name over http is not a trusted origin');
+    I.h.cleanup();
+  });
   await test('an install that already sets its names behaves as before: the quiz door, the reading room\'s calls, Host/Origin (password mode)', async () => {
     const I = await boot('password', { PLUGIN_MEMORY_HOSTNAME: 'memo.example.test', PLUGIN_READING_HOSTNAME: 'read.example.test', PLUGIN_PUBLIC_HOSTNAMES: 'pub.example.test' });
     const bearer = { authorization: 'Bearer guest-pw', 'x-plugin-handle': 'visitor' };
