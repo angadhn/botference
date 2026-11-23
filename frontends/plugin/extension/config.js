@@ -183,7 +183,7 @@
   //   choosing    the owner is choosing a scope ("just this comment", "this and the ones above")
   //   starting    the start request is out (the note is being written)
   //   waiting     a run was found that this drawer did not start (a reload, another tab): one button to review it
-  //   working     plan is running
+  //   working     prepare (when the owner set one) or plan is running
   //   confirming  the note and the plan are on screen; Publish or Cancel
   //   running     apply, then publish, are running
   //   done        published
@@ -207,7 +207,7 @@
     return to;
   }
   // the companion's run mode → the view it is shown in
-  const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', planning: 'working', planned: 'confirming', applying: 'running',
+  const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', preparing: 'working', planning: 'working', planned: 'confirming', applying: 'running',
     applied: 'running', publishing: 'running', published: 'done', failed: 'problem', interrupted: 'problem', cancelled: 'closed', abandoned: 'closed' });
   const pubViewOf = mode => PUB_VIEW_OF[mode] || 'problem';
   // The operations the drawer may ask of the companion for a publish, and nothing else: the worker forwards these and only

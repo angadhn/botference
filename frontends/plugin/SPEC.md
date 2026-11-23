@@ -13069,7 +13069,7 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 `blyg_home` in config.json, edited at `GET /blyg-home/page` (or by hand): `folder` (absolute, exists,
 inside a git work tree, not in `.git`), `filename` (pattern with `${slug}` and `${date}`, ending in
 `.md`), `template`, `escape` (`liquid` default, or `none`), `timezone`, `env_pass` (names), and
-`commands`: `plan`, `apply`, `publish` and an optional `discard` (undo what plan staged), each an argv
+`commands`: `plan`, `apply`, `publish` and two optional ones, `prepare` (runs after the note is written and before `plan`: stage the note, fetch what it quotes; 300 s) and `discard` (undo what prepare or plan did, on cancel or abandon before apply), each an argv
 list with `{note}` (the note's path relative to the work tree, ONE argument; `{note_abs}` is the
 absolute path). Run in the work tree, never through a shell, in their own process group, with stdin
 closed, a time limit (plan 120 s, apply 900 s, publish 1800 s, discard 60 s), a minimal environment
@@ -13085,16 +13085,18 @@ One field, `run.mode`, one of `RUN_MODES`, changed only by `RunBook#move`, which
 does not list:
 
 ```
-idle → drafted → planning → planned → applying → applied → publishing → published
-          \         \          \         \          \           \
-           cancelled  failed    cancelled failed     failed      failed       (any live mode → interrupted on restart)
-failed → planning | applying | publishing (only the step that failed, by the owner's click) | abandoned
+idle → drafted → [preparing →] planning → planned → applying → applied → publishing → published
+   (preparing only when a `prepare` command is set; drafted → planning otherwise)
+   drafted/planned → cancelled; any running mode → failed; any live mode → interrupted on restart
+failed → preparing | planning | applying | publishing (only the step that failed, by the owner's click) | abandoned
 interrupted → abandoned          published | cancelled | abandoned → drafted (a new run)
 ```
 
 One run at a time for the whole companion (a second start is refused, not queued). Step A (start): the note
 is written inside the notes folder (real path inside it; never over an existing file; never through a link;
-`O_EXCL|O_NOFOLLOW`), `plan` runs, nothing else is touched. Step B: the drawer shows the note and the plan.
+`O_EXCL|O_NOFOLLOW`), then `prepare` (if set) and `plan` run; nothing else of the companion's is touched. A
+note's `blyg_sources` is what a site's importer fetches, so it is written only for a public https/http address on the
+post's own origin host (`blygItemOf`, `netguard.urlRefusal`); anything else makes the page an ordinary quote. Step B: the drawer shows the note and the plan.
 Step C (confirm, with the run's id and token): `apply`, then `publish`, each step's outcome kept with its
 output; a failure names the step and stops; nothing is retried by itself. Cancel removes the draft only if
 this run made it and it is unchanged (calling `discard` first when one is set). Abandon before apply does

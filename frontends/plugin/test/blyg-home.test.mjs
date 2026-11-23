@@ -84,6 +84,6 @@ test('the file name pattern and the names it makes', () => {
 });
 
 test('the limits are the ones stated', () => {
-  assert.deepEqual(H.TIME_LIMITS_MS, { plan: 120000, apply: 900000, publish: 1800000, discard: 60000 });
+  assert.deepEqual(H.TIME_LIMITS_MS, { prepare: 300000, plan: 120000, apply: 900000, publish: 1800000, discard: 60000 });
   assert.deepEqual([H.OUTPUT.maxBuffer, H.OUTPUT.kept, H.ARGV.maxArgs, H.ARGV.maxArgChars], [4194304, 65536, 32, 400]);
 });

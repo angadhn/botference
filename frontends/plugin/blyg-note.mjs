@@ -29,6 +29,7 @@ import { isBotAuthor, hasMention } from './chat.mjs';
 import { stripMore } from './more.mjs';
 import { withRuns } from './export.mjs';
 import { ownerTyped } from './tkgaps.mjs';
+import { urlRefusal } from './netguard.mjs';
 import { escapePassageLine, byReference, labelOf, readVersion, responseOf, canRespond, defuse, TK_MARK } from './note-quotes.mjs';
 
 const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
@@ -223,6 +224,11 @@ export function blygItemOf(page) {
   const where = safeWebUrl(it.page);
   const version = Number(it.version);
   if (!BLYG_ID.test(String(it.id || '')) || !origin || !origin.endsWith('/') || !where || !Number.isInteger(version) || version < 1) return null;
+  // The note's `blyg_sources` is what a site's importer FETCHES. It must be a public address (never this computer, a private
+  // network or the companion's own port) and on the origin's own host and scheme: a page cannot name another host to be fetched.
+  if (urlRefusal(origin) || urlRefusal(where)) return null;
+  const o = new URL(origin); const w = new URL(where);
+  if (o.protocol !== w.protocol || o.host !== w.host) return null;
   return { id: String(it.id), origin, page: where, version, pageUrl: where };
 }
 

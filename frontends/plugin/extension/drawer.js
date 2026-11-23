@@ -10735,14 +10735,16 @@ ${bubbleShellHtml()}`;
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">This and the ${n} above</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting': case 'working':
-          return `<h2>Preparing your post…</h2><p>Writing the note and asking your publish tool what it would do. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+          return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
         case 'waiting':
           return `<h2>A publish is waiting</h2><p>${run.title ? '“' + esc(run.title) + '” is ' : 'A blyg post is '}${esc(run.mode || 'under way')}. Review it to carry on.</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-review">Review</button>${closeBtn}</div>`;
         case 'confirming': {
           const plan = ((run.steps || []).filter(s => s.step === 'plan').pop() || {}).output || '';
+          const prep = ((run.steps || []).filter(s => s.step === 'prepare' && s.exit === 0).pop() || {}).output || '';
           return `<h2>Publish this?</h2>
             <p class="pubwhere">Written to <code>${esc(run.note_rel || '')}</code></p>
+            ${prep ? `<h3>What was prepared first</h3><pre class="pubprep">${esc(prep)}</pre>` : ''}
             <h3>The note, as it will be published</h3><pre class="pubnote">${esc(run.note_text || '')}</pre>
             <h3>What your publish tool says it will do</h3><pre class="pubplan">${esc(plan || '(it printed nothing)')}</pre>
             <p class="pubwarn">Publish puts this on your live site and cannot be undone from here. The plan lists who will be told and anything irreversible; read it first.</p>

@@ -36,7 +36,7 @@ test('the mode table: every move is either listed or refused, the retry is guard
   for (const from of R.RUN_MODES) {
     for (const to of R.RUN_MODES) {
       const run = { mode: from, id: 'x', token: 'y', failed_step: 'publish', steps: [] };
-      const want = R.RUN_MOVES[from].includes(to) && !(from === 'failed' && ['planning', 'applying'].includes(to));
+      const want = R.RUN_MOVES[from].includes(to) && !(from === 'failed' && ['preparing', 'planning', 'applying'].includes(to));
       assert.equal(R.canMove(from, to, run), want, `${from} → ${to}`);
       const file = path.join(dir, `${from}-${to}.json`);
       fs.writeFileSync(file, JSON.stringify(run));
@@ -46,12 +46,12 @@ test('the mode table: every move is either listed or refused, the retry is guard
       else { assert.throws(() => book.move(to), R.IllegalMove, `${from} → ${to} refused`); assert.equal(book.mode, from, 'and the mode did not change'); illegal++; }
     }
   }
-  assert.ok(legal >= 25 && illegal >= 100, `${legal} legal, ${illegal} illegal`);
+  assert.ok(legal >= 28 && illegal >= 110, `${legal} legal, ${illegal} illegal`);
   assert.throws(() => new R.RunBook({}).move('nonsense'), /no such mode/);
-  for (const step of ['plan', 'apply', 'publish']) {
+  for (const step of ['prepare', 'plan', 'apply', 'publish']) {
     const to = R.RETRY_FOR[step];
     assert.ok(R.canMove('failed', to, { failed_step: step }));
-    for (const other of ['planning', 'applying', 'publishing'].filter(x => x !== to)) assert.equal(R.canMove('failed', other, { failed_step: step }), false, `${step} fails → ${other}`);
+    for (const other of ['preparing', 'planning', 'applying', 'publishing'].filter(x => x !== to)) assert.equal(R.canMove('failed', other, { failed_step: step }), false, `${step} fails → ${other}`);
   }
   assert.deepEqual(R.RUN_MODES.filter(m => !R.RUN_FINISHED.includes(m) && m !== 'idle' || false).sort(), [...R.RUN_LIVE].sort());
   fs.rmSync(dir, { recursive: true, force: true });
@@ -384,4 +384,83 @@ test('hostile comment text cannot change where the file goes', async t => {
     await b.pub.cancel({ id: v.id, token: v.token });
   }
   assert.deepEqual(fs.readdirSync(rig.top).filter(n => n !== '.git').sort(), ['README.md', '_notes']);
+});
+
+// ---- the optional prepare step -------------------------------------------------------------------
+test('with a prepare command the run goes drafted > preparing > planning > planned, prepare runs before plan, and its output is kept with the plan', async t => {
+  const rig = makeRig({ prepare: true, discard: true }); t.after(rig.done);
+  const b = boot(rig);
+  const modes = [];
+  b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
+  assert.ok(b.start().ok);
+  await until(() => b.mode() === 'planned', 'planned');
+  assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned']);
+  assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan']);
+  const v = b.pub.current();
+  assert.deepEqual(v.steps.map(s => [s.step, s.exit]), [['prepare', 0], ['plan', 0]]);
+  assert.equal(rig.calls()[0].argv[3], v.note_rel, 'prepare gets {note} as one argument too');
+  // Cancel: discard runs because prepare ran, and it is the owner's one undo for both
+  const c = await b.pub.cancel({ id: v.id, token: v.token });
+  assert.ok(c.ok);
+  assert.deepEqual(rig.calls().map(x => x.step), ['prepare', 'plan', 'discard']);
+  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), false);
+});
+
+test('without a prepare command the run goes straight from drafted to planning, as before', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const b = boot(rig);
+  const modes = [];
+  b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  assert.deepEqual(modes, ['drafted', 'planning', 'planned']);
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
+});
+
+test('prepare fails: failed(prepare) with its output, plan never runs, nothing retries by itself; the owner\'s click retries prepare only, then plan', async t => {
+  const rig = makeRig({ prepare: true, discard: true }); t.after(rig.done);
+  rig.control({ prepare: 'fail' });
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'failed', 'failed');
+  let v = b.pub.current();
+  assert.equal(v.failed_step, 'prepare');
+  assert.match(v.failed_reason, /prepare exited with code 1/);
+  assert.match(v.steps[0].output, /something broke/);
+  await sleep(250);
+  assert.deepEqual(rig.calls().map(c => c.step), ['prepare'], 'plan did not run and nothing was retried');
+  assert.equal((await b.pub.confirm({ id: v.id, token: v.token })).ok, false);
+  rig.control({});
+  assert.ok((await b.pub.retry({ id: v.id, token: v.token })).ok);
+  await until(() => b.mode() === 'planned', 'planned after retry');
+  assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'prepare', 'plan']);
+  // a plan failure after a good prepare retries plan only
+  const rig2 = makeRig({ prepare: true }); t.after(rig2.done);
+  rig2.control({ plan: 'fail' });
+  const b2 = boot(rig2);
+  b2.start(); await until(() => b2.mode() === 'failed', 'plan failed');
+  v = b2.pub.current();
+  assert.equal(v.failed_step, 'plan');
+  rig2.control({});
+  await b2.pub.retry({ id: v.id, token: v.token });
+  await until(() => b2.mode() === 'planned', 'planned');
+  assert.deepEqual(rig2.calls().map(c => c.step), ['prepare', 'plan', 'plan'], 'prepare is not run again');
+});
+
+test('abandon after a failed prepare takes the draft away through discard', async t => {
+  const rig = makeRig({ prepare: true, discard: true }); t.after(rig.done);
+  rig.control({ prepare: 'fail' });
+  const b = boot(rig);
+  b.start(); await until(() => b.mode() === 'failed', 'failed');
+  const v = b.pub.current();
+  const a = await b.pub.abandon({ id: v.id, token: v.token });
+  assert.ok(a.ok);
+  assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'discard']);
+  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), false);
+});
+
+test('a restart while preparing is interrupted like any other live mode', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-prep-'));
+  const file = path.join(dir, 'r.json');
+  fs.writeFileSync(file, JSON.stringify({ mode: 'preparing', id: 'a', token: 't' }));
+  assert.equal(new R.RunBook({ file }).mode, 'interrupted');
+  fs.rmSync(dir, { recursive: true, force: true });
 });

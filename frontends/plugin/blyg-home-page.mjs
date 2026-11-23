@@ -34,6 +34,8 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
 <label for="escape">Escaping in the body<select id="escape">${['liquid', 'none'].map(v => `<option value="${v}"${(s.escape || defaults.escape) === v ? ' selected' : ''}>${v === 'liquid' ? 'liquid (a Jekyll site: {{ }} and {% %} are made inert)' : 'none (the site is not Jekyll)'}</option>`).join('')}</select></label>
 <label for="template">Front matter template<small>Lines of “key: value”. Placeholders: \${title} (a quoted string, as the whole value), \${created}, \${released}, \${slug}, and \${blyg_keys} on a line of its own (the quote’s sources and the post it responds to).</small></label>
 <textarea id="template">${esc(s.template || defaults.template)}</textarea>
+<label for="prepare">Command: prepare (optional)<small>Runs after the note is written and before plan: for a site that must commit the note or fetch what it quotes first. A JSON list with {note}.</small></label>
+<input type="text" id="prepare" value="${cmd('prepare')}">
 <label for="plan">Command: plan<small>A JSON list, one argument each; {note} becomes the note’s path inside the work tree, as ONE argument. Run in the work tree, never through a shell.</small></label>
 <input type="text" id="plan" value="${cmd('plan')}">
 <label for="apply">Command: apply</label><input type="text" id="apply" value="${cmd('apply')}">
@@ -55,7 +57,7 @@ ${errors && errors.length ? `<p id="now" class="bad" style="color:var(--bad)">No
     e.preventDefault();var out=$('out');out.className='';out.textContent='Saving…';
     var body;
     try{
-      var commands={plan:cmd('plan'),apply:cmd('apply'),publish:cmd('publish')};var d=cmd('discard');if(d)commands.discard=d;
+      var commands={plan:cmd('plan'),apply:cmd('apply'),publish:cmd('publish')};var d=cmd('discard');if(d)commands.discard=d;var pp=cmd('prepare');if(pp)commands.prepare=pp;
       body={settings:{folder:$('folder').value.trim(),filename:$('filename').value.trim(),timezone:$('timezone').value.trim(),escape:$('escape').value,
         template:$('template').value,commands:commands,env_pass:$('env_pass').value.split(/\\s+/).filter(Boolean)}};
     }catch(err){out.className='bad';out.textContent='A command is not a JSON list: '+err.message;return}

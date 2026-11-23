@@ -88,8 +88,8 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     else { let threw = false; try { CFG.pubMove(from, to); } catch (_) { threw = true; } ok(`pubMove ${from} → ${to} refused`, threw); illegal++; }
   }
   ok('the table has legal and illegal moves', legal >= 20 && illegal >= 40, `${legal}/${illegal}`);
-  eq('server modes → views', ['idle', 'drafted', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published', 'failed', 'interrupted', 'cancelled', 'abandoned'].map(CFG.pubViewOf),
-    ['closed', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'closed', 'closed']);
+  eq('server modes → views', ['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published', 'failed', 'interrupted', 'cancelled', 'abandoned'].map(CFG.pubViewOf),
+    ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'closed', 'closed']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
   eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'cancel', 'abandon']);
   eq('only confirm and retry need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry']);
@@ -162,6 +162,18 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('published', { published: { title: 't', permalink: '/b/t', address: 'javascript:alert(1)' } });
   click(q('[data-act="pub-close"]'));
   eq('closed', view(), 'closed');
+}
+
+// ---- what prepare did is shown with the plan -----------------------------------------------------------------
+{
+  const server = companion();
+  server.run = server.make('planned', { steps: [{ step: 'prepare', exit: 0, output: 'Imported: <i>a post</i>' }, { step: 'plan', exit: 0, output: 'PLAN' }] });
+  const { q, qa, view, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  eq('prepare\'s output is shown, as text, before the note and the plan', [view(), q('pre.pubprep').textContent, qa('.pubdlg i').length, q('pre.pubplan').textContent], ['confirming', 'Imported: <i>a post</i>', 0, 'PLAN']);
+  const none = companion(); none.run = none.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] });
+  const y = await make({ server: none }); await tick(10); y.click(y.q('[data-act="pub-review"]')); await tick();
+  eq('no prepare, no such block', y.qa('pre.pubprep').length, 0);
 }
 
 // ---- cancel, and Escape --------------------------------------------------------------------------

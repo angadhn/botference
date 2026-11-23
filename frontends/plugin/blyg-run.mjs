@@ -7,13 +7,14 @@
 //
 //   idle         no run (the field's value when nothing has been started)
 //   drafted      the note file is written (and nothing else has happened)
+//   preparing    the optional `prepare` command is running (stage the note, fetch what it quotes)
 //   planning     the `plan` command is running
 //   planned      the plan is in: the owner is looking at the note and the plan
 //   applying     the `apply` command is running (the owner clicked Publish)
 //   applied      apply is done; `publish` is next (a moment, not a place to wait)
 //   publishing   the `publish` command is running (this is the one that goes live)
 //   published    done: recorded on the thread(s)
-//   failed       a step failed (`failed_step` says which); nothing is retried by itself
+//   failed       a step failed (`failed_step` says which: prepare, plan, apply or publish); nothing is retried by itself
 //   cancelled    the owner cancelled at the confirmation; the draft was taken away
 //   abandoned    the owner gave the run up
 //   interrupted  the companion stopped mid-run; the record only offers "show" and "abandon"
@@ -36,7 +37,7 @@ import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runComm
 import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
-export const RUN_MODES = Object.freeze(['idle', 'drafted', 'planning', 'planned', 'applying', 'applied', 'publishing',
+export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
   'published', 'failed', 'cancelled', 'abandoned', 'interrupted']);
 /** Finished: a new run may start. `idle` is "nothing yet". */
 export const RUN_FINISHED = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
@@ -44,21 +45,23 @@ export const RUN_FINISHED = Object.freeze(['idle', 'published', 'cancelled', 'ab
 export const RUN_LIVE = Object.freeze(RUN_MODES.filter(m => !RUN_FINISHED.includes(m)));
 export const RUN_MOVES = Object.freeze({
   idle: Object.freeze(['drafted']),
-  drafted: Object.freeze(['planning', 'cancelled', 'failed', 'interrupted']),
+  // `prepare` is optional: a run with none goes straight from drafted to planning
+  drafted: Object.freeze(['preparing', 'planning', 'cancelled', 'failed', 'interrupted']),
+  preparing: Object.freeze(['planning', 'failed', 'interrupted']),
   planning: Object.freeze(['planned', 'failed', 'interrupted']),
   planned: Object.freeze(['applying', 'cancelled', 'interrupted']),
   applying: Object.freeze(['applied', 'failed', 'interrupted']),
   applied: Object.freeze(['publishing', 'failed', 'interrupted']),
   publishing: Object.freeze(['published', 'failed', 'interrupted']),
   // a failed step is tried again only by the owner's click, and only that step
-  failed: Object.freeze(['planning', 'applying', 'publishing', 'abandoned', 'interrupted']),
+  failed: Object.freeze(['preparing', 'planning', 'applying', 'publishing', 'abandoned', 'interrupted']),
   interrupted: Object.freeze(['abandoned']),
   published: Object.freeze(['drafted']),
   cancelled: Object.freeze(['drafted']),
   abandoned: Object.freeze(['drafted']),
 });
 /** Which move re-runs which failed step. */
-export const RETRY_FOR = Object.freeze({ plan: 'planning', apply: 'applying', publish: 'publishing' });
+export const RETRY_FOR = Object.freeze({ prepare: 'preparing', plan: 'planning', apply: 'applying', publish: 'publishing' });
 export class IllegalMove extends Error {}
 /** Is this move allowed for this record? (the table, plus the one guard on a retry) */
 export function canMove(from, to, run = {}) {
@@ -202,7 +205,15 @@ export function createPublisher(deps) {
   const pushStep = rec => { if (rec) book.run.steps = [...(book.run.steps || []), rec]; };
 
   // ---- Step A --------------------------------------------------------------------
+  // Step A: the optional prepare, then plan. Each is a step with its own mode; a failure stops there (failed_step names it).
   async function runPlan() {
+    const home = settingsNow();
+    if (home.ok && home.settings.commands.prepare && !(book.run.steps || []).some(s => s.step === 'prepare' && s.exit === 0)) {
+      book.move('preparing');
+      const p = await step('prepare');
+      pushStep(p.record);
+      if (!p.ok) return book.move('failed', { failed_step: 'prepare', failed_reason: p.reason, steps: book.run.steps });
+    }
     book.move('planning');
     const s = await step('plan');
     pushStep(s.record);
@@ -276,7 +287,7 @@ export function createPublisher(deps) {
       chained_to: earlier ? { title: earlier.title } : null, day: date,
     });
     // Step A's second half runs in the background; its end is announced by the mode
-    runPlan().catch(e => { try { book.move('failed', { failed_step: 'plan', failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* already moved */ } });
+    runPlan().catch(e => { try { book.move('failed', { failed_step: book.mode === 'preparing' ? 'prepare' : 'plan', failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* already moved */ } });
     return { ok: true, view: viewOf(run) };
   }
 
@@ -339,7 +350,7 @@ export function createPublisher(deps) {
     const bad = owned(id, token); if (bad) return bad;
     const to = book.mode === 'failed' ? RETRY_FOR[book.run.failed_step] : '';
     if (!to || !canMove('failed', to, book.run)) return fail(409, 'there is no failed step to try again');
-    if (to === 'planning') runPlan().catch(() => {});
+    if (to === 'planning' || to === 'preparing') runPlan().catch(() => {});
     else runFrom(to === 'applying' ? 'apply' : 'publish');
     return { ok: true, view: viewOf(book.run) };
   }
@@ -355,7 +366,7 @@ export function createPublisher(deps) {
     let text = null;
     try { text = fs.readFileSync(abs, 'utf8'); } catch { out.note = 'the note file is already gone'; return out; }
     if (!run.created || sha(text) !== run.note_sha) { out.note = 'the note was changed after it was written, so it was left where it is'; return out; }
-    if (S.commands.discard && (run.steps || []).some(s => s.step === 'plan')) {
+    if (S.commands.discard && (run.steps || []).some(s => s.step === 'plan' || s.step === 'prepare')) {
       const d = await step('discard');
       out.discard = d.record ? d.record.output : '';
       if (!d.ok) { out.note = `the discard command failed (${d.reason}); the note was left where it is`; return out; }

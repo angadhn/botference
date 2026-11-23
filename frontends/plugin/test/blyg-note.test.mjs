@@ -136,6 +136,28 @@ test('hostile PAGE fields: title, URL, and a Blygger post\'s id, origin and vers
   assert.ok(!/\{\{/.test(rl.text));
 });
 
+test('what a note makes a site FETCH (blyg_sources): a private, local or other-host address from a hostile page is never written; the page falls back to an ordinary quote', () => {
+  const hostile = [
+    { origin: 'http://127.0.0.1:4189/', page: 'http://127.0.0.1:4189/t/' + ID + '/' },
+    { origin: 'http://localhost/blyg/', page: 'http://localhost/blyg/t/' + ID + '/' },
+    { origin: 'https://10.0.0.5/blyg/', page: 'https://10.0.0.5/blyg/t/' + ID + '/' },
+    { origin: 'http://[::1]/blyg/', page: 'http://[::1]/blyg/t/' + ID + '/' },
+    { origin: 'http://169.254.169.254/', page: 'http://169.254.169.254/latest/' },
+    { origin: 'https://printer.local/blyg/', page: 'https://printer.local/blyg/t/' + ID + '/' },
+    { origin: ORIGIN, page: 'https://evil.example.test/t/' + ID + '/' },            // a page on ANOTHER host than its origin
+    { origin: ORIGIN, page: 'http://blyg.example.test/notes/t/' + ID + '/' },          // a downgraded scheme
+    { origin: ORIGIN, page: 'file:///etc/passwd' },
+  ];
+  for (const h of hostile) {
+    const page = blygPage([thread('t1', PASSAGE, 'words', { blyg: stamp() })], { blyg: { status: 'blyg', item: { id: ID, version: 2, ...h } } });
+    assert.equal(N.blygItemOf(page), null, JSON.stringify(h));
+    const r = make(page, page.threads);
+    assert.ok(r.ok, JSON.stringify(h));
+    assert.ok(!/blyg_sources|!\[\[|origin:/.test(r.text), `nothing for a site to fetch: ${JSON.stringify(h)}`);
+  }
+  assert.ok(N.blygItemOf(blygPage([thread('t1', PASSAGE, 'w', { blyg: stamp() })])), 'the ordinary public case still works');
+});
+
 test('the owner\'s own words: trusted as content, but Liquid is made inert, front matter cannot be reached, a deliberate wikilink stays', () => {
   const page = webPage([thread('t1', '', 'Use {{ page.title }} and {% include x %}.\n\nSee [[' + ID + ' | that post]].\n\n---\n\ntitle: nope')]);
   const r = make(page, page.threads);

@@ -8,7 +8,7 @@
 //   filename   a pattern for the note's file name: `${slug}` and `${date}`, ending in `.md`
 //   template   the front matter (blyg-note.mjs checkTemplate), and `escape`
 //              ('liquid' | 'none'): whether Jekyll's Liquid is made inert in the body
-//   commands   `plan`, `apply`, `publish` (and an optional `discard`): argv arrays
+//   commands   `plan`, `apply`, `publish` (and an optional `prepare` and `discard`): argv arrays
 //              with a `{note}` placeholder, run with execFile semantics (argv, shell: false),
 //              never a shell, in the work tree, each under a time limit, with a minimal environment
 //
@@ -28,8 +28,10 @@ import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone
 
 // ---- the limits, stated once ---------------------------------------------------
 export const STEPS = Object.freeze(['plan', 'apply', 'publish']);
-export const COMMAND_KEYS = Object.freeze([...STEPS, 'discard']);
-export const TIME_LIMITS_MS = Object.freeze({ plan: 120_000, apply: 900_000, publish: 1_800_000, discard: 60_000 });
+// `prepare` (optional) runs before `plan`, after the note is written: for a site that has to stage the note or fetch what it
+// quotes first. `discard` (optional) undoes whatever prepare or plan did, when the owner cancels or abandons before apply.
+export const COMMAND_KEYS = Object.freeze(['prepare', ...STEPS, 'discard']);
+export const TIME_LIMITS_MS = Object.freeze({ prepare: 300_000, plan: 120_000, apply: 900_000, publish: 1_800_000, discard: 60_000 });
 export const OUTPUT = Object.freeze({
   maxBuffer: 4 * 1024 * 1024,   // a command that prints more than this is stopped
   kept: 64 * 1024,              // what is stored and shown: the first 8 KiB and the last 56 KiB
@@ -153,7 +155,9 @@ export function validateHome(raw, { env = process.env } = {}) {
   if (extra.length) errors.push(`unknown command ${JSON.stringify(extra[0]).slice(0, 30)}: the commands are ${COMMAND_KEYS.join(', ')}`);
   const commands = {};
   for (const k of STEPS) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
-  if (cmds.discard !== undefined && cmds.discard !== null) { const a = checkArgv('discard', cmds.discard, top || process.cwd(), errors); if (a) commands.discard = a; }
+  for (const k of ['prepare', 'discard']) {
+    if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
+  }
   if (errors.length) return { ok: false, errors, settings: null };
   return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands } };
 }
