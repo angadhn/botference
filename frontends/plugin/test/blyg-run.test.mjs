@@ -682,3 +682,39 @@ test('published_marker: a publish that exits 0 without the done marker is failed
   assert.match(H.validateHome({ ...rig.home, published_marker: 'a\nb' }).errors.join(), /published_marker must be one line/);
   assert.equal(H.validateHome({ ...rig.home, published_marker: undefined }).settings.published_marker, '', 'without it the exit code decides');
 });
+
+test('the abandon command must carry {note} (so the site\'s command ends only THAT note\'s run) and gets the note\'s path as one argument', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const noNote = { ...rig.home, commands: { ...rig.home.commands, abandon: [process.execPath, FAKE, rig.log, rig.ctl, 'abandon'] } };
+  assert.match(H.validateHome(noNote).errors.join(), /command “abandon” must have \{note\}/);
+  const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
+  const b = boot(rig, { config: home });
+  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  const v = b.pub.current();
+  rig.control({ publish: 'sleep' });
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publishing');
+  b.pub.stopAll(); await sleep(150);
+  const rec = JSON.parse(fs.readFileSync(path.join(rig.out, 'run.json'), 'utf8'));
+  const file = path.join(rig.out, 'run3.json'); fs.writeFileSync(file, JSON.stringify(rec));
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: () => null, savePage: () => {} });
+  const v2 = pub.current();
+  rig.control({});
+  assert.ok((await pub.abandon({ id: v2.id, token: v2.token })).ok);
+  assert.equal(rig.calls().at(-1).step, 'abandon');
+  assert.equal(rig.calls().at(-1).argv[3], v.note_rel, 'the abandon command was told which note');
+});
+
+test('abandon after apply runs the site\'s abandon command only with the settings the run started under (a changed setting never reaches a command)', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
+  const file = path.join(rig.out, 'run4.json');
+  fs.writeFileSync(file, JSON.stringify({ mode: 'publishing', id: 'abc', token: 'tok', note_rel: '_notes/x.md', settings_fp: 'not-the-fingerprint-of-these-settings', steps: [{ step: 'apply', exit: 0, output: 'A' }], thread_ids: ['t1'], page_url: 'u' }));
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: () => null, savePage: () => {} });
+  assert.equal(pub.current().mode, 'interrupted');
+  const a = await pub.abandon({ id: 'abc', token: 'tok' });
+  assert.ok(a.ok);
+  assert.deepEqual(rig.calls(), [], 'no command ran under changed settings');
+});
