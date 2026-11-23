@@ -3539,7 +3539,8 @@ export function safeHandler(req, res) {
   // A hosted companion that takes Access tokens checks the request's token FIRST, once, before anything is routed
   // (the routes ask who is asking synchronously). The body is not read meanwhile: nothing has listened to it yet.
   if (access && HOSTED && !isLocalDirect(req)) {
-    access.resolve(req).then(() => serveRequest(req, res), () => serveRequest(req, res));
+    const go = () => { if (!req.destroyed) serveRequest(req, res); };   // a caller that hung up while we checked is not served
+    access.resolve(req).then(go, go);
     return;
   }
   return serveRequest(req, res);
@@ -6877,8 +6878,9 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   setInterval(() => {
     // a connection whose Access token has expired is closed here (the client reconnects with a fresh one)
     const t = Date.now();
-    for (const res of [...sseClients]) { if (connectionLive(standingOf.get(res), t)) res.write('data: {"type":"ping"}\n\n'); else { sseClients.delete(res); res.end(); } }
-    for (const ws of [...wsClients]) { if (connectionLive(standingOf.get(ws), t)) ws.send('{"type":"ping"}'); else { wsClients.delete(ws); ws.close(); } }
-    syncWatchers();
+    let closed = 0;
+    for (const res of [...sseClients]) { if (connectionLive(standingOf.get(res), t)) res.write('data: {"type":"ping"}\n\n'); else { sseClients.delete(res); res.end(); closed++; } }
+    for (const ws of [...wsClients]) { if (connectionLive(standingOf.get(ws), t)) ws.send('{"type":"ping"}'); else { wsClients.delete(ws); ws.close(); closed++; } }
+    if (closed) syncWatchers();
   }, HEARTBEAT_MS).unref();
 }
