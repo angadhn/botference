@@ -12883,7 +12883,8 @@ and never asks for a token.
 | `access` | only a valid Cloudflare Access token | off (`/auth` and `/signout` are 404, the login page is never served, a Bearer password or `?auth=` is ignored) | no |
 | `either` | a valid token when one is present, otherwise the password path | on, but only for a request with no token | yes |
 
-`either` is a **temporary** mode for moving over without locking the owner out. Move on to `access`.
+In `either` a password guest may not take the name of an Access collaborator or of the owner (any case); if the owner renames themselves
+to a collaborator's name, that collaborator appears under a name with a short suffix. `either` is a **temporary** mode for moving over without locking the owner out. Move on to `access`.
 
 Settings (all required for `access` and `either`):
 
@@ -12893,11 +12894,16 @@ Settings (all required for `access` and `either`):
   "team": "myteam.cloudflareaccess.com",
   "aud": "<the application's AUD tag>",
   "owner_email": "owner@example.test",
+  "extension_ids": ["<the extension's id>"],
   "collaborators": ["ada@example.test", { "email": "bo@example.test", "handle": "bo" }]
 }
 ```
 
-`certs_url_for_tests` (optional) points the key fetch at a local fake; it exists for the test suite only.
+`extension_ids` is required (a list of 32-letter ids): with Access the browser's cookie is the credential, so which extensions may
+call is never "any". Find the id on the browser's extensions page (brave://extensions or chrome://extensions, Developer mode on):
+it is shown under the extension's name. An unpacked extension's id follows the folder it was loaded from: loading it from another
+folder changes the id, so update the list. `certs_url_for_tests` is refused unless the process was started with
+`PLUGIN_ACCESS_TEST_CERTS=1` (the test suite): the key list is always the team's, over https.
 
 ### Standing
 
@@ -12926,7 +12932,26 @@ token that is present but refused is not rescued by a password.
 closes the rest, so a stream or socket never outlives the token that opened it; the client reconnects with a fresh one (or, if
 Cloudflare's session has ended, is asked to sign in).
 
-Unchanged: the Host allow-list, Origin checks, body rules, every owner-only refusal, and the loopback being the owner.
+### Where a request came from (the lock that matters most)
+
+The `CF_Authorization` cookie that Cloudflare turns into the assertion header is sent by the browser on ANY request to the host
+that carries it, including one a page on another website makes. So before anything else, in every hosted mode, one function
+(`hosted.mjs` sourceVerdict, a named list `trusted | unmarked | foreign`) judges where the request came from:
+
+| request | verdict | result |
+|---|---|---|
+| Origin is the configured extension (`extension_ids`), or the companion's own page over https, or a configured public name over https | trusted | continues |
+| no Origin and no fetch metadata saying cross-site/same-site (curl, node, python, a typed address) | unmarked | continues; a token-authenticated change must say `application/json` |
+| a followed link: GET, `Sec-Fetch-Mode: navigate`, `Sec-Fetch-Dest: document` | unmarked | continues |
+| any other Origin, `null`, a sibling subdomain, our own name over http, an extension not on the list | foreign | 403, for every method, every SSE stream and every WebSocket upgrade |
+| no Origin but `Sec-Fetch-Site: cross-site` or `same-site` (an image, script, frame or form post) | foreign | 403 |
+
+Sibling subdomains are same-site: neither SameSite nor the Origin of a sibling can be trusted, so the Origin check is the real lock.
+Password mode: a foreign page's change, stream or socket is now refused too; a plain foreign read is as it was (a bearer is not ambient and the
+page cannot read the answer). No GET changes anything the person chose: `GET /page` only writes derived, idempotent rendering of anchors, so a
+followed link cannot change state.
+
+Unchanged: the Host allow-list, body rules, every owner-only refusal, and the loopback being the owner.
 CORS: in `access` and `either` an allowed origin is echoed with `access-control-allow-credentials: true`, and no wildcard is
 offered at all (a wildcard cannot carry credentials).
 
@@ -12938,8 +12963,12 @@ offered at all (a wildcard cannot carry credentials).
    Streams are closed at the token's expiry, so a shorter session means more reconnects, never a stale sign-in.
 4. Advanced settings > Cross-Origin Resource Sharing (CORS): turn on **Bypass options requests to origin**, so preflights reach
    the companion, which answers them itself. (Otherwise Cloudflare answers a preflight, which carries no cookie, with a 403.)
-5. Cookie settings: leave HttpOnly as it is and SameSite at its default (None for the application's own cookie); do not set
-   SameSite to Strict (Cloudflare warns of redirect loops) and do not turn on the binding cookie.
+5. Cookie settings: leave HttpOnly as it is and SameSite at its default (None). Do not set Strict (Cloudflare warns of redirect
+   loops) and do not turn on the binding cookie. SameSite=Lax would be a second lock for page-to-page requests, but nothing
+   found documents whether Chrome or Brave then send the cookie on a service worker's fetch and on a WebSocket from the extension
+   (those are cross-site requests; Chrome's pages on extensions and host permissions do not mention SameSite, and the one developer
+   thread found says only that the cookie is sent with host permissions and is silent on SameSite). So None stays the documented
+   setting and the Origin check above is the lock; if you try Lax and the extension shows "sign-in needed" after signing in, go back.
 6. Copy the application's **Audience (AUD) tag** and the team domain into `plugin-access.json`.
 
 ### Moving a live companion over without a lockout
@@ -12964,12 +12993,16 @@ An answer that is not the companion's (a redirect, Cloudflare's page with a 200/
 `signin: true`) is never data: the connection mode (`CONN_MODES`) becomes `signin`, the drawer shows one line and a button
 (a trusted click only) that opens the companion's address in a new tab, and the socket reconnects by itself once the companion
 answers (or the sign-in tab is closed). A signed-in person Cloudflare refuses (its own 403 page) is told so, not asked to sign in.
-The options page asks `GET /auth-mode` (or reads Cloudflare's sign-in answer as `access`) and hides the password box for an
+A password saved on the options page is never sent to a companion that has said it uses Access: the mode is asked first, without the
+password (`GET /auth-mode`, or Cloudflare's sign-in answer); `access` is remembered for that address, and only `access` is ever
+remembered, so no later answer can make the extension send the password again. Saving on the options page forgets it (and asks afresh);
+the page offers to clear the saved password. While sign-in is needed no socket is tried: the worker only asks, and a good answer is
+what opens one. The options page asks `GET /auth-mode` (or reads Cloudflare's sign-in answer as `access`) and hides the password box for an
 `access` companion; password companions keep it.
 
-Not settled by a test here: that every browser sends the cookie on a WebSocket handshake and on a worker `fetch`. Chrome documents
-that an extension's request to a host it holds permission for counts as same-site, but that exception stops applying when
-third-party cookies are blocked (Brave's default; Chrome with the setting on). If the cookie is not sent, the symptom is the
+Not settled by a test here: that every browser sends the cookie on a WebSocket handshake and on a worker `fetch`. A developer thread
+reports that a worker's fetch carries the browser's cookies when the extension holds host permission, but nothing documents it, and
+third-party cookie blocking (Brave's default; Chrome with the setting on) may stop it. If the cookie is not sent, the symptom is the
 `signin` mode even after signing in. The fallbacks are, in order: allow cookies for the companion's host in the browser; or, as
 an option the owner may choose and not a default, a Cloudflare service token held by the extension. That is a long-lived
 password under another name, and the companion refuses service tokens as it stands, so choosing it also means a policy change
