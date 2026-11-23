@@ -327,3 +327,21 @@ test('a passage that is only a URL (or holds one) stays text (a code span): no a
   assert.ok(!/\n>\s*https?:\/\/hostile/i.test(body));
   assert.match(body, /\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n/, 'the source line is a plain bare URL: the card');
 });
+
+test('short posts are text: raw HTML in the owner\'s own and an adopted text is written so it renders literally; markdown, an http(s) autolink and code are kept', () => {
+  const evil = 'a < b and <script>alert(1)</script> <img src=x onerror=alert(1)> <iframe src=//x></iframe> <style>*{x:y}</style> <!-- c --> <details open ontoggle=alert(1)> [x](javascript:alert(1)) <https://ok.example.test/a> **bold** `<code>` [h](https://ok.example.test)';
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Own: ' + evil + '\n/tk go\n'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', text: 'Adopted: ' + evil }] }] }]);
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  const body = r.text.split('\n---\n').slice(1).join('');
+  const noCode = body.replace(/`[^`]*`/g, '');
+  assert.ok(!/<(script|img|iframe|style|details|!--)/i.test(noCode), 'no raw HTML tag outside code: ' + body);
+  assert.match(body, /a &lt; b/, '“a < b” reads as typed');
+  assert.ok(!/\]\(javascript/i.test(body), 'no javascript: link');
+  assert.equal((body.match(/<https:\/\/ok\.example\.test\/a>/g) || []).length, 2, 'the autolink is kept, in each');
+  assert.equal((body.match(/\*\*bold\*\*/g) || []).length, 2, 'markdown is kept');
+  assert.equal((body.match(/`<code>`/g) || []).length, 2, 'a code span shows < literally: not double-escaped');
+  assert.equal((body.match(/\[h\]\(https:\/\/ok\.example\.test\)/g) || []).length, 2, 'an https link is kept');
+  // a stray bar never becomes a table; a wikilink keeps its own
+  assert.equal(N.neutraliseHtml('a | b\n- | -\nsee [[x | y]]'), 'a \\| b\n- \\| -\nsee [[x | y]]');
+});

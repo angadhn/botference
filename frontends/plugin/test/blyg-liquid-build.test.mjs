@@ -47,6 +47,11 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     text: 'LEAK {% cycle site.title %} {% include_relative zz-private.md %} <script>alert(1)</script> [x](javascript:alert(1)) " onmouseover="x' }] }] }] };
   cases['liq-url'] = { url: 'https://news.example.test/{{ site.title }}/{% cycle site.url %}?q={%25', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('plain')] }] };
   cases['liq-url-only'] = { url: 'https://news.example.test/urlonly', title: 'S', threads: [{ id: 't', quote: 'before\nhttps://hostile-card.example.test/steal\nafter', msgs: [mine('plain')] }] };
+  const html = '<script>alert(1)</script> <img src=x onerror=alert(1)> <iframe src=//x></iframe> <style>*{x:y}</style> <!-- c --> <details open ontoggle=alert(1)>t</details> [x](javascript:alert(1)) <https://ok.example.test/a> a < b';
+  cases['html-owner'] = { url: 'https://news.example.test/ho', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('Own: ' + html)] }] };
+  cases['html-adopted'] = { url: 'https://news.example.test/ha', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', text: html }] }] }] };
+  cases['html-agent'] = { url: 'https://news.example.test/hg', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', text: html }] }] }] };
+  cases['html-passage'] = { url: 'https://news.example.test/hp', title: 'S', threads: [{ id: 't', quote: html, msgs: [mine('plain')] }] };
   cases['liq-attr'] = { url: 'https://news.example.test/attr', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('"><script>alert(1)</script> \' onfocus=\'x say "hello" & <b>bold</b>')] }] };
   for (const [slug, page] of Object.entries(cases)) {
     const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug });
@@ -76,8 +81,8 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     assert.ok(!html.includes('PRIVATE-FILE-MARKER'), `${slug}: nothing of another file`);
     const body = (/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1];
     assert.ok(!body.includes(siteTitle), `${slug}: Liquid did not run (the site title is not in the post body)`);
-    // (the owner's own words are theirs: raw HTML they typed stays; every other source is text)
-    if (slug !== 'liq-attr') assert.ok(!/<script|href="javascript:|on\w+="/i.test(body), `${slug}: no live script or javascript: link`);
+    // short posts are text: raw HTML is never live, whoever wrote it
+    assert.ok(!/<script|href="javascript:|on\w+="/i.test(body), `${slug}: no live script or javascript: link`);
     // every meta attribute is closed: og:title and twitter:title hold the whole value on one tag
     for (const m of html.matchAll(/<meta (?:property="og:title"|name="twitter:title") content="([^"]*)"/g)) assert.ok(!/<script/.test(m[1]), `${slug}: ${m[1]}`);
     assert.ok(!/onmouseover="|onfocus='x/.test(html.replace(/&quot;/g, '')) || !/<[^>]*\sonmouseover="x/.test(html), `${slug}: no injected attribute`);
@@ -87,6 +92,12 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   assert.match(lit, /before \{% cycle site\.title %\} after/);
   assert.match(decode(fs.readFileSync(path.join(site, 'b', 'liq-0.html'), 'utf8')), /\{% include_relative zz-private\.md %\}/);
   assert.match(decode(fs.readFileSync(path.join(site, 'b', 'liq-3.html'), 'utf8')), /\{% raw %\}\{\{ site\.url \}\}\{% endraw %\}/);
+  for (const k of ['html-owner', 'html-adopted', 'html-agent', 'html-passage']) {
+    const h = fs.readFileSync(path.join(site, 'b', `${k}.html`), 'utf8');
+    const b = (/<content>([\s\S]*?)<\/content>/.exec(h) || [, h])[1];
+    assert.ok(!/<(script|iframe|style|details)\b|<img [^>]*onerror|<!--\s*c\s*-->|href="javascript:/i.test(b), `${k}: no live HTML in the post`);
+    assert.match(decode(b), /a < b/, `${k}: a < b reads as typed`);
+  }
   const attr = fs.readFileSync(path.join(site, 'b', 'liq-attr.html'), 'utf8');
   assert.ok(/<meta property="og:title" content="[^"]*&quot;|<meta property="og:title" content="[^"<>]*"/.test(attr), 'og:title is one closed attribute');
   const urlOnly = fs.readFileSync(path.join(site, 'b', 'liq-url-only.html'), 'utf8');

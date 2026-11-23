@@ -166,6 +166,43 @@ const liquidOutsideCode = text => {
   }
   return out;
 };
+// SHORT POSTS ARE TEXT. In the owner's own words (and an adopted gap) the markdown stays (emphasis, links, code, lists, quotes) but raw
+// HTML cannot: outside code every `<` is written `&lt;` (so `a < b` reads as typed), except an autolink `<https://…>`, which kramdown
+// turns into a link; a link whose destination is a javascript:, data:, vbscript: or file: address (or hides its scheme in a character
+// reference) is made `#`; a `|` that is not inside a [[wikilink]] is escaped so a stray bar never becomes a table. Inside a code span
+// or block nothing is changed: a `<` there is shown literally by the renderer (and `&lt;` would show as its letters). (Indented code
+// blocks are not recognised as code here, so a `<` in one shows as `&lt;`.)
+export function neutraliseHtml(text) {
+  const t = String(text);
+  const mask = Grammar.codeMask(t);
+  let out = '';
+  let wiki = 0;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (mask[i]) { out += c; continue; }
+    if (c === '[' && t[i + 1] === '[') wiki++;
+    if (c === ']' && t[i + 1] === ']' && wiki) wiki--;
+    if (c === '<' && t[i - 1] === '\\') out += c;   // already escaped by the passage rules (an agent's or a quoted text)
+    else if (c === '<') out += /^<https?:\/\/[^\s<>"'`]+>/i.test(t.slice(i)) ? c : '&lt;';
+    else if (c === '|' && !wiki && t[i - 1] !== '\\') out += '\\|';
+    else out += c;
+  }
+  // link destinations: `](dest)` and `[ref]: dest` with a dangerous scheme (checked on the text with character references decoded)
+  const bad = d => { const x = d.replace(/&#x?[0-9a-f]+;?|&colon;|&Tab;|&NewLine;/gi, ':').replace(/[\s\u0000-\u001f]+/g, '').toLowerCase(); return /^<?(?:javascript|data|vbscript|file)(?::|$)/.test(x) || /&#|&colon/i.test(d); };
+  // `](dest)` with balanced parentheses (a destination may hold some), outside code
+  const m2 = Grammar.codeMask(out);
+  let res = '';
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] === ']' && out[i + 1] === '(' && !m2[i]) {
+      let depth = 1; let j = i + 2;
+      while (j < out.length && depth) { if (out[j] === '(') depth++; else if (out[j] === ')') depth--; j++; }
+      const dest = out.slice(i + 2, depth ? out.length : j - 1);
+      if (bad(dest.trim().split(/\s+"/)[0])) { res += '](#)'; i = (depth ? out.length : j) - 1; continue; }
+    }
+    res += out[i];
+  }
+  return res.replace(/^(\s{0,3}\[[^\]]+\]:\s*)(\S+)/gm, (m, a, d) => (bad(d) ? a + '#' : m));
+}
 const LIQUID_IN_CODE = /\{[{%]/;
 const codeHasLiquid = text => {
   const mask = Grammar.codeMask(text);
@@ -207,6 +244,7 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
   for (const m of out.matchAll(TK_MARK)) {
     if (!mask[m.index]) { blocked.push('a [TK] marker is still in the comment and nobody has filled it in: fill it or remove it (write `[TK]` as code to mean the letters), then publish'); break; }
   }
+  out = neutraliseHtml(out);
   if (escape === 'liquid') {
     if (codeHasLiquid(out)) blocked.push('a code span or block in the comment holds “{{” or “{%”, which a Jekyll build would run: change it, or tell the settings the site is not Jekyll');
     else out = liquidOutsideCode(out);
