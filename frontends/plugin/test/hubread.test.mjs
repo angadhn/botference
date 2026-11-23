@@ -191,6 +191,14 @@ test('a newer version: the page says so, loading keeps highlights whose quotes s
   store.saveSnapshot(url2, '<p>Captured words of the original page.</p>');
   store.addThread(cap, { quote: 'Captured words', prefix: '', suffix: '', text: 'mine', author: 'owner' });
   store.savePage(cap);
+  // a record at that address that is NOT known to be this post is not touched at all
+  await assert.rejects(async () => holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...(await r.f.fetchPost(key)), page_url: url2 } }), /left alone/);
+  assert.equal(store.readPage(url2).title, 'captured');
+  assert.ok(!store.readPage(url2).hub);
+  // …but one whose identity (found by the extension's own check) is exactly this post's is its record
+  const cap2 = store.readPage(url2);
+  cap2.blyg = { status: 'blyg', checked: 'x', site: { origin: A }, item: { origin: A, id, version: 1 } };
+  store.savePage(cap2);
   const kept2 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...(await r.f.fetchPost(key)), page_url: url2 } });
   assert.equal(kept2.text_from, 'captured');
   assert.match(store.readSnapshot(store.pageKey(url2)), /Captured words/, 'never swapped under existing highlights');
@@ -281,6 +289,27 @@ test('every post\'s text is kept in a file of its own beside the list; capped, t
   const k = r.f.keyFor(A, short);
   fs.writeFileSync(path.join(r.bodies, `${k}.html`), '<p>ok</p><script>alert(1)</script><p onclick="x()">fine</p>');
   assert.equal(r.f.bodyHtml(k), '<p>ok</p><p>fine</p>');
+  r.done();
+});
+
+test('a truncated body is said so on its page, in the one vocabulary (BODY_STATES), and holding it makes that the page\'s text state', async () => {
+  const r = rig();
+  const site = r.web.add(A, { title: 'Alpha Notes' });
+  const id = idOf(8);
+  const big = doc(id, { kind: 'thread', transclusions: [] });
+  big.content_html = '<p>' + 'word '.repeat(12000) + '</p><p>tail</p>';
+  site.put(big);
+  r.f.confirmImport([{ origin: A }]);
+  await r.f.refresh();
+  const key = r.f.keyFor(A, id);
+  assert.equal(r.f.heldPost(key).text_state, 'truncated');
+  assert.ok(F.BODY_STATES.includes(r.f.heldPost(key).text_state));
+  const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post: r.f.heldPost(key) });
+  assert.equal(held.page.hub.text_state, 'truncated');
+  assert.match(view(held), /Only the first part of this post is held here/);
+  const whole = await r.f.fetchPost(key);
+  assert.equal(holdPost({ store, applyAnswer: blyg.applyAnswer, post: whole, replace: true }).page.hub.text_state, 'whole');
+  assert.ok(!/Only the first part/.test(view({ page: store.readPage(held.page.url), key: held.key })), 'once the whole text is loaded the note goes');
   r.done();
 });
 
@@ -417,5 +446,99 @@ test('no token or secret reaches the article view or the Feed', async () => {
   const all = view(held) + followingPage({ data: r.f.view(), settings: SETTINGS(), nonce: 'N' }) + JSON.stringify(store.readPage(held.page.url)) + fs.readFileSync(r.file, 'utf8');
   assert.ok(!all.includes(TOKEN));
   assert.ok(!/authorization|bearer/i.test(view(held)));
+  r.done();
+});
+
+test('a hostile post cannot take over a page record: one named outside its blyg\'s origin is kept under the post\'s own document address', async () => {
+  const r = rig();
+  const VICTIM = 'https://news.web.test/private-article';
+  store.upsertPage({ url: VICTIM, title: 'Owner private capture' });
+  store.saveSnapshot(VICTIM, '<p>the owner captured text</p>');
+  const vpage = store.readPage(VICTIM);
+  store.addThread(vpage, { quote: 'captured text', prefix: '', suffix: '', text: 'my note', author: 'owner' });
+  store.savePage(vpage);
+  const site = r.web.add(A, { title: 'Hostile' });
+  const id = idOf(1);
+  site.put(doc(id, { title: 'Hostile', body: 'ATTACKER TEXT', page: VICTIM }));
+  r.f.confirmImport([{ origin: A }]);
+  await r.f.refresh();
+  const key = r.f.keyFor(A, id);
+  const rec = r.f.itemByKey(key);
+  assert.equal(rec.page, VICTIM, 'the page is kept as what it says (a link to open)');
+  assert.equal(r.f.recordUrlOf(rec), `${A}items/${id}.json`, 'the record is kept under the post\'s own document address');
+  for (const post of [r.f.heldPost(key), await r.f.fetchPost(key)]) {
+    const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post, replace: true });
+    assert.equal(held.page.url, `${A}items/${id}.json`);
+    assert.equal(held.page.hub.origin, A);
+  }
+  const v = store.readPage(VICTIM);
+  assert.equal(v.title, 'Owner private capture');
+  assert.ok(!v.hub && !v.blyg, 'no identity put on it');
+  assert.equal(store.readSnapshot(store.pageKey(VICTIM)), '<p>the owner captured text</p>', 'its text is untouched');
+  assert.equal(v.threads.length, 1);
+  assert.ok(!v.threads[0].orphaned);
+  assert.deepEqual(r.f.view().entries[0].head.record_url, `${A}items/${id}.json`);
+  r.done();
+});
+
+test('a blyg whose origin contains another site\'s pages still cannot take over a record that is not exactly its post', async () => {
+  const r = rig();
+  const SHARED = 'https://shared.web.test/';
+  const page = `${SHARED}victim/article`;
+  const site = r.web.add(SHARED, { title: 'Evil' });
+  const id = idOf(2);
+  site.put(doc(id, { origin: SHARED, title: 'Evil', body: 'ATTACKER TEXT', page }));
+  r.f.confirmImport([{ origin: SHARED }]);
+  await r.f.refresh();
+  const key = r.f.keyFor(SHARED, id);
+  assert.equal(r.f.recordUrlOf(r.f.itemByKey(key)), page, 'inside the origin: the page is the key');
+  const attempt = () => holdPost({ store, applyAnswer: blyg.applyAnswer, post: r.f.heldPost(key), replace: true });
+  // a plain capture the owner made of the victim page
+  store.upsertPage({ url: page, title: 'Victim capture' });
+  store.saveSnapshot(page, '<p>victim words</p>');
+  assert.throws(attempt, /left alone/);
+  // a record that is another post of another blyg
+  const p2 = store.readPage(page);
+  p2.blyg = { status: 'blyg', checked: 'x', site: { origin: 'https://victim.web.test/' }, item: { origin: 'https://victim.web.test/', id: idOf(5), version: 1 } };
+  store.savePage(p2);
+  assert.throws(attempt, /left alone/);
+  // a record the Hub made for ANOTHER post
+  const p3 = store.readPage(page);
+  p3.hub = { origin: 'https://victim.web.test/', id: idOf(5), version: 1, text_from: 'item-document' };
+  store.savePage(p3);
+  assert.throws(attempt, /left alone/);
+  const after = store.readPage(page);
+  assert.equal(after.title, 'Victim capture');
+  assert.equal(store.readSnapshot(store.pageKey(page)), '<p>victim words</p>');
+  assert.equal(after.hub.origin, 'https://victim.web.test/');
+  r.done();
+});
+
+test('holding a post from the Hub\'s own text makes ZERO outbound requests; a captured copy is never replaced unless the reader asks', async () => {
+  const r = rig();
+  const id = idOf(3);
+  const key = await seeded(r, id);
+  r.web.requests.length = 0;
+  const post = r.f.heldPost(key);
+  const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post });
+  assert.deepEqual(r.web.requests, [], 'not one request');
+  assert.equal(held.text_from, 'item-document');
+  // a captured copy with the post's identity, no highlights on it
+  const page = `${A}f/capture-test/`;
+  store.upsertPage({ url: page, title: 'captured' });
+  store.saveSnapshot(page, '<p>Captured words of the original page.</p>');
+  const cap = store.readPage(page);
+  cap.blyg = { status: 'blyg', checked: 'x', site: { origin: A }, item: { origin: A, id, version: 1 } };
+  store.savePage(cap);
+  const k1 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...post, page_url: page } });
+  assert.equal(k1.text_from, 'captured', 'with no highlights on it either');
+  assert.match(store.readSnapshot(store.pageKey(page)), /Captured words/);
+  const info = hubInfoOf(store.readPage(page), { following: r.f });
+  assert.equal(info.use_document.key, key, 'the article view offers the post\'s own text');
+  const html = articleView({ page: store.readPage(page), key: store.pageKey(page), me: { handle: 'o', owner: true }, snapshot: store.readSnapshot(store.pageKey(page)), info: null, nonce: 'N', hub: info });
+  assert.match(html, /<form class="hubnewer" method="post" action="\/following\/read-here">[\s\S]*Use the post's own text/);
+  const k2 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...post, page_url: page }, replace: true });
+  assert.equal(k2.text_from, 'item-document');
+  assert.match(store.readSnapshot(store.pageKey(page)), /Some invented words/);
   r.done();
 });

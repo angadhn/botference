@@ -43,7 +43,7 @@ import { guardedGet as netGet, FetchTrouble, urlRefusal } from './netguard.mjs';
 import { readJsonState, writeJson, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 import { session, findManifest, identityOf, isManifest, ID_RE, clip, textContent, isWebUrl, samePage,
   docRefusal, cleanHints, candidateBase, pageLinks, LIMITS as BLYG_LIMITS } from './blyg.mjs';
-import { sanitizeArticle } from './sanitize.mjs';
+import { sanitizeArticle, sanitizeStable } from './sanitize.mjs';
 import { parseInbox, readTokenFile, redactor, scrubDeep, tokenFileWarning, REPOST_RE } from './following-inbox.mjs';
 
 const CFG = createRequire(import.meta.url)('./extension/config.js');
@@ -321,7 +321,7 @@ export function formatDate(iso, locale = 'en-US', withTime = false) {
 /** A post's sanitised body (the SAME sanitiser the article view uses), capped; and how many words it has. → { html, state, words } */
 export function bodyOf(doc) {
   const src = typeof doc.content_html === 'string' && doc.content_html.trim() ? doc.content_html : mdFallbackHtml(doc.content_md);
-  const r = sanitizeArticle(src, { max: LIMITS.bodyBytes, truncate: true });
+  const r = sanitizeStable(src, { max: LIMITS.bodyBytes, truncate: true, landmarks: false });
   return { html: r.html, state: !r.html.trim() ? 'none' : r.tooBig ? 'truncated' : 'whole', words: wordsIn(textContent(src)) };
 }
 /** Markdown with nothing rendered: paragraphs of escaped text (the fallback when a document has no HTML). */
@@ -612,8 +612,9 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   // body is written atomically), named by the record's random key, and is swept away with its post.
   const bodiesDir = path.join(path.dirname(file), 'following-bodies');
   const bodyFile = key => path.join(bodiesDir, `${String(key).replace(/[^0-9a-f]/g, '')}.html`);
+  let bodiesDirMade = false; // the folder is made once, not once per post
   const writeBody = (key, html) => {
-    fs.mkdirSync(bodiesDir, { recursive: true });
+    if (!bodiesDirMade) { fs.mkdirSync(bodiesDir, { recursive: true }); bodiesDirMade = true; }
     const f = bodyFile(key), tmp = `${f}.tmp.${process.pid}`;
     fs.writeFileSync(tmp, String(html));
     fs.renameSync(tmp, f);
@@ -622,7 +623,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const readBodyHtml = key => {
     let s = '';
     try { s = fs.readFileSync(bodyFile(key), 'utf8'); } catch { return ''; }
-    return sanitizeArticle(s, { max: LIMITS.bodyBytes + 4096, truncate: true }).html;
+    return sanitizeStable(s, { max: LIMITS.bodyBytes + 4096, truncate: true, landmarks: false }).html;
   };
   function sweepBodies() {
     let names = [];
@@ -1066,6 +1067,17 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
 
   // ---- reading a post here ----
   /**
+   * The address a post's PAGE RECORD is kept under. A post's `page` may be anywhere (§5.8), so it is the key only when it lies inside
+   * the blyg's own origin, which the blyg may speak for; otherwise the record is kept under the post's item document address (which is
+   * inside the origin, by construction) and `page` stays what it is for a reader: a link to open. A blyg can thus never name the
+   * address of a page that is not its own and have its text, identity or title put on that record.
+   */
+  const recordUrlOf = rec => {
+    if (within(rec.origin, rec.page)) return rec.page;
+    const b = load().blygs[rec.origin];
+    return itemUrlFor({ item: b && b.item_template }, rec.origin, rec.id) || rec.page;
+  };
+  /**
    * The post's own item document, fetched again through the same guarded getter and the same origin rule (its URL and
    * its final URL must be inside the blyg's origin), checked as the reconciliation checks it, and its content
    * sanitised by the article view's sanitiser. → what the page record is made of; nothing is written here.
@@ -1092,12 +1104,12 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const post = recordFromDoc(doc, rec.origin, b);
     if (post.invalid) throw new Error(`the post cannot be shown: ${post.invalid}`);
     const src = typeof doc.content_html === 'string' && doc.content_html.trim() ? doc.content_html : mdFallbackHtml(doc.content_md);
-    const clean = sanitizeArticle(src); // the article view's own cap (2 MB), refused rather than cut
+    const clean = sanitizeStable(src, { landmarks: false }); // the article view's own cap (2 MB), refused rather than cut; run to a fixed point
     if (clean.tooBig) throw new Error('the post is too large to keep a readable copy of');
     if (!clean.html.trim()) throw new Error('there is nothing readable in that post');
     const pinned = pinnedOf(post);
     return {
-      key: rec.key, page_url: post.page, title: post.title || post.excerpt || 'A post', html: clean.html,
+      key: rec.key, page_url: within(rec.origin, post.page) ? post.page : url, display_page: post.page, title: post.title || post.excerpt || 'A post', html: clean.html,
       result: { status: 'blyg', source: 'item-document', site: { origin: rec.origin, title: b.title, author: b.author },
         html: '', text: textContent(clean.html),
         item: { origin: rec.origin, id: rec.id, kind: post.kind, version: post.version, latest: post.version, pinned: pinned.includes(post.version),
@@ -1120,7 +1132,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     if (!html.trim()) throw new Error('no text is held for that post yet: use Read here');
     const pinned = pinnedOf(rec);
     return {
-      key: rec.key, page_url: rec.page, title: rec.title || rec.excerpt || 'A post', html, text_state: rec.body_state === 'truncated' ? 'partial' : 'whole',
+      key: rec.key, page_url: recordUrlOf(rec), display_page: rec.page, title: rec.title || rec.excerpt || 'A post', html, text_state: rec.body_state,
       result: { status: 'blyg', source: 'item-document', site: { origin: rec.origin, title: b.title, author: b.author }, html: '', text: textContent(html),
         item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version, pinned: pinned.includes(rec.version),
           pinned_versions: pinned, page: rec.page, pinned_page: '', json: '', source: b.title, author: rec.author } },
@@ -1204,7 +1216,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       const body = withBody && i.body_state && i.body_state !== 'none' ? clipBody(readBodyHtml(i.key), i.kind, cfg.following_feed_clip_words) : { head: '', rest: '' };
       return { ...copy(i), excerpt: cleanText(plainText(i.excerpt), LIMITS.excerptChars), title: cleanText(plainText(i.title), LIMITS.titleChars),
         blyg_title: titleOf(i.origin), blyg_label: mine.includes(i.origin) ? 'you' : titleOf(i.origin),
-        shown_at: new Date(sortTime(i)).toISOString(), reading: readingLabel(i.words || wordsIn(i.text || '')),
+        record_url: isWithdrawn(i) ? '' : recordUrlOf(i), shown_at: new Date(sortTime(i)).toISOString(), reading: readingLabel(i.words || wordsIn(i.text || '')),
         body_head: body.head, body_rest: body.rest,
         versions_note: i.version > 1 ? `${i.version} versions` : '',
         history: [...(i.versions || [])].sort((a, b) => b.version - a.version)
@@ -1232,7 +1244,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const itemByKey = key => copy(byKey(key));
 
   return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove, markAllSeen,
-    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
+    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
     breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },

@@ -512,6 +512,13 @@ await test('Read here: the post becomes an annotatable page (same record as the 
   assert.match(feed.headers['content-security-policy'], /default-src 'none'; script-src 'nonce-[^']+'; style-src 'nonce-[^']+'; img-src https:; connect-src 'self'/);
 });
 
+await test('/health tells the owner how many blygs the Hub follows (the feed icon asks it), and nobody else', async () => {
+  const mine = (await GET(B, '/health')).json;
+  assert.ok(Number.isInteger(mine.hub_follows) && mine.hub_follows >= 1, JSON.stringify(mine));
+  const guest = (await request(hosted.base, 'GET', '/health', undefined, GUEST)).json;
+  assert.ok(!('hub_follows' in guest), 'a guest is not told');
+});
+
 await test('the theme: served only from the owner\'s folder, behind the gate; linked after the built-in style; the CSP gains exactly style-src \'self\' and font-src \'self\'; a broken theme leaves the built-in look', async () => {
   const themeRoot = tmp('theme');
   const dir = path.join(themeRoot, 'folder'), outside = path.join(themeRoot, 'outside');
@@ -533,6 +540,9 @@ await test('the theme: served only from the owner\'s folder, behind the gate; li
   assert.equal((await POST(B, '/following/settings', { hub_theme_dir: 'relative/dir' })).status, 400);
   // set
   assert.equal((await POST(B, '/following/settings', { hub_theme_dir: dir })).status, 200);
+  // a malformed escape is a 404, and the companion is still up afterwards (it used to throw in the handler and exit)
+  for (const bad of ['%E0%A4%A', '%', '%zz', '%C0%AE%C0%AE/x.css']) assert.equal((await GET(B, '/hub/theme/' + bad)).status, 404, bad);
+  assert.equal((await GET(B, '/health')).status, 200, 'still serving');
   const css = await GET(B, '/hub/theme/hub.css');
   assert.equal(css.status, 200);
   assert.match(css.headers['content-type'], /^text\/css/);
@@ -582,7 +592,8 @@ await test('the theme: served only from the owner\'s folder, behind the gate; li
 await test('theme files are behind the gate: unauthenticated, hosted, they are refused', async () => {
   assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com' })).status, 401);
   assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com', authorization: 'Bearer nope' })).status, 401);
-  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, GUEST)).status, 404, 'a guest who passes the gate gets the file if there is one (here none is set)');
+  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, GUEST)).status, 403, 'a guest who passes the gate is still not the owner: the theme is for the owner\'s own reading pages');
+  assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, OWNER)).status, 404, 'the owner is answered (here no theme is set)');
 });
 
 await test('Respond from the Feed: /following/hold makes the held text the post\'s page (no request); a highlight made there carries the document\'s identity, is the SAME record as Read here, and the Feed draws it', async () => {
@@ -619,6 +630,48 @@ await test('Respond from the Feed: /following/hold makes the held text the post\
   // an unknown post, a withdrawn one and a bad body are refused
   assert.equal((await POST(B, '/following/hold', { origin: A, id: idOf(9999) })).status, 400);
   assert.equal((await POST(B, '/following/hold', {})).status, 400);
+});
+
+await test('a page the Hub made is the owner\'s alone: a guest\'s lists leave it out and every address answers as if it were not there', async () => {
+  const HV = idOf(41);
+  const d = makeDoc({ id: HV, origin: A, kind: 'thread', title: 'Owner only post', created: '2026-11-12T09:00:00Z', transclusions: [] });
+  d.content_html = '<p>Words only the owner reads, here.</p>';
+  site.put(d);
+  const owner = (m, p, body) => request(hosted.base, m, p, body, OWNER);
+  const guest = (m, p, body) => request(hosted.base, m, p, body, GUEST);
+  assert.equal((await owner('POST', '/following/follow', { url: `${A}t/${HV}/` })).status, 200);
+  assert.equal((await owner('POST', '/following/refresh', {})).status, 200);
+  const data = (await owner('GET', '/following/data')).json;
+  const key = data.entries.find(e => e.head.id === HV).head.key;
+  const read = await owner('POST', '/following/read-here', { key });
+  assert.equal(read.status, 200, read.body);
+  const pageUrl = `${A}t/${HV}/`;
+  const pkey = read.json.url.slice(3);
+  // the owner sees it everywhere
+  assert.match((await owner('GET', read.json.url)).body, /Words only the owner reads/);
+  const same = u => String(u).replace(/\/+$/, '') === pageUrl.replace(/\/+$/, '');
+  assert.ok(Object.values((await owner('GET', '/index')).json).some(e => same(e.url)));
+  assert.match((await owner('GET', '/pages')).body, /Words only the owner reads/);
+  // a guest sees none of it
+  assert.equal((await guest('GET', read.json.url)).status, 404, 'the article view');
+  assert.equal((await guest('GET', `/p/${pkey}`)).status, 404, 'the comments view');
+  assert.ok(!Object.values((await guest('GET', '/index')).json).some(e => same(e.url)), 'the index');
+  assert.ok(!/Words only the owner reads/.test((await guest('GET', '/pages')).body), 'the reading room');
+  assert.equal((await guest('GET', '/page?url=' + encodeURIComponent(pageUrl))).status, 404, 'the page record by its address');
+  for (const [route, body] of [['/thread', { url: pageUrl, quote: 'owner reads', msg: { text: 'a guest note' } }], ['/reply', { url: pageUrl, thread_id: '__page__', text: 'a guest question' }],
+    ['/page', { url: pageUrl, title: 'renamed by a guest' }]]) {
+    assert.equal((await guest('POST', route, body)).status, 404, route);
+  }
+  assert.equal((await owner('GET', '/page?url=' + encodeURIComponent(pageUrl))).json.title.includes('renamed'), false, 'and nothing of it reached the record');
+  // an ordinary annotated page is still shared
+  await owner('POST', '/page', { url: 'https://plain.web.test/shared', title: 'A shared page' });
+  assert.ok(Object.values((await guest('GET', '/index')).json).some(e => e.title === 'A shared page'));
+  const pg = await import('../hubread.mjs');
+  assert.deepEqual(pg.VISIBILITY, ['shared', 'owner-only']);
+  assert.equal(pg.visibilityOf({ hub: {} }), 'owner-only');
+  assert.equal(pg.visibilityOf({}), 'shared');
+  assert.equal(pg.mayRead({ hub: {} }, true), true);
+  assert.equal(pg.mayRead({ hub: {} }, false), false);
 });
 
 cleanup();

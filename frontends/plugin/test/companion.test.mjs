@@ -194,6 +194,8 @@ async function main() {
     const r = await GET(base, '/health');
     assert.equal(r.status, 200);
     assert.deepEqual(r.json, { ok: true, capabilities: { draft_blog: 1 }, bridge: 'stopped', queue: 0, queues: [],
+      // the owner is told how many blygs the Hub follows (the extension's feed icon asks)
+      hub_follows: 0,
       // the pool exists from the first moment; its child does not
       bridges: { live: 1, max: 1, workspace: 0, blog: 0 } });
     assert.equal(fs.existsSync(logFile), false, 'bridge must not spawn before a bot turn');
@@ -4882,7 +4884,7 @@ async function main() {
     const realRoot = tmpRoot('real');
     const real = await startServer({ root: realRoot });
     const health = await GET(real.base, '/health');
-    assert.deepEqual(health.json, { ok: true, capabilities: { draft_blog: 1 }, bridge: 'stopped', queue: 0, queues: [],
+    assert.deepEqual(health.json, { ok: true, capabilities: { draft_blog: 1 }, bridge: 'stopped', queue: 0, queues: [], hub_follows: 0,
       bridges: { live: 1, max: 1, workspace: 0, blog: 0 } });
     // a relay with nothing running must refuse rather than spawn the bridge
     const relay = await POST(real.base, '/relay', { agent: 'claude' });

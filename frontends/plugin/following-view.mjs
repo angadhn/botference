@@ -100,9 +100,11 @@ function versions(h) {
 function bodyOf(h) {
   if (!h.body_head) return h.excerpt ? `<div class="hub-entry-body"><p>${t(h.excerpt, 300)}</p></div>` : '';
   const quote = x => x.replace(/<blockquote/g, '<blockquote class="hub-quote"');
-  const more = h.body_rest ? `<div class="rest" hidden>${quote(h.body_rest)}</div><button type="button" class="link" data-act="more">more</button>` : '';
+  // each piece of a post's text travels inside an inert <template> (a browser cannot let anything in it close the page's own
+  // elements) and the page's nonced script moves it into place
+  const more = h.body_rest ? `<div class="rest" hidden><template>${quote(h.body_rest)}</template></div><button type="button" class="link" data-act="more">more</button>` : '';
   const trunc = h.body_state === 'truncated' ? `<div class="moremsg"><button type="button" class="link" data-act="read" data-key="${escHtml(h.key)}">Read here for the rest</button></div>` : '';
-  return `<div class="hub-entry-body" data-blyg-page="${t(h.page, 500)}" data-blyg-origin="${t(h.origin, 500)}" data-blyg-id="${t(h.id, 40)}" data-blyg-version="${Number(h.version) || 1}">${quote(h.body_head)}${more}${trunc}</div>`;
+  return `<div class="hub-entry-body" data-blyg-page="${t(h.page, 500)}" data-blyg-origin="${t(h.origin, 500)}" data-blyg-id="${t(h.id, 40)}" data-blyg-version="${Number(h.version) || 1}"><template>${quote(h.body_head)}</template>${more}${trunc}</div>`;
 }
 function entry(e) {
   const h = e.head;
@@ -169,6 +171,27 @@ function mentionsPane(data) {
 
 const SCRIPT = `
 (function(){
+  // The "more" control of a long post: ONE field (data-more on the post's text), one of MORE_MODES, changed here only.
+  var MORE_MODES=['collapsed','expanded'];
+  function setMore(box,mode){
+    if(MORE_MODES.indexOf(mode)<0)throw new Error('more: no such mode '+mode);
+    box.dataset.more=mode;
+    var rest=box.querySelector('.rest'),btn=box.querySelector('button[data-act=more]');
+    if(rest)rest.hidden=mode==='collapsed';
+    if(btn)btn.textContent=mode==='collapsed'?'more':'less';
+  }
+  // The comment composer of the Feed: ONE mode in one field, one of COMPOSER_MODES, moved only through composerMove, which refuses
+  // a move that is not in the table (a second press of Save while saving does nothing). The mode is also shown on <html>
+  // (data-hub-composer) so a theme or a test can see it.
+  var COMPOSER_MODES=['idle','composing','saving'];
+  var COMPOSER_MOVES={idle:['composing'],composing:['composing','saving','idle'],saving:['composing','idle']};
+  var composer={mode:'idle'};
+  function composerMove(to){
+    if(COMPOSER_MODES.indexOf(to)<0||COMPOSER_MOVES[composer.mode].indexOf(to)<0)throw new Error('composer: cannot go from '+composer.mode+' to '+to);
+    composer.mode=to;document.documentElement.setAttribute('data-hub-composer',to);
+  }
+  // the posts' texts, delivered inert, are put in place first
+  document.querySelectorAll('.hub-entry-body template').forEach(function(t){t.parentNode.insertBefore(t.content,t);t.remove();});
   var msg=document.getElementById('msg');
   function say(s,bad){msg.textContent=s;msg.className=bad?'warn':'mut';}
   function post(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})})
@@ -188,8 +211,7 @@ const SCRIPT = `
     if(a==='read'||a==='respond'){var rk=b.dataset.key,resp=a==='respond';say('opening…');
       return post('/following/read-here',{key:rk}).then(function(r){
         if(r&&r.ok&&r.url){location.href=r.url+(resp?'#respond':'');}else say((r&&r.error)||'failed',true);});}
-    if(a==='more'){var box=b.closest('.hub-entry-body'),rest=box&&box.querySelector('.rest');
-      if(rest){rest.hidden=!rest.hidden;b.textContent=rest.hidden?'more':'less';}return;}
+    if(a==='more'){var box=b.closest('.hub-entry-body');if(box)setMore(box,box.dataset.more==='expanded'?'collapsed':'expanded');return;}
     if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
     if(a==='see')return post('/following/read',{key:b.dataset.key,move:'see'}).then(function(r){done(r);});
     if(a==='seen-all')return post('/following/read',{all:true}).then(function(r){done(r);});
@@ -254,19 +276,23 @@ const SCRIPT = `
       var idx=A.buildTextIndex(b),off=A.offsetsFromRange(idx,r),anchor=A.buildAnchor(idx.raw,off.start,off.end);
       hide();sel.removeAllRanges();if(!anchor.quote)return;
       var ent=b.closest('.hub-entry'),old=ent.querySelector('.hub-composer');if(old)old.remove();
+      document.querySelectorAll('.hub-composer').forEach(function(c){c.remove();});
+      composerMove('composing');
       var box=document.createElement('div');box.className='hub-composer';
       var q=document.createElement('blockquote');q.textContent=anchor.quote;box.appendChild(q);
       var ta=document.createElement('textarea');ta.placeholder='Your comment on this passage';box.appendChild(ta);
       var go=document.createElement('button');go.type='button';go.textContent='Save comment';var no=document.createElement('button');no.type='button';no.textContent='Cancel';
       box.appendChild(go);box.appendChild(no);b.parentNode.insertBefore(box,b.nextSibling);ta.focus();
-      no.addEventListener('click',function(){box.remove();});
-      go.addEventListener('click',function(){var text=ta.value.trim();if(!text)return;go.disabled=true;
+      no.addEventListener('click',function(){if(composer.mode==='composing'){box.remove();composerMove('idle');}});
+      go.addEventListener('click',function(){var text=ta.value.trim();if(!text||composer.mode!=='composing')return;
+        composerMove('saving');go.disabled=true;
+        var fail=function(m){composerMove('composing');go.disabled=false;say(m,true);};
         post('/following/hold',{origin:b.dataset.blygOrigin,id:b.dataset.blygId}).then(function(h){
-          if(!h||!h.ok){go.disabled=false;say((h&&h.error)||'could not keep that post',true);return;}
+          if(!h||!h.ok){fail((h&&h.error)||'could not keep that post');return;}
           return post('/thread',{url:h.url,quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix,msg:{text:text}}).then(function(t){
             if(t&&t.ok&&t.thread){(T[ent.dataset.key]=T[ent.dataset.key]||[]).push({id:t.thread.id,quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix});
-              box.remove();paint();say('Saved. It is also kept on the page of that post: see Read here.');}
-            else{go.disabled=false;say((t&&t.error)||'could not save that',true);}});});});});
+              box.remove();composerMove('idle');paint();say('Saved. It is also kept on the page of that post: see Read here.');}
+            else fail((t&&t.error)||'could not save that');});}).catch(function(){fail('could not reach the companion');});});});
   }
 })();
 `;

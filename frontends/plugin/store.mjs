@@ -491,6 +491,8 @@ export function savePage(page) {
     // tags are, because most pages are filed under none
     ...(projectsOf(page).length
       ? { projects: projectsOf(page).map(p => p.id) } : {}),
+    // a page the Hub made (hubread.mjs) is the owner's alone: lists drawn for anyone else leave it out
+    ...(page.hub ? { owner_only: true } : {}),
     updated_at: page.updated_at,
   };
   writeIndex(idx);

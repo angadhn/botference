@@ -679,14 +679,13 @@ test('the default transport really is netguard.guardedGet', async () => {
   assert.equal(typeof guard.guardedGet, 'function');
 });
 
-test('the extension reaches the Hub: a drawer button, the worker\'s open-here at /hub, and an options link', () => {
+test('the extension reaches the Hub: a drawer button, the worker\'s open-reader (the Hub at /hub unless a reader is set), and an options link', () => {
   const ext = f => fs.readFileSync(path.join(HERE, '..', 'extension', f), 'utf8');
   assert.match(ext('drawer.js'), /data-act="following"/);
   assert.match(ext('drawer.js'), /'following': \(\) => cb\('onOpenFollowing'\)\(\)/);
-  assert.match(ext('content.js'), /onOpenFollowing: \(\) => \{ bg\(\{ t: 'open-here', path: '\/hub' \}\); \}/);
-  // the worker only opens paths of this shape at the companion
-  assert.match('/hub', /^\/[A-Za-z0-9/_-]*$/);
-  assert.match(ext('options.js'), /'\/hub'/);
+  assert.match(ext('content.js'), /onOpenFollowing: async \(\) => \{ const r = await bg\(\{ t: 'open-reader' \}\);/);
+  assert.match(ext('background.js'), /CFG\.httpUrl\(CONF\.base, '\/hub'\)/);
+  assert.match(ext('config.js'), /httpUrl\(\(cfg && cfg\.base\) \|\| DEFAULT_BASE, '\/hub'\)/);
   assert.match(ext('options.html'), /id="following-link"/);
   assert.match(ext('options.js'), /following-link/);
 });
@@ -696,7 +695,7 @@ test('the user docs name every state and every setting', () => {
   const section = doc.slice(doc.indexOf('## The Hub: a private reading feed'), doc.indexOf('## What is fetched, and when')).replace(/\s+/g, ' ');
   assert.ok(section.length > 500, 'the section exists');
   for (const s of [...F.BLYG_STATES, ...F.READ_STATES, ...F.INBOX_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
-  for (const w of ['Hub', 'Feed', 'Mentions', 'Background', 'Following', '/hub', 'chmod 600', 'PLUGIN_PUBLIC_HOSTNAMES', 'older-pinned', 'pinned: v1, v4', 'Reading in the Hub', 'Respond from the Feed', 'data-blyg-page', 'Theming the Hub', 'hub_theme_dir', 'hub-entry-actions', 'hub-quote', 'hub-settings', 'item-document', 'following_feed_clip_words', 'search every word', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
+  for (const w of ['Hub', 'Feed', 'Mentions', 'Background', 'Following', '/hub', 'chmod 600', 'PLUGIN_PUBLIC_HOSTNAMES', 'older-pinned', 'pinned: v1, v4', 'Reading in the Hub', 'Using your own reader', 'bfp:reader-url', 'chrome.storage.local', 'Images in a post are loaded from their own hosts', 'Where the page record is kept', 'Who sees it', 'Respond from the Feed', 'data-blyg-page', 'Theming the Hub', 'hub_theme_dir', 'hub-entry-actions', 'hub-quote', 'hub-settings', 'item-document', 'following_feed_clip_words', 'search every word', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
   for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file']) assert.ok(section.includes(k), `setting ${k}`);
 });
 

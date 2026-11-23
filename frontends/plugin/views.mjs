@@ -9,6 +9,7 @@
 //
 // Palette matches frontends/review/assets/style.css so the two frontends look
 // like one product, dark and light both.
+import { sanitizeStable } from './sanitize.mjs';
 import { escHtml } from './hosted.mjs';
 // the library's reserved identity and the page-chat target, from the one place
 // that defines them rather than as literals repeated down here
@@ -909,13 +910,17 @@ function hubHeader(hub) {
     .map(x => `<span>${escHtml(x)}</span>`).join('');
   const pins = hub.pinned && hub.pinned.length ? `<div class="mut">pinned: ${hub.pinned.map(n => `v${Number(n)}`).join(', ')}</div>` : '';
   const resp = hub.in_response_to ? `<div class="mut">in response to ${escHtml(hub.in_response_to)}</div>` : '';
-  const note = [hub.source_note, hub.text_state === 'partial' ? 'Only the first part of this post is held here; load it to read the rest.' : ''].filter(Boolean)
+  const note = [hub.source_note, hub.text_state === 'truncated' ? 'Only the first part of this post is held here; load it to read the rest.' : ''].filter(Boolean)
     .map(x => `<div class="mut">${escHtml(x)}</div>`).join('');
   const newer = hub.newer ? `<form class="hubnewer" method="post" action="/following/read-here"><span>A newer version (v${Number(hub.newer.version)}) exists.</span>
 <input type="hidden" name="key" value="${escHtml(hub.newer.key)}"><input type="hidden" name="replace" value="1">
 <button class="pill" type="submit">Load v${Number(hub.newer.version)}</button>
 <span class="mut">Highlights are kept where their quotes still match and marked otherwise.</span></form>` : '';
-  return `<header class="hubhead hub-entry-meta"><div class="meta">${bits}</div>${pins}${resp}${note}${newer}</header>`;
+  const useDoc = hub.use_document ? `<form class="hubnewer" method="post" action="/following/read-here"><span>This is the copy captured from the original page.</span>
+<input type="hidden" name="key" value="${escHtml(hub.use_document.key)}"><input type="hidden" name="replace" value="1">
+<button class="pill" type="submit">Use the post's own text</button>
+<span class="mut">Highlights are kept where their quotes still match and marked otherwise.</span></form>` : '';
+  return `<header class="hubhead hub-entry-meta"><div class="meta">${bits}</div>${pins}${resp}${note}${newer}${useDoc}</header>`;
 }
 
 export function articleView({ page, key, me, snapshot, info, nonce, hub = null, themeHref = '' }) {
@@ -929,7 +934,11 @@ ${me.owner ? '<button class="pill" id="bfp-export">export</button>' : ''}
   // A page annotated before snapshots existed has no article to show. Say so
   // in one line, offer the conversation, and name the one thing that fixes it.
   const body = snapshot
-    ? `<article id="bfp-article"${hub ? ' class="hub-main hub-entry-body"' : ''}>${hub ? snapshot.replace(/<blockquote/g, '<blockquote class="hub-quote"') : snapshot}</article>`
+    ? `<article id="bfp-article"${hub ? ' class="hub-main hub-entry-body"' : ''}>${hub
+      // a followed post's text travels inside an inert <template>: whatever it holds, a browser cannot let it close the page's own
+      // elements; the page's nonced script below puts it in place before the reader's scripts read the article
+      ? `<template id="hub-post">${sanitizeStable(snapshot, { landmarks: false }).html.replace(/<blockquote/g, '<blockquote class="hub-quote"')}</template>`
+      : snapshot}</article>`
     : `<div class="none"><p>No readable copy of this article has been captured yet, so there
 is nothing to mark up here.</p><p>Open it once on the Mac with the extension running and the
 companion will keep a copy — after that this page works from anywhere.</p>
@@ -950,6 +959,7 @@ ${jsonScript('bfp-data', {
     threads: page.threads || [], page_chat: page.page_chat || [],
     snapshot: !!snapshot, captured_at: (info && info.captured_at) || null,
   }, nonce)}
+${snapshot && hub ? `<script nonce="${n}">(function(){var t=document.getElementById('hub-post');if(t){t.parentNode.insertBefore(t.content,t);t.remove();}})();</script>` : ''}
 ${snapshot ? `<script src="/assets/anchor.js" nonce="${n}"></script>
 <script src="/assets/reader.js" nonce="${n}"></script>` : ''}
 </body></html>`;

@@ -74,7 +74,7 @@ import * as figedits from './figedits.mjs';
 import * as blygMod from './blyg.mjs';
 import * as followingMod from './following.mjs';
 import * as inboxMod from './following-inbox.mjs';
-import { holdPost, hubInfoOf } from './hubread.mjs';
+import { holdPost, hubInfoOf, mayRead } from './hubread.mjs';
 import * as hubTheme from './hubtheme.mjs';
 import { followingPage } from './following-view.mjs';
 // a figure-editor batch already routed: its answer, so a retry writes nothing
@@ -2859,6 +2859,12 @@ function readBody(req, res, fn) {
     } else {
       try { data = JSON.parse(body || '{}'); } catch { return fail(res, 400, 'bad json'); }
     }
+    // A guest cannot name a page the Hub made (hubread.mjs visibilityOf): it answers as if there were none, for every route
+    if (data && data.url && !hosted.isOwner(req)) {
+      let named = null;
+      try { named = store.readPage(String(data.url)); } catch { named = null; }
+      if (named && !mayRead(named, false)) return fail(res, 404, 'unknown page');
+    }
     // A write path that refuses (fsjson.UnreadableJsonError: a record on disk
     // that is not readable JSON, which nothing may overwrite) throws; the
     // reader is told which file and why, and the companion stays up. Anything
@@ -2887,6 +2893,12 @@ const queryUrl = reqUrl => {
 };
 // every mutation route needs "the page, or a 404" — except the ones that may
 // legitimately create it
+// The page index as THIS request may see it: a guest's leaves out the pages the Hub made
+function visibleIndex(req) {
+  const idx = store.readIndex();
+  if (hosted.isOwner(req)) return idx;
+  return Object.fromEntries(Object.entries(idx).filter(([, e]) => !e.owner_only));
+}
 function pageOf(res, data) {
   if (!data.url) { fail(res, 400, 'url required'); return null; }
   const page = store.readPage(data.url) || ensureLibrary(data.url);
@@ -3356,7 +3368,7 @@ async function readHere(data) {
   const replace = [true, 1, '1', 'true'].includes(data.replace);
   const rec = following.itemByKey(key);
   if (!rec || rec.kind === 'withdrawn') throw new Error('no such post');
-  const existing = store.readPage(rec.page);
+  const existing = store.readPage(following.recordUrlOf(rec));
   if (existing && existing.hub && !replace) { following.openedHere(key); return { url: `/a/${store.pageKey(existing.url)}`, kept: true }; }
   followingNeedsChecks();
   const post = await following.fetchPost(key);
@@ -3378,7 +3390,7 @@ function handleFollowing(route, req, res) {
   // each entry carries the highlights already made on its page record, so the Feed can draw them
   const withThreads = v => {
     for (const e of v.entries || []) {
-      const page = e.head.page ? store.readPage(e.head.page) : null;
+      const page = e.head.record_url ? store.readPage(e.head.record_url) : null;
       e.head.threads = page && page.hub ? (page.threads || []).map(t => ({ id: t.id, quote: t.quote, prefix: t.prefix, suffix: t.suffix, ordinal: t.ordinal, occurrences: t.occurrences, orphaned: !!t.orphaned })) : [];
     }
     return v;
@@ -3466,6 +3478,18 @@ function handleFollowing(route, req, res) {
   }));
 }
 
+// A handler that throws must answer 500 and leave the companion running: an exception in a synchronous route, uncaught, would take the
+// whole process (every page, every chat) down with it. Every request goes through here.
+export function safeHandler(req, res) {
+  try { return handler(req, res); }
+  catch (e) {
+    console.error('plugin: handler threw:', e && e.message ? e.message : e);
+    try {
+      if (!res.headersSent) res.writeHead(500, JSON_HEAD);
+      res.end('{"ok":false,"error":"internal error"}');
+    } catch { /* the socket is gone: nothing more to say */ }
+  }
+}
 export function handler(req, res) {
   // BEFORE ANYTHING ELSE, the name this request asked for. 421, and nothing about why in the body.
   if (hostBlocked(req)) { req.resume(); return res.writeHead(421, JSON_HEAD).end('{"ok":false,"error":"misdirected request"}'); }
@@ -3519,6 +3543,13 @@ export function handler(req, res) {
     });
   }
   if (!hosted.authorized(req)) return hosted.denied(req, res);
+  // and a guest cannot read one by naming its address either
+  if (req.method === 'GET' && !hosted.isOwner(req)) {
+    const named = new URLSearchParams(req.url.split('?')[1] || '').get('url');
+    let pg = null;
+    try { pg = named ? store.readPage(named) : null; } catch { pg = null; }
+    if (pg && !mayRead(pg, false)) return fail(res, 404, 'unknown page');
+  }
 
   // --- Following: the reader's private list of blygs (following.mjs) ------
   // Every route is in followingMod.ROUTES, behind the gate above, and the
@@ -3527,7 +3558,11 @@ export function handler(req, res) {
   // The owner's theme files: only files directly in the theme folder, by name, behind the same gate (a guest may read an article
   // view that links them, so this is not owner-only; it serves styles and fonts and nothing else).
   if (req.method === 'GET' && url.startsWith('/hub/theme/')) {
-    const got = hubTheme.readThemeFile(followingMod.followingSettingsOf(store.readConfig()).settings.hub_theme_dir, decodeURIComponent(url.slice('/hub/theme/'.length)), THEME_FORBIDDEN);
+    // the owner's reading pages wear it, and nobody else's do: owner only, like the Hub
+    if (notOwner(req, res)) return;
+    let name = '';
+    try { name = decodeURIComponent(url.slice('/hub/theme/'.length)); } catch { return fail(res, 404, 'not found'); } // a malformed escape is not a file name
+    const got = hubTheme.readThemeFile(followingMod.followingSettingsOf(store.readConfig()).settings.hub_theme_dir, name, THEME_FORBIDDEN);
     if (got.refused) return fail(res, 404, 'not found');
     return res.writeHead(200, { 'content-type': got.type, 'cache-control': 'private, no-cache', 'x-content-type-options': 'nosniff', 'content-length': String(got.body.length) }).end(got.body);
   }
@@ -3612,7 +3647,7 @@ export function handler(req, res) {
   // --- the reading room: collaborators without the extension -------------
   if (req.method === 'GET' && (url === '/' || url === '/pages')) {
     if (url === '/') return res.writeHead(302, { location: '/pages' }).end();
-    const index = store.readIndex();
+    const index = visibleIndex(req);
     const snapshots = new Set(Object.keys(index).filter(k => store.hasSnapshot(k)));
     // the same two filters the drawer's list has, as the query string: the
     // reading room has no client state, so a filtered archive is a LINK
@@ -3630,7 +3665,7 @@ export function handler(req, res) {
   if (req.method === 'GET' && url.startsWith('/p/')) {
     const key = url.slice(3);
     const page = store.readPageByKey(key);
-    if (!page) return fail(res, 404, 'unknown page');
+    if (!page || !mayRead(page, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
     const q = new URLSearchParams(req.url.split('?')[1] || '');
     const notice = q.get('notice') || '';
     const html = pageView({
@@ -3669,6 +3704,8 @@ export function handler(req, res) {
       // hosted only: a remote extension has to know its own standing before it
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
+      // how many blygs the owner's Hub follows: the extension's feed icon asks it to decide whether to offer a choice of reader
+      ...(me.owner ? { hub_follows: following.listBlygs().length } : {}),
     });
   }
   // the same standing on its own, for a client that only wants to ask "who am I"
@@ -4906,7 +4943,7 @@ export function handler(req, res) {
   }
 
   if (req.method === 'GET' && url === '/index') {
-    return res.writeHead(200, JSON_HEAD).end(JSON.stringify(store.readIndex()));
+    return res.writeHead(200, JSON_HEAD).end(JSON.stringify(visibleIndex(req)));
   }
   if (req.method === 'GET' && url === '/page') {
     const u = queryUrl(req.url);
@@ -5057,7 +5094,7 @@ export function handler(req, res) {
   if (req.method === 'GET' && url.startsWith('/a/')) {
     const key = url.slice(3);
     const page = store.readPageByKey(key);
-    if (!page) return fail(res, 404, 'unknown page');
+    if (!page || !mayRead(page, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
     const me = hosted.identity(req);
     const nonce = crypto.randomBytes(16).toString('base64');
     const hubInfo = hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) });
@@ -6685,7 +6722,7 @@ export function handler(req, res) {
 if (process.env.PLUGIN_NO_LISTEN !== '1') {
   acquireLock();
   store.readConfig(); // materialize defaults on first run
-  const server = http.createServer(handler);
+  const server = http.createServer(safeHandler);
   attachWs(server, {
     path: '/ws',
     // a browser cannot set headers on an upgrade, so the shared password may

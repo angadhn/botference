@@ -747,12 +747,52 @@ that post's page, not under the Hub's address. The extension reads those attribu
 (its configured address, path `/hub` or `/following`); on any other website they are ignored, so a page cannot claim to be
 someone else's post.
 
+**Images.** Images in a post are loaded from their own hosts when they are shown: over https only, lazily, and with no Referer. That
+tells each of those hosts your address and the time you looked, which is what reading a post anywhere on the web tells its images'
+hosts. Discuss does not proxy or copy images.
+
+**Where the page record is kept.** A post's `page` may be anywhere (§5.8). The record Read here makes is kept under the post's own
+page address only when that address lies inside the blyg's own origin; for a page outside it (a permalink beside the blyg's mount, or on
+another host) the record is kept under the post's item document address, which is inside the origin, and `page` stays a link to open.
+So a blyg cannot name the address of a page it does not own and have its text, title or identity put on a record of yours. An existing
+record is attached to a post only if it already is that post (the Hub's own record, or a page whose identity is exactly that blyg and id),
+and a copy you captured with the extension is never replaced unless you press "Use the post's own text".
+
+**What the page is made of.** A post's text is written by the sanitiser as a balanced tree built by its own stack, applying HTML's
+implied end tags itself, with no page-structure elements (`main`, `header`, `footer`, `section`, `article`, `aside`, `address`), and read
+again to a fixed point; it travels inside an inert `<template>` and a nonced script puts it in place, so nothing in it can close or
+move an element of the page around it. A real browser's parser is run over a corpus of hostile inputs to check this
+(`test/sanitize-browser.test.mjs`; it is skipped, with a message, when no Chrome or Brave is found).
+
+**Who sees it.** A page the Hub made is the owner's alone: a guest's page lists leave it out, its address answers as if there were nothing
+there, and nothing may be written to it. So is the theme folder's address.
+
 **What is stored, and for whom.** The sanitised text of every followed post (at most 40 KB each, with "Read here for the
 rest" when it was longer) is kept in a file of its own in the companion's data folder (`following-bodies/`), removed with
 its post, and a post you read here becomes an ordinary page record. Images are not copied: your browser loads them from
 their https addresses. Nothing is sent anywhere. At the default limits the bodies come to at most 2000 x 40 KB = 80 MB,
 usually a small fraction of that. Like every page in the companion's store they are the owner's; a guest who has the
 password of a shared companion can open any annotated page, these too.
+
+## Using your own reader
+
+The drawer's feed icon opens the Hub by default. If you already read blygs somewhere else (a Blygger Studio's reading page, say), you can
+make the icon, and the options page's link, open that instead. For a person, or for their coding agent:
+
+- **Where the setting lives.** The extension's options page, the field "Your own reader", saved with the Save button. In storage it is
+  `chrome.storage.local` key `bfp:reader-url`, and the choice that was made is `bfp:reader-onboarding` (one of `unasked`, `hub`,
+  `external`). Both are read and validated by `readerUrlOf`, `readerTarget` and `readerAction` in `frontends/plugin/extension/config.js`.
+- **The two values.** Empty (the default): the companion's own Hub, `/hub` on the configured companion address. An address: that reader.
+  It must be an absolute `https` address (an `http` one only for this computer: `localhost`, `127.0.0.1`, `[::1]`); anything else is
+  refused and nothing is saved.
+- **Example, a Blygger Studio reading page.** Set "Your own reader" to `https://their.site/blyg/studio/reading`. The feed icon then opens
+  that address in a new tab.
+- **First use.** With no reader set and nothing chosen, if the Hub follows no blyg yet, clicking the feed icon asks instead of opening an
+  empty page: "Use the built-in Hub", or "I already read blygs somewhere" with a box for its address. The choice is remembered, and both
+  can be changed later on the options page.
+- **What still works.** When an external reader is used, Discuss still recognises Blygger posts on the pages you open from it (the usual
+  detection, see "Recognising a post"), so highlights, comments and exports work there. The Hub-only features do not apply: Read here,
+  respond from the Feed, Mentions and the Feed itself.
 
 ## Theming the Hub
 

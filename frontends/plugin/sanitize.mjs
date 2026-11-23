@@ -158,13 +158,35 @@ function* attrPairs(src) {
 
 export const SNAPSHOT_MAX = 2 * 1024 * 1024; // 2 MB of sanitized HTML
 
-// sanitizeArticle(html, {allowImages}) -> {html, dropped, tooBig}
+// WELL-FORMED BY CONSTRUCTION. What this writes is built from a stack of its own: every element it opens it closes, and the
+// rules HTML's own parser applies (an <li> ends the <li> before it, a <p> ends at a block, a <td> needs a <tr>, a <table> holds
+// only table parts) are applied HERE, so a browser that parses the output finds nothing to repair, moves nothing, and closes
+// nothing it did not open. `/>` is a way to close an element only for the void ones (br, hr, img, wbr, col): on anything else a
+// browser ignores the slash, so it is ignored here too.
+//
+// `landmarks: false` is for a followed post, which has no business emitting page structure: main, header, footer, section,
+// article, aside and address are then unwrapped (their words kept), so a post cannot add chrome to the page it is shown in.
+// (A PDF snapshot, which uses <section> per page, keeps them: the default.)
+const LANDMARKS = new Set(['main', 'header', 'footer', 'section', 'article', 'aside', 'address']);
+// elements an opening <li>, <dd>, <dt> or heading may close its way through: not special in HTML's parsing (plus div, p, address)
+const THROUGH = new Set(['div', 'p', 'address', 'span', 'a', 'b', 'i', 'em', 'strong', 'u', 's', 'strike', 'del', 'ins', 'sub', 'sup',
+  'small', 'mark', 'code', 'kbd', 'samp', 'q', 'cite', 'abbr', 'time', 'bdi', 'bdo', 'ruby', 'rt', 'rp']);
+// start tags that end an open <p> (HTML's "close a p element")
+const CLOSES_P = new Set(['address', 'article', 'aside', 'blockquote', 'div', 'dl', 'figcaption', 'figure', 'footer', 'header', 'main',
+  'ol', 'p', 'section', 'ul', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'pre', 'li', 'dd', 'dt', 'table', 'hr']);
+const HEADINGS = new Set(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const SECTIONS = new Set(['thead', 'tbody', 'tfoot']);
+const TABLE_CONTEXT = new Set(['table', 'thead', 'tbody', 'tfoot', 'tr', 'colgroup']);
+const TABLE_PARTS = new Set(['caption', 'colgroup', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'col']);
+const BARRIERS = new Set(['table', 'td', 'th', 'caption']);
+
+// sanitizeArticle(html, {allowImages, max, truncate, landmarks}) -> {html, dropped, tooBig}
 // `dropped` counts the elements that were removed outright, which the tests
 // assert on and the companion logs — a snapshot that lost half the page is
 // worth noticing.
-export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, truncate = false } = {}) {
+export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, truncate = false, landmarks = true } = {}) {
   const out = [];
-  const open = [];            // stack of emitted element names
+  const stack = [];           // names of the elements emitted and not yet closed
   let killDepth = 0;          // >0 while inside a dropped subtree
   let killTag = '';
   let dropped = 0;
@@ -176,25 +198,94 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, 
     if (size > max) { tooBig = true; return; }
     out.push(s);
   };
+  const close = (name) => { if (truncate) out.push(`</${name}>`); else push(`</${name}>`); };
+  const popTo = (n) => { while (stack.length > n) close(stack.pop()); };
+  const top = () => stack[stack.length - 1];
+  const lastIndex = (name, stopAt) => {
+    for (let k = stack.length - 1; k >= 0; k--) {
+      if (stack[k] === name) return k;
+      if (stopAt && stopAt.has(stack[k])) return -1;
+    }
+    return -1;
+  };
+  const open = (name, attrs) => { push(`<${name}${attrs}>`); stack.push(name); };
+  // text or any non-table element directly inside a table, a section or a row would be moved out of it by a browser: give it a cell
+  const intoCell = () => {
+    if (top() === 'colgroup') close(stack.pop());
+    if (SECTIONS.has(top()) || top() === 'table') open('tr', '');
+    if (top() === 'tr') open('td', '');
+  };
+  // an element's start tag, with HTML's implied end tags applied first. false: not valid here, unwrap it (its words stay).
+  const startTag = (name) => {
+    if (TABLE_PARTS.has(name)) {
+      const ti = lastIndex('table');
+      if (ti < 0) return false;
+      if (name === 'col') return top() === 'colgroup' || top() === 'table';
+      if (name === 'caption' || name === 'colgroup' || SECTIONS.has(name)) { popTo(ti + 1); return true; }
+      if (name === 'tr') {
+        let k = stack.length;
+        while (k > ti + 1 && !SECTIONS.has(stack[k - 1])) k--;
+        popTo(k);
+        return true;
+      }
+      // td, th: in a row; a row is made if there is none
+      let ri = -1;
+      for (let k = stack.length - 1; k > ti; k--) { if (stack[k] === 'tr') { ri = k; break; } if (stack[k] === 'table') break; }
+      if (ri >= 0) { popTo(ri + 1); return true; }
+      let k = stack.length;
+      while (k > ti + 1 && !SECTIONS.has(stack[k - 1])) k--;
+      popTo(k);
+      open('tr', '');
+      return true;
+    }
+    if (TABLE_CONTEXT.has(top())) intoCell();
+    if (CLOSES_P.has(name)) { const pi = lastIndex('p', BARRIERS); if (pi >= 0) popTo(pi); }
+    if (name === 'li' || name === 'dd' || name === 'dt') {
+      const same = name === 'li' ? ['li'] : ['dd', 'dt'];
+      for (let k = stack.length - 1; k >= 0; k--) {
+        if (same.includes(stack[k])) { popTo(k); break; }
+        if (!THROUGH.has(stack[k])) break;
+      }
+    }
+    if (HEADINGS.has(name)) {
+      for (let k = stack.length - 1; k >= 0; k--) {
+        if (HEADINGS.has(stack[k])) { popTo(k); break; }
+        if (!THROUGH.has(stack[k])) break;
+      }
+    }
+    if (name === 'a') { const ai = lastIndex('a'); if (ai >= 0) popTo(ai); }
+    if (name === 'rt' || name === 'rp') while (top() === 'rt' || top() === 'rp') close(stack.pop());
+    return true;
+  };
+  const endTag = (name) => {
+    const stopAt = TABLE_PARTS.has(name) || name === 'table' ? new Set(name === 'table' ? [] : ['table']) : BARRIERS;
+    const k = lastIndex(name, stopAt);
+    if (k >= 0) popTo(k);
+  };
 
   for (const tok of tokens(html)) {
     if (tooBig) break;
     if (killDepth > 0) {
       // inside a dropped subtree: the only thing that matters is finding its end
-      if (tok.t === 'open' && tok.name === killTag && !tok.self && !VOID.has(tok.name)) killDepth++;
+      if (tok.t === 'open' && tok.name === killTag && !VOID.has(tok.name)) killDepth++;
       else if (tok.t === 'close' && tok.name === killTag) killDepth--;
       continue;
     }
-    if (tok.t === 'text') { push(escText(tok.v)); continue; }
+    if (tok.t === 'text') {
+      if (TABLE_CONTEXT.has(top())) { if (!/\S/.test(tok.v)) continue; intoCell(); }
+      push(escText(tok.v));
+      continue;
+    }
 
     if (tok.t === 'open') {
       const name = tok.name;
       if (KILL.has(name)) {
         dropped++;
-        if (!tok.self && !VOID.has(name) && !KILL_VOID.has(name)) { killDepth = 1; killTag = name; }
+        // a browser ignores the slash of <script/>: the element runs on, so it is dropped on, to its end tag
+        if (!VOID.has(name) && !KILL_VOID.has(name)) { killDepth = 1; killTag = name; }
         continue;
       }
-      if (!KEEP.has(name)) { dropped++; continue; } // unwrap: keep the words
+      if (!KEEP.has(name) || (!landmarks && LANDMARKS.has(name))) { dropped++; continue; } // unwrap: keep the words
       if (name === 'img' && !allowImages) { dropped++; continue; }
 
       const allow = ATTRS[name] || null;
@@ -211,23 +302,33 @@ export function sanitizeArticle(html, { allowImages = true, max = SNAPSHOT_MAX, 
       }
       // an <img> we could not resolve a source for is not worth a broken icon
       if (name === 'img' && !kept.some(a => a.startsWith(' src='))) { dropped++; continue; }
-      // links always leave this site safely, and never in place
-      // …and an image is fetched lazily, sending no Referer
+      if (!startTag(name)) { dropped++; continue; }
+      // links always leave this site safely, and never in place; an image is fetched lazily, sending no Referer
       const extra = name === 'a' ? ' rel="noreferrer noopener" target="_blank"'
         : name === 'img' ? ' loading="lazy" decoding="async" referrerpolicy="no-referrer"' : '';
-      if (VOID.has(name) || tok.self) { push(`<${name}${kept.join('')}${extra}>`); continue; }
-      push(`<${name}${kept.join('')}${extra}>`);
-      open.push(name);
+      if (VOID.has(name)) { push(`<${name}${kept.join('')}${extra}>`); continue; }
+      open(name, `${kept.join('')}${extra}`);
       continue;
     }
 
     // close
-    const at = open.lastIndexOf(tok.name);
-    if (at < 0) continue;                     // a close with no open: ignore it
-    for (let k = open.length - 1; k >= at; k--) push(`</${open[k]}>`);
-    open.length = at;
+    endTag(tok.name);
   }
   // `truncate`: an over-long article is cut at the limit and its open elements are closed, rather than refused
-  for (let k = open.length - 1; k >= 0; k--) { if (truncate) out.push(`</${open[k]}>`); else push(`</${open[k]}>`); }
+  while (stack.length) { const n = stack.pop(); if (truncate) out.push(`</${n}>`); else push(`</${n}>`); }
   return { html: out.join(''), dropped, tooBig };
+}
+
+/**
+ * Sanitise until the output is stable (at most `passes`): what comes out is what the sanitiser would write again, so a second
+ * reading of it (the article view reads a Hub snapshot again) can change nothing. → { html, dropped, tooBig }.
+ */
+export function sanitizeStable(html, opts = {}, passes = 3) {
+  let r = sanitizeArticle(html, opts);
+  for (let k = 1; k < passes; k++) {
+    const again = sanitizeArticle(r.html, opts);
+    if (again.html === r.html) break;
+    r = { ...again, dropped: r.dropped + again.dropped, tooBig: r.tooBig || again.tooBig };
+  }
+  return r;
 }

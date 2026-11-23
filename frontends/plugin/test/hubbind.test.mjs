@@ -95,7 +95,8 @@ test('the extension is wired to it: loaded before content.js, asks the worker fo
   assert.match(c, /data-bfp-extension/);
   const save = /async function saveOnHubPost[\s\S]*?\n  }\n/.exec(c)[0];
   assert.match(save, /api\('POST', '\/following\/hold', \{ origin: h\.origin, id: h\.id \}\)/);
-  assert.match(save, /url: h\.page/);
+  assert.match(save, /held\.data && held\.data\.url/);
+  assert.ok(!/url: h\.page/.test(save), 'never the address the page markup states');
   assert.ok(!/blyg_hints/.test(save), 'no hints: the identity is the document\'s');
   assert.match(c, /if \(pendingSel && pendingSel\.hub\) return saveOnHubPost/);
   assert.match(fs.readFileSync(path.join(HERE, '..', 'following-view.mjs'), 'utf8'), /hasAttribute\('data-bfp-extension'\)\)return hide\(\)/);

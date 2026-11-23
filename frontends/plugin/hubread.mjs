@@ -19,6 +19,13 @@ import { formatDate } from './following.mjs';
 
 const A = createRequire(import.meta.url)('./extension/anchor.js');
 export const HUB_TEXT_FROM = Object.freeze(['item-document', 'captured']);
+// Who may see a page record. One list, one function:
+//   shared     — an ordinary annotated page: whoever the companion lets in (a guest with the password, in a shared one)
+//   owner-only — a page the Hub made from a followed post: what the owner reads is the owner's, so a guest's lists do not show it,
+//                its address answers as if there were nothing there, and nothing may be written to it
+export const VISIBILITY = Object.freeze(['shared', 'owner-only']);
+export const visibilityOf = page => (page && page.hub ? 'owner-only' : 'shared');
+export const mayRead = (page, isOwner) => visibilityOf(page) === 'shared' || !!isOwner;
 
 /**
  * Put `post` ({ page_url, title, html, result, meta, text_state }) on its page record. `replace` is the reader's explicit
@@ -29,12 +36,23 @@ export const HUB_TEXT_FROM = Object.freeze(['item-document', 'captured']);
  *     (anchor.js locate: quote, prefix, suffix); those that no longer match are marked orphaned, as for any changed page.
  */
 export function holdPost({ store, applyAnswer, post, replace = false, now = () => new Date() }) {
-  const page = store.upsertPage({ url: post.page_url, title: post.title });
+  // A record already at this address is touched only if it IS this post: the Hub's own record of it, or a page whose identity is
+  // exactly this blyg and this id. Anything else (a page the owner captured, another post's record) is left exactly as it is: a blyg
+  // that names an address does not thereby get its text, title or identity put on what is there.
+  const there = store.readPage(post.page_url);
+  if (there) {
+    const same = i => i && i.origin === post.meta.origin && i.id === post.meta.id;
+    const ok = there.hub ? (there.hub.origin === post.meta.origin && there.hub.id === post.meta.id)
+      : (there.blyg && there.blyg.status === 'blyg' && same(there.blyg.item));
+    if (!ok) throw new Error('a page already recorded at that address is not this post, so it was left alone');
+  }
+  const page = store.upsertPage({ url: post.page_url, title: there ? '' : post.title });
   const key = store.pageKey(page.url);
   const had = !!page.hub;
   const threads = page.threads || [];
   if (had && !replace) return { page, key, kept: true, text_from: page.hub.text_from, orphaned: 0 };
-  const mayReplace = replace || !threads.length || !store.hasSnapshot(key);
+  // a copy captured from the original page by the extension is never replaced unless the reader says so (the article view asks)
+  const mayReplace = replace || !store.hasSnapshot(key);
   let textFrom = 'captured', orphaned = 0;
   if (mayReplace) {
     store.saveSnapshot(page.url, post.html);
@@ -46,7 +64,7 @@ export function holdPost({ store, applyAnswer, post, replace = false, now = () =
       store.setOrphaned(t, !ok);
     }
   }
-  page.hub = { ...post.meta, text_from: textFrom, text_state: mayReplace ? (post.text_state || 'whole') : 'whole', fetched_at: now().toISOString() };
+  page.hub = { ...post.meta, text_from: textFrom, text_state: mayReplace ? (post.text_state || 'whole') : 'whole' /* one vocabulary: following.mjs BODY_STATES */, fetched_at: now().toISOString() };
   delete page.hub.key; // the engine's key for a record is not a property of the page
   applyAnswer(page, post.result);
   store.savePage(page);
@@ -68,5 +86,6 @@ export function hubInfoOf(page, { following, locale = 'en-US' } = {}) {
     in_response_to: resp ? resp.label : '', text_from: h.text_from, text_state: h.text_state || 'whole',
     key, newer: held > h.version && key ? { version: held, key } : null,
     source_note: h.text_from === 'captured' ? 'This copy was captured from the original page.' : '',
+    use_document: h.text_from === 'captured' && key ? { key } : null,
   };
 }

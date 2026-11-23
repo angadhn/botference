@@ -21,7 +21,7 @@ const CFG = createRequire(import.meta.url)('../extension/config.js');
 const ANCHOR = fs.readFileSync(path.join(HERE, '..', 'extension', 'anchor.js'), 'utf8');
 const A = 'https://alpha.web.test/notes/';
 
-async function feedWindow({ threads = {} } = {}) {
+async function feedWindow({ threads = {}, holdReply = null, long = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubfeed-'));
   const web = makeWeb();
   const site = web.add(A, { title: 'Alpha Notes' });
@@ -30,7 +30,11 @@ async function feedWindow({ threads = {} } = {}) {
     const d = makeDoc({ id, origin: A, kind: 'fragment', title: '', created: id === one ? '2026-11-02T10:00:00Z' : '2026-11-03T10:00:00Z' });
     d.content_html = `<p>${words}</p>`; site.put(d);
   }
-  const f = F.createFollowing({ file: path.join(dir, 'f.json'), get: web.get, getSettings: () => CFG.followingSettingsOf({}).settings, timers: { set: () => 1, clear: () => {} } });
+  if (long) {
+    const d = makeDoc({ id: idOf(3), origin: A, kind: 'thread', title: '', created: '2026-11-04T10:00:00Z', transclusions: [] });
+    d.content_html = `<p>${'first block words '.repeat(30)}</p><p>${'second block words '.repeat(30)}</p>`; site.put(d);
+  }
+  const f = F.createFollowing({ file: path.join(dir, 'f.json'), get: web.get, getSettings: () => CFG.followingSettingsOf({ following_feed_clip_words: 50 }).settings, timers: { set: () => 1, clear: () => {} } });
   f.confirmImport([{ origin: A }]);
   await f.refresh();
   const data = f.view();
@@ -40,8 +44,10 @@ async function feedWindow({ threads = {} } = {}) {
   const calls = [];
   w.fetch = async (url, init) => {
     calls.push({ url, body: JSON.parse(init.body) });
-    const body = url === '/following/hold' ? { ok: true, url: `${A}f/${one}/` } : { ok: true, thread: { id: 't-1' } };
-    return { json: async () => body };
+    // the companion answers where it keeps the post (not the address the page's markup states)
+    const body = url === '/following/hold' ? { ok: true, url: `${A}items/${one}.json` } : { ok: true, thread: { id: 't-1' } };
+    const reply = holdReply ? await holdReply(url, body) : body;
+    return { json: async () => reply };
   };
   w.document.documentElement.innerHTML = html.replace(/^<!doctype html>/i, '');
   // the page's scripts run with this window as the browser's globals
@@ -88,7 +94,7 @@ test('a selection inside one post: the pill offers a comment, and saving it hold
   await new Promise(res => setTimeout(res, 30));
   assert.deepEqual(x.calls.map(c => c.url), ['/following/hold', '/thread']);
   assert.deepEqual(x.calls[0].body, { origin: A, id: x.one }, 'the post is named by its origin and id, from the entry');
-  assert.equal(x.calls[1].body.url, `${A}f/${x.one}/`, 'the thread goes to the post\'s own page record, not to the Hub');
+  assert.equal(x.calls[1].body.url, `${A}items/${x.one}.json`, 'the thread goes to the address the companion returned from hold, not to the Hub and not to the markup\'s own');
   assert.equal(x.calls[1].body.quote, 'quotable about gardens');
   assert.equal(x.calls[1].body.msg.text, 'my comment');
   assert.ok(!('blyg_hints' in x.calls[1].body), 'no hints: the identity is the entry\'s (item document), never a guess');
@@ -118,4 +124,67 @@ test('a selection outside any post\'s text does nothing; existing highlights are
   assert.equal([...marks].map(m => m.textContent).join(''), 'kettles and tea');
   assert.equal(y.byId[y.one].querySelectorAll('mark').length, 0);
   y.done();
+});
+
+const mode = x => x.w.document.documentElement.getAttribute('data-hub-composer');
+async function openComposer(x, id = x.one, word = 'quotable') {
+  const node = x.text(id);
+  await x.select(node, node.data.indexOf(word), node, node.data.indexOf(word) + word.length);
+  x.w.document.getElementById('hub-pill').click();
+  return x.byId[id].parentNode.querySelector('.hub-composer');
+}
+
+test('the composer has ONE named mode (idle, composing, saving), moved through one function: Save pressed twice saves once; Cancel and failure move it back', async () => {
+  let release;
+  const x = await feedWindow({ holdReply: (url, body) => (url === '/following/hold' ? new Promise(r => { release = () => r(body); }) : body) });
+  assert.equal(mode(x), null, 'nothing yet: idle');
+  const box = await openComposer(x);
+  assert.equal(mode(x), 'composing');
+  box.querySelector('textarea').value = 'a comment';
+  const save = box.querySelectorAll('button')[0];
+  save.click();
+  assert.equal(mode(x), 'saving');
+  save.click(); save.click();
+  assert.deepEqual(x.calls.map(c => c.url), ['/following/hold'], 'a second press while saving does nothing');
+  release();
+  await new Promise(res => setTimeout(res, 30));
+  assert.equal(mode(x), 'idle', 'saved: back to idle');
+  assert.deepEqual(x.calls.map(c => c.url), ['/following/hold', '/thread']);
+  assert.equal(x.w.document.querySelector('.hub-composer'), null);
+  // cancel
+  const b2 = await openComposer(x, x.two, 'kettles');
+  assert.equal(mode(x), 'composing');
+  b2.querySelectorAll('button')[1].click();
+  assert.equal(mode(x), 'idle');
+  assert.equal(x.w.document.querySelector('.hub-composer'), null);
+  // a second selection while composing replaces the first composer: still composing
+  await openComposer(x, x.two, 'kettles');
+  const b3 = await openComposer(x, x.two, 'tea');
+  assert.equal(mode(x), 'composing');
+  assert.equal(x.w.document.querySelectorAll('.hub-composer').length, 1);
+  x.done();
+  // a failure leaves the composer open and composing, with the reason
+  const y = await feedWindow({ holdReply: async () => ({ ok: false, error: 'no text is held' }) });
+  const b4 = await openComposer(y);
+  b4.querySelector('textarea').value = 'text';
+  b4.querySelectorAll('button')[0].click();
+  await new Promise(res => setTimeout(res, 30));
+  assert.equal(mode(y), 'composing');
+  assert.match(y.w.document.getElementById('msg').textContent, /no text is held/);
+  assert.equal(b4.querySelectorAll('button')[0].disabled, false);
+  y.done();
+});
+
+test('the "more" control of a long post is one field with two named modes (collapsed, expanded)', async () => {
+  const x = await feedWindow({ long: true });
+  const body = x.byId[idOf(3)];
+  const rest = body.querySelector('.rest'), btn = body.querySelector('button[data-act=more]');
+  assert.ok(rest && btn, 'a long post is clipped');
+  assert.equal(rest.hidden, true);
+  assert.match(rest.textContent, /second block words/);
+  btn.click();
+  assert.deepEqual([body.dataset.more, rest.hidden, btn.textContent], ['expanded', false, 'less']);
+  btn.click();
+  assert.deepEqual([body.dataset.more, rest.hidden, btn.textContent], ['collapsed', true, 'more']);
+  x.done();
 });
