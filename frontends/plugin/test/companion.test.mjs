@@ -3151,7 +3151,9 @@ async function main() {
     });
 
     await test('sign out clears the session', async () => {
-      const r = await GET(hb, '/signout', { ...REMOTE, cookie: adaCookie });
+      // a GET only shows the button; the POST (from a page of ours) signs out
+      assert.equal((await GET(hb, '/signout', { ...REMOTE, cookie: adaCookie })).status, 200);
+      const r = await POST(hb, '/signout', undefined, { ...REMOTE, cookie: adaCookie });
       assert.equal(r.status, 303);
       assert.equal(r.headers.location, '/pages');
       assert.match((r.headers['set-cookie'] || []).join('; '), /plugin_auth=; Max-Age=0/);

@@ -65,7 +65,7 @@ try {
           assert.equal(r.headers['x-content-type-options'], 'nosniff', p);
           if (/\.pdf$/.test(name)) assert.equal(r.headers['content-security-policy'], undefined, 'a PDF viewer does not run inside a sandbox');
           else assert.equal(r.headers['content-security-policy'], 'sandbox', p + ' has a sandbox with no allow-scripts and no allow-same-origin');
-          if (/\.(bin|pdf)$/.test(name)) assert.equal(r.headers['content-disposition'], 'attachment', p + ' is a download');
+          if (/\.(bin|pdf|xhtml)$/.test(name)) assert.equal(r.headers['content-disposition'], 'attachment', p + ' is a download');
           else assert.equal(r.headers['content-disposition'], undefined, p);
           assert.ok(!/allow-/.test(r.headers['content-security-policy'] || ''), 'nothing is allowed back');
         }
