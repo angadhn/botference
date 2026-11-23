@@ -172,22 +172,28 @@ export async function fetchKeys(url, { get = defaultGet } = {}) {
   return keys;
 }
 
-// The key cache holds plain facts: what was fetched, when it was fetched, when a fetch was last tried, and
-// the fetch in flight (so a crowd of requests shares ONE fetch). What the cache IS is worked out by one function.
-export const KEY_CACHE_STATES = Object.freeze(['empty', 'fresh', 'stale', 'expired']);
+// The key cache holds plain facts: what was fetched, when it was fetched, when a fetch was last tried, and the fetch in flight (so a crowd of
+// requests shares ONE fetch). What the cache IS is worked out by one function, from those facts, and named in one list:
+//   empty     nothing held and nothing being fetched
+//   fresh     held, fetched less than JWKS_TTL_MS ago
+//   stale     held, older than that but within JWKS_STALE_OK_MS (still verifies if Cloudflare's list is down)
+//   expired   held, older than that, or the clock went backwards: trusted for nothing
+//   fetching  a fetch is in flight (it takes precedence: whoever needs the list waits for it)
+export const KEY_CACHE_STATES = Object.freeze(['empty', 'fresh', 'stale', 'expired', 'fetching']);
 export const newKeyCache = () => ({ keys: null, at: 0, triedAt: null, inflight: null });
-export function keyCacheState(cache, t) {
+function heldAge(cache, t) {
   if (cache.keys === null) return 'empty';
   const age = t - cache.at;
-  if (age < 0) return 'expired'; // the clock went backwards: trust nothing
+  if (age < 0) return 'expired';
   return age < JWKS_TTL_MS ? 'fresh' : age < JWKS_STALE_OK_MS ? 'stale' : 'expired';
 }
+export const keyCacheState = (cache, t) => (cache.inflight ? 'fetching' : heldAge(cache, t));
 async function keyFor(kid, { url, cache, now, get }) {
   const t = now();
-  const state = keyCacheState(cache, t);
-  if (state === 'fresh' && cache.keys.has(kid)) return cache.keys.get(kid);
-  const usable = () => (state === 'fresh' || state === 'stale') ? (cache.keys.get(kid) ?? null) : null;
-  if (!cache.inflight) {
+  const held = heldAge(cache, t);                  // what is held, whether or not a fetch is also under way
+  if (held === 'fresh' && cache.keys.has(kid)) return cache.keys.get(kid);
+  const usable = () => (held === 'fresh' || held === 'stale') ? (cache.keys.get(kid) ?? null) : null;
+  if (keyCacheState(cache, t) !== 'fetching') {
     const mayTry = cache.triedAt === null || t < cache.triedAt || t - cache.triedAt >= JWKS_REFETCH_MIN_MS;
     // a stale cache that already has the key may keep serving it between attempts; an unknown key id waits for the gap
     if (!mayTry) return usable();

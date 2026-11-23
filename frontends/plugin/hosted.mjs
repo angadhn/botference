@@ -218,12 +218,11 @@ const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/pa
 export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password', reservedHandles = () => [] }) {
   // `access`: only a Cloudflare Access token counts; the password routes, login page and cookie are off.
   // `either`: a token when one is present, otherwise the password path. See access.mjs.
-  const pwOn = authMode !== 'access';
   const grantsFile = path.join(dir, 'grants.json');
   const usageFile = path.join(dir, 'grant-usage.json');
   const secretFile = path.join(dir, '.auth-secret');
   let secret = '';
-  if (hosted && pwOn) {
+  if (hosted && authMode !== 'access') {
     fs.mkdirSync(dir, { recursive: true });
     try { secret = fs.readFileSync(secretFile, 'utf8').trim(); } catch { }
     if (!secret) {
@@ -239,8 +238,8 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   // Resolved once, at startup rather than on the first remote request: this is
   // the credential the owner will type, so a hosted companion should establish
   // it (and persist a new one, if the hub never has) before it serves anything.
-  const ownerPwMemo = (hosted && pwOn && !ownerPassword) ? (sharedOwnerPassword() || '') : '';
-  const ownerPw = () => pwOn ? (ownerPassword || ownerPwMemo) : '';
+  const ownerPwMemo = (hosted && authMode !== 'access' && !ownerPassword) ? (sharedOwnerPassword() || '') : '';
+  const ownerPw = () => authMode !== 'access' ? (ownerPassword || ownerPwMemo) : '';
 
   // --- the cookie: exp + role + HANDLE, signed. Stateless, survives restarts.
   // The handle is inside the signature, not beside it: a guest cookie used to
@@ -274,7 +273,7 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   // cookie is re-issued once it is past half its life, so continued use
   // extends it indefinitely while an abandoned session still expires.
   function refreshCookies(req) {
-    if (!hosted || !pwOn || tokenVerdict(req)) return null;
+    if (!hosted || authMode === 'access' || tokenVerdict(req)) return null;
     const s = cookieSession(req);
     if (!s) return null;
     const [exp] = String(cookieOf(req, 'plugin_auth')).split('.');

@@ -33,7 +33,7 @@ const mintAt = (r, over, o) => mint(key, over, { now: r.now(), ...o });
 test('the modes and verdicts are named lists', () => {
   assert.deepEqual(HOSTED_AUTH, ['password', 'access', 'either']);
   assert.deepEqual(ACCESS_VERDICTS, ['absent', 'invalid', 'service', 'unlisted', 'owner', 'guest']);
-  assert.deepEqual(KEY_CACHE_STATES, ['empty', 'fresh', 'stale', 'expired']);
+  assert.deepEqual(KEY_CACHE_STATES, ['empty', 'fresh', 'stale', 'expired', 'fetching']);
   assert.equal(parseHostedAuth(undefined), 'password');
   for (const m of HOSTED_AUTH) assert.equal(parseHostedAuth(m), m);
   for (const bad of ['Access', 'oauth', 'both', 1, true]) assert.throws(() => parseHostedAuth(bad), AccessConfigError);
@@ -129,8 +129,11 @@ test('the key list: cached, shared by a crowd, bounded, and failing closed', asy
   const tok = () => mintAt(r);
   // a crowd with an empty cache makes ONE fetch
   r.get.delay = 30;
-  const all = await Promise.all(Array.from({ length: 40 }, () => verifyAccessToken(tok(), c, r)));
+  const crowd = Array.from({ length: 40 }, () => verifyAccessToken(tok(), c, r));
+  assert.equal(keyCacheState(r.cache, r.now()), 'fetching', 'a fetch under way is a named state');
+  const all = await Promise.all(crowd);
   assert.ok(all.every(Boolean)); assert.equal(r.get.hits, 1);
+  assert.ok(KEY_CACHE_STATES.includes(keyCacheState(r.cache, r.now())), 'every state is in the list');
   assert.equal(keyCacheState(r.cache, r.now()), 'fresh');
   // fresh: no more fetches
   await verifyAccessToken(tok(), c, r); assert.equal(r.get.hits, 1);
