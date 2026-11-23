@@ -65,6 +65,11 @@ import * as preview from './preview.mjs';
 import * as scratch from './scratch.mjs';
 import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
+import { createPublisher } from './blyg-run.mjs';
+import { validateHome, storable } from './blyg-home.mjs';
+import { blygHomePage } from './blyg-home-page.mjs';
+import { DEFAULT_TEMPLATE, DEFAULT_ESCAPE, LIMITS as BLYG_NOTE_LIMITS } from './blyg-note.mjs';
+import { DEFAULT_FILENAME } from './blyg-home.mjs';
 import * as sites from './sites.mjs';
 import * as collateral from './collateral.mjs';
 import * as lasso from './lasso.mjs';
@@ -206,7 +211,10 @@ const standingFor = req => connectionRecord(hosted.isOwner(req) ? 'owner' : 'gue
   hosted.authMode === 'password' ? Infinity : (verdictOfRequest(req).expiresAt ?? Infinity));
 // the page an event is about, by any field a page can be named in
 const eventNames = ev => [ev.url, ev.page_url, ev.page_key, ev.key, ev.page].filter(v => typeof v === 'string');
-const ownerOnlyEvent = ev => namesOwnerOnlyPage(eventNames(ev));
+// Events that are the owner's alone whatever page they name: the state of a Publish-as-blyg run (blyg-run.mjs) says
+// what the owner is about to put on their site. A guest's SSE and WebSocket never carry them.
+export const OWNER_ONLY_EVENTS = Object.freeze(['blyg-publish']);
+const ownerOnlyEvent = ev => OWNER_ONLY_EVENTS.includes(ev && ev.type) || namesOwnerOnlyPage(eventNames(ev));
 export const mayHear = (standing, hush) => !hush || standing === 'owner';
 // `hush` is decided from the page's record when the event is made; a caller whose act REMOVES the record decides it first and passes it
 // in, because once the record is gone nothing can tell what it was
@@ -216,6 +224,15 @@ function broadcast(ev, hush = ownerOnlyEvent(ev)) {
   for (const res of sseClients) { const r = standingOf.get(res); if (connectionLive(r, t) && mayHear(r.standing, hush)) res.write(`data: ${json}\n\n`); }
   for (const ws of wsClients) { const r = standingOf.get(ws); if (connectionLive(r, t) && mayHear(r.standing, hush)) ws.send(json); }
 }
+// The one Publish-as-blyg run this companion can have (blyg-run.mjs). Its record is a file next to the pages, so a
+// restart finds it and marks it interrupted; its events go to owner clients only (OWNER_ONLY_EVENTS).
+const blygPublish = createPublisher({
+  file: path.join(store.DIR, 'blyg-publish-run.json'),
+  readConfig: () => store.readConfig(),
+  readPage: url => store.readPage(url),
+  savePage: page => store.savePage(page),
+  broadcast: ev => broadcast(ev),
+});
 // --- the review's decision log, kept in step ------------------------------
 //
 // A decision was just made on this page — a thread filed, a thread deleted, a
@@ -4167,6 +4184,68 @@ export function handler(req, res) {
       return ok(res, { root: hit.root, id: hit.id, route, msg, ...s });
     });
   }
+  // ---- Publish as blyg (blyg-run.mjs, blyg-note.mjs, blyg-home.mjs) -----------------------------------
+  // The owner turns their own comment(s) on a page into a short post on their own site. EVERY route
+  // here is owner-only (notOwner, first thing; a guest is told 403 and nothing else), and every POST is
+  // JSON-only through readBody (a page on another site cannot send application/json without asking
+  // first, and the Origin/Host rules at the top of this handler refuse it anyway). The two routes that
+  // act on a run (confirm, retry, cancel, abandon) also need the run's own id and token, which only
+  // the owner's client was ever handed. `pageOf` authorises the page actually found.
+  //   GET  /blyg-home        the setting, whether it is usable, and the defaults
+  //   POST /blyg-home        {settings} validate and save (refused while a run is under way)
+  //   GET  /blyg-home/page   the form for it
+  //   GET  /blyg-publish/run the current run (a drawer that reloaded asks this)
+  //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above'}   Step A: write the note, run plan
+  //   POST /blyg-publish/confirm {run, token}   Step C: apply, then publish
+  //   POST /blyg-publish/retry   {run, token}   the failed step again (the owner's click)
+  //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
+  //   POST /blyg-publish/abandon {run, token}   a failed or interrupted run is given up
+  if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
+    if (notOwner(req, res)) return;
+    const homeView = () => {
+      const raw = store.readConfig().blyg_home;
+      const v = validateHome(raw);
+      return { settings: storable(raw), valid: v.ok, errors: v.errors,
+        defaults: { template: DEFAULT_TEMPLATE, filename: DEFAULT_FILENAME, escape: DEFAULT_ESCAPE }, limits: BLYG_NOTE_LIMITS };
+    };
+    if (req.method === 'GET' && url === '/blyg-home') return ok(res, homeView());
+    if (req.method === 'GET' && url === '/blyg-home/page') {
+      const nonce = crypto.randomBytes(16).toString('base64');
+      const h = homeView();
+      return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        'content-security-policy': `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' }).end(blygHomePage({ ...h, nonce }));
+    }
+    if (req.method === 'POST' && url === '/blyg-home') {
+      return readBody(req, res, data => {
+        if (blygPublish.book.mode !== 'idle' && !['published', 'cancelled', 'abandoned'].includes(blygPublish.book.mode)) {
+          return fail(res, 409, 'a publish run is under way; finish or abandon it before changing these settings');
+        }
+        const v = validateHome(data.settings);
+        if (!v.ok) return res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: v.errors[0], errors: v.errors }));
+        store.saveConfig({ blyg_home: storable(data.settings) });
+        return ok(res, homeView());
+      });
+    }
+    if (req.method === 'GET' && url === '/blyg-publish/run') return ok(res, { run: blygPublish.current() });
+    const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
+    if (req.method === 'POST' && url === '/blyg-publish/start') {
+      return readBody(req, res, data => {
+        const page = pageOf(req, res, data);
+        if (!page) return;
+        if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
+        const r = blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || '') });
+        return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
+      });
+    }
+    if (req.method === 'POST' && acts[url]) {
+      return readBody(req, res, async data => {
+        const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || '') });
+        return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
+      });
+    }
+    return fail(res, 404, 'not found');
+  }
   // POST /publish {url, target?} — this project artifact, live on the
   // reader's own website.
   //
@@ -6874,7 +6953,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
   // Ctrl-C / launcher stop: run the exit hooks (lock file) and take the
   // bridge child with us instead of orphaning it
   for (const sig of ['SIGINT', 'SIGTERM']) {
-    process.on(sig, () => { for (const c of allChats()) c.stop(); process.exit(0); });
+    process.on(sig, () => { blygPublish.stopAll(); for (const c of allChats()) c.stop(); process.exit(0); });
   }
   server.listen(PORT, '127.0.0.1', () => {
     const p = server.address().port;
