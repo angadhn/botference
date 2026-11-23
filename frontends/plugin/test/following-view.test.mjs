@@ -19,6 +19,16 @@ const rec = (n, text) => ({ key: `k${n}`, origin: `https://x${n}.web.test/`, id:
   maintenance: 1, page: 'javascript:alert(1)', blyg_title: text, versions_note: '3 versions',
   in_response_to: { origin: 'javascript:alert(1)', id: '', label: text }, stub_of: null, refs: [], ref_origins: [] });
 
+
+// every script on a Hub page carries the nonce; exactly one is executable inline code (ours), the only one with a source is the
+// companion's own anchoring code, and the rest is JSON data
+const scriptsOf = html => {
+  const tags = html.match(/<script\b[^>]*>/g) || [];
+  return { all: tags.length, nonced: tags.filter(t => /\snonce="[^"]+"/.test(t)).length,
+    inline: tags.filter(t => !/\ssrc=/.test(t) && !/type="application\/json"/.test(t)).length,
+    sources: tags.filter(t => /\ssrc=/.test(t)).map(t => /src="([^"]*)"/.exec(t)[1]) };
+};
+
 test('hostile titles, excerpts, authors, notes and labels are escaped; hrefs are only the page\'s own routes', () => {
   const entries = HOSTILE.map((h, n) => ({ head: rec(n, h), members: [rec(n + 50, h)] }));
   const data = { view: 'feed', filter: 'all', counts: { all: 8, new: 8, threads: 4, fragments: 4, responses: 0 }, run: { state: 'idle' }, schedule: { mode: 'scheduled' },
@@ -31,8 +41,8 @@ test('hostile titles, excerpts, authors, notes and labels are escaped; hrefs are
   assert.ok(!/<script>alert/i.test(body) && !/<img\b/i.test(body) && !/<a href="javascript/i.test(body));
   assert.ok(!/<\/title><script/i.test(body));
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html));
-  assert.equal((html.match(/<script/g) || []).length, 1);
-  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
+  { const sc = scriptsOf(html); assert.deepEqual([sc.inline, sc.nonced === sc.all], [1, true]); }
+  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-|\/assets\/anchor\.js$)/, m[1]);
   // no attribute value was broken out of: every tag's attributes parse as name="value" pairs only
   for (const tag of body.matchAll(/<(?:article|a|button|input|textarea)\b([^>]*)>/g)) {
     const rest = tag[1].replace(/\s[\w-]+(?:="[^"]*")?/g, '').replace(/\s*\/?$/, '');
@@ -81,7 +91,7 @@ test('the version history renders escaped: "v5 · 5 versions", "pinned: v1, v4",
   assert.ok(body.includes('&lt;script&gt;alert(1)&lt;/script&gt;') && body.includes('&quot;&gt;&lt;img'));
   assert.ok(!/<script>alert|<img\b/i.test(body));
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body));
-  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
+  for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-|\/assets\/anchor\.js$)/, m[1]);
   assert.ok(!/href="https?:\/\/x\.web\.test/.test(body), 'the post\'s own address is never a link (it is a button that asks the companion)');
   // one version only: no history to show
   const one = followingPage({ data: { view: 'feed', filter: 'all', counts: { all: 1, new: 1, threads: 1, fragments: 0, responses: 0 }, run: { state: 'idle' },

@@ -66,6 +66,9 @@ table{border-collapse:collapse;width:100%}td,th{padding:.25rem .4rem;border-bott
 input[type=text],input[type=url],input[type=number],textarea{font:inherit;padding:.25rem .4rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg);max-width:100%}
 input[type=url],input[type=text]{width:100%}textarea{width:100%;min-height:5rem}label{display:block;margin:.3rem 0}#msg{min-height:1.4em}
 pre{white-space:pre-wrap;overflow-wrap:anywhere}
+#hub-pill{position:absolute;z-index:20;box-shadow:0 2px 10px rgba(0,0,0,.25);border-radius:999px;padding:.25rem .8rem}
+.hub-composer{margin:.4rem 0;padding:.5rem;border:1px solid var(--line);border-radius:.4rem;background:var(--card)}
+.hub-composer blockquote{margin:0 0 .4rem;font-size:.9em;color:var(--mut)}.hub-composer button{margin:.3rem .4rem 0 0}
 @media (max-width:560px){
   table.blygs,table.blygs tbody,table.blygs tr,table.blygs td{display:block;width:100%}table.blygs thead{display:none}
   table.blygs tr{border:1px solid var(--line);border-radius:.5rem;padding:.5rem .6rem;margin:.5rem 0;background:var(--card)}
@@ -224,6 +227,47 @@ const SCRIPT = `
     b.my_origins=f.my_origins.value.split(/\\n/).map(function(s){return s.trim();}).filter(Boolean);
     b.inbox_api_url=f.inbox_api_url.value.trim();b.hub_theme_dir=f.hub_theme_dir.value.trim();b.inbox_token_file=f.inbox_token_file.value.trim();
     post('/following/settings',b).then(function(r){done(r,'saved');});});
+  // ---- respond from the Feed: a selection inside ONE post's text is a highlight on that post's page record ----
+  var A=window.BFPAnchor,TJ=document.getElementById('hub-threads');
+  if(A&&TJ){
+    var T={};try{T=JSON.parse(TJ.textContent)||{};}catch(e){T={};}
+    var bodyOf=function(n){var el=n&&(n.nodeType===1?n:n.parentElement);return el&&el.closest?el.closest('.hub-entry-body[data-blyg-page]'):null;};
+    var paint=function(){document.querySelectorAll('.hub-entry-body[data-blyg-page]').forEach(function(b){
+      var ent=b.closest('.hub-entry'),ts=(ent&&T[ent.dataset.key])||[];
+      ts.forEach(function(t){A.unpaint(t.id);});
+      ts.forEach(function(t){var idx=A.buildTextIndex(b),hit=A.locate(idx.raw,t);if(hit.ok)A.paintOffsets(idx,hit.start,hit.end,t.id,false);});});};
+    paint();
+    var pill=document.createElement('button');pill.type='button';pill.id='hub-pill';pill.textContent='Comment';pill.hidden=true;document.body.appendChild(pill);
+    var hide=function(){pill.hidden=true;};
+    // with the Discuss extension on this page the extension owns the selection (it marks the page), so only one Comment is offered
+    var onSel=function(){if(document.documentElement.hasAttribute('data-bfp-extension'))return hide();var sel=window.getSelection();if(!sel||sel.isCollapsed||!sel.rangeCount)return hide();
+      var r=sel.getRangeAt(0),a=bodyOf(r.startContainer),b=bodyOf(r.endContainer);
+      if(!a&&!b)return hide();
+      if(a!==b){hide();say('A comment belongs to one post: keep the selection inside one.',true);return;}
+      if(!String(sel).trim())return hide();
+      var box=r.getBoundingClientRect();pill.style.left=Math.max(8,box.left+box.width/2-30)+'px';pill.style.top=(box.top+window.scrollY-34)+'px';pill.hidden=false;};
+    document.addEventListener('selectionchange',function(){setTimeout(onSel,0);});
+    pill.addEventListener('mousedown',function(e){e.preventDefault();});
+    pill.addEventListener('click',function(){
+      var sel=window.getSelection();if(!sel||!sel.rangeCount)return;var r=sel.getRangeAt(0),b=bodyOf(r.startContainer);
+      if(!b||b!==bodyOf(r.endContainer)){say('A comment belongs to one post: keep the selection inside one.',true);return;}
+      var idx=A.buildTextIndex(b),off=A.offsetsFromRange(idx,r),anchor=A.buildAnchor(idx.raw,off.start,off.end);
+      hide();sel.removeAllRanges();if(!anchor.quote)return;
+      var ent=b.closest('.hub-entry'),old=ent.querySelector('.hub-composer');if(old)old.remove();
+      var box=document.createElement('div');box.className='hub-composer';
+      var q=document.createElement('blockquote');q.textContent=anchor.quote;box.appendChild(q);
+      var ta=document.createElement('textarea');ta.placeholder='Your comment on this passage';box.appendChild(ta);
+      var go=document.createElement('button');go.type='button';go.textContent='Save comment';var no=document.createElement('button');no.type='button';no.textContent='Cancel';
+      box.appendChild(go);box.appendChild(no);b.parentNode.insertBefore(box,b.nextSibling);ta.focus();
+      no.addEventListener('click',function(){box.remove();});
+      go.addEventListener('click',function(){var text=ta.value.trim();if(!text)return;go.disabled=true;
+        post('/following/hold',{origin:b.dataset.blygOrigin,id:b.dataset.blygId}).then(function(h){
+          if(!h||!h.ok){go.disabled=false;say((h&&h.error)||'could not keep that post',true);return;}
+          return post('/thread',{url:h.url,quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix,msg:{text:text}}).then(function(t){
+            if(t&&t.ok&&t.thread){(T[ent.dataset.key]=T[ent.dataset.key]||[]).push({id:t.thread.id,quote:anchor.quote,prefix:anchor.prefix,suffix:anchor.suffix});
+              box.remove();paint();say('Saved. It is also kept on the page of that post: see Read here.');}
+            else{go.disabled=false;say((t&&t.error)||'could not save that',true);}});});});});
+  }
 })();
 `;
 
@@ -284,5 +328,6 @@ ${data.inbox.token_warning ? `<p class="warn">${t(data.inbox.token_warning, 300)
 <p class="mut">Theme: ${t(theme.state, 20)}${theme.reason ? ` (${t(theme.reason, 200)})` : ''}</p>
 <button type="submit">Save settings</button></form>
 <p class="mut">Read states: ${READ_STATES.map(s => escHtml(s)).join(', ')}. Inbox states: ${INBOX_STATES.map(s => escHtml(s)).join(', ')}.</p>
-</main><script nonce="${escHtml(nonce)}">${SCRIPT}</script></body></html>`;
+</main>${data.view === 'feed' ? `<script type="application/json" id="hub-threads" nonce="${escHtml(nonce)}">${JSON.stringify(Object.fromEntries(data.entries.map(e => [e.head.key, e.head.threads || []]))).replace(/</g, String.fromCharCode(92) + 'u003c')}</script>
+<script src="/assets/anchor.js" nonce="${escHtml(nonce)}"></script>` : ''}<script nonce="${escHtml(nonce)}">${SCRIPT}</script></body></html>`;
 }

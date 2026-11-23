@@ -1106,6 +1106,28 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         author: post.author, blyg_title: b.title, versions: post.versions, stub_of: post.stub_of, key: rec.key },
     };
   }
+  /**
+   * The same shape as fetchPost's, made from what the Hub already holds (the stored body and the record, both from the post's
+   * item document) with NO request: for a highlight made in the Feed, before anyone has pressed "Read here". `ref` is a record
+   * key, or { origin, id }.
+   */
+  function heldPost(ref) {
+    const rec = typeof ref === 'string' ? byKey(ref) : (ref && heldItem(String(ref.origin), String(ref.id)));
+    if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+    const b = load().blygs[rec.origin];
+    if (!b) throw new Error('that blyg is not followed');
+    const html = readBodyHtml(rec.key);
+    if (!html.trim()) throw new Error('no text is held for that post yet: use Read here');
+    const pinned = pinnedOf(rec);
+    return {
+      key: rec.key, page_url: rec.page, title: rec.title || rec.excerpt || 'A post', html, text_state: rec.body_state === 'truncated' ? 'partial' : 'whole',
+      result: { status: 'blyg', source: 'item-document', site: { origin: rec.origin, title: b.title, author: b.author }, html: '', text: textContent(html),
+        item: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, latest: rec.version, pinned: pinned.includes(rec.version),
+          pinned_versions: pinned, page: rec.page, pinned_page: '', json: '', source: b.title, author: rec.author } },
+      meta: { origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, created: rec.created, updated: rec.updated, author: rec.author,
+        blyg_title: b.title, versions: rec.versions, stub_of: rec.stub_of, key: rec.key },
+    };
+  }
   /** Reading a post here is opening it. */
   function openedHere(key) {
     const rec = byKey(key);
@@ -1210,7 +1232,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   const itemByKey = key => copy(byKey(key));
 
   return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove, markAllSeen,
-    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
+    markResponded, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
     breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },
@@ -1229,6 +1251,7 @@ export const ROUTES = Object.freeze([
   { method: 'GET', path: '/following/data', what: 'the console as JSON' },
   { method: 'POST', path: '/following/open', what: 'open a post or mention (marks it, answers with the original address)' },
   { method: 'POST', path: '/following/read-here', what: 'keep the post\'s text as an annotatable page and open it (or load its newer version)' },
+  { method: 'POST', path: '/following/hold', what: 'make the held text of a post its annotatable page (no request), so a highlight can be made on it from the Feed' },
   { method: 'POST', path: '/following/follow', what: 'follow a blyg by any URL on it' },
   { method: 'POST', path: '/following/unfollow', what: 'stop following' },
   { method: 'POST', path: '/following/state', what: 'pause or resume one' },

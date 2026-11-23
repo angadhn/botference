@@ -982,6 +982,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // carries the auto-open handshake with a content script. This just opens
       // a tab, and it will only ever open one at this companion, because a
       // content script asking the worker to open arbitrary urls is a hole.
+      // The companion addresses this extension is configured with, so a Hub page can be told from any other website (hubbind.js)
+      case 'companion-bases': { await configReady; return { ok: true, bases: [CONF.base] }; }
       case 'open-here': {
         await configReady;
         const path = String(msg.path || '/').replace(/^\/*/, '/');

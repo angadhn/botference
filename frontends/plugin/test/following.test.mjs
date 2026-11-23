@@ -696,7 +696,7 @@ test('the user docs name every state and every setting', () => {
   const section = doc.slice(doc.indexOf('## The Hub: a private reading feed'), doc.indexOf('## What is fetched, and when')).replace(/\s+/g, ' ');
   assert.ok(section.length > 500, 'the section exists');
   for (const s of [...F.BLYG_STATES, ...F.READ_STATES, ...F.INBOX_STATES]) assert.ok(section.includes(`*${s}*`), `state ${s}`);
-  for (const w of ['Hub', 'Feed', 'Mentions', 'Background', 'Following', '/hub', 'chmod 600', 'PLUGIN_PUBLIC_HOSTNAMES', 'older-pinned', 'pinned: v1, v4', 'Reading in the Hub', 'Theming the Hub', 'hub_theme_dir', 'hub-entry-actions', 'hub-quote', 'hub-settings', 'item-document', 'following_feed_clip_words', 'search every word', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
+  for (const w of ['Hub', 'Feed', 'Mentions', 'Background', 'Following', '/hub', 'chmod 600', 'PLUGIN_PUBLIC_HOSTNAMES', 'older-pinned', 'pinned: v1, v4', 'Reading in the Hub', 'Respond from the Feed', 'data-blyg-page', 'Theming the Hub', 'hub_theme_dir', 'hub-entry-actions', 'hub-quote', 'hub-settings', 'item-document', 'following_feed_clip_words', 'search every word', 'linked from', 'reposted by', 'class unknown', 'MENTION_FIELDS', 'unverified']) assert.ok(section.includes(w), w);
   for (const k of [...Object.keys(F.FOLLOWING_NUMBERS), 'my_origins', 'inbox_api_url', 'inbox_token_file']) assert.ok(section.includes(k), `setting ${k}`);
 });
 

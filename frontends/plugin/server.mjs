@@ -3375,8 +3375,16 @@ function handleFollowing(route, req, res) {
   const q = new URLSearchParams(req.url.split('?')[1] || '');
   const settings = () => followingMod.followingSettingsOf(store.readConfig());
   const locale = followingMod.localeOf(req.headers['accept-language']);
-  const viewOf = () => following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
-    limit: Math.max(1, Math.min(Number(q.get('n')) || followingMod.LIMITS.feedEntries, 1000)) });
+  // each entry carries the highlights already made on its page record, so the Feed can draw them
+  const withThreads = v => {
+    for (const e of v.entries || []) {
+      const page = e.head.page ? store.readPage(e.head.page) : null;
+      e.head.threads = page && page.hub ? (page.threads || []).map(t => ({ id: t.id, quote: t.quote, prefix: t.prefix, suffix: t.suffix, ordinal: t.ordinal, occurrences: t.occurrences, orphaned: !!t.orphaned })) : [];
+    }
+    return v;
+  };
+  const viewOf = () => withThreads(following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
+    limit: Math.max(1, Math.min(Number(q.get('n')) || followingMod.LIMITS.feedEntries, 1000)) }));
   const say = fn => async data => {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };
@@ -3409,6 +3417,12 @@ function handleFollowing(route, req, res) {
   return readBody(req, res, say(async data => {
     switch (route.path) {
       case '/following/open': return following.open(String(data.key || ''), Number.isInteger(data.version) ? data.version : 0);
+      case '/following/hold': {
+        // no request: the held text and the record's identity (both from the post's item document) become the page record
+        const ref = data.key ? String(data.key) : { origin: String(data.origin || ''), id: String(data.id || '') };
+        const held = holdPost({ store, applyAnswer: blygMod.applyAnswer, post: following.heldPost(ref) });
+        return { url: held.page.url, path: `/a/${held.key}`, kept: held.kept };
+      }
       case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
       case '/following/unfollow': return { removed: following.unfollow(String(data.origin || '')) };
       case '/following/state': {

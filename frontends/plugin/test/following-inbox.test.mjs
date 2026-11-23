@@ -49,6 +49,16 @@ function rig({ answer = { status: 200, body: FIXTURE }, settings = {}, forbidden
     done: () => { fs.rmSync(dir, { recursive: true, force: true }); fs.rmSync(tokenDir, { recursive: true, force: true }); } };
 }
 
+
+// every script on a Hub page carries the nonce; exactly one is executable inline code (ours), the only one with a source is the
+// companion's own anchoring code, and the rest is JSON data
+const scriptsOf = html => {
+  const tags = html.match(/<script\b[^>]*>/g) || [];
+  return { all: tags.length, nonced: tags.filter(t => /\snonce="[^"]+"/.test(t)).length,
+    inline: tags.filter(t => !/\ssrc=/.test(t) && !/type="application\/json"/.test(t)).length,
+    sources: tags.filter(t => /\ssrc=/.test(t)).map(t => /src="([^"]*)"/.exec(t)[1]) };
+};
+
 test('the field mapping is one table, and the parser tolerates what it does not know', () => {
   assert.ok(Object.isFrozen(I.MENTION_FIELDS));
   const p = I.parseInbox(FIXTURE);
@@ -254,7 +264,7 @@ test('the Mentions page: grouped by your post, passage, details as escaped JSON,
   assert.ok(!/[\u202a-\u202e\u2066-\u2069]/.test(html));
   assert.ok(!/<[^>]*\son(error|load)\s*=/i.test(body));
   for (const m of body.matchAll(/\s(?:href|src|action)="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-)/, m[1]);
-  assert.equal((html.match(/<script/g) || []).length, 1);
+  { const sc = scriptsOf(html); assert.deepEqual([sc.inline, sc.nonced === sc.all], [1, true]); assert.ok(sc.sources.every(u => u === '/assets/anchor.js')); }
   assert.ok(!html.includes(TOKEN));
   // the Background page names the reasons
   const bg = followingPage({ data: r.f.view({ view: 'background' }), settings, nonce: 'N0NCE' });

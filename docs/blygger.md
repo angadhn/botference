@@ -737,6 +737,16 @@ offers to load it; loading it keeps each highlight whose quote still matches and
 page, and nothing is swapped under your highlights before you ask. A page you had already captured with the extension, with
 highlights on it, is kept as it is until you load the post's version.
 
+**Respond from the Feed.** Select text inside a post in the Feed, press Comment, write, save: the comment goes to that post's
+own page record (the one Read here and the original page use), made on the spot from the text the Hub holds, with no request,
+and its identity (origin, id, version) is the item document's. A selection that runs across two posts is refused with a short
+message. Highlights already on a post are drawn in its entry. This needs no extension, so it works on a phone. With the Discuss
+extension on a desktop browser, the Hub page marks each post's text `data-blyg-page`, `data-blyg-origin`, `data-blyg-id` and
+`data-blyg-version`, and the extension (not the Feed's own button, which then stands down) files a selection inside it under
+that post's page, not under the Hub's address. The extension reads those attributes only on the companion's own Hub pages
+(its configured address, path `/hub` or `/following`); on any other website they are ignored, so a page cannot claim to be
+someone else's post.
+
 **What is stored, and for whom.** The sanitised text of every followed post (at most 40 KB each, with "Read here for the
 rest" when it was longer) is kept in a file of its own in the companion's data folder (`following-bodies/`), removed with
 its post, and a post you read here becomes an ordinary page record. Images are not copied: your browser loads them from

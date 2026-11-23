@@ -85,6 +85,16 @@ const keyOfPost = async id => {
 const PAGE1 = `${A}t/${ID1}/`;
 const HINTS = { blyg: `${A}blyg.json`, json: `${A}items/${ID1}.json` };
 
+
+// every script on a Hub page carries the nonce; exactly one is executable inline code (ours), the only one with a source is the
+// companion's own anchoring code, and the rest is JSON data
+const scriptsOf = html => {
+  const tags = html.match(/<script\b[^>]*>/g) || [];
+  return { all: tags.length, nonced: tags.filter(t => /\snonce="[^"]+"/.test(t)).length,
+    inline: tags.filter(t => !/\ssrc=/.test(t) && !/type="application\/json"/.test(t)).length,
+    sources: tags.filter(t => /\ssrc=/.test(t)).map(t => /src="([^"]*)"/.exec(t)[1]) };
+};
+
 await test('follow by a post URL, refresh, and the data route lists it newest first', async () => {
   let r = await POST(B, '/following/follow', { url: PAGE1 });
   assert.equal(r.status, 200, r.body);
@@ -241,7 +251,7 @@ await test('hostile titles, excerpts, authors and addresses are text: nothing is
   // real attributes of real tags only: the page's own links, or (inside a post's sanitised text) an http(s) or mailto link
   for (const m of body.matchAll(/<[a-zA-Z][^>]*?\shref="([^"]*)"/g)) assert.match(m[1], /^(\/(hub|pages)|#e-|https?:\/\/|mailto:)/, `href ${m[1]}`);
   assert.ok(!/<[a-zA-Z][^>]*\s(?:href|src)="\s*(?:javascript|data|vbscript):/i.test(body), 'no script or data link in any tag');
-  assert.equal((html.match(/<script/g) || []).length, 1, 'one script: ours');
+  { const sc = scriptsOf(html); assert.deepEqual([sc.inline, sc.nonced === sc.all], [1, true], 'one script of ours, all nonced'); assert.ok(sc.sources.every(u => u === '/assets/anchor.js')); }
 });
 
 // ---- every route is behind the same gate ------------------------------------
@@ -312,7 +322,7 @@ await test('Following is never framed, and its one script and style carry a fres
     assert.ok(!/unsafe-inline|unsafe-eval/.test(csp));
     const nonce = /script-src 'nonce-([^']+)'/.exec(csp)[1];
     assert.ok(r.body.includes(`<script nonce="${nonce}">`) && r.body.includes(`<style nonce="${nonce}">`));
-    assert.equal((r.body.match(/<script/g) || []).length, 1);
+    assert.equal(scriptsOf(r.body).inline, 1);
     assert.equal(r.headers['x-frame-options'], 'DENY');
   }
   assert.notEqual(/nonce-([^']+)'/.exec(a.headers['content-security-policy'])[1], /nonce-([^']+)'/.exec(b.headers['content-security-policy'])[1], 'a new nonce each time');
@@ -573,6 +583,42 @@ await test('theme files are behind the gate: unauthenticated, hosted, they are r
   assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com' })).status, 401);
   assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, { host: 'discuss.botference.com', authorization: 'Bearer nope' })).status, 401);
   assert.equal((await request(hosted.base, 'GET', '/hub/theme/hub.css', undefined, GUEST)).status, 404, 'a guest who passes the gate gets the file if there is one (here none is set)');
+});
+
+await test('Respond from the Feed: /following/hold makes the held text the post\'s page (no request); a highlight made there carries the document\'s identity, is the SAME record as Read here, and the Feed draws it', async () => {
+  const HID2 = idOf(31);
+  const d = makeDoc({ id: HID2, origin: A, kind: 'fragment', title: '', created: '2026-11-11T09:00:00Z' });
+  d.content_html = '<p>A fragment with a passage that deserves a comment from the Feed.</p>';
+  site.put(d);
+  await POST(B, '/following/refresh', {});
+  const before = web.requests.length;
+  const hold = await POST(B, '/following/hold', { origin: A, id: HID2 });
+  assert.equal(hold.status, 200, hold.body);
+  assert.equal(web.requests.length, before, 'no request');
+  assert.match(hold.json.path, /^\/a\/[0-9a-f]{40}$/);
+  const PAGE = hold.json.url;
+  assert.match(/<article id="bfp-article"[^>]*>([\s\S]*?)<\/article>/.exec((await GET(B, hold.json.path, { accept: 'text/html' })).body)[1], /A fragment with a passage that deserves a comment from the Feed\./, 'the held text is the page\'s text');
+  const t = (await POST(B, '/thread', { url: PAGE, quote: 'passage that deserves a comment', prefix: 'A fragment with a ', suffix: ' from the Feed', msg: { text: 'from the feed' } })).json.thread;
+  assert.deepEqual([t.blyg.status, t.blyg.origin, t.blyg.id, t.blyg.version], ['blyg', A, HID2, 1], 'the identity is the document\'s');
+  assert.equal(web.requests.length, before, 'still no request');
+  assert.equal((await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json.blyg.source, 'item-document');
+  // the Feed draws it …
+  const entry = (await dataOf()).entries.find(e => e.head.id === HID2).head;
+  assert.deepEqual(entry.threads.map(x => x.quote), ['passage that deserves a comment']);
+  const feed = (await GET(B, '/hub', { accept: 'text/html' })).body;
+  assert.match(feed, /<script type="application\/json" id="hub-threads"[^>]*>[^<]*passage that deserves a comment/);
+  assert.match(feed, /<script src="\/assets\/anchor\.js" nonce="[^"]+"><\/script>/);
+  // … and Read here shows the same thread list (the same record), the highlight made there appears in the Feed
+  const key = await keyOfPost(HID2);
+  const read = await POST(B, '/following/read-here', { key });
+  assert.equal(read.json.kept, true, 'the page was already held: no fetch');
+  const art = (await GET(B, read.json.url, { accept: 'text/html' })).body;
+  assert.match(art, /passage that deserves a comment/);
+  await POST(B, '/thread', { url: PAGE, quote: 'fragment with a passage', msg: { text: 'from read here' } });
+  assert.equal((await dataOf()).entries.find(e => e.head.id === HID2).head.threads.length, 2);
+  // an unknown post, a withdrawn one and a bad body are refused
+  assert.equal((await POST(B, '/following/hold', { origin: A, id: idOf(9999) })).status, 400);
+  assert.equal((await POST(B, '/following/hold', {})).status, 400);
 });
 
 cleanup();

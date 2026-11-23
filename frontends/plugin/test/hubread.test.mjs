@@ -61,14 +61,14 @@ test('hostile content_html is neutralised in the article view (and in the Feed):
   const post = await r.f.fetchPost(key);
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post });
   const html = view(held);
-  const art = /<article id="bfp-article">([\s\S]*?)<\/article>/.exec(html)[1];
+  const art = /<article id="bfp-article"[^>]*>([\s\S]*?)<\/article>/.exec(html)[1];
   for (const bad of [/<script/i, /<iframe/i, /<form/i, /<input/i, /<button/i, /<meta/i, /<base/i, /<svg/i, /<math/i, /<object/i, /<embed/i, /<link/i, /<style(?! nonce)/i,
     /\son\w+\s*=/i, /\sstyle\s*=/i, /srcset/i, /javascript:/i, /data:text/i, /vbscript:/i, /evil\.example/i, /http:\/\/img\.example/i, /data:image/i]) {
     assert.ok(!bad.test(art), `the article body has no ${bad}`);
   }
   assert.match(art, /Honest words before the trouble/);
   assert.match(art, /Honest words after the trouble/);
-  assert.match(art, /<blockquote>/);
+  assert.match(art, /<blockquote class="hub-quote">/, 'a quoted post keeps its blockquote, with the theme hook');
   for (const a of art.match(/<a [^>]*>/g)) assert.match(a, /rel="noreferrer noopener" target="_blank"/, a);
   assert.ok(!/<a [^>]*href="javascript/.test(art));
   assert.match(art, /<a href="https:\/\/ok\.example\.test\/page" rel="noreferrer noopener" target="_blank">/, 'an https link keeps only href, rel and target _blank');

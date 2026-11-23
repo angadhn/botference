@@ -679,6 +679,17 @@
   // not go through and that it can be tried again (and a timeout counts as the
   // companion not answering, toward the connection's verdict); the next answer
   // that does arrive takes the line down.
+  // THE COMPANION'S OWN HUB (hubbind.js). Asked once: which addresses are the companion's. On its Hub pages, and only there, a selection
+  // inside a followed post's text belongs to that post's page record; the page marks itself for the Hub's own script so the two
+  // do not both offer a comment.
+  const HubBind = (typeof BFPHubBind !== 'undefined') ? BFPHubBind : null;
+  let COMPANION_BASES = [];
+  if (HubBind && /^\/(?:hub|following)\/?$/.test(location.pathname)) {
+    bg({ t: 'companion-bases' }).then(r => {
+      COMPANION_BASES = (r && r.bases) || [];
+      if (HubBind.isHubPage(location.href, COMPANION_BASES)) document.documentElement.setAttribute('data-bfp-extension', '1');
+    }).catch(() => { /* not asked: not honoured */ });
+  }
   const api = (method, path, body) => bg({ t: 'api', method, path, body }).then(r => {
     if (r && r.timeout) {
       if (drawer) drawer.noteTimeout(r.error);
@@ -697,6 +708,20 @@
   // the owner's here — pick another"); this only supplies words for a bare
   // status with no body to speak for it.
   const OWNER_ONLY = 'owner only — this companion belongs to someone else';
+  // The Hub's post: the companion makes the page record from what it holds (no request, identity from the item document),
+  // and the thread goes to THAT page's address with no hints, never to the Hub's. Nothing of the Hub page itself is recorded.
+  async function saveOnHubPost(sel, { quote, prefix, suffix, text, route, mark }) {
+    const h = sel.hub;
+    const held = await api('POST', '/following/hold', { origin: h.origin, id: h.id });
+    if (!held.ok) return failure(held);
+    const body = { url: h.page, quote, prefix, suffix, msg: { text }, ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
+    const r = await api('POST', '/thread', body);
+    if (!r.ok) return failure(r);
+    const thread = (r.data && r.data.thread) || null;
+    if (thread) Anchor.rekey('__new__', thread.id);
+    pendingSel = null;
+    return { ok: true, queued: r.data && r.data.queued };
+  }
   function failure(r) {
     const said = String((r && r.error) || '').trim();
     const bare = !said || /^HTTP \d+$/.test(said);
@@ -2838,6 +2863,8 @@
         // The act that earns the record. Order matters on the first one:
         // record, then snapshot, then the message — so a mention's turn is
         // planned against a page whose full text is already on disk.
+        // A comment on a followed post's text on the Hub: the post's own page record, held by the companion from its item document
+        if (pendingSel && pendingSel.hub) return saveOnHubPost(pendingSel, { quote, prefix, suffix, text, route, mark });
         const wasNew = !registered;
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
@@ -3830,6 +3857,14 @@
     if (standDown()) return;   // no new threads where the page owns the margin
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
+    // On the companion's Hub page a selection inside one post's text is that post's; one that spans two posts is refused
+    const hubSel = HubBind ? HubBind.selectionBinding(sel.getRangeAt(0), HREF, COMPANION_BASES) : { verdict: 'none', binding: null };
+    if (hubSel.verdict === 'cross') {
+      sel.removeAllRanges(); drawer.hideSel();
+      const note = document.getElementById('msg');
+      if (note) note.textContent = 'A comment belongs to one post: keep the selection inside one.';
+      return;
+    }
     const index = freshIndex();
     const { start, end } = Anchor.offsetsFromRange(index, sel.getRangeAt(0));
     if (end <= start) return;
@@ -3860,7 +3895,7 @@
     })();
 
     Anchor.unpaint('__new__');
-    pendingSel = { ...a, start, end, page, mark, ...where };
+    pendingSel = { ...a, start, end, page, mark, ...where, ...(hubSel.binding ? { hub: hubSel.binding } : {}) };
     Anchor.paintOffsets(index, start, end, '__new__', false, mark);
     sel.removeAllRanges();
     drawer.hideSel();
