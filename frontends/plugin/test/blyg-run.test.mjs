@@ -24,7 +24,7 @@ function boot(rig, { page, config, hook } = {}) {
     readConfig: () => ({ blyg_home: config === undefined ? rig.home : config }),
     readPage: url => pages.get(url), savePage: p => pages.set(p.url, p),
   });
-  return { pub, pages, events, file, page: pg, start: (threadId = 't1', scope = 'one') => pub.start({ page: pages.get(pg.url), threadId, scope }),
+  return { pub, pages, events, file, page: pg, start: (threadId = 't1', scope = 'one', shown) => pub.start({ page: pages.get(pg.url), threadId, scope, shown: shown !== undefined ? shown : ((config === undefined ? rig.home : config) || {}).confirm || 'always' }),
     mode: () => pub.current().mode };
 }
 const noteOf = (rig, v) => path.join(rig.top, v.note_rel);
@@ -269,7 +269,7 @@ test('a companion restart mid-run leaves a record that offers only "show what ha
     assert.equal((await pub.confirm({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.retry({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.cancel({ id: 'abc', token: 'tok' })).status, 409);
-    assert.equal(pub.start({ page: blygPage([thread('t1', 'q', 'w')]), threadId: 't1', scope: 'one' }).status, 409, 'and it blocks a new run');
+    assert.equal(pub.start({ page: blygPage([thread('t1', 'q', 'w')]), threadId: 't1', scope: 'one', shown: 'always' }).status, 409, 'and it blocks a new run');
     const a = await pub.abandon({ id: 'abc', token: 'tok' });
     assert.ok(a.ok, mode);
     assert.equal(pub.current().mode, 'abandoned');
@@ -342,7 +342,7 @@ test('a setting changed after the run started stops the next step (validated aga
   let cfg = rig.home;
   const pages = new Map(); const page = blygPage([thread('t1', 'q', 'A thought on this.', { blyg: stamp() })]); pages.set(page.url, page);
   const pub = R.createPublisher({ file: path.join(rig.out, 'run.json'), now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: cfg }), readPage: u => pages.get(u), savePage: () => {} });
-  assert.ok(pub.start({ page, threadId: 't1', scope: 'one' }).ok);
+  assert.ok(pub.start({ page, threadId: 't1', scope: 'one', shown: 'always' }).ok);
   await until(() => pub.current().mode === 'planned', 'planned');
   const v = pub.current();
   cfg = { ...rig.home, commands: { ...rig.home.commands, publish: [process.execPath, FAKE, rig.log, rig.ctl, 'evil', '{note}'] } };
@@ -717,4 +717,22 @@ test('abandon after apply runs the site\'s abandon command only with the setting
   const a = await pub.abandon({ id: 'abc', token: 'tok' });
   assert.ok(a.ok);
   assert.deepEqual(rig.calls(), [], 'no command ran under changed settings');
+});
+
+test('F7: a start whose shown setting is not the one in force is refused with a plain message and starts nothing (a stale drawer cannot promise a look first, or the reverse)', async t => {
+  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  const b = boot(rig);
+  for (const shown of ['always', '', undefined, 'sometimes']) {
+    const r = b.start('t1', 'one', shown === undefined ? null : shown);
+    assert.equal(r.ok, false, String(shown)); assert.equal(r.status, 409);
+    assert.match(r.error, /The setting changed: your drawer showed .* but “never” is in force \(one click publishes\)\. Nothing was started/);
+  }
+  assert.deepEqual(fs.readdirSync(rig.folder), [], 'no note written');
+  assert.deepEqual(rig.calls(), []);
+  assert.equal(b.mode(), 'idle');
+  const rig2 = makeRig({ confirm: 'always' }); t.after(rig2.done);
+  const b2 = boot(rig2);
+  const r2 = b2.start('t1', 'one', 'never');
+  assert.match(r2.error, /“always” is in force \(you will see the note first\)/);
+  assert.ok(b2.start('t1', 'one', 'always').ok);
 });

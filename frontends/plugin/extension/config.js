@@ -216,7 +216,7 @@
   // these (the generic `api` message refuses every /blyg-publish and /blyg-home path). `offer`: 'grants' = a successful answer
   // opens this tab's one-use offer; 'needs' = the worker forwards it only while the tab holds an offer, and spends it.
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'grants', body: ['url', 'thread_id', 'scope'] }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'grants', body: ['url', 'thread_id', 'scope', 'confirm'] }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [] }),
     resume: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [] }),
     confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'] }),

@@ -20,6 +20,8 @@ const SERVER = path.join(TEST, '..', 'server.mjs');
 const { test, waitFor, tmp, startServer, cleanup, passed, failures } = createHarness({ server: SERVER, tag: 'blygpub', waitMs: 15000 });
 
 const PAGE = 'https://notes.web.test/post';
+let shownNow = 'always';   // what the owner's drawer was shown (the setting in force, as the test last set it)
+const SHOWN = () => shownNow;
 const settingsOf = rig => ({ folder: rig.folder, filename: '${slug}.md', timezone: 'Europe/London', confirm: 'always', commands: rig.home.commands });
 const rigs = [];
 const newRig = (o) => { const r = makeRig(o); rigs.push(r); return r; };
@@ -44,7 +46,7 @@ await test('unset: every route refuses to act, a start writes nothing, and the s
   assert.match(s.json.errors.join(' '), /not set up/);
   assert.match(s.json.defaults.template, /permalink: \/b\/\$\{slug\}/);
   const tid = await comment(B, 'My view on this story.');
-  const r = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  const r = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(r.status, 409);
   assert.match(r.json.error, /not set up/);
   assert.deepEqual(fs.readdirSync(rig.folder), []);
@@ -70,7 +72,7 @@ await test('the settings are validated when saved: a bad one is 400 with every r
 
 await test('request hygiene: only JSON, only this site; a form, text/plain, a foreign Origin and a rebound Host are all refused before anything runs', async () => {
   const tid = await comment(B, 'Another view on this story.');
-  const body = JSON.stringify({ url: PAGE, thread_id: tid, scope: 'one' });
+  const body = JSON.stringify({ url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   const send = (headers, raw = body) => new Promise((resolve, reject) => {
     const rq = http.request(B + '/blyg-publish/start', { method: 'POST', headers: { 'content-length': Buffer.byteLength(raw), ...headers } }, res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
     rq.on('error', reject); rq.end(raw);
@@ -92,7 +94,7 @@ await test('request hygiene: only JSON, only this site; a form, text/plain, a fo
 await test('the flow: start writes the note and runs plan; the owner hears each move; confirm runs apply then publish; the thread is marked', async () => {
   const events = listen(B);
   const tid = await comment(B, 'A third view on this story, which is the one I will publish.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(s.status, 200, s.body);
   assert.ok(['drafted', 'planning', 'planned'].includes(s.json.run.mode));
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
@@ -101,7 +103,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.match(planned.note_text, /\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n\nA third view on this story, which is the one I will publish\.\n$/);
   assert.ok(!JSON.stringify(planned).includes(rig.top), 'no absolute path of the work tree in what the client is shown');
   assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' })).status, 404);
-  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' })).status, 409, 'one run at a time');
+  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'one run at a time');
   const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token });
   assert.equal(c.status, 200, c.body);
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published');
@@ -110,7 +112,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   const page = (await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json;
   const th = (page.page || page).threads.find(x => x.id === tid);
   assert.equal(th.blyg_published.address, done.published.address);
-  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' })).status, 409, 'not offered again');
+  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'not offered again');
   await waitFor(() => events.of('blyg-publish').length >= 6, 'the moves were announced');
   assert.deepEqual([...new Set(events.of('blyg-publish').map(e => e.run.mode))].sort(), ['applied', 'applying', 'drafted', 'planned', 'planning', 'published', 'publishing']);
   assert.ok(events.of('blyg-publish').every(e => Object.keys(e.run).sort().join() === 'id,mode'), 'an event says which run and which mode, nothing else');
@@ -120,7 +122,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
 await test('a settings change is refused while a run is under way', async () => {
   rig.control({});
   const tid = await comment(B, 'A fourth view that will sit at the confirmation.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(s.status, 200);
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
   const r = await POST(B, '/blyg-home', { settings: settingsOf(rig) });
@@ -135,10 +137,11 @@ await test('confirm never (with a guard): one start is the publish, end to end, 
   rig.control({});
   const never = { ...settingsOf(rig), confirm: 'never', plan_guard: ['--only-note'] };
   assert.equal((await POST(B, '/blyg-home', { settings: never })).status, 200);
+  shownNow = 'never';
   assert.equal((await GET(B, '/blyg-publish/run')).json.confirm, 'never');
   const before = rig.calls().length;
   const tid = await comment(B, 'A fifth view, published with one click and no other step.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(s.status, 200, s.body);
   assert.equal(s.json.run.confirm, 'never');
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published without a confirm');
@@ -148,7 +151,11 @@ await test('confirm never (with a guard): one start is the publish, end to end, 
   assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: [] } })).status, 400, 'never without a guard is refused when saving');
   assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/a-fifth-view/);
   assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: ['not-a-flag'] } })).status, 400);
+  const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: 'always' });
+  assert.equal(stale.status, 409, 'a drawer that showed the other wording is refused');
+  assert.match(stale.json.error, /The setting changed/);
   assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'back to confirming for the rest of the suite');
+  shownNow = 'always';
 });
 
 // ---- crash and restart ------------------------------------------------------------------------------
@@ -159,7 +166,7 @@ await test('the companion is killed mid-run: after a restart the record is inter
   let srv = await startServer({ root: root2, args: ['--no-agents'] });
   await POST(srv.base, '/blyg-home', { settings: settingsOf(rig2) });
   const tid = await comment(srv.base, 'A view the companion will not finish publishing.');
-  const s = await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' });
+  const s = await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
   assert.equal(s.status, 200, s.body);
   await waitFor(() => rig2.calls().length === 1, 'plan started');
   const { id, token } = s.json.run;
@@ -173,7 +180,7 @@ await test('the companion is killed mid-run: after a restart the record is inter
   assert.equal(v.interrupted_from, 'planning');
   assert.deepEqual(v.can, ['abandon']);
   for (const p of ['confirm', 'retry', 'cancel']) assert.equal((await POST(srv.base, `/blyg-publish/${p}`, { run: id, token })).status, 409, p);
-  assert.equal((await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one' })).status, 409, 'it blocks a new run');
+  assert.equal((await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'it blocks a new run');
   const a = await POST(srv.base, '/blyg-publish/abandon', { run: id, token });
   assert.equal(a.status, 200, a.body);
   assert.equal((await runOf(srv.base)).mode, 'abandoned');
@@ -207,7 +214,7 @@ await test('hosted: a same-site page cannot publish (a present Origin must be tr
   assert.equal(t.status, 200);
   await request(hosted.base, 'POST', '/page', { url: PAGE, title: 'A story' }, OWNER);
   const th = await request(hosted.base, 'POST', '/thread', { url: PAGE, quote: 'Q one passage.', msg: { text: 'A hosted view for the request-rule test.' } }, OWNER);
-  const body = { url: PAGE, thread_id: th.json.thread.id, scope: 'one' };
+  const body = { url: PAGE, thread_id: th.json.thread.id, scope: 'one', confirm: 'always' };
   const calls = hrig.calls().length;
   const sneaky = (extra, ct = 'application/json') => request(hosted.base, 'POST', '/blyg-publish/start', ct === null ? undefined : body, { ...OWNER, ...extra, ...(ct ? {} : {}) }, ct === 'none' ? JSON.stringify(body) : null);
   const forged = [
@@ -254,13 +261,13 @@ await test('hosted: a guest cannot change the settings, start a run, or act on o
   const gt = await request(hosted.base, 'POST', '/thread', { url: PAGE, quote: 'Another passage.', msg: { text: 'A guest\'s comment.' } }, GUEST);
   assert.equal(gt.status, 200);
   const guestThread = gt.json.thread.id;
-  const guestTry = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'one' }, GUEST);
+  const guestTry = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'one', confirm: 'always' }, GUEST);
   assert.equal(guestTry.status, 403);
   assert.deepEqual(hrig.calls(), [], 'nothing ran for a guest');
-  const ownGuest = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: guestThread, scope: 'one' }, OWNER);
+  const ownGuest = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: guestThread, scope: 'one', confirm: 'always' }, OWNER);
   assert.equal(ownGuest.status, 409, 'and the owner cannot publish a guest\'s comment either');
   assert.match(ownGuest.json.error, /you wrote yourself/);
-  const s = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'above' }, OWNER);
+  const s = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'above', confirm: 'always' }, OWNER);
   assert.equal(s.status, 200, s.body);
   assert.ok(!JSON.stringify(s.json.run.thread_ids).includes(guestThread));
   const { id, token } = s.json.run;

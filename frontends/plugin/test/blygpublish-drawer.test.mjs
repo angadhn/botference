@@ -53,7 +53,7 @@ function companion(first) {
     state.calls.push({ op, body });
     if (state.fail && state.fail[op]) return { ok: false, error: state.fail[op] };
     if (op === 'start') { state.run = run('planning', { steps: [], thread_ids: [body.thread_id], ...(state.confirm ? { confirm: state.confirm } : {}) }); return { ok: true, run: state.run }; }
-    if (op === 'run' || op === 'resume') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' } };
+    if (op === 'run' || op === 'resume') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' }, confirm: state.confirm || 'always' };
     if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', exit: 0, output: 'PLAN' }] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
@@ -127,11 +127,11 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // ---- the whole flow, trusted ---------------------------------------------------------------------
 {
   const { server, q, qa, dlg, drawer, view, click } = await make();
-  click(qa('.thr-pub')[1]);                                   // the second comment: there is one above it
+  click(qa('.thr-pub')[1]); await tick();                                   // the second comment: there is one above it
   eq('choosing', [view(), dlg().hidden], ['choosing', false]);
   eq('both scopes are offered, the second with its count', qa('.pubdlg [data-act="pub-scope"]').map(b => [b.dataset.scope, b.textContent]), [['one', 'Just this comment'], ['above', 'This and the 1 above']]);
   click(q('[data-act="pub-scope"][data-scope="above"]')); await tick();
-  eq('start sends the thread and the scope, nothing else', server.calls.at(-1), { op: 'start', body: { thread_id: 't2', scope: 'above' } });
+  eq('start sends the thread, the scope and the setting the owner was shown, nothing else', server.calls.at(-1), { op: 'start', body: { thread_id: 't2', scope: 'above', confirm: 'always' } });
   eq('planning is shown as working', view(), 'working');
   ok('and says nothing is published', /Nothing is published/.test(dlg().textContent));
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'Would notify: <b>nobody</b>' }] });
@@ -152,7 +152,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 }
 {
   const { server, q, dlg, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   click(q('[data-act="pub-confirm"]')); await tick();
   server.run = server.make('published', { steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 0, output: 'U' }],
@@ -165,15 +165,32 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('closed', view(), 'closed');
 }
 
+// ---- F7: the wording follows the setting in force, asked when the menu opens; the start carries it back ---------------------------------
+{
+  const server = companion(); server.confirm = 'never';
+  const { q, qa, dlg, view, click, drawer } = await make({ server });
+  click(qa('.thr-pub')[0]); await tick();
+  eq('the menu asked the companion what is in force (as it opened) and shows THAT wording', [server.calls.filter(c => c.op === 'run').length >= 2, /Choosing one of these publishes it now/.test(dlg().textContent), drawer.pub.shown], [true, true, 'never']);
+  click(q('.pubdlg [data-act="pub-close"]')); await tick();
+  // the setting changes behind the drawer's back: the next opening shows the new wording, and a stale start is refused by the companion
+  server.confirm = 'always';
+  click(qa('.thr-pub')[0]); await tick();
+  eq('reopened: the new wording, with no memory of the old one', [/Nothing is published yet: first you will see exactly what would be/.test(dlg().textContent), drawer.pub.shown], [true, 'always']);
+  click(q('.pubdlg [data-act="pub-close"]')); await tick();
+  // an answer that cannot say what a click would do offers nothing
+  server.fail = { run: 'the companion is not there' };
+  click(qa('.thr-pub')[0]); await tick();
+  eq('no answer: nothing is offered, with a plain message', [view(), qa('[data-act="pub-scope"]').length, /Could not ask the companion|the companion is not there/.test(dlg().textContent)], ['problem', 0, true]);
+}
+
 // ---- confirm 'never': one click is the publish; one line on the thread; no dialog ------------------------------------
 {
   const server = companion(); server.confirm = 'never';
   const { q, qa, dlg, view, click, drawer } = await make({ server });
-  eq('(the drawer learned the setting when it opened)', drawer.pub.run && drawer.pub.run.confirm, 'never');
-  click(qa('.thr-pub')[0]);
+  click(qa('.thr-pub')[0]); await tick();
   ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
   click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
-  eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one' } }, true, 'working']);
+  eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one', confirm: 'never' } }, true, 'working']);
   eq('the thread carries ONE line of progress', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking what would change']);
   server.run = server.make('planned', { confirm: 'never', thread_ids: ['t1'], steps: [{ step: 'plan', exit: 0, output: 'P' }] });
   drawer.blygPublishMoved(); await tick(5);
@@ -205,7 +222,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   for (const [name, set] of cases) {
     const server = companion();
     const { q, qa, view, click, dlg, drawer } = await make({ server });
-    click(qa('.thr-pub')[0]);
+    click(qa('.thr-pub')[0]); await tick();
     eq(name + ': (set up: choosing)', view(), 'choosing');
     set();
     const ev = new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
@@ -217,7 +234,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   // …and when the point is the drawer's own host, it goes through
   const server = companion();
   const { q, qa, view, click, drawer } = await make({ server });
-  click(qa('.thr-pub')[0]);
+  click(qa('.thr-pub')[0]); await tick();
   document.elementsFromPoint = () => [drawer.host];
   q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
   eq('with the drawer on top and no top layer, the start goes out', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
@@ -239,14 +256,14 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // ---- cancel, and Escape --------------------------------------------------------------------------
 {
   const { server, q, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   click(q('[data-act="pub-cancel"]')); await tick();
   eq('Cancel sends the run\'s id and token and closes', [server.calls.at(-1), view()], [{ op: 'cancel', body: { run: 'r1', token: 'tok1' } }, 'closed']);
 }
 {
   const { server, q, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   drawer.escape();
   eq('Escape closes the dialog and sends nothing (the run stays where it is)', [view(), server.calls.filter(c => ['cancel', 'confirm', 'abandon'].includes(c.op)).length], ['closed', 0]);
@@ -256,7 +273,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 {
   const server = companion(); server.fail = { start: 'Publish as blyg is not set up: the notes folder is not set <script>x</script>' };
   const { q, view, click, qa, dlg } = await make({ server });
-  click(qa('.thr-pub')[0]); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('a refusal is shown as words in a problem view', [view(), dlg().textContent.includes('the notes folder is not set <script>x</script>'), qa('.pubdlg script').length], ['problem', true, 0]);
   eq('with only Close', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-close']);
 }

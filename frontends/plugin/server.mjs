@@ -4253,7 +4253,7 @@ export function handler(req, res) {
         const page = pageOf(req, res, data);
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
-        const r = blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || '') });
+        const r = blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || '') });
         return r.ok ? ok(res, { run: r.view }) : fail(res, r.status, r.error);
       });
     }

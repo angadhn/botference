@@ -2564,7 +2564,7 @@
       // Publish as blyg: what the dialog is showing. `view` is one of config.js PUB_VIEWS, changed only by pubGo (which asks
       // config.js pubMove); `run` is the companion's run as last heard (blyg-run.mjs; the drawer never works a run out for
       // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
-      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0 },
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '' },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -10650,14 +10650,14 @@ ${bubbleShellHtml()}`;
     }
     // with confirm 'never' the dialog stays out of the way while a run goes through: the thread carries one line of progress
     const pubQuiet = () => (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
-      && !!D.pub.run && D.pub.run.confirm === 'never';
+      && (D.pub.view === 'starting' ? D.pub.shown : (D.pub.run && D.pub.run.confirm)) === 'never';
     const PUB_WORDS = { drafted: 'writing the note', preparing: 'preparing it for your site', planning: 'checking what would change', planned: 'building and testing',
       applying: 'building and testing', applied: 'publishing to your site', publishing: 'publishing to your site' };
     // THE ONE LINE on a thread: what a run that has this thread in it is doing now, then the link to the live post
     function pubLine(t) {
       if (!D.owner || pubPublished(t)) return '';
       const r = D.pub.run;
-      if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.run && D.pub.run.confirm === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
+      if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.shown === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
       if (!r || r.confirm !== 'never' || (r.thread_ids || []).indexOf(t.id) === -1) return '';
       if (r.mode === 'published') {
         const a = safeHttp((r.published || {}).address);
@@ -10686,15 +10686,26 @@ ${bubbleShellHtml()}`;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
-      // nothing live: keep what the companion said (an idle run carries the setting in force: confirm), and stay closed
-      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) { D.pub.run = r.run; return; }
+      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) return;
       pubGo('waiting', { run: r.run });
     }
-    function pubOpen(id) {
-      if (!D.owner) return;
+    // THE SETTING IN FORCE is asked of the companion every time the menu opens; the wording shown follows that answer and the start
+    // sends it back (`confirm`), so a stale drawer can never promise "you will see it first" when one click publishes. The companion
+    // refuses a start whose `confirm` is not the setting in force.
+    async function pubOpen(id) {
+      if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
       if (!t || !pubThreadOk(t) || pubPublished(t)) return;
-      pubGo('choosing', { thread: id, scope: '', error: '' });
+      let r = null;
+      try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (D.pub.view !== 'closed') return;
+      if (!r || !r.ok || (r.confirm !== 'never' && r.confirm !== 'always')) {
+        // cannot say what a click would do: nothing is offered
+        pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: '' });
+        pubGo('problem', { error: (r && r.error) || 'Could not ask the companion what Publish as blyg would do, so nothing is offered. Try again.', run: null });
+        return;
+      }
+      pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm });
     }
     // CLICKJACKING. A page can put a top-layer <dialog> or popover over the drawer with `pointer-events:none`, so that a TRUSTED click
     // lands on a drawer button it has disguised. Before anything that publishes or goes on to, the page must have no element in the
@@ -10724,7 +10735,7 @@ ${bubbleShellHtml()}`;
       const thread = D.pub.thread;
       if (!pubGo('starting', { scope })) return;
       let r = null;
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown }); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'the publish did not start', run: null }); return; }
       pubApply(r.run);
     }
@@ -10777,9 +10788,9 @@ ${bubbleShellHtml()}`;
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
           const n = pubAbove(P.thread).length;
           return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>
-            <p>${(P.run && P.run.confirm) === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${(P.run && P.run.confirm) === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
-            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${(P.run && P.run.confirm) === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
+            <p>${P.shown === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${P.shown === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.shown === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting': case 'working':
           return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;

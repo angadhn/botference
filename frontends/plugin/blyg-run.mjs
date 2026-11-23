@@ -247,12 +247,15 @@ export function createPublisher(deps) {
    * Start a run: → { ok, view } | { ok: false, status, error }. Writes the note file (the one side effect
    * outside the run's own record) and begins `plan` in the background.
    */
-  function start({ page, threadId, scope }) {
+  function start({ page, threadId, scope, shown }) {
     if (RUN_LIVE.includes(book.mode)) return fail(409, `a publish run is already under way (${book.mode}); finish or abandon it first`);
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     const home = settingsNow();
     if (!home.ok) return fail(409, `Publish as blyg is not set up: ${home.errors[0]}. Set “Where my blyg lives” on the companion first.`);
     const S = home.settings;
+    // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
+    // first when one click publishes, or the reverse)
+    if (shown !== S.confirm) return fail(409, `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${S.confirm}” is in force (${S.confirm === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`);
     const threads = page.threads || [];
     const at = threads.findIndex(t => t && t.id === threadId);
     if (at < 0) return fail(404, 'unknown comment');
