@@ -92,7 +92,7 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     assert.ok(f, `${slug}: built at ${p}`);
     return fs.readFileSync(f, 'utf8');
   };
-  const siteTitle = (fs.readFileSync(path.join(TREE, '_config.yml'), 'utf8').match(/^title:\s*["']?(.+?)["']?\s*$/m) || [])[1] || 'Angadh';
+  const siteTitle = (fs.readFileSync(path.join(TREE, '_config.yml'), 'utf8').match(/^title:\s*["']?(.+?)["']?\s*$/m) || [])[1] || 'Site';
   for (const slug of Object.keys(cases)) {
     const html = built(slug);
     assert.ok(!html.includes('PRIVATE-FILE-MARKER'), `${slug}: nothing of another file`);
