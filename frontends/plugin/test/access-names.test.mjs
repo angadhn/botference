@@ -113,10 +113,10 @@ try {
   await test('at start, in hosted mode, the companion says its sign-in mode, the names it trusts and its memorizer name (and nothing secret)', async () => {
     const M = await boot('either', { PLUGIN_PUBLIC_HOSTNAMES: 'pub.example.test', PLUGIN_MEMORY_HOSTNAME: 'memo.example.test' });
     const log = M.out();
-    assert.match(log, /sign-in: either +trusted names: memo\.example\.test, pub\.example\.test +memorizer: memo\.example\.test/);
+    assert.match(log, /sign-in: either +people: owner and guests +trusted names: memo\.example\.test, pub\.example\.test +memorizer: memo\.example\.test/);
     for (const bad of [OWNER, AUD, 'guest-pw', 'owner-pw', TEAM]) assert.ok(!log.includes(bad), 'the log carries no ' + bad);
-    assert.match(A.out(), /sign-in: access +trusted names: annotations\.example\.test +memorizer: \(none\)/);
-    assert.match(P.out(), /sign-in: password +trusted names: \(none\) +memorizer: \(none\)/);
+    assert.match(A.out(), /sign-in: access +people: owner and guests +trusted names: annotations\.example\.test +memorizer: \(none\)/);
+    assert.match(P.out(), /sign-in: password +people: owner and guests +trusted names: \(none\) +memorizer: \(none\)/);
     M.h.cleanup();
   });
   await test('the launcher exports the public names and the memorizer name from the names it routes the tunnel to (its snippet, run with placeholder names)', () => {
