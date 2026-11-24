@@ -720,28 +720,55 @@ and runs one script and one style under a Content-Security-Policy.
 
 **The Archive and the unread target.** Tick the box at the start of a post's line and the post moves to the Archive: it
 leaves the Feed, its text is deleted from the companion, and a small record stays (its blyg, kind, title or first words
-up to 120 characters, version read, dates and page address, about half a kilobyte). The Archive tab lists those records,
-newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each with "Open original" and an untick box;
-its search box filters the records by title and blyg. Unticking puts the post back in the Feed as *new*, fetching its text
-again (one request), so it needs the blyg to be reachable; if it cannot be fetched the post stays archived. "Tick all
-shown" archives exactly the posts the Feed is showing, after a confirmation. At most 2000 archive records are kept; past
-that the oldest ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also
-remembers the ids (26 characters each) of the posts you ticked, up to 10,000 per blyg and 50,000 in all, and the Hub
-never fetches an id on that list as a new post. If a blyg reaches that bound, nothing more is fetched from it (the list
-of blygs says "stopped") rather than risk showing you posts you read again; that ends only when you unfollow it, which
-also forgets what was read from it. A blyg whose posts have all been fetched or ticked is *caught up*; when every blyg
-you follow (other than paused ones) is and the Feed is empty, the Feed says "You have read everything from the blygs you
-follow."
+up to 120 characters, version read, dates and its whole page address, about half a kilobyte). The Archive tab lists those
+records, newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each with "Open original" and an untick
+box; its search box filters the records by title and blyg. Unticking puts the post back in the Feed as *new*, fetching its
+text again (one request), so it needs the blyg to be reachable and not paused; if it cannot be fetched the post stays
+archived. Ticking a thread also archives the parts folded under it that the Feed showed with it ("and its 3 parts"); a post
+the thread only links to stays where it is. "Tick all shown" archives exactly the posts the Feed is showing, with their
+parts, after a confirmation (the page sends them 100 at a time). At most 2000 archive records are kept; past that the oldest
+ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also keeps a small list of
+the posts you read (up to 5,000, each with its date; past that the oldest 500 are dropped and a *floor* date rises, and
+anything that blyg published at or before the floor counts as read), and the Hub never fetches a post on that list, or
+below the floor, as a new one. A blyg is never stopped for this. A blyg whose posts have all been fetched or ticked is
+*caught up*; when every blyg you follow (other than paused ones) is and the Feed is empty, the Feed says "You have read
+everything from the blygs you follow."
 
-A refresh keeps the Feed stocked: while it holds fewer unread posts than `following_unread_target` (default 50, 1 to 500)
-it also reads further back in each blyg's index, going round the blygs one post at a time (the one read back longest ago
-first) and within a blyg from its newest post that is not yet fetched to its oldest, so each blyg is read backwards in
-time. It stops at the target, at the refresh's request and time limits, or at the holding caps, and carries on at the
-next refresh: running out of budget is not an error and counts against nobody. Withdrawn posts are never fetched. A post
-that was published since the last refresh is always fetched, target or not. Ticking a post when the Feed then holds fewer
-than the target asks for a refresh straight away. A new version of an archived post whose content differs brings it back
-to the Feed as *new*, marked "edited since you read it" (nothing of its text was kept, so a small change cannot be told
-from a large one); a version with identical content stays archived.
+**Edits of posts you have read.** When a post you ticked gets a new version whose content differs (its `content_hash`), it
+comes back to the Feed as *edited*, badged "edited since you read it" (nothing of its text was kept, so a small change
+cannot be told from a large one); a version with identical content is maintenance and changes nothing. Edits are wanted,
+but not often, so a post comes back at most once in 7 days, at most 3 posts of one blyg in one refresh and 10 in a day, and
+not when that blyg already has as many unread posts as its cap; otherwise it stays in the Archive as *archived_changed*,
+whose line says "edited again", with **Mark read** (keep it read, at the newer version), "Open original" and the untick box,
+and it comes back at a later refresh once those limits allow. At most 5 documents of read posts are fetched per blyg per
+refresh. A post whose record was dropped from the Archive's list is known only by its id: an edit of it leaves it read.
+
+**Bursts.** A thread and the fragments published with it (§13.7) arrive together: the thread is fetched before any fragment
+created within ten minutes of it, the fragments fold under it (in Background), and they do not count toward the target. A
+fragment fetched while its thread could not be is in Background, "waiting for its thread", for at most a day, then stands on
+its own. A fold covers the versions published in the burst: a part edited later is shown as its own update.
+
+**Reading back.** A refresh keeps the Feed stocked: while it holds fewer unread posts than `following_unread_target`
+(default 50, 1 to 500) it also reads further back in each blyg's index, going round the blygs one post at a time (the one
+read back longest ago first) and within a blyg from its newest post that is not yet fetched to its oldest, so each blyg is
+read backwards in time. It stops at the target, at the refresh's request and time limits, or at the holding caps, and
+carries on at the next refresh: running out of budget is not an error and counts against nobody. Withdrawn posts are never
+fetched. A post published since the last refresh (dated after the newest post the Hub has itself fetched from that blyg,
+and not in the future) is always fetched, target or not; dates an index gives only order a blyg's own reading back. When a
+tick leaves the Feed below the target, the page asks for a *top-up*: the next posts the last refresh lined up (20 per blyg),
+with no index read, at most 10 requests and at most once in 30 seconds. A host that answers 429, 5xx or not at all is asked
+again later (its breaker opens after three failures); a post a host does not serve (404, 410, 403) is asked again after a
+back-off. Only a document that was served and cannot be used is noted against the blyg (for 7 days, or until its index names
+a new version); if one blyg serves 100 of them (or all together 2,000), reading back pauses for that blyg, its line says
+*reading back is paused: this blyg served documents that could not be used. New posts are still fetched.*, and **Retry**
+clears the list. **Unfollow** asks which you mean: "Stop following" keeps the list of posts you read there (for up to 50
+blygs, a year), so following it again does not bring them back as unread; "Stop following and forget what I have read
+there" deletes it.
+
+**Where it is kept.** The main document is `following.json`; each blyg's read list is a small file of its own in
+`following-ledgers/` and each post's text one in `following-bodies/`, so ticking or opening a post rewrites only the main
+document (and that one blyg's list). All of it goes through one storage interface in `following.mjs`, which writes only if
+what is stored has not changed since it was read, and merges otherwise.
 
 ## Reading in the Hub
 

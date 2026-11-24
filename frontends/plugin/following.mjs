@@ -19,37 +19,50 @@
 // WHAT IS NAMED, each as ONE list with ONE field and ONE function that moves it
 // and refuses a move that is not in the table:
 //   BLYG_STATES     a followed blyg's standing:           moveBlyg
-//   READ_STATES     where a post is: in the Feed (new,
-//                   opened, responded) or in the Archive:  moveRead
-//   BACKFILL_MODES  how far back one blyg has been read:   moveBackfill
-//   RUN_STATES      whether a reconciliation is going:    moveRun
+//   READ_STATES     where a post is: in the Feed (new, opened, responded,
+//                   edited) or in the Archive (archived, archived_changed): moveRead
+//   BACKFILL_MODES  how far back one blyg has been read, a fault named
+//                   in the mode (paused_bad_documents):    moveBackfill
+//   RUN_STATES      whether a refresh or a top-up is going: moveRun
 //   BREAKER_STATES  a host's circuit breaker:             moveBreaker
 //   SCHEDULE_MODES  whether the refresh timer is armed:   moveSchedule
 //   IDENTITY_STATES whether a post's page agreed with the list: setIdentity
 //   INBOX_STATES    the mentions inbox's standing:        moveInbox
 //   MENTION_READ    a mention's read state:               moveMention
+//   LEDGER_COPIES   whether a cached ledger awaits writing: moveLedgerCopy
 // and, as values a function works out rather than states that move:
-//   PLACEMENTS (placementOf: which view an entry belongs to, and why),
-//   IDENTITY_VERDICTS (identityFor), ANSWER_SOURCES, LAST_CHANGES.
+//   PLACEMENTS (placementOf: which view an entry belongs to, and why: a burst part waiting for its thread is worked out
+//   from the record's `awaits` and the time), IDENTITY_VERDICTS (identityFor), ANSWER_SOURCES, LAST_CHANGES.
 //
-// WHAT IS KEPT, per post (never the whole HTML): origin, id, kind, current version,
-// created, updated, title (first heading) or an excerpt, stub_of, how many
-// transclusions and links, and the sanitised plain text the list needs (clipped). One
-// record per post at its newest version (the rollup, §13.1). A withdrawn post
-// (kind 'withdrawn') is a bare marker, so it is not fetched again (§13.4).
+// WHAT IS KEPT goes through ONE store (fileStore by default; see "the storage seam"): the main document, one ledger per blyg,
+// one body per held post. Per post (never the whole HTML): origin, id, kind, current version, created, updated, title (first
+// heading) or an excerpt, stub_of, its transclusions (with the versions named) and links, and the sanitised plain text the list
+// needs (clipped). One record per post at its newest version (the rollup, §13.1). A withdrawn post (kind 'withdrawn') is a bare
+// marker, so it is not fetched again (§13.4).
 //
-// THE ARCHIVE. The owner's own tick moves a post from the Feed to the Archive (read state `archived`): its text and body file
-// are deleted and a small record stays (key, origin, id, kind, version read, index version, created, updated, fetched_at, page,
-// content_hash, a title or first words of at most 120 characters, archived_at: about half a kilobyte; at most 2000 are kept,
-// the oldest ticked dropped first). Beside the records, each blyg has a LEDGER: the ids of the posts ticked (10,000 per blyg,
-// 50,000 in all), the ids whose documents could not be used (100, each with the index's version), and its backfill mode. The
-// ledger is what keeps a post read after its record is gone. The caps (`following_max_items_*`) count unread held posts only.
+// THE ARCHIVE. The owner's own tick moves a post from the Feed to the Archive (read state `archived`): its body is deleted (after
+// the save) and a small record stays (key, origin, id, kind, version read, index version, created, updated, fetched_at, the whole
+// page address, content_hash, a title or first words of at most 120 characters, archived_at, and `returned_at` if an edit ever
+// brought it back: about half a kilobyte; at most 2000 are kept, the oldest ticked dropped first). Each blyg has a LEDGER, a
+// document of its own: the ids of the posts read, each with its post's `created` (5,000; then the oldest go and a FLOOR date
+// rises: anything created at or before it counts as read), the ids whose documents could not be used (`bad`: 100 per blyg, 2,000
+// in all, each for 7 days), the ids a host could not give (`later`, a back-off), its backfill mode, the newest date the Hub has
+// seen from it (`seen_until`), the edit-returns of the last 24 hours, and the queue a top-up reads. The ledger is what keeps a
+// post read after its record is gone, and an unfollow keeps its read ids and floor (unless asked to forget). The caps
+// (`following_max_items_*`) count unread held posts only.
+//
+// THE EDIT RULE. A real edit (a new content_hash) of a post the owner read returns it to the Feed as `edited` at most once in 7
+// days, at most 3 per blyg per refresh and 10 a day, within the unread cap; otherwise it waits in the Archive as
+// archived_changed ("edited again"). At most 5 documents of read posts are fetched per blyg per refresh. A maintenance version
+// (the same hash) moves nothing.
 //
 // THE BACKFILL. A refresh reads each blyg's index (hostile input: at most 20,000 entries, well-formed string ids, an id listed
-// twice is one post at its highest version; none of it is stored) and fetches, within the run's one budget: (1) documents of
-// posts already held whose version moved; (2) FRESH posts, those newer than the newest post already known, up to the caps;
-// (3) BACKFILL, only while the Feed holds fewer unread posts than `following_unread_target`: round-robin over the blygs, one
-// post per blyg per round, a blyg's newest unfetched post first. What is left is deferred, never an error.
+// twice is one post at its highest version; none of it is stored but a 20-entry queue) and fetches, within the run's one budget:
+// (1) documents of posts already held whose version moved; (2) FRESH posts, created after the newest date the Hub itself has
+// seen from that blyg (never decided by the index's order), oldest first, up to the caps; (3) BACKFILL, only while the Feed holds
+// fewer unread posts than `following_unread_target`: round-robin over the blygs, one post per blyg per round, a blyg's newest
+// unfetched post first, a burst's thread before its parts; (4) documents of read posts, by the edit rule. What is left is
+// deferred, never an error. After a tick a TOP-UP fetches only from the saved queues: no index, ten requests, once in 30 s.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
