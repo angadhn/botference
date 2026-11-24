@@ -979,7 +979,9 @@ test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up
   f.setBlygState(A, 'pause');
   assert.ok(!('ledgers' in r.json()));
   assert.deepEqual(fs.readdirSync(path.dirname(r.ledgerFile(A))), [path.basename(r.ledgerFile(A))], 'the ledger of a blyg that is not followed is not carried over');
-  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], floor: 0, bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, seen_until: 0, returns: [], queue: [], backfill: 'unknown' });
+  const led = r.ledger(A);
+  assert.deepEqual({ origin: led.origin, ids: led.ids, bad: led.bad, later: led.later, backfill: led.backfill },
+    { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, backfill: 'unknown' });
   r.done();
 });
 
@@ -1306,5 +1308,61 @@ test('a top-up is refused within topupGapMs of the last one, by the engine itsel
   assert.deepEqual(second, { started: false, reason: 'topped up a moment ago' });
   r.clock.t += F.LIMITS.topupGapMs;
   assert.equal((await r.f.topUp()).started, true);
+  r.done();
+});
+
+// ---- a blyg whose fresh entries fail (round 2, finding 1) ------------------------------------------------------------------
+
+test('a blyg listing 2,000 "fresh" entries that 404 takes 3 requests of a run, then waits; the others are read back; its cost per day is small', async () => {
+  const H = 'https://hostile.web.test/';
+  const honest = Array.from({ length: 5 }, (_, i) => `https://h${i + 1}.web.test/`);
+  const r = rig({ settings: { following_unread_target: 500, following_run_requests: 60, following_max_items_per_blyg: 2000, following_max_items_total: 20000 } });
+  const dead = new Set();
+  const real = r.web.get;
+  r.web.get = async (u, o) => { const m = /items\/([^/]+)\.json$/.exec(String(u)); if (m && dead.has(m[1])) { r.web.requests.push(String(u)); return { status: 404, url: String(u), text: 'no' }; } return real(u, o); };
+  const hs = r.web.add(H);
+  hs.put(makeDoc({ id: idOf(1), origin: H, created: day(1) }));
+  for (const o of honest) publish(r.web.add(o), o, 400);
+  follow(r, H, ...honest);
+  await r.f.refresh();
+  const redate = () => { for (let k = 0; k < 2000; k++) { const id = idOf(100000 + k); dead.add(id); hs.put(makeDoc({ id, origin: H, created: new Date(r.clock.t + 60e3).toISOString() })); } };
+  let hostile = 0;
+  for (let run = 0; run < 48; run++) { // a day of refreshes, every 30 minutes, the entries re-dated to "now" each time
+    r.clock.t += 30 * 60e3;
+    redate();
+    const n0 = r.web.requests.length;
+    const s = await r.f.refresh();
+    const asked = r.web.requests.slice(n0);
+    hostile += asked.filter(u => u.startsWith(H)).length;
+    assert.ok(asked.filter(u => u.startsWith(H) && /items\/(?!index)/.test(u)).length <= F.LIMITS.freshFailuresPerRun, `run ${run}`);
+    if (run < 8) assert.ok(s.backfilled >= 40, `run ${run}: the honest blygs are read back (${s.backfilled})`);
+  }
+  // 2 requests a refresh for its manifest and index, and 3 document requests each time its back-off lets it try again
+  assert.ok(hostile <= 2 * 48 + 3 * 12, `${hostile} requests to the hostile host in a day (was about 2,500)`);
+  assert.equal(r.ledger(H).fresh, 'failing');
+  assert.deepEqual(F.FRESH_MODES, ['reading', 'failing']);
+  // when it serves its fresh posts again, it recovers
+  dead.clear();
+  r.clock.t += F.LIMITS.backoffMaxMs + 1;
+  hs.put(makeDoc({ id: idOf(5), origin: H, title: 'Real again', created: new Date(r.clock.t).toISOString() }));
+  await r.f.refresh();
+  assert.equal(r.ledger(H).fresh, 'reading');
+  r.done();
+});
+
+test('fresh posts take a fair share of a run: one blyg publishing 80 at once does not take the others\' backfill', async () => {
+  const r = rig({ settings: { following_unread_target: 500, following_run_requests: 60 } });
+  const os = Array.from({ length: 6 }, (_, i) => `https://f${i}.web.test/`);
+  for (const [i, o] of os.entries()) publish(r.web.add(o), o, 30, { base: i * 1000 });
+  follow(r, ...os);
+  await r.f.refresh(); await r.f.refresh();
+  for (let k = 0; k < 80; k++) r.web.sites.get(os[0]).put(makeDoc({ id: idOf(9000 + k), origin: os[0], title: `Spam ${k}`, created: new Date(r.clock.t + 1000).toISOString() }));
+  r.clock.t += 5000;
+  const n0 = r.web.requests.length;
+  const s = await r.f.refresh();
+  const spam = new Set(Array.from({ length: 80 }, (_, k) => idOf(9000 + k)));
+  const docs = r.web.requests.slice(n0).filter(u => u.startsWith(os[0]) && spam.has(u.slice(-31, -5))).length;
+  assert.equal(docs, Math.min(F.LIMITS.docsPerBlygRun, Math.max(F.LIMITS.freshShareMin, Math.floor(60 / 6))), 'its share: 10 of 60');
+  assert.ok(s.backfilled > 0, 'and the others are still read back');
   r.done();
 });

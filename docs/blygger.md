@@ -754,7 +754,9 @@ read back longest ago first) and within a blyg from its newest post that is not 
 read backwards in time. It stops at the target, at the refresh's request and time limits, or at the holding caps, and
 carries on at the next refresh: running out of budget is not an error and counts against nobody. Withdrawn posts are never
 fetched. A post published since the last refresh (dated after the newest post the Hub has itself fetched from that blyg,
-and not in the future) is always fetched, target or not; dates an index gives only order a blyg's own reading back. When a
+and not in the future) is always fetched, target or not, within that blyg's fair share of the refresh (its requests divided by
+the blygs due, at least 5); dates an index gives only order a blyg's own reading back. A blyg whose new posts cannot be
+fetched (three failures in a refresh) is not asked for them again until a back-off that doubles each time has passed. When a
 tick leaves the Feed below the target, the page asks for a *top-up*: the next posts the last refresh lined up (20 per blyg),
 with no index read, at most 10 requests and at most once in 30 seconds. A host that answers 429, 5xx or not at all is asked
 again later (its breaker opens after three failures); a post a host does not serve (404, 410, 403) is asked again after a

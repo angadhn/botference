@@ -186,6 +186,19 @@ export const BACKFILL_MOVES = Object.freeze({
   forget: { unknown: 'unknown', more: 'unknown', caught_up: 'unknown', paused_bad_documents: 'unknown' },
 });
 const backfillMachine = machine('backfill', BACKFILL_MODES, BACKFILL_MOVES);
+// Whether a blyg's FRESH posts are being fetched (kept in its ledger, with two data fields that gate it: `fresh_failures`, how
+// many runs in a row ended with freshFailuresPerRun failed fresh fetches, and `fresh_after`, when to try again).
+//   reading — its fresh posts are fetched each run, within its fair share of the run
+//   failing — a run's fresh fetches failed (404, 410, 403, an unusable document, a host that could not answer) freshFailuresPerRun
+//             times: its fresh posts wait for a back-off that doubles each failing run (backoffMs), then are tried again. This
+//             counts every failing fresh entry, however many: a blyg cannot list thousands of fresh ids that 404 and take a run's
+//             budget for ever.
+//   fail     a run's fresh fetches failed: reading → failing, failing → failing (the back-off doubles)
+//   recover  a fresh fetch worked: failing → reading
+export const FRESH_MODES = Object.freeze(['reading', 'failing']);
+export const FRESH_MOVES = Object.freeze({ fail: { reading: 'failing', failing: 'failing' }, recover: { failing: 'reading' } });
+const freshMachine = machine('fresh', FRESH_MODES, FRESH_MOVES);
+export function moveFresh(led, ev) { led.fresh = freshMachine.to(led.fresh, ev); return led.fresh; }
 export const canMoveBackfill = (led, ev) => backfillMachine.can(led.backfill, ev);
 export function moveBackfill(led, ev) { led.backfill = backfillMachine.to(led.backfill, ev); return led.backfill; }
 
@@ -304,6 +317,9 @@ export const LIMITS = Object.freeze({
   timeoutMs: 8000,
   indexEntries: 20000,        // more entries than this in one index are not read
   docsPerBlygRun: 50,         // item documents fetched for one blyg in one run
+  freshShareMin: 5,           // fresh documents per blyg per run: min(docsPerBlygRun, max(freshShareMin, run requests / blygs due))
+  freshFailuresPerRun: 3,     // failed fresh fetches (missing, unusable, host trouble) after which a blyg's fresh loop stops for the
+                              // run, and its fresh posts wait (FRESH_MODES failing, back-off backoffMs doubling up to backoffMaxMs)
   followMax: 500,             // blygs followed
   importMax: 100,             // entries of a blogroll resolved in one preview
   importRequests: 300,        // requests one preview may make
@@ -927,7 +943,7 @@ export function mergeLedger(ours, base, theirs) {
   }
   ours.floor = Math.max(ours.floor || 0, theirs.floor || 0);
   ours.seen_until = Math.max(ours.seen_until || 0, theirs.seen_until || 0);
-  for (const k of ['backfill', 'queue', 'returns']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
+  for (const k of ['backfill', 'queue', 'returns', 'fresh', 'fresh_failures', 'fresh_after']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
   return ours;
 }
 
@@ -990,7 +1006,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // when posts of this blyg returned to the Feed through an edit, in the last 24 hours (for editReturnsPerDay)
     const returns = (Array.isArray(r.returns) ? r.returns : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-LIMITS.editReturnsPerDay);
     // `stopped` (the mode before this list) and anything made up load as unknown
-    return { ids, floor, bad, later, seen_until: seenUntil, returns, queue, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    const fresh = FRESH_MODES.includes(r.fresh) ? r.fresh : 'reading';
+    const freshFailures = Number.isInteger(r.fresh_failures) && r.fresh_failures > 0 && r.fresh_failures < 64 ? r.fresh_failures : 0;
+    const freshAfter = Number.isFinite(r.fresh_after) && r.fresh_after > 0 ? r.fresh_after : 0;
+    return { ids, floor, bad, later, seen_until: seenUntil, returns, queue, fresh, fresh_failures: freshFailures, fresh_after: freshAfter, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), copy (LEDGER_COPIES: whether it awaits writing) }
   const ledgerEntry = origin => {
@@ -1629,13 +1648,28 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     // FRESH posts: published since, fetched now within the caps (target or not), each burst's thread before its fragments, and
     // OLDEST first: what a cap or the budget leaves for the next run is then newer than everything fetched, so it is still fresh
+    // Each blyg's FAIR SHARE of the run's requests for fresh posts (so one blyg cannot take a run from the others' backfill), and
+    // at most freshFailuresPerRun failed fresh fetches a run; a blyg whose fresh fetches keep failing waits (FRESH_MODES).
+    const share = Math.min(LIMITS.docsPerBlygRun, Math.max(LIMITS.freshShareMin, Math.floor(g.budget.cap / Math.max(1, g.due || 1))));
+    const waiting = led.fresh === 'failing' && now() < (led.fresh_after || 0);
+    let freshDocs = 0, freshFails = 0, freshOk = false;
     for (const e of burstOrder(freshTodo.reverse())) {
+      if (waiting || freshDocs >= share || freshFails >= LIMITS.freshFailuresPerRun) { tally.deferred++; plan.left++; continue; }
       if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
       if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
-      plan.docs++;
+      plan.docs++; freshDocs++;
       const out = await ingest(b, e, undefined, cfg, g, tally, alive);
       if (out === 'aborted') return;
       outcome(plan, e, out);
+      if (['missing', 'unusable', 'host_trouble'].includes(out)) freshFails++;
+      if (out === 'stored') freshOk = true;
+    }
+    if (freshOk && led.fresh === 'failing') { moveFresh(led, 'recover'); led.fresh_failures = 0; led.fresh_after = 0; }
+    else if (!freshOk && freshFails >= LIMITS.freshFailuresPerRun) {
+      moveFresh(led, 'fail');
+      led.fresh_failures = Math.min((led.fresh_failures || 0) + 1, 63);
+      led.fresh_after = now() + backoffMs(led.fresh_failures);
+      tally.fresh_failing++;
     }
     plan.backfill = burstOrder(plan.backfill);
     // The documents of posts the owner had read whose index entry moved (or that wait for release): at most archivedDocsPerRun per
@@ -1758,8 +1792,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const cfg = settings();
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget; g.returns = new Map(); // (edit-returns per blyg in this refresh)
+    g.due = Object.values(load().blygs).filter(due).length; // (for each blyg's fair share of the run's fresh fetches)
     const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, held: 0, released: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
+      errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, held: 0, released: 0, fresh_failing: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
     const plans = [];
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
