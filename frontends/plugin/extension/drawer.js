@@ -10615,6 +10615,14 @@ ${bubbleShellHtml()}`;
     // a second confirmation the owner is being asked for, one named value: none, or `forget` (forgetting a run whose earlier step
     // cannot be identified)
     const PUB_ASKS = Object.freeze(['none', 'forget']);
+    // …moved ONLY by pubAskMove, which refuses a move PUB_ASK_MOVES does not list (staying where it is is no move)
+    const PUB_ASK_MOVES = Object.freeze({ none: Object.freeze(['forget']), forget: Object.freeze(['none']) });
+    function pubAskMove(to) {
+      if (D.pub.ask === to) return true;
+      if (PUB_ASKS.indexOf(to) === -1 || (PUB_ASK_MOVES[D.pub.ask] || []).indexOf(to) === -1) return false;
+      D.pub.ask = to;
+      return true;
+    }
     const PUB_DONE_MODES = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
     const pubOwnWords = m => !!m && m.provenance === 'owner-typed' && !m.origin && !m.route && !m.agent && m.kind !== 'tools'
       && !isBot(m.author) && !/@(claude|codex|all)\b/i.test(String(m.text || ''));
@@ -10658,7 +10666,7 @@ ${bubbleShellHtml()}`;
       if (!CFG || !CFG.canPubMove(D.pub.view, next)) return false;
       CFG.pubMove(D.pub.view, next);
       D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
-      if (next !== 'problem') D.pub.ask = 'none';
+      if (next !== 'problem') pubAskMove('none');
       if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
       if (next !== 'confirming') pubPic('none');
       paintPub();
@@ -10732,6 +10740,7 @@ ${bubbleShellHtml()}`;
       if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
       if (!t || !pubThreadOk(t)) return;
+      { const framed = pubFramed(); if (framed) { pubGo('problem', { thread: id, error: framed, run: null, opener: 'plane' }); return; } }
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (D.pub.view !== 'closed') return;
@@ -10845,6 +10854,12 @@ ${bubbleShellHtml()}`;
       else pubArm('settling');
     }
     // → '' when a click that starts or carries on a publish may count, else the sentence to show
+    // NOT IN THE TOP WINDOW: the drawer can be inside a frame another page made (the extension's own PDF viewer is a page any site
+    // may frame). There a click is the framing page's to stage, so nothing that starts, carries on or ends a publish is done.
+    const PUB_FRAMED_SAY = 'Publishing works only from the drawer of a page open in its own tab, not inside another page. Open the page in a tab of its own, then publish.';
+    function pubFramed() {
+      try { return typeof window !== 'undefined' && window.top !== window ? PUB_FRAMED_SAY : ''; } catch (_) { return PUB_FRAMED_SAY; }
+    }
     function pubArmRefusal() {
       const a = D.pub.arm;
       if (!a || a.state !== 'ready') return PUB_ARM_SAY;
@@ -10856,6 +10871,7 @@ ${bubbleShellHtml()}`;
     }
     async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
+      { const framed = pubFramed(); if (framed) { D.pub.error = framed; paintPub(); return; } }
       const early = pubArmRefusal();
       if (early) { D.pub.error = early; paintPub(); return; }
       const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null);
@@ -10874,6 +10890,7 @@ ${bubbleShellHtml()}`;
     async function pubAct(op, e, how) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
+      { const framed = pubFramed(); if (framed) { D.pub.error = framed; paintPub(); return; } }
       const starts = op === 'confirm' || op === 'retry' || op === 'continue';
       if (starts) {
         const early = pubArmRefusal();
@@ -10885,9 +10902,9 @@ ${bubbleShellHtml()}`;
       const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: stop ? 'stop-and-abandon' : 'abandon', forget: 'forget', continue: stop ? 'stop-and-continue' : 'continue' }[op];
       if (!may || can.indexOf(may) === -1) return;
       // forgetting a run whose earlier step cannot be identified asks twice
-      if (op === 'forget' && run.earlier_step === 'unknown' && D.pub.ask !== 'forget') { D.pub.ask = 'forget'; paintPub(); return; }
+      if (op === 'forget' && run.earlier_step === 'unknown' && D.pub.ask !== 'forget') { pubAskMove('forget'); paintPub(); return; }
       const sure = op === 'forget' && D.pub.ask === 'forget';
-      D.pub.ask = 'none';
+      pubAskMove('none');
       // the view changes first for the one that publishes, so a second click finds nothing to press
       if (op === 'confirm' && !pubGo('running')) return;
       if (starts) {
@@ -11068,7 +11085,7 @@ ${bubbleShellHtml()}`;
             can.indexOf('forget') !== -1 ? btn('pub-forget', P.ask === 'forget' ? 'Yes, forget it' : 'Forget this run', false) : '',
           ].join('');
           return `<h2>${refused ? 'Not given up yet' : interrupted ? 'Stopped part-way' : 'Not published'}</h2>${pubFor(run)}${pubStepsHtml(run)}
-            <p class="puberr">${esc(sentence)}</p>${tries}${err}
+            <p class="puberr">${esc(sentence)}</p>${run.unsure ? `<p class="pubunsure">${esc(run.unsure)}</p>` : ''}${tries}${err}
             ${run.earlier_step === 'alive' ? '<p class="pubquiet">The earlier step is still running on the companion\'s machine: stop it first.</p>' : ''}
             ${run.earlier_step === 'unknown' ? '<p class="pubquiet">The earlier step may still be running and cannot be identified safely, so it is neither stopped nor run again.</p>' : ''}
             ${P.ask === 'forget' ? '<p class="puberr">Forgetting runs nothing and stops nothing. Press again to confirm.</p>' : ''}

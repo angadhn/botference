@@ -1583,3 +1583,10 @@ test('the cleanup is ONE named outcome; an older record\'s two booleans are read
     assert.deepEqual(m.cleanup, { said: 'x', outcome: want });
   }
 });
+
+test('the picture\'s state changes only by previewMove: no other assignment to it in the publisher (the one initial value aside)', () => {
+  const src = fs.readFileSync(new URL('../blyg-run.mjs', import.meta.url), 'utf8');
+  const assigns = [...src.matchAll(/(?<![.\w])preview(?:\.state)?\s*=(?!=)/g)].map(m => src.slice(m.index, m.index + 40));
+  assert.deepEqual(assigns, ["preview = { state: 'off', run: '', theme"], assigns.join('\n'));
+  assert.ok(/p\.state = to;/.test(src), 'previewMove is the one place that writes it');
+});

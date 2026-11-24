@@ -584,6 +584,8 @@ export function createPublisher(deps) {
 
   // ---- the picture of the draft (preview_url + headless render) ----------------------------------------------------------
   function previewTo(to) { previewMove(preview, to); }
+  // the picture now belongs to another run (or none): its state goes to off by a move, then the facts about it are reset
+  function previewFor(runId, theme) { if (preview.state !== 'off') previewTo('off'); preview.run = runId; preview.theme = theme; preview.png = null; }
   async function renderDraft(runId, theme) {
     const home = settingsNow();
     const url = home.ok ? previewUrlFor(home.settings.preview_url, { permalink: book.run.permalink, slug: book.run.slug, id: (book.run.permalink || '').split('/').filter(Boolean).pop() || '' }) : '';
@@ -607,9 +609,9 @@ export function createPublisher(deps) {
     const bad = owned(id, token); if (bad) return bad;
     const home = settingsNow();
     const want = book.mode === 'planned' && home.ok && !!home.settings.preview_url;
-    if (!want) { if (preview.state !== 'off') previewTo('off'); preview = { state: 'off', run: '', theme: 'light', png: null }; return { ok: true, state: 'off' }; }
+    if (!want) { previewFor('', 'light'); return { ok: true, state: 'off' }; }
     const th = theme === 'dark' ? 'dark' : 'light';
-    if (preview.run !== book.run.id) preview = { state: 'off', run: book.run.id, theme: th, png: null };
+    if (preview.run !== book.run.id) previewFor(book.run.id, th);
     const again = fresh || preview.theme !== th;
     if (preview.state === 'off' || (again && preview.state !== 'waiting')) {
       preview.theme = th; preview.png = null; previewTo('waiting');

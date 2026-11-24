@@ -622,6 +622,48 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   delete document.elementsFromPoint;
 }
 
+// ---- review round 5: the drawer inside another page's frame acts on nothing --------------------------------------------------------
+{
+  const realTop = Object.getOwnPropertyDescriptor(w, 'top');
+  const frame = () => Object.defineProperty(w, 'top', { configurable: true, get: () => ({ framing: 'page' }) });
+  const unframe = () => { if (realTop) Object.defineProperty(w, 'top', realTop); else delete w.top; };
+  try {
+    // the plane
+    const a = await make();
+    frame();
+    a.click(a.q('.thr-pub[data-target="t1"]')); await tick();
+    eq('framed: the plane shows a plain refusal and asks the companion nothing more', [a.view(), /in a tab of its own/.test(a.dlg().textContent), a.server.calls.filter(c => c.op !== 'run').length], ['problem', true, 0]);
+    unframe();
+    // a run waiting for the owner: Publish and Cancel do nothing while framed
+    const server = companion();
+    server.run = server.make('planned', { steps: [] });
+    const b = await make({ server });
+    await tick(10); b.click(b.q('[data-act="pub-review"]')); await tick();
+    document.elementsFromPoint = () => [b.drawer.host];
+    await settle();
+    frame();
+    for (const act of ['pub-confirm', 'pub-cancel']) { b.click(b.q(`[data-act="${act}"]`)); await tick(); }
+    eq('framed: no act is armed or sent', server.calls.filter(c => ['arm', 'confirm', 'cancel'].includes(c.op)).length, 0);
+    ok('…and the owner is told why', /in a tab of its own/.test(b.dlg().textContent));
+    unframe();
+    await settle();
+    b.click(b.q('[data-act="pub-confirm"]')); await tick(20);
+    ok('in its own tab again: Publish works', server.calls.some(c => c.op === 'confirm'));
+    delete document.elementsFromPoint;
+  } finally { unframe(); }
+}
+
+// ---- review round 5: the second confirmation is one named value moved by one function; a new version that may be live says so ----
+{
+  const src = (await import('node:fs')).readFileSync(path.join(here, '..', 'extension', 'drawer.js'), 'utf8');
+  eq('D.pub.ask is written only by pubAskMove', [...src.matchAll(/D\.pub\.ask\s*=(?!=)/g)].length, 1);
+  const server = companion();
+  server.run = server.make('failed_publish', { kind: 'edit', version: 2, can: ['retry', 'abandon', 'forget'], unsure: 'Your site may already have published the new version, so your note was left as it is: look at the post on your site, and if the new version is not there, publish it from your site.' });
+  const { q, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  ok('a new version that may be live: the one sentence, and Forget', /may already have published the new version/.test(q('.pubunsure').textContent) && !!q('[data-act="pub-forget"]'));
+}
+
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);
 for (const f of failures) console.log('  · ' + f);
 process.exit(fail ? 1 : 0);
