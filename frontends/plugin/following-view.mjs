@@ -265,24 +265,43 @@ const SCRIPT = `
     if(a==='pause'||a==='resume')return post('/following/state',{origin:b.dataset.origin,move:a}).then(function(r){done(r);});
     if(a==='retry')return post('/following/state',{origin:b.dataset.origin,move:'retry'}).then(function(r){done(r,'reading it again');});
     if(a==='unfollow'||a==='unfollow-forget')return post('/following/unfollow',{origin:b.dataset.origin,forget:a==='unfollow-forget'}).then(function(r){done(r,'unfollowed');});
-    if(a==='refresh'){say('refreshing…');b.disabled=true;return post('/following/refresh',{}).then(function(r){b.disabled=false;
+    if(a==='refresh'){if(fetchMode!=='idle'){say('already reading; a moment',true);return;}fetchMove('refreshing');say('refreshing…');
+      return post('/following/refresh',{}).then(function(r){fetchMove('idle');
       if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
   });
   // The tick (Feed) and the untick (Archive): a checkbox each, handled here and nowhere else. A post's own text is inert and
   // cannot hold one (the sanitiser removes inputs, ids and classes), and a control inside a post's text is ignored anyway.
   function membersOf(row){var m=row&&row.dataset&&row.dataset.members;return m?m.split(' ').filter(Boolean):[];}
   function count(name,d){document.querySelectorAll('[data-n="'+name+'"]').forEach(function(n){n.textContent=String(Math.max(0,(Number(n.textContent)||0)+d));});}
+  // A tick box's request, per row: ONE field (data-tick on the row), one of ROW_MODES, moved only by rowMove, which refuses a move
+  // not in the table (a second change while the first is being sent does nothing). The box is disabled BECAUSE the row is sending:
+  // the attribute shows the mode, it is not the mode.
+  var ROW_MODES=['ready','sending'];
+  var ROW_MOVES={ready:['sending'],sending:['ready']};
+  function rowMove(row,to){var from=row.dataset.tick||'ready';
+    if(ROW_MODES.indexOf(to)<0||ROW_MOVES[from].indexOf(to)<0)throw new Error('tick: cannot go from '+from+' to '+to);
+    row.dataset.tick=to;var box=row.querySelector('input.tick,input.untick');if(box)box.disabled=to==='sending';}
+  // What the page is asking the companion to fetch: ONE field (data-hub-fetch on <html>), one of FETCH_MODES, moved only by
+  // fetchMove. A top-up (after a tick) and Refresh now are never asked twice at once, and never queued: the second is skipped.
+  var FETCH_MODES=['idle','refreshing','topping_up'];
+  var FETCH_MOVES={idle:['refreshing','topping_up'],refreshing:['idle'],topping_up:['idle']};
+  var fetchMode='idle';document.documentElement.setAttribute('data-hub-fetch','idle');
+  function fetchMove(to){if(FETCH_MODES.indexOf(to)<0||FETCH_MOVES[fetchMode].indexOf(to)<0)throw new Error('fetch: cannot go from '+fetchMode+' to '+to);
+    fetchMode=to;document.documentElement.setAttribute('data-hub-fetch',to);}
+  function topUp(){if(fetchMode!=='idle')return;fetchMove('topping_up');say('reading further back…');
+    post('/following/topup',{}).then(function(r2){fetchMove('idle');
+      if(r2&&r2.ok&&r2.started&&Number(r2.new)>0)location.reload();else say('');},function(){fetchMove('idle');say('');});}
   document.addEventListener('change',function(ev){
     var c=ev.target;if(!c||!c.matches||!c.matches('input.tick,input.untick')||c.closest('.hub-entry-body'))return;
-    var un=c.classList.contains('untick'),row=c.closest('article,.aline');
-    c.disabled=true;if(un)say('putting it back in the Feed…');
+    var un=c.classList.contains('untick'),row=c.closest('article,.aline');if(!row)return;
+    if((row.dataset.tick||'ready')!=='ready'){c.checked=un;return;}
+    rowMove(row,'sending');if(un)say('putting it back in the Feed…');
     post('/following/read',un?{key:c.dataset.key,move:'untick'}:{key:c.dataset.key,move:'tick',members:membersOf(row)}).then(function(r){
-      if(!(r&&r.ok)){c.disabled=false;c.checked=un;say((r&&r.error)||'failed',true);return;}
+      if(!(r&&r.ok)){rowMove(row,'ready');c.checked=un;say((r&&r.error)||'failed',true);return;}
       var parts=Number(r.parts)||0;
-      if(row)row.remove();count('feed',un?1:-1);count('archive',un?-1:1+parts);say(un?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
-      // the Feed fell below its target and a blyg has more to read: one refresh tops it up (a second one while it runs is refused, not queued)
-      if(!un&&r.topup){say('reading further back…');post('/following/refresh',{}).then(function(r2){
-        if(r2&&r2.ok&&r2.started&&Number(r2.new)>0)location.reload();else say('');});}
+      row.remove();count('feed',un?1:-1);count('archive',un?-1:1+parts);say(un?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
+      // the Feed fell below its target and a blyg has more queued: one top-up (never two at once, never queued)
+      if(!un&&r.topup)topUp();
     });});
   var search=document.getElementById('hub-search');
   if(search)search.addEventListener('input',function(){var q=search.value.trim().toLowerCase();

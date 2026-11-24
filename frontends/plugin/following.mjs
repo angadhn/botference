@@ -176,9 +176,14 @@ const backfillMachine = machine('backfill', BACKFILL_MODES, BACKFILL_MOVES);
 export const canMoveBackfill = (led, ev) => backfillMachine.can(led.backfill, ev);
 export function moveBackfill(led, ev) { led.backfill = backfillMachine.to(led.backfill, ev); return led.backfill; }
 
-// Whether a reconciliation is in flight. Never more than one.
-export const RUN_STATES = Object.freeze(['idle', 'running']);
-export const RUN_MOVES = Object.freeze({ begin: { idle: 'running' }, end: { running: 'idle' } });
+// Whether the engine is fetching, and what. Never more than one at a time.
+//   idle        — nothing is being fetched
+//   running     — a refresh: manifests, indexes, documents (refresh)
+//   topping_up  — a top-up after a tick: documents from the ledgers' saved queues only, no manifest or index (topUp)
+// `topup` is also refused (by topUp, before the move) until `topup_after`, a time kept beside the field: at most one top-up
+// every topupGapMs, however fast the owner ticks.
+export const RUN_STATES = Object.freeze(['idle', 'running', 'topping_up']);
+export const RUN_MOVES = Object.freeze({ begin: { idle: 'running' }, topup: { idle: 'topping_up' }, end: { running: 'idle', topping_up: 'idle' } });
 const runMachine = machine('run state', RUN_STATES, RUN_MOVES);
 export function moveRun(run, ev) { run.state = runMachine.to(run.state, ev); return run.state; }
 
@@ -309,6 +314,10 @@ export const LIMITS = Object.freeze({
   saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
   burstMembersMax: 100,       // parts of one burst a tick of its thread may archive with it
+  queuePerBlyg: 20,           // the next unfetched index entries a refresh saves per blyg (validated), for the top-up
+  topupRequests: 10,          // requests one top-up may make (documents only: a top-up reads no manifest and no index)
+  topupSeconds: 15,           // ... and seconds
+  topupGapMs: 30 * 1000,      // at least this long between two top-ups
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
   skewMs: 5 * 60 * 1000,
   // AN EDIT OF A POST THE OWNER HAD READ (a fetched document of an archived post whose content_hash differs from the one read).
@@ -950,10 +959,18 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     const floor = Number.isFinite(r.floor) && r.floor > 0 ? r.floor : 0;
     const seenUntil = Number.isFinite(r.seen_until) && r.seen_until > 0 && r.seen_until <= now() ? r.seen_until : 0;
+    // the next unfetched entries of its index, in fetch order, as the last refresh left them: what a top-up fetches (no index read)
+    const queue = [];
+    for (const q of Array.isArray(r.queue) ? r.queue : []) {
+      if (queue.length >= LIMITS.queuePerBlyg) break;
+      if (!q || typeof q.id !== 'string' || !ID_RE.test(q.id) || !KINDS.includes(q.kind) || q.kind === 'withdrawn' || !Number.isInteger(q.version) || q.version < 1) continue;
+      queue.push({ id: q.id, kind: q.kind, version: q.version, created: cleanText(q.created, 40), updated: cleanText(q.updated, 40),
+        ...(typeof q.awaits === 'string' && ID_RE.test(q.awaits) ? { awaits: q.awaits } : {}) });
+    }
     // when posts of this blyg returned to the Feed through an edit, in the last 24 hours (for editReturnsPerDay)
     const returns = (Array.isArray(r.returns) ? r.returns : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-LIMITS.editReturnsPerDay);
     // `stopped` (the mode before this list) and anything made up load as unknown
-    return { ids, floor, bad, later, seen_until: seenUntil, returns, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    return { ids, floor, bad, later, seen_until: seenUntil, returns, queue, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
   const ledgerEntry = origin => {
@@ -1092,7 +1109,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const name of store.list('body')) if (!keep.has(name)) { deleteBody(name); n++; }
     return n;
   }
-  const run = { state: 'idle' };
+  const run = { state: 'idle', topup_after: 0 };
   const schedule = { mode: 'off' };
   let handle; // the timer's handle: meaningful only while schedule.mode is 'scheduled'
   const breakers = new Map(); // host → { state, failures, until }
@@ -1651,6 +1668,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   /** A blyg's backfill mode after a run: more to fetch, or caught up; a paused one recovers once its list is below its bounds. */
   function settle(plan) {
     if (load().blygs[plan.b.origin] !== plan.b) return;
+    // what is left of the backfill, in order, is the queue a top-up reads from until the next refresh
+    plan.led.queue = plan.backfill.slice(0, LIMITS.queuePerBlyg).map(e => ({ id: e.id, kind: e.kind, version: e.version, created: e.created, updated: e.updated,
+      ...(e.awaits ? { awaits: e.awaits } : {}) }));
     if (plan.led.backfill === 'paused_bad_documents') { if (!badFull(plan.led)) moveBackfill(plan.led, 'recover'); return; }
     moveBackfill(plan.led, plan.backfill.length + plan.left > 0 ? 'remain' : 'finish');
   }
@@ -1711,7 +1731,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   /** Refresh every blyg that is due, and the inbox. At most one run at a time; a second ask while one is going is refused, not queued. */
   async function refresh({ reason = 'demand' } = {}) {
     if (!mayFetch()) { syncInbox(settings()); return { started: false, reason: 'fetching is off (blyg_checks), so nothing was asked' }; }
-    if (run.state !== 'idle') return { started: false, reason: 'a refresh is already running' };
+    if (run.state === 'running') return { started: false, reason: 'a refresh is already running' };
+    if (run.state === 'topping_up') return { started: false, reason: 'the Feed is being topped up; try again in a moment' };
     moveRun(run, 'begin');
     const cfg = settings();
     const budget = newBudget(cfg, now);
@@ -1742,6 +1763,54 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     } finally { moveRun(run, 'end'); }
     onChange();
     return { started: true, ...tally };
+  }
+
+  // ---- the top-up ----
+  /**
+   * After a tick leaves the Feed below its target: fetch the next posts from the blygs' saved QUEUES (what the last refresh left of
+   * each backfill, in order, at most queuePerBlyg each), round-robin, one per blyg per round, until the target is met. No manifest and
+   * no index is read (an index is read only by a refresh, at the blyg's own interval), at most topupRequests requests, and at most
+   * one top-up every topupGapMs (RUN_STATES). Each entry is checked again before it is fetched (held, read, below the floor,
+   * unusable or waiting meanwhile: skipped). → { started, new, requests } or { started: false, reason }.
+   */
+  async function topUp() {
+    if (!mayFetch()) return { started: false, reason: 'fetching is off (blyg_checks), so nothing was asked' };
+    if (run.state !== 'idle') return { started: false, reason: run.state === 'running' ? 'a refresh is running: it reads further back itself' : 'a top-up is already running' };
+    if (now() < run.topup_after) return { started: false, reason: 'topped up a moment ago' };
+    moveRun(run, 'topup');
+    const cfg = settings();
+    const budget = newBudget({ following_run_requests: LIMITS.topupRequests, following_run_seconds: LIMITS.topupSeconds }, now);
+    const g = getter(budget); g.budget = budget; g.returns = new Map();
+    const tally = { new: 0, deferred: 0, errors: 0, invalid: 0, missing: 0, refused: 0, aborted: 0, raced: 0, withdrawn: 0, held: 0, released: 0,
+      edited: 0, minor: 0, maintenance: 0, regressions: 0, mismatched: 0 };
+    try {
+      const st = load();
+      const turn = Object.values(st.blygs).filter(b => b.state === 'active' && ['unknown', 'more'].includes(ledgerOf(b.origin).backfill) && ledgerOf(b.origin).queue.length)
+        .sort((a, c) => (a.last_backfill || 0) - (c.last_backfill || 0))
+        .map(b => ({ b, led: ledgerFor(b.origin), left: 0, halted: false }));
+      let moved = true;
+      while (moved && unreadCount() < cfg.following_unread_target && !budget.spent()) {
+        moved = false;
+        for (const p of turn) {
+          if (unreadCount() >= cfg.following_unread_target || budget.spent()) break;
+          if (p.halted || load().blygs[p.b.origin] !== p.b || !p.led.queue.length) continue;
+          if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) continue;
+          const e = p.led.queue.shift();
+          moved = true;
+          const ids = new Set(p.led.ids.map(x => x[0]));
+          const c = Date.parse(e.created);
+          if (st.items[identOf(p.b.origin, e.id)] || ids.has(e.id) || (p.led.floor > 0 && Number.isFinite(c) && c <= p.led.floor)
+            || (p.led.bad[e.id] && p.led.bad[e.id][0] === e.version) || (p.led.later[e.id] && p.led.later[e.id][0] > now())) continue;
+          p.b.last_backfill = now();
+          const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
+          if (out === 'aborted') { p.halted = true; continue; }
+          outcome(p, e, out);
+        }
+      }
+      save();
+    } finally { run.topup_after = now() + LIMITS.topupGapMs; moveRun(run, 'end'); }
+    onChange();
+    return { started: true, new: tally.new, requests: budget.requests };
   }
 
   // ---- the timer ----
@@ -1869,9 +1938,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     save(); onChange();
     return next.read;
   }
-  /** Is the Feed below its target while some blyg that is not paused has more to read (or has not been read yet)? Worked out, not stored. */
-  const wantsTopUp = () => mayFetch() && unreadCount() < settings().following_unread_target
-    && Object.values(load().blygs).some(b => b.state === 'active' && ['unknown', 'more'].includes(ledgerOf(b.origin).backfill));
+  /** Would a top-up do anything now: the Feed below its target, a blyg with a saved queue, the engine idle and past its gap? Worked out, not stored. */
+  const wantsTopUp = () => mayFetch() && run.state === 'idle' && now() >= run.topup_after && unreadCount() < settings().following_unread_target
+    && Object.values(load().blygs).some(b => b.state === 'active' && ['unknown', 'more'].includes(ledgerOf(b.origin).backfill) && ledgerOf(b.origin).queue.length > 0);
   /** What the page may ask of /following/read: tick (one post, or the keys it shows), untick, or the owner's own "mark new". */
   async function readRequest(data) {
     const d = data && typeof data === 'object' ? data : {};
@@ -2132,7 +2201,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const itemByKey = key => copy(byKey(key));
 
   return { follow, unfollow, setBlygState, stateRequest, retryBackfill, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove,
-    markResponded, tickMany, untick, readRequest, unreadCount, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
+    markResponded, tickMany, untick, readRequest, topUp, unreadCount, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
     breakerSnapshot: host => { const b = breakers.get(host); return b ? Object.freeze({ ...b }) : null; },
@@ -2158,6 +2227,7 @@ export const ROUTES = Object.freeze([
   { method: 'POST', path: '/following/import-preview', what: 'what a blogroll or directory would add' },
   { method: 'POST', path: '/following/import-confirm', what: 'add what was confirmed' },
   { method: 'POST', path: '/following/refresh', what: 'refresh now' },
+  { method: 'POST', path: '/following/topup', what: 'after a tick: fetch the next posts from the saved queues (no index is read; at most one every 30 seconds)' },
   { method: 'POST', path: '/following/read', what: 'tick a post (or the posts shown) into the Archive, untick one, or mark an opened one new' },
   { method: 'POST', path: '/following/mention-read', what: 'mark a mention (or all) seen' },
   { method: 'POST', path: '/following/settings', what: 'refresh interval, caps, my_origins, inbox' },

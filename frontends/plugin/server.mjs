@@ -3529,6 +3529,7 @@ function handleFollowing(route, req, res) {
         return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };
       case '/following/import-confirm': return following.confirmImport(data.entries);
       case '/following/refresh': return await following.refresh({ reason: 'demand' });
+      case '/following/topup': return await following.topUp();
       case '/following/read': return await following.readRequest(data); // tick, untick or renew (following.mjs names the moves)
       case '/following/mention-read':
         if (data.all) return { seen: following.allMentionsSeen() };

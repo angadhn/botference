@@ -103,29 +103,50 @@ test('ticking: one click posts the tick, the post leaves the page in place (no r
   x.done();
 });
 
-test('ticking when the Feed falls below its target and the server says a top-up is worth it: one refresh, and a reload only if it brought something', async () => {
+test('ticking when the Feed falls below its target and the server says a top-up is worth it: one top-up (not a refresh), a reload only if it brought something', async () => {
   const x = await hub({ n: 3 });
-  const answers = { '/following/read': { ok: true, read: 'archived', unread: 2, target: 50, topup: true }, '/following/refresh': { ok: true, started: true, new: 4 } };
+  const answers = { '/following/read': { ok: true, read: 'archived', unread: 2, target: 50, topup: true }, '/following/topup': { ok: true, started: true, new: 4 } };
   const p = x.run({}, { reply: url => answers[url] });
   const c = p.doc.querySelector('input.tick');
   p.change(c);
   await p.settle();
-  assert.deepEqual(p.calls.map(c2 => c2.url), ['/following/read', '/following/refresh']);
+  assert.deepEqual(p.calls.map(c2 => c2.url), ['/following/read', '/following/topup']);
   assert.equal(p.reloads(), 1);
-  // a refresh that found nothing new does not reload; one that was refused (already running) does not either
-  for (const second of [{ ok: true, started: true, new: 0 }, { ok: true, started: false, reason: 'a refresh is already running' }]) {
-    answers['/following/refresh'] = second;
+  // a top-up that found nothing new does not reload; one that was refused (too soon, or a refresh running) does not either
+  for (const second of [{ ok: true, started: true, new: 0 }, { ok: true, started: false, reason: 'topped up a moment ago' }]) {
+    answers['/following/topup'] = second;
     const q = x.run({}, { reply: url => answers[url] });
     q.change(q.doc.querySelector('input.tick'));
     await q.settle();
     assert.equal(q.reloads(), 0);
+    assert.equal(q.doc.documentElement.getAttribute('data-hub-fetch'), 'idle');
   }
-  // topup false: no refresh at all
-  answers['/following/read'] = { ok: true, read: 'archived', unread: 2, target: 50, topup: false };
-  const q = x.run({}, { reply: url => answers[url] });
-  q.change(q.doc.querySelector('input.tick'));
-  await q.settle();
-  assert.deepEqual(q.calls.map(c2 => c2.url), ['/following/read']);
+  x.done();
+});
+
+test('the page\'s requests are named modes: a row being sent ignores a second change; a top-up in flight is not asked again, nor queued', async () => {
+  const x = await hub({ n: 4 });
+  let releaseTopup;
+  const p = x.run({}, { reply: url => (url === '/following/topup' ? new Promise(res => { releaseTopup = () => res({ ok: true, started: true, new: 0 }); }) : { ok: true, read: 'archived', unread: 2, target: 50, topup: true }) });
+  const boxes = [...p.doc.querySelectorAll('input.tick')];
+  p.change(boxes[0]);
+  const row0 = boxes[0].closest('article');
+  assert.equal(row0.dataset.tick, 'sending');
+  assert.equal(boxes[0].disabled, true, 'disabled because the row is sending');
+  p.change(boxes[0]); // a second change while it is being sent: nothing more is sent
+  await p.settle();
+  assert.equal(p.doc.documentElement.getAttribute('data-hub-fetch'), 'topping_up');
+  p.change(boxes[1]);
+  await p.settle();
+  assert.deepEqual(p.calls.map(c => c.url), ['/following/read', '/following/topup', '/following/read'], 'one top-up while one is in flight');
+  p.doc.querySelector('button[data-act=refresh]').click();
+  await p.settle();
+  assert.equal(p.calls.length, 3, 'Refresh now waits for the top-up too');
+  assert.match(p.doc.getElementById('msg').textContent, /already reading/);
+  releaseTopup();
+  await p.settle();
+  assert.equal(p.doc.documentElement.getAttribute('data-hub-fetch'), 'idle');
+  assert.ok(!/c\.disabled\s*=/.test(p.html), 'no disabled flag standing in for a mode');
   x.done();
 });
 

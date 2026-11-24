@@ -979,7 +979,7 @@ test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up
   f.setBlygState(A, 'pause');
   assert.ok(!('ledgers' in r.json()));
   assert.deepEqual(fs.readdirSync(path.dirname(r.ledgerFile(A))), [path.basename(r.ledgerFile(A))], 'the ledger of a blyg that is not followed is not carried over');
-  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], floor: 0, bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, seen_until: 0, returns: [], backfill: 'unknown' });
+  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], floor: 0, bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, seen_until: 0, returns: [], queue: [], backfill: 'unknown' });
   r.done();
 });
 
@@ -1117,5 +1117,61 @@ test('lying dates on unfetched posts cannot jump the queue: future, NaN, strings
   r.f.tickMany(feed(r).map(h => h.key));
   await r.f.refresh();
   assert.ok(titles(r).includes('Post 1'), 'the future-dated entry sorts as now: first in the backfill');
+  r.done();
+});
+
+// ---- the top-up (finding 5) --------------------------------------------------------------------------------------------------
+
+test('30 ticks in 30 seconds over 20 blygs: at most two top-ups, no index read, a few documents each; never a refresh', async () => {
+  const r = rig();
+  const os = Array.from({ length: 20 }, (_, i) => `https://s${i}.web.test/`);
+  for (const [i, o] of os.entries()) publish(r.web.add(o), o, 100, { base: i * 1000 });
+  follow(r, ...os);
+  await r.f.refresh();
+  assert.equal(feed(r).length, 50);
+  const n0 = r.web.requests.length;
+  let topups = 0, started = 0;
+  for (let i = 0; i < 30; i++) {
+    const ans = await r.f.readRequest({ key: feed(r)[0].key, move: 'tick' });
+    if (ans.topup) { topups++; const t = await r.f.topUp(); if (t.started) started++; }
+    r.clock.t += 1000;
+  }
+  const asked = r.web.requests.slice(n0);
+  assert.ok(started <= 2, `${started} top-ups`);
+  assert.equal(asked.filter(u => /index\.json$|blyg\.json$/.test(u)).length, 0, 'no manifest and no index is read by a top-up');
+  assert.ok(asked.length <= started * F.LIMITS.topupRequests, `${asked.length} requests`);
+  assert.ok(feed(r).length >= 20, 'and the Feed did get topped up');
+  // a refresh while a top-up runs is refused, and the other way round
+  r.clock.t += F.LIMITS.topupGapMs;
+  r.f.readRequest({ key: feed(r)[0].key, move: 'tick' });
+  const t = r.f.topUp();
+  assert.equal(r.f.runState(), 'topping_up');
+  assert.match((await r.f.refresh()).reason, /topped up/);
+  await t;
+  const ref = r.f.refresh();
+  assert.match((await r.f.topUp()).reason, /refresh is running/);
+  await ref;
+  assert.ok(F.RUN_STATES.includes('topping_up'));
+  assert.throws(() => F.moveRun({ state: 'running' }, 'topup'), /cannot topup while running/);
+  r.done();
+});
+
+test('the queue a top-up reads is validated, bounded, and every entry is checked again before it is fetched', async () => {
+  const r = rig({ settings: { following_unread_target: 3 } });
+  const site = r.web.add(A);
+  publish(site, A, 40);
+  follow(r, A);
+  await r.f.refresh();
+  const led = r.ledger(A);
+  assert.equal(led.queue.length, F.LIMITS.queuePerBlyg);
+  assert.deepEqual(led.queue.slice(0, 2).map(q => q.id), [idOf(37), idOf(36)], 'in fetch order, newest first');
+  // hand-edited: junk is dropped on load, and an entry read meanwhile is skipped
+  r.setLedger(A, l => { l.queue = [{ id: 'nope', kind: 'fragment', version: 1 }, { id: idOf(37), kind: 'thread?', version: 1 }, { id: idOf(36), kind: 'fragment', version: 0 }, { id: idOf(1), kind: 'withdrawn', version: 2 }, ...l.queue]; l.ids.push([idOf(37), 1]); });
+  const f2 = r.make();
+  f2.readMove(f2.keyFor(A, idOf(40)), 'tick');
+  r.web.requests.length = 0;
+  const t = await f2.topUp();
+  assert.deepEqual(t, { started: true, new: 1, requests: 1 });
+  assert.deepEqual(r.web.itemRequests().map(u => u.slice(-31, -5)), [idOf(36)], 'the junk and the read one were not asked for');
   r.done();
 });
