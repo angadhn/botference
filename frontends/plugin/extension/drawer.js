@@ -3503,12 +3503,15 @@ ${bubbleShellHtml()}`;
 
     // ---- agent blocks inside the reader's own message ------------------------
     // A gap the reader asked for with `/tk` is drawn where they typed it: a
-    // small block, set apart from their words, with a robot mark, the word
-    // "agent" and the agent's name, what it wrote (or that it is writing, or
+    // small block, set apart from their words, with the marks the published box
+    // carries (a robot; a robot and the site's "A" once the reader edited or
+    // accepted it) and no name on it (the agent's name is only in the marks'
+    // tooltip and accessible name), what it wrote (or that it is writing, or
     // why it could not), and the reader's instruction underneath in small
     // grey type. Its modes are the companion's (tkgaps.GAP_MODES); the
     // buttons are the moves that mode allows: fill again, edit by hand, "mine"
-    // (this is now my text: it becomes the reader's own words), remove.
+    // (the reader accepts the text as it stands; it still publishes marked as
+    // written with an AI), remove.
     // Which block is being edited by hand is ONE field, D.gapEdit (a key, or
     // null), changed only by setGapEdit.
     const ROBOT_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false">'
@@ -3518,9 +3521,10 @@ ${bubbleShellHtml()}`;
     // the same marks the owner's site puts on a published agent's box: a robot (an AI model wrote it), and the robot with the site's
     // own "A" (the author edited or adopted it). No names: the accessible name says who wrote it in words.
     const BOX_NAMES = Object.freeze({ ai: 'Written by an AI model', 'ai-and-author': 'Written by an AI model and edited by the author' });
-    const boxMarksHtml = by => {
+    const boxMarksHtml = (by, who) => {
       const k = by === 'ai-and-author' ? 'ai-and-author' : 'ai';
-      return `<span class="pubagentmarks" role="img" aria-label="${esc(BOX_NAMES[k])}" title="${esc(BOX_NAMES[k])}">${ROBOT_SVG}${k === 'ai-and-author' ? '<span class="pubagentA" aria-hidden="true">A</span>' : ''}</span>`;
+      const name = BOX_NAMES[k] + (who ? ` (${who})` : '');
+      return `<span class="pubagentmarks" role="img" aria-label="${esc(name)}" title="${esc(name)}">${ROBOT_SVG}${k === 'ai-and-author' ? '<span class="pubagentA" aria-hidden="true">A</span>' : ''}</span>`;
     };
     // an agent's passage that holds the site's own bracket marks cannot be published until it is edited (blyg-note AGENT_TK_SAY)
     const GAP_TK_MARK = /\[\/?tk\]/i;
@@ -3544,13 +3548,13 @@ ${bubbleShellHtml()}`;
     });
     const GAP_ACT_WORDS = { refill: 'fill again', edit: 'edit', adopt: 'mine', remove: 'remove' };
     const GAP_ACT_TIPS = { refill: 'ask the agent to write it again', edit: 'change the words by hand (still shown as the agent\'s draft)',
-      adopt: 'this is now my text: it becomes part of my own words', remove: 'take this passage out' };
+      adopt: 'accept this text as it stands: it still publishes marked as written with an AI', remove: 'take this passage out' };
     const gapKeyOf = (target, r, g) => target + '|' + r.ts + '|' + g.id;
     function setGapEdit(key) { D.gapEdit = key || null; render(); return true; }
     function gapBlockHtml(target, r, g) {
       if (g.mode === 'removed') return '';
       const key = gapKeyOf(target, r, g);
-      const who = g.agent ? g.agent.charAt(0).toUpperCase() + g.agent.slice(1) : 'agent';
+      const who = g.agent ? g.agent.charAt(0).toUpperCase() + g.agent.slice(1) : '';
       const needsEdit = AGENT_GAP_TEXT_MODES.indexOf(g.mode) !== -1 && GAP_TK_MARK.test(String(g.text || ''));
       const state = needsEdit ? 'needs an edit' : g.mode === 'pending' ? 'writing…' : g.mode === 'failed' ? 'not written'
         : g.mode === 'edited-by-reader' ? 'edited by you' : g.mode === 'adopted-by-reader' ? 'made yours'
@@ -3566,8 +3570,8 @@ ${bubbleShellHtml()}`;
       const acts = editing ? '' : (GAP_ACTS[g.mode] || []).map(a =>
         `<button class="rebtn gapbtn" data-act="gap" data-op="${a}" data-gap-key="${esc(key)}" data-target="${esc(target)}" data-ts="${esc(r.ts)}" data-gap="${esc(g.id)}" type="button" title="${esc(GAP_ACT_TIPS[a])}">${GAP_ACT_WORDS[a]}</button>`).join('');
       return `<div class="gapblock ${esc(g.mode)}" data-gap="${esc(g.id)}">`
-        + `<div class="gaphead"><span class="gaprobot">${ROBOT_SVG}</span><span class="gapword">agent</span>`
-        + `<span class="gapwho">${esc(who)}</span>${state ? `<span class="gapstate">${esc(state)}</span>` : ''}</div>`
+        + `<div class="gaphead">${boxMarksHtml(g.mode === 'edited-by-reader' || g.mode === 'adopted-by-reader' ? 'ai-and-author' : 'ai', who)}`
+        + `${state ? `<span class="gapstate">${esc(state)}</span>` : ''}</div>`
         + body
         + (needsEdit ? '<div class="gapneeds">This passage holds letters your site keeps for marking agents\' passages, so it cannot be published as it is: edit it.</div>' : '')
         + (g.mode === 'pasted-by-reader' ? '' : `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`)

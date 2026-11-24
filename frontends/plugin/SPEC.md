@@ -12975,7 +12975,8 @@ whatever `confirm` says (`run.review = 'agent-text'`).
   no tool that runs a command or opens a file is left on, which these flags say but which cannot be proven here without running a model
   (`unified_exec` still reports itself on in `codex features list` whatever is passed). Hence the agent-text rule above. (SUPERSEDED
   2026-11-24, review round 5: Codex is jailed and the tool list was recorded against a mock provider; see "Review round 5".)
-- The drawer draws pasted and adopted passages as agent blocks too ("pasted by you", "made yours"; remove only).
+- The drawer draws pasted and adopted passages as agent blocks too ("pasted by you", "made yours"; remove only). (SUPERSEDED below:
+  the drawer's block carries the published box's marks, no name.)
 
 ### Review follow-ups
 
@@ -12999,7 +13000,7 @@ through the DOM domain, scripts staying off). For a run waiting on the owner, th
 made by the companion from the setting and the run's permalink, never from the client. The companion renders it itself
 (`preview-render.mjs`): a headless Chromium (Chrome, Brave or Chromium; `BOTFERENCE_CHROME`) in a throwaway profile, JavaScript OFF, every
 request to another origin failed before it leaves, 420 CSS px at 2x, the drawer's theme through `prefers-color-scheme`, cropped to the
-selector, at most 2400 px tall, 12 s for the page and 30 s in all; a page not there yet is asked again (4 times, 3 s apart). The drawer
+selector, at most 2400 px tall, 12 s for the page and 30 s in all; a page not there yet is asked again (4 times, 3 s apart; SUPERSEDED below: 15 times, about 45 s). The drawer
 shows it in a bordered box with its own scroll, "how it will look", "open full size" (the address, local owner only) and "refresh"; while
 it is made, or when it is not available, the note's text is shown and nothing is blocked. The drawer's picture state is
 `PUB_PIC_STATES` (none, waiting, ready, unavailable), moved by `pubPicMove`.
@@ -13627,3 +13628,16 @@ characters, quoted), written only when the page has one. The example site shows 
 Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plane on either thread; when it is offered; given up),
 `blyg-note` (title, target, two quotes of one page, per-thread passage), `blygpublish-drawer` (the choice), `blygpublish-background`
 (join and earlier forwarded, an odd choice refused), `blyg-publish-server` (the route).
+
+### Owner's use, same day: four small changes
+- **The picture waits longer.** The owner's local preview site regenerates twice after a note is staged (the note, then the link-card
+  cache), about 11 s each. `PREVIEW_TRIES` is 15 more asks 3 s apart (about 45 s, still bounded, the same `PREVIEW_STATES`); the
+  drawer's `PUB_PIC_TRIES` is 24 x 2.5 s, so it is still asking when the companion answers.
+- **An edit sets aside only what answered it** (`store.supersedeAfter`, the one rule; the drawer only shows it): what follows the edited
+  message is set aside only when a message by someone else follows it (a bot, a tool summary, another person), as before; when
+  everything after it is the same author's own words nothing is set aside, so the owner editing their first comment keeps their later
+  ones (and they stay in the post). Messages set aside earlier are never touched. Tests: `supersede.test.mjs`.
+- **"mine" says what it does**: "accept this text as it stands: it still publishes marked as written with an AI".
+- **The drawer's agent block carries the published box's marks** (`boxMarksHtml`: a robot; a robot and the site's "A" once the owner
+  edited or accepted it), no word "agent" and no name on it; the agent's name is only in the marks' tooltip and accessible name
+  ("Written by an AI model (Codex)"). Tests: `tkdrawer`.

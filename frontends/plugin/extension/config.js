@@ -358,7 +358,9 @@
   const PUB_PIC_STATES = Object.freeze(['none', 'waiting', 'ready', 'unavailable']);
   const PUB_PIC_MOVES = Object.freeze({ none: Object.freeze(['waiting', 'ready', 'unavailable']), waiting: Object.freeze(['waiting', 'ready', 'unavailable', 'none']),
     ready: Object.freeze(['waiting', 'none']), unavailable: Object.freeze(['waiting', 'none']) });
-  const PUB_PIC_TRIES = Object.freeze({ times: 12, apartMs: 2500 });
+  // (the companion waits up to about 45 s for the preview site, blyg-run PREVIEW_TRIES; the drawer asks for about 60 s, so it is
+  // still asking when the companion's answer comes)
+  const PUB_PIC_TRIES = Object.freeze({ times: 24, apartMs: 2500 });
   function pubPicMove(from, to) {
     if (PUB_PIC_STATES.indexOf(to) === -1) throw new Error('preview picture: no such state ' + to);
     if (!PUB_PIC_MOVES[from] || PUB_PIC_MOVES[from].indexOf(to) === -1) throw new Error('preview picture: cannot go from ' + from + ' to ' + to);

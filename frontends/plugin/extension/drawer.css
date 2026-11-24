@@ -1916,9 +1916,6 @@ button[disabled]:hover { border-color: var(--card-line); color: var(--fg) }
 }
 .gapblock.failed { border-left-color: var(--bad) }
 .gaphead { display: flex; gap: 6px; align-items: center; color: var(--muted); font: 11px/1.4 var(--sans); margin-bottom: 3px; flex-wrap: wrap }
-.gaprobot { display: inline-flex }
-.gapword { text-transform: lowercase; letter-spacing: .02em }
-.gapwho { font-weight: 600 }
 .gapstate { font-style: italic }
 .gaptext.wait { color: var(--muted); font-style: italic }
 .gaptext.reason { color: var(--bad) }

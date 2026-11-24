@@ -169,9 +169,10 @@ export function previewMove(p, to) {
   p.state = to;
   return p;
 }
-/** How many times, and how far apart, the draft's page is asked for before it is called unavailable (the preview site may need a few
- *  seconds after prepare to show a new draft). */
-export const PREVIEW_TRIES = Object.freeze({ times: 4, apartMs: 3000 });
+/** How many times, and how far apart, the draft's page is asked for before it is called unavailable. The owner's local preview site
+ *  regenerates twice after a note is staged (the note, then the link-card cache), about 11 s each, so the wait is bounded at about
+ *  45 s in all (15 more asks, 3 s apart, after the first). */
+export const PREVIEW_TRIES = Object.freeze({ times: 15, apartMs: 3000 });
 export const DEFAULT_PREVIEW_SELECTOR = 'article';
 
 // ---- the site's own refusals, in PREPARED words --------------------------------------------------------------------------

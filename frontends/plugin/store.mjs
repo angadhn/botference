@@ -1174,10 +1174,19 @@ export function msgsOf(page, threadId) {
 // it: everything after it in the thread is set aside — kept, readable, folded
 // under "before the edit" in the drawer — and marked with the ts of the
 // message whose edit retired it. Returns how many were set aside.
+// THE ONE RULE (the drawer only shows what this decided): something answered the
+// old wording only if a message by SOMEONE ELSE follows it (a bot, a tool
+// summary, another person). When everything after the edited message (not
+// already set aside) is the same author's own words, nothing is set aside: the
+// owner editing their first comment keeps their later comments. Messages set
+// aside earlier are never touched.
+export const answeredAfter = (list, i, msg) => list.slice(i + 1)
+  .some(m => m && !m.superseded && (m.author !== msg.author || m.kind === 'tools'));
 export function supersedeAfter(msgs, msg) {
   const list = Array.isArray(msgs) ? msgs : [];
   const i = list.indexOf(msg);
   if (i < 0) return 0;
+  if (!answeredAfter(list, i, msg)) return 0;
   let n = 0;
   for (const m of list.slice(i + 1)) {
     if (!m || m.superseded) continue;

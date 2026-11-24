@@ -45,8 +45,12 @@ eq('one block per gap: an adopted one is still the agent\'s words (a post shows 
   'gapblock filled-by-agent', 'gapblock pending', 'gapblock failed', 'gapblock adopted-by-reader']);
 eq('adopted: "made yours", and only remove', [blocks()[3].querySelector('.gapstate').textContent, [...blocks()[3].querySelectorAll('.gapbtn')].map(x => x.textContent)], ['made yours', ['remove']]);
 const b0 = blocks()[0];
-ok('the block says agent and who', /agent/.test(b0.querySelector('.gapword').textContent) && b0.querySelector('.gapwho').textContent === 'Claude');
-ok('…carries a robot mark', !!b0.querySelector('.gaprobot svg'));
+const marks = b => b.querySelector('.gaphead .pubagentmarks');
+eq('the block carries the published box\'s marks, no name on it (the name only in the tooltip and accessible name)',
+  [!!marks(b0).querySelector('svg'), !!marks(b0).querySelector('.pubagentA'), marks(b0).getAttribute('role'), marks(b0).getAttribute('aria-label'), marks(b0).getAttribute('title'), /agent|Claude|Codex/.test(b0.querySelector('.gaphead').textContent)],
+  [true, false, 'img', 'Written by an AI model (Claude)', 'Written by an AI model (Claude)', false]);
+eq('…an accepted ("mine") passage: the robot and the owner\'s mark', [!!marks(blocks()[3]).querySelector('.pubagentA'), marks(blocks()[3]).getAttribute('aria-label')], [true, 'Written by an AI model and edited by the author'], 'no agent recorded: no name in it');
+eq('"mine" says what happens: accepted as it stands, still published as written with an AI', b0.querySelector('.gapbtn[data-op="adopt"]').getAttribute('title'), 'accept this text as it stands: it still publishes marked as written with an AI');
 ok('…draws the agent\'s text as markdown', !!b0.querySelector('.gaptext strong'), b0.innerHTML);
 eq('…and the instruction, de-emphasised', b0.querySelector('.gapask').textContent, 'asked: explain it');
 eq('filled: fill again, edit, mine, remove', [...b0.querySelectorAll('.gapbtn')].map(x => x.textContent), ['fill again', 'edit', 'mine', 'remove']);
@@ -82,9 +86,9 @@ const asSent = (g0) => ({ url: URL_, title: 'A', threads: [], page_chat: [{ auth
   gaps: [g0, { id: 'p1', kind: 'impyrt', agent: 'claude', instruction: 'pasted words', mode: 'pasted-by-reader', text: 'pasted words', at: 't' }] }] });
 drawer.setPage(asSent({ id: 'c0', kind: 'ask', agent: 'codex', instruction: 'summarise it', mode: 'pending' })); await tick(20);
 const first = blocks()[0];
-eq('sent: "writing…", by Codex (the agent the owner named)', [first.querySelector('.gapstate').textContent, first.querySelector('.gapwho').textContent, first.querySelector('.gaptext').textContent], ['writing…', 'Codex', 'the agent is writing this passage…']);
-eq('a pasted passage is drawn like an agent fill: its maker, "pasted by you", only remove, no "asked:" line', [blocks()[1].querySelector('.gapwho').textContent, blocks()[1].querySelector('.gapstate').textContent,
-  [...blocks()[1].querySelectorAll('.gapbtn')].map(x => x.textContent), !!blocks()[1].querySelector('.gapask')], ['Claude', 'pasted by you', ['remove'], false]);
+eq('sent: "writing…", by Codex (the agent the owner named)', [first.querySelector('.gapstate').textContent, marks(first).getAttribute('aria-label'), first.querySelector('.gaptext').textContent], ['writing…', 'Written by an AI model (Codex)', 'the agent is writing this passage…']);
+eq('a pasted passage is drawn like an agent fill: its maker, "pasted by you", only remove, no "asked:" line', [marks(blocks()[1]).getAttribute('aria-label'), blocks()[1].querySelector('.gapstate').textContent,
+  [...blocks()[1].querySelectorAll('.gapbtn')].map(x => x.textContent), !!blocks()[1].querySelector('.gapask')], ['Written by an AI model (Claude)', 'pasted by you', ['remove'], false]);
 drawer.setPage(asSent({ id: 'c0', kind: 'ask', agent: 'codex', instruction: 'summarise it', mode: 'filled-by-agent', text: 'A **summary**.', model: 'gpt-x', at: 't' })); await tick(20);
 const filled = blocks()[0];
 eq('…the fill lands IN PLACE (same slot, no reload), with its buttons', [blocks().length, filled.className, filled.querySelector('.gaptext').textContent, [...filled.querySelectorAll('.gapbtn')].map(x => x.textContent), S.querySelector('.reply').textContent.indexOf('Intro.') < S.querySelector('.reply').textContent.indexOf('A summary.')],
