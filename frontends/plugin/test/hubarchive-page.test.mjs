@@ -441,11 +441,11 @@ test('the star: one per post beside Read; a press stars it in place (no reload),
 test('the Starred tab: newest starred first, light lines (no text), where each post is now, Open original and Remove star', async () => {
   const x = await hub({ n: 4 });
   const keys = await Promise.all([1, 2, 3].map(k => x.f.keyFor(A, idOf(k))));
-  for (const k of keys) await x.f.readRequest({ key: k, move: 'star' });
+  for (const k of keys) { await x.f.readRequest({ key: k, move: 'star' }); await new Promise(res => setTimeout(res, 5)); } // (each starred at its own millisecond)
   await x.f.readMove(keys[1], 'tick'); // read: it keeps its star
   const p = await x.run({ view: 'starred' });
   const lines = [...p.doc.querySelectorAll('.hub-starred-line')];
-  assert.deepEqual(lines.map(l => l.dataset.key), [...keys].reverse(), 'newest starred first (same time: by key)');
+  assert.deepEqual(lines.map(l => l.dataset.key), [...keys].reverse(), 'newest starred first');
   assert.ok(!/Distinctive words/.test(p.html), 'no text of any post');
   const byKey = k => lines.find(l => l.dataset.key === k).textContent.replace(/\s+/g, ' ');
   assert.match(byKey(keys[0]), /unread, in your Feed/);
