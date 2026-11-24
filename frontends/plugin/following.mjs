@@ -48,7 +48,7 @@
 // rises: anything created at or before it counts as read), the ids whose documents could not be used (`bad`: 100 per blyg, 2,000
 // in all, each for 7 days), the ids a host could not give (`later`, a back-off), its backfill mode, the newest date the Hub has
 // seen from it (`seen_until`), the edit-returns of the last 24 hours, and the queue a top-up reads. The ledger is what keeps a
-// post read after its record is gone, and an unfollow keeps its read ids and floor (unless asked to forget). The caps
+// post read after its record is gone, and an unfollow keeps its read ids and its GONE filter (unless asked to forget). The caps
 // (`following_max_items_*`) count unread held posts only.
 //
 // THE EDIT RULE. A real edit (a new content_hash) of a post the owner read returns it to the Feed as `edited` at most once in 7
@@ -175,7 +175,7 @@ export function moveRead(rec, ev) { rec.read = readMachine.to(rec.read, ev); ret
 //   pause_bad        the list of unusable documents is full
 //   retry            the owner's Retry: the list is cleared and the index read afresh
 //   recover          entries expired and the list is below its bounds again
-//   forget           the blyg was unfollowed (its read ids and floor are kept, the rest starts again on a refollow)
+//   forget           the blyg was unfollowed (its read ids and gone filter are kept, the rest starts again on a refollow)
 export const BACKFILL_MODES = Object.freeze(['unknown', 'more', 'caught_up', 'paused_bad_documents']);
 export const BACKFILL_MOVES = Object.freeze({
   remain: { unknown: 'more', more: 'more', caught_up: 'more' },
@@ -332,15 +332,18 @@ export const LIMITS = Object.freeze({
   archiveRecords: 2000,       // archive records kept for display (~0.5 KB each); beyond it the oldest-ticked are dropped
   archiveTitleChars: 120,     // a record's title, or the first words of the post
   archiveIdsPerBlyg: 5000,    // read ids remembered per blyg, each with its post's `created` (~46 bytes each: ~0.23 MB at the
-                              // bound). At the bound the oldest `ledgerTrim` are dropped and the FLOOR rises to the newest of
-                              // them: an index entry created at or before the floor counts as read. A blyg is never stopped.
+                              // bound). At the bound the oldest `ledgerTrim` go into the blyg's GONE filter (a Bloom filter of
+                              // ids, never of dates: a blyg that re-dates its posts cannot bring one back). A blyg is never stopped.
+  goneBits: 479232,           // the gone filter's size in bits (59,904 bytes; 79,872 characters of base64 in the ledger) ...
+  goneHashes: 7,              // ... and hashes: 1% false positives at 50,000 ids (a false positive hides one post of that blyg),
+                              // about 8% at 100,000
   ledgerTrim: 500,            // ids dropped at once when a ledger is full (so it is not trimmed on every tick)
   badPerBlyg: 100,            // ids whose document could not be used (a 2xx answer that failed its checks), per blyg, with the
                               // version the index gave and when: at the bound reading back pauses for that blyg (fresh posts go on)
   badTotal: 2000,             // ... and in all blygs together (the blyg that reaches it pauses the same way)
   badExpiryMs: 7 * 24 * 3600e3, // an unusable document is asked for again after this long (or at once when the index names a new version)
   laterPerBlyg: 200,          // ids whose document a host could not give (404, 410, 403), asked again after a doubling back-off
-  keptMax: 50,                // ledgers kept for blygs unfollowed without "forget" (their read ids and floor only) ...
+  keptMax: 50,                // ledgers kept for blygs unfollowed without "forget" (their read ids and gone filter only) ...
   keptMs: 365 * 24 * 3600e3,  // ... for at most this long; beyond either bound the oldest is forgotten
   pageChars: 2048,            // a post's page address (refused beyond it, never cut: a cut address opens something else)
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
@@ -637,6 +640,35 @@ export function fingerprintChange(a, b) {
   const length = (Math.abs(a.chars - b.chars) * 100) / Math.max(a.chars, b.chars, 1);
   return Math.max(words, length);
 }
+// The GONE filter of a ledger: a Bloom filter of read ids (goneBits bits, goneHashes hashes by double hashing the two halves of
+// one mixed 64-bit hash). Never a false negative; a false positive hides one post of that blyg.
+// (FNV-1a alone is too regular for ids that differ in a character or two: its value is mixed by MurmurHash3's 64-bit finaliser)
+const fmix64 = h => {
+  h ^= h >> 33n; h = (h * 0xff51afd7ed558ccdn) & MASK64; h ^= h >> 33n; h = (h * 0xc4ceb9fe1a85ec53n) & MASK64; h ^= h >> 33n;
+  return h;
+};
+const goneIndexes = id => {
+  const h = fmix64(fnv64(id));
+  const h1 = Number(h & 0xffffffffn), h2 = (Number(h >> 32n) | 1) >>> 0;
+  return Array.from({ length: LIMITS.goneHashes }, (_, i) => (h1 + i * h2) % LIMITS.goneBits);
+};
+export function addGone(gone, ids) {
+  const bits = gone ? Buffer.from(gone.bits, 'base64') : Buffer.alloc(LIMITS.goneBits / 8);
+  for (const id of ids) for (const x of goneIndexes(id)) bits[x >> 3] |= 1 << (x & 7);
+  return { n: (gone ? gone.n : 0) + ids.length, bits: bits.toString('base64') };
+}
+/** → a test (id → true if it is in the gone filter), decoding the filter once. */
+export function goneTest(led) {
+  if (!led.gone) return () => false;
+  const bits = Buffer.from(led.gone.bits, 'base64');
+  return id => goneIndexes(id).every(x => (bits[x >> 3] >> (x & 7)) & 1);
+}
+function joinGone(a, b) {
+  if (!a || !b) return a || b || null;
+  const x = Buffer.from(a.bits, 'base64'), y = Buffer.from(b.bits, 'base64');
+  for (let i = 0; i < x.length; i++) x[i] |= y[i];
+  return { n: Math.max(a.n, b.n), bits: x.toString('base64') };
+}
 const isFingerprint = v => !!v && typeof v === 'object' && /^[0-9a-f]{16}$/.test(v.fp) && Number.isInteger(v.chars) && v.chars >= 0 && Number.isInteger(v.words) && v.words >= 0;
 
 // ---- placement: which view an entry belongs to, and why ----------------------------
@@ -823,7 +855,7 @@ function newBudget(settings, now) {
 // EVERYTHING the engine keeps goes through ONE store, so a host that keeps it elsewhere (a blob store with conditional
 // writes, one blob per body) supplies its own and this file does not change. Three kinds of thing are kept:
 //   'state'  — the one main document (the follow list, the held posts and archive records, the inbox, the last run);
-//   'ledger' — one small document per blyg (its read ids and floor, its unusable documents, its backfill mode, its queue);
+//   'ledger' — one small document per blyg (its read ids and gone filter, its unusable documents, its backfill mode, its queue);
 //   'body'   — one sanitised body per held post, named by the post's random key.
 // The interface (every method synchronous; a host whose store is asynchronous wraps the engine's calls, not this file):
 //   get(kind, name)                     → null (nothing stored) | { value, version } | { unreadable: Error, version }
@@ -970,7 +1002,7 @@ export function mergeState(ours, base, theirs) {
 }
 /**
  * A three-way merge of one ledger: the read ids and the unusable and later-again lists are SETS (what either side added
- * stays, what either side removed goes), the floor and the newest-seen date take the larger, and the rest (backfill mode,
+ * stays, what either side removed goes), the gone filters are joined (bitwise or), the newest-seen date takes the larger, and the rest (backfill mode,
  * queue, returns) takes ours where we changed it and theirs otherwise. `ours` is changed in place.
  */
 export function mergeLedger(ours, base, theirs) {
@@ -985,7 +1017,7 @@ export function mergeLedger(ours, base, theirs) {
   for (const k of ['bad', 'later']) {
     ours[k] = Object.fromEntries(setMerge(new Map(Object.entries(ours[k] || {})), new Map(Object.entries(base[k] || {})), new Map(Object.entries(theirs[k] || {}))));
   }
-  ours.floor = Math.max(ours.floor || 0, theirs.floor || 0);
+  ours.gone = joinGone(ours.gone, theirs.gone);
   ours.seen_until = Math.max(ours.seen_until || 0, theirs.seen_until || 0);
   for (const k of ['backfill', 'queue', 'returns', 'changes', 'fresh', 'fresh_failures', 'fresh_after']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
   return ours;
@@ -1002,7 +1034,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
   const prune = st => {
     for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k];
-    // the ledgers kept for blygs unfollowed (read ids and floor only): at most keptMax, none older than keptMs
+    // the ledgers kept for blygs unfollowed (read ids and gone filter only): at most keptMax, none older than keptMs
     const kept = Object.entries(st.kept).filter(([o]) => !st.blygs[o]).sort((a, b) => b[1] - a[1]);
     for (const [i, [o, at]] of kept.entries()) if (i >= LIMITS.keptMax || now() - at > LIMITS.keptMs) { delete st.kept[o]; forgetLedger(o); }
     for (const o of Object.keys(st.kept)) if (st.blygs[o]) delete st.kept[o];
@@ -1037,7 +1069,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (ID_RE.test(id) && Array.isArray(v) && Number.isFinite(v[0]) && Number.isInteger(v[1]) && v[1] >= 1 && v[1] < 64) later[id] = [v[0], v[1]];
       }
     }
-    const floor = Number.isFinite(r.floor) && r.floor > 0 ? r.floor : 0;
+    // the gone filter: base64 of goneBits bits, and how many ids were added (a ledger from before it kept a date `floor`: not carried)
+    const gone = r.gone && typeof r.gone === 'object' && typeof r.gone.bits === 'string' && Buffer.from(r.gone.bits, 'base64').length === LIMITS.goneBits / 8
+      && Number.isInteger(r.gone.n) && r.gone.n >= 0 ? { n: r.gone.n, bits: r.gone.bits } : null;
     const seenUntil = Number.isFinite(r.seen_until) && r.seen_until > 0 && r.seen_until <= now() ? r.seen_until : 0;
     // the next unfetched entries of its index, in fetch order, as the last refresh left them: what a top-up fetches (no index read)
     const queue = [];
@@ -1055,7 +1089,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const fresh = FRESH_MODES.includes(r.fresh) ? r.fresh : 'reading';
     const freshFailures = Number.isInteger(r.fresh_failures) && r.fresh_failures > 0 && r.fresh_failures < 64 ? r.fresh_failures : 0;
     const freshAfter = Number.isFinite(r.fresh_after) && r.fresh_after > 0 ? r.fresh_after : 0;
-    return { ids, floor, bad, later, seen_until: seenUntil, returns, changes, queue, fresh, fresh_failures: freshFailures, fresh_after: freshAfter, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    return { ids, gone, bad, later, seen_until: seenUntil, returns, changes, queue, fresh, fresh_failures: freshFailures, fresh_after: freshAfter, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), copy (LEDGER_COPIES: whether it awaits writing) }
   const ledgerEntry = origin => {
@@ -1274,7 +1308,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (Object.keys(st.blygs).length >= LIMITS.followMax) throw new Error(`at most ${LIMITS.followMax} blygs can be followed`);
     st.blygs[origin] = { origin, title: cleanText(title, 200), author: cleanText(author, 200), state: 'active', added: new Date(now()).toISOString(),
       via, failures: 0, absent_runs: 0, retry_after: 0, last_try: 0, last_ok: 0, last_error: '' };
-    // followed again after an unfollow that kept what was read: its ledger (read ids and floor) is used as it is
+    // followed again after an unfollow that kept what was read: its ledger (read ids and gone filter) is used as it is
     delete st.kept[origin];
     return true;
   }
@@ -1290,7 +1324,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   /**
    * Stop following. Its posts and archive records go either way. `forget: false` (the page's "Stop following") KEEPS its ledger's
-   * read ids and floor (a few kilobytes; at most keptMax blygs, for at most keptMs), so following it again does not bring back as
+   * read ids and gone filter (a few kilobytes, at most 0.3 MB; at most keptMax blygs, for at most keptMs), so following it again does not bring back as
    * unread what was read there; `forget: true` ("Stop following and forget what I have read there") deletes the ledger too.
    */
   function unfollow(origin, { forget = false } = {}) {
@@ -1654,9 +1688,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     // an unusable document is asked for again once it has been remembered for badExpiryMs
     for (const [id, [, at]] of Object.entries(led.bad)) if (now() - at >= LIMITS.badExpiryMs) delete led.bad[id];
-    // a read id remembered without its post's date (from a ledger written before dates were kept) takes the index's, for the floor
+    // a read id remembered without its post's date (from a ledger written before dates were kept) takes the index's, for the trim order
     for (const p of led.ids) if (!p[1] && byId.has(p[0])) { const c = Date.parse(byId.get(p[0]).created); if (Number.isFinite(c) && c > 0 && c <= now()) p[1] = c; }
-    const belowFloor = e => { const c = Date.parse(e.created); return led.floor > 0 && Number.isFinite(c) && c <= led.floor; };
+    const goneSet = goneTest(led);
     const paused = led.backfill === 'paused_bad_documents';
     // FRESH or BACKFILL is decided from dates the Hub stored itself, never from positions or dates the index controls (finding 6 of
     // the gate review: the edge used to be taken from the index's order, so re-dating one held post made everything "fresh"). The
@@ -1677,9 +1711,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
       if (!held) {
-        // withdrawn items are never fetched; ticked ones are read, and so is anything created at or before the floor; an unusable
+        // withdrawn items are never fetched; ticked ones are read (in the ids, or in the gone filter); an unusable
         // one waits for the index to name a new version (or for its entry to expire); a missing one for its back-off
-        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || belowFloor(e) || (led.bad[e.id] && led.bad[e.id][0] === e.version)) continue;
+        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || goneSet(e.id) || (led.bad[e.id] && led.bad[e.id][0] === e.version)) continue;
         if (led.later[e.id] && led.later[e.id][0] > now()) { plan.left++; continue; }
         if (e.kind === 'fragment') { const t = awaitsOf(e); if (t) e.awaits = t; }
         if (!isFresh(e)) { if (paused) plan.left++; else plan.backfill.push(e); continue; }
@@ -1892,7 +1926,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
    * After a tick leaves the Feed below its target: fetch the next posts from the blygs' saved QUEUES (what the last refresh left of
    * each backfill, in order, at most queuePerBlyg each), round-robin, one per blyg per round, until the target is met. No manifest and
    * no index is read (an index is read only by a refresh, at the blyg's own interval), at most topupRequests requests, and at most
-   * one top-up every topupGapMs (RUN_STATES). Each entry is checked again before it is fetched (held, read, below the floor,
+   * one top-up every topupGapMs (RUN_STATES). Each entry is checked again before it is fetched (held, read, in the gone filter,
    * unusable or waiting meanwhile: skipped). → { started, new, requests } or { started: false, reason }.
    */
   async function topUp() {
@@ -1920,8 +1954,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
           const e = p.led.queue.shift();
           moved = true;
           const ids = new Set(p.led.ids.map(x => x[0]));
-          const c = Date.parse(e.created);
-          if (st.items[identOf(p.b.origin, e.id)] || ids.has(e.id) || (p.led.floor > 0 && Number.isFinite(c) && c <= p.led.floor)
+          if (st.items[identOf(p.b.origin, e.id)] || ids.has(e.id) || goneTest(p.led)(e.id)
             || (p.led.bad[e.id] && p.led.bad[e.id][0] === e.version) || (p.led.later[e.id] && p.led.later[e.id][0] > now())) continue;
           p.b.last_backfill = now();
           const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
@@ -1969,16 +2002,16 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   });
   /** The owner's tick: the post leaves the Feed (its text is deleted, a small record stays) and its id is remembered in its blyg's ledger. */
   /**
-   * A ledger at its bound drops its `ledgerTrim` oldest ids (by the post's `created`, as kept at the tick; an id whose date is not
-   * known is dropped last) and raises its FLOOR to the newest date among them: from then on every index entry created at or before
-   * the floor counts as read. A blyg is never stopped for having been read a lot. → the floor.
+   * A ledger at its bound moves its `ledgerTrim` oldest ids (by the post's `created` as kept at the tick; an id whose date is not
+   * known goes last) into its GONE filter, which knows them by id alone: no date the blyg gives can bring one back. A blyg is never
+   * stopped for having been read a lot. → how many ids the filter holds.
    */
   function trimLedger(led) {
-    const dropped = led.ids.map((p, i) => [p[1] || Infinity, i]).sort((a, b) => a[0] - b[0]).slice(0, LIMITS.ledgerTrim);
-    for (const [c] of dropped) if (Number.isFinite(c)) led.floor = Math.max(led.floor, c);
+    const dropped = led.ids.map((p, i) => [p[1] > 0 ? p[1] : Infinity, i]).sort((a, b) => a[0] - b[0]).slice(0, LIMITS.ledgerTrim);
+    led.gone = addGone(led.gone, dropped.map(([, i]) => led.ids[i][0]));
     const drop = new Set(dropped.map(x => x[1]));
     led.ids = led.ids.filter((_, i) => !drop.has(i));
-    return led.floor;
+    return led.gone.n;
   }
   const bodiesToDelete = [];
   /** Save, and only then delete the bodies of the posts just ticked. */

@@ -728,9 +728,9 @@ archived. Ticking a thread also archives the parts folded under it that the Feed
 the thread only links to stays where it is. "Tick all shown" archives exactly the posts the Feed is showing, with their
 parts, after a confirmation (the page sends them 100 at a time). At most 2000 archive records are kept; past that the oldest
 ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also keeps a small list of
-the posts you read (up to 5,000, each with its date; past that the oldest 500 are dropped and a *floor* date rises, and
-anything that blyg published at or before the floor counts as read), and the Hub never fetches a post on that list, or
-below the floor, as a new one. A blyg is never stopped for this. A blyg whose posts have all been fetched or ticked is
+the posts you read (up to 5,000 by id; past that the oldest 500 go into a compact filter that knows them by id alone, 60 KB
+however many, with about one false match in a hundred at 50,000 ids: a false match hides one post), and the Hub never
+fetches a post on that list, or in that filter, as a new one, whatever date the blyg gives it. A blyg is never stopped for this. A blyg whose posts have all been fetched or ticked is
 *caught up*; when every blyg you follow (other than paused ones) is and the Feed is empty, the Feed says "You have read
 everything from the blygs you follow."
 

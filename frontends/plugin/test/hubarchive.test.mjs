@@ -691,38 +691,42 @@ test('a ticked post never comes back as unread: not when its record is gone from
   r.done();
 });
 
-test('at its bound a ledger drops its oldest ids and raises its floor: nothing created at or before the floor is fetched as unread; the blyg is never stopped', async () => {
-  const r = rig({ settings: { following_unread_target: 500 } });
-  const site = r.web.add(A);
-  const other = r.web.add(B);
-  publish(site, A, 12);
-  publish(other, B, 5, { base: 9000 });
-  follow(r, A, B);
-  await r.f.refresh();
-  // the blyg already remembers as many ids as it may (invented ids, not in its index, all created before post 1)
-  const old = Date.parse(day(0)) - 1000;
-  r.setLedger(A, l => { l.ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => [idOf(7000000 + i), old - i]); });
-  const f2 = r.make();
-  f2.readMove(f2.keyFor(A, idOf(5)), 'tick');
-  const led = r.ledger(A);
-  assert.equal(led.ids.length, F.LIMITS.archiveIdsPerBlyg + 1 - F.LIMITS.ledgerTrim, 'the oldest were dropped');
-  assert.ok(led.ids.some(p => p[0] === idOf(5)), 'the new one is remembered');
-  assert.equal(led.floor, old - (F.LIMITS.archiveIdsPerBlyg - F.LIMITS.ledgerTrim), 'the floor is the newest date among those dropped');
-  assert.notEqual(f2.listBlygs().find(b => b.origin === A).backfill, 'stopped');
-  // the floor counts as read: entries created at or before it are never fetched; a brand-new post still is
-  r.setLedger(A, l => { l.floor = Date.parse(day(6)); });
-  const j = r.json();
-  for (const k of Object.keys(j.items)) if (k.startsWith(A)) delete j.items[k]; // and nothing of it is held any more
-  fs.writeFileSync(r.file, JSON.stringify(j));
-  site.put(makeDoc({ id: idOf(50), origin: A, title: 'Brand new', created: day(400) }));
-  const f3 = r.make();
-  r.web.requests.length = 0;
-  await f3.refresh();
-  const asked = r.web.itemRequests().filter(u => u.startsWith(A)).map(u => u.slice(-31, -5));
-  assert.ok(!asked.some(id => [1, 2, 3, 4, 5, 6].map(n => idOf(n)).includes(id)), 'nothing at or below the floor');
-  assert.ok(asked.includes(idOf(50)) && asked.includes(idOf(7)), 'above it, old and new are read');
-  assert.equal(f3.listBlygs().find(b => b.origin === A).backfill, 'caught_up');
-  r.done();
+test('at its bound a ledger moves its oldest ids into a gone filter (by id, never by date): no read post returns, even re-dated or undated', async () => {
+  for (const [label, createdOf, redate] of [['undated (1970)', () => '1970-01-01T00:00:00Z', null], ['re-dated after the trim', k => day(k - 6000 + 7000), k => day(k + 20)]]) {
+    const store = F.memoryStore();
+    store.put('ledger', F.ledgerName(A), { origin: A, ids: Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => [idOf(i + 1), 0]), backfill: 'more' });
+    const web = makeWeb(); const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
+    const f = F.createFollowing({ store, get: async (u, o) => { clock.t += 10; return web.get(u, o); }, now: () => clock.t,
+      getSettings: () => CFG.followingSettingsOf({ following_unread_target: 30, following_run_requests: 200 }).settings, timers: { set: () => ({}), clear: () => {} } });
+    const site = web.add(A);
+    for (let k = 1; k <= F.LIMITS.archiveIdsPerBlyg + 1; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `P${k}`, body: `w${k}`, created: createdOf(k) }));
+    f.confirmImport([{ origin: A }]);
+    await f.refresh();
+    const first = f.view({ limit: 1000 }).entries.map(e => e.head);
+    assert.deepEqual(first.map(h => h.id), [idOf(F.LIMITS.archiveIdsPerBlyg + 1)], `${label}: only the unread one`);
+    f.readMove(first[0].key, 'tick');
+    const led = store.get('ledger', F.ledgerName(A)).value;
+    assert.equal(led.ids.length, F.LIMITS.archiveIdsPerBlyg + 1 - F.LIMITS.ledgerTrim, `${label}: the oldest went`);
+    assert.equal(led.gone.n, F.LIMITS.ledgerTrim);
+    assert.ok(!('floor' in led), 'no date floor');
+    if (redate) for (let k = 1; k <= F.LIMITS.archiveIdsPerBlyg + 1; k++) { const d = site.docs.get(idOf(k)); site.put({ ...d, created: redate(k), updated: redate(k) }); }
+    clock.t += 3600e3;
+    await f.refresh();
+    assert.equal(f.view({ limit: 1000 }).entries.length, 0, `${label}: none of the 5,001 read posts came back`);
+  }
+});
+
+test('the gone filter: about 1% false positives at 50,000 ids in 59,904 bytes; no false negatives', () => {
+  const ids = Array.from({ length: 50000 }, (_, i) => idOf(1e7 + i));
+  let gone = null;
+  for (let i = 0; i < ids.length; i += 5000) gone = F.addGone(gone, ids.slice(i, i + 5000));
+  assert.equal(Buffer.from(gone.bits, 'base64').length, 59904);
+  assert.equal(gone.bits.length, 79872);
+  const has = F.goneTest({ gone });
+  assert.ok(ids.every(has), 'every id added is found');
+  let fp = 0;
+  for (let i = 0; i < 20000; i++) if (has(idOf(5e7 + i))) fp++;
+  assert.ok(fp / 20000 < 0.015, `${(100 * fp / 20000).toFixed(2)}% false positives`);
 });
 
 test('ticking a post of one blyg never touches another blyg\'s reading, however many ids the others remember', async () => {

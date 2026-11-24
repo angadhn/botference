@@ -139,13 +139,13 @@ test('the merges, unit by unit: theirs wins where both changed, ours stands wher
   assert.equal(ours.blygs.x.state, 'paused');
   assert.deepEqual(ours.last_run, { at: 1 });
   assert.equal(dropped, 1, 'our change to b was dropped');
-  const lb = { ids: [['i1', 1], ['i2', 2]], bad: { b1: [1, 1] }, floor: 0, backfill: 'more', queue: [] };
-  const lo = { ids: [['i1', 1], ['i3', 3]], bad: {}, floor: 5, backfill: 'caught_up', queue: [] };
-  const lt = { ids: [['i1', 1], ['i2', 2], ['i4', 4]], bad: { b1: [1, 1], b2: [1, 2] }, floor: 7, backfill: 'more', queue: [] };
+  const lb = { ids: [['i1', 1], ['i2', 2]], bad: { b1: [1, 1] }, gone: null, backfill: 'more', queue: [] };
+  const lo = { ids: [['i1', 1], ['i3', 3]], bad: {}, gone: F.addGone(null, ['g1']), backfill: 'caught_up', queue: [] };
+  const lt = { ids: [['i1', 1], ['i2', 2], ['i4', 4]], bad: { b1: [1, 1], b2: [1, 2] }, gone: F.addGone(null, ['g2']), backfill: 'more', queue: [] };
   F.mergeLedger(lo, lb, lt);
   assert.deepEqual(lo.ids.map(p => p[0]).sort(), ['i1', 'i3', 'i4'], 'what either side added stays, what either removed goes');
   assert.deepEqual(Object.keys(lo.bad), ['b2']);
-  assert.equal(lo.floor, 7);
+  assert.ok(['g1', 'g2'].every(F.goneTest(lo)), 'the gone filters are joined');
   assert.equal(lo.backfill, 'caught_up');
 });
 
