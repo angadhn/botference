@@ -266,10 +266,13 @@ const codeHasLiquid = text => {
 // may hold paragraphs); one inside a sentence stays one line. The instruction is the owner's, written as one line with the scope's
 // tokens, Liquid and HTML made inert; the example site never shows it on the page or the wire (docs/BLYGGER.md).
 const importedModelToken = m => String(m || '').replace(/[\s=\[\]`<>&{}]/g, '').slice(0, 60);
+// (inside the site's box the passage sits in an HTML element, where a backslash before `<`, `>` or `&` is shown as a backslash: those
+// three are character references here, which read the same everywhere)
 export function escapeScopeLine(line, { escape = 'liquid' } = {}) {
   return escapePassage(line, { escape })
     .replace(/`(\[\/?tk\])`/gi, (m, t) => '&#91;' + t.slice(1))
-    .replace(/\\`/g, '&#96;');
+    .replace(/\\`/g, '&#96;')
+    .replace(/\\</g, '&lt;').replace(/\\&/g, '&amp;').replace(/^(\s*)\\>/, '$1&gt;');
 }
 export function scopeText(text, { block = false, escape = 'liquid' } = {}) {
   const t = clean(text).trim();

@@ -54,7 +54,7 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   // (in the owner's own words a javascript: link is REFUSED at the start since review item 6; the rest of the HTML is made text)
   const own = html.replace(' [x](javascript:alert(1))', '');
   cases['html-owner'] = { url: 'https://news.example.test/ho', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('Own: ' + own)] }] };
-  cases['html-adopted'] = { url: 'https://news.example.test/ha', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', text: own }] }] }] };
+  cases['html-adopted'] = { url: 'https://news.example.test/ha', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', agent: 'claude', model: 'claude-opus-5', text: own }] }] }] };
   cases['html-agent'] = { url: 'https://news.example.test/hg', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', text: html }] }] }] };
   cases['html-passage'] = { url: 'https://news.example.test/hp', title: 'S', threads: [{ id: 't', quote: html, msgs: [mine('plain')] }] };
   // review item 5: a hostile passage written in the site's sidenote syntax stays text (no sidenote markup, nothing of it as HTML)
@@ -96,7 +96,8 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   for (const slug of Object.keys(cases)) {
     const html = built(slug);
     assert.ok(!html.includes('PRIVATE-FILE-MARKER'), `${slug}: nothing of another file`);
-    const body = (/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1];
+    // (an agent box's label may name the author, who may share the site's title: the label is the site's own words, not the post's)
+    const body = ((/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1]).replace(/<span class="blyg-gen-box__label">[^<]*<\/span>/g, '');
     assert.ok(!body.includes(siteTitle), `${slug}: Liquid did not run (the site title is not in the post body)`);
     // short posts are text: raw HTML is never live, whoever wrote it
     assert.ok(!/<script|href="javascript:|on\w+="/i.test(body), `${slug}: no live script or javascript: link`);
@@ -115,6 +116,10 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     assert.ok(!/<(script|iframe|style|details)\b|<img [^>]*onerror|<!--\s*c\s*-->|href="javascript:/i.test(b), `${k}: no live HTML in the post`);
     assert.match(decode(b), /a < b/, `${k}: a < b reads as typed`);
   }
+  // the owner's rule on the built page: agent text in a box labelled with the agent; "+ the author" when the owner adopted or edited it
+  const label = k => ((/<span class="blyg-gen-box__label">([^<]*)<\/span>/.exec(built(k)) || [])[1] || '');
+  assert.equal(label('html-agent'), 'AI model', 'no model recorded: a neutral label');
+  assert.match(label('html-adopted'), /^Claude \+ \S/, 'adopted: the agent and the author');
   const attr = built('liq-attr');
   assert.ok(/<meta property="og:title" content="[^"]*&quot;|<meta property="og:title" content="[^"<>]*"/.test(attr), 'og:title is one closed attribute');
   const urlOnly = built('liq-url-only');
