@@ -27,6 +27,8 @@ const SNAPS = path.join(DIR, 'snapshots');
 const RUNS = path.join(DIR, 'runs');
 const INDEX_FILE = path.join(DIR, 'index.json');
 const CONFIG_FILE = path.join(BASE_DIR, 'config.json');
+/** (where config.json is: the blyg-home CLI names it, so the owner can see which companion's setting it changes) */
+export const CONFIG_PATH = CONFIG_FILE;
 
 // Default vault: the nearest ancestor of the workspace that is an Obsidian
 // vault (has .obsidian/), else the home directory — the export folder is

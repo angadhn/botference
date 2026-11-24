@@ -32,11 +32,21 @@ const comment = async (base, text, headers) => {
   return r.json.thread.id;
 };
 const runOf = async (base, headers) => (await GET(base, '/blyg-publish/run', headers)).json.run;
+// The publish routes answer only the pinned extension's worker (the drawer): its requests carry the extension's own Origin.
+const EXT = 'ponmlkjihgfedcbaponmlkjihgfedcba';
+const X = { origin: `chrome-extension://${EXT}`, 'sec-fetch-site': 'cross-site' };
+// "Where my blyg lives" is never written over HTTP: it is the companion's config file (the owner uses `botference blyg-home set`)
+const setHome = (root, settings) => {
+  const file = path.join(root, '.botference', 'plugin', 'config.json');
+  let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first */ }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ ...cfg, blyg_home: settings }));
+};
 
 // ---- local: the owner's own companion ----------------------------------------------------------
 const rig = newRig();
 const root = tmp('local');
-const local = await startServer({ root, args: ['--no-agents'] });
+const local = await startServer({ root, args: ['--no-agents'], env: { PLUGIN_EXTENSION_IDS: EXT } });
 const B = local.base;
 
 await test('unset: every route refuses to act, a start writes nothing, and the settings page says what is missing', async () => {
@@ -46,28 +56,28 @@ await test('unset: every route refuses to act, a start writes nothing, and the s
   assert.match(s.json.errors.join(' '), /not set up/);
   assert.match(s.json.defaults.template, /blyg_id: "\$\{id\}"\npermalink: \/b\/\$\{id\}/);
   const tid = await comment(B, 'My view on this story.');
-  const r = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
+  const r = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
   assert.equal(r.status, 409);
   assert.match(r.json.error, /not set up/);
   assert.deepEqual(fs.readdirSync(rig.folder), []);
   assert.equal((await runOf(B)).mode, 'idle');
 });
 
-await test('the settings are validated when saved: a bad one is 400 with every reason, nothing stored; a good one is stored', async () => {
-  const bad = await POST(B, '/blyg-home', { settings: { ...settingsOf(rig), commands: { plan: ['/bin/sh', '-c', 'x {note}'], apply: ['x'], publish: ['y', '{note}'] } } });
-  assert.equal(bad.status, 400);
+await test('the setting is read from the config file and validated there: a bad one is reported and nothing runs; a good one is in force; the page is read only', async () => {
+  setHome(root, { ...settingsOf(rig), commands: { plan: ['/bin/sh', '-c', 'x {note}'], apply: ['x'], publish: ['y', '{note}'] } });
+  const bad = await GET(B, '/blyg-home');
+  assert.equal(bad.json.valid, false);
   assert.ok(bad.json.errors.length >= 2 && bad.json.errors.some(e => /shell/.test(e)) && bad.json.errors.some(e => /{note}/.test(e)));
-  assert.equal((await GET(B, '/blyg-home')).json.valid, false, 'nothing was stored');
-  const good = await POST(B, '/blyg-home', { settings: settingsOf(rig) });
-  assert.equal(good.status, 200, good.body);
+  setHome(root, settingsOf(rig));
   const now = await GET(B, '/blyg-home');
   assert.deepEqual([now.json.valid, now.json.errors], [true, []]);
   assert.deepEqual(now.json.settings.commands.plan, rig.home.commands.plan);
   const page = await request(B, 'GET', '/blyg-home/page', undefined, { accept: 'text/html' });
   assert.equal(page.status, 200);
-  assert.match(page.headers['content-security-policy'], /script-src 'nonce-/);
+  assert.match(page.headers['content-security-policy'], /script-src 'none'/);
   assert.match(page.body, /<title>Where my blyg lives<\/title>/);
-  assert.ok(!/<script>/.test(page.body), 'only a nonced script');
+  assert.ok(!/<script|<form/i.test(page.body), 'no script and no form: the page cannot change anything');
+  assert.match(page.body, /botference blyg-home set/);
 });
 
 await test('request hygiene: only JSON, only this site; a form, text/plain, a foreign Origin and a rebound Host are all refused before anything runs', async () => {
@@ -77,13 +87,14 @@ await test('request hygiene: only JSON, only this site; a form, text/plain, a fo
     const rq = http.request(B + '/blyg-publish/start', { method: 'POST', headers: { 'content-length': Buffer.byteLength(raw), ...headers } }, res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
     rq.on('error', reject); rq.end(raw);
   });
-  assert.equal((await send({ 'content-type': 'text/plain' })).status, 415);
-  assert.equal((await send({ 'content-type': 'application/x-www-form-urlencoded' }, 'url=x&thread_id=y&scope=one')).status, 415);
+  assert.equal((await send({ 'content-type': 'text/plain', ...X })).status, 415);
+  assert.equal((await send({ 'content-type': 'application/x-www-form-urlencoded', ...X }, 'url=x&thread_id=y&scope=one')).status, 415);
+  assert.equal((await send({ 'content-type': 'application/json' })).status, 403, 'no extension Origin: not the drawer');
   assert.equal((await send({ 'content-type': 'application/json', origin: 'https://evil.example' })).status, 403);
   assert.equal((await send({ 'content-type': 'application/json', origin: 'null' })).status, 403);
   assert.equal((await send({ 'content-type': 'application/json', host: 'rebound.attacker.example' })).status, 421);
-  for (const p of ['/blyg-publish/confirm', '/blyg-publish/cancel', '/blyg-publish/retry', '/blyg-publish/abandon', '/blyg-home']) {
-    assert.equal((await request(B, 'POST', p, undefined, { 'content-type': 'application/x-www-form-urlencoded' }, 'run=x&token=y')).status, 415, p);
+  for (const p of ['/blyg-publish/confirm', '/blyg-publish/cancel', '/blyg-publish/retry', '/blyg-publish/abandon', '/blyg-publish/forget']) {
+    assert.equal((await request(B, 'POST', p, undefined, { 'content-type': 'application/x-www-form-urlencoded', ...X }, 'run=x&token=y')).status, 415, p);
   }
   assert.equal((await request(B, 'GET', '/blyg-publish/run', undefined, { origin: 'https://evil.example' })).status, 403);
   assert.equal((await request(B, 'GET', '/blyg-home', undefined, { origin: 'https://evil.example' })).status, 403);
@@ -94,7 +105,7 @@ await test('request hygiene: only JSON, only this site; a form, text/plain, a fo
 await test('the flow: start writes the note and runs plan; the owner hears each move; confirm runs apply then publish; the thread is marked', async () => {
   const events = listen(B);
   const tid = await comment(B, 'A third view on this story, which is the one I will publish.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
   assert.equal(s.status, 200, s.body);
   assert.ok(['drafted', 'planning', 'planned'].includes(s.json.run.mode));
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
@@ -102,9 +113,9 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.match(planned.note_text, /^---\ncreated: \d{4}-\d\d-\d\d\n/);
   assert.match(planned.note_text, /\nA third view on this story, which is the one I will publish\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n$/);
   assert.ok(!JSON.stringify(planned).includes(rig.top), 'no absolute path of the work tree in what the client is shown');
-  assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' })).status, 404);
-  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'one run at a time');
-  const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token });
+  assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' }, X)).status, 404);
+  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X)).status, 409, 'one run at a time');
+  const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token }, X);
   assert.equal(c.status, 200, c.body);
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published');
   assert.deepEqual(rig.calls().map(x => x.step), ['plan', 'apply', 'publish']);
@@ -112,7 +123,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   const page = (await GET(B, '/page?url=' + encodeURIComponent(PAGE))).json;
   const th = (page.page || page).threads.find(x => x.id === tid);
   assert.equal(th.blyg_published.address, done.published.address);
-  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'not offered again');
+  assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X)).status, 409, 'not offered again');
   await waitFor(() => events.of('blyg-publish').length >= 6, 'the moves were announced');
   assert.deepEqual([...new Set(events.of('blyg-publish').map(e => e.run.mode))].sort(), ['applied', 'applying', 'drafted', 'planned', 'planning', 'published', 'publishing']);
   assert.ok(events.of('blyg-publish').every(e => Object.keys(e.run).sort().join() === 'id,mode'), 'an event says which run and which mode, nothing else');
@@ -122,65 +133,79 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
 // The command set is code that runs on this machine: only the companion's OWN page (its own origin) or no Origin at all (the owner's
 // curl) may write it. A page served on another loopback port (a local dev server, another tool), a sibling name, or any extension
 // (pinned or not) is refused, and nothing is stored.
-await test('the settings write accepts only the companion\'s own page (or no Origin): another loopback port, a same-site page or an extension is refused', async () => {
-  const port = new URL(B).port;
-  const other = String(Number(port) === 4000 ? 4001 : 4000);
-  const changed = { ...settingsOf(rig), filename: 'changed-${slug}.md' };
-  const refusedBy = [
-    { origin: `http://127.0.0.1:${other}`, 'sec-fetch-site': 'cross-site' },
-    { origin: `http://localhost:${other}`, 'sec-fetch-site': 'same-site' },
-    { origin: `http://localhost:${other}` },
-    { origin: 'null' },
-    { origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop', 'sec-fetch-site': 'cross-site' },
-    { origin: B, 'sec-fetch-site': 'same-site' },
-  ];
-  for (const h of refusedBy) {
-    const r = await request(B, 'POST', '/blyg-home', { settings: changed }, { 'content-type': 'application/json', ...h });
-    assert.equal(r.status, 403, JSON.stringify(h));
+// Review item 1b: the command set is code that runs on this machine, so it is NOT writable over HTTP at all: any write to /blyg-home* is
+// 405, for an anonymous caller, the owner's curl, the companion's own page and the pinned extension alike; the file is unchanged.
+await test('the setting is never written over HTTP: any write is 405 for everyone (own page, curl, extension), and nothing changes', async () => {
+  const file = path.join(root, '.botference', 'plugin', 'config.json');
+  const before = fs.readFileSync(file, 'utf8');
+  const changed = { ...settingsOf(rig), commands: { ...rig.home.commands, check: ['/usr/bin/touch', path.join(rig.out, 'PWNED')] } };
+  for (const h of [{}, { origin: B, 'sec-fetch-site': 'same-origin' }, X, { origin: 'https://evil.example' }]) {
+    for (const [m, p] of [['POST', '/blyg-home'], ['PUT', '/blyg-home'], ['POST', '/blyg-home/page'], ['DELETE', '/blyg-home']]) {
+      const r = await request(B, m, p, { settings: changed }, { 'content-type': 'application/json', ...h });
+      // (a foreign Origin is refused even earlier, by the companion-wide source rule: 403)
+      assert.equal(r.status, h.origin === 'https://evil.example' ? 403 : 405, `${m} ${p} ${JSON.stringify(h)}`);
+    }
   }
-  assert.equal((await GET(B, '/blyg-home')).json.settings.filename, '${slug}.md', 'nothing was stored');
-  const own = await request(B, 'POST', '/blyg-home', { settings: changed }, { 'content-type': 'application/json', origin: B, 'sec-fetch-site': 'same-origin' });
-  assert.equal(own.status, 200, own.body);
-  assert.equal((await GET(B, '/blyg-home')).json.settings.filename, 'changed-${slug}.md', 'the companion\'s own page may');
-  assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'and no Origin (a curl on this machine) may');
+  assert.equal(fs.readFileSync(file, 'utf8'), before, 'the config file is unchanged');
+  assert.equal(fs.existsSync(path.join(rig.out, 'PWNED')), false);
 });
 
-await test('a settings change is refused while a run is under way', async () => {
+// ... and a script on the companion's own origin cannot start, advance or read a publish (only the drawer, through the worker, can)
+await test('the companion\'s own page cannot start, advance or read a publish: only the pinned extension\'s worker can', async () => {
+  const OWN = { origin: B, 'sec-fetch-site': 'same-origin' };
+  const tid = await comment(B, 'A view a same-origin script would like to publish.');
+  const calls = rig.calls().length;
+  const st = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, OWN);
+  assert.equal(st.status, 403, st.body);
+  for (const p of ['confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget']) assert.equal((await POST(B, `/blyg-publish/${p}`, { run: 'x', token: 'y' }, OWN)).status, 403, p);
+  assert.equal((await request(B, 'GET', '/blyg-publish/run', undefined, { 'sec-fetch-site': 'same-origin' })).status, 403, 'nor read the run (its token)');
+  assert.equal(rig.calls().length, calls, 'nothing ran');
+  assert.equal((await request(B, 'GET', '/blyg-publish/run', undefined, X)).status, 200, 'the drawer can');
+});
+
+await test('the setting changed while a run waits at the confirmation: its next step is refused and the run stops (the fingerprint)', async () => {
   rig.control({});
   const tid = await comment(B, 'A fourth view that will sit at the confirmation.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
   assert.equal(s.status, 200);
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
-  const r = await POST(B, '/blyg-home', { settings: settingsOf(rig) });
-  assert.equal(r.status, 409);
-  const cancel = await POST(B, '/blyg-publish/cancel', { run: planned.id, token: planned.token });
-  assert.equal(cancel.status, 200);
-  assert.deepEqual(fs.readdirSync(rig.folder).filter(f => f.startsWith('a-fourth')), [], 'the draft is gone');
-  assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'and the settings can change again');
+  const calls = rig.calls().length;
+  setHome(root, { ...settingsOf(rig), filename: 'other-${slug}.md' });
+  const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token }, X);
+  assert.equal(c.status, 200);
+  const failed = await waitFor(async () => { const r = await runOf(B); return r.mode === 'failed_apply' ? r : null; }, 'failed at apply');
+  assert.match(failed.failed_reason, /settings changed after this run started/);
+  assert.equal(rig.calls().length, calls, 'apply never ran');
+  setHome(root, settingsOf(rig));
+  const a = await POST(B, '/blyg-publish/abandon', { run: planned.id, token: planned.token }, X);
+  assert.equal(a.status, 200, a.body);
 });
 
 await test('confirm never (with a guard): one start is the publish, end to end, with no confirm call; GET /blyg-publish/run says which setting is in force', async () => {
   rig.control({});
   const never = { ...settingsOf(rig), confirm: 'never', plan_guard: ['--only-note'] };
-  assert.equal((await POST(B, '/blyg-home', { settings: never })).status, 200);
+  setHome(root, never);
   shownNow = 'never';
   assert.equal((await GET(B, '/blyg-publish/run')).json.confirm, 'never');
   const before = rig.calls().length;
   const tid = await comment(B, 'A fifth view, published with one click and no other step.');
-  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
+  const s = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
   assert.equal(s.status, 200, s.body);
   assert.equal(s.json.run.confirm, 'never');
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published without a confirm');
   assert.deepEqual(rig.calls().slice(before).map(c => c.step), ['plan', 'apply', 'publish']);
   assert.ok(rig.calls()[before].argv.includes('--only-note'), 'the plan carried the guard flag');
   assert.ok(rig.calls()[before + 1].argv.includes('--only-note') && rig.calls()[before + 2].argv.includes('--only-note'), 'apply and publish carry it too');
-  assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: [] } })).status, 400, 'never without a guard is refused when saving');
+  setHome(root, { ...never, plan_guard: [] });
+  assert.equal((await GET(B, '/blyg-home')).json.valid, false, 'never without a guard is not valid');
   assert.match(done.published.address, /^https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}$/);
-  assert.equal((await POST(B, '/blyg-home', { settings: { ...never, plan_guard: ['not-a-flag'] } })).status, 400);
-  const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: 'always' });
+  setHome(root, { ...never, plan_guard: ['not-a-flag'] });
+  assert.equal((await GET(B, '/blyg-home')).json.valid, false);
+  setHome(root, never);
+  const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: 'always' }, X);
   assert.equal(stale.status, 409, 'a drawer that showed the other wording is refused');
   assert.match(stale.json.error, /The setting changed/);
-  assert.equal((await POST(B, '/blyg-home', { settings: settingsOf(rig) })).status, 200, 'back to confirming for the rest of the suite');
+  setHome(root, settingsOf(rig));   // back to confirming for the rest of the suite
   shownNow = 'always';
 });
 
@@ -189,10 +214,10 @@ await test('the companion is killed mid-run: after a restart the record is inter
   const rig2 = newRig();
   const root2 = tmp('crash');
   rig2.control({ plan: 'sleep' });
-  let srv = await startServer({ root: root2, args: ['--no-agents'] });
-  await POST(srv.base, '/blyg-home', { settings: settingsOf(rig2) });
+  let srv = await startServer({ root: root2, args: ['--no-agents'], env: { PLUGIN_EXTENSION_IDS: EXT } });
+  setHome(root2, settingsOf(rig2));
   const tid = await comment(srv.base, 'A view the companion will not finish publishing.');
-  const s = await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() });
+  const s = await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
   assert.equal(s.status, 200, s.body);
   await waitFor(() => rig2.calls().length === 1, 'plan started');
   const { id, token } = s.json.run;
@@ -200,14 +225,14 @@ await test('the companion is killed mid-run: after a restart the record is inter
   srv.proc.kill('SIGKILL');
   await new Promise(r => srv.proc.on('exit', r));
   try { process.kill(sleeper, 'SIGKILL'); } catch { /* already gone */ }
-  srv = await startServer({ root: root2, args: ['--no-agents'] });
+  srv = await startServer({ root: root2, args: ['--no-agents'], env: { PLUGIN_EXTENSION_IDS: EXT } });
   const v = await runOf(srv.base);
   assert.equal(v.mode, 'interrupted_planning');
   assert.equal(v.interrupted_from, 'planning');
   assert.deepEqual(v.can, ['abandon']);
-  for (const p of ['confirm', 'retry', 'cancel']) assert.equal((await POST(srv.base, `/blyg-publish/${p}`, { run: id, token })).status, 409, p);
-  assert.equal((await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() })).status, 409, 'it blocks a new run');
-  const a = await POST(srv.base, '/blyg-publish/abandon', { run: id, token });
+  for (const p of ['confirm', 'retry', 'cancel']) assert.equal((await POST(srv.base, `/blyg-publish/${p}`, { run: id, token }, X)).status, 409, p);
+  assert.equal((await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X)).status, 409, 'it blocks a new run');
+  const a = await POST(srv.base, '/blyg-publish/abandon', { run: id, token }, X);
   assert.equal(a.status, 200, a.body);
   assert.equal((await runOf(srv.base)).mode, 'abandoned');
   assert.deepEqual(rig2.calls().map(c => c.step), ['plan'], 'nothing else ever ran');
@@ -216,10 +241,10 @@ await test('the companion is killed mid-run: after a restart the record is inter
 // ---- hosted: guests -----------------------------------------------------------------------------------
 const hrig = newRig();
 const hroot = tmp('hosted');
-const hosted = await startServer({ root: hroot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
+const hosted = await startServer({ root: hroot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', PLUGIN_EXTENSION_IDS: EXT } });
 const GUEST = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
 const OWNER = { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' };
-const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['POST', '/blyg-home'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'],
+const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'],
   ['POST', '/blyg-publish/confirm'], ['POST', '/blyg-publish/retry'], ['POST', '/blyg-publish/continue'], ['POST', '/blyg-publish/cancel'], ['POST', '/blyg-publish/abandon'], ['POST', '/blyg-publish/forget']];
 
 await test('hosted: every route is refused to an anonymous caller (401), a wrong password (401) and a guest (403), body or none', async () => {
@@ -233,11 +258,13 @@ await test('hosted: every route is refused to an anonymous caller (401), a wrong
     assert.ok(!/blyg|note|folder|command/i.test(g.body.replace('owner only — ask the owner to do that', '')), `a guest learns nothing from ${p}`);
   }
   assert.equal((await request(hosted.base, 'GET', '/blyg-home', undefined, OWNER)).status, 200);
+  // (an anonymous caller is stopped by the sign-in first: 401; everyone who gets that far is told 405)
+  assert.equal((await request(hosted.base, 'POST', '/blyg-home', body, { host: 'discuss.botference.com' })).status, 401);
+  for (const who of [GUEST, OWNER, { ...OWNER, ...X }]) assert.equal((await request(hosted.base, 'POST', '/blyg-home', body, who)).status, 405, 'a write is 405 for everyone');
 });
 
 await test('hosted: a same-site page cannot publish (a present Origin must be trusted, Sec-Fetch-Site must be same-origin or none, a POST must say it is JSON); the real owner page can', async () => {
-  const t = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, {});
-  assert.equal(t.status, 200);
+  setHome(hroot, settingsOf(hrig));
   await request(hosted.base, 'POST', '/page', { url: PAGE, title: 'A story' }, OWNER);
   const th = await request(hosted.base, 'POST', '/thread', { url: PAGE, quote: 'Q one passage.', msg: { text: 'A hosted view for the request-rule test.' } }, OWNER);
   const body = { url: PAGE, thread_id: th.json.thread.id, scope: 'one', confirm: 'always' };
@@ -257,28 +284,27 @@ await test('hosted: a same-site page cannot publish (a present Origin must be tr
   }
   // no content type at all, and a form, and text/plain
   for (const ct of [undefined, 'text/plain', 'application/x-www-form-urlencoded']) {
-    const r = await new Promise((resolve, reject) => { const u = new URL(hosted.base); const rq = http.request({ host: u.hostname, port: u.port, path: '/blyg-publish/start', method: 'POST', headers: { ...OWNER, ...(ct ? { 'content-type': ct } : {}) } }, res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); rq.on('error', reject); rq.end(JSON.stringify(body)); });
+    const r = await new Promise((resolve, reject) => { const u = new URL(hosted.base); const rq = http.request({ host: u.hostname, port: u.port, path: '/blyg-publish/start', method: 'POST', headers: { ...OWNER, ...X, ...(ct ? { 'content-type': ct } : {}) } }, res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); rq.on('error', reject); rq.end(JSON.stringify(body)); });
     assert.equal(r.status, 415, `content-type ${ct}: ${r.body}`);
   }
   assert.equal(hrig.calls().length, calls, 'nothing ran for any of them');
   assert.equal((await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, 'sec-fetch-site': 'same-site' })).status, 403, 'a read is refused too');
-  const good = await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, origin: 'https://discuss.botference.com', 'sec-fetch-site': 'same-origin' });
-  assert.equal(good.status, 200, 'the companion\'s own page, same-origin, is let through');
+  const own = await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, origin: 'https://discuss.botference.com', 'sec-fetch-site': 'same-origin' });
+  assert.equal(own.status, 403, 'the companion\'s own page is refused too: only the drawer reads a run');
+  assert.equal((await request(hosted.base, 'POST', '/blyg-publish/start', body, { ...OWNER, origin: 'https://discuss.botference.com', 'sec-fetch-site': 'same-origin' })).status, 403);
+  assert.equal((await request(hosted.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, ...X })).status, 200, 'the pinned extension is let through');
   void sneaky;
 });
 
 await test('hosted: a guest cannot change the settings, start a run, or act on one (even with the right id and token, even by naming the page)', async () => {
   // the setting is written on the machine (a loopback request with no proxy headers), never by a remote owner session
-  const remoteSet = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, OWNER);
-  assert.equal(remoteSet.status, 403);
-  assert.match(remoteSet.json.error, /only on the machine/);
-  const set = await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, {});
-  assert.equal(set.status, 200, set.body);
+  assert.equal((await request(hosted.base, 'POST', '/blyg-home', { settings: settingsOf(hrig) }, OWNER)).status, 405);
+  setHome(hroot, settingsOf(hrig));
   const redacted = (await request(hosted.base, 'GET', '/blyg-home', undefined, OWNER)).json;
   assert.deepEqual([redacted.redacted, redacted.valid, redacted.confirm, 'settings' in redacted, JSON.stringify(redacted).includes(hrig.top)], [true, true, 'always', false, false], 'a remote owner sees a redacted view: no paths, no commands');
   assert.equal((await request(hosted.base, 'GET', '/blyg-home/page', undefined, OWNER)).status, 403);
   const evil = { ...settingsOf(hrig), commands: { plan: ['/usr/bin/touch', '/tmp/pwned-by-guest', '{note}'], apply: ['/usr/bin/true', '{note}'], publish: ['/usr/bin/true', '{note}'] } };
-  assert.equal((await request(hosted.base, 'POST', '/blyg-home', { settings: evil }, GUEST)).status, 403);
+  assert.equal((await request(hosted.base, 'POST', '/blyg-home', { settings: evil }, GUEST)).status, 405);
   const after = (await request(hosted.base, 'GET', '/blyg-home', undefined, {})).json;
   assert.deepEqual(after.settings.commands.plan, hrig.home.commands.plan, 'unchanged');
   // the owner starts a run; a guest has the run's id and token (worst case) and still cannot touch it
@@ -290,10 +316,10 @@ await test('hosted: a guest cannot change the settings, start a run, or act on o
   const guestTry = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'one', confirm: 'always' }, GUEST);
   assert.equal(guestTry.status, 403);
   assert.deepEqual(hrig.calls(), [], 'nothing ran for a guest');
-  const ownGuest = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: guestThread, scope: 'one', confirm: 'always' }, OWNER);
+  const ownGuest = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: guestThread, scope: 'one', confirm: 'always' }, { ...OWNER, ...X });
   assert.equal(ownGuest.status, 409, 'and the owner cannot publish a guest\'s comment either');
   assert.match(ownGuest.json.error, /you wrote yourself/);
-  const s = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'above', confirm: 'always' }, OWNER);
+  const s = await request(hosted.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: t.json.thread.id, scope: 'above', confirm: 'always' }, { ...OWNER, ...X });
   assert.equal(s.status, 200, s.body);
   assert.ok(!JSON.stringify(s.json.run.thread_ids).includes(guestThread));
   const { id, token } = s.json.run;
@@ -345,7 +371,7 @@ await test('hosted: a guest\'s SSE and WebSocket never hear of a run; the owner\
   });
   const L = { ownerSse: await sse(OWNER), guestSse: await sse(GUEST), ownerWs: await wsc(OWNER), guestWs: await wsc(GUEST) };
   const run = (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, OWNER)).json.run;
-  const c = await request(hosted.base, 'POST', '/blyg-publish/confirm', { run: run.id, token: run.token }, OWNER);
+  const c = await request(hosted.base, 'POST', '/blyg-publish/confirm', { run: run.id, token: run.token }, { ...OWNER, ...X });
   assert.equal(c.status, 200, c.body);
   await waitFor(async () => (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, OWNER)).json.run.mode === 'published', 'published');
   await new Promise(r => setTimeout(r, 400));

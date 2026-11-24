@@ -77,6 +77,13 @@ if [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; then
   exit $?
 fi
 
+# --- blyg-home: the ONE way to change "Where my blyg lives" (the Publish-as-blyg command set). It is never
+# writable over HTTP; this runs on the machine (frontends/plugin/blyg-home-cli.mjs: show, check, set, example). ---
+if [ "${1:-}" = "blyg-home" ]; then
+  shift
+  exec node "${BOTFERENCE_HOME}/frontends/plugin/blyg-home-cli.mjs" "$@"
+fi
+
 # --- site / sites: put a project in Discuss's scope, list or revoke ---
 # One marker in the project (.botference/site.json), one line in a per-user
 # registry (~/.botference/sites.json); the companion reads both. All of it is

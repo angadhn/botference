@@ -13086,10 +13086,15 @@ named by its first words; `${title}` is still available in a template).
 applies in EVERY mode to `/blyg-publish/*` and `/blyg-home*`: a present Origin must be trusted; a chrome-extension Origin is
 accepted only when `PLUGIN_EXTENSION_IDS` is set and names it (the feature is off for an extension until then);
 `Sec-Fetch-Site`, when sent, must be `same-origin` or `none` (a pinned extension's worker may be `cross-site`); a POST must
-say `content-type: application/json`. Another branch's companion-wide request rule can replace that one function.
-The command set is read and written only by a LOCAL-DIRECT request (`isLocalDirect`: on the machine, no tunnel): a remote owner
-session can use the feature and sees a redacted `GET /blyg-home` (valid, confirm; no paths, no commands), and cannot open
-`/blyg-home/page` or `POST /blyg-home`. The owner sets it at `http://127.0.0.1:<port>/blyg-home/page` on that machine.
+say `content-type: application/json`. THE PUBLISH ROUTES (`/blyg-publish/*`) answer ONLY the pinned extension's worker: a POST must
+carry the pinned `chrome-extension://<id>` Origin (a page cannot send that header), and a read is refused when it comes from a page
+(an Origin that is not the extension, or `Sec-Fetch-Site: same-origin|same-site`). Only the drawer offers Publish as blyg, so a script
+on the companion's own origin can neither start nor advance a publish, nor read a run's token.
+THE COMMAND SET IS NEVER WRITTEN OVER HTTP: any write to `/blyg-home*` is 405 for everyone (owner, the companion's own page, the
+extension). It is read from config.json and changed on the machine with `botference blyg-home show | check <file.json> | set
+<file.json> | example` (`blyg-home-cli.mjs`; `set` validates first and is refused while a run is under way). `GET /blyg-home/page`
+(local-direct only) is READ ONLY: whether it is valid, what is set, the CLI lines; no form, no script (`script-src 'none'`). A remote
+owner session sees a redacted `GET /blyg-home` (valid, confirm; no paths, no commands) and cannot open the page.
 
 ### Text that goes into the note
 
@@ -13109,7 +13114,7 @@ apply, so no state needs hand-editing. A `failed` run is not interrupted by a re
 
 ### The setting: "Where my blyg lives" (owner only, on the companion)
 
-`blyg_home` in config.json, edited at `GET /blyg-home/page` (or by hand): `folder` (absolute, exists,
+`blyg_home` in config.json, changed with `botference blyg-home set <file.json>` (or by hand): `folder` (absolute, exists,
 inside a git work tree, not in `.git`), `filename` (pattern with `${slug}` and `${date}`, ending in
 `.md`), `template`, `escape` (`liquid` default, or `none`), `timezone`, `env_pass` (names), and
 `commands`: `plan`, `apply`, `publish` and four optional ones, `check` (the pre-flight, no `{note}`, 15 s), `prepare` (runs after the note is written and before `plan`: stage the note, fetch what it quotes; 300 s; needs `discard`), `discard` (undo what prepare or plan did, on cancel or abandon before apply) and `abandon` (the site's own end-of-run, on abandon after apply), each an argv
@@ -13176,8 +13181,8 @@ After `published`, each thread that went in gets `blyg_published: {at, title, pe
 
 ### Routes and events (all owner-only; a guest gets 403, an anonymous caller 401)
 
-`GET /blyg-home`, `GET /blyg-home/page`, `POST /blyg-home`, `GET /blyg-publish/run`,
-`POST /blyg-publish/{start,confirm,retry,cancel,abandon}`. JSON only (a form or `text/plain` body is 415);
+`GET /blyg-home`, `GET /blyg-home/page` (both read only; any write is 405), `GET /blyg-publish/run`,
+`POST /blyg-publish/{start,confirm,retry,continue,cancel,abandon,forget}` (the pinned extension only). JSON only (a form or `text/plain` body is 415);
 the Origin and Host rules at the top of the handler apply. `confirm`, `retry`, `cancel` and `abandon` need
 the run's id and token, which only the owner's client was ever handed. The event `{type:'blyg-publish',
 run:{id, mode}}` is in `OWNER_ONLY_EVENTS`: a guest's SSE and WebSocket never carry it.
@@ -13200,8 +13205,9 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
 
 - **Request rule.** `extensionIdsInForce()` in server.mjs is the ONE helper for the extension ids (the access settings' list when Access is
   configured, else `PLUGIN_EXTENSION_IDS`); the global origin rule and the blyg routes both use it. `blygRequestRefusal` is a thin layer
-  over `sourceRefusal`: the global verdict first (strict reads), then only what the blyg routes add (an extension needs explicit ids; the
-  settings write refuses any extension Origin, pinned or not; `Sec-Fetch-Site` same-origin or none; explicit `application/json`).
+  over `sourceRefusal`: the global verdict first (strict reads), then only what the blyg routes add (an extension needs explicit ids;
+  `Sec-Fetch-Site` same-origin or none; the publish routes answer only the pinned extension; explicit `application/json`). The
+  settings are not writable over HTTP at all.
 - **Done marker.** `published_marker` (optional, e.g. `State: merged_back`): a publish step that exits 0 without it as its LAST `State:` line
   ends `failed(publish)` (output shown, Retry offered), nothing is stamped. The example site's `--push` also exits 2 (not 0) when it did
   not push. Without a marker the exit code decides.
@@ -13245,7 +13251,8 @@ Three things in the companion's LAUNCH environment (the shell, launch agent or s
    environment; when Access (hosted mode) is configured, its `extension_ids` list is the one in force instead. Until one of them names the
    extension, Publish as blyg is off for it (403, "which extension may use it").
 
-The setting (`blyg_home` in config.json, or `/blyg-home/page` on the machine), the way the example blog uses it. `folder` is the blog's
+The setting (`blyg_home` in config.json: `botference blyg-home example > blyg-home.json`, edit, `botference blyg-home check
+blyg-home.json`, then `botference blyg-home set blyg-home.json`; `/blyg-home/page` shows it, read only), the way the example blog uses it. `folder` is the blog's
 `_notes` in a checkout that is on its `wip` branch:
 
 ```json

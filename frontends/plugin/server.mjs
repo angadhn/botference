@@ -4195,9 +4195,9 @@ export function handler(req, res) {
   // first, and the Origin/Host rules at the top of this handler refuse it anyway). The two routes that
   // act on a run (confirm, retry, cancel, abandon) also need the run's own id and token, which only
   // the owner's client was ever handed. `pageOf` authorises the page actually found.
-  //   GET  /blyg-home        the setting, whether it is usable, and the defaults
-  //   POST /blyg-home        {settings} validate and save (refused while a run is under way)
-  //   GET  /blyg-home/page   the form for it
+  //   GET  /blyg-home        the setting, whether it is usable, and the defaults (read only)
+  //   GET  /blyg-home/page   a READ-ONLY page: is it valid, what is set, and the CLI lines that change it. The setting is NEVER
+  //                          writable over HTTP (any write is 405, for everyone): `botference blyg-home set <file.json>` on the machine.
   //   GET  /blyg-publish/run the current run (a drawer that reloaded asks this)
   //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above'}   Step A: write the note, run plan
   //   POST /blyg-publish/confirm {run, token}   Step C: apply, then publish
@@ -4205,10 +4205,17 @@ export function handler(req, res) {
   //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
   //   POST /blyg-publish/abandon {run, token}   a failed or interrupted run is given up
   if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
+    // THE COMMAND SET IS NOT WRITABLE OVER HTTP, by anyone (the owner, the companion's own page, the extension): it decides what runs
+    // on this machine. It is read from the config file; the owner changes it with `botference blyg-home set` on the machine.
+    if (url.startsWith('/blyg-home') && req.method !== 'GET' && req.method !== 'HEAD') {
+      req.resume();
+      return res.writeHead(405, { ...JSON_HEAD, allow: 'GET' }).end(JSON.stringify({ ok: false, error: 'the Where my blyg lives setting is changed only on the machine: botference blyg-home set <file.json>' }));
+    }
     if (notOwner(req, res)) return;
-    // WHICH REQUESTS may reach these routes (blyg-request.mjs): the one place that rule is called
+    // WHICH REQUESTS may reach these routes (blyg-request.mjs): the one place that rule is called. The publish routes answer only the
+    // pinned extension's worker (the drawer), never a page, not even the companion's own.
     const refused = blygRequestRefusal(req, { origin: originOf(req), extensionIds: extensionIdsInForce(), sourceRefusal,
-      writesSettings: req.method === 'POST' && url === '/blyg-home' });
+      publishRoute: url.startsWith('/blyg-publish/') });
     if (refused) { req.resume(); return fail(res, refused.status, refused.error); }
     // THE COMMAND SET IS SET ON THE MACHINE, never over a tunnel: it decides what gets run here. A remote owner session can use
     // the feature and read a redacted view (no paths, no commands), but cannot read the page or change the setting.
@@ -4238,24 +4245,13 @@ export function handler(req, res) {
       if (here) return ok(res, h);
       return ok(res, { redacted: true, valid: h.valid, confirm: (h.settings && h.settings.confirm) || h.defaults.confirm, note: 'The Where my blyg lives setting is read and changed only on the machine the companion runs on.' });
     }
-    if ((url === '/blyg-home/page' || (req.method === 'POST' && url === '/blyg-home')) && !here) return fail(res, 403, 'the Where my blyg lives setting is read and changed only on the machine the companion runs on');
+    if (url === '/blyg-home/page' && !here) return fail(res, 403, 'the Where my blyg lives page is shown only on the machine the companion runs on');
     if (req.method === 'GET' && url === '/blyg-home/page') {
       const nonce = crypto.randomBytes(16).toString('base64');
       const h = homeView();
       return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
-        'content-security-policy': `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+        'content-security-policy': `default-src 'none'; style-src 'nonce-${nonce}'; script-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
         'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer' }).end(blygHomePage({ ...h, nonce }));
-    }
-    if (req.method === 'POST' && url === '/blyg-home') {
-      return readBody(req, res, data => {
-        if (!RUN_FINISHED.includes(blygPublish.book.mode)) {
-          return fail(res, 409, 'a publish run is under way; finish or abandon it before changing these settings');
-        }
-        const v = validateHome(data.settings);
-        if (!v.ok) return res.writeHead(400, JSON_HEAD).end(JSON.stringify({ ok: false, error: v.errors[0], errors: v.errors }));
-        store.saveConfig({ blyg_home: storable(data.settings) });
-        return ok(res, homeView());
-      });
     }
     if (req.method === 'GET' && url === '/blyg-publish/run') {
       const v = validateHome(store.readConfig().blyg_home);
