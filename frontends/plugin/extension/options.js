@@ -112,7 +112,10 @@
     // the reader the feed icon opens (config.js): kept as it was by every save that is not about it
     reader_url: readerNow.url,
     reader_onboarding: readerNow.onboarding,
+    // the owner's hosted Hub pages (config.js hosted_hubs): kept as they were by every save that is not about them
+    hosted_hubs: hubsNow,
   });
+  let hubsNow = [];
   let readerNow = { url: '', onboarding: 'unasked' };
   function say(v) {
     const s = el('status');
@@ -185,6 +188,9 @@
     readerNow = { url: cfg.reader_url, onboarding: cfg.reader_onboarding };
     const rb = el('reader-url');
     if (rb) rb.value = cfg.reader_url;
+    hubsNow = cfg.hosted_hubs || [];
+    const hb = el('hosted-hubs');
+    if (hb) hb.value = hubsNow.join('\n');
     const target = CFG.readerTarget(cfg);
     const fl = el('following-link');
     if (fl) { fl.href = target.url; fl.textContent = target.mode === 'external' ? 'Open your reader' : 'Open the Hub'; }
@@ -233,6 +239,13 @@
       const pick = CFG.readerChoiceFrom(rb.value, readerNow.onboarding);
       if (!pick.ok) { say({ cls: 'err', text: pick.error }); return; }
       readerNow = { url: pick.reader_url, onboarding: pick.reader_onboarding };
+    }
+    // the hosted Hub box: an address that is not an exact https page stops the save, and says which
+    const hb = el('hosted-hubs');
+    if (hb) {
+      const hubs = CFG.hostedHubsOf(hb.value);
+      if (hubs.refused.length) { say({ cls: 'err', text: `Not a hosted Hub page address I can honour (https, an exact page, at most ${CFG.HOSTED_HUBS_MAX}): ${hubs.refused[0]}` }); return; }
+      hubsNow = hubs.value;
     }
     const cfg = fields();
     el('save').disabled = true;

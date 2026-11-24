@@ -542,7 +542,7 @@
   // same two places — the worker, which installs the redirect rule, and the
   // options page, which is where it is turned off.
   const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle', learned: 'bfp:learned-auth',
-                 pdf: 'bfp:pdf', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding' };
+                 pdf: 'bfp:pdf', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding', hostedHubs: 'bfp:hosted-hubs' };
   // absent means on: an extension installed before this existed should still
   // open PDFs in the viewer, because that is the feature
   const readBool = (v, dflt) => (v === undefined || v === null ? !!dflt : !!v);
@@ -696,6 +696,38 @@
     return 'open-hub';
   }
 
+  // ── the owner's HOSTED Hub pages ─────────────────────────────────────────────
+  // hubbind.js honours a followed post's `data-blyg-*` binding on the companion's own Hub pages (its origin, /hub or /following). The
+  // owner may also read a hosted Hub at another origin and path that serves the same engine markup. `hosted_hubs`
+  // (bfp:hosted-hubs) is a short list of EXACT Hub page addresses honoured in addition: https only, no credentials, no query or
+  // fragment, an origin and a path (a trailing slash is not part of it). It is set only on this options page (extension storage,
+  // which no web page can write), like the companion's address, because the extension is the one that decides what a page's
+  // markup is believed for. → { value: [address…], refused: [what was typed…] }
+  const HOSTED_HUBS_MAX = 5;
+  function hostedHubOf(raw) {
+    const s = clean(raw);
+    if (!s) return '';
+    let u;
+    try { u = new URL(s); } catch { return null; }
+    if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash || !u.hostname) return null;
+    const p = u.pathname.replace(/\/+$/, '');
+    if (!p) return null;
+    return u.origin + p;
+  }
+  function hostedHubsOf(raw) {
+    const list = Array.isArray(raw) ? raw : String(raw == null ? '' : raw).split(/[\s,]+/);
+    const value = [];
+    const refused = [];
+    for (const one of list) {
+      const v = hostedHubOf(one);
+      if (v === '') continue;
+      if (v === null) { refused.push(clean(one).slice(0, 200)); continue; }
+      if (value.indexOf(v) === -1) value.push(v);
+    }
+    if (value.length > HOSTED_HUBS_MAX) { refused.push(...value.slice(HOSTED_HUBS_MAX)); value.length = HOSTED_HUBS_MAX; }
+    return { value, refused };
+  }
+
   // ── a companion behind Cloudflare Access ──────────────────────────────────
   // The person signs in once in an ordinary tab at the companion's address; Cloudflare sets its cookie for that host and the
   // browser sends it on the extension's requests when they say credentials 'include' (the manifest's host permission is what lets
@@ -778,11 +810,11 @@
   // ---- storage (the only chrome.* in this file) ---------------------------
   function readConfig(area) {
     const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
-    const fallback = { base: DEFAULT_BASE, password: '', handle: '', auth_learned: '', pdf: true, reader_url: '', reader_onboarding: 'unasked' };
+    const fallback = { base: DEFAULT_BASE, password: '', handle: '', auth_learned: '', pdf: true, reader_url: '', reader_onboarding: 'unasked', hosted_hubs: [] };
     if (!store) return Promise.resolve(fallback);
     return new Promise(resolve => {
       try {
-        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.learned, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding], r => {
+        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.learned, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding, KEYS.hostedHubs], r => {
           const got = r || {};
           resolve({
             base: normalizeBase(got[KEYS.base]) || DEFAULT_BASE,
@@ -792,6 +824,7 @@
             pdf: readBool(got[KEYS.pdf], true),
             reader_url: readerUrlOf(got[KEYS.readerUrl]).value,
             reader_onboarding: onboardingOf(got[KEYS.onboarding]),
+            hosted_hubs: hostedHubsOf(got[KEYS.hostedHubs] || []).value,
           });
         });
       } catch { resolve(fallback); }
@@ -807,6 +840,7 @@
       [KEYS.pdf]: readBool(cfg && cfg.pdf, true),
       [KEYS.readerUrl]: readerUrlOf(cfg && cfg.reader_url).value,
       [KEYS.onboarding]: onboardingOf(cfg && cfg.reader_onboarding),
+      [KEYS.hostedHubs]: hostedHubsOf((cfg && cfg.hosted_hubs) || []).value,
     };
     if (!store) return Promise.resolve(out);
     return new Promise(resolve => {
@@ -842,6 +876,7 @@
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
     PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
+    HOSTED_HUBS_MAX, hostedHubsOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
     REQUEST_MS, SLOW_REQUEST_MS, requestLimitMs, requestWhat, timeoutLine,

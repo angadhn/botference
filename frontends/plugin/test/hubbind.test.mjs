@@ -89,9 +89,9 @@ test('the extension is wired to it: loaded before content.js, asks the worker fo
   const manifest = JSON.parse(ext('manifest.json'));
   const js = manifest.content_scripts[0].js;
   assert.ok(js.indexOf('hubbind.js') > -1 && js.indexOf('hubbind.js') < js.indexOf('content.js'));
-  assert.match(ext('background.js'), /case 'companion-bases':[^\n]*CONF\.base/);
+  assert.match(ext('background.js'), /case 'companion-bases':[^\n]*CONF\.base[^\n]*hubs: CFG\.hostedHubsOf\(CONF\.hosted_hubs/);
   const c = ext('content.js');
-  assert.match(c, /HubBind\.selectionBinding\(sel\.getRangeAt\(0\), HREF, COMPANION_BASES\)/);
+  assert.match(c, /HubBind\.selectionBinding\(sel\.getRangeAt\(0\), HREF, COMPANION_BASES, HOSTED_HUBS\)/);
   assert.match(c, /data-bfp-extension/);
   const save = /async function saveOnHubPost[\s\S]*?\n  }\n/.exec(c)[0];
   assert.match(save, /api\('POST', '\/following\/hold', \{ origin: h\.origin, id: h\.id \}\)/);
@@ -100,4 +100,39 @@ test('the extension is wired to it: loaded before content.js, asks the worker fo
   assert.ok(!/blyg_hints/.test(save), 'no hints: the identity is the document\'s');
   assert.match(c, /if \(pendingSel && pendingSel\.hub\) return saveOnHubPost/);
   assert.match(fs.readFileSync(path.join(HERE, '..', 'following-view.mjs'), 'utf8'), /hasAttribute\('data-bfp-extension'\)\)return hide\(\)/);
+});
+
+const CFG = createRequire(import.meta.url)('../extension/config.js');
+test('the owner\'s HOSTED Hub pages are honoured too: exactly the listed https pages, nothing else', () => {
+  const HUBS = ['https://hub.example.com/blyg/hub'];
+  assert.equal(H.isHubPage('https://hub.example.com/blyg/hub', BASES, HUBS), true);
+  assert.equal(H.isHubPage('https://hub.example.com/blyg/hub/', BASES, HUBS), true, 'a trailing slash is the same page');
+  assert.equal(H.isHubPage('https://hub.example.com/blyg/hub?view=archive', BASES, HUBS), true, 'the query is the view, not another page');
+  for (const [url, why] of [['https://other.example.com/blyg/hub', 'an unlisted origin, the same path'],
+    ['https://hub.example.com/blyg/other', 'a different path on a listed origin'], ['https://hub.example.com/hub', 'the companion\'s Hub path on a listed origin'],
+    ['https://hub.example.com/blyg/hub/x', 'a deeper path'], ['http://hub.example.com/blyg/hub', 'not https'],
+    ['https://hub.example.com:8443/blyg/hub', 'another port']]) assert.equal(H.isHubPage(url, BASES, HUBS), false, why);
+  assert.equal(H.isHubPage('https://hub.example.com/blyg/hub', BASES, ['http://hub.example.com/blyg/hub']), false, 'a listed http address is never honoured');
+  const d = doc(entry(ID1, 'alpha words'));
+  const t1 = d.querySelector('p').firstChild;
+  assert.equal(H.selectionBinding(rangeIn(d, t1, t1), 'https://hub.example.com/blyg/hub', BASES, HUBS).verdict, 'one');
+  assert.equal(H.selectionBinding(rangeIn(d, t1, t1), 'https://hub.example.com/blyg/other', BASES, HUBS).verdict, 'none');
+  assert.equal(H.selectionBinding(rangeIn(d, t1, t1), 'https://other.example.com/blyg/hub', BASES, HUBS).verdict, 'none');
+  // the companion's own Hub is unchanged with a list present
+  assert.equal(H.isHubPage('http://127.0.0.1:4189/hub', BASES, HUBS), true);
+});
+
+test('the hosted Hub list (config.js hostedHubsOf): https, an exact page, at most five, set only in extension storage', () => {
+  assert.deepEqual(CFG.hostedHubsOf('https://hub.example.com/blyg/hub/\nhttps://hub.example.com/blyg/hub').value, ['https://hub.example.com/blyg/hub']);
+  for (const bad of ['http://hub.example.com/blyg/hub', 'https://u:p@hub.example.com/hub', 'https://hub.example.com/hub?x=1', 'https://hub.example.com/hub#a', 'https://hub.example.com/', 'javascript:alert(1)', 'not-a-url']) {
+    const r = CFG.hostedHubsOf(bad);
+    assert.deepEqual(r.value, [], bad);
+    assert.equal(r.refused.length, 1, bad);
+  }
+  const many = CFG.hostedHubsOf(Array.from({ length: 7 }, (_, i) => `https://h${i}.example.com/hub`));
+  assert.equal(many.value.length, CFG.HOSTED_HUBS_MAX);
+  assert.equal(many.refused.length, 2);
+  assert.equal(CFG.KEYS.hostedHubs, 'bfp:hosted-hubs');
+  const opts = fs.readFileSync(path.join(HERE, '..', 'extension', 'options.html'), 'utf8');
+  assert.match(opts, /id="hosted-hubs"/);
 });

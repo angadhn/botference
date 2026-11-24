@@ -10,8 +10,9 @@
 //
 // WHERE THIS IS HONOURED, and nowhere else. A web page could write the same attributes and claim to be somebody else's post, so a
 // binding is read ONLY on the companion's own Hub pages: the page's origin must be the origin of a companion address the extension
-// is configured with, and its path /hub or /following. On any other page, bindingOf answers null and the extension behaves exactly
-// as it always did. No network, no DOM beyond reading attributes: it runs in node (test/hubbind.test.mjs).
+// is configured with, and its path /hub or /following; or the page is one of the owner's HOSTED Hub pages listed in the extension's
+// options (config.js hosted_hubs: https, the exact origin and path, nothing else on that origin). On any other page, bindingOf
+// answers null and the extension behaves exactly as it always did. No network, no DOM beyond reading attributes: it runs in node (test/hubbind.test.mjs).
 (function (root) {
   'use strict';
 
@@ -19,11 +20,19 @@
   const HUB_PATH = /^\/(?:hub|following)\/?$/;
   const BINDING_VERDICTS = Object.freeze(['none', 'one', 'cross']);
 
-  // the page is one of the companion's Hub pages: same origin as a configured companion address, and a Hub path
-  function isHubPage(pageUrl, companionBases) {
+  // the page is one of the companion's Hub pages (same origin as a configured companion address, and a Hub path), or exactly one of
+  // the owner's listed hosted Hub pages (https, the same origin and the same path; a trailing slash is not part of the path)
+  function isHubPage(pageUrl, companionBases, hostedHubs) {
     let u;
     try { u = new URL(String(pageUrl)); } catch { return false; }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const listed = (hostedHubs || []).some(h => {
+      let x;
+      try { x = new URL(String(h)); } catch { return false; }
+      return x.protocol === 'https:' && u.protocol === 'https:' && x.origin === u.origin
+        && x.pathname.replace(/\/+$/, '') === u.pathname.replace(/\/+$/, '') && x.pathname.replace(/\/+$/, '') !== '';
+    });
+    if (listed) return true;
     if (!HUB_PATH.test(u.pathname)) return false;
     return (companionBases || []).some(b => { try { return new URL(String(b)).origin === u.origin; } catch { return false; } });
   }
@@ -47,8 +56,8 @@
   }
 
   /** The binding at `node` on this page, or null (any page that is not a companion Hub page, or a node outside any post's text). */
-  function bindingOf(node, pageUrl, companionBases) {
-    if (!isHubPage(pageUrl, companionBases)) return null;
+  function bindingOf(node, pageUrl, companionBases, hostedHubs) {
+    if (!isHubPage(pageUrl, companionBases, hostedHubs)) return null;
     const b = bound(node);
     return b ? { page: b.page, origin: b.origin, id: b.id, version: b.version } : null;
   }
@@ -59,8 +68,8 @@
    *   one  — inside one post's text: { binding }
    *   cross — it begins in one post and ends in another (or in none): refused
    */
-  function selectionBinding(range, pageUrl, companionBases) {
-    if (!range || !isHubPage(pageUrl, companionBases)) return { verdict: 'none', binding: null };
+  function selectionBinding(range, pageUrl, companionBases, hostedHubs) {
+    if (!range || !isHubPage(pageUrl, companionBases, hostedHubs)) return { verdict: 'none', binding: null };
     const a = bound(range.startContainer), b = bound(range.endContainer);
     if (!a && !b) return { verdict: 'none', binding: null };
     if (!a || !b || a.element !== b.element) return { verdict: 'cross', binding: null };

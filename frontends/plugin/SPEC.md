@@ -13687,3 +13687,20 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
   add` carries both (`post`, `post_version`); the companion refuses with `ADD_CHANGED_SAY` and starts nothing when they no longer match.
 - **The toast's waiting is a named mode**: `pubtoast.js` `TOAST_MODES` waiting | shown | closing, one field, moved only by `move`
   (refuses a move `TOAST_MOVES` does not list); the visibility listener is removed when it shows or closes.
+
+## Amendment (2026-11-24): batch 3 — a feed's posts, a hosted Hub, a lone link, an outside edit, publish up to here
+
+### The owner's hosted Hub is honoured like the companion's own (`hubbind.js`, `config.js hosted_hubs`)
+- `hosted_hubs` (`bfp:hosted-hubs`): at most `HOSTED_HUBS_MAX` (5) exact Hub page addresses, https only, no credentials, query or
+  fragment, an origin and a non-empty path (a trailing slash is not part of it), read by `hostedHubsOf` (→ `{value, refused}`).
+- Set only on the extension's options page ("Your hosted Hub"), beside the companion's address, because the TRUST decision is the
+  extension's: a page's markup is believed only where the extension's own storage (which no web page and no companion route can
+  write) says so. The companion's CLI-only settings were not used: they configure what the companion does, and the companion never
+  reads the page the binding comes from.
+- `isHubPage(url, bases, hostedHubs)`: the companion's own Hub (unchanged) OR an https page whose origin and path equal a listed one.
+  A different path on a listed origin, another origin, http, or another port is not honoured. The worker answers
+  `companion-bases` with `{bases, hubs}`; the content script asks on every https page (it answers from memory).
+- The hosted page (the blog's `netlify/blyg-hub/page.mjs`) keeps the engine's `data-blyg-page/origin/id/version` on each
+  `.hub-entry-body` (its rules never touch them; pinned by the blog's `tests/blyg-hub/page.test.mjs`).
+- Tests: `hubbind.test.mjs` (listed page honoured; unlisted origin, other path, http, port refused; the list's parser),
+  `adapters.test.mjs` (storage shape).

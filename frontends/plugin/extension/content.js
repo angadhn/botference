@@ -682,12 +682,16 @@
   // THE COMPANION'S OWN HUB (hubbind.js). Asked once: which addresses are the companion's. On its Hub pages, and only there, a selection
   // inside a followed post's text belongs to that post's page record; the page marks itself for the Hub's own script so the two
   // do not both offer a comment.
+  // The owner's hosted Hub pages (config.js hosted_hubs, set only in the options) are honoured the same way; their path is the owner's
+  // choice, so the worker is asked on every page (it answers from memory) whenever the page's own path could not tell.
   const HubBind = (typeof BFPHubBind !== 'undefined') ? BFPHubBind : null;
   let COMPANION_BASES = [];
-  if (HubBind && /^\/(?:hub|following)\/?$/.test(location.pathname)) {
+  let HOSTED_HUBS = [];
+  if (HubBind && (/^\/(?:hub|following)\/?$/.test(location.pathname) || location.protocol === 'https:')) {
     bg({ t: 'companion-bases' }).then(r => {
       COMPANION_BASES = (r && r.bases) || [];
-      if (HubBind.isHubPage(location.href, COMPANION_BASES)) document.documentElement.setAttribute('data-bfp-extension', '1');
+      HOSTED_HUBS = (r && r.hubs) || [];
+      if (HubBind.isHubPage(location.href, COMPANION_BASES, HOSTED_HUBS)) document.documentElement.setAttribute('data-bfp-extension', '1');
     }).catch(() => { /* not asked: not honoured */ });
   }
   const api = (method, path, body) => bg({ t: 'api', method, path, body }).then(r => {
@@ -3873,7 +3877,7 @@
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return;
     // On the companion's Hub page a selection inside one post's text is that post's; one that spans two posts is refused
-    const hubSel = HubBind ? HubBind.selectionBinding(sel.getRangeAt(0), HREF, COMPANION_BASES) : { verdict: 'none', binding: null };
+    const hubSel = HubBind ? HubBind.selectionBinding(sel.getRangeAt(0), HREF, COMPANION_BASES, HOSTED_HUBS) : { verdict: 'none', binding: null };
     if (hubSel.verdict === 'cross') {
       sel.removeAllRanges(); drawer.hideSel();
       const note = document.getElementById('msg');

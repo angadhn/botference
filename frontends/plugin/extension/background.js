@@ -1253,7 +1253,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // a tab, and it will only ever open one at this companion, because a
       // content script asking the worker to open arbitrary urls is a hole.
       // The companion addresses this extension is configured with, so a Hub page can be told from any other website (hubbind.js)
-      case 'companion-bases': { await configReady; return { ok: true, bases: [CONF.base] }; }
+      // …and the owner's hosted Hub pages, exact addresses set only on the options page (config.js hosted_hubs)
+      case 'companion-bases': { await configReady; return { ok: true, bases: [CONF.base], hubs: CFG.hostedHubsOf(CONF.hosted_hubs || []).value }; }
       // The feed icon: where it goes is CFG.readerAction's to say (config.js): an external reader if one is set, the companion's Hub,
       // or (nothing set, nothing chosen, nothing followed) a question the drawer asks first
       case 'open-reader': {
