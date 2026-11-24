@@ -4256,7 +4256,7 @@ export function handler(req, res) {
   //                          writable over HTTP (any write is 405, for everyone): `botference blyg-home set <file.json>` on the machine.
   //   GET  /blyg-publish/run the current run (a drawer that reloaded asks this)
   //   POST /blyg-publish/earlier {url, thread_id}   may this comment be added to the earlier post from its page? ({earlier} or null)
-  //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above', join?:'add'|'new'}   Step A: write the note, run plan
+  //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above', join?:'add'|'new', outside?:'replace'}   Step A: write the note, run plan
   //   POST /blyg-publish/confirm {run, token}   Step C: apply, then publish
   //   POST /blyg-publish/retry   {run, token}   the failed step again (the owner's click)
   //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
@@ -4335,7 +4335,9 @@ export function handler(req, res) {
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
         const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
-          post: String(data.post || ''), postVersion: String(data.post_version || '') });
+          post: String(data.post || ''), postVersion: String(data.post_version || ''), outside: String(data.outside || '') });
+        // a post changed outside the plugin: the refusal carries the question for the owner (the sentence and a count of lines)
+        if (!r.ok && r.outside) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, outside: r.outside }));
         return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
       });
     }

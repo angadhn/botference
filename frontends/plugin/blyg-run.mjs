@@ -150,6 +150,21 @@ export function changelogFromMove(from, to) {
 }
 export const CHANGELOG_ASK_MS = 15000;
 export const ADD_CHANGED_SAY = 'Your earlier post from this page has changed since this was shown. Nothing was started. Close this and open it again.';
+// A POST CHANGED OUTSIDE THE PLUGIN: its note on disk is still that post (same id, same place, a plain file) but not the text the
+// plugin last wrote (its hash differs: the owner, or an agent for them, edited it and may have published it with the site's own
+// command). A new version, or adding a comment, rebuilds the whole note from the page's comments, so it would undo that edit. The
+// owner is ALWAYS asked first (whatever `confirm` says), before anything is written, with two named answers (OUTSIDE_ANSWERS):
+//   keep     "Keep the post as it is": the drawer sends nothing more; nothing is written
+//   replace  "Replace it with this thread's text": the start is sent again with `outside: 'replace'` and goes ahead; the post's
+//            record then holds the new note's hash, so the next version is an ordinary one
+// A start that meets such a note without `outside: 'replace'` is answered 409 with `outside: { say, lost }` (`lost`: how many lines
+// of the note on disk the new text would not keep; a count, never the text) and nothing is written.
+export const OUTSIDE_ANSWERS = Object.freeze(['keep', 'replace']);
+export const OUTSIDE_SAY = 'Your post was changed outside the plugin since it was last published from here. Publishing from here rebuilds the whole post from this page\'s comments, so the changes made outside the plugin would be lost.';
+const linesLost = (onDisk, next) => {
+  const keep = new Set(String(next).split('\n').map(l => l.trim()));
+  return String(onDisk).replace(/^---\n[\s\S]*?\n---\n/, '').split('\n').map(l => l.trim()).filter(l => l && !keep.has(l)).length;
+};
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** Why a run stops at `planned` for the owner's look (`run.review`), one of:
  *    setting      the owner's setting is confirm 'always'
@@ -729,9 +744,11 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '' }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     if (join && !JOINS.includes(join)) return fail(400, `join must be one of ${JOINS.join(', ')}`);
+    // (only `replace` is ever sent: `keep` sends nothing at all)
+    if (outside && outside !== 'replace') return fail(400, 'outside must be replace or absent');
     const home = settingsNow();
     if (!home.ok) { log.write(id, { ev: 'note', text: `settings: ${home.errors.join(' | ')}` }); return fail(409, 'Publish as blyg is not set up correctly on the companion: its “Where my blyg lives” setting does not pass its check. Open that setting on the companion to see why.'); }
     const S = home.settings;
@@ -769,9 +786,9 @@ export function createPublisher(deps) {
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside });
     }
-    return editing ? startEdit({ page, here, S, shown, id }) : startNew({ page, threads, at, here, scope, S, id });
+    return editing ? startEdit({ page, here, S, shown, id, outside }) : startNew({ page, threads, at, here, scope, S, id });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -800,10 +817,11 @@ export function createPublisher(deps) {
     if (!st.isFile() || st.isSymbolicLink()) return fail(409, 'The note of this post is not a plain file, so it is not rewritten from here.');
     if (fs.realpathSync(path.dirname(target)) !== S.folder) return fail(409, 'The note of this post is not in your notes folder, so it is not rewritten from here.');
     const before = fs.readFileSync(target, 'utf8');
-    if (pub.note_sha && sha(before) !== pub.note_sha) return fail(409, 'The note of this post was changed on your site since it was published from here, so it is not rewritten from here. Publish that change on your site.');
     const fm = frontOf(before);
     if (fmValue(fm, 'blyg_id') !== bid || !isBlygId(bid)) return fail(409, 'The note of this post does not carry the post\'s id, so it is not rewritten from here.');
-    return { ok: true, rel, target, before, fm, bid };
+    // still that post, but not the text written from here: changed outside the plugin (the owner is asked: OUTSIDE_ANSWERS)
+    const outside = !!pub.note_sha && sha(before) !== pub.note_sha;
+    return { ok: true, rel, target, before, fm, bid, outside };
   }
   // Does the page still answer what the post answered (its ONE `blyg_stub_of` target, or none)? A post recorded before the target
   // was kept is compared by its whole stub (as it was written then: a web page's stub had no title).
@@ -913,7 +931,7 @@ export function createPublisher(deps) {
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '' }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     const threads = page.threads || [];
     // the threads that went into that post (in the order they went in), and the comment being added to it, last
@@ -935,8 +953,16 @@ export function createPublisher(deps) {
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
-    const changelog = pub.snapshot ? changelogLine(pub.snapshot, rendered.snapshot) : (rendered.text === before ? '' : 'Edited the post.');
-    if (!changelog || rendered.text === before) return fail(409, 'Nothing has changed since you published this.');
+    if (rendered.text === before) return fail(409, 'Nothing has changed since you published this.');
+    // CHANGED OUTSIDE THE PLUGIN: asked first, always; nothing is written until the owner answers `replace`
+    if (note.outside && outside !== 'replace') {
+      log.write(id, { ev: 'note', text: 'the note was changed outside the plugin since it was last published from here: the owner is asked' });
+      return { ...fail(409, OUTSIDE_SAY), outside: { say: OUTSIDE_SAY, lost: linesLost(before, rendered.text) } };
+    }
+    let changelog = pub.snapshot ? changelogLine(pub.snapshot, rendered.snapshot) : 'Edited the post.';
+    // (replacing an outside edit is a change even when the comments are as they were published)
+    if (!changelog && note.outside) changelog = 'Edited the post.';
+    if (!changelog) return fail(409, 'Nothing has changed since you published this.');
     try {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0));
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }

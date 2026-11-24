@@ -808,6 +808,44 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   ok('a new version that may be live: the one sentence, and Forget', /may already have published the new version/.test(q('.pubunsure').textContent) && !!q('[data-act="pub-forget"]'));
 }
 
+// ---- a post changed OUTSIDE the plugin: asked, always; Keep writes nothing; Replace sends the start again (one field, one move) ----
+{
+  eq('the question\'s names', CFG.PUB_OUTSIDE, ['none', 'asking', 'replacing']);
+  for (const from of CFG.PUB_OUTSIDE) for (const to of CFG.PUB_OUTSIDE) {
+    const listed = CFG.PUB_OUTSIDE_MOVES[from].includes(to);
+    let threw = false; try { CFG.pubOutsideMove(from, to); } catch (_) { threw = true; }
+    eq(`outside ${from} → ${to} ${listed ? 'allowed' : 'refused'}`, threw, !listed);
+  }
+  const src = (await import('node:fs')).readFileSync(path.join(here, '..', 'extension', 'drawer.js'), 'utf8');
+  eq('D.pub.outside is written only by pubOutside', [...src.matchAll(/D\.pub\.outside\s*=(?!=)/g)].length, 1);
+  const SAY = 'Your post was changed outside the plugin since it was last published from here. Publishing from here rebuilds the whole post from this page\'s comments, so the changes made outside the plugin would be lost.';
+  const outsideServer = () => {
+    const server = companion();
+    server.confirm = 'never';   // even with one click: asked
+    const inner = server.onBlygPublish;
+    server.onBlygPublish = async (op, body) => {
+      if (op === 'start' && body.outside !== 'replace') { server.calls.push({ op, body }); return { ok: false, error: SAY, outside: { say: SAY, lost: 2 } }; }
+      return inner(op, body);
+    };
+    return server;
+  };
+  const server = outsideServer();
+  const x = await make({ server });
+  x.click(x.q('.thr-pub[data-target="tp"]')); await tick(5);
+  await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
+  eq('asked, in the choice view', [x.view(), x.drawer.pub.outside], ['choosing', 'asking']);
+  ok('the sentence, and what would be lost (a count)', x.dlg().textContent.includes(SAY) && /2 lines of the post as it is now would not be kept/.test(x.dlg().textContent));
+  eq('two named answers and Close', x.qa('.pubdlg .pbtn').map(b => b.textContent), ['Keep the post as it is', 'Replace it with this thread\'s text', 'Close']);
+  x.click(x.q('[data-act="pub-outside-keep"]')); await tick();
+  eq('Keep: closed, nothing more sent', [x.view(), x.drawer.pub.outside, server.calls.filter(c => c.op === 'start').length], ['closed', 'none', 1]);
+  // again, and Replace: the start is sent again with outside: replace
+  x.click(x.q('.thr-pub[data-target="tp"]')); await tick(5);
+  await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
+  await settle(); x.click(x.q('[data-act="pub-outside-replace"]')); await tick(10);
+  eq('Replace: the same start with outside: replace', server.calls.filter(c => c.op === 'start').at(-1).body, { thread_id: 'tp', scope: 'one', confirm: 'never', outside: 'replace' });
+  eq('…and the question is over', x.drawer.pub.outside, 'none');
+}
+
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);
 for (const f of failures) console.log('  · ' + f);
 process.exit(fail ? 1 : 0);

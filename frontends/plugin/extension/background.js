@@ -1106,9 +1106,15 @@ async function blygPublish(msg, tabId) {
   for (const k of spec.body) body[k] = msg[k] === undefined ? '' : String(msg[k]);
   if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
   if (op === 'start' && body.join && CFG.BLYG_PUBLISH_JOINS.indexOf(body.join) === -1) return { ok: false, error: 'no such choice' };
+  if (op === 'start' && body.outside && CFG.BLYG_PUBLISH_OUTSIDE.indexOf(body.outside) === -1) return { ok: false, error: 'no such answer' };
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
-  if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null };
+  if (!r.ok) {
+    // a post changed outside the plugin: the companion's question for the owner (a sentence and a count of lines, nothing else)
+    const o = r.data && r.data.outside;
+    const outside = o && typeof o === 'object' ? { say: String(o.say || '').slice(0, 400), lost: Math.max(0, Number(o.lost) | 0) } : null;
+    return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null, outside };
+  }
   if (spec.reply === 'image') return { ok: true, image: (r.data && r.data.image) || '' };
   if (spec.offer === 'grants') blygOffers.offer(offerKey(String(msg.act)));
   // the owner set a run going (or a drawer found one going): watch it in the background

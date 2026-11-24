@@ -13710,3 +13710,24 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
 The example site's `--push` now asks such a page (W3C discovery, its own address guard; never at build, never in the plan) and
 sends a mention when it accepts them. The dialog's line for it is `WEB_PAGE_ASKED_SAY`: "Its page will be asked whether it accepts
 mentions" (nothing is promised: the page decides). A post that neither quotes nor answers the page still tells nobody.
+
+### A post changed outside the plugin (`blyg-run OUTSIDE_ANSWERS`, `config.js PUB_OUTSIDE`)
+SUPERSEDES the refusal "The note of this post was changed on your site since it was published from here…": after any outside edit
+the owner could never publish a new version of that post, or add to it, from here again.
+- `publishedNoteOf` keeps every check (inside the notes folder, a plain file, in the folder, carrying the post's `blyg_id`); a note
+  whose hash is not the recorded `note_sha` is now `outside: true` instead of a refusal.
+- A new version or an add (`startEdit`) that meets such a note, without `outside: 'replace'`, writes and runs nothing and answers
+  409 `{ error: OUTSIDE_SAY, outside: { say, lost } }`: "Your post was changed outside the plugin since it was last published from
+  here. Publishing from here rebuilds the whole post from this page's comments, so the changes made outside the plugin would be
+  lost." `lost` is how many lines of the note on disk the new text would not keep (a count; the note's text never leaves the
+  companion). ALWAYS asked, whatever `confirm` says. "Add to your earlier post" is still offered for such a post and goes through the
+  same question.
+- The drawer: `D.pub.outside` (`PUB_OUTSIDE`: none | asking | replacing), moved only by `pubOutside` (`pubOutsideMove`). The start's
+  answer puts the dialog back in `choosing` (`PUB_MOVES` starting → choosing) with the sentence, the count and two buttons: "Keep the
+  post as it is" (closes; nothing is sent, nothing written) and "Replace it with this thread's text" (the same start again with
+  `outside: 'replace'`, the only value the worker forwards, `BLYG_PUBLISH_OUTSIDE`). Replace goes ahead as any new version (the
+  changelog line is "Edited the post." when the comments themselves did not change); Cancel or a give-up puts the outside text back
+  exactly; once published the post's record holds the new hash, so the next version is an ordinary one.
+- Tests: `blyg-run` (asked, nothing written or run; keep is never accepted; replace, cancel restores, publish, then ordinary; add to
+  such a post asks), `blygpublish-drawer` (the table, one writer, Keep, Replace sends outside: replace, one-click still asks),
+  `blygpublish-background` (forwarded; anything but replace refused).

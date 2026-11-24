@@ -193,7 +193,8 @@
     // (the plane on any thread FIRST asks the companion for its run: a live one is shown as it is, never the scope choice)
     closed: Object.freeze(['choosing', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']),
     choosing: Object.freeze(['starting', 'problem', 'closed']),
-    starting: Object.freeze(['working', 'problem']),
+    // (…or back to choosing, when the companion answers with a question: a post changed outside the plugin)
+    starting: Object.freeze(['working', 'problem', 'choosing']),
     waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
     working: Object.freeze(['confirming', 'running', 'problem', 'closed']),
     confirming: Object.freeze(['running', 'problem', 'closed']),
@@ -228,7 +229,7 @@
   // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version'], reply: 'json' }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside'], reply: 'json' }),
     // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
     earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
@@ -381,6 +382,21 @@
     return to;
   }
   const BLYG_PUBLISH_JOINS = Object.freeze(['add', 'new']);
+  // ── a post changed OUTSIDE the plugin (blyg-run.mjs OUTSIDE_ANSWERS) ─────────────────────────────────────────────────────
+  // The companion answers a start with `outside: { say, lost }` when the post's note is no longer the text last written from here.
+  // The dialog then asks, in one field (D.pub.outside), moved only by pubOutsideMove:
+  //   none       nothing is being asked
+  //   asking     the sentence and two buttons: "Keep the post as it is" (closes; nothing is written) and "Replace it with this
+  //              thread's text"
+  //   replacing  the owner chose Replace: the start is sent again with `outside: 'replace'` (BLYG_PUBLISH_OUTSIDE)
+  const PUB_OUTSIDE = Object.freeze(['none', 'asking', 'replacing']);
+  const PUB_OUTSIDE_MOVES = Object.freeze({ none: Object.freeze(['asking']), asking: Object.freeze(['none', 'replacing']), replacing: Object.freeze(['none', 'asking']) });
+  function pubOutsideMove(from, to) {
+    if (PUB_OUTSIDE.indexOf(to) === -1) throw new Error('a post changed outside: no such state ' + to);
+    if (!PUB_OUTSIDE_MOVES[from] || PUB_OUTSIDE_MOVES[from].indexOf(to) === -1) throw new Error('a post changed outside: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
+  const BLYG_PUBLISH_OUTSIDE = Object.freeze(['replace']);
 
   // ── whether an exported note is a RESPONSE to its page ─────────────────
   // Blygger's "stub" (spec §10.6). One field on the page record,
@@ -874,7 +890,7 @@
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
-    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS,
+    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     HOSTED_HUBS_MAX, hostedHubsOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,

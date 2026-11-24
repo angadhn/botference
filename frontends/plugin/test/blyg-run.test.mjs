@@ -1422,11 +1422,36 @@ test('PUBLISHING AGAIN: a new version of the same post — same file, id, addres
   th.msgs = [];
   const gone = await b.start();
   assert.deepEqual([gone.ok, gone.error], [false, 'Withdrawing a post is done on your site, not from here.']);
-  // the note changed on the site by hand: not rewritten from here
+  // the note changed OUTSIDE the plugin (by hand, then published with the site's own command): the owner is asked, nothing is written
   th.msgs = [mine('First comment, edited.', { ts: '1' })];
   fs.appendFileSync(path.join(rig.top, rel), '\nedited by hand\n');
+  const handText = fs.readFileSync(path.join(rig.top, rel), 'utf8');
+  const calls = rig.calls().length;
   const hand = await b.start();
-  assert.match(hand.error, /changed on your site since it was published from here/);
+  assert.deepEqual([hand.ok, hand.status, hand.error], [false, 409, R.OUTSIDE_SAY]);
+  assert.deepEqual(hand.outside, { say: R.OUTSIDE_SAY, lost: 3 }, 'the sentence and how many lines would not be kept (a count, never the text): the hand-written line and the two comments no longer in the thread');
+  assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), handText, 'KEEP: nothing is written');
+  assert.equal(rig.calls().length, calls, 'and nothing is run');
+  assert.equal(b.mode(), 'cancelled', 'no run was started');
+  assert.deepEqual(R.OUTSIDE_ANSWERS, ['keep', 'replace']);
+  assert.equal((await b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', outside: 'keep' })).status, 400, 'only replace is ever sent');
+  // REPLACE: the same start with outside: 'replace' goes ahead, rebuilding the note from the thread
+  const rep = await b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', outside: 'replace' });
+  assert.ok(rep.ok, rep.error);
+  assert.equal(rep.view.kind, 'edit');
+  await until(() => b.mode() === 'planned', 'planned (replace)');
+  v = b.pub.current();
+  assert.ok(!/edited by hand/.test(fs.readFileSync(path.join(rig.top, rel), 'utf8')), 'the thread\'s text replaces the outside edit');
+  // cancelling a replace puts the outside edit back exactly
+  await b.pub.cancel({ id: v.id, token: v.token });
+  assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), handText);
+  await b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', outside: 'replace' });
+  await until(() => b.mode() === 'planned', 'planned (replace 2)');
+  v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published (replace)');
+  // from then on the record holds the new note's hash: the next press is an ordinary one
+  const after = await b.start();
+  assert.deepEqual([after.ok, after.error], [false, 'Nothing has changed since you published this.']);
 });
 
 test('the start refuses while the last record\'s step process is still alive', async t => {
@@ -1772,12 +1797,16 @@ test('ADD TO THE EARLIER POST is offered only for a post whose note is still the
   P().threads[0].blyg_published.at = '2026-11-23T12:00:00.000Z';
   P().threads[1].blyg_published.at = '2026-11-23T12:05:00.000Z';
   assert.equal(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier.title, P().threads[1].blyg_published.title);
-  // the most recent post's note changed by hand on the site: not recognisably ours, so no offer (and an add is refused)
+  // the most recent post's note changed OUTSIDE the plugin: still offered, and adding goes through the same look (nothing written
+  // until the owner says replace; the sentence says the outside changes would be lost)
   const n2 = path.join(rig.top, r2.note_rel);
   const keep = fs.readFileSync(n2, 'utf8');
   fs.appendFileSync(n2, '\nedited by hand\n');
-  assert.equal(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier, null);
-  assert.equal((await b.pub.start({ page: P(), threadId: 't3', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't3') })).error, R.ADD_GONE_SAY);
+  assert.ok(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier, 'still offered');
+  const asked = await b.pub.start({ page: P(), threadId: 't3', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't3') });
+  assert.deepEqual([asked.ok, asked.error, asked.outside && asked.outside.say], [false, R.OUTSIDE_SAY, R.OUTSIDE_SAY]);
+  assert.match(R.OUTSIDE_SAY, /would be lost/);
+  assert.equal(fs.readFileSync(n2, 'utf8'), keep + '\nedited by hand\n', 'nothing written');
   fs.writeFileSync(n2, keep);
   assert.ok(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier);
   // a post with no record of its note here (published by an older companion): no offer

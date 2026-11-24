@@ -2572,9 +2572,10 @@
       // finding a run when it opened); `ask` is a second confirmation pending (PUB_ASKS); `pic` the picture of the draft
       // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }). `join` is where a new comment goes when an earlier
       // post from this page can take it (config.js PUB_JOINS, moved only by pubJoin); `earlier` that post as the companion named it
-      // ({ title, version }), a fact shown in the choice.
+      // ({ title, version }), a fact shown in the choice. `outside` is the question asked when the post was changed outside the plugin
+      // (config.js PUB_OUTSIDE, moved only by pubOutside); `lost` the companion's count of lines that would go (a fact).
       pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 },
-        join: 'none', earlier: null },
+        join: 'none', earlier: null, outside: 'none', lost: 0 },
       // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
       // tkHintMove (said once per drawer, never again)
       tkBlockHint: 'unseen',
@@ -8394,6 +8395,9 @@ ${bubbleShellHtml()}`;
       // ---- Publish as blyg (every one of these runs only on a trusted click: the delegated handler above) ----
       'pub-open': (btn, target) => pubOpen(target),
       'pub-scope': (btn, t, e) => pubStart(btn.dataset.scope, e),
+      // a post changed outside the plugin: keep it (nothing is written) or replace it (the start again, with outside: 'replace')
+      'pub-outside-keep': () => { if (D.pub.view === 'choosing' && D.pub.outside !== 'none') pubClose(); },
+      'pub-outside-replace': (btn, t, e) => { if (D.pub.view === 'choosing' && D.pub.outside !== 'none') { pubOutside('replacing'); pubStart(D.pub.scope || 'one', e); } },
       'pub-join': (btn) => { if (D.pub.view === 'choosing' && D.pub.join !== 'none' && D.pub.join !== btn.dataset.join) { pubJoin(btn.dataset.join); paintPub(); } },
       'pub-confirm': (btn, t, e) => pubAct('confirm', e),
       'pub-cancel': () => pubAct('cancel'),
@@ -10648,6 +10652,8 @@ ${bubbleShellHtml()}`;
     // back, and every button is a data-act that only a trusted click reaches (the delegated handler). The view it is in is
     // D.pub.view, one of config.js PUB_VIEWS, changed ONLY by pubGo.
     const PUB_POLL_MS = 2000;
+    // the one sentence for a post changed outside the plugin (the companion's blyg-run OUTSIDE_SAY, the same words)
+    const OUTSIDE_SAY = 'Your post was changed outside the plugin since it was last published from here. Publishing from here rebuilds the whole post from this page\'s comments, so the changes made outside the plugin would be lost.';
     // who put the dialog up, one named value: `start` (this drawer's own start: with confirm 'never' the dialog stays out of the way
     // while it runs), `plane` (the owner pressed a thread's plane: always shown), `drawer` (a run found when the drawer opened)
     const PUB_OPENERS = Object.freeze(['start', 'plane', 'drawer']);
@@ -10709,7 +10715,7 @@ ${bubbleShellHtml()}`;
       CFG.pubMove(D.pub.view, next);
       D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
       if (next !== 'problem') pubAskMove('none');
-      if (next === 'closed') pubJoin('none');
+      if (next === 'closed') { pubJoin('none'); pubOutside('none'); }
       if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
       if (next !== 'confirming') pubPic('none');
       paintPub();
@@ -10829,6 +10835,13 @@ ${bubbleShellHtml()}`;
       CFG.pubJoinMove(D.pub.join, to);
       D.pub.join = to;
       if (to === 'none') D.pub.earlier = null;
+    }
+    // A POST CHANGED OUTSIDE THE PLUGIN (D.pub.outside, config.js PUB_OUTSIDE): the one function that changes it; staying is no move
+    function pubOutside(to) {
+      if (D.pub.outside === to) return;
+      CFG.pubOutsideMove(D.pub.outside, to);
+      D.pub.outside = to;
+      if (to === 'none') D.pub.lost = 0;
     }
     async function pubOpen(id) {
       if (!D.owner || D.pub.view !== 'closed') return;
@@ -11012,9 +11025,17 @@ ${bubbleShellHtml()}`;
       const join = D.pub.join === 'none' ? '' : D.pub.join;
       // adding: the post the dialog named, so the companion adds to that one or to none
       const shownPost = join === 'add' && D.pub.earlier ? { post: D.pub.earlier.post, post_version: String(D.pub.earlier.version) } : {};
+      const replacing = D.pub.outside === 'replacing';
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}) }); } catch (_) { r = null; }
+      // the post was changed outside the plugin: back to the choice, which now asks (nothing was written)
+      if (r && !r.ok && r.outside && !replacing) {
+        pubOutside('asking');
+        D.pub.lost = Math.max(0, Number(r.outside.lost) | 0);
+        if (pubGo('choosing', { error: '' })) return;
+      }
+      pubOutside('none');
       if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'The publish did not start.', run: null }); return; }
       pubApply(r.run);
       if (D.pub.shown === 'never') setFootNote('info', PUB_BACKGROUND_SAY);
@@ -11166,6 +11187,15 @@ ${bubbleShellHtml()}`;
           const t = ((D.page && D.page.threads) || []).find(x => x && x.id === P.thread);
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
           const look = P.shown !== 'never' || (t && pubAgentText(t));
+          // the post was changed outside the plugin since it was last published from here: asked, always (whatever the setting)
+          if (P.outside === 'asking' || P.outside === 'replacing') {
+            const lost = Number(P.lost) || 0;
+            return `<h2>Your post was changed elsewhere</h2><p class="pubq">${esc(first)}</p>${err}
+              <p>${esc(OUTSIDE_SAY)}</p>
+              ${lost ? `<p class="pubquiet">${lost === 1 ? 'One line' : esc(String(lost)) + ' lines'} of the post as it is now would not be kept.</p>` : ''}
+              <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-outside-keep">Keep the post as it is</button>`
+              + `<button class="pbtn" type="button" data-act="pub-outside-replace">Replace it with this thread's text</button>${closeBtn}</div>`;
+          }
           if (P.edit && t) {
             const v = (Number(t.blyg_published.version) || 1) + 1;
             return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}
