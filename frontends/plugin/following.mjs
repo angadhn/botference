@@ -1185,13 +1185,21 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   /**
    * Fetch one post's document and put it in the list. `held` is what is held for it (a post in the Feed, an archive record, a
-   * withdrawn marker) or undefined. → 'stored' | 'kept' | 'unusable' | 'trouble' | 'aborted'
+   * withdrawn marker) or undefined. → 'stored' | 'kept' | 'unusable' | 'trouble' | 'aborted' | 'deferred'
+   *
+   * RE-READ AFTER THE AWAIT (finding 1 of the gate review, and the rule for every async function here): the record this fetch
+   * started from is compared with the one held when the answer comes back. If it is not the same object (the owner ticked,
+   * unticked or otherwise replaced it meanwhile, or a merge brought in another process's change), nothing is written and the
+   * post is counted as deferred: the next refresh looks at it again. A change made IN PLACE meanwhile (opening it, a note for
+   * it) keeps the object, and is kept, because everything written is worked out from the record as it is after the await.
    */
   async function ingest(b, e, held, cfg, g, tally, alive) {
-    const st = load();
     const ident = identOf(b.origin, e.id);
+    if (load().items[ident] !== held) { tally.deferred++; return 'deferred'; }
     const got = await pull(b, e.id, g, tally, alive);
     if (got.out !== 'ok') return got.out;
+    const st = load();
+    if (st.items[ident] !== held) { tally.raced++; tally.deferred++; return 'deferred'; }
     const { doc, rec, body } = got;
     if (held && rec.version < held.version) { tally.regressions++; return 'kept'; }
     if (doc.version !== e.version) tally.mismatched++;
@@ -1302,7 +1310,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         plan.docs++;
         const out = await ingest(b, e, undefined, cfg, g, tally, alive);
         if (out === 'aborted') return;
-        if (out === 'unusable') markBad(led, e); else if (out === 'trouble') plan.left++;
+        if (out === 'unusable') markBad(led, e); else if (out === 'trouble' || out === 'deferred') plan.left++;
         continue;
       }
       // what the INDEX said last time we looked: a document that disagrees with its index entry
@@ -1347,8 +1355,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
         if (out === 'aborted') p.backfill = [];
         else if (out === 'unusable') markBad(p.led, e);
-        else if (out === 'trouble') p.left++;
-        else tally.backfilled++;
+        else if (out === 'trouble' || out === 'deferred') p.left++;
+        else if (out === 'stored') tally.backfilled++;
         unread = unreadCount();
       }
     }
@@ -1386,9 +1394,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     try { token = readToken(cfg.inbox_token_file, tokenForbidden); }
     catch (e) { moveInbox(box, 'deny'); box.error = cleanText(String(e && e.message), 200); return; }
     const redact = redactor(token);
-    let r;
+    let r, thrown = null;
     try { r = await g(url, { maxBytes: LIMITS.inboxBytes, accept: 'application/json', headers: { authorization: `Bearer ${token}` } }); }
-    catch (e) {
+    catch (e) { thrown = e; }
+    // re-read after the await: if the inbox was unset, paused or set to another address meanwhile (or replaced by a merge), this
+    // answer is about an inbox that is no longer the one set, and nothing is written
+    if (load().inbox !== box || box.state === 'off' || box.state === 'paused' || settings().inbox_api_url !== url) return;
+    if (thrown) {
+      const e = thrown;
       if (e && (e.kind === 'limit' || e.kind === 'breaker' || e.kind === 'off')) return; // not asked: the state stays what it was
       moveInbox(box, 'fail'); box.error = cleanText(redact(String((e && e.message) || 'could not fetch')), 200); return;
     }
@@ -1422,7 +1435,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget;
     const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
+      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
     const plans = [];
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
@@ -1522,6 +1535,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const tally = { deferred: 0, errors: 0, invalid: 0, refused: 0, aborted: 0 };
     const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
     const got = await pull(b, rec.id, g, tally, () => load().items[identOf(rec.origin, rec.id)] === rec);
+    // re-read after the await (pull's own check runs before this function resumes, so it is checked here again)
+    if (got.out === 'aborted' || load().items[identOf(rec.origin, rec.id)] !== rec) throw new Error('that post changed meanwhile (it was ticked, unticked or refreshed): look again and retry');
     if (got.out === 'trouble') throw new Error(`could not fetch the post: ${got.message}`);
     if (got.out !== 'ok') throw new Error('the blyg does not serve that post as it was, so it stays in the Archive');
     if (isWithdrawn(got.rec)) throw new Error('that post has been withdrawn');
