@@ -193,24 +193,45 @@ test('the owner\'s own words: trusted as content, but Liquid is made inert, fron
   assert.ok(N.renderShortNote({ page: code, threads: code.threads, home: { ...HOME, escape: 'none' }, now: NOW, slug: 's' }).ok);
 });
 
-test('/tk: a filled gap is the owner\'s text, escaped as a passage (an adopted one is the owner\'s own markdown); an unfilled, failed, unknown or leftover [TK] BLOCKS with a plain message', () => {
-  const gap = (mode, text) => ({ instruction: 'say hello', mode, ...(text ? { text } : {}) });
+test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the site\'s generated-passage form, escaped as text, with one blyg_generated entry each; an unfilled or failed one BLOCKS; a [TK] the owner typed is shown as the letters', () => {
+  const gap = (mode, text, extra = {}) => ({ instruction: 'say hello', mode, ...(text ? { text } : {}), agent: 'claude', model: 'claude-opus-5', at: '2026-11-24T10:00:00Z', ...extra });
   const one = (text, gaps) => { const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine(text), gaps }] }]); return make(p, p.threads); };
   const filled = one('Intro\n/tk say hello\nAfter', [gap('filled-by-agent', 'Hello, reader. [[x]]')]);
-  assert.ok(filled.ok);
-  // (brackets as character references since review item 5: no raw [ or ] for a site's own markup to read)
-  assert.match(filled.text, /Intro\nHello, reader\. &#91;&#91;x&#93;&#93;\nAfter\n$/, 'an agent\'s fill is escaped as a passage is');
-  assert.ok(!/\/tk|TK/.test(filled.text));
-  assert.match(one('Intro /tk(say hello) after', [gap('adopted-by-reader', 'Mine [[x]]')]).text, /Intro Mine \[\[x\]\] after/);
+  assert.ok(filled.ok, filled.error);
+  // a line gap is a block of its own; brackets as character references (no raw [ or ] for a site's own markup to read)
+  assert.match(filled.text, /Intro\n\n\[TK\] say hello \[=\]Hello, reader\. &#91;&#91;x&#93;&#93;\[\/TK\]\n\nAfter\n$/, filled.text);
+  assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n---/);
+  assert.deepEqual(filled.generated.map(g => [g.agent, !!g.edited_by_author]), [['claude', false]]);
+  // edited and adopted: the same form, the text as it now stands, still escaped, and marked as having the owner's hand in it
+  for (const mode of ['edited-by-reader', 'adopted-by-reader']) {
+    const r = one('Intro /tk(say hello) after', [gap(mode, 'Mine **b** [[x]]')]);
+    assert.match(r.text, /Intro \[TK\] say hello \[=\]Mine \\\*\\\*b\\\*\\\* &#91;&#91;x&#93;&#93;\[\/TK\] after/, mode);
+    assert.match(r.text, /edited_by_author: true/, mode);
+  }
+  // pasted from an agent's tool: the impyrt form, with the model of that agent
+  const pasted = one('See /tkimpyrt-codex(pasted words) here', [{ kind: 'impyrt', agent: 'codex', instruction: 'pasted words', mode: 'pasted-by-reader', text: 'pasted words', model: 'gpt-5.5-codex', at: '2026-11-24T10:00:00Z' }]);
+  assert.match(pasted.text, /See \[TK\]impyrt gpt-5\.5-codex=pasted words\[\/TK\] here/, pasted.text);
+  assert.deepEqual(pasted.generated.map(g => g.agent), ['codex']);
   for (const [name, gaps] of [['pending', [gap('pending')]], ['failed', [gap('failed')]], ['not stored', undefined]]) {
     const r = one('Intro\n/tk say hello', gaps);
     assert.equal(r.ok, false, name);
-    assert.match(r.error, /\/tk or \[TK\] placeholder .*still in the comment and nobody has filled it in/, name);
+    assert.match(r.error, /a \/tk passage .*is not written yet/, name);
+    assert.ok(!/\[TK\]/.test(r.error), 'the owner is never told about bracket markers');
   }
+  // the bracket form is not a gap any more: the owner's own words, shown as the letters, never the site's grammar
   const studio = one('Intro [TK] a [/TK] x');
-  assert.equal(studio.ok, false);
+  assert.ok(studio.ok, studio.error);
+  assert.match(studio.text, /Intro &#91;TK\] a &#91;\/TK\] x/);
   const code = one('Say `[TK]` out loud');
-  assert.ok(code.ok, 'inside code a mark is only text');
+  assert.ok(code.ok && /`\[TK\]`/.test(code.text), 'inside code a mark is only text');
+});
+
+test('inside a generated passage nothing can end the scope or pair with code: a TK mark, [=] and a backtick are character references; Liquid and HTML inert', () => {
+  const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('A /tk(go) b'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 'x [/TK] y [=] z ` w {{ site.title }} <b>' }] }] }]);
+  const t = make(p, p.threads).text;
+  const scope = /\[TK\] go \[=\](.*?)\[\/TK\]/.exec(t)[1];
+  assert.ok(!/\[\/?TK\]|\[=\]|`|\{\{|(^|[^\\])<b/.test(scope), scope);
+  assert.equal((t.match(/\[\/TK\]/g) || []).length, 1, 'one scope, one end');
 });
 
 test('who may publish: only a thread whose first message the owner typed, addressed to no agent, not a deletion', () => {
@@ -318,16 +339,14 @@ test('LIQUID is made inert with character references (a backslash does nothing t
   assert.ok(!/\{[{%]/.test(body), 'no Liquid opener anywhere in the body: ' + body);
   assert.ok(!/\\\{/.test(body), 'and no backslash standing in for the protection');
   assert.match(body, /&#123;% include_relative X\.md %&#125;/);
-  // an agent's fill and an owner-edited one are escaped as a passage; only an adopted one is the owner's markdown
+  // every agent-written passage (adopted included) is escaped as a passage is
   const gap = (mode, text) => ({ instruction: 'say hello', mode, text });
-  for (const mode of ['filled-by-agent', 'edited-by-reader']) {
+  for (const mode of ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader']) {
     const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Before\n/tk say hello\nAfter'), gaps: [gap(mode, 'X {% cycle site.title %} <script>alert(1)</script> [a](javascript:alert(1)) "q" # head')] }] }]);
     const t = make(p, p.threads).text;
     assert.ok(!/\{[{%]/.test(t) && !/(^|[^\\])<script/.test(t) && !/[^\\]\]\(javascript/.test(t), mode + ': ' + t);
     assert.match(t, /\\<script>|&lt;script/, mode);
   }
-  const adopted = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Before\n/tk say hello\nAfter'), gaps: [gap('adopted-by-reader', 'Mine **bold** [[x]]')] }] }]);
-  assert.match(make(adopted, adopted.threads).text, /Mine \*\*bold\*\* \[\[x\]\]/);
   // a code span with Liquid in it is refused, with a message (a reference would show as its letters there)
   const code = webPage([thread('t1', '', 'See `{% cycle a %}` here')]);
   assert.match(make(code, code.threads).error, /code span or block/);
@@ -349,20 +368,24 @@ test('a passage that is only a URL (or holds one) stays text (a code span): no a
   assert.match(body, /\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n/, 'the source line is a plain bare URL: the card');
 });
 
-test('short posts are text: raw HTML in the owner\'s own and an adopted text is written so it renders literally; markdown, an http(s) autolink and code are kept', () => {
+test('short posts are text: raw HTML in the owner\'s own words is written so it renders literally (markdown, an http(s) autolink and code kept); an adopted agent passage is plain text in its box', () => {
   const evil = 'a < b and <script>alert(1)</script> <img src=x onerror=alert(1)> <iframe src=//x></iframe> <style>*{x:y}</style> <!-- c --> <details open ontoggle=alert(1)> <https://ok.example.test/a> **bold** `<code>` [h](https://ok.example.test)';
-  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Own: ' + evil + '\n/tk go\n'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', text: 'Adopted: ' + evil }] }] }]);
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Own: ' + evil + '\n/tk go\n'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', agent: 'claude', text: 'Adopted: ' + evil }] }] }]);
   const r = make(page, page.threads);
   assert.ok(r.ok, r.error);
   const body = r.text.split('\n---\n').slice(1).join('');
-  const noCode = body.replace(/`[^`]*`/g, '');
-  assert.ok(!/<(script|img|iframe|style|details|!--)/i.test(noCode), 'no raw HTML tag outside code: ' + body);
-  assert.match(body, /a &lt; b/, '“a < b” reads as typed');
+  const [own, box] = body.split('[TK] go [=]');
+  const noCode = own.replace(/`[^`]*`/g, '');
+  assert.ok(!/<(script|img|iframe|style|details|!--)/i.test(noCode), 'no raw HTML tag outside code: ' + own);
+  // (an address in it is a code span, as in a passage: its backticks come in pairs; any other backtick is a character reference)
+  assert.ok(!/(^|[^\\])<(script|img|iframe|style|details|!--)/i.test(box) && (box.match(/`/g) || []).length % 2 === 0, 'the box holds text only: ' + box);
+  assert.match(own, /a &lt; b/, '“a < b” reads as typed');
   assert.ok(!/\]\(javascript/i.test(body), 'no javascript: link (one in the owner\'s words is refused: see the test below)');
-  assert.equal((body.match(/<https:\/\/ok\.example\.test\/a>/g) || []).length, 2, 'the autolink is kept, in each');
-  assert.equal((body.match(/\*\*bold\*\*/g) || []).length, 2, 'markdown is kept');
-  assert.equal((body.match(/`<code>`/g) || []).length, 2, 'a code span shows < literally: not double-escaped');
-  assert.equal((body.match(/\[h\]\(https:\/\/ok\.example\.test\)/g) || []).length, 2, 'an https link is kept');
+  assert.match(own, /<https:\/\/ok\.example\.test\/a>/, 'the autolink is kept in the owner\'s words');
+  assert.match(own, /\*\*bold\*\*/, 'markdown is kept in the owner\'s words');
+  assert.match(own, /`<code>`/, 'a code span shows < literally: not double-escaped');
+  assert.match(own, /\[h\]\(https:\/\/ok\.example\.test\)/, 'an https link is kept');
+  assert.match(box, /\\\*\\\*bold\\\*\\\*/, 'in the box markdown is text');
   // a stray bar never becomes a table; a wikilink keeps its own
   assert.equal(N.neutraliseHtml('a | b\n- | -\nsee [[x | y]]'), 'a \\| b\n- \\| -\nsee [[x | y]]');
 });
