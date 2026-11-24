@@ -586,7 +586,7 @@ test('one huge blyg (a 100,000-entry index): the Hub reads at most 20,000 entrie
   assert.ok((await feed(r)).filter(h => h.origin === B).length >= 10, 'the small blyg is not starved: all of its ten are there');
   assert.ok(layoutBytes(r.file) < 300 * 1024, `state stays small (${layoutBytes(r.file)} bytes)`);
   assert.ok(fs.statSync(r.file).size < 4 * 1024, `the main document holds no post (${fs.statSync(r.file).size} bytes)`);
-  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'items', 'kept', 'last_run', 'layout'], 'the ledgers, feeds, archives and inbox are documents of their own');
+  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'items', 'kept', 'last_run', 'layout', 'migration'], 'the ledgers, feeds, archives and inbox are documents of their own');
   assert.ok(fs.statSync(r.ledgerFile(A)).size < 64 * 1024, 'and the big blyg\'s ledger is small too');
   r.done();
 });

@@ -125,7 +125,7 @@ export const canMoveBlyg = (b, ev) => blygMachine.can(b.state, ev);
 //   kept      — unfollowed with "Stop following": its ledger (read ids and gone filter) is kept, so a refollow shows none again
 //   forgotten — nothing kept (never followed, unfollowed with "forget", or a kept ledger expired: keptMax, keptMs)
 //   follow           forgotten → followed
-//   refollow         kept → followed (its ledger is used as it is)
+//   refollow         kept → followed (its ledger is used as it is, under the new follow's EPOCH: written again with it)
 //   unfollow_keep    followed → kept
 //   unfollow_forget  followed → forgotten
 //   expire           kept → forgotten
@@ -270,6 +270,52 @@ const starMachine = machine('star', STAR_STATES, STAR_MOVES);
 export const canMoveStar = (e, ev) => starMachine.can(e.star, ev);
 export function moveStar(e, ev) { e.star = starMachine.to(e.star, ev); return e.star; }
 
+// THE CONVERSION of a store of an older layout into this one. ONE field, `migration.state` of the main document (none stored:
+// not_started), moved only by moveMigration. See "the conversion" below for what each step writes and why nothing is lost.
+//   not_started   — no main document of this layout: nothing stored yet, or a document of an older layout (where the older
+//                   code keeps it: the main document itself on the companion, 'legacy' on the hosted Hub)
+//   converting    — this layout's main document is written, carrying the copy of the document converted (`copy`, `from`):
+//                   every invocation that reads it first finishes the conversion (each step keeps what is already there)
+//   keeping_copy  — converted; the copy is kept in 'pre-shard' (and the older bodies where they were) until `copy_until`, the
+//                   QUIET PERIOD (LIMITS.migrationQuietMs): an invocation of the older code may still be running
+//   done          — the copy and the older bodies are deleted (by a sweep after `copy_until`), or there was nothing to convert
+//   begin      not_started → converting   (one conditional write claims it: two invocations cannot both)
+//   converted  converting → keeping_copy  (after every blyg's documents, the inbox and the unread posts' text are in place)
+//   finish     keeping_copy → done        (refused before copy_until: data that gates the move)
+//   fresh      not_started → done         (a Hub with nothing to convert)
+export const MIGRATION_STATES = Object.freeze(['not_started', 'converting', 'keeping_copy', 'done']);
+export const MIGRATION_MOVES = Object.freeze({ begin: { not_started: 'converting' }, converted: { converting: 'keeping_copy' },
+  finish: { keeping_copy: 'done' }, fresh: { not_started: 'done' } });
+const migrationMachine = machine('migration', MIGRATION_STATES, MIGRATION_MOVES);
+export function moveMigration(m, ev, at = Date.now()) {
+  if (ev === 'finish' && at < (m.copy_until || 0)) throw new Error('migration: cannot finish before the quiet period is over');
+  m.state = migrationMachine.to(m.state, ev); return m.state;
+}
+// HOW AN ATTEMPT OF A TRANSACTION RUNS (see "the storage seam"). ONE field, the attempt's `rerun`, moved only by moveRerun.
+//   first        — the first attempt
+//   again        — a re-run after a conflict, on what is stored now
+//   again_mine   — a re-run that found a document whose last FINAL write was this operation's own earlier attempt: its move may
+//                  be applied already, and is then done, not refused (a re-run of a tick that finds the post archived)
+//   conflict     any → again           (a write lost the race, or a read met a conversion in progress)
+//   found_mine   again → again_mine     (decided from the documents read, before the operation runs)
+export const RERUN_MODES = Object.freeze(['first', 'again', 'again_mine']);
+export const RERUN_MOVES = Object.freeze({ conflict: { first: 'again', again: 'again', again_mine: 'again' }, found_mine: { again: 'again_mine' } });
+const rerunMachine = machine('re-run', RERUN_MODES, RERUN_MOVES);
+export function moveRerun(a, ev) { a.rerun = rerunMachine.to(a.rerun, ev); return a.rerun; }
+// A document or a body that NOTHING names (a sweep found it), in the run document's `marks`: ONE value per name, moved only by
+// moveSweepMark (a name not marked is `unmarked`).
+//   unmarked  — named, or not seen unnamed yet
+//   marked    — seen unnamed by sweep number `seq`, at `at` (by the sweeper's clock)
+//   mark      unmarked → marked
+//   sweep     marked → (deleted)        only by a LATER sweep AND when its own written-at is older than LIMITS.bodySweepAgeMs:
+//                                       a body is written before the record that names it, so a young one may be another
+//                                       invocation's not committed yet. Two sweeps apart is a count, not a clock (see TIMED RULES).
+//   named     marked → unmarked         (a record names it again)
+export const SWEEP_MARKS = Object.freeze(['unmarked', 'marked']);
+export const SWEEP_MOVES = Object.freeze({ mark: { unmarked: 'marked' }, sweep: { marked: 'unmarked' }, named: { marked: 'unmarked' } });
+const sweepMachine = machine('sweep mark', SWEEP_MARKS, SWEEP_MOVES);
+export function moveSweepMark(m, ev) { m.state = sweepMachine.to(m.state, ev); return m.state; }
+
 // A host's circuit breaker: closed (asked), open (not asked until it cools),
 // half-open (one probe decides).
 export const BREAKER_STATES = Object.freeze(['closed', 'open', 'half-open']);
@@ -387,8 +433,12 @@ export const LIMITS = Object.freeze({
                               // blyg rewrites: ~225 KB at the bound with ordinary addresses); beyond it the
                               // oldest-ticked are dropped (never a starred one). Their ids stay in the ledger: that keeps them read.
   starsMax: 500,
-  repairAgeMs: 10 * 60 * 1000, // a copy of a post in both its feed and its archive (a move between its writes) is repaired only this old              // posts starred at once (the next star is refused, saying so)
-  bodySweepAgeMs: 3600e3,     // a body nothing names is deleted only when older than this (it may belong to a transaction not yet committed)
+  bodySweepAgeMs: 3600e3,     // a body (or a blyg's document) nothing names is deleted only when older than this AND found unnamed by
+                              // an earlier sweep too (it may belong to a transaction not yet committed: SWEEP_MARKS, TIMED RULES)
+  sweepMarksKept: 2000,       // names a sweep remembers as unnamed (the rest are looked at again by the next sweep)
+  migrationQuietMs: 24 * 3600e3, // the conversion's quiet period: its copy and the older bodies are kept this long (MIGRATION_STATES)
+  mainEvery: 10,              // a refresh writes what it learned about each blyg (last tried, failures, title) to the main document
+                              // once every this many blygs and at its end: a crash loses at most that many blygs' bookkeeping
   leaseMarginMs: 30 * 1000,   // a run lease lasts the run's seconds and this much more (then another invocation may take it back)
   txAttempts: 6,              // a transaction that keeps meeting another's write is run this many times, then refused plainly
   opsKept: 8,                 // operation ids a document keeps (so a re-run never writes it twice)
@@ -928,15 +978,18 @@ function newBudget(settings, now) {
 //   3. commit: each document whose content changed is written with the version that was read (ifVersion), in a fixed order
 //      that leaves a legal state after any prefix of the writes (a crash between two writes; see COMMIT ORDER), and the
 //      bodies it no longer needs are deleted after the last write.
-//   4. on a StoreConflict (another invocation wrote one of them meanwhile) the documents are read again and the operation
-//      is RE-RUN on what is stored now (bounded: LIMITS.txAttempts, then a plain error). So an owner's move is never merged
-//      away: it is applied again on the fresh state, and refused there only if the table of its state machine refuses it.
-//      Each written document carries the ids of the last operations that wrote it (`ops`): a re-run does not write again a
-//      document whose LAST writer is its own earlier attempt (so nothing is applied twice); one written since by another is
-//      written again with the change re-applied on it.
+//   4. on a StoreConflict (another invocation wrote one of them meanwhile, or a read met a conversion in progress) the
+//      documents are read again and the operation is RE-RUN on what is stored now (bounded: LIMITS.txAttempts, then a plain
+//      "try again"; RERUN_MODES names how an attempt runs). So an owner's move is never merged away: it is applied again on the
+//      fresh state, and refused there only if the table of its state machine refuses it. Each written document carries the
+//      ids of the last operations that wrote it (`ops`): a re-run does not write again a document whose LAST FINAL writer is
+//      its own earlier attempt (so nothing is applied twice); one written since by another is written again with the change
+//      re-applied on it. The first half of an archive written in two (additions, then removals: COMMIT ORDER 2 and 4) is
+//      stamped `<op>:add`, never the op itself: it is not a final write, so a re-run always writes the second half.
 // A refresh does its network work OUTSIDE any transaction (it reads a snapshot, fetches, writes bodies) and then applies what
 // it fetched in a short transaction per blyg, re-checking each post's record against the snapshot: a conflict costs a
-// re-apply, never a re-fetch.
+// re-apply, never a re-fetch. What it learned about each blyg's record (last tried, failures, title) is put in the main
+// document every LIMITS.mainEvery blygs and at its end, re-applied on the main document as stored then.
 //
 // COMMIT ORDER (and the repairs a reader makes, so that every prefix is a legal state):
 //   1. ledgers                (a read id is removed only here, before the archive record goes: a crash leaves the record,
@@ -944,18 +997,95 @@ function newBudget(settings, now) {
 //   2. archives, additions    (the archive with what is added and nothing removed yet)
 //   3. feeds
 //   4. archives, removals     (a post leaves the Archive only after the feed holds it again)
-//   5. stars, inbox, main document, run document
-//   6. documents deleted (an unfollowed blyg's feed and archive; a forgotten blyg's ledger), then bodies deleted.
-//   R1 a post found in both its blyg's feed and its archive (a crash between 2 and 3, or 3 and 4): the feed's copy is the
-//      later one: a tick crashed before its feed write is not done (the post is unread, as the owner last saw it); an untick
-//      or an edit-return crashed after its feed write is done.
+//   5. stars, inbox, main document, run document; then ledgers whose only change is read ids ADDED (a crash before: R3)
+//   6. documents deleted (an unfollowed blyg's feed and archive; a forgotten blyg's ledger), each only if it is still the
+//      version this transaction read (a refollow's documents written meanwhile are never deleted); then bodies deleted.
+// THE REPAIRS, made by whoever reads both documents (and written only by an operation that writes anyway; a view shows them):
+//   R1 a post found unread in its blyg's feed and also in its archive (a crash between 2 and 3, or 3 and 4; or another
+//      invocation's move between its writes): the feed's copy wins, the archive's copy goes. A tick stopped before its feed
+//      write is not done (the post is unread, as the owner last saw it); an untick or an edit-return stopped after its feed
+//      write is done.
 //   R2 a post in the feed whose state is archived (a document of the older layout) moves to the archive.
-//   R3 every archive record's id is in its blyg's ledger (added when both are read; a tick writes no ledger at all).
+//   R3 every archive record's id is in its blyg's ledger (added when both are read; a tick writes its ledger last).
+// WHY A REPAIR NEEDS NO CLOCK. A repair cannot tell a move another invocation is making right now (between two of its writes)
+// from one whose invocation died there: the store holds the same thing. So it does not try: an operation whose commit carries
+// a repair ALSO writes, conditionally, every document of that blyg it read (its feed, archive and ledger, rewritten as read
+// if nothing else changed them). A move in flight writes at least one of them after the repair (see the order above), and that
+// write then meets a changed version: the move is RE-RUN on the repaired state and applied again whole (a tick ticks again; an
+// untick whose feed write landed is finished). And the repair itself was worked out from documents whose versions its
+// commit checks: one changed since it was read (another invocation's whole untick between two of this one's reads) makes the
+// repair re-run on what is stored then, never writes a ledger worked out from a stale archive. The same holds for every other
+// place that writes one document from what another said (all of them, each with the documents it writes as well):
+//   R1, R2  the archive (and feed) from the feed                      → the blyg's feed, archive and ledger are written
+//   R3      the ledger from the archive                               → the blyg's feed (if read), archive and ledger
+//   trimArchive  the archive from the stars (a starred record stays)  → the stars document is written too
+//   summaryOf    a feed's summary from its ledger and archive (counts) → not checked: a count only; the next write corrects it
 // A document of a blyg whose EPOCH (a random id given when it is followed, kept while it is kept) is not the blyg's is read as
 // absent: what a slow invocation wrote for a blyg unfollowed meanwhile is never taken for the blyg followed again.
+//
+// TIMED RULES: every place a clock decides something, its bound, and whether a clock that is wrong can cost more than work.
+//   the run lease's `until`          a holder that died blocks refreshes this long. A clock running ahead lapses a live lease
+//                                    early: two refreshes overlap, which costs requests only (every apply is a transaction)
+//   the top-up gap (topup_after)     at most one top-up every topupGapMs: cost only, same reason
+//   the sweep (bodySweepAgeMs, 1 h)  a body or blyg document nothing names may be another invocation's not committed yet. It is
+//                                    deleted only when found unnamed by TWO sweeps (a count: SWEEP_MARKS) and when its
+//                                    written-at is an hour old: a wrong clock alone cannot delete a body in use; it takes
+//                                    that AND a whole refresh starting and ending inside one commit of another invocation
+//   the quiet period (24 h)          the conversion's copy is kept this long after it is done (MIGRATION_STATES): an older
+//                                    invocation lives seconds; a clock wrong by hours ends the copy early, nothing else
+//   the edit rule, back-offs, bursts dates the Hub stored itself, compared with now: a wrong clock moves a post's return or a
+//                                    retry by that much; nothing is lost
+// (The repairs used to wait 10 minutes before removing an archive copy: a clock running 10 minutes ahead could then remove
+// a tick's record in flight. They need no clock now: see WHY A REPAIR NEEDS NO CLOCK.)
+//
+// THE CONVERSION (MIGRATION_STATES). A store of an older layout is converted on first read. On the hosted Hub the older
+// document is in 'legacy' and the older bodies in 'oldbody', and DURING A DEPLOY an invocation of the older code may still run
+// against them; on the companion the older document is the main document itself and its bodies are where they stay.
+//   1. (hosted) 'legacy' is replaced, conditionally on the version read, by a MARKER: the older engine cannot load it, so an
+//      old page view, "Refresh now", follow or sweep fails with an error and writes nothing; and it keeps the old document's
+//      posts, so an old sweep that read it before its refresh finished still finds every old body named and deletes none. The
+//      marker carries the old document (its copy). An old write that got in first makes this write fail: converted again.
+//   2. this layout's main document is written, `converting`, carrying the copy: conditionally (nothing stored, or the older
+//      document's version on the companion). From here every reader finishes the conversion first.
+//   3. each followed blyg's ledger, archive and feed, the inbox, and each unread post's text (copied from 'oldbody'; the
+//      older one is left where it is). A document already there is KEPT as it is (written by an earlier attempt, or since);
+//      so is the epoch it carries.
+//   4. the copy goes to 'pre-shard'; the main document moves to `keeping_copy` (copy_until = now + the quiet period).
+//   5. a sweep after copy_until deletes 'pre-shard' and every 'oldbody', empties the marker of the old posts, and moves to
+//      `done`. Nothing of the older layout is deleted before that.
+// A conflict anywhere is retried like any other (step 4 of the transaction), and a crash anywhere is finished by the next
+// reader: no step can leave a state that throws for ever. A conversion that finds this layout's documents already there
+// (a companion whose older code wrote its document back after a conversion) merges: the blygs the older document follows are
+// followed, each with the documents already there (its unread posts, archive and ledger stand; the older document's posts of
+// that blyg are not taken: the next refresh fetches what is new); a blyg it does not follow any more but that has a ledger is
+// KEPT (its read ids stay, as after an unfollow without forget); a blyg it follows that has no documents is converted from its
+// posts. An older invocation's follow or unfollow is therefore never lost silently: before step 1 it is in the document
+// converted; after it, the older code refuses it with an error (and writes nothing), and the owner does it again.
 export { STORE_KINDS, StoreConflict, ledgerName, fileStore, memoryStore };
 class NeedMore extends Error { constructor(wants) { super('the operation needs documents it has not read'); this.wants = wants; } }
-const LAYOUT = 2;
+// The layout of what is kept. 1 (no number): one main document holding every post. 2: per-blyg documents (the companion only,
+// before the conversion was named). 3: this one (the main document carries `migration`; on the hosted Hub the main document
+// and the bodies are kept apart from where the older code keeps its own). A store of a HIGHER layout was written by a newer
+// engine: this one refuses to write to it (HubNewer), so an older invocation during a deploy can never corrupt it.
+export const LAYOUT = 3;
+export class HubNewer extends Error {
+  constructor() { super('the Hub is being updated; try again in a minute'); this.name = 'HubNewer'; this.code = 'EHUBNEWER'; }
+}
+/** The older document a host keeps apart ('legacy'), once converted: a marker the older engine cannot load (a blyg record that is
+ * not an object stops it at once, before it writes anything), still naming every post of the old document (an older sweep that
+ * reads it keeps every older body), and carrying the rest of the old document (the copy). */
+const MARKER = 'moved';
+const isMarker = v => !!v && typeof v === 'object' && v.layout === MARKER;
+const markerOf = (doc, tag, withCopy = true) => ({ layout: MARKER, note: 'converted to a newer layout of the Hub: this document is no longer read',
+  from: tag, blygs: { [MARKER]: null }, items: withCopy && doc.items && typeof doc.items === 'object' ? doc.items : {},
+  ...(withCopy ? { doc: Object.fromEntries(Object.entries(doc).filter(([k]) => k !== 'items')) } : {}) });
+const copyOfMarker = m => ({ ...(m.doc && typeof m.doc === 'object' ? m.doc : {}), items: m.items && typeof m.items === 'object' ? m.items : {} });
+const migrationOf = v => {
+  const m = v && v.migration && typeof v.migration === 'object' ? v.migration : null;
+  if (!v || (Number.isInteger(v.layout) ? v.layout : 1) < LAYOUT) return { state: 'not_started' };
+  if (!m || !MIGRATION_STATES.includes(m.state) || m.state === 'not_started') return { state: 'done' };
+  return m;
+};
 const sortKeys = v => {
   if (Array.isArray(v)) return v.map(sortKeys);
   if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v).sort()) o[k] = sortKeys(v[k]); return o; }
@@ -1006,10 +1136,49 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return { value: g.value, version: g.version, at: g.at || 0 };
   }
   const mainRaw = docs => { const d = docs.get('state/following'); return d && d.value && typeof d.value === 'object' && !Array.isArray(d.value) ? d.value : null; };
-  const isOldLayout = v => !!v && v.layout !== LAYOUT;
+  const layoutOf = v => (Number.isInteger(v.layout) ? v.layout : 1);
+  /**
+   * The main document, of this layout: converting (or finishing a conversion of) an older one first. A conversion's write that
+   * meets another's throws StoreConflict, and the transaction runs again (as for any conflict): nothing here throws for ever.
+   */
+  async function readMain(docs) {
+    for (let round = 0; !docs.has('state/following'); round++) {
+      if (round >= 6) throw new StoreConflict('state', 'following');
+      const main = await getDoc('state', 'following');
+      const m = main.value && typeof main.value === 'object' && !Array.isArray(main.value) ? main.value : null;
+      if (main.unreadable || (m && layoutOf(m) > LAYOUT)) { docs.set('state/following', { ...main, newer: !main.unreadable }); break; }
+      if (m && layoutOf(m) === LAYOUT) {
+        if (migrationOf(m).state === 'converting') { await finishConversion(main); continue; }
+        docs.set('state/following', main); break;
+      }
+      if (m && layoutOf(m) === 2) {
+        // the companion's per-blyg layout before the conversion was named: the same documents; it says so now
+        const mig = { state: 'not_started' }; moveMigration(mig, 'fresh');
+        await store.put('state', 'following', { ...content(m), layout: LAYOUT, migration: mig }, { ifVersion: main.version });
+        continue;
+      }
+      if (m) { await beginConversion({ doc: m, tag: String(main.version), ifMain: main.version }); continue; }
+      // nothing of this layout: the older document where a host keeps it apart, or a new Hub
+      const leg = await getDoc('state', 'legacy');
+      const l = leg.value && typeof leg.value === 'object' && !Array.isArray(leg.value) ? leg.value : null;
+      if (l && isMarker(l)) {
+        // converted to a main document that is not there: a conversion that stopped between its steps 1 and 2 (its copy is in
+        // the marker), or a main document deleted by hand after it (then nothing is written: the operator restores it)
+        if (!l.doc) throw new Error('the Hub\'s main document is missing (its older document was converted): restore it from its copy');
+        await beginConversion({ doc: copyOfMarker(l), tag: String(l.from), ifMain: null });
+        continue;
+      }
+      if (l) {
+        // step 1: the marker, conditionally on the version read (an older invocation's write that got in first: converted again)
+        await store.put('state', 'legacy', markerOf(l, String(leg.version)), { ifVersion: leg.version });
+        await beginConversion({ doc: l, tag: String(leg.version), ifMain: null });
+        continue;
+      }
+      docs.set('state/following', main); // nothing stored: a new Hub
+    }
+  }
   async function readDocs(spec, docs) {
-    if (!docs.has('state/following')) docs.set('state/following', await getDoc('state', 'following'));
-    if (isOldLayout(mainRaw(docs))) { await migrate(docs.get('state/following')); docs.clear(); docs.set('state/following', await getDoc('state', 'following')); }
+    await readMain(docs);
     const main = mainRaw(docs) || {};
     const followed = Object.keys(main.blygs && typeof main.blygs === 'object' ? main.blygs : {});
     const kept = Object.keys(main.kept && typeof main.kept === 'object' ? main.kept : {});
@@ -1056,7 +1225,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const [h, b] of Object.entries(r.breakers && typeof r.breakers === 'object' ? r.breakers : {}).slice(0, LIMITS.breakersKept)) {
       if (b && BREAKER_STATES.includes(b.state)) breakers[h] = { state: b.state, failures: Number.isInteger(b.failures) ? b.failures : 0, until: Number.isFinite(b.until) ? b.until : 0 };
     }
-    return { lease, topup_after: Number.isFinite(r.topup_after) ? r.topup_after : 0, breakers };
+    const sw = r.sweep && typeof r.sweep === 'object' ? r.sweep : {};
+    const marks = {};
+    for (const [k, m] of Object.entries(sw.marks && typeof sw.marks === 'object' ? sw.marks : {}).slice(0, LIMITS.sweepMarksKept)) {
+      if (/^(body|feed|archive|ledger)\/[0-9a-f]{8,64}$/.test(k) && m && m.state === 'marked' && Number.isInteger(m.seq)) marks[k] = { state: 'marked', seq: m.seq };
+    }
+    return { lease, topup_after: Number.isFinite(r.topup_after) ? r.topup_after : 0, breakers, sweep: { seq: Number.isInteger(sw.seq) && sw.seq >= 0 ? sw.seq : 0, marks } };
   };
   const cleanStars = raw => {
     const out = {};
@@ -1082,8 +1256,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const [o, k] of Object.entries(v.kept && typeof v.kept === 'object' ? v.kept : {})) {
       if (originOf(o) === o && k && Number.isFinite(k.at) && typeof k.epoch === 'string' && !blygs[o]) kept[o] = { at: k.at, epoch: k.epoch };
     }
-    state = { blygs, kept, items: {}, last_run: v.last_run || null, inbox: null, stars: null };
-    S = { docs, spec, keepArchive: [], feeds: new Set(), archives: new Set(), prevSummary: new Map(), bodies: new Map(), deletes: [], bodiesToDelete: [], run: cleanRun(docs.get('state/run') && docs.get('state/run').value) };
+    state = { blygs, kept, items: {}, last_run: v.last_run || null, inbox: null, stars: null, migration: structuredClone(migrationOf(mainRaw(docs))) };
+    // touch: documents an operation that writes must write even if unchanged (conditionally), because a repair was worked out
+    // from them (see WHY A REPAIR NEEDS NO CLOCK)
+    S = { docs, spec, feeds: new Set(), archives: new Set(), prevSummary: new Map(), bodies: new Map(), deletes: [], bodiesToDelete: [], touch: new Set(),
+      run: cleanRun(docs.get('state/run') && docs.get('state/run').value) };
+    const r2 = new Set(); // R2: blygs whose feed holds a record in the Archive's state (moved out when the archive is read too)
+    const touchBlyg = o => { for (const kind of ['feed', 'archive', 'ledger']) if (docs.has(docKey(kind, ledgerName(o)))) S.touch.add(docKey(kind, ledgerName(o))); };
     const doc = (kind, o) => { const d = docs.get(docKey(kind, ledgerName(o))); const val = d && d.value && typeof d.value === 'object' && d.value.origin === o ? d.value : null; return val && val.epoch === epochOf(o) ? structuredClone(val) : null; };
     if (spec.inbox) {
       const d = docs.get('state/inbox');
@@ -1106,7 +1285,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       S.prevSummary.set(o, raw && raw.summary && typeof raw.summary === 'object' ? raw.summary : {});
       for (const i of Object.values(raw && raw.items && typeof raw.items === 'object' ? raw.items : {})) {
         if (!i || typeof i !== 'object' || !ID_RE.test(String(i.id || ''))) continue;
-        state.items[identOf(o, i.id)] = cleanRecord(i, o);
+        const rec = cleanRecord(i, o);
+        state.items[identOf(o, i.id)] = rec;
+        if (ARCHIVE_STATES.includes(rec.read)) r2.add(o);
       }
     }
     for (const o of spec.allArchives ? Object.keys(blygs) : spec.archives) {
@@ -1118,11 +1299,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         const ident = identOf(o, i.id);
         const inFeed = state.items[ident];
         if (inFeed && S.feeds.has(o) && !ARCHIVE_STATES.includes(inFeed.read)) {
-          // R1: the feed's copy is the later one. The archive's copy is dropped from what is stored only once it is older than
-          // repairAgeMs: a younger one may be a tick (or an untick) still between its writes in another invocation, which will
-          // finish it; until then it is kept as it is and read as absent.
-          const at = Date.parse(i.archived_at) || 0;
-          if (now() - at < LIMITS.repairAgeMs) S.keepArchive.push(cleanRecord(i, o));
+          // R1: the feed's copy is the later one; the archive's copy goes. Whatever move of another invocation this half-made
+          // state belongs to is made to run again by the touch (no clock: see WHY A REPAIR NEEDS NO CLOCK)
+          touchBlyg(o);
           continue;
         }
         const rec = cleanRecord(i, o);
@@ -1130,11 +1309,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         state.items[ident] = rec;
       }
     }
+    for (const o of r2) if (S.archives.has(o)) touchBlyg(o);
     // R3: every archive record's id is in its blyg's ledger (when both were read)
     for (const [o, led] of ledgers) {
       if (!S.archives.has(o)) continue;
       const have = new Set(led.ids.map(p => p[0]));
-      for (const i of itemsOf(o)) if (ARCHIVE_STATES.includes(i.read) && !have.has(i.id)) { led.ids.push([i.id, Math.max(0, stamp(i.created, i.fetched_at || now()))]); have.add(i.id); }
+      for (const i of itemsOf(o)) if (ARCHIVE_STATES.includes(i.read) && !have.has(i.id)) { led.ids.push([i.id, Math.max(0, stamp(i.created, i.fetched_at || now()))]); have.add(i.id); touchBlyg(o); }
       if (led.ids.length > LIMITS.archiveIdsPerBlyg) trimLedger(led);
     }
     for (const [k, d] of docs) if (k.startsWith('body/')) S.bodies.set(k.slice(5), d.value || '');
@@ -1160,7 +1340,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const byIdOf = list => Object.fromEntries(list.map(i => [i.id, compact(i)]));
   function docsNow() {
     const out = new Map();
-    out.set('state/following', { layout: LAYOUT, blygs: state.blygs, kept: state.kept, last_run: state.last_run });
+    let migration = state.migration;
+    if (migration.state === 'not_started') { migration = { state: 'not_started' }; moveMigration(migration, 'fresh'); } // (a new Hub: nothing to convert)
+    out.set('state/following', { layout: LAYOUT, blygs: state.blygs, kept: state.kept, last_run: state.last_run, migration });
     out.set('state/run', S.run);
     if (state.inbox) out.set('state/inbox', state.inbox);
     if (state.stars) out.set('state/stars', { stars: state.stars });
@@ -1168,8 +1350,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const o of S.archives) {
       if (!state.blygs[o]) continue;
       const items = byIdOf(itemsOf(o).filter(i => ARCHIVE_STATES.includes(i.read) || !S.feeds.has(o)));
-      // a young archive copy of a post the feed holds unread (R1) stays as stored, unless this operation archived the post itself
-      for (const r of S.keepArchive) if (r.origin === o && !items[r.id]) items[r.id] = r;
       out.set(docKey('archive', ledgerName(o)), { origin: o, epoch: epochOf(o), items });
     }
     for (const [o, led] of ledgers) if (state.blygs[o] || state.kept[o]) out.set(docKey('ledger', ledgerName(o)), { origin: o, epoch: epochOf(o), ...led });
@@ -1187,25 +1367,27 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   async function commit(opId, attempt) {
     const docs = S.docs;
     const writes = [];
-    for (const [k, value] of docsNow()) {
+    const plan = (k, value, touched) => {
       const d = docs.get(k);
       const was = d && d.value && typeof d.value === 'object' ? d.value : null;
-      if (canon(content(was)) === canon(value)) continue;
-      if (!was && isDefaultDoc(k, value)) continue; // nothing stored, and nothing to store
-      // this operation's earlier attempt wrote it, and nobody has written it since: it stands as written (a re-run would apply the
-      // same change twice). If another wrote it after, the change is applied again on what they wrote (they may have undone it).
-      if (attempt > 0 && was && Array.isArray(was.ops) && was.ops[was.ops.length - 1] === opId) continue;
+      if (!touched && canon(content(was)) === canon(value)) return;
+      if (!touched && !was && isDefaultDoc(k, value)) return; // nothing stored, and nothing to store
+      // this operation's earlier attempt wrote it (a FINAL write), and nobody has written it since: it stands as written (a re-run
+      // would apply the same change twice). If another wrote it after, the change is applied again on what they wrote.
+      if (attempt > 0 && was && Array.isArray(was.ops) && was.ops[was.ops.length - 1] === opId) return;
       const [kind, ...rest] = k.split('/');
       const name = rest.join('/');
-      const stamped = { ...value, ops: [...(was && Array.isArray(was.ops) ? was.ops : []).slice(-(LIMITS.opsKept - 1)), opId] };
+      const ops = [...(was && Array.isArray(was.ops) ? was.ops : []).slice(-(LIMITS.opsKept - 1))];
+      const stamped = { ...value, ops: [...ops, opId] };
       if (kind === 'archive' && was && was.items) {
-        // additions first; removals only after the feeds are written
+        // additions first; removals only after the feeds are written. The first half is stamped `<op>:add`: it is never this
+        // operation's final write, so a re-run after a conflict between the halves writes the second half
         const removed = Object.keys(was.items).filter(id => !value.items[id]);
         if (removed.length) {
-          const first = { ...stamped, items: { ...Object.fromEntries(Object.entries(was.items).filter(([id]) => removed.includes(id))), ...value.items } };
+          const first = { ...value, ops: [...ops, `${opId}:add`], items: { ...Object.fromEntries(Object.entries(was.items).filter(([id]) => removed.includes(id))), ...value.items } };
           if (Object.keys(first.items).length !== Object.keys(was.items).length || canon(first.items) !== canon(was.items)) writes.push({ k, kind, name, value: first, phase: 2 });
           writes.push({ k, kind, name, value: stamped, phase: 4 });
-          continue;
+          return;
         }
       }
       // a ledger whose only change is read ids ADDED is written last (a crash before it: R3 adds them again); any other change
@@ -1214,128 +1396,219 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         && was.ids.every(p => value.ids.some(q => q[0] === p[0]));
       const phase = kind === 'state' ? (name === 'following' ? 7 : name === 'run' ? 8 : 6) : onlyAdds ? 9 : PHASE[kind];
       writes.push({ k, kind, name, value: stamped, phase });
-    }
+    };
+    const all = docsNow();
+    for (const [k, value] of all) plan(k, value, false);
+    // the documents a repair was worked out from: written too, conditionally, when anything is written (WHY A REPAIR NEEDS NO CLOCK)
+    if (writes.length) for (const k of S.touch) if (all.has(k) && !writes.some(w => w.k === k)) plan(k, all.get(k), true);
     writes.sort((a, b) => a.phase - b.phase);
+    // ... and, before anything is written, those documents are still the versions the repair was worked out from (a refresh's
+    // snapshot is seconds old; its reads were not made at one instant): one written since makes this attempt run again, so a
+    // first write (a ledger, say) can never be one worked out from a stale archive and then stand, as its own, after a conflict
+    if (writes.length && S.touch.size) {
+      await pool([...S.touch].filter(k => docs.has(k)), 8, async k => {
+        const [kind, ...rest] = k.split('/');
+        const g = await store.get(kind, rest.join('/'));
+        if ((g ? g.version : null) !== (docs.get(k).version ?? null)) throw new StoreConflict(kind, rest.join('/'));
+      });
+    }
     for (const w of writes) {
       const d = docs.get(w.k);
       if (d && d.unreadable) throw Object.assign(new Error(`the Hub's ${w.kind} ${w.name} is not readable, so it is not written over`), { code: 'EUNREADABLEJSON' });
       const r = await store.put(w.kind, w.name, w.value, { ifVersion: d ? d.version : null });
       docs.set(w.k, { value: w.value, version: r.version, at: now() });
     }
-    for (const [kind, name] of S.deletes) { await store.delete(kind, name); docs.delete(docKey(kind, name)); }
+    // an unfollowed blyg's documents: each deleted only if it is still the version this operation read (or, not read, still of
+    // the epoch unfollowed): a refollow's documents written meanwhile are never deleted, whatever its epoch
+    for (const [kind, name, epoch] of S.deletes) {
+      const k = docKey(kind, name);
+      let d = docs.get(k);
+      if (!d) { const g = await store.get(kind, name); d = g ? { value: g.value, version: g.version } : null; if (d && (!d.value || d.value.epoch !== epoch)) d = null; }
+      if (d && d.version !== null && d.version !== undefined) {
+        try { await store.delete(kind, name, { ifVersion: d.version }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; /* written since: not ours to delete */ }
+      }
+      docs.delete(k);
+    }
     return writes.length;
   }
   // One operation at a time in this process (the store's compare-and-swap is what orders operations of different processes).
   let chain = Promise.resolve();
   const locked = fn => { const p = chain.then(fn, fn); chain = p.then(() => {}, () => {}); return p; };
+  const drop = () => { state = null; S = null; ledgers.clear(); };
   /**
    * Run `mutate` as ONE transaction (see the storage seam). `wants`: what to read first. `write: false` for a view (nothing is
-   * written). `docs`: a map of documents already read (a refresh hands each blyg's on from its snapshot to its apply; a write
-   * updates it). → what `mutate` returned.
+   * written). `guard`: refuse (HubNewer) when the store is of a newer layout: every operation that writes, and every read that
+   * leads to a write (default: as `write`). `docs`: a map of documents already read (a refresh hands each blyg's on from its
+   * snapshot to its apply; a write updates it). → what `mutate` returned.
    */
-  function tx(wants, mutate, { write = true, docs: given = null } = {}) {
+  function tx(wants, mutate, { write = true, guard = write, docs: given = null } = {}) {
     return locked(async () => {
       const opId = crypto.randomBytes(6).toString('hex');
       const spec = specOf(wants);
-      let docs = given || new Map();
+      const docs = given || new Map();
+      const how = { rerun: 'first' };
       for (let attempt = 0; ; attempt++) {
         let result;
-        for (let rounds = 0; ; rounds++) {
-          await readDocs(spec, docs);
-          build(spec, docs);
-          // a re-run after a conflict that finds a document this operation already wrote: its move may be done already
-          S.mine = attempt > 0 && [...docs.values()].some(d => d && d.value && Array.isArray(d.value.ops) && d.value.ops.includes(opId));
-          try { result = mutate(); break; }
-          catch (e) {
-            if (!(e instanceof NeedMore) || rounds >= 8) { state = null; S = null; ledgers.clear(); throw e; }
-            addWants(spec, e.wants);
-          }
-        }
-        if (!write) { state = null; S = null; ledgers.clear(); return result; }
         try {
+          for (let rounds = 0; ; rounds++) {
+            await readDocs(spec, docs);
+            if (guard && docs.get('state/following').newer) throw new HubNewer();
+            build(spec, docs);
+            // a re-run that finds a document this operation's earlier attempt wrote last: its move may be done already
+            if (how.rerun === 'again' && [...docs.values()].some(d => d && d.value && Array.isArray(d.value.ops) && d.value.ops.includes(opId))) moveRerun(how, 'found_mine');
+            S.rerun = how.rerun;
+            try { result = mutate(); break; }
+            catch (e) { if (!(e instanceof NeedMore) || rounds >= 8) throw e; addWants(spec, e.wants); }
+          }
+          if (!write) { drop(); return result; }
           prune();
           await commit(opId, attempt);
         } catch (e) {
-          state = null; const gone = S; S = null; ledgers.clear();
+          drop();
           if (e instanceof StoreConflict && attempt + 1 < LIMITS.txAttempts) {
             // read again what is stored now (keeping nothing of this attempt), and run the operation again
             for (const k of [...docs.keys()]) docs.delete(k);
-            void gone;
+            moveRerun(how, 'conflict');
             continue;
           }
           if (e instanceof StoreConflict) throw new Error('the Hub was changed by something else at the same moment, several times: try again');
           throw e;
         }
         const del = S.bodiesToDelete;
-        state = null; S = null; ledgers.clear();
+        drop();
         for (const n of new Set(del)) { try { await store.delete('body', n); } catch { /* swept later */ } }
         return result;
       }
     });
   }
 
-  // ---- migration: the layout before this one (one main document holding every post) ----
+  // ---- the conversion of an older layout (see THE CONVERSION above; MIGRATION_STATES) ----
+  // The older layouts: every post in one main document (`items`); before that, the ledgers inside it too; on a hosted Hub, the
+  // engine before the Archive (posts new, seen, opened, responded and no ledgers). Nothing is archived by the conversion: a post
+  // is where its read state says (`seen` is unread, as before).
+  const objectOr = (v, d = {}) => (v && typeof v === 'object' && !Array.isArray(v) ? v : d);
+  /** This layout's documents already there for `origins` (and every blyg a ledger names): origin → { feed, archive, ledger } as stored. */
+  async function docsThere(origins) {
+    const names = new Map([...origins].map(o => [ledgerName(o), o]));
+    const out = new Map();
+    for (const kind of ['ledger', 'feed', 'archive']) {
+      const listed = await store.list(kind);
+      await pool(listed.filter(n => kind === 'ledger' || names.has(n)), 16, async n => {
+        const g = await store.get(kind, n);
+        const v = g && objectOr(g.value, null);
+        if (!v || typeof v.origin !== 'string' || ledgerName(v.origin) !== n) return;
+        if (!out.has(v.origin)) out.set(v.origin, {});
+        out.get(v.origin)[kind] = { value: v, version: g.version };
+      });
+    }
+    return out;
+  }
+  const epochThere = d => { for (const k of ['feed', 'archive', 'ledger']) { const v = d && d[k] && d[k].value; if (v && typeof v.epoch === 'string' && v.epoch) return v.epoch; } return ''; };
   /**
-   * The main document of the older layouts (every post in it, `items`; before that, the ledgers inside it too; on a hosted Hub,
-   * the engine before the Archive: posts new, seen, opened, responded and no ledgers) is converted, once, into this layout.
-   * ORDER, so a crash anywhere loses nothing: (1) a copy of the old document is kept ('pre-shard'); (2) each followed blyg's
-   * ledger, archive and feed are written (each marked with the old document's version, so a repeated conversion may write
-   * them again, and a conversion that finds one written since by this layout stops); (3) the inbox; (4) the main document,
-   * conditionally on the version converted (until then every reader still sees the old document and converts again: the
-   * conversion is deterministic, so two invocations converting at once write the same documents); (5) the copy is deleted.
-   * Nothing is archived by it: a post is where its read state says (`seen` is unread, as before).
+   * Steps 2 (and the merge): this layout's main document, `converting`, carrying the copy of `doc` (the older document, tagged
+   * by its version). Written only if nothing is there yet (`ifMain` null) or the older document is still the version read.
    */
-  async function migrate(got) {
-    const v = got.value;
-    const tag = String(got.version);
+  async function beginConversion({ doc, tag, ifMain }) {
     const epochFor = o => crypto.createHash('sha256').update(`epoch\n${o}\n${tag}`).digest('hex').slice(0, 16);
-    await store.put('state', 'pre-shard', { from: tag, doc: v });
+    const oldBlygs = objectOr(doc.blygs), oldKept = objectOr(doc.kept);
+    const there = await docsThere(new Set([...Object.keys(oldBlygs), ...Object.keys(oldKept)]));
     const blygs = {}, kept = {};
-    for (const [o, b] of Object.entries(v.blygs && typeof v.blygs === 'object' ? v.blygs : {})) {
-      if (originOf(o) === o && b && typeof b === 'object') blygs[o] = { ...b, epoch: typeof b.epoch === 'string' && b.epoch ? b.epoch : epochFor(o) };
+    for (const [o, b] of Object.entries(oldBlygs)) {
+      if (originOf(o) !== o || !b || typeof b !== 'object') continue;
+      // the epoch of the documents already there (an earlier conversion's, or this layout's since): they are kept as they are
+      blygs[o] = { ...b, epoch: epochThere(there.get(o)) || (typeof b.epoch === 'string' && b.epoch ? b.epoch : epochFor(o)) };
     }
-    for (const [o, k] of Object.entries(v.kept && typeof v.kept === 'object' ? v.kept : {})) {
+    for (const [o, k] of Object.entries(oldKept)) {
       if (blygs[o] || originOf(o) !== o) continue;
-      kept[o] = k && typeof k === 'object' ? { at: Number(k.at) || now(), epoch: typeof k.epoch === 'string' && k.epoch ? k.epoch : epochFor(o) } : { at: Number(k) || now(), epoch: epochFor(o) };
+      const e = epochThere(there.get(o)) || (k && typeof k.epoch === 'string' && k.epoch ? k.epoch : epochFor(o));
+      kept[o] = { at: Number(k && typeof k === 'object' ? k.at : k) || now(), epoch: e };
     }
-    const items = v.items && typeof v.items === 'object' ? v.items : {};
-    const oldLedgers = v.ledgers && typeof v.ledgers === 'object' ? v.ledgers : {};
-    const put = async (kind, o, value) => {
-      const name = ledgerName(o);
-      const cur = await store.get(kind, name);
-      const curv = cur && cur.value && typeof cur.value === 'object' ? cur.value : null;
-      // a document this layout wrote since (no conversion mark, or another's) is newer than the old document: stop
-      if (curv && curv.epoch && !curv.migrated_from && kind !== 'ledger') throw new StoreConflict(kind, name);
-      if (curv && curv.migrated_from && curv.migrated_from !== tag) throw new StoreConflict(kind, name);
-      if (kind === 'ledger' && curv && curv.epoch && !curv.migrated_from) throw new StoreConflict(kind, name);
-      await store.put(kind, name, { ...value, migrated_from: tag }, { ifVersion: cur ? cur.version : null });
+    // a blyg the older document does not follow any more (an older invocation unfollowed it after an earlier conversion) whose
+    // ledger of this layout is there: kept, as an unfollow without forget keeps it
+    for (const [o, d] of there) {
+      if (blygs[o] || kept[o] || originOf(o) !== o || !d.ledger || typeof d.ledger.value.epoch !== 'string' || !d.ledger.value.epoch) continue;
+      kept[o] = { at: now(), epoch: d.ledger.value.epoch };
+    }
+    const mig = { state: 'not_started' };
+    moveMigration(mig, 'begin');
+    Object.assign(mig, { from: tag, copy: doc });
+    await store.put('state', 'following', { layout: LAYOUT, blygs, kept, last_run: doc.last_run || null, migration: mig }, { ifVersion: ifMain });
+  }
+  /** Steps 3 and 4: every blyg's documents (keeping those there), the inbox, the unread posts' text; the copy; keeping_copy. */
+  async function finishConversion(main) {
+    const m = main.value;
+    const mig = migrationOf(m);
+    const tag = String(mig.from || '');
+    const doc = objectOr(mig.copy);
+    const items = Object.values(objectOr(doc.items));
+    const oldLedgers = objectOr(doc.ledgers);
+    const blygs = objectOr(m.blygs), kept = objectOr(m.kept);
+    const put = async (kind, o, cur, value) => {
+      // a document of this layout already there for this epoch stands as it is (an earlier attempt's, or written since)
+      if (cur && cur.value && cur.value.epoch === value.epoch) return cur.value;
+      await store.put(kind, ledgerName(o), { ...value, migrated_from: tag }, { ifVersion: cur ? cur.version : null });
+      return { ...value, migrated_from: tag };
     };
-    for (const [o, b] of [...Object.entries(blygs), ...Object.entries(kept)]) {
+    const getCur = async (kind, o) => { const g = await store.get(kind, ledgerName(o)); const v = g && objectOr(g.value, null); return g ? { value: v && v.origin === o ? v : null, version: g.version } : null; };
+    await pool([...Object.entries(blygs), ...Object.entries(kept)], 8, async ([o, b]) => {
+      if (originOf(o) !== o || !b || typeof b.epoch !== 'string') return;
       const followedNow = !!blygs[o];
-      const mine = Object.values(items).filter(i => i && typeof i === 'object' && i.origin === o && ID_RE.test(String(i.id || ''))).map(i => cleanRecord(structuredClone(i), o));
+      const mine = items.filter(i => i && typeof i === 'object' && i.origin === o && ID_RE.test(String(i.id || ''))).map(i => cleanRecord(structuredClone(i), o));
       const arch = followedNow ? mine.filter(i => ARCHIVE_STATES.includes(i.read)) : [];
       const feedItems = followedNow ? mine.filter(i => !ARCHIVE_STATES.includes(i.read)) : [];
-      // its ledger: the one stored (the layout before kept them apart), else the one inside the old document; and R3
-      const stored = await store.get('ledger', ledgerName(o));
-      const raw = stored && stored.value && stored.value.origin === o && (!stored.value.epoch || stored.value.migrated_from === tag) ? stored.value : oldLedgers[o] || null;
-      if (raw || arch.length) {
+      // its ledger: the one stored by the layout before (no epoch), else the one inside the old document; and R3
+      const curL = await getCur('ledger', o);
+      const older = curL && curL.value && !curL.value.epoch ? curL.value : null;
+      const raw = older || oldLedgers[o] || null;
+      if (raw || arch.length || (curL && curL.value)) {
         const led = cleanLedger(raw);
         const have = new Set(led.ids.map(p => p[0]));
         for (const i of arch) if (!have.has(i.id)) { led.ids.push([i.id, Math.max(0, stamp(i.created, i.fetched_at || now()))]); have.add(i.id); }
         if (led.ids.length > LIMITS.archiveIdsPerBlyg) trimLedger(led);
-        await put('ledger', o, { origin: o, epoch: b.epoch, ...led });
+        await put('ledger', o, curL, { origin: o, epoch: b.epoch, ...led });
       }
-      if (!followedNow) continue;
-      if (arch.length) await put('archive', o, { origin: o, epoch: b.epoch, items: Object.fromEntries(arch.map(i => [i.id, i])) });
-      if (feedItems.length) await put('feed', o, { origin: o, epoch: b.epoch, items: Object.fromEntries(feedItems.map(i => [i.id, i])),
+      if (!followedNow) return;
+      const curA = await getCur('archive', o);
+      if (arch.length || (curA && curA.value)) await put('archive', o, curA, { origin: o, epoch: b.epoch, items: Object.fromEntries(arch.map(i => [i.id, i])) });
+      const curF = await getCur('feed', o);
+      const feed = (feedItems.length || (curF && curF.value)) ? await put('feed', o, curF, { origin: o, epoch: b.epoch, items: Object.fromEntries(feedItems.map(i => [i.id, i])),
         summary: { unread: feedItems.filter(isUnreadHeld).length, archived: arch.length, backfill: BACKFILL_MODES.includes(raw && raw.backfill) ? raw.backfill : 'unknown',
-          bad: raw && raw.bad && typeof raw.bad === 'object' ? Object.keys(raw.bad).length : 0, queue: raw && Array.isArray(raw.queue) ? raw.queue.length : 0, changes: [] } });
+          bad: raw && raw.bad && typeof raw.bad === 'object' ? Object.keys(raw.bad).length : 0, queue: raw && Array.isArray(raw.queue) ? raw.queue.length : 0, changes: [] } }) : null;
+      // the text of each unread post this conversion put in the feed: COPIED from where the older layout kept it (left there)
+      if (feed && feed.migrated_from === tag) {
+        await pool(Object.values(objectOr(feed.items)).filter(i => i && i.kind !== 'withdrawn'), 8, async i => {
+          const name = bodyNameOf(i);
+          const g = await store.get('oldbody', name);
+          if (!g || typeof g.value !== 'string' || !g.value) return;
+          try { await store.put('body', name, g.value, { ifVersion: null }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; /* there already */ }
+        });
+      }
+    });
+    if (doc.inbox && typeof doc.inbox === 'object' && !(await store.get('state', 'inbox'))) {
+      try { await store.put('state', 'inbox', doc.inbox, { ifVersion: null }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; }
     }
-    if (v.inbox && typeof v.inbox === 'object' && !(await store.get('state', 'inbox'))) await store.put('state', 'inbox', v.inbox, { ifVersion: null });
-    try {
-      await store.put('state', 'following', { layout: LAYOUT, blygs, kept, last_run: v.last_run || null }, { ifVersion: got.version });
-    } catch (e) { if (!(e instanceof StoreConflict)) throw e; /* another invocation converted (or changed) it meanwhile: read it again */ }
-    try { await store.delete('state', 'pre-shard'); } catch { /* kept a while longer */ }
+    // step 4: the copy, kept through the quiet period; then the main document says so (conditionally: one that changed meanwhile
+    // was finished by another invocation, and this one reads it again)
+    await store.put('state', 'pre-shard', { from: tag, doc });
+    const next = { state: mig.state, from: tag };
+    moveMigration(next, 'converted');
+    next.copy_until = now() + LIMITS.migrationQuietMs;
+    const { migration: _m, ...rest } = content(m);
+    await store.put('state', 'following', { ...rest, migration: next }, { ifVersion: main.version });
+  }
+  /** Step 5, by a sweep: after the quiet period, the copy and the older bodies go, the marker keeps no old post, and it is done. */
+  async function finishQuietPeriod() {
+    const main = await getDoc('state', 'following');
+    const mig = migrationOf(main.value);
+    if (!main.value || layoutOf(main.value) !== LAYOUT || mig.state !== 'keeping_copy' || now() < (mig.copy_until || 0)) return false;
+    await store.delete('state', 'pre-shard');
+    for (const n of await store.list('oldbody')) await store.delete('oldbody', n);
+    const leg = await store.get('state', 'legacy');
+    if (leg && isMarker(leg.value) && (leg.value.doc || Object.keys(objectOr(leg.value.items)).length)) {
+      try { await store.put('state', 'legacy', markerOf({}, leg.value.from, false), { ifVersion: leg.version }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; }
+    }
+    await tx({}, () => { const m = load().migration; if (m.state === 'keeping_copy') moveMigration(m, 'finish', now()); });
+    return true;
   }
 
   // A post whose blyg is not followed has no business being held; the ledgers kept for unfollowed blygs: at most keptMax,
@@ -1356,17 +1629,22 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const to = followMachine.to(was, ev);
     const name = ledgerName(origin);
     if (to === 'followed') {
-      // refollow: the kept ledger is used as it is (same epoch); a follow starts a new epoch
-      st.blygs[origin] = { ...record, epoch: was === 'kept' ? st.kept[origin].epoch : newEpoch() };
+      // every follow starts a new EPOCH, a refollow too: whatever a slow invocation wrote for the blyg as it was followed before
+      // (a refresh's apply that read the follow list before the unfollow) is read as absent. The kept ledger is used as it is,
+      // and written again under the new epoch (it was read: ledgerOf)
+      if (was === 'kept') ledgerOf(origin);
+      st.blygs[origin] = { ...record, epoch: newEpoch() };
       delete st.kept[origin];
     } else if (to === 'kept') {
-      st.kept[origin] = { at: now(), epoch: st.blygs[origin].epoch };
+      const epoch = st.blygs[origin].epoch;
+      st.kept[origin] = { at: now(), epoch };
       delete st.blygs[origin];
-      S.deletes.push(['feed', name], ['archive', name]);
+      S.deletes.push(['feed', name, epoch], ['archive', name, epoch]);
     } else {
+      const epoch = epochOf(origin);
       delete st.blygs[origin]; delete st.kept[origin];
       ledgers.delete(origin);
-      S.deletes.push(['feed', name], ['archive', name], ['ledger', name]);
+      S.deletes.push(['feed', name, epoch], ['archive', name, epoch], ['ledger', name, epoch]);
     }
     return to;
   }
@@ -1442,6 +1720,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const candidates = arch.filter(i => !starred.has(identOf(i.origin, i.id))).sort((a, b) => (Date.parse(a.archived_at) || 0) - (Date.parse(b.archived_at) || 0));
     const drop = candidates.slice(0, arch.length - LIMITS.archiveRecordsPerBlyg);
     for (const i of drop) delete state.items[identOf(i.origin, i.id)];
+    if (drop.length) S.touch.add('state/stars'); // (worked out from the stars: written too, so a star made meanwhile re-runs this)
     return drop.length;
   };
   // The sanitised body of each post is a 'body' of its own in the store, named in its record (`body`; a record of the older
@@ -1618,7 +1897,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (r.trouble) throw new Error(`could not ask that site: ${r.trouble}`);
     if (r.none) throw new Error('no Blygger manifest was found there');
     const added = await tx({}, () => addBlyg({ ...r, via: 'url' }));
-    unfollowedHere.delete(r.origin);
     await reschedule(); onChange();
     return { ...r, added };
   }
@@ -1631,7 +1909,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const o = String(origin);
     const r = await tx({ feeds: [o], archives: [o], ledgers: [o], stars: forget }, () => {
       const st = load();
-      if (!st.blygs[o]) return S.mine; // (unfollowed by this operation's own earlier attempt: true)
+      if (!st.blygs[o]) return S.rerun === 'again_mine'; // (unfollowed by this operation's own earlier attempt: true)
       for (const i of itemsOf(o)) if (!isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read)) S.bodiesToDelete.push(bodyNameOf(i));
       if (forget) {
         needStars();
@@ -1642,11 +1920,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         led.bad = {}; led.later = {};
         moveBackfill(led, 'forget');
         moveFollow(st, o, 'unfollow_keep');
+        // the kept ledger is written even if nothing in it changed: a refresh's apply that read the follow list before this
+        // unfollow then meets a changed ledger and runs again (and sees the unfollow), never writes into what is kept
+        S.touch.add(docKey('ledger', ledgerName(o)));
       }
       for (const k of Object.keys(st.items)) if (st.items[k].origin === o) delete st.items[k];
       return true;
     });
-    if (r) { unfollowedHere.add(o); await reschedule(); onChange(); }
+    if (r) { await reschedule(); onChange(); }
     return r;
   }
   /** What /following/state may ask: pause or resume a blyg (BLYG_STATES), or Retry its reading back (BACKFILL_MODES). */
@@ -1674,7 +1955,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const r = await tx({}, () => {
       const b = load().blygs[origin];
       if (!b) throw new Error('not followed');
-      if (S.mine && !canMoveBlyg(b, ev) && Object.values(BLYG_MOVES[ev]).includes(b.state)) return b.state; // (its own earlier attempt)
+      if (S.rerun === 'again_mine' && !canMoveBlyg(b, ev) && Object.values(BLYG_MOVES[ev]).includes(b.state)) return b.state; // (its own earlier attempt)
       moveBlyg(b, ev);
       if (ev === 'resume') { b.failures = 0; b.absent_runs = 0; b.retry_after = 0; }
       return b.state;
@@ -1731,6 +2012,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   async function confirmImport(entries) {
     const r = await tx({}, () => {
       const added = [], skipped = [];
+      // (the ledgers of the kept blygs among them, read at once: a refollow writes its ledger again)
+      needLedgers((Array.isArray(entries) ? entries.slice(0, LIMITS.followMax) : []).map(e => originOf(e && e.origin)).filter(o => o && load().kept[o]));
       for (const e of Array.isArray(entries) ? entries.slice(0, LIMITS.followMax) : []) {
         const origin = originOf(e && e.origin);
         if (!origin || urlRefusal(origin)) { skipped.push(String(e && e.origin || '').slice(0, 200)); continue; }
@@ -1739,7 +2022,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       }
       return { added, skipped };
     });
-    for (const o of r.added) unfollowedHere.delete(o);
     if (r.added.length) { await reschedule(); onChange(); }
     return r;
   }
@@ -1857,7 +2139,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       // this very fetch was applied already, by an earlier attempt of this transaction (its body's name is unique to the fetch)
       if (held && bodyName && held.body === bodyName) {
         if (sig === '-') tally.new++;
-        S.keepArchive = S.keepArchive.filter(r => !(r.origin === b.origin && r.id === e.id)); // (an edit's return: its archive copy goes now)
         return 'stored';
       }
       tally.raced++; tally.deferred++; return 'deferred';
@@ -1972,8 +2253,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return { kind: 'ok', base, entries: [...byId.values()], whole: raw.length <= LIMITS.indexEntries, readAt: now() };
   }
   /** What a blyg's head says about its record (title, template, reachable or not), applied to the record held now. */
-  function applyHead(b, head, tally) {
-    b.last_try = now();
+  function applyHead(b, head, tally, at = now()) {
+    b.last_try = at;
     if (head.base && head.kind !== 'trouble') {
       b.title = head.base.title || b.title;
       b.item_template = head.base.template;
@@ -1987,8 +2268,23 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (head.kind === 'absent') { noteFailure(b, 'absent', head.message); tally.absent++; return; }
     if (head.kind === 'refused') { b.last_error = head.error; tally.refused++; return; }
     if (canMoveBlyg(b, 'recover')) moveBlyg(b, 'recover');
-    b.failures = 0; b.absent_runs = 0; b.retry_after = 0; b.last_error = head.base.templateRefused ? REFUSALS.item : ''; b.last_ok = now();
+    b.failures = 0; b.absent_runs = 0; b.retry_after = 0; b.last_error = head.base.templateRefused ? REFUSALS.item : ''; b.last_ok = at;
   }
+  /**
+   * What one refresh learned about a blyg's RECORD in the main document (its head, an item's refusal, when it was read back), kept
+   * aside and put in the main document every LIMITS.mainEvery blygs and at the end of the refresh (flushRecords): re-applied on
+   * the record as stored then (a pause the owner made meanwhile stands: applyHead moves the state only by its table).
+   */
+  const recordNote = (o, epoch, { head = null, error = '', last_backfill = 0 } = {}) => ({ o, epoch, head, error, last_backfill, at: now() });
+  function replayRecord(b, n) {
+    if (n.head) applyHead(b, n.head, newTally(), n.at);
+    if (n.error) b.last_error = n.error;
+    if (n.last_backfill) b.last_backfill = n.last_backfill;
+  }
+  const flushRecords = notes => (notes.length ? tx({}, () => {
+    const st = load();
+    for (const n of notes) { const b = st.blygs[n.o]; if (b && b.epoch === n.epoch) replayRecord(b, n); }
+  }) : Promise.resolve())
   /**
    * The index against what is held (a pure step on the operation's copy, made on the snapshot to plan the fetches and again in
    * the apply on what is stored then): drops what the index no longer lists, marks withdrawals, and sorts every entry into what
@@ -2057,15 +2353,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const touchedHere = new Map();
   let touchSeq = 0;
   const touch = rec => { touchedHere.set(identOf(rec.origin, rec.id), ++touchSeq); if (touchedHere.size > 5000) touchedHere.delete(touchedHere.keys().next().value); };
-  const unfollowedHere = new Set(); // a cache: blygs this process unfollowed, so a refresh running here stops asking them at once
   const newTally = (reason = '') => ({ reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
     errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, held: 0, released: 0, fresh_failing: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 });
   const addTally = (into, from) => { for (const [k, v] of Object.entries(from)) if (typeof v === 'number') into[k] = (into[k] || 0) + v; };
   const blygWants = o => ({ feeds: [o], archives: [o], ledgers: [o] });
   /** Fetch one post (budget and checks: pull) and keep its text in the store, before any record names it. → a result for ingest. */
   async function fetchOne(b, e, sig, phase, g, tally, heldHash = null, since = 0) {
-    // unfollowed by this process meanwhile: not asked (another invocation's unfollow is seen by the apply, through the epoch)
-    if (unfollowedHere.has(b.origin)) { tally.aborted++; return { e, sig, got: { out: 'aborted' }, bodyName: '', phase }; }
+    // (a blyg unfollowed meanwhile, here or anywhere, is seen by the apply, through its epoch: what was fetched is not kept)
     const moved = () => sig !== '-' && (touchedHere.get(identOf(b.origin, e.id)) || 0) > since;
     if (moved()) { tally.raced++; tally.deferred++; return { e, sig, got: { out: 'raced' }, bodyName: '', phase }; }
     const got = await pull(b, e.id, g, tally);
@@ -2080,16 +2374,18 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   /** Apply what was fetched for a blyg: what an index says, then each result, then (`finish`) its queue, backfill mode and parts. */
   function applyResults(o, epoch, head, results, cfg, g, t, { finish = null, last_backfill = 0 } = {}) {
     const st = load();
-    const b = st.blygs[o];
-    if (!b || b.epoch !== epoch) { t.aborted += results.length || 1; return null; } // unfollowed (or followed again) meanwhile
+    const held = st.blygs[o];
+    if (!held || held.epoch !== epoch) { t.aborted += results.length || 1; return null; } // unfollowed (or followed again) meanwhile
+    // the record as this apply sees it: what changes in it goes to the main document later (recordNote), not in this commit
+    const b = { ...held };
+    const note = recordNote(o, epoch, { head: finish ? null : head, last_backfill });
     head.tally = t;
-    if (!finish) applyHead(b, head, t);
-    if (last_backfill) b.last_backfill = last_backfill;
-    if (head.kind !== 'ok') return { left: 0 };
+    if (!finish) applyHead(b, head, t, note.at);
+    if (head.kind !== 'ok') return { left: 0, note };
     const plan = finish ? { b, led: ledgerFor(o), left: 0 } : indexPass(b, head, cfg);
     let freshOk = false, freshFails = 0;
     for (const r of results) {
-      const out = r.got.out !== 'ok' ? (r.got.error && (b.last_error = r.got.error), r.got.out)
+      const out = r.got.out !== 'ok' ? (r.got.error && (b.last_error = note.error = r.got.error), r.got.out)
         : ingest(b, r.e, r.sig, r.got, r.bodyName, cfg, g, t);
       if (r.phase === 'fresh' || r.phase === 'backfill' || r.phase === 'topup') outcome(plan, r.e, out);
       if (r.phase === 'fresh') { if (['missing', 'unusable', 'host_trouble'].includes(out)) freshFails++; if (out === 'stored') freshOk = true; }
@@ -2104,7 +2400,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         led.fresh_after = now() + backoffMs(led.fresh_failures);
         t.fresh_failing++;
       }
-      return { left: plan.left };
+      return { left: plan.left, note };
     }
     // the end of a refresh for this blyg: what is left of its backfill, in order, is the queue a top-up reads until the next refresh
     const led = plan.led;
@@ -2113,7 +2409,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     else moveBackfill(led, finish.rest.length + finish.left + plan.left > 0 ? 'remain' : 'finish');
     settleParts(o);
     trimArchive(o);
-    return { left: plan.left };
+    return { left: plan.left, note };
   }
   /** One blyg of a refresh: its head, a snapshot plan, the fetches, one apply. → what the backfill needs, or null. */
   async function refreshBlyg(o, run) {
@@ -2175,6 +2471,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       return r && { ...r, mine: copy(itemsOf(o).filter(i => !ARCHIVE_STATES.includes(i.read))) };
     }, { docs });
     if (applied && applied.mine) { run.items = [...run.items.filter(i => i.origin !== o), ...applied.mine]; run.unread = feedCountOf(run); }
+    if (applied && applied.note) run.notes.push(applied.note);
     addTally(tally, t);
     const bp = run.backfillPlans.find(x => x.o === o);
     if (bp) bp.left = (applied ? applied.left : 0) + left;
@@ -2303,7 +2600,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget; g.returns = new Map(); // (edit-returns per blyg in this refresh)
     const tally = newTally(reason);
-    const run = { g, cfg, tally, backfillPlans: [], unread: 0, total: 0, docs: new Map(), started: touchSeq, items: [], blygs: {} };
+    const run = { g, cfg, tally, backfillPlans: [], unread: 0, total: 0, docs: new Map(), started: touchSeq, items: [], blygs: {}, notes: [] };
+    // what the refresh learned about the blygs' records: into the main document every LIMITS.mainEvery blygs (a crash loses at most
+    // that many blygs' last-tried times and failure counts: they are tried again first), and at the end
+    const flush = async (all = false) => {
+      if (!all && run.notes.length < LIMITS.mainEvery) return;
+      const notes = run.notes.splice(0);
+      try { await flushRecords(notes); } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
+    };
     try {
       // what is followed, and how much each blyg holds: the main document and every feed (no ledger, no archive)
       const snap0 = await tx({ allFeeds: true }, () => {
@@ -2326,19 +2630,23 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (budget.spent() || budget.requests + 2 > budget.cap - reserve) { tally.deferred++; continue; }
         try { await refreshBlyg(o, run); tally.blygs++; }
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
+        await flush();
         if (now() >= renewAt) { if (!(await renewLease(holder, leaseMs))) break; renewAt = now() + leaseMs / 2; }
       }
       try { await backfillRun(run); } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
       for (const p of run.backfillPlans) {
         try {
           const t = newTally();
-          await tx(blygWants(p.o), () => { const x = newTally(); applyResults(p.o, p.epoch, p.head, p.results, cfg, g, x, { finish: { rest: p.backfill, left: p.left }, last_backfill: p.lastBackfill }); Object.assign(t, x); }, { docs: run.docs });
+          const r = await tx(blygWants(p.o), () => { const x = newTally(); const a = applyResults(p.o, p.epoch, p.head, p.results, cfg, g, x, { finish: { rest: p.backfill, left: p.left }, last_backfill: p.lastBackfill }); Object.assign(t, x); return a; }, { docs: run.docs });
+          if (r && r.note && (r.note.error || r.note.last_backfill)) run.notes.push(r.note);
           addTally(tally, t);
         } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
       }
       try { await refreshInbox(getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now)), cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
       tally.requests = budget.requests;
-      await tx({}, () => { load().last_run = { ...tally, at: new Date(now()).toISOString() }; });
+      // the records' notes left, and the run's tally: one write of the main document
+      const notes = run.notes.splice(0);
+      await tx({}, () => { const st = load(); for (const n of notes) { const b = st.blygs[n.o]; if (b && b.epoch === n.epoch) replayRecord(b, n); } st.last_run = { ...tally, at: new Date(now()).toISOString() }; });
       try { await sweep(); } catch (e) { console.warn(`[following] sweep: ${cleanText(String(e && e.message), 200)}`); }
     } finally {
       opCtx = null;
@@ -2438,31 +2746,52 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
 
   // ---- sweeping: what nothing names any more ----
   /**
-   * Bodies no held record names, older than LIMITS.bodySweepAgeMs (a body is written BEFORE the record that names it, so a younger
-   * one may belong to a transaction not yet committed: it is never deleted); and documents of blygs neither followed nor kept.
+   * Bodies no held record names, and documents of blygs neither followed nor kept: each deleted when it was found unnamed by an
+   * EARLIER sweep too (SWEEP_MARKS, in the run document) and its written-at is older than LIMITS.bodySweepAgeMs (a body is written
+   * BEFORE the record that names it, so a young one may belong to a transaction not yet committed: it is never deleted). Also
+   * ends the conversion's quiet period when it is over (MIGRATION_STATES). → how many were deleted.
    */
   async function sweep() {
-    const listed = await store.list('body');
+    try { await finishQuietPeriod(); } catch (e) { if (e instanceof HubNewer) throw e; console.warn(`[following] the conversion: ${cleanText(String(e && e.message), 200)}`); }
+    const listed = {};
+    for (const kind of ['body', 'feed', 'archive', 'ledger']) listed[kind] = await store.list(kind);
     const known = await tx({ allFeeds: true }, () => {
       const st = load();
       return { bodies: new Set(Object.values(st.items).filter(i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read)).map(bodyNameOf)),
         names: new Set([...Object.keys(st.blygs), ...Object.keys(st.kept)].map(ledgerName)), followed: new Set(Object.keys(st.blygs).map(ledgerName)) };
-    }, { write: false });
-    let n = 0;
-    for (const name of listed) {
-      if (known.bodies.has(name)) continue;
-      const got = await store.get('body', name);
-      if (got && now() - (got.at || 0) >= LIMITS.bodySweepAgeMs) { await store.delete('body', name, { ifVersion: got.version }).catch(() => {}); n++; }
-    }
-    for (const kind of ['feed', 'archive', 'ledger']) {
-      for (const name of await store.list(kind)) {
-        const keep = kind === 'ledger' ? known.names : known.followed;
-        if (keep.has(name)) continue;
-        const got = await store.get(kind, name);
-        if (got && now() - (got.at || 0) >= LIMITS.bodySweepAgeMs) { await store.delete(kind, name, { ifVersion: got.version }).catch(() => {}); n++; }
+    }, { write: false, guard: true });
+    const unnamed = new Set();
+    for (const name of listed.body) if (!known.bodies.has(name)) unnamed.add(docKey('body', name));
+    for (const kind of ['feed', 'archive', 'ledger']) for (const name of listed[kind]) if (!(kind === 'ledger' ? known.names : known.followed).has(name)) unnamed.add(docKey(kind, name));
+    // the marks: what an earlier sweep found unnamed may go now; what is unnamed for the first time is marked; what is named again
+    // is unmarked. (Nothing is written when nothing is unnamed and nothing was marked.)
+    const ripe = await tx({}, () => {
+      const sw = S.run.sweep;
+      if (!unnamed.size && !Object.keys(sw.marks).length) return [];
+      sw.seq++;
+      for (const [key, m] of Object.entries(sw.marks)) if (!unnamed.has(key)) { moveSweepMark(m, 'named'); delete sw.marks[key]; }
+      const out = [];
+      for (const key of unnamed) {
+        const m = sw.marks[key];
+        if (m) { if (m.seq < sw.seq) out.push(key); continue; }
+        if (Object.keys(sw.marks).length >= LIMITS.sweepMarksKept) continue;
+        const fresh = { state: 'unmarked', seq: sw.seq };
+        moveSweepMark(fresh, 'mark');
+        sw.marks[key] = fresh;
       }
+      return out;
+    });
+    const gone = [];
+    for (const key of ripe) {
+      const [kind, ...rest] = key.split('/');
+      const name = rest.join('/');
+      const got = await store.get(kind, name);
+      if (!got) { gone.push(key); continue; }
+      if (now() - (got.at || 0) < LIMITS.bodySweepAgeMs) continue;
+      try { await store.delete(kind, name, { ifVersion: got.version }); gone.push(key); } catch (e) { if (!(e instanceof StoreConflict)) throw e; }
     }
-    return n;
+    if (gone.length) await tx({}, () => { const sw = S.run.sweep; for (const key of gone) if (sw.marks[key]) { moveSweepMark(sw.marks[key], 'sweep'); delete sw.marks[key]; } });
+    return gone.length;
   }
 
   // ---- the timer ----
@@ -2523,7 +2852,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const rec = byKey(key);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     // (this operation's own earlier attempt moved it already, before another write made it run again: done, not refused)
-    if (S.mine && !canMoveRead(rec, ev) && READ_MOVES[ev] && Object.values(READ_MOVES[ev]).includes(rec.read)) return rec.read;
+    if (S.rerun === 'again_mine' && !canMoveRead(rec, ev) && READ_MOVES[ev] && Object.values(READ_MOVES[ev]).includes(rec.read)) return rec.read;
     if (ev === 'tick') { needBodies([bodyNameOf(rec)]); tickRec(rec); trimArchive(rec.origin); } else moveRead(rec, ev);
     return load().items[identOf(rec.origin, rec.id)].read;
   }
@@ -2591,7 +2920,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       refuseIfNotAsked(b);
       syncBreakers();
       return { rec: copy(rec), b: copy(b), sig: sigOf(rec) };
-    }, { write: false });
+    }, { write: false, guard: true });
     const tally = { deferred: 0, errors: 0, invalid: 0, missing: 0, refused: 0, aborted: 0 };
     const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
     let got;
@@ -2605,7 +2934,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const rec = byKey(k);
       // this untick's own earlier attempt wrote the feed (its body is unique to it): finish it, the archive copy goes
       if (rec && bodyName && rec.body === bodyName && !ARCHIVE_STATES.includes(rec.read)) {
-        S.keepArchive = S.keepArchive.filter(r => !(r.origin === rec.origin && r.id === rec.id));
         dropArchivedId(rec.origin, rec.id);
         return rec.read;
       }
@@ -2642,13 +2970,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const k = String(key);
     const entry = Object.values(stars).find(e => e.key === k);
     if (ev === 'unstar') {
-      if (!entry && S.mine) return 'plain'; // (unstarred by this operation's own earlier attempt)
+      if (!entry && S.rerun === 'again_mine') return 'plain'; // (unstarred by this operation's own earlier attempt)
       if (!entry) throw new Error('that post is not starred');
       moveStar(entry, 'unstar');
       delete stars[identOf(entry.origin, entry.id)];
       return entry.star;
     }
-    if (entry && S.mine) return entry.star; // (starred by this operation's own earlier attempt)
+    if (entry && S.rerun === 'again_mine') return entry.star; // (starred by this operation's own earlier attempt)
     if (entry) { moveStar(entry, 'star'); return entry.star; } // refused: already starred
     const rec = byKey(k);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
@@ -2674,7 +3002,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const r = await tx({}, () => {
         const rec = byKey(key);
         if (!rec || isWithdrawn(rec)) throw new Error('no such post');
-        if (!canMoveRead(rec, 'tick') && S.mine && ARCHIVE_STATES.includes(rec.read)) return { read: rec.read, parts: 0 }; // (done by its own earlier attempt)
+        if (!canMoveRead(rec, 'tick') && S.rerun === 'again_mine' && ARCHIVE_STATES.includes(rec.read)) return { read: rec.read, parts: 0 }; // (done by its own earlier attempt)
         if (!canMoveRead(rec, 'tick')) throw new Error(`read state: cannot tick while ${rec.read}`);
         const t = tickBatchNow([{ key, members: Array.isArray(d.members) ? d.members : [] }]);
         return { read: load().items[identOf(rec.origin, rec.id)].read, parts: t.parts };
@@ -2961,6 +3289,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     recordUrlOf: rec => tx({}, () => recordUrlOf(rec), { write: false }), openedHere, heldVersion, responseOf: stub => tx({}, () => responseOfNow(stub), { write: false }), bodyHtml, sweep, sweepBodies: sweep,
     keyFor, runState, followCount: () => tx({}, () => Object.keys(load().blygs).length, { write: false }), scheduleMode: () => schedule.mode, inboxState: () => tx({ inbox: true }, () => load().inbox.state, { write: false }),
     breakerSnapshot, store,
+    /** Refuses (HubNewer) when the store is of a newer layout than this engine: a host checks it before writing anything of its own. */
+    checkLayout: () => tx({}, () => LAYOUT, { write: false, guard: true }),
+    migrationState: () => tx({}, () => load().migration.state, { write: false }),
     start: () => reschedule(),
     stop: () => { if (schedule.mode === 'scheduled') { timers.clear(handle); handle = undefined; moveSchedule(schedule, 'disarm'); } } };
 }

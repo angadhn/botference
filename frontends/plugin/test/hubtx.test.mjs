@@ -376,8 +376,7 @@ async function crashEach(label, prepare, op, { done, undone }) {
     try { await op(one, ctx); } catch (e) { if (e.code !== 'ECRASH') throw e; died = true; }
     w.store.crashAfter(0);
     const wrote = w.store.log.slice(before).filter(x => x.startsWith('put') || x.startsWith('delete'));
-    // the next invocation reads what is there; a refresh once the half-made move is older than repairAgeMs repairs it (R1)
-    w.clock.t += F.LIMITS.repairAgeMs + 1;
+    // the next invocation reads what is there and repairs it at once (R1, R3: no clock)
     const three = w.engine('three');
     await three.view();
     await three.refresh();

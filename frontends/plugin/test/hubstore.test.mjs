@@ -50,7 +50,7 @@ test('the store: asynchronous, a version per entry, and a real compare-and-swap 
     await assert.rejects(s.delete('ledger', 'ab12', { ifVersion: v1 }), F.StoreConflict);
     assert.equal(await s.delete('ledger', 'ab12', { ifVersion: v2 }), true);
     assert.deepEqual(await s.list('ledger'), []);
-    assert.deepEqual(F.STORE_KINDS, ['state', 'feed', 'archive', 'ledger', 'body']);
+    assert.deepEqual(F.STORE_KINDS, ['state', 'feed', 'archive', 'ledger', 'body', 'oldbody']);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
@@ -154,7 +154,8 @@ test('the layout on disk: following.json (no post in it), following-feed/, follo
   await f.refresh();
   await f.readMove(await f.keyFor(A, idOf(1)), 'tick');
   const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'kept', 'last_run', 'layout', 'ops']);
+  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'kept', 'last_run', 'layout', 'migration', 'ops']);
+  assert.deepEqual([doc.layout, doc.migration.state], [F.LAYOUT, 'done'], 'a new Hub: nothing to convert');
   assert.deepEqual(fs.readdirSync(dir).sort(), ['following-archive', 'following-bodies', 'following-feed', 'following-ledgers', 'following-run.json', 'following.json']);
   assert.equal(Object.keys(readLayout(file).items).length, 2);
   const stale = path.join(dir, 'following-bodies', 'abc.html.tmp.999');
@@ -236,12 +237,19 @@ test('the older layout converts on first read: posts to their blyg\'s feed and a
   assert.equal(v.tabs.archive, 2);
   assert.match(v.entries.find(e => e.head.id === idOf(4)).head.body_head, /Words of post 4/, 'a body of the older layout is read under its key');
   const main = store.peek('state', 'following');
-  assert.equal(main.layout, 2);
+  assert.equal(main.layout, F.LAYOUT);
   assert.ok(!('items' in main) && !('inbox' in main));
   assert.deepEqual(store.peek('ledger', NAME(A)).ids.map(p => p[0]).sort(), [idOf(1), idOf(2)], 'R3: every archive record\'s id is in the ledger');
-  assert.equal(store.peek('state', 'pre-shard'), null, 'the copy is deleted once converted');
+  assert.equal(main.migration.state, 'keeping_copy', 'converted, the copy kept through the quiet period');
+  assert.ok(!('copy' in main.migration), 'the main document does not carry the copy any more');
+  assert.equal(Object.keys(store.peek('state', 'pre-shard').doc.items).length, 6, 'the copy is the document converted');
   const s = await f.refresh();
   assert.equal(s.new + s.edited, 0, 'nothing read comes back, nothing is fetched as new');
+  assert.ok(store.peek('state', 'pre-shard'), 'a sweep before the quiet period is over keeps the copy');
+  clock.t += F.LIMITS.migrationQuietMs + 1;
+  await f.sweep();
+  assert.equal(store.peek('state', 'pre-shard'), null, 'after it, the copy goes');
+  assert.equal(store.peek('state', 'following').migration.state, 'done');
 });
 
 test('a conversion that stops half way (the process died at any write) loses nothing: the next read converts again', async () => {
@@ -254,7 +262,8 @@ test('a conversion that stops half way (the process died at any write) loses not
     await assert.rejects(one.f.view(), /died here/, `die at write ${die}`);
     store.crashAfter(0);
     const main = store.peek('state', 'following');
-    if (main.layout !== 2) assert.ok(store.peek('state', 'pre-shard') || die === 1, `die ${die}: the old document is untouched, and its copy kept`);
+    if (main.layout !== F.LAYOUT) assert.ok(main.items && die === 1, `die ${die}: the old document is untouched`);
+    else assert.ok((main.migration.copy && main.migration.copy.items) || store.peek('state', 'pre-shard'), `die ${die}: the copy is kept (in the main document while converting, then apart)`);
     const two = engine({ store, clock });
     const v = await two.f.view({ view: 'archive' });
     assert.deepEqual([v.tabs.feed, v.tabs.archive], [4, 2], `die ${die}`);
@@ -262,7 +271,7 @@ test('a conversion that stops half way (the process died at any write) loses not
   }
 });
 
-test('a file of the older layout converts the same way, and its copy is kept until the main document is written', async () => {
+test('a file of the older layout converts the same way, in place, and its copy is kept through the quiet period', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubstore-'));
   const file = path.join(dir, 'following.json');
   const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
@@ -270,8 +279,8 @@ test('a file of the older layout converts the same way, and its copy is kept unt
   const before = fs.readFileSync(file, 'utf8');
   const { f } = engine({ file, clock });
   assert.equal((await f.view()).tabs.feed, 4);
-  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).layout, 2);
-  assert.ok(!fs.existsSync(path.join(dir, 'following-pre-shard.json')), 'the copy goes once done');
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).layout, F.LAYOUT);
+  assert.ok(fs.existsSync(path.join(dir, 'following-pre-shard.json')), 'the copy is kept through the quiet period');
   assert.ok(before.includes('"items"'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
