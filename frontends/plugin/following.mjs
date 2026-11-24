@@ -1052,8 +1052,9 @@ function newBudget(settings, now) {
 //      so is the epoch it carries. A ledger of another epoch is converted with its read ids, and a post read there (its id
 //      in that ledger or its gone filter) is not put in the feed unless its record says a real edit brought it back.
 //   4. the copy goes to 'pre-shard'; the main document moves to `keeping_copy` (copy_until = now + the quiet period).
-//   5. a sweep after copy_until deletes 'pre-shard' and every 'oldbody', empties the marker of the old posts, and moves to
-//      `done`. Nothing of the older layout is deleted before that.
+//   5. every sweep while `keeping_copy` copies into 'body' any text an unread post names that only 'oldbody' has (a post the
+//      older code saved during the deploy); the first after copy_until with none missing deletes 'pre-shard' and every
+//      'oldbody', empties the marker (MARKER_STATES) and moves to `done`. Nothing of the older layout is deleted before that.
 // A conflict anywhere is retried like any other (step 4 of the transaction), and a crash anywhere is finished by the next
 // reader: no step can leave a state that throws for ever. A conversion that finds this layout's documents already there
 // (a companion whose older code wrote its document back after a conversion) merges: the blygs the older document follows are
@@ -1620,11 +1621,30 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const { migration: _m, ...rest } = content(m);
     await store.put('state', 'following', { ...rest, migration: next }, { ifVersion: main.version });
   }
+  /** The text every unread post names, copied from 'oldbody' where 'body' lacks it. → how many named texts could not be copied. */
+  async function copyOlderTexts() {
+    const named = await tx({ allFeeds: true }, () => [...new Set(Object.values(load().items).filter(i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read)).map(bodyNameOf))], { write: false });
+    const have = new Set(await store.list('body'));
+    const older = new Set(await store.list('oldbody'));
+    let missing = 0;
+    for (const n of named) {
+      if (have.has(n) || !older.has(n)) continue;
+      try {
+        const g = await store.get('oldbody', n);
+        if (g && typeof g.value === 'string' && g.value) await store.put('body', n, g.value, { ifVersion: null });
+      } catch (e) { if (!(e instanceof StoreConflict)) missing++; }
+    }
+    return missing;
+  }
   /** Step 5, by a sweep: after the quiet period, the copy and the older bodies go, the marker keeps no old post, and it is done. */
   async function finishQuietPeriod() {
     const main = await getDoc('state', 'following');
     const mig = migrationOf(main.value);
-    if (!main.value || layoutOf(main.value) !== LAYOUT || mig.state !== 'keeping_copy' || now() < (mig.copy_until || 0)) return false;
+    if (!main.value || layoutOf(main.value) !== LAYOUT || mig.state !== 'keeping_copy') return false;
+    // a post the older code saved during the deploy may have its text only where the older code keeps it (written after the
+    // conversion copied): copied now, at every sweep of the quiet period; nothing older is deleted while a named text is missing
+    const missing = await copyOlderTexts();
+    if (missing || now() < (mig.copy_until || 0)) return false;
     await store.delete('state', 'pre-shard');
     for (const n of await store.list('oldbody')) await store.delete('oldbody', n);
     const leg = await store.get('state', 'legacy');

@@ -188,6 +188,32 @@ test('1: the marker is ONE field moved by one function: it carries its copy unti
   await assert.rejects(w.engine('t').view(), /main document is missing/);
   assert.deepEqual(w.store.log.slice(before), []);
 });
+test('1: a text the older code saved after the conversion copied (only in "oldbody") is copied before any older text is deleted; none deleted while one is missing', async () => {
+  const w = world();
+  await seedOlder(w.store, olderDoc('aaaa'), { where: 'legacy', bodies: 'oldbody' });
+  const v = await w.engine('one').view();
+  const late = v.entries[0].head;
+  // as if the older code wrote this post's text after the conversion's copy: only under its older name
+  await w.store.delete('body', late.key);
+  // a sweep in the quiet period copies it at once
+  await w.engine('s').sweep();
+  assert.ok(w.store.peek('body', late.key), 'copied during the quiet period');
+  await w.store.delete('body', late.key);
+  // after it, while the copy cannot be made, nothing older is deleted and the conversion stays where it is
+  w.clock.t += F.LIMITS.migrationQuietMs + 1;
+  const failing = world({ store: { ...w.store, kind: 'memory', get: (k, n) => w.store.get(k, n), delete: (k, n, o) => w.store.delete(k, n, o), list: k => w.store.list(k),
+    put: (k, n, val, o) => (k === 'body' ? Promise.reject(new Error('the store refused it')) : w.store.put(k, n, val, o)) } });
+  failing.clock.t = w.clock.t;
+  const quiet = console.warn; console.warn = () => {};
+  try { await failing.engine('f').sweep(); } finally { console.warn = quiet; }
+  assert.equal(w.store.names('oldbody').length, 6, 'no older text deleted while one named is missing');
+  assert.equal(w.store.peek('state', 'following').migration.state, 'keeping_copy');
+  await w.engine('s2').sweep();
+  assert.ok(w.store.peek('body', late.key), 'copied by the next sweep');
+  assert.equal(w.store.names('oldbody').length, 0);
+  assert.equal(w.store.peek('state', 'following').migration.state, 'done');
+  assert.match((await w.engine('v').view()).entries.find(e => e.head.key === late.key).head.body_head, /text of/);
+});
 test('1: a re-conversion after a rollback never puts back in the Feed a post read in a KEPT ledger (hosted and companion shapes)', async () => {
   for (const where of ['legacy', 'following']) {
     const w = world();
