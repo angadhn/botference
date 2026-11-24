@@ -228,7 +228,9 @@
   // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm'], reply: 'json' }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join'], reply: 'json' }),
+    // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
+    earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
     arm: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [], reply: 'json' }),
     confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'], reply: 'json' }),
@@ -363,6 +365,20 @@
     return to;
   }
   const BLYG_PUBLISH_SCOPES = Object.freeze(['one', 'above']);
+  // ── where a new comment goes, when the owner already published a post from this page (blyg-run.mjs JOINS) ─────────────────
+  // The dialog's ONE choice, held in one field (D.pub.join), moved only by pubJoinMove:
+  //   none  no choice is offered (no earlier post from this page that can be added to; or the dialog is not choosing)
+  //   add   "Add to your earlier post from this page" (the default whenever the choice is offered): that post's next version
+  //   new   "Publish as a new post"
+  // `add` and `new` are what the start sends as `join` (BLYG_PUBLISH_JOINS); `none` sends nothing.
+  const PUB_JOINS = Object.freeze(['none', 'add', 'new']);
+  const PUB_JOIN_MOVES = Object.freeze({ none: Object.freeze(['add']), add: Object.freeze(['new', 'none']), new: Object.freeze(['add', 'none']) });
+  function pubJoinMove(from, to) {
+    if (PUB_JOINS.indexOf(to) === -1) throw new Error('where the comment goes: no such choice ' + to);
+    if (!PUB_JOIN_MOVES[from] || PUB_JOIN_MOVES[from].indexOf(to) === -1) throw new Error('where the comment goes: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
+  const BLYG_PUBLISH_JOINS = Object.freeze(['add', 'new']);
 
   // ── whether an exported note is a RESPONSE to its page ─────────────────
   // Blygger's "stub" (spec §10.6). One field on the page record,
@@ -822,6 +838,7 @@
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
+    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,

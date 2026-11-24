@@ -4251,7 +4251,8 @@ export function handler(req, res) {
   //   GET  /blyg-home/page   a READ-ONLY page: is it valid, what is set, and the CLI lines that change it. The setting is NEVER
   //                          writable over HTTP (any write is 405, for everyone): `botference blyg-home set <file.json>` on the machine.
   //   GET  /blyg-publish/run the current run (a drawer that reloaded asks this)
-  //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above'}   Step A: write the note, run plan
+  //   POST /blyg-publish/earlier {url, thread_id}   may this comment be added to the earlier post from its page? ({earlier} or null)
+  //   POST /blyg-publish/start   {url, thread_id, scope:'one'|'above', join?:'add'|'new'}   Step A: write the note, run plan
   //   POST /blyg-publish/confirm {run, token}   Step C: apply, then publish
   //   POST /blyg-publish/retry   {run, token}   the failed step again (the owner's click)
   //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
@@ -4329,8 +4330,16 @@ export function handler(req, res) {
         const page = pageOf(req, res, data);
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
-        const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || '') });
+        const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || '') });
         return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
+      });
+    }
+    if (req.method === 'POST' && url === '/blyg-publish/earlier') {
+      return readBody(req, res, data => {
+        const page = pageOf(req, res, data);
+        if (!page) return;
+        const r = blygPublish.earlierOf({ page, threadId: String(data.thread_id || '') });
+        return r.ok ? ok(res, { earlier: r.earlier }) : fail(res, r.status, r.error);
       });
     }
     if (req.method === 'POST' && acts[url]) {

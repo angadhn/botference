@@ -2570,8 +2570,11 @@
       // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
       // `opener` says who put the dialog up (PUB_OPENERS: a start of this drawer's, the owner's plane on a thread, or the drawer
       // finding a run when it opened); `ask` is a second confirmation pending (PUB_ASKS); `pic` the picture of the draft
-      // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }).
-      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 } },
+      // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }). `join` is where a new comment goes when an earlier
+      // post from this page can take it (config.js PUB_JOINS, moved only by pubJoin); `earlier` that post as the companion named it
+      // ({ title, version }), a fact shown in the choice.
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 },
+        join: 'none', earlier: null },
       // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
       // tkHintMove (said once per drawer, never again)
       tkBlockHint: 'unseen',
@@ -8387,6 +8390,7 @@ ${bubbleShellHtml()}`;
       // ---- Publish as blyg (every one of these runs only on a trusted click: the delegated handler above) ----
       'pub-open': (btn, target) => pubOpen(target),
       'pub-scope': (btn, t, e) => pubStart(btn.dataset.scope, e),
+      'pub-join': (btn) => { if (D.pub.view === 'choosing' && D.pub.join !== 'none' && D.pub.join !== btn.dataset.join) { pubJoin(btn.dataset.join); paintPub(); } },
       'pub-confirm': (btn, t, e) => pubAct('confirm', e),
       'pub-cancel': () => pubAct('cancel'),
       'pub-retry': (btn, t, e) => pubAct('retry', e),
@@ -10698,6 +10702,7 @@ ${bubbleShellHtml()}`;
       CFG.pubMove(D.pub.view, next);
       D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
       if (next !== 'problem') pubAskMove('none');
+      if (next === 'closed') pubJoin('none');
       if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
       if (next !== 'confirming') pubPic('none');
       paintPub();
@@ -10809,10 +10814,18 @@ ${bubbleShellHtml()}`;
     // scope choice, so the drawer never "loses" a run (a Close, a reload, another tab). Otherwise THE SETTING IN FORCE is asked every
     // time: the wording shown follows that answer and the start sends it back (`confirm`), so a stale drawer can never promise "you
     // will see it first" when one click publishes. The companion refuses a start whose `confirm` is not the setting in force.
+    // WHERE THE COMMENT GOES (D.pub.join, config.js PUB_JOINS): the one function that changes it; staying where it is is no move
+    function pubJoin(to) {
+      if (D.pub.join === to) return;
+      CFG.pubJoinMove(D.pub.join, to);
+      D.pub.join = to;
+      if (to === 'none') D.pub.earlier = null;
+    }
     async function pubOpen(id) {
       if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
       if (!t || !pubThreadOk(t)) return;
+      pubJoin('none');
       { const framed = pubFramed(); if (framed) { pubGo('problem', { thread: id, error: framed, run: null, opener: 'plane' }); return; } }
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
@@ -10827,7 +10840,17 @@ ${bubbleShellHtml()}`;
         const target = CFG.pubViewOf(r.run.mode, r.run.confirm);
         if (pubGo(target, { run: r.run, thread: id, error: '', opener: 'plane' })) return;
       }
-      pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm, opener: 'plane', edit: pubPublished(t) });
+      // an unpublished comment on a page where another of the owner's comments is already a post: may it be added to that post?
+      // (the companion says, and names the post; with no answer the choice is simply not offered)
+      let earlier = null;
+      if (!pubPublished(t)) {
+        let e = null;
+        try { e = await cb('onBlygPublish')('earlier', { thread_id: id }); } catch (_) { e = null; }
+        if (D.pub.view !== 'closed') return;
+        if (e && e.ok && e.earlier && typeof e.earlier === 'object') earlier = { title: String(e.earlier.title || ''), version: Number(e.earlier.version) || 1 };
+      }
+      if (earlier) { pubJoin('add'); D.pub.earlier = earlier; }
+      if (!pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm, opener: 'plane', edit: pubPublished(t) })) pubJoin('none');
     }
     // CLICKJACKING. A page can cover the drawer with something it controls (a top-layer <dialog> or popover with `pointer-events:none`, an
     // opaque/filtered/clipped host, a frame) so that a TRUSTED click lands on a drawer button it has disguised. Before anything that
@@ -10944,6 +10967,7 @@ ${bubbleShellHtml()}`;
     }
     async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
+      if (D.pub.join === 'add' && scope !== 'one') return;
       { const framed = pubFramed(); if (framed) { D.pub.error = framed; paintPub(); return; } }
       const early = pubArmRefusal();
       if (early) { D.pub.error = early; paintPub(); return; }
@@ -10951,9 +10975,10 @@ ${bubbleShellHtml()}`;
       if (over) { pubGo('problem', { error: over, run: null }); return; }
       D.pub.error = '';
       const thread = D.pub.thread;
+      const join = D.pub.join === 'none' ? '' : D.pub.join;
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}) }); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'The publish did not start.', run: null }); return; }
       pubApply(r.run);
       if (D.pub.shown === 'never') setFootNote('info', PUB_BACKGROUND_SAY);
@@ -11109,8 +11134,19 @@ ${bubbleShellHtml()}`;
               <p>${look ? `This makes version ${v} of your post. Nothing is published yet: first you will see it.` : `This publishes version ${v} of your post now.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
+          // an earlier post from this page can take it: ONE choice, adding to it by default (D.pub.join)
+          const joinHtml = P.join === 'none' ? '' : `<div class="pubjoin" role="radiogroup" aria-label="Where this comment goes">`
+            + ['add', 'new'].map(j => `<button class="pjoin" type="button" role="radio" aria-checked="${P.join === j ? 'true' : 'false'}" data-act="pub-join" data-join="${j}">`
+              + `${j === 'add' ? 'Add to your earlier post from this page' : 'Publish as a new post'}</button>`).join('') + '</div>';
+          if (P.join === 'add' && P.earlier) {
+            const v = (Number(P.earlier.version) || 1) + 1;
+            const named = P.earlier.title ? `“${esc(P.earlier.title)}”` : 'your earlier post';
+            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}
+              <p>${look ? `This comment goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with this comment after the earlier one.`}</p>
+              <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
+          }
           const n = pubAbove(P.thread, P.shown).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}
             <p>${look ? 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.' : 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.'}</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Just this comment' : 'Publish just this comment'}</button>
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This and the ' + n + ' above' : 'Publish this and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;

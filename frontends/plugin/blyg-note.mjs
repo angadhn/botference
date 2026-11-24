@@ -504,7 +504,8 @@ export function blygKeyLines({ sources = [], stubOf = null, generated = [] } = {
     // id that a YAML 1.1 reader (the site's Ruby) would otherwise read as a NUMBER, and the build would then refuse the note
     out.push('blyg_stub_of:', `  origin: ${yamlString(stubOf.origin)}`, `  id: ${yamlString(stubOf.id)}`, `  version: ${Number(stubOf.version)}`);
   } else if (stubOf && stubOf.url) {
-    out.push('blyg_stub_of:', `  url: ${yamlString(stubOf.url)}`);
+    // (the page's title, when it had one: the site's "In response to" line shows it; never on the wire)
+    out.push('blyg_stub_of:', `  url: ${yamlString(stubOf.url)}`, ...(stubOf.title ? [`  title: ${yamlString(stubOf.title)}`] : []));
   }
   // one entry per agent-written passage, in note order (tkgaps.generatedLines: model, at, edited_by_author)
   for (const l of generatedLines(generated)) out.push(...l.split('\n'));
@@ -540,6 +541,31 @@ export function dayOf(now, tz = '') {
   return `${p.year}-${p.month}-${p.day}`;
 }
 
+// ---- what a post responds to ------------------------------------------------------------
+// The page's title as the note records it for a response to an ordinary web page (`blyg_stub_of: {url, title}`): the page chose
+// it, so it is one line of plain words, without the characters HTML, Liquid or a YAML reader could make something of (`<>{}`),
+// at most PAGE_TITLE_CHARS; '' when nothing is left (the site then shows the page's host name).
+export const PAGE_TITLE_CHARS = 200;
+export function pageTitleOf(page) {
+  let t = oneLine(page && page.title).replace(/[<>{}]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (t.length > PAGE_TITLE_CHARS) t = t.slice(0, PAGE_TITLE_CHARS).replace(/\s+\S*$/, '').trim();
+  return t;
+}
+/** The one target a post on this page responds to (`blyg_stub_of`), or null: a Blygger post (origin, id, the version read), or an
+ *  ordinary web page ({url, title?}); only when the owner marked the page a response. */
+export function stubOfPage(page) {
+  if (!(responseOf(page) === 'response' && canRespond(page))) return null;
+  const item = blygItemOf(page);
+  if (item) return { origin: item.origin, id: item.id, version: readVersion(page, { id: item.id, version: item.version }) };
+  const webPage = isWebUrl(page.url) ? safeWebUrl(page.url) : '';
+  if (!webPage) return null;
+  const title = pageTitleOf(page);
+  return { url: webPage, ...(title ? { title } : {}) };
+}
+/** WHICH page a post responds to, whatever version was read and whatever the page is called now: '' for none. Two posts answer the
+ *  same target when these are equal (a post adding another comment from the same page must keep its ONE target). */
+export const stubTargetOf = stubOf => (!stubOf ? '' : stubOf.id ? `post ${stubOf.origin}${stubOf.id}` : stubOf.url ? `page ${stubOf.url}` : '');
+
 // ---- the note ---------------------------------------------------------------------
 const linkText = s => oneLine(s).replace(/[\\[\]*_`<>{}|!]/g, ' ').replace(/\s+/g, ' ').trim();
 
@@ -563,7 +589,6 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   if (threads.length > LIMITS.comments) return { ok: false, error: `at most ${LIMITS.comments} comments can go in one post` };
   const item = blygItemOf(page);
   const webPage = isWebUrl(page.url) ? safeWebUrl(page.url) : '';
-  const response = responseOf(page) === 'response' && canRespond(page);
   const label = directiveLabel(page.title || '');
   const sources = [];
   const blocks = [];
@@ -612,8 +637,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     if (href) body += `\n\nEarlier: [${linkText(earlier.title) || 'an earlier note'}](${href})`;
   }
   const title = titleOf(titleSource);
-  const stubOf = response ? (item ? { origin: item.origin, id: item.id, version: readVersion(page, { id: item.id, version: item.version }) }
-    : (webPage ? { url: webPage } : null)) : null;
+  const stubOf = stubOfPage(page);
   if (stubOf && item) sources.push(item.page);
   const day = dayOf(now, home && home.timezone);
   const dateOk = d => /^\d{4}-\d\d-\d\d$/.test(String(d || ''));
@@ -626,10 +650,11 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const perm = front.map(l => /^permalink:\s*(\S+)\s*$/.exec(l)).find(Boolean);
   return { ok: true, text, title: oneLine(title).replace(/[<>{}]/g, ''), slug, permalink: perm ? perm[1].replace(/^["']|["']$/g, '') : '', sources: [...new Set(sources)],
     generated, notify: notifyOf(page, { sources, stubOf }),
-    snapshot: { quotes: snapshot.map(x => x.quote), threads: snapshot, sources: [...new Set(sources)].sort(), stub: stubOf ? hashOf(JSON.stringify(stubOf)) : '' } };
+    snapshot: { quotes: snapshot.map(x => x.quote), threads: snapshot, sources: [...new Set(sources)].sort(), stub: stubOf ? hashOf(JSON.stringify(stubOf)) : '',
+      target: hashOf(stubTargetOf(stubOf)) } };
 }
 
-const hashOf = t => crypto.createHash('sha256').update(String(t)).digest('hex').slice(0, 24);
+export const hashOf = t => crypto.createHash('sha256').update(String(t)).digest('hex').slice(0, 24);
 
 /** Who the site will tell about this post, in the owner's words, or '' (an ordinary web page: nobody). */
 export function notifyOf(page, { sources = [], stubOf = null } = {}) {
@@ -702,7 +727,13 @@ export function changesBetween(before, after) {
   const edited = b.map((x, i) => ({ ...x, at: i + 1 })).filter(x => old.has(x.key) && old.get(x.key) !== x.sha);
   const added = b.filter(x => !old.has(x.key));
   const removed = a.filter(x => !now.has(x.key));
-  const quotes = JSON.stringify((before && before.quotes) || []) !== JSON.stringify((after && after.quotes) || []);
+  // the quoted passage changed: a thread in both versions whose passage is not the same (a thread added or taken away is a comment
+  // added or removed, not a changed passage); a snapshot without threads is compared as a whole, as before
+  const quoteOf = snap => new Map(((snap && snap.threads) || []).map(t => [t.thread, t.quote]));
+  const qa = quoteOf(before);
+  const qb = quoteOf(after);
+  const quotes = qa.size && qb.size ? [...qb].some(([k, q]) => qa.has(k) && qa.get(k) !== q)
+    : JSON.stringify((before && before.quotes) || []) !== JSON.stringify((after && after.quotes) || []);
   return { edited, added, removed, quote: quotes, total: b.length };
 }
 export function changelogLine(before, after) {

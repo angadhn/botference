@@ -79,7 +79,59 @@ test('an ordinary page: the plain web quote whose last paragraph is the bare URL
   assert.match(r.text, /\n---\nThis matches what I see\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n$/);
   assert.ok(!/blyg_stub_of|blyg_sources/.test(r.text));
   const resp = make({ ...page, export_response: 'response' }, page.threads);
-  assert.match(resp.text, /blyg_stub_of:\n {2}url: "https:\/\/news\.example\.test\/a\/story\?id=7"\n---/);
+  assert.match(resp.text, /blyg_stub_of:\n {2}url: "https:\/\/news\.example\.test\/a\/story\?id=7"\n {2}title: "A story"\n---/);
+  // a page with no title: the url alone (the site shows the host name)
+  const bare = make({ ...page, title: '  ', export_response: 'response' }, page.threads);
+  assert.match(bare.text, /blyg_stub_of:\n {2}url: "https:\/\/news\.example\.test\/a\/story\?id=7"\n---/);
+});
+
+test('the page title a response records is the page\'s text made plain: one line, no <>{}, at most 200 characters, quoted', () => {
+  const hostile = 'Breaking: {{ site.x }} {% raw %} <script>alert(1)</script> "quoted" \u202e\nsecond line';
+  assert.equal(N.pageTitleOf({ title: hostile }), 'Breaking: site.x % raw % script alert(1) /script "quoted" second line');
+  assert.equal(N.pageTitleOf({ title: '<>{}' }), '');
+  const long = N.pageTitleOf({ title: 'word '.repeat(80) });
+  assert.ok(long.length <= N.PAGE_TITLE_CHARS && long.endsWith('word'), long);
+  const page = webPage([thread('t1', 'Hiring is slowing.', 'Words.')], { export_response: 'response', title: hostile });
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  const line = r.text.split('\n').find(l => l.startsWith('  title: '));
+  assert.equal(line, `  title: ${JSON.stringify(N.pageTitleOf({ title: hostile }))}`);
+  assert.ok(!/[<>{}]/.test(line));
+  // never for a Blygger post's stub (that target names itself), never without a response
+  const post = blygPage([thread('t1', PASSAGE, 'x', { blyg: stamp() })], { export_response: 'response' });
+  assert.ok(!/^ {2}title:/m.test(make(post, post.threads).text));
+  assert.ok(!/title:/.test(make({ ...page, export_response: 'not-a-response' }, page.threads).text));
+});
+
+test('a post\'s one target: the same for every version read and every title the page had; none when not a response', () => {
+  const t = [thread('t1', 'x', 'y')];
+  const w = webPage(t, { export_response: 'response' });
+  assert.equal(N.stubTargetOf(N.stubOfPage(w)), 'page https://news.example.test/a/story?id=7');
+  assert.equal(N.stubTargetOf(N.stubOfPage({ ...w, title: 'Renamed' })), N.stubTargetOf(N.stubOfPage(w)));
+  assert.equal(N.stubTargetOf(N.stubOfPage(webPage(t))), '');
+  const b = blygPage([thread('t1', PASSAGE, 'x', { blyg: stamp() })]);
+  assert.equal(N.stubTargetOf(N.stubOfPage(b)), `post ${ORIGIN}${ID}`);
+  const later = blygPage([thread('t1', PASSAGE, 'x', { blyg: stamp({ version: 3 }) })]);
+  assert.equal(N.stubTargetOf(N.stubOfPage(later)), N.stubTargetOf(N.stubOfPage(b)), 'a later version read is the same target');
+  const r = make(b, b.threads);
+  assert.equal(r.snapshot.target, N.hashOf(`post ${ORIGIN}${ID}`));
+});
+
+test('two comments from one ordinary page in one post: each comment, its quote card and the same address, in the order given', () => {
+  const page = webPage([thread('t1', 'Hiring is slowing.', 'First thought.'), thread('t2', 'Juniors are hit first.', 'Second thought.')]);
+  const r = make(page, [page.threads[0], page.threads[1]]);
+  assert.ok(r.ok, r.error);
+  assert.match(r.text, /\n---\nFirst thought\.\n\n> Hiring is slowing\.\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n\nSecond thought\.\n\n> Juniors are hit first\.\n>\n> https:\/\/news\.example\.test\/a\/story\?id=7\n$/);
+  assert.equal(r.title, 'First thought');
+  const flip = make(page, [page.threads[1], page.threads[0]]);
+  assert.ok(flip.text.indexOf('Second thought.') < flip.text.indexOf('First thought.'), 'the order given is the order written');
+  // adding a comment from the same page is "Added a comment." (its passage is part of that comment, not a changed passage)
+  const one = make(page, [page.threads[0]]);
+  assert.equal(N.changelogLine(one.snapshot, r.snapshot), 'Added a comment.');
+  assert.equal(N.changelogLine(r.snapshot, one.snapshot), 'Removed a comment.');
+  const moved = webPage([thread('t1', 'Hiring is slowing fast.', 'First thought.'), page.threads[1]]);
+  assert.equal(N.changelogLine(r.snapshot, make(moved, moved.threads).snapshot), 'Changed the quoted passage.');
+  assert.equal(N.changelogLine({ quotes: ['a'] }, { quotes: ['b'] }), 'Changed the quoted passage.', 'a snapshot without threads is compared as a whole');
 });
 
 rb('front matter round-trips through a real YAML parser, for both kinds of page', () => {
@@ -94,7 +146,9 @@ rb('front matter round-trips through a real YAML parser, for both kinds of page'
   const digits = yamlOf(make(pg, pg.threads, { id: '12345678901234567890123456' }).text);
   assert.equal(digits.blyg_id, '12345678901234567890123456', 'an id of only digits is still a string (it is quoted)');
   const w = webPage([thread('t1', 'x', 'plain words')], { export_response: 'response' });
-  assert.deepEqual(yamlOf(make(w, w.threads).text).blyg_stub_of, { url: w.url });
+  assert.deepEqual(yamlOf(make(w, w.threads).text).blyg_stub_of, { url: w.url, title: 'A story' });
+  const hostile = webPage([thread('t1', 'x', 'plain words')], { export_response: 'response', title: 'A: "b" # c \\ d \u2028 e: [f] - g' });
+  assert.deepEqual(yamlOf(make(hostile, hostile.threads).text).blyg_stub_of, { url: w.url, title: N.pageTitleOf(hostile) });
 });
 
 rb('yamlString: hostile strings come back exactly (a real parser reads them)', () => {

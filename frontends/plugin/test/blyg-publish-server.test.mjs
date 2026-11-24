@@ -130,6 +130,13 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   const th = (page.page || page).threads.find(x => x.id === tid);
   assert.equal(th.blyg_published.address, done.published.address);
   assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X)).status, 409, 'not offered again');
+  // the earlier post from this page, for another comment on it: the drawer asks; a page cannot
+  const other = await comment(B, 'Another view on the same story.');
+  const ask = await POST(B, '/blyg-publish/earlier', { url: PAGE, thread_id: other }, X);
+  assert.equal(ask.status, 200, ask.body);
+  assert.ok('earlier' in ask.json, 'answers whether it can be added (null without edit commands)');
+  assert.equal((await request(B, 'POST', '/blyg-publish/earlier', { url: PAGE, thread_id: other }, { 'content-type': 'application/json', origin: 'https://evil.example' })).status, 403);
+  assert.equal((await POST(B, '/blyg-publish/earlier', { url: PAGE, thread_id: 'no-such-thread' }, X)).status, 404);
   await waitFor(() => events.of('blyg-publish').length >= 6, 'the moves were announced');
   assert.deepEqual([...new Set(events.of('blyg-publish').map(e => e.run.mode))].sort(), ['applied', 'applying', 'drafted', 'planned', 'planning', 'published', 'publishing']);
   assert.ok(events.of('blyg-publish').every(e => Object.keys(e.run).sort().join() === 'id,mode'), 'an event says which run and which mode, nothing else');
@@ -275,7 +282,7 @@ const hroot = tmp('hosted');
 const hosted = await startServer({ root: hroot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', PLUGIN_EXTENSION_IDS: EXT } });
 const GUEST = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
 const OWNER = { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' };
-const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'],
+const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'], ['POST', '/blyg-publish/earlier'],
   ['POST', '/blyg-publish/confirm'], ['POST', '/blyg-publish/retry'], ['POST', '/blyg-publish/continue'], ['POST', '/blyg-publish/cancel'], ['POST', '/blyg-publish/abandon'], ['POST', '/blyg-publish/forget']];
 
 await test('hosted: every route is refused to an anonymous caller (401), a wrong password (401) and a guest (403), body or none', async () => {

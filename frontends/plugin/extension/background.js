@@ -1105,6 +1105,7 @@ async function blygPublish(msg, tabId) {
   const body = {};
   for (const k of spec.body) body[k] = msg[k] === undefined ? '' : String(msg[k]);
   if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
+  if (op === 'start' && body.join && CFG.BLYG_PUBLISH_JOINS.indexOf(body.join) === -1) return { ok: false, error: 'no such choice' };
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
   if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null };
@@ -1117,7 +1118,8 @@ async function blygPublish(msg, tabId) {
     const watch = run && (['confirm', 'retry', 'continue'].indexOf(op) !== -1 || (op === 'start' && run.confirm === 'never')
       || (op === 'run' && CFG.pubViewOf(run.mode, run.confirm) === 'running'));
     if (watch) pubWatchStart(run).catch(() => {}); }
-  return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '' };
+  return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '',
+    earlier: (r.data && r.data.earlier) || null };
 }
 
 // ---- Publish as blyg in the BACKGROUND: the watch and the notice ------------------------------------------------------------

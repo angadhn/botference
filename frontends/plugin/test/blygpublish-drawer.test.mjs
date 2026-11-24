@@ -58,6 +58,7 @@ function companion(first) {
     if (state.fail && state.fail[op]) return { ok: false, error: state.fail[op] };
     if (op === 'start') { state.run = run('planning', { steps: [], thread_ids: [body.thread_id], ...(state.confirm ? { confirm: state.confirm } : {}) }); return { ok: true, run: state.run }; }
     if (op === 'run' || op === 'arm') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' }, confirm: state.confirm || 'always' };
+    if (op === 'earlier') return state.earlier === undefined ? { ok: false, error: 'no such op' } : { ok: true, earlier: state.earlier };
     if (op === 'preview') return { ok: true, state: state.picture || 'off' };
     if (op === 'preview-image') return { ok: true, image: 'data:image/png;base64,iVBORw0KGgo=' };
     if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', ok: true, ms: 1 }], thread_ids: state.run.thread_ids || ['t1'] }); return { ok: true, run: state.run }; }
@@ -101,7 +102,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'earlier', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
   eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
   eq('only arm opens one (for the act it names)', [Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'grants').map(([k]) => k), CFG.BLYG_ARMED_ACTS], [['arm'], ['confirm', 'retry', 'continue']]);
 }
@@ -665,6 +666,61 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
     ok('in its own tab again: Publish works', server.calls.some(c => c.op === 'confirm'));
     delete document.elementsFromPoint;
   } finally { unframe(); }
+}
+
+// ---- adding a comment to the earlier post from this page: ONE choice, named, in one field, moved by one function -----------------------
+{
+  // the table
+  eq('the choice\'s names', CFG.PUB_JOINS, ['none', 'add', 'new']);
+  for (const from of CFG.PUB_JOINS) for (const to of CFG.PUB_JOINS) {
+    const listed = CFG.PUB_JOIN_MOVES[from].includes(to);
+    let threw = false; try { CFG.pubJoinMove(from, to); } catch (_) { threw = true; }
+    eq(`join ${from} → ${to} ${listed ? 'allowed' : 'refused'}`, threw, !listed);
+  }
+  { let threw = false; try { CFG.pubJoinMove('add', 'merge'); } catch (_) { threw = true; } ok('an unknown choice is refused', threw); }
+  const src = (await import('node:fs')).readFileSync(path.join(here, '..', 'extension', 'drawer.js'), 'utf8');
+  eq('D.pub.join is written only by pubJoin (and its starting value)', [...src.matchAll(/D\.pub\.join\s*=(?!=)/g)].length, 1);
+  // offered: the default is "add"; one primary button that makes the next version; the start says join: add
+  const server = companion();
+  server.earlier = { title: 'Already out', version: 2 };
+  const x = await make({ server });
+  x.click(x.qa('.thr-pub')[1]); await tick(5);
+  eq('the companion is asked about this comment', server.calls.find(c => c.op === 'earlier'), { op: 'earlier', body: { thread_id: 't2' } });
+  eq('two named options, "add" chosen', x.qa('.pubjoin [data-act="pub-join"]').map(b => [b.dataset.join, b.textContent, b.getAttribute('aria-checked')]),
+    [['add', 'Add to your earlier post from this page', 'true'], ['new', 'Publish as a new post', 'false']]);
+  eq('…in a radio group with a name', [x.q('.pubjoin').getAttribute('role'), x.q('.pubjoin').getAttribute('aria-label')], ['radiogroup', 'Where this comment goes']);
+  eq('adding: one button, for the next version, and Close', x.qa('.pubdlg .pbtn').map(b => b.textContent), ['Prepare version 3', 'Close']);
+  ok('it names the post and says where the comment goes', /after the earlier one, as version 3 of “Already out”/.test(x.dlg().textContent));
+  // "Publish as a new post": today's choice of scopes
+  x.click(x.q('[data-join="new"]')); await tick();
+  eq('new: the scopes as before', [x.drawer.pub.join, x.qa('.pubdlg [data-act="pub-scope"]').map(b => b.dataset.scope)], ['new', ['one', 'above']]);
+  x.click(x.q('[data-join="add"]')); await tick();
+  eq('back to add', [x.drawer.pub.join, x.qa('.pubdlg [data-act="pub-scope"]').map(b => b.dataset.scope)], ['add', ['one']]);
+  await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  eq('the start carries join: add', server.calls.filter(c => c.op === 'start').at(-1), { op: 'start', body: { thread_id: 't2', scope: 'one', confirm: 'always', join: 'add' } });
+  // a new post chosen: join: new
+  const s2 = companion(); s2.earlier = { title: 'Already out', version: 1 };
+  const y = await make({ server: s2 });
+  y.click(y.qa('.thr-pub')[0]); await tick(5);
+  y.click(y.q('[data-join="new"]')); await tick();
+  await settle(); y.click(y.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  eq('the start carries join: new', s2.calls.filter(c => c.op === 'start').at(-1).body.join, 'new');
+  // closing forgets the choice; nothing offered (no earlier post, or an older companion): no choice, no join sent
+  const s3 = companion(); s3.earlier = { title: 'Already out', version: 1 };
+  const z = await make({ server: s3 });
+  z.click(z.qa('.thr-pub')[0]); await tick(5);
+  z.click(z.q('[data-act="pub-close"]')); await tick();
+  eq('closed: the choice is none again', [z.view(), z.drawer.pub.join, z.drawer.pub.earlier], ['closed', 'none', null]);
+  s3.earlier = null;
+  z.click(z.qa('.thr-pub')[0]); await tick(5);
+  eq('no earlier post: no choice shown', [z.view(), z.qa('.pubjoin').length, z.drawer.pub.join], ['choosing', 0, 'none']);
+  await settle(); z.click(z.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  ok('…and no join is sent', !('join' in s3.calls.filter(c => c.op === 'start').at(-1).body));
+  // a published thread's plane: a new version, never the choice (the companion is not asked)
+  const s4 = companion(); s4.earlier = { title: 'Already out', version: 1 };
+  const p = await make({ server: s4 });
+  p.click(p.q('.thr-pub[data-target="tp"]')); await tick(5);
+  eq('a published thread: no choice, not asked', [p.qa('.pubjoin').length, s4.calls.some(c => c.op === 'earlier')], [0, false]);
 }
 
 // ---- review round 5: the second confirmation is one named value moved by one function; a new version that may be live says so ----

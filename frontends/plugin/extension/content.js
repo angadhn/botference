@@ -3593,7 +3593,7 @@
       // worker, not this script, decides whether confirm and retry may go through (a one-use offer per tab).
       onBlygPublish: async (op, body) => {
         const r = await bg({ t: 'blyg-publish', op, url: URL_NOW, ...(body || {}) });
-        return r && r.ok ? { ok: true, run: r.run || null, confirm: r.confirm || '' } : { ok: false, error: (r && r.error) || 'the publish did not go through', code: (r && r.code) || '' };
+        return r && r.ok ? { ok: true, run: r.run || null, confirm: r.confirm || '', earlier: r.earlier || null } : { ok: false, error: (r && r.error) || 'the publish did not go through', code: (r && r.code) || '' };
       },
       onExportResponse: async response => {
         const reg = await ensureRegistered();

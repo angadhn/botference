@@ -46,7 +46,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
 
@@ -133,6 +133,12 @@ export class IllegalMove extends Error {}
 /** A run publishes a NEW post, or a new VERSION of one already published from here (the same note file, id and address, rewritten,
  *  and the site's commands in their edit form: blyg-home COMMAND_FOR). One field, `run.kind`, set when the run is drafted. */
 export const RUN_KINDS = Object.freeze(['new', 'edit']);
+/** WHERE A NEW COMMENT GOES when another thread of the owner's on the same page is already a post published from here (the owner's
+ *  one choice in the dialog, sent with the start as `join`; '' when no choice was offered):
+ *    add   the comment is added to that post (the most recent one from this page): a new VERSION of it, kind 'edit'
+ *    new   the comment becomes a post of its own, as when there is no earlier post */
+export const JOINS = Object.freeze(['add', 'new']);
+export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** Why a run stops at `planned` for the owner's look (`run.review`), one of:
  *    setting      the owner's setting is confirm 'always'
  *    agent-text   the post holds a passage an agent wrote or the owner pasted from an agent's tool: it is ALWAYS shown first,
@@ -681,8 +687,9 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
+    if (join && !JOINS.includes(join)) return fail(400, `join must be one of ${JOINS.join(', ')}`);
     const home = settingsNow();
     if (!home.ok) { log.write(id, { ev: 'note', text: `settings: ${home.errors.join(' | ')}` }); return fail(409, 'Publish as blyg is not set up correctly on the companion: its “Where my blyg lives” setting does not pass its check. Open that setting on the companion to see why.'); }
     const S = home.settings;
@@ -691,7 +698,10 @@ export function createPublisher(deps) {
     if (at < 0) return fail(404, 'That comment is not on this page any more.');
     const here = threads[at];
     const editing = isPublishedThread(here);
-    if (editing && !EDIT_STEPS.every(k => S.commands[k])) return fail(409, 'Publishing a new version is not set up on the companion yet (its edit commands are missing).');
+    // adding this comment to the earlier post from this page (the owner's choice): that post's new version, through the edit path
+    const adding = !editing && join === 'add';
+    if (adding && scope !== 'one') return fail(400, 'Only this one comment can be added to your earlier post.');
+    if ((editing || adding) && !EDIT_STEPS.every(k => S.commands[k])) return fail(409, 'Publishing a new version is not set up on the companion yet (its edit commands are missing).');
     // THE PRE-FLIGHT, before anything is written: a broken environment fails here, in about a second, with the check's own sentence
     if (S.commands.check) {
       book.move('checking');
@@ -712,7 +722,88 @@ export function createPublisher(deps) {
     // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
     // first when one click publishes, or the reverse)
     if (shown !== S.confirm) return fail(409, `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${S.confirm}” is in force (${S.confirm === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`);
+    if (adding) {
+      const earlier = earlierPostFor(page, here, S);
+      if (!earlier) return fail(409, ADD_GONE_SAY);
+      return startEdit({ page, here: earlier.thread, S, id, adding: here });
+    }
     return editing ? startEdit({ page, here, S, shown, id }) : startNew({ page, threads, at, here, scope, S, id });
+  }
+
+  // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
+  // comment added later comes after the ones it was added to), else page order.
+  function matesOf(threads, pub) {
+    const key = String(pub.permalink || '').replace(/\/+$/, '');
+    const order = Array.isArray(pub.thread_ids) ? pub.thread_ids.map(String) : [];
+    const rank = (t, i) => { const k = order.indexOf(String(t.id)); return k < 0 ? order.length + i : k; };
+    return threads.map((t, i) => ({ t, r: rank(t, i) }))
+      .filter(({ t }) => isPublishedThread(t) && String(t.blyg_published.permalink || '').replace(/\/+$/, '') === key)
+      .sort((a, b) => a.r - b.r).map(({ t }) => t);
+  }
+  // THE NOTE OF A POST published from here, found and checked: inside the notes folder, a plain file, unchanged since it was
+  // published from here (when its hash was kept) and carrying the post's id. → { ok, rel, target, before, fm, bid } or a refusal.
+  function publishedNoteOf(pub, S) {
+    const bid = String(pub.blyg_id || (pub.permalink || '').split('/').filter(Boolean).pop() || '');
+    let rel = String(pub.note_rel || '');
+    if (!rel) { const n = noteWithId(S.folder, bid); if (n) rel = path.relative(S.top, path.join(S.folder, n)).split(path.sep).join('/'); }
+    if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return fail(409, 'The note of this post cannot be found in your notes folder, so a new version cannot be written from here.');
+    const target = path.join(S.top, rel);
+    let st;
+    try { st = fs.lstatSync(target); } catch { return fail(409, 'The note of this post is no longer in your notes folder, so a new version cannot be written from here.'); }
+    if (!st.isFile() || st.isSymbolicLink()) return fail(409, 'The note of this post is not a plain file, so it is not rewritten from here.');
+    if (fs.realpathSync(path.dirname(target)) !== S.folder) return fail(409, 'The note of this post is not in your notes folder, so it is not rewritten from here.');
+    const before = fs.readFileSync(target, 'utf8');
+    if (pub.note_sha && sha(before) !== pub.note_sha) return fail(409, 'The note of this post was changed on your site since it was published from here, so it is not rewritten from here. Publish that change on your site.');
+    const fm = frontOf(before);
+    if (fmValue(fm, 'blyg_id') !== bid || !isBlygId(bid)) return fail(409, 'The note of this post does not carry the post\'s id, so it is not rewritten from here.');
+    return { ok: true, rel, target, before, fm, bid };
+  }
+  // Does the page still answer what the post answered (its ONE `blyg_stub_of` target, or none)? A post recorded before the target
+  // was kept is compared by its whole stub (as it was written then: a web page's stub had no title).
+  function sameTarget(snapshot, page) {
+    if (!snapshot || typeof snapshot !== 'object') return false;
+    const now = stubOfPage(page);
+    if (typeof snapshot.target === 'string') return snapshot.target === hashOf(stubTargetOf(now));
+    if (!snapshot.stub) return !now;
+    return !!now && snapshot.stub === hashOf(JSON.stringify(now.url ? { url: now.url } : now));
+  }
+  /** THE EARLIER POST a comment may be added to: of the posts published from this page by another of the owner's threads, the most
+   *  recent (by when it was first published), and only when its note is still the one written from here (the post's record holds
+   *  its hash and the file still has it), all its threads are still here and publishable, one more fits, and the page still answers
+   *  the same target. → { thread, permalink, title, version } or null. */
+  function earlierPostFor(page, here, S) {
+    if (!page || !here || isPublishedThread(here) || !eligibleThread(here).ok) return null;
+    if (!EDIT_STEPS.every(k => S.commands[k])) return null;
+    const threads = page.threads || [];
+    const posts = new Map();
+    for (const t of threads) {
+      if (t === here || !isPublishedThread(t)) continue;
+      const key = String(t.blyg_published.permalink || '').replace(/\/+$/, '');
+      if (!key) continue;
+      const when = String(t.blyg_published.first_at || t.blyg_published.at);
+      const p = posts.get(key);
+      if (!p) posts.set(key, { thread: t, first: when }); else if (when < p.first) p.first = when;
+    }
+    const newest = [...posts.entries()].sort((a, b) => b[1].first.localeCompare(a[1].first))[0];
+    if (!newest) return null;
+    const [permalink, { thread }] = newest;
+    const rec = postOf(permalink);
+    if (!rec || !rec.note_sha || !rec.snapshot) return null;
+    const pub = { ...thread.blyg_published, ...rec };
+    if (!publishedNoteOf(pub, S).ok) return null;
+    const mates = matesOf(threads, pub);
+    if (mates.length + 1 > LIMITS.comments || !mates.every(t => eligibleThread(t).ok)) return null;
+    if (!sameTarget(rec.snapshot, page)) return null;
+    return { thread, permalink: pub.permalink, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1 };
+  }
+  /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version } | null }. */
+  function earlierOf({ page, threadId }) {
+    const home = settingsNow();
+    if (!home.ok || !page) return { ok: true, earlier: null };
+    const here = (page.threads || []).find(t => t && t.id === threadId);
+    if (!here) return fail(404, 'That comment is not on this page any more.');
+    const e = earlierPostFor(page, here, home.settings);
+    return { ok: true, earlier: e ? { title: e.title, version: e.version } : null };
   }
 
   // which threads "this and the ones above" takes: the owner's earlier unpublished eligible threads (with confirm 'never', only those
@@ -771,28 +862,19 @@ export function createPublisher(deps) {
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id }) {
+  async function startEdit({ page, here, S, id, adding = null }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     const threads = page.threads || [];
-    // the threads that went into that post (in page order)
-    const mates = threads.filter(t => isPublishedThread(t) && t.blyg_published.permalink === pub.permalink);
-    const picked = mates.length ? mates : [here];
+    // the threads that went into that post (in the order they went in), and the comment being added to it, last
+    const mates = matesOf(threads, pub);
+    const picked = [...(mates.length ? mates : [here]), ...(adding ? [adding] : [])];
     if (!picked.some(t => (t.msgs || []).some(m => isPublishableMsg(m) && String(m.text || '').trim()))) return fail(409, 'Withdrawing a post is done on your site, not from here.');
     for (const t of picked) { const el = eligibleThread(t); if (!el.ok) return fail(409, el.why === 'that comment has no words' ? 'Withdrawing a post is done on your site, not from here.' : el.why); }
+    if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} comments can go in one post.`);
     // the note: as recorded on the thread, or (a post published before the thread kept it) the one note that declares the post's id
-    const bid = String(pub.blyg_id || (pub.permalink || '').split('/').filter(Boolean).pop() || '');
-    let rel = String(pub.note_rel || '');
-    if (!rel) { const n = noteWithId(S.folder, bid); if (n) rel = path.relative(S.top, path.join(S.folder, n)).split(path.sep).join('/'); }
-    if (!rel || path.isAbsolute(rel) || rel.split(/[\\/]/).includes('..')) return fail(409, 'The note of this post cannot be found in your notes folder, so a new version cannot be written from here.');
-    const target = path.join(S.top, rel);
-    let st;
-    try { st = fs.lstatSync(target); } catch { return fail(409, 'The note of this post is no longer in your notes folder, so a new version cannot be written from here.'); }
-    if (!st.isFile() || st.isSymbolicLink()) return fail(409, 'The note of this post is not a plain file, so it is not rewritten from here.');
-    if (fs.realpathSync(path.dirname(target)) !== S.folder) return fail(409, 'The note of this post is not in your notes folder, so it is not rewritten from here.');
-    const before = fs.readFileSync(target, 'utf8');
-    if (pub.note_sha && sha(before) !== pub.note_sha) return fail(409, 'The note of this post was changed on your site since it was published from here, so it is not rewritten from here. Publish that change on your site.');
-    const fm = frontOf(before);
-    if (fmValue(fm, 'blyg_id') !== bid || !isBlygId(bid)) return fail(409, 'The note of this post does not carry the post\'s id, so it is not rewritten from here.');
+    const note = publishedNoteOf(pub, S);
+    if (!note.ok) return note;
+    const { rel, target, before, fm, bid } = note;
     const now = clock();
     const slug = String(pub.slug || path.basename(rel, '.md').replace(/[^a-z0-9-]/g, '').slice(0, LIMITS.slugChars) || 'note');
     const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') } });
@@ -862,7 +944,7 @@ export function createPublisher(deps) {
     const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1 };
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
-        snapshot: run.snapshot || null, at: published.at });
+        snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], at: published.at });
     } catch { published.record_error = 'The post is live, but the companion could not keep what it needs to publish a new version of it.'; }
     try {
       const page = deps.readPage(run.page_url);
@@ -1054,6 +1136,6 @@ export function createPublisher(deps) {
   /** Stop whatever is running (the companion is shutting down). */
   function stopAll() { if (RUNNING_MODES.includes(book.mode) && stopHandle) { try { stopHandle(); } catch { /* gone */ } } }
 
-  return { book, log, start, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
+  return { book, log, start, earlierOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
 }
 const LIQUID_SAY = 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.';

@@ -79,15 +79,20 @@ await test('the api door is shut on every SPELLING of a blyg route (the fetch\'s
   for (const p of ['/page?url=https%3A%2F%2Fa.test%2Fblyg-home', '/index', '/files/a%20b.png']) assert.equal((await W.send({ t: 'api', method: 'GET', path: p })).ok, true, p);
 });
 
-await test('start forwards exactly url, thread_id and scope; an odd scope or operation goes nowhere', async () => {
+await test('start forwards exactly url, thread_id, scope, confirm and join; earlier forwards url and thread_id; an odd scope, choice or operation goes nowhere', async () => {
   const W = boot();
   const r = await pub(W, 'start', { thread_id: 't9', scope: 'above', extra_field: 'ignored', run: 'x' });
   assert.equal(r.ok, true);
-  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '' }]]);
-  for (const bad of [{ op: 'start', scope: 'everything' }, { op: 'nope' }, { op: '__proto__' }, { op: 'constructor' }, { op: undefined }]) {
-    assert.equal((await pub(W, bad.op, { scope: bad.scope, thread_id: 't' })).ok, false, JSON.stringify(bad));
+  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '', join: '' }]]);
+  assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);
+  assert.equal(W.ours().at(-1).body.join, 'add');
+  assert.equal((await pub(W, 'earlier', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);
+  assert.deepEqual([W.ours().at(-1).url.replace(/^https?:\/\/[^/]+/, ''), W.ours().at(-1).body], ['/blyg-publish/earlier', { url: 'https://example.com/a', thread_id: 't9' }]);
+  const sent = W.ours().length;
+  for (const bad of [{ op: 'start', scope: 'everything' }, { op: 'start', scope: 'one', join: 'merge' }, { op: 'nope' }, { op: '__proto__' }, { op: 'constructor' }, { op: undefined }]) {
+    assert.equal((await pub(W, bad.op, { scope: bad.scope, thread_id: 't', ...(bad.join ? { join: bad.join } : {}) })).ok, false, JSON.stringify(bad));
   }
-  assert.equal(W.ours().length, 1);
+  assert.equal(W.ours().length, sent);
 });
 
 await test('confirm, retry and continue need the tab\'s one-use offer FOR THAT ACT, opened by an `arm` from that tab; it is spent by use; another tab or act never has it; start and run open nothing', async () => {

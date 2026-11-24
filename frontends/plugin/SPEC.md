@@ -13591,3 +13591,39 @@ mentions). What changed is where the owner waits:
 Tests: `blygpublish-notice` (the watch table; dot, tick, "!"; the toast on another tab than the one that started; a worker restart
 mid-run tells once, never twice; the toast's words, link, trusted and uncovered clicks, keyboard), `blygpublish-drawer` (the box
 closes, the chip, the mark, nothing pops up when it ends), `blygpublish-walk`, `blyg-run` (the late press).
+
+## Amendment (2026-11-24): adding a comment to the earlier post from the same page; the page's title on a response
+
+### "Add to your earlier post from this page"
+The owner published one thread from a page, then highlights a second passage on the same page and wants it in the same post.
+- **When it is offered** (`blyg-run earlierPostFor`, asked by the drawer through `POST /blyg-publish/earlier {url, thread_id}` →
+  `{earlier: {title, version} | null}`, op `earlier` in `BLYG_PUBLISH_OPS`): the thread is the owner's, eligible and not published;
+  another thread on the page was published from here; of the posts published from the page the MOST RECENT (by when it was first
+  published) is the one, and only when: its record in `blyg-publish-posts.json` holds the note's hash and a snapshot, the note file is
+  still that text (in the folder, a plain file, carrying the post's id: `publishedNoteOf`, shared with every new version), all its
+  threads are still on the page and publishable, one more fits (12), the edit commands are set, and the page answers the SAME one
+  target (`blyg-note stubTargetOf`: the post or the web page, whatever version was read or title the page has; a record from before
+  the target was kept is compared by its stub). Otherwise nothing is offered and the dialog is as before.
+- **The choice** is one list, `config.js PUB_JOINS` (`none`, `add`, `new`), one field `D.pub.join`, one function `pubJoin`
+  (`pubJoinMove` refuses a move `PUB_JOIN_MOVES` does not list). Offered, it starts at `add`: two options in a radio group, "Add to
+  your earlier post from this page" and "Publish as a new post"; `add` shows one button ("Prepare version N" / "Publish version N"),
+  `new` the scopes as before. Closing the dialog returns it to `none`. The start carries `join` (`blyg-run JOINS`: add, new; the
+  worker refuses anything else; with `none` nothing is sent).
+- **Adding** is a new VERSION of that post through the existing edit path (`startEdit` with `adding`): the same file, id and address,
+  `created`/`released` kept, the threads in the order they went in (`thread_ids`, now kept in the post's record; a post recorded
+  before it is in page order), then the new one, each comment–quote–comment; the changelog line is "Added a comment." (a passage is
+  compared per thread now, so an added thread's passage is part of the added comment, not "Changed the quoted passage."). A start
+  with `join: add` whose post is no longer addable is refused with `ADD_GONE_SAY` and starts nothing. Cancel and every give-up restore
+  the published text exactly as for any new version (`undraft`, `prev_text`); the added thread is marked only after `published`.
+  After that every thread of the post carries it, so the plane on either republishes the whole post as a further version.
+- Everything else is the edit path's: agent passages and their review, the `[TK]` refusals, the picture, background publishing, the
+  site's prepared refusals. The site needs nothing new: two quote cards of one page in one note build and pass the conformance checker.
+
+### The page's title on a response to an ordinary web page
+`blyg_stub_of: {url, title}`: `title` is the page's title made plain (`blyg-note pageTitleOf`: one line, no `<>{}`, at most 200
+characters, quoted), written only when the page has one. The example site shows it as the link text of its "In response to" line
+(else the host name); it never goes on the wire.
+
+Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plane on either thread; when it is offered; given up),
+`blyg-note` (title, target, two quotes of one page, per-thread passage), `blygpublish-drawer` (the choice), `blygpublish-background`
+(join and earlier forwarded, an odd choice refused), `blyg-publish-server` (the route).
