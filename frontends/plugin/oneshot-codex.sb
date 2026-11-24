@@ -1,0 +1,30 @@
+(version 1)
+; oneshot-codex.sb — the macOS sandbox (seatbelt) a `/tk-codex` gap's `codex exec` runs in (oneshot.mjs codexJail).
+; Started as: sandbox-exec -f oneshot-codex.sb -D HOME=… -D CLI_HOME=… -D WORK=… -D OUT=… -D CLI_BIN=… <CLI_BIN> exec …
+; Every path parameter is a real path (no symlinks): seatbelt matches the resolved path.
+;   HOME      the owner's home folder (only its own entry may be looked at, to walk to CLI_HOME)
+;   CLI_HOME  the CLI's own config and sign-in folder ($CODEX_HOME, else ~/.codex): read and written (sign-in refresh, its state files)
+;   WORK      the fresh empty folder the run starts in (its --cd)
+;   OUT       the fresh folder its last message is written to (-o)
+;   CLI_BIN   the CLI's own binary: the only program it may start
+(allow default)
+
+; No file under the owners' folders or on another volume may be read or written, but the CLI's own folder and the two fresh folders.
+(deny file-read* (subpath "/Users") (subpath "/Volumes"))
+(allow file-read-metadata (literal "/Users") (literal (param "HOME")))
+(allow file-read* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")))
+(deny file-write* (subpath "/Users") (subpath "/Volumes"))
+(allow file-write* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")))
+
+; No program but the CLI itself: a shell, its own nested sandbox (sandbox-exec), git, anything a model asks for, is refused.
+(deny process-exec)
+(allow process-exec (literal (param "CLI_BIN")))
+
+; Network: a seatbelt rule names a remote by port, not by host name (a host other than localhost cannot be written), so the
+; model provider cannot be singled out. What is allowed: TCP to port 443 anywhere, and the system's name lookups. No other port,
+; no loopback service of the owner's (the companion, a local database). The CLI's answer reaches the owner only as the gap's text,
+; which is escaped, boxed and shown to the owner before anything is published.
+(deny network-outbound)
+(allow network-outbound (remote tcp "*:443"))
+(allow network-outbound (remote unix-socket (path-literal "/private/var/run/mDNSResponder")))
+(deny network-bind)

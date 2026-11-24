@@ -129,7 +129,7 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
     let input = '';
     child.stdin.on('data', d => { input += d; });
     child.kill = sig => { child.killed = sig; setImmediate(() => child.emit('close', null)); };
-    const rec = { cmd, args, cwd: o.cwd, child, input: () => input };
+    const rec = { cmd, args, cwd: o.cwd, env: o.env, child, input: () => input };
     spawned.push(rec);
     child.stdin.on('finish', () => {
       if (answer === null) return; // never answers
@@ -156,26 +156,58 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
   // CODEX, LOCKED DOWN: `codex exec` with every lock-down flag, in a fresh empty folder, the prompt on stdin, and the answer read ONLY
   // from the last-message file (outside that folder), under the same caps; both folders are gone after
   const fsm = await import('node:fs');
+  const osm = await import('node:os');
+  const pathm = await import('node:path');
   const codexSpawn = answer => (cmd, args, o) => {
     const rec = fakeSpawn(null)(cmd, args, o);
     rec.stdin.on('finish', () => { const out = args[args.indexOf('-o') + 1]; fsm.writeFileSync(out, answer); rec.stdout.end('progress noise that is never the answer'); setImmediate(() => rec.emit('close', 0)); });
     return rec;
   };
   const before = spawned.length;
-  const c = await O.runOneShot('codex', 'the codex prompt', { model: 'gpt-x', effort: 'high', spawn: codexSpawn('Codex words.\n') });
+  // the jail as made on macOS, with a stand-in for the CLI's path (the real codexJail is tested below)
+  const jail = o => O.codexJail({ ...o, platform: 'darwin', sandboxExec: process.execPath, profile: O.CODEX_JAIL_PROFILE, bin: '/opt/cli/codex' });
+  const canaryEnv = { HOME: '/Users/someone', PATH: '/usr/bin:/bin', TMPDIR: '/tmp', LANG: 'en_GB.UTF-8', OPENAI_API_KEY: 'k-1', ANTHROPIC_API_KEY: 'k-2',
+    PLUGIN_OWNER_PASSWORD: 'CANARY-owner', PLUGIN_PASSWORD: 'CANARY-guest', GITHUB_TOKEN: 'CANARY-gh', CANARY_VAR: 'CANARY' };
+  const c = await O.runOneShot('codex', 'the codex prompt', { model: 'gpt-x', effort: 'high', spawn: codexSpawn('Codex words.\n'), jail, env: canaryEnv });
   eq('codex answers with its last message only', c, { ok: true, text: 'Codex words.', model: 'gpt-x' });
   const cs = spawned[before];
-  eq('codex exec, every lock-down flag, in order', [cs.cmd, ...cs.args.slice(0, 1 + O.CODEX_LOCKDOWN.length)], ['codex', 'exec', ...O.CODEX_LOCKDOWN]);
+  const at = cs.args.indexOf('/opt/cli/codex');
+  eq('codex runs INSIDE the jail: sandbox-exec -f <profile> -D … <cli>', [cs.cmd, cs.args[0], cs.args[1], at > 0], [process.execPath, '-f', O.CODEX_JAIL_PROFILE, true]);
+  eq('the jail\'s parameters', cs.args.slice(2, at).filter(a => a !== '-D').map(a => a.split('=')[0]), ['HOME', 'CLI_HOME', 'WORK', 'OUT', 'CLI_BIN']);
+  eq('codex exec, every lock-down flag, in order', cs.args.slice(at, at + 2 + O.CODEX_LOCKDOWN.length), ['/opt/cli/codex', 'exec', ...O.CODEX_LOCKDOWN]);
+  eq('codex: a minimal environment (the canary and the companion\'s secrets do not reach it; its own sign-in names do)', Object.keys(cs.env).sort(),
+    ['HOME', 'LANG', 'OPENAI_API_KEY', 'PATH', 'TMPDIR']);
   for (const f of ['--ephemeral', '--ignore-user-config', '--ignore-rules', 'approval_policy="never"', 'web_search="disabled"', 'mcp_servers={}']) ok(`codex: ${f}`, cs.args.includes(f));
   eq('codex: a read-only sandbox', cs.args[cs.args.indexOf('--sandbox') + 1], 'read-only');
   for (const f of ['shell_tool', 'unified_exec', 'apps', 'plugins', 'browser_use', 'computer_use', 'view_image', 'multi_agent', 'hooks']) ok(`codex: ${f} off`, cs.args.join(' ').includes(`--disable ${f}`));
-  eq('codex: its root is the fresh folder it runs in', cs.args[cs.args.indexOf('--cd') + 1], cs.cwd);
+  eq('codex: its root is the fresh folder it runs in (the jail\'s WORK is its real path)', [cs.args[cs.args.indexOf('--cd') + 1], cs.args.some(a => a.startsWith('WORK=/') && a.endsWith('/' + pathm.basename(cs.cwd)))], [cs.cwd, true]);
+  eq('codex: the jail lets it write its answer into OUT (the -o file\'s folder)', cs.args.some(a => a.startsWith('OUT=/') && a.endsWith('/' + pathm.basename(pathm.dirname(cs.args[cs.args.indexOf('-o') + 1])))), true);
   ok('codex: the answer file is NOT in that folder', !cs.args[cs.args.indexOf('-o') + 1].startsWith(cs.cwd + '/'));
-  eq('codex: the model and effort set for it; the prompt on stdin, `-` last', [cs.args[cs.args.indexOf('-m') + 1], cs.args.includes('model_reasoning_effort="high"'), cs.args.at(-1), cs.input()], ['gpt-x', true, '-', 'the codex prompt']);
+  eq('codex: the model as ONE argument, and the effort set for it; the prompt on stdin, `-` last', [cs.args.includes('--model=gpt-x'), cs.args.includes('-m'), cs.args.includes('model_reasoning_effort="high"'), cs.args.at(-1), cs.input()], [true, false, true, '-', 'the codex prompt']);
   ok('codex: both folders are removed after', !fsm.existsSync(cs.cwd) && !fsm.existsSync(cs.args[cs.args.indexOf('-o') + 1]));
-  eq('codex: effort medium when none is set', spawned.length && (await O.runOneShot('codex', 'p', { spawn: codexSpawn('x') })).ok && spawned.at(-1).args.includes('model_reasoning_effort="medium"'), true);
-  eq('codex: a hard output cap on the answer file', (await O.runOneShot('codex', 'p', { spawn: codexSpawn('y'.repeat(100000)), maxBytes: 1000 })).text.length, 1000);
-  eq('claude: the effort set for it', ((await O.runOneShot('claude', 'p', { effort: 'low', spawn: fakeSpawn('ok') })) && spawned.at(-1).args.slice(-2)), ['--effort', 'low']);
+  eq('codex: effort medium when none is set', spawned.length && (await O.runOneShot('codex', 'p', { spawn: codexSpawn('x'), jail })).ok && spawned.at(-1).args.includes('model_reasoning_effort="medium"'), true);
+  eq('codex: a hard output cap on the answer file', (await O.runOneShot('codex', 'p', { spawn: codexSpawn('y'.repeat(100000)), maxBytes: 1000, jail })).text.length, 1000);
+  eq('claude: the model and effort set for it, each ONE argument', ((await O.runOneShot('claude', 'p', { model: 'opus-x', effort: 'low', spawn: fakeSpawn('ok') })) && spawned.at(-1).args.slice(-2)), ['--model=opus-x', '--effort=low']);
+  eq('claude: a minimal environment too', ((await O.runOneShot('claude', 'p', { spawn: fakeSpawn('ok'), env: canaryEnv })) && Object.keys(spawned.at(-1).env).sort()), ['ANTHROPIC_API_KEY', 'HOME', 'LANG', 'PATH', 'TMPDIR']);
+  // a model name that is a flag is never passed, for either CLI
+  for (const a of ['claude', 'codex']) {
+    const n = spawned.length;
+    eq(`${a}: a model beginning with - is refused, nothing run`, [(await O.runOneShot(a, 'p', { model: '--dangerously-bypass-approvals-and-sandbox', spawn: fakeSpawn('x'), jail })).error, spawned.length - n], ['the model name may not begin with -', 0]);
+  }
+  // WHERE THE JAIL CANNOT BE MADE, A CODEX GAP FAILS: nothing is started
+  { const n = spawned.length;
+    const r2 = await O.runOneShot('codex', 'p', { spawn: codexSpawn('x'), jail: o => O.codexJail({ ...o, platform: 'linux' }) });
+    eq('not macOS: Codex fails with a plain reason, nothing spawned', [r2, spawned.length - n], [{ ok: false, error: 'Codex cannot be contained on this system' }, 0]);
+    const r3 = await O.runOneShot('codex', 'p', { spawn: codexSpawn('x'), jail: o => O.codexJail({ ...o, platform: 'darwin', sandboxExec: '/no/such/sandbox-exec' }) });
+    eq('no sandbox-exec: the same', [r3.error, spawned.length - n], ['Codex cannot be contained on this system', 0]);
+  }
+  // the real jail on this machine
+  if (process.platform === 'darwin') {
+    const j = O.codexJail({ env: { HOME: osm.homedir(), PATH: '/usr/bin:/bin' }, work: osm.tmpdir(), out: osm.tmpdir(), bin: '/bin/echo' });
+    eq('macOS: sandbox-exec with the shipped profile', [j.ok, j.argv[0], j.argv[2]], [true, '/usr/bin/sandbox-exec', O.CODEX_JAIL_PROFILE]);
+    ok('the CLI\'s own folder defaults to ~/.codex', j.argv.some(a => a.startsWith('CLI_HOME=') && a.endsWith('/.codex')));
+    eq('CODEX_HOME names it when set', O.codexJail({ env: { HOME: osm.homedir(), CODEX_HOME: '/opt/ch' }, work: '/tmp', out: '/tmp', bin: '/bin/echo' }).argv.includes('CLI_HOME=/opt/ch'), true);
+  }
 }
 
 // ---- asking for one gap (stubbed agent) ---------------------------------------------

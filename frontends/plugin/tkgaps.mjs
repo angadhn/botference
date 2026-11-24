@@ -422,3 +422,35 @@ export function generatedLines(entries) {
     return members.map((m, i) => (i ? '    ' : '  - ') + m).join('\n');
   })];
 }
+
+// ---- what a guest receives of a gap: nothing ------------------------------------------
+// A gap is the owner's working space: an agent's fill (or pasted text) the owner may not have looked at yet, and the instruction
+// they gave it. A guest of a hosted companion receives NONE of it, at any stage (simpler than tracking whether the owner has
+// acted, and nothing a guest needs): a message's `gaps` are left out, and in its text each gap's span (the instruction, or the
+// pasted words) is shown as GUEST_GAP_WORDS. `forGuest` is applied to everything the companion sends a guest (an answer, `/page`,
+// an event on SSE or WebSocket); the owner's copy is untouched.
+export const GUEST_GAP_WORDS = '[an agent\'s passage]';
+export function maskGaps(text, gaps) {
+  const s = String(text || '');
+  const found = Grammar.gapsFor(s, gaps);
+  if (!found.length) return s;
+  let out = '';
+  let at = 0;
+  for (const f of found) { out += s.slice(at, f.start) + GUEST_GAP_WORDS; at = f.end; }
+  return out + s.slice(at);
+}
+export function forGuest(v, depth = 0) {
+  if (depth > 12 || v === null || typeof v !== 'object') return v;
+  if (Array.isArray(v)) { let changed = false; const a = v.map(x => { const y = forGuest(x, depth + 1); if (y !== x) changed = true; return y; }); return changed ? a : v; }
+  let out = null;
+  for (const [k, x] of Object.entries(v)) {
+    const y = forGuest(x, depth + 1);
+    if (y !== x) { out = out || { ...v }; out[k] = y; }
+  }
+  if (Array.isArray(v.gaps)) {
+    out = out || { ...v };
+    delete out.gaps;
+    if (typeof v.text === 'string') out.text = maskGaps(v.text, v.gaps);
+  }
+  return out || v;
+}

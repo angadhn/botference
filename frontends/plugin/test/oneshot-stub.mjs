@@ -8,7 +8,7 @@ let input = '';
 process.stdin.on('data', d => { input += d; });
 process.stdin.on('end', () => {
   if (process.env.ONESHOT_LOG) {
-    fs.appendFileSync(process.env.ONESHOT_LOG, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), input }) + '\n');
+    fs.appendFileSync(process.env.ONESHOT_LOG, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), input, env: process.env }) + '\n');
   }
   process.stdout.write('ONESHOT filled text.\n');
 });

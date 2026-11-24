@@ -306,7 +306,7 @@ await test('the library and local files are never asked about', async () => {
   const g = await startServer({ root: gRoot, args: ['--hosted'],
     env: { PLUGIN_BRIDGE_CMD: JSON.stringify([process.execPath, path.join(TEST, 'mock-bridge.mjs')]), MOCK_BRIDGE_LOG: gLog,
       PLUGIN_ONESHOT_CMD: JSON.stringify([process.execPath, path.join(TEST, 'oneshot-stub.mjs')]), ONESHOT_LOG: oLog,
-      PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw' } });
+      PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', BFP_CANARY_SECRET: 'CANARY-7f3a' } });
   const GB = g.base;
   const GUESTH = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' };
   const runs = () => (fs.existsSync(oLog) ? fs.readFileSync(oLog, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : []);
@@ -424,6 +424,60 @@ await test('the library and local files are never asked about', async () => {
     assert.equal(runs().length, before, 'an unmarked old comment is not asked');
     await POST(GB, '/edit', { url: other, thread_id: t.id, ts: old.ts, text: '/tk an old instruction', resend: false });
     await waitFor(() => runs().length === before + 1, 're-saved by the owner: asked');
+  });
+  await test('a one-shot gets a minimal environment: the companion\'s canary, passwords and other variables never reach it', async () => {
+    const all = runs();
+    assert.ok(all.length > 0);
+    for (const run of all) {
+      const names = Object.keys(run.env || {});
+      assert.ok(!names.includes('BFP_CANARY_SECRET') && !JSON.stringify(run.env).includes('CANARY-7f3a'), names.join(','));
+      assert.ok(!names.includes('PLUGIN_PASSWORD') && !names.includes('PLUGIN_OWNER_PASSWORD') && !names.includes('PLUGIN_ONESHOT_CMD'), names.join(','));
+      // HOME, PATH, TMPDIR, LANG, USER, LOGNAME, the CLI's sign-in names (none set here), and the test stand-in's log
+      for (const n of names) assert.ok(['HOME', 'PATH', 'TMPDIR', 'LANG', 'USER', 'LOGNAME', 'ONESHOT_LOG', '__CF_USER_TEXT_ENCODING'].includes(n), n);
+    }
+  });
+
+  if (process.platform === 'darwin') await test('a /tk-codex gap runs `codex exec` inside sandbox-exec with the shipped profile (macOS)', async () => {
+    const u = 'https://example.org/codex-gap';
+    await POST(GB, '/page', { url: u, title: 'Codex', site: 'example.org' });
+    const before = runs().length;
+    await POST(GB, '/thread', { url: u, quote: 'q', msg: { text: 'Mine.\n/tk-codex say it briefly' } });
+    await waitFor(() => runs().length === before + 1, 'the codex one-shot');
+    const run = runs().at(-1);
+    assert.equal(run.argv[0], '/usr/bin/sandbox-exec');
+    assert.equal(run.argv[1], '-f');
+    assert.match(run.argv[2], /oneshot-codex\.sb$/);
+    const at = run.argv.indexOf('codex');
+    assert.deepEqual(run.argv.slice(at, at + 2), ['codex', 'exec']);
+    assert.ok(run.argv.some(a => a.startsWith('--model=')) || !run.argv.includes('-m'));
+  });
+
+  await test('a hosted GUEST never receives a gap: not its fill, its instruction, or pasted words (/page, an answer, SSE)', async () => {
+    const u = 'https://example.org/guest-gaps';
+    await POST(GB, '/page', { url: u, title: 'Guest', site: 'example.org' });
+    // the guest listens on SSE while the owner writes and the fill lands
+    const frames = [];
+    const sse = http.request(GB + '/events', { headers: GUESTH }, res => { res.on('data', c => frames.push(String(c))); });
+    sse.end();
+    await new Promise(r => setTimeout(r, 150));
+    const th = await POST(GB, '/thread', { url: u, quote: 'q', msg: { text: 'Mine. /tk(SECRET-INSTRUCTION) and\n/tkimpyrt-codex PASTED-AGENT-WORDS\nend' } });
+    assert.equal(th.status, 200, th.body);
+    assert.equal(th.json.thread.msgs[0].gaps.length, 2, 'the owner\'s own answer keeps its gaps');
+    await waitFor(() => record(u).threads[0].msgs[0].gaps[0].mode === 'filled-by-agent', 'the fill');
+    const owner = await GET(GB, `/page?url=${encodeURIComponent(u)}`);
+    assert.ok(owner.body.includes('ONESHOT filled text.') && owner.body.includes('SECRET-INSTRUCTION'), 'the owner sees it');
+    const guest = await GET(GB, `/page?url=${encodeURIComponent(u)}`, GUESTH);
+    assert.equal(guest.status, 200, guest.body);
+    for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS', '"gaps"']) assert.ok(!guest.body.includes(secret), secret);
+    assert.equal(guest.json.threads[0].msgs[0].text, "Mine. [an agent's passage] and\n[an agent's passage]\nend");
+    // a guest's reply is answered with the thread: still nothing of the gaps
+    const rep = await POST(GB, '/reply', { url: u, thread_id: th.json.thread.id, text: 'a guest reply' }, GUESTH);
+    for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS', '"gaps"']) assert.ok(!rep.body.includes(secret), `reply: ${secret}`);
+    await new Promise(r => setTimeout(r, 200));
+    sse.destroy();
+    const heard = frames.join('');
+    assert.ok(heard.includes('"type"'), 'the guest heard events');
+    for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS', '"gaps"']) assert.ok(!heard.includes(secret), `sse: ${secret}`);
   });
   g.proc.kill();
 }

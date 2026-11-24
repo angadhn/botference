@@ -43,8 +43,8 @@ import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
-  GAP_LIMITS } from './tkgaps.mjs';
-import { runOneShot } from './oneshot.mjs';
+  GAP_LIMITS, forGuest } from './tkgaps.mjs';
+import { runOneShot, codexJail } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
@@ -226,9 +226,13 @@ export const mayHear = (standing, hush) => !hush || standing === 'owner';
 // in, because once the record is gone nothing can tell what it was
 function broadcast(ev, hush = ownerOnlyEvent(ev)) {
   const json = JSON.stringify(ev);
+  // a guest's copy carries no gap (tkgaps.forGuest)
+  const guestEv = forGuest(ev);
+  const guestJson = guestEv === ev ? json : JSON.stringify(guestEv);
   const t = Date.now();
-  for (const res of sseClients) { const r = standingOf.get(res); if (connectionLive(r, t) && mayHear(r.standing, hush)) res.write(`data: ${json}\n\n`); }
-  for (const ws of wsClients) { const r = standingOf.get(ws); if (connectionLive(r, t) && mayHear(r.standing, hush)) ws.send(json); }
+  const as = r => (r.standing === 'owner' ? json : guestJson);
+  for (const res of sseClients) { const r = standingOf.get(res); if (connectionLive(r, t) && mayHear(r.standing, hush)) res.write(`data: ${as(r)}\n\n`); }
+  for (const ws of wsClients) { const r = standingOf.get(ws); if (connectionLive(r, t) && mayHear(r.standing, hush)) ws.send(as(r)); }
 }
 // The one Publish-as-blyg run this companion can have (blyg-run.mjs). Its record is a file next to the pages, so a
 // restart finds it and marks it interrupted; its events go to owner clients only (OWNER_ONLY_EVENTS).
@@ -2228,10 +2232,14 @@ function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
   // not invented when none is set, the effort is medium then
   const { model, effort } = agentSetting(agent);
   const override = process.env.PLUGIN_ONESHOT_CMD ? JSON.parse(process.env.PLUGIN_ONESHOT_CMD) : null;
+  // (tests: the stand-in is told where to log, which is the one name added to the child's minimal environment, and the jail is
+  // made with the CLI's name, since the stand-in runs in its place)
   const spawnFn = override
-    ? (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args], o)
+    ? (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
+      { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } })
     : undefined;
-  return runOneShot(agent, prompt, { model, effort, timeoutMs, ...(spawnFn ? { spawn: spawnFn } : {}) });
+  return runOneShot(agent, prompt, { model, effort, timeoutMs,
+    ...(spawnFn ? { spawn: spawnFn, jail: o => codexJail({ ...o, bin: 'codex' }) } : {}) });
 }
 function agentSetting(agent) {
   const a = store.readConfig().agents || {};
@@ -2900,7 +2908,12 @@ const rememberRoot = root => {
   if (r && store.readConfig().last_council_root !== r) store.saveConfig({ last_council_root: r });
 };
 
-const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...obj }));
+// An answer to a guest (anyone but the owner) carries no TK gap: not its fill, its instruction, or pasted words (tkgaps.forGuest).
+// The handler marks the guest's response once, at the top; every JSON answer below goes through `ok` or `sendJson`.
+const guestReplies = new WeakSet();
+const asSeenBy = (res, obj) => (guestReplies.has(res) ? forGuest(obj) : obj);
+const sendJson = (res, obj, status = 200) => res.writeHead(status, JSON_HEAD).end(JSON.stringify(asSeenBy(res, obj)));
+const ok = (res, obj) => res.writeHead(200, JSON_HEAD).end(JSON.stringify({ ok: true, ...asSeenBy(res, obj) }));
 const fail = (res, code, error) => res.writeHead(code, JSON_HEAD).end(JSON.stringify({ ok: false, error }));
 // /edit, /tick and /delete address a message by timestamp, and a timestamp is
 // not an identity: whole milliseconds, and a bot's tools summary and its answer
@@ -3654,6 +3667,7 @@ export function handler(req, res) {
     return fail(res, 403, 'refused: requests from other websites cannot use the companion');
   }
   { const why = sourceRefused(req); if (why) { req.resume(); return fail(res, 403, why); } }
+  if (!hosted.isOwner(req)) guestReplies.add(res);
   // CORS, hosted only: the remote extension is cross-origin against a public
   // hostname. An origin that passed is echoed; a foreign one gets nothing; no
   // Origin keeps the wildcard, which is safe because API auth is a bearer
@@ -5233,9 +5247,8 @@ export function handler(req, res) {
     // which of its chats a bot is answering right now
     const turns = turnsFor(u);
     return page
-      ? res.writeHead(200, JSON_HEAD).end(JSON.stringify(
-        store.chatArchiveOf(page).length
-          ? { ...page, chat_archive: store.chatArchiveSummary(page), turns } : { ...page, turns }))
+      ? sendJson(res, store.chatArchiveOf(page).length
+        ? { ...page, chat_archive: store.chatArchiveSummary(page), turns } : { ...page, turns })
       : ok(res, { page: null, turns });
   }
   if (req.method === 'GET' && url === '/events') {
@@ -5420,7 +5433,7 @@ export function handler(req, res) {
       // check starts now, so the first highlight rarely has to wait for it
       if (data.blyg_hints !== undefined && blygMay(req) && !blygSkips(page.url)) blygAsk(page.url, data.blyg_hints);
       broadcast({ type: 'page', url: page.url });
-      res.writeHead(200, JSON_HEAD).end(JSON.stringify(page));
+      sendJson(res, page);
     });
   }
   // Is the exported note a RESPONSE to this page (note-quotes.RESPONSE_MODES)?
