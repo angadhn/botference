@@ -75,8 +75,9 @@ export const CONTINUE_FOR = Object.freeze({ interrupted_applying: 'applying', in
 const I = INTERRUPTED_OF;
 export const RUN_MOVES = Object.freeze({
   idle: Object.freeze(['checking', 'drafted']),
-  // the pre-flight passed (the note is written: drafted), or it refused / the start stopped before writing (idle)
-  checking: Object.freeze(['drafted', 'idle']),
+  // the pre-flight passed (the note is written: drafted), or it refused / the start stopped before writing: back to where it was
+  // (idle, or the finished run the owner last saw, as it was)
+  checking: Object.freeze(['drafted', 'idle', 'published', 'cancelled', 'abandoned']),
   // `prepare` is optional: a run with none goes straight from drafted to planning
   drafted: Object.freeze(['preparing', 'planning', 'cancelled', 'failed_plan', I.drafted]),
   preparing: Object.freeze(['planning', 'failed_prepare', I.preparing]),
@@ -565,7 +566,8 @@ export function createPublisher(deps) {
     file: deps.file, now: deps.now ? () => deps.now().toISOString() : nowIso,
     onChange: (run, from) => {
       log.write(run.id, { ev: 'move', from, to: run.mode });
-      try { deps.broadcast({ type: 'blyg-publish', run: { id: run.id, mode: run.mode } }); } catch { /* nobody listening */ }
+      // (a run held while a start looks has no id yet: '')
+      try { deps.broadcast({ type: 'blyg-publish', run: { id: run.id || '', mode: run.mode } }); } catch { /* nobody listening */ }
     },
   });
   const exec = deps.exec || runCommand;
@@ -758,9 +760,14 @@ export function createPublisher(deps) {
     const id = crypto.randomBytes(8).toString('hex');
     // THE RUN IS HELD from here, before the first await (the pre-flight, the link checks): a second start meanwhile is refused
     if (!canMove(book.mode, 'checking')) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
+    const before = book.run;
     book.move('checking');
     try { r = await startChecked({ ...args, id }); } catch (e) { r = fail(500, `could not start: ${String((e && e.message) || e).slice(0, 200)}`); }
-    if (book.mode === 'checking') book.move('idle');
+    // a start that stopped before writing anything: the run is as it was before it (a finished run's record kept for the owner)
+    if (book.mode === 'checking') {
+      if (before && before.mode !== 'idle' && canMove('checking', before.mode)) book.move(before.mode, before);
+      else book.move('idle');
+    }
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }

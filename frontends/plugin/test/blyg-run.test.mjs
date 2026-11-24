@@ -1432,7 +1432,7 @@ test('PUBLISHING AGAIN: a new version of the same post — same file, id, addres
   assert.deepEqual(hand.outside, { say: R.OUTSIDE_SAY, lost: 3 }, 'the sentence and how many lines would not be kept (a count, never the text): the hand-written line and the two comments no longer in the thread');
   assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), handText, 'KEEP: nothing is written');
   assert.equal(rig.calls().length, calls, 'and nothing is run');
-  assert.equal(b.mode(), 'idle', 'no run was started (the start held the run while it looked, then let it go)');
+  assert.equal(b.mode(), 'cancelled', 'no run was started (the start held the run while it looked, then put it back)');
   assert.deepEqual(R.OUTSIDE_ANSWERS, ['keep', 'replace']);
   assert.equal((await b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', outside: 'keep' })).status, 400, 'only replace is ever sent');
   // REPLACE: the same start with outside: 'replace' goes ahead, rebuilding the note from the thread
@@ -1724,7 +1724,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
     const r = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add', ...wrong });
     assert.deepEqual([r.ok, r.error], [false, R.ADD_CHANGED_SAY], JSON.stringify(wrong));
   }
-  assert.equal(b.mode(), 'idle', 'nothing was started (the start held the run while it looked, then let it go)');
+  assert.equal(b.mode(), 'published', 'nothing was started (the start held the run while it looked, then put it back)');
   assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't1' }).earlier, null);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'merge' })).status, 400);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'above', shown: 'always', join: 'add' })).status, 400);

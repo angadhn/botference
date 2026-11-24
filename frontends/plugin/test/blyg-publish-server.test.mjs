@@ -138,7 +138,7 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.equal((await request(B, 'POST', '/blyg-publish/earlier', { url: PAGE, thread_id: other }, { 'content-type': 'application/json', origin: 'https://evil.example' })).status, 403);
   assert.equal((await POST(B, '/blyg-publish/earlier', { url: PAGE, thread_id: 'no-such-thread' }, X)).status, 404);
   await waitFor(() => events.of('blyg-publish').length >= 6, 'the moves were announced');
-  assert.deepEqual([...new Set(events.of('blyg-publish').map(e => e.run.mode))].sort(), ['applied', 'applying', 'drafted', 'planned', 'planning', 'published', 'publishing']);
+  assert.deepEqual([...new Set(events.of('blyg-publish').map(e => e.run.mode))].sort(), ['applied', 'applying', 'checking', 'drafted', 'planned', 'planning', 'published', 'publishing']);
   assert.ok(events.of('blyg-publish').every(e => Object.keys(e.run).sort().join() === 'id,mode'), 'an event says which run and which mode, nothing else');
   events.close();
 });
