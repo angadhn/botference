@@ -10799,7 +10799,8 @@ ${bubbleShellHtml()}`;
       const from = D.pub.arm ? D.pub.arm.state : 'settling';
       if (D.pub.arm && PUB_ARM_MOVES[from].indexOf(to) === -1) throw new Error('publish buttons: cannot go from ' + from + ' to ' + to);
       D.pub.arm = { state: to, since: Date.now(), box: pubDlgBox() };
-      if (to === 'settling') { clearTimeout(pubArmTimer); pubArmTimer = setTimeout(pubArmCheck, PUB_ARM_MS); }
+      // (checked a little after the threshold: a timer may fire a millisecond early by Date.now(), which would settle again for nothing)
+      if (to === 'settling') { clearTimeout(pubArmTimer); pubArmTimer = setTimeout(pubArmCheck, PUB_ARM_MS + 40); }
     }
     function pubArmCheck() {
       const a = D.pub.arm;

@@ -30,7 +30,8 @@ const ok = (name, cond, detail) => { if (cond) pass++; else { fail++; failures.p
 const eq = (name, got, want) => ok(name, JSON.stringify(got) === JSON.stringify(want), 'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
 // a click that starts or carries on a publish counts only once the dialog has been on screen, unobstructed and still for 500 ms
-const settle = () => tick(560);
+// (the readiness check runs 40 ms after the 500; the margin is for a loaded machine running the suites in parallel)
+const settle = () => tick(800);
 
 const mine = (text, extra = {}) => ({ author: 'owner', ts: '2026-11-22T10:00:00Z', text, provenance: 'owner-typed', ...extra });
 const th = (id, text, extra = {}) => ({ id, quote: 'passage ' + id, msgs: [mine(text)], ...extra });
