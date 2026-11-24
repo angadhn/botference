@@ -363,6 +363,9 @@ export const LIMITS = Object.freeze({
   editReturnsPerRun: 3,       // edit-returns per blyg per refresh
   editReturnsPerDay: 10,      // ... and per blyg in any 24 hours (the ledger's `returns`)
   archivedDocsPerRun: 5,      // documents of archived posts fetched per blyg per refresh (only while a return is possible)
+  editedPerBlyg: 3,           // edited posts of one blyg unread at once (more wait in the Archive, released as the owner ticks)
+  massEditPerDay: 5,          // more read posts of one blyg than this changing in 24 hours is a MASS EDIT: none returns, the Archive
+                              // says so in one line for the blyg (and a below-threshold change, judged by the fingerprint, is none)
   // (an edit-return also counts against following_max_items_per_blyg, the per-blyg unread cap: at the cap the post is held)      // a `created` further in the future than this is a lie: it never makes a post fresh
 });
 const KINDS = ['fragment', 'thread', 'withdrawn'];
@@ -594,6 +597,47 @@ export function changeOf(held, rec, percent) {
   if (held.content_hash === rec.content_hash) return 'maintenance';
   return barelyChanged(held, rec, percent) ? 'minor' : 'new-words';
 }
+
+// ---- a fingerprint of a post's words, kept when its text is not --------------------
+// An archive record keeps no text, so "barely changed" (§13.2) could not be judged for a post the owner had read: a typo fix
+// brought it back to the Feed. The record keeps instead a 64-bit SIMHASH of the post's normalised text (lower case, words
+// separated by single spaces; shingles of two consecutive words; each hashed with 64-bit FNV-1a) and the text's length: about
+// 30 bytes, computed from the held body at the tick, deterministic, no dependencies.
+const FNV_OFFSET = 0xcbf29ce484222325n, FNV_PRIME = 0x100000001b3n, MASK64 = (1n << 64n) - 1n;
+function fnv64(str) {
+  let h = FNV_OFFSET;
+  for (const ch of String(str)) { h ^= BigInt(ch.codePointAt(0)); h = (h * FNV_PRIME) & MASK64; }
+  return h;
+}
+const wordsOf = text => String(text || '').toLowerCase().split(/\s+/).filter(Boolean);
+/** → { fp: 16 hex digits, chars } for a text: a simhash over its two-word shingles, and the length of its normalised text. */
+export function fingerprintOf(text) {
+  const w = wordsOf(text);
+  const shingles = w.length < 2 ? w : w.slice(1).map((x, i) => `${w[i]} ${x}`);
+  const acc = new Array(64).fill(0);
+  for (const sh of shingles) { const h = fnv64(sh); for (let b = 0; b < 64; b++) acc[b] += (h >> BigInt(b)) & 1n ? 1 : -1; }
+  let v = 0n;
+  for (let b = 0; b < 64; b++) if (acc[b] > 0) v |= 1n << BigInt(b);
+  return { fp: v.toString(16).padStart(16, '0'), chars: w.join(' ').length, words: w.length };
+}
+/**
+ * How much of a text changed, in percent, judged from two fingerprints: the larger of the change the simhashes' distance
+ * estimates (d differing bits of 64: 1 - cos(pi d / 64), the cosine distance of the two shingle sets) and the change in length.
+ * Compared with the same reader-local threshold the Feed uses (following_barely_changed_percent). A text too short for one word to
+ * be within the threshold (fewer than 100 / percent words) is never barely changed: in six words, one is 17%.
+ */
+export function barelyByFingerprint(a, b, percent) {
+  if (!(percent > 0) || Math.min(a.words, b.words) < Math.ceil(100 / percent)) return false;
+  return fingerprintChange(a, b) < percent;
+}
+export function fingerprintChange(a, b) {
+  let x = BigInt(`0x${a.fp}`) ^ BigInt(`0x${b.fp}`), d = 0;
+  while (x) { d += Number(x & 1n); x >>= 1n; }
+  const words = (1 - Math.cos(Math.PI * d / 64)) * 100;
+  const length = (Math.abs(a.chars - b.chars) * 100) / Math.max(a.chars, b.chars, 1);
+  return Math.max(words, length);
+}
+const isFingerprint = v => !!v && typeof v === 'object' && /^[0-9a-f]{16}$/.test(v.fp) && Number.isInteger(v.chars) && v.chars >= 0 && Number.isInteger(v.words) && v.words >= 0;
 
 // ---- placement: which view an entry belongs to, and why ----------------------------
 // ONE function decides it, for a post and for a mention, and names the reason shown on
@@ -943,7 +987,7 @@ export function mergeLedger(ours, base, theirs) {
   }
   ours.floor = Math.max(ours.floor || 0, theirs.floor || 0);
   ours.seen_until = Math.max(ours.seen_until || 0, theirs.seen_until || 0);
-  for (const k of ['backfill', 'queue', 'returns', 'fresh', 'fresh_failures', 'fresh_after']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
+  for (const k of ['backfill', 'queue', 'returns', 'changes', 'fresh', 'fresh_failures', 'fresh_after']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
   return ours;
 }
 
@@ -1006,10 +1050,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // when posts of this blyg returned to the Feed through an edit, in the last 24 hours (for editReturnsPerDay)
     const returns = (Array.isArray(r.returns) ? r.returns : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-LIMITS.editReturnsPerDay);
     // `stopped` (the mode before this list) and anything made up load as unknown
+    // when read posts of this blyg were found really edited, in the last 24 hours (for massEditPerDay)
+    const changes = (Array.isArray(r.changes) ? r.changes : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-50);
     const fresh = FRESH_MODES.includes(r.fresh) ? r.fresh : 'reading';
     const freshFailures = Number.isInteger(r.fresh_failures) && r.fresh_failures > 0 && r.fresh_failures < 64 ? r.fresh_failures : 0;
     const freshAfter = Number.isFinite(r.fresh_after) && r.fresh_after > 0 ? r.fresh_after : 0;
-    return { ids, floor, bad, later, seen_until: seenUntil, returns, queue, fresh, fresh_failures: freshFailures, fresh_after: freshAfter, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    return { ids, floor, bad, later, seen_until: seenUntil, returns, changes, queue, fresh, fresh_failures: freshFailures, fresh_after: freshAfter, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), copy (LEDGER_COPIES: whether it awaits writing) }
   const ledgerEntry = origin => {
@@ -1442,13 +1488,20 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   function editBlock(origin, held, cfg, g) {
     if (!g.returns) g.returns = new Map();
     if (held.returned_at && now() - held.returned_at < LIMITS.editReturnGapMs) return 'window';
-    if ((g.returns.get(origin) || 0) >= LIMITS.editReturnsPerRun) return 'run';
     const led = ledgerOf(origin);
+    // a MASS EDIT (more than massEditPerDay read posts of one blyg changed in 24 hours) returns none: the posts wait in the
+    // Archive, which says so once for the blyg (view: archive_notices)
+    led.changes = led.changes.filter(t => now() - t < 24 * 3600e3);
+    if (led.changes.length > LIMITS.massEditPerDay) return 'mass';
+    // at most editedPerBlyg edited posts of one blyg unread at once: more wait, and are released as the owner ticks them
+    if (itemsOf(origin).filter(i => i.read === 'edited').length >= LIMITS.editedPerBlyg) return 'edited';
+    if ((g.returns.get(origin) || 0) >= LIMITS.editReturnsPerRun) return 'run';
     led.returns = led.returns.filter(t => now() - t < 24 * 3600e3);
     if (led.returns.length >= LIMITS.editReturnsPerDay) return 'day';
     if (unreadOf(origin) >= cfg.following_max_items_per_blyg) return 'cap';
     return '';
   }
+
   /** When a held (archived_changed) post may be fetched again: not before its last return's window has passed. */
   const windowEnd = rec => (rec.returned_at || 0) + LIMITS.editReturnGapMs;
   /**
@@ -1491,8 +1544,17 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (held.read === 'archived_changed') { moveRead(held, 'revert'); delete held.newer; }
         Object.assign(held, { version: rec.version, ...common }); tally.maintenance++; return 'stored';
       }
-      // Its words changed (no text is kept to measure by, so it is never "barely changed"). It returns to the Feed only if its
-      // bounds allow it (editBlock); otherwise it is held in the Archive with the newer version recorded.
+      // Its content_hash changed. Judged by the fingerprint the record kept of the words read (a record ticked before fingerprints
+      // has none: any edit counts): below following_barely_changed_percent it is barely changed, so the version is recorded and the
+      // post stays where it is (a held one has nothing newer worth reading: revert).
+      const pct = cfg.following_barely_changed_percent;
+      if (isFingerprint(held.fp) && barelyByFingerprint(held.fp, fingerprintOf(textContent(body.html)), pct)) {
+        if (held.read === 'archived_changed') { moveRead(held, 'revert'); delete held.newer; }
+        Object.assign(held, { version: rec.version, ...common }); tally.minor++; return 'stored';
+      }
+      // A real edit. It returns to the Feed only if its bounds allow it (editBlock); otherwise it is held in the Archive with the
+      // newer version recorded.
+      if (held.read === 'archived') { const l = ledgerFor(b.origin); l.changes.push(now()); if (l.changes.length > 50) l.changes.splice(0, l.changes.length - 50); }
       const why = editBlock(b.origin, held, cfg, g);
       if (why) {
         moveRead(held, 'hold');
@@ -1676,7 +1738,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // blyg per refresh, and none while no edit of this blyg could return now (its quota or cap): they wait, and are not asked for.
     let archivedDocs = 0;
     for (const [e, held] of archivedTodo) {
-      if (archivedDocs >= LIMITS.archivedDocsPerRun || editBlock(b.origin, {}, cfg, g) || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      // (during a mass edit, or with editedPerBlyg edited posts unread, they are still fetched, 5 a run, to be held as "edited again")
+      const block = editBlock(b.origin, {}, cfg, g);
+      // (a held one is fetched again only to be released, so only when a return is possible now)
+      const holdOnly = block === 'mass' || block === 'edited';
+      if (archivedDocs >= LIMITS.archivedDocsPerRun || (block && !holdOnly) || (block && held.read === 'archived_changed') || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
       archivedDocs++; plan.docs++;
       const out = await ingest(b, e, held, cfg, g, tally, alive);
       if (out === 'aborted') return;
@@ -1897,6 +1963,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     page: typeof rec.page === 'string' && rec.page.length <= LIMITS.pageChars && isWebUrl(rec.page) ? rec.page : '', content_hash: rec.newer ? rec.newer.hash : rec.content_hash,
     title: cleanText(plainText(rec.title) || plainText(rec.excerpt), LIMITS.archiveTitleChars), text: '', text_chars: 0, read: rec.read, archived_at: iso(),
     ...(rec.returned_at ? { returned_at: rec.returned_at } : {}),
+    // the fingerprint of the words read, from the body still held (deleted after the save): what judges a later edit. A post ticked
+    // from archived_changed was not read at its newer wording here, so it keeps none (any later edit counts).
+    ...(() => { const t = rec.newer ? '' : textContent(readBodyHtml(rec.key)); return t.trim() ? { fp: fingerprintOf(t) } : {}; })(),
   });
   /** The owner's tick: the post leaves the Feed (its text is deleted, a small record stays) and its id is remembered in its blyg's ledger. */
   /**
@@ -2252,6 +2321,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       // Said only when it is true of every blyg that is not paused: reachable, and its index read to the end. A value worked out here, not a mode.
       read_all: v.tabs.feed === 0 && active.length > 0 && active.every(b => b.state === 'active' && ledgerOf(b.origin).backfill === 'caught_up'),
       archive: archiveAll.slice(0, archiveLimit), archive_total: archiveAll.length, archive_query: needle,
+      // ONE line per blyg that changed more read posts than massEditPerDay: they wait here, "edited again", instead of returning
+      archive_notices: viewOf(tab) === 'archive' ? Object.keys(st.blygs).map(o => ({ origin: o, blyg_title: titleOf(o),
+        held: itemsOf(o).filter(i => i.read === 'archived_changed').length, changes: ledgerOf(o).changes.filter(t => now() - t < 24 * 3600e3).length }))
+        .filter(n => n.held > 0 && (n.changes > LIMITS.massEditPerDay || n.held > LIMITS.massEditPerDay)).map(({ changes, ...n }) => n) : [],
       run: { ...run }, schedule: { ...schedule }, last_run: copy(st.last_run), blygs: listBlygs(),
       // the Feed carries each entry's text, so at most `limit` entries at a time (the rest is `entry_total` minus that)
       entry_total: v.feed.entries.length, limit,

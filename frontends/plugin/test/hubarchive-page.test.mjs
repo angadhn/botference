@@ -358,3 +358,14 @@ test('a thread with folded parts carries their keys; ticking it sends them, and 
   assert.equal(countOf(p.doc, 'archive'), 3);
   x.done();
 });
+
+test('a mass edit is ONE line at the top of the Archive for that blyg, in words', async () => {
+  const x = await hub({ n: 2 });
+  const real = x.f.view;
+  x.f.view = q => ({ ...real(q), archive_notices: [{ origin: A, blyg_title: 'Alpha Notes', held: 37 }] });
+  const p = x.run({ view: 'archive' });
+  const lines = p.doc.querySelectorAll('.hub-mass-edit');
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].textContent, 'Alpha Notes changed 37 posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.');
+  x.done();
+});

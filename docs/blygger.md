@@ -736,11 +736,15 @@ everything from the blygs you follow."
 
 **Edits of posts you have read.** When a post you ticked gets a new version whose content differs (its `content_hash`), it
 comes back to the Feed as *edited*, badged "edited since you read it" (nothing of its text was kept, so a small change
-cannot be told from a large one); a version with identical content is maintenance and changes nothing. Edits are wanted,
+cannot be told from a large one, so the record keeps a 30-byte fingerprint of the words you read instead: an edit that
+changes less than `following_barely_changed_percent` of a post of at least 100/percent words is recorded and the post stays
+read); a version with identical content is maintenance and changes nothing. Edits are wanted,
 but not often, so a post comes back at most once in 7 days, at most 3 posts of one blyg in one refresh and 10 in a day, and
 not when that blyg already has as many unread posts as its cap; otherwise it stays in the Archive as *archived_changed*,
 whose line says "edited again", with **Mark read** (keep it read, at the newer version), "Open original" and the untick box,
-and it comes back at a later refresh once those limits allow. At most 5 documents of read posts are fetched per blyg per
+and it comes back at a later refresh once those limits allow. At most 3 edited posts of one blyg are in the Feed at once (the
+next come back as you tick them), and when more than 5 posts of one blyg you had read change within a day none comes back:
+the Archive says so in one line for that blyg and the posts wait there, "edited again". At most 5 documents of read posts are fetched per blyg per
 refresh. A post whose record was dropped from the Archive's list is known only by its id: an edit of it leaves it read.
 
 **Bursts.** A thread and the fragments published with it (§13.7) arrive together: the thread is fetched before any fragment

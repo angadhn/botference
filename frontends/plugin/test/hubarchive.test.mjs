@@ -98,8 +98,9 @@ test('tick: the post leaves the Feed, its text is deleted, a small record stays;
   assert.equal(r.f.bodyHtml(key), '', 'and nothing reads it back');
   // the record: exactly these fields, small, no text
   const rec = r.json().items[`${A}\n${idOf(3)}`];
-  assert.deepEqual(Object.keys(rec).sort(), ['archived_at', 'content_hash', 'created', 'fetched_at', 'id', 'index_version', 'key', 'kind', 'origin',
+  assert.deepEqual(Object.keys(rec).sort(), ['archived_at', 'content_hash', 'created', 'fetched_at', 'fp', 'id', 'index_version', 'key', 'kind', 'origin',
     'page', 'read', 'text', 'text_chars', 'title', 'updated', 'version']);
+  assert.ok(JSON.stringify(rec.fp).length <= 60, 'a fingerprint of the words read, about 30 bytes');
   assert.equal(rec.read, 'archived');
   assert.equal(rec.text, '');
   assert.equal(rec.title, 'Post 3');
@@ -331,7 +332,7 @@ test('"edited again" in the Archive: Mark read keeps it read at the newer wordin
   r.done();
 });
 
-test('the edit storm: 400 read posts all republished with a one-character change: per refresh at most 5 fetched and 3 returned, per day at most 10, never past the caps', async () => {
+test('the edit storm: 400 read posts all changed: per refresh at most 5 fetched and 3 returned, at most 3 in the Feed at once, a mass edit is one Archive notice', async () => {
   const r = rig({ settings: { following_unread_target: 50 } });
   const site = r.web.add(A);
   const at = n => new Date(Date.parse('2026-06-01T00:00:00Z') + n * 3600e3).toISOString();
@@ -341,27 +342,54 @@ test('the edit storm: 400 read posts all republished with a one-character change
   assert.equal(archive(r).archive_total, 400);
   assert.equal(feed(r).length, 0);
   for (let k = 1; k <= 400; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: `Words of post ${k}!`, created: at(k), updated: at(5000), version: 2 }));
-  let returned = 0;
-  for (let run = 0; run < 24; run++) { // a day of refreshes, one an hour
-    const n0 = r.web.itemRequests().length;
-    const s = await r.f.refresh();
-    const fetched = r.web.itemRequests().length - n0;
-    assert.ok(fetched <= F.LIMITS.archivedDocsPerRun, `run ${run}: ${fetched} documents of read posts fetched`);
-    assert.ok(s.edited <= F.LIMITS.editReturnsPerRun, `run ${run}: ${s.edited} returned`);
-    returned += s.edited;
-    assert.ok(feed(r).length <= r.SETTINGS().following_max_items_per_blyg);
-    r.clock.t += 3600e3 - 1000;
+  for (let dayN = 0; dayN < 3; dayN++) {
+    let returned = 0;
+    for (let run = 0; run < 24; run++) { // a day of refreshes, one an hour; the owner ticks what came back every six hours
+      const n0 = r.web.itemRequests().length;
+      const s = await r.f.refresh();
+      assert.ok(r.web.itemRequests().length - n0 <= F.LIMITS.archivedDocsPerRun);
+      assert.ok(s.edited <= F.LIMITS.editReturnsPerRun);
+      assert.ok(feed(r).length <= F.LIMITS.editedPerBlyg, `at most ${F.LIMITS.editedPerBlyg} in the Feed at once (${feed(r).length})`);
+      returned += s.edited;
+      if (run % 6 === 5) r.f.tickMany(feed(r).map(h => h.key));
+      r.clock.t += 3600e3 - 1000;
+    }
+    assert.ok(returned <= F.LIMITS.editReturnsPerDay, `day ${dayN}: ${returned} returned`);
+    if (dayN === 0) assert.ok(returned <= F.LIMITS.massEditPerDay, `the first day of a mass edit: ${returned} returned before it was seen as one`);
   }
-  assert.equal(returned, F.LIMITS.editReturnsPerDay, 'ten in the day, no more');
-  assert.equal(feed(r).length, 10);
-  assert.ok(feed(r).every(h => h.read === 'edited'));
-  const held = archive(r, { limit: 1000 }).archive.filter(l => l.read === 'archived_changed').length;
-  assert.ok(held <= 24 * F.LIMITS.archivedDocsPerRun, `${held} held as "edited again", the rest unknown until fetched`);
-  // the next day, ten more at most
-  r.clock.t += 3600e3;
-  let next = 0;
-  for (let run = 0; run < 24; run++) { next += (await r.f.refresh()).edited; r.clock.t += 3600e3 - 1000; }
-  assert.ok(next <= F.LIMITS.editReturnsPerDay);
+  const v = archive(r, { limit: 1000 });
+  assert.equal(v.archive_notices.length, 1, 'ONE notice for the blyg');
+  assert.ok(v.archive_notices[0].held > F.LIMITS.massEditPerDay);
+  r.done();
+});
+
+test('a one-character change to a long post you read keeps it read (judged by its fingerprint); a real rewrite still comes back', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  const words = Array.from({ length: 300 }, (_, i) => `word${i}`).join(' ');
+  site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words, created: day(1) }));
+  site.put(makeDoc({ id: idOf(2), origin: A, title: 'Short', body: 'Six words in this short post.', created: day(2) }));
+  follow(r, A);
+  await r.f.refresh();
+  r.f.tickMany([keyOf(r, A, 1), keyOf(r, A, 2)]);
+  site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.replace('word150', 'word15O'), version: 2, created: day(1), updated: day(9) }));
+  site.put(makeDoc({ id: idOf(2), origin: A, title: 'Short', body: 'Six words in this short post!', version: 2, created: day(2), updated: day(9) }));
+  const s = await r.f.refresh();
+  assert.deepEqual([r.f.itemByKey(keyOf(r, A, 1)).read, r.f.itemByKey(keyOf(r, A, 1)).version], ['archived', 2], 'a typo: recorded, still read, no "edited again"');
+  assert.equal(r.f.itemByKey(keyOf(r, A, 2)).read, 'edited', 'in a six-word post one word is not "barely": it comes back');
+  assert.equal(s.minor, 1);
+  // a rewrite of the long one comes back
+  site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.split(' ').map((w, i) => (i % 5 ? w : 'new')).join(' '), version: 3, created: day(1), updated: day(10) }));
+  await r.f.refresh();
+  assert.equal(r.f.itemByKey(keyOf(r, A, 1)).read, 'edited');
+  // a record ticked before fingerprints (none kept): any edit counts, as before
+  r.f.readMove(keyOf(r, A, 1), 'tick');
+  const j = r.json(); delete j.items[`${A}\n${idOf(1)}`].fp; fs.writeFileSync(r.file, JSON.stringify(j));
+  const f2 = r.make();
+  r.clock.t += F.LIMITS.editReturnGapMs;
+  site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.split(' ').map((w, i) => (i % 5 ? w : 'new')).join(' ').replace('word151', 'word15l'), version: 4, created: day(1), updated: day(11) }));
+  await f2.refresh();
+  assert.equal(f2.itemByKey(keyOf(r, A, 1)).read, 'edited');
   r.done();
 });
 
