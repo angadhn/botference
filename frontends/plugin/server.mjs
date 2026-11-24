@@ -3069,12 +3069,14 @@ function blygAsk(url, hints, { verify = false } = {}) {
   // A page the reader FOLLOWS is identified from what the list holds (origin, id,
   // version), so detection is skipped; unless the page's own links disagree
   // with the list, in which case the list's word is not used and the check runs.
-  const listed = verify ? null : following.identityFor(url, blygMod.cleanHints(hints));
-  // A request that sends NO hints at all (the Hub's own article view; an extension always sends some) about a page the Hub
-  // holds is answered by the record: its identity came from the item document (source 'item-document'), not from a page.
+  // (the list is read from the Hub's store: asynchronously)
   const held = verify || hints !== undefined ? null : hubAnswerFor(url);
-  const p = held ? Promise.resolve(held) : listed && listed.result ? Promise.resolve(listed.result)
-    : blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
+  const p = (async () => {
+    if (held) return held;
+    const listed = verify ? null : await following.identityFor(url, blygMod.cleanHints(hints)).catch(() => null);
+    if (listed && listed.result) return listed.result;
+    return blygChecker.check(url, blygMod.cleanHints(hints), { kind: known ? known.kind : '' });
+  })();
   p.then(result => {
     if (blygPersisted.has(result)) return;
     blygPersisted.add(result);
@@ -3477,14 +3479,14 @@ const followingHeaders = (type, extra = {}) => ({ 'content-type': type, 'cache-c
 async function readHere(data) {
   const key = String(data.key || '');
   const replace = [true, 1, '1', 'true'].includes(data.replace);
-  const rec = following.itemByKey(key);
+  const rec = await following.itemByKey(key);
   if (!rec || rec.kind === 'withdrawn') throw new Error('no such post');
-  const existing = store.readPage(following.recordUrlOf(rec));
-  if (existing && existing.hub && !replace) { following.openedHere(key); return { url: `/a/${store.pageKey(existing.url)}`, kept: true }; }
+  const existing = store.readPage(await following.recordUrlOf(rec));
+  if (existing && existing.hub && !replace) { await following.openedHere(key); return { url: `/a/${store.pageKey(existing.url)}`, kept: true }; }
   followingNeedsChecks();
   const post = await following.fetchPost(key);
   const held = holdPost({ store, applyAnswer: blygMod.applyAnswer, post, replace });
-  following.openedHere(key);
+  await following.openedHere(key);
   broadcast({ type: 'page', url: held.page.url });
   return { url: `/a/${held.key}`, text_from: held.text_from, orphaned: held.orphaned };
 }
@@ -3506,7 +3508,7 @@ function handleFollowing(route, req, res) {
     }
     return v;
   };
-  const viewOf = () => withThreads(following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
+  const viewOf = async () => withThreads(await following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
     limit: Math.max(1, Math.min(Number(q.get('n')) || (q.get('view') === 'archive' ? followingMod.LIMITS.archivePage : followingMod.LIMITS.feedEntries), 1000)),
     q: q.get('q') || '' }));
   const say = fn => async data => {
@@ -3517,12 +3519,13 @@ function handleFollowing(route, req, res) {
     case '/following': {
       const s = settings();
       const nonce = crypto.randomBytes(16).toString('base64');
-      return res.writeHead(200, followingHeaders('text/html; charset=utf-8', {
+      return viewOf().then(data => res.writeHead(200, followingHeaders('text/html; charset=utf-8', {
         'content-security-policy': hubCsp(nonce, themeNow(), ["img-src https:", "connect-src 'self'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"]),
         'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer',
-      })).end(followingPage({ data: viewOf(), settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce, locale, theme: themeNow() }));
+      })).end(followingPage({ data, settings: s.settings, refused: s.refused, notice: q.get('notice') || '', nonce, locale, theme: themeNow() })),
+      e => fail(res, 500, `the Hub could not be read: ${String((e && e.message) || e).slice(0, 200)}`));
     }
-    case '/following/data': return ok(res, { ...viewOf(), settings: settings().settings });
+    case '/following/data': return viewOf().then(v => ok(res, { ...v, settings: settings().settings }), e => fail(res, 500, String((e && e.message) || e).slice(0, 200)));
     default: break;
   }
   if (route.path === '/following/read-here') {
@@ -3540,26 +3543,26 @@ function handleFollowing(route, req, res) {
   }
   return readBody(req, res, say(async data => {
     switch (route.path) {
-      case '/following/open': return following.open(String(data.key || ''), Number.isInteger(data.version) ? data.version : 0);
+      case '/following/open': return await following.open(String(data.key || ''), Number.isInteger(data.version) ? data.version : 0);
       case '/following/hold': {
         // no request: the held text and the record's identity (both from the post's item document) become the page record
         const ref = data.key ? String(data.key) : { origin: String(data.origin || ''), id: String(data.id || '') };
-        const held = holdPost({ store, applyAnswer: blygMod.applyAnswer, post: following.heldPost(ref) });
+        const held = holdPost({ store, applyAnswer: blygMod.applyAnswer, post: await following.heldPost(ref) });
         return { url: held.page.url, path: `/a/${held.key}`, kept: held.kept };
       }
       case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
-      case '/following/unfollow': return { removed: following.unfollow(String(data.origin || ''), { forget: data.forget === true }) };
-      case '/following/state': return { state: following.stateRequest(data) }; // pause, resume, or retry a paused reading back
+      case '/following/unfollow': return { removed: await following.unfollow(String(data.origin || ''), { forget: data.forget === true }) };
+      case '/following/state': return { state: await following.stateRequest(data) }; // pause, resume, or retry a paused reading back
       case '/following/import-preview':
         followingNeedsChecks();
         return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };
-      case '/following/import-confirm': return following.confirmImport(data.entries);
+      case '/following/import-confirm': return await following.confirmImport(data.entries);
       case '/following/refresh': return await following.refresh({ reason: 'demand' });
       case '/following/topup': return await following.topUp();
       case '/following/read': return await following.readRequest(data); // tick, untick or renew (following.mjs names the moves)
       case '/following/mention-read':
-        if (data.all) return { seen: following.allMentionsSeen() };
-        return { read: following.mentionSeen(String(data.key || '')) };
+        if (data.all) return { seen: await following.allMentionsSeen() };
+        return { read: await following.mentionSeen(String(data.key || '')) };
       case '/following/settings': {
         const cur = store.readConfig();
         const patch = {};
@@ -3576,7 +3579,7 @@ function handleFollowing(route, req, res) {
           if (why) throw new Error(why);
         }
         store.saveConfig(patch);
-        following.reschedule();
+        await following.reschedule();
         return { settings: settings().settings };
       }
       default: throw new Error('no such route');
@@ -3830,7 +3833,7 @@ export function handler(req, res) {
 
   if (req.method === 'GET' && url === '/health') {
     const me = hosted.identity(req);
-    return ok(res, {
+    const send = hubFollows => ok(res, {
       capabilities: { draft_blog: 1 },
       ...(AUTHORING_ROOT ? { blog_authoring: {
         enabled: !!authoring.siteForRoot(AUTHORING_ROOT),
@@ -3855,8 +3858,10 @@ export function handler(req, res) {
       // can render (or gray out) the owner's controls
       ...(HOSTED ? { hosted: true, owner: me.owner, handle: me.handle } : {}),
       // how many blygs the owner's Hub follows: the extension's feed icon asks it to decide whether to offer a choice of reader
-      ...(me.owner ? { hub_follows: following.listBlygs().length } : {}),
+      ...(me.owner ? { hub_follows: hubFollows } : {}),
     });
+    // (the follow list is read from the Hub's store: asynchronously, and only for the owner)
+    return me.owner ? following.followCount().then(send, () => send(0)) : send(0);
   }
   // the same standing on its own, for a client that only wants to ask "who am I"
   if (req.method === 'GET' && url === '/whoami') {
@@ -5341,7 +5346,8 @@ export function handler(req, res) {
     if (!page || !mayRead(page, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
     const me = hosted.identity(req);
     const nonce = crypto.randomBytes(16).toString('base64');
-    const hubInfo = hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) });
+    // (what the Hub holds of the post is read from its store: asynchronously)
+    return hubInfoOf(page, { following, locale: followingMod.localeOf(req.headers['accept-language']) }).then(hubInfo => {
     // the Hub's own pages (a followed post's text) may wear the owner's theme; no other article does
     const theme = hubInfo ? themeNow() : { state: 'none', reason: '' };
     const html = articleView({
@@ -5370,6 +5376,7 @@ export function handler(req, res) {
       ].join('; '),
       'referrer-policy': 'no-referrer',
     }).end(html);
+    }, e2 => fail(res, 500, `the Hub could not be read: ${String((e2 && e2.message) || e2).slice(0, 200)}`));
   }
 
   if (req.method === 'GET' && url === '/test-page') {
@@ -6783,7 +6790,7 @@ export function handler(req, res) {
       // a note for a post the reader follows: that post is now `responded` on the list
       try {
         const posted = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
-        if (posted) following.markResponded(posted.origin, posted.id);
+        if (posted) following.markResponded(posted.origin, posted.id).catch(e => console.warn(`[following] ${e.message}`));
       } catch (e) { console.warn(`[following] ${e.message}`); }
       // …and a PDF is also logged: one row in the vault's reading log
       // (Clippings/read-links.md), tagged papers, linking the note just
@@ -7006,7 +7013,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
     const p = server.address().port;
     // the Following refresh timer: armed only while something is followed, and
     // only when Blygger checks are on (it fetches from the web)
-    if (blygChecksOn()) following.start();
+    if (blygChecksOn()) following.start().catch(e => console.warn(`[following] ${e.message}`));
     console.log(`Web annotator companion live at http://127.0.0.1:${p} — workspace: ${store.ROOT}`);
     // the projects `botference site` registered (markers.mjs), read once now
     // and again on POST /sites/rescan; the skipped ones are said, never hidden

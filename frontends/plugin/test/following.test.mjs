@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import * as F from '../following.mjs';
 import { makeWeb, makeDoc, idOf } from './following-fake.mjs';
+import { readLayout } from './hub-layout.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CFG = createRequire(import.meta.url)('../extension/config.js');
@@ -32,11 +33,11 @@ function rig({ settings = {}, clock = { t: Date.parse('2026-11-10T12:00:00Z') } 
       timers: { set: timers.set_, clear: timers.clear_ } }),
     done: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
-const follow = async (r, origin) => r.f.confirmImport([{ origin, title: 'x' }]);
-const items = r => r.f.view({ filter: 'all' }).entries.flatMap(e => [e.head, ...e.members]);
+const follow = async (r, origin) => await r.f.confirmImport([{ origin, title: 'x' }]);
+const items = async r => (await r.f.view({ filter: 'all' })).entries.flatMap(e => [e.head, ...e.members]);
 // what the old "mark all seen" did for these tests: every post the Feed holds has been opened
-const openAll = r => { for (const i of items(r)) r.f.open(i.key); };
-const inBackground = r => r.f.view({ view: 'background' }).background;
+const openAll = async r => { for (const i of await items(r)) await r.f.open(i.key); };
+const inBackground = async r => (await r.f.view({ view: 'background' })).background;
 
 test('follow by any URL on a blyg resolves its origin; unfollow forgets it and its posts; list', async () => {
   const r = rig();
@@ -48,17 +49,17 @@ test('follow by any URL on a blyg resolves its origin; unfollow forgets it and i
   assert.equal(got.title, 'Alpha Notes');
   assert.equal(got.added, true);
   assert.equal((await r.f.follow(A)).added, false, 'following it twice is one follow');
-  const list = r.f.listBlygs();
+  const list = await r.f.listBlygs();
   assert.equal(list.length, 1);
   assert.equal(list[0].state, 'active');
   await r.f.refresh();
-  assert.equal(items(r).length, 1);
-  assert.equal(r.f.unfollow(A), true);
-  assert.equal(r.f.listBlygs().length, 0);
-  assert.equal(items(r).length, 0, 'its posts go with it');
-  assert.equal(r.f.unfollow(A), false);
-  await assert.rejects(() => r.f.follow('https://nothing.web.test/x'), /could not ask|no Blygger/);
-  await assert.rejects(() => r.f.follow('ftp://x'), /not a web address/);
+  assert.equal((await items(r)).length, 1);
+  assert.equal(await r.f.unfollow(A), true);
+  assert.equal((await r.f.listBlygs()).length, 0);
+  assert.equal((await items(r)).length, 0, 'its posts go with it');
+  assert.equal(await r.f.unfollow(A), false);
+  await assert.rejects(async () => await r.f.follow('https://nothing.web.test/x'), /could not ask|no Blygger/);
+  await assert.rejects(async () => await r.f.follow('ftp://x'), /not a web address/);
   r.done();
 });
 
@@ -68,8 +69,8 @@ test('the follow list survives a restart (stored in the file it is given)', asyn
   await follow(r, A);
   await r.f.refresh();
   const again = r.reload();
-  assert.equal(again.listBlygs().length, 1);
-  assert.equal(again.view().entries.length, 1);
+  assert.equal((await again.listBlygs()).length, 1);
+  assert.equal((await again.view()).entries.length, 1);
   r.done();
 });
 
@@ -92,10 +93,10 @@ test('OPML: parse, preview what would be added (nothing added yet), confirm only
   assert.deepEqual(pv.add.map(a => a.origin), [A, Bo]);
   assert.equal(pv.skipped.length, 1, 'the one that is not a blyg is said, not added');
   assert.match(pv.skipped[0].reason, /not a blyg|could not ask/);
-  assert.equal(r.f.listBlygs().length, 0, 'a preview adds nothing');
-  const done = r.f.confirmImport([pv.add[1]]);
+  assert.equal((await r.f.listBlygs()).length, 0, 'a preview adds nothing');
+  const done = await r.f.confirmImport([pv.add[1]]);
   assert.deepEqual(done.added, [Bo]);
-  assert.deepEqual(r.f.listBlygs().map(b => b.origin), [Bo], 'only what the reader confirmed');
+  assert.deepEqual((await r.f.listBlygs()).map(b => b.origin), [Bo], 'only what the reader confirmed');
   const again = await r.f.previewImport({ text: OPML });
   assert.deepEqual(again.already.map(a => a.origin), [Bo]);
   assert.deepEqual(again.add.map(a => a.origin), [A]);
@@ -125,9 +126,9 @@ test('directory JSON (an object or a list; origin, title, feed): preview, confir
     assert.equal(pv.kind, 'directory');
     assert.deepEqual(pv.add.map(a => a.origin), [A, Bo]);
     assert.equal(pv.add[0].title, 'Alphaevil', 'bidi override stripped');
-    assert.equal(r.f.listBlygs().length, 0);
-    assert.deepEqual(r.f.confirmImport([pv.add[0], { origin: 'http://127.0.0.1:9/' }, { origin: 'ftp://x/' }]).added, [A], 'a private or odd origin cannot be confirmed in');
-    assert.deepEqual(r.f.listBlygs().map(b => b.origin), [A]);
+    assert.equal((await r.f.listBlygs()).length, 0);
+    assert.deepEqual((await r.f.confirmImport([pv.add[0], { origin: 'http://127.0.0.1:9/' }, { origin: 'ftp://x/' }])).added, [A], 'a private or odd origin cannot be confirmed in');
+    assert.deepEqual((await r.f.listBlygs()).map(b => b.origin), [A]);
     r.done();
   }
   assert.deepEqual(F.parseDirectory('not json'), []);
@@ -145,8 +146,8 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   let s = await r.f.refresh();
   assert.equal(s.new, 4);
   assert.equal(r.web.itemRequests().length, 4);
-  const key = id => r.f.keyFor(A, id);
-  for (const id of [i1, i2, i3, i4]) r.f.readMove(key(id), 'open');
+  const key = async id => await r.f.keyFor(A, id);
+  for (const id of [i1, i2, i3, i4]) await r.f.readMove(await key(id), 'open');
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.equal(r.web.itemRequests().length, 0, 'nothing changed: no document is fetched');
@@ -162,11 +163,11 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.deepEqual([s.new, s.edited, s.maintenance, s.withdrawn, s.removed], [1, 1, 1, 1, 1]);
-  const got = Object.fromEntries(items(r).map(i => [i.id, i]));
+  const got = Object.fromEntries((await items(r)).map(i => [i.id, i]));
   assert.equal(got[i1].read, 'new', 'new words resurface a read post');
   assert.equal(got[i1].version, 2);
   assert.ok(!(i2 in got), 'a maintenance version (same content_hash) does not put it back on top of the feed: it is in Background');
-  const m2 = inBackground(r).find(b => b.type === 'post' && b.post.id === i2);
+  const m2 = (await inBackground(r)).find(b => b.type === 'post' && b.post.id === i2);
   assert.equal(m2.reason, 'no new words');
   assert.equal(m2.post.read, 'opened', 'and it is not resurfaced as new');
   assert.equal(m2.post.version, 2);
@@ -176,7 +177,7 @@ test('index diff: new, edited, maintenance, withdrawn, removed from the index; o
   assert.equal(got[i5].read, 'new');
   assert.equal(r.web.itemRequests().length, 3, 'only the changed, non-withdrawn documents were fetched (the withdrawal is read off the index)');
   // the withdrawn one is a bare marker: not asked about again, no words kept
-  const tomb = r.f.itemByKey(key(i3));
+  const tomb = await r.f.itemByKey(await key(i3));
   assert.equal(tomb.kind, 'withdrawn');
   assert.equal(tomb.text, '');
   r.web.requests.length = 0;
@@ -192,12 +193,12 @@ test('rollup by version: one entry per post, the newest version, "N versions" no
   site.put(makeDoc({ id, origin: A, body: 'v1 words' }));
   await follow(r, A);
   await r.f.refresh();
-  assert.equal(items(r)[0].versions_note, '');
+  assert.equal((await items(r))[0].versions_note, '');
   site.put(makeDoc({ id, origin: A, body: 'v2 words', version: 2, updated: '2026-11-02T10:00:00Z' }));
   await r.f.refresh();
   site.put(makeDoc({ id, origin: A, body: 'v3 words', version: 3, updated: '2026-11-03T10:00:00Z' }));
   await r.f.refresh();
-  const list = items(r);
+  const list = await items(r);
   assert.equal(list.length, 1);
   assert.equal(list[0].version, 3);
   assert.equal(list[0].versions_note, '3 versions');
@@ -206,7 +207,7 @@ test('rollup by version: one entry per post, the newest version, "N versions" no
   site.put(makeDoc({ id, origin: A, body: 'old words', version: 2, updated: '2026-11-04T10:00:00Z' }));
   const s = await r.f.refresh();
   assert.equal(s.regressions, 1);
-  assert.equal(items(r)[0].version, 3);
+  assert.equal((await items(r))[0].version, 3);
   r.done();
 });
 
@@ -221,7 +222,7 @@ test('what is kept: title from the first heading, else an excerpt; stub_of; coun
   site.put(makeDoc({ id: noTitle, origin: A, title: '', body: 'just a short thought', author: null }));
   await follow(r, A);
   await r.f.refresh();
-  const by = Object.fromEntries(items(r).map(i => [i.id, i]));
+  const by = Object.fromEntries((await items(r)).map(i => [i.id, i]));
   const t = by[stubId];
   assert.equal(t.title, 'A reply');
   assert.equal(t.kind, 'thread');
@@ -251,14 +252,14 @@ test('burst folding: a thread and the posts it names, published together, are on
     transclusions: [f1, f2, late].map(id => ({ origin: A, id, version: 1 })) }));
   await follow(r, A);
   await r.f.refresh();
-  const v = r.f.view({ filter: 'all' });
+  const v = await r.f.view({ filter: 'all' });
   assert.equal(v.entries.length, 3, 'thread (with two) + the old fragment + the unrelated one');
   const burst = v.entries.find(e => e.head.id === th);
   assert.deepEqual(burst.members.map(m => m.id).sort(), [f1, f2].sort(), 'a post created long before the publish is not in the burst');
   assert.equal(v.counts.all, 3);
   // display only: every post is still held, and the Fragments filter lists them flat
-  assert.equal(r.f.view({ filter: 'fragments' }).entries.length, 4);
-  assert.equal(r.f.view({ filter: 'threads' }).entries.length, 1);
+  assert.equal((await r.f.view({ filter: 'fragments' })).entries.length, 4);
+  assert.equal((await r.f.view({ filter: 'threads' })).entries.length, 1);
   // a thread of another blyg never folds this blyg's posts
   assert.equal(F.foldBursts([{ key: 'a', kind: 'thread', origin: Bo, created: '2026-11-05T10:03:00Z', updated: '2026-11-05T10:03:00Z', refs: [{ origin: A, id: f1 }] },
     { key: 'z', kind: 'fragment', origin: A, id: f1, created: '2026-11-05T10:00:00Z' }]).length, 2);
@@ -275,16 +276,16 @@ test('filters: New, Threads, Fragments, Responses to me (stub_of or a transclusi
   site.put(makeDoc({ id: plain, origin: A, title: 'Plain', created: '2026-11-03T10:00:00Z' }));
   await follow(r, A);
   await r.f.refresh();
-  const names = f => r.f.view({ filter: f, mine: [me] }).entries.map(e => e.head.id);
-  assert.deepEqual(names('responses').sort(), [stub, quoter].sort());
-  assert.deepEqual(r.f.view({ filter: 'responses', mine: [] }).entries, [], 'with my_origins empty nothing is a response to me');
-  assert.deepEqual(names('threads').sort(), [stub, quoter].sort());
-  assert.deepEqual(names('fragments'), [plain]);
-  r.f.readMove(r.f.keyFor(A, plain), 'open');
-  assert.equal(names('new').includes(plain), false);
-  assert.equal(names('new').length, 2);
+  const names = async f => (await r.f.view({ filter: f, mine: [me] })).entries.map(e => e.head.id);
+  assert.deepEqual((await names('responses')).sort(), [stub, quoter].sort());
+  assert.deepEqual((await r.f.view({ filter: 'responses', mine: [] })).entries, [], 'with my_origins empty nothing is a response to me');
+  assert.deepEqual((await names('threads')).sort(), [stub, quoter].sort());
+  assert.deepEqual(await names('fragments'), [plain]);
+  await r.f.readMove(await r.f.keyFor(A, plain), 'open');
+  assert.equal((await names('new')).includes(plain), false);
+  assert.equal((await names('new')).length, 2);
   // the response entry says what it answers
-  const e = r.f.view({ filter: 'responses', mine: [me] }).entries.find(x => x.head.id === stub).head;
+  const e = (await r.f.view({ filter: 'responses', mine: [me] })).entries.find(x => x.head.id === stub).head;
   assert.equal(e.in_response_to.origin, me);
   assert.equal(F.filterOf('nonsense'), 'all');
   r.done();
@@ -296,8 +297,8 @@ test('caps: per-blyg and total', async () => {
   for (let n = 1; n <= 15; n++) site.put(makeDoc({ id: idOf(n), origin: A, title: `P${n}`, created: `2026-11-${String(n).padStart(2, '0')}T10:00:00Z` }));
   await follow(r, A);
   await r.f.refresh();
-  assert.equal(items(r).length, 10, 'per-blyg cap: the newest ten');
-  assert.ok(items(r).every(i => Number(i.title.slice(1)) > 5));
+  assert.equal((await items(r)).length, 10, 'per-blyg cap: the newest ten');
+  assert.ok((await items(r)).every(i => Number(i.title.slice(1)) > 5));
   // the cap is not chased every run: nothing is refetched
   r.web.requests.length = 0;
   await r.f.refresh();
@@ -310,7 +311,7 @@ test('caps: per-blyg and total', async () => {
     await follow(t, o);
   }
   const s = await t.f.refresh();
-  assert.equal(items(t).length, 50, 'total cap: 50 of 60');
+  assert.equal((await items(t)).length, 50, 'total cap: 50 of 60');
   assert.equal(s.capped, 10);
   t.done();
 });
@@ -325,10 +326,10 @@ test('per-run request cap and time budget stop the run (and carry on next time)'
   assert.equal(r.web.requests.length, 8, 'never more requests than the cap');
   assert.equal(s.requests, 8);
   assert.ok(s.deferred > 0);
-  assert.equal(items(r).length, 6, 'manifest + index + six documents');
-  assert.equal(r.f.listBlygs()[0].state, 'active', 'running out of budget is not the blyg\'s fault');
+  assert.equal((await items(r)).length, 6, 'manifest + index + six documents');
+  assert.equal((await r.f.listBlygs())[0].state, 'active', 'running out of budget is not the blyg\'s fault');
   await r.f.refresh();
-  assert.equal(items(r).length, 12, 'the next run carries on');
+  assert.equal((await items(r)).length, 12, 'the next run carries on');
   r.done();
 
   // time: the clock moves with every request; the budget is five seconds
@@ -340,7 +341,7 @@ test('per-run request cap and time budget stop the run (and carry on next time)'
   const orig = t.web.get;
   const g = F.createFollowing({ file: path.join(t.dir, 'slow.json'), now: () => clock.t, getSettings: () => SETTINGS({ following_run_seconds: 5 }),
     get: async (u, o) => { clock.t += 2000; return orig(u, o); } });
-  g.confirmImport([{ origin: A }]);
+  await g.confirmImport([{ origin: A }]);
   const s3 = await g.refresh();
   assert.ok(s3.requests <= 3, `stopped by the time budget (${s3.requests} requests)`);
   assert.ok(s3.deferred > 0);
@@ -351,10 +352,10 @@ test('per-host breaker opens after repeated failures and refuses that host until
   const r = rig();
   const hosts = [A, 'https://alpha.web.test/other/', 'https://alpha.web.test/third/', 'https://alpha.web.test/fourth/'];
   for (const o of hosts) r.web.add(o).down = 'timeout';
-  for (const o of hosts) r.f.confirmImport([{ origin: o }]);
+  for (const o of hosts) await r.f.confirmImport([{ origin: o }]);
   r.web.requests.length = 0;
   const s = await r.f.refresh();
-  const b = r.f.breakerSnapshot('alpha.web.test');
+  const b = await r.f.breakerSnapshot('alpha.web.test');
   assert.equal(b.state, 'open');
   assert.equal(r.web.requests.length, F.BREAKER.threshold, 'after three failures the host is not asked again this run');
   assert.ok(s.deferred >= 1);
@@ -366,14 +367,14 @@ test('per-host breaker opens after repeated failures and refuses that host until
   r.web.requests.length = 0;
   await r.f.refresh();
   assert.ok(r.web.requests.length > 0, 'half-open: a probe is let through');
-  assert.equal(r.f.breakerSnapshot('alpha.web.test').state === 'closed' || r.f.breakerSnapshot('alpha.web.test').state === 'open', true);
+  assert.equal((await r.f.breakerSnapshot('alpha.web.test')).state === 'closed' || (await r.f.breakerSnapshot('alpha.web.test')).state === 'open', true);
   // a different host is unaffected
   const x = rig();
   x.web.add(A).down = 'timeout';
   x.web.add(Bo).put(makeDoc({ id: idOf(1), origin: Bo }));
-  x.f.confirmImport([{ origin: A }, { origin: Bo }]);
+  await x.f.confirmImport([{ origin: A }, { origin: Bo }]);
   await x.f.refresh();
-  assert.equal(items(x).length, 1);
+  assert.equal((await items(x)).length, 1);
   r.done(); x.done();
   assert.throws(() => F.moveBreaker({ state: 'open' }, 'ok'), /cannot ok while open/);
 });
@@ -385,7 +386,7 @@ test('an unreachable blyg is backed off (doubling), then recovers; a gone blyg i
   await follow(r, A);
   site.down = 'network';
   await r.f.refresh();
-  let b = r.f.listBlygs()[0];
+  let b = (await r.f.listBlygs())[0];
   assert.equal(b.state, 'unreachable');
   assert.equal(b.failures, 1);
   const first = b.retry_after - r.clock.t;
@@ -396,29 +397,29 @@ test('an unreachable blyg is backed off (doubling), then recovers; a gone blyg i
   assert.equal(skipped.skipped, 1);
   r.clock.t += first + 1;
   await r.f.refresh();
-  b = r.f.listBlygs()[0];
+  b = (await r.f.listBlygs())[0];
   assert.equal(b.failures, 2);
   assert.equal(b.retry_after - r.clock.t, 2 * first, 'the wait doubles');
   site.down = null;
   r.clock.t += 2 * first + 1;
   await r.f.refresh();
-  b = r.f.listBlygs()[0];
+  b = (await r.f.listBlygs())[0];
   assert.equal(b.state, 'active');
   assert.equal(b.failures, 0);
-  assert.equal(items(r).length, 1);
+  assert.equal((await items(r)).length, 1);
   // answering, repeatedly, with no manifest: gone, and not asked again
   site.noManifest = true;
   for (let n = 0; n < F.LIMITS.goneAfter; n++) await r.f.refresh();
-  assert.equal(r.f.listBlygs()[0].state, 'gone');
+  assert.equal((await r.f.listBlygs())[0].state, 'gone');
   r.web.requests.length = 0;
   await r.f.refresh();
   assert.equal(r.web.requests.length, 0);
   site.noManifest = false;
-  r.f.setBlygState(A, 'resume');
+  await r.f.setBlygState(A, 'resume');
   await r.f.refresh();
-  assert.equal(r.f.listBlygs()[0].state, 'active');
+  assert.equal((await r.f.listBlygs())[0].state, 'active');
   // paused is never fetched
-  r.f.setBlygState(A, 'pause');
+  await r.f.setBlygState(A, 'pause');
   r.web.requests.length = 0;
   await r.f.refresh();
   assert.equal(r.web.requests.length, 0);
@@ -433,7 +434,7 @@ test('never more than one reconciliation in flight: a second refresh is refused,
   r.web.delayMs = 15;
   r.web.requests.length = 0;
   const first = r.f.refresh();
-  assert.equal(r.f.runState(), 'running');
+  assert.equal(await r.f.runState(), 'running');
   const [second, third] = await Promise.all([r.f.refresh(), r.f.refresh()]);
   assert.equal(second.started, false);
   assert.equal(third.started, false);
@@ -441,7 +442,7 @@ test('never more than one reconciliation in flight: a second refresh is refused,
   assert.equal(done.started, true);
   assert.equal(r.web.maxInFlight, 1, 'one request at a time, one run at a time');
   assert.equal(r.web.requests.length, 5, 'one run\'s requests only (manifest, index, three documents)');
-  assert.equal(r.f.runState(), 'idle');
+  assert.equal(await r.f.runState(), 'idle');
   const again = await r.f.refresh();
   assert.equal(again.started, true, 'idle again: a new run is allowed');
   r.done();
@@ -449,7 +450,7 @@ test('never more than one reconciliation in flight: a second refresh is refused,
 
 test('the timer: armed (at the configured interval) while something is followed, off when the list is empty, reaches refresh', async () => {
   const r = rig({ settings: { following_refresh_minutes: 45 } });
-  assert.equal(r.f.start(), 'off');
+  assert.equal(await r.f.start(), 'off');
   assert.equal(r.timers.set.length, 0, 'nothing followed: no timer');
   r.web.add(A).put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
@@ -457,8 +458,8 @@ test('the timer: armed (at the configured interval) while something is followed,
   assert.equal(r.timers.set.at(-1).ms, 45 * 60 * 1000);
   r.timers.set.at(-1).fn();
   await new Promise(res => setTimeout(res, 50));
-  assert.equal(items(r).length, 1, 'the timer ran a refresh');
-  r.f.unfollow(A);
+  assert.equal((await items(r)).length, 1, 'the timer ran a refresh');
+  await r.f.unfollow(A);
   assert.equal(r.f.scheduleMode(), 'off');
   assert.ok(r.timers.cleared.length >= 1);
   assert.equal(F.createFollowing({ file: path.join(r.dir, 'd.json') }) && CFG.followingSettingsOf({}).settings.following_refresh_minutes, 30, 'the default is thirty minutes');
@@ -516,19 +517,19 @@ test('read state through the engine: open, markResponded; withdrawn and unknown 
   site.put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
   await r.f.refresh();
-  const key = r.f.keyFor(A, idOf(1));
-  assert.equal(r.f.readMove(key, 'open'), 'opened');
-  assert.throws(() => r.f.readMove(key, 'open'), /cannot open while opened/, 'the table is the judge: opening again is not a move (open() checks first)');
-  assert.throws(() => r.f.readMove(key, 'see'), /no such move/);
-  assert.equal(r.f.markResponded(A, idOf(1)), true);
-  assert.equal(r.f.itemByKey(key).read, 'responded');
-  assert.throws(() => r.f.readMove(key, 'open'), /cannot open while responded/);
-  assert.equal(r.f.markResponded(A, idOf(99)), false, 'a post not on the list is not touched');
-  assert.throws(() => r.f.readMove('nope', 'open'), /no such post/);
+  const key = await r.f.keyFor(A, idOf(1));
+  assert.equal(await r.f.readMove(key, 'open'), 'opened');
+  await assert.rejects(async () => await r.f.readMove(key, 'open'), /cannot open while opened/, 'the table is the judge: opening again is not a move (open() checks first)');
+  await assert.rejects(async () => await r.f.readMove(key, 'see'), /no such move/);
+  assert.equal(await r.f.markResponded(A, idOf(1)), true);
+  assert.equal((await r.f.itemByKey(key)).read, 'responded');
+  await assert.rejects(async () => await r.f.readMove(key, 'open'), /cannot open while responded/);
+  assert.equal(await r.f.markResponded(A, idOf(99)), false, 'a post not on the list is not touched');
+  await assert.rejects(async () => await r.f.readMove('nope', 'open'), /no such post/);
   // a responded post is not put back to new by a maintenance bump or an edit
   site.put(makeDoc({ id: idOf(1), origin: A, body: 'changed', version: 2, updated: '2026-11-09T10:00:00Z' }));
   await r.f.refresh();
-  assert.equal(r.f.itemByKey(key).read, 'responded');
+  assert.equal((await r.f.itemByKey(key)).read, 'responded');
   r.done();
 });
 
@@ -557,19 +558,19 @@ test('hostile remote content is cleaned when it is kept: no control or bidi-over
   site.put(makeDoc({ id: idOf(1), origin: A, title: '<b>t</b>\u202e\u2066bad', body: evil, author: 'Mallory\u202e<script>' }));
   await follow(r, A);
   await r.f.refresh();
-  const i = items(r)[0];
+  const i = (await items(r))[0];
   for (const f of ['title', 'excerpt', 'text', 'author']) {
     assert.ok(!/[\u202a-\u202e\u2066-\u2069\u0000-\u001f]/.test(i[f]), `${f} has no control or override characters`);
     assert.ok(i[f].length <= F.LIMITS.textChars, f);
   }
-  assert.ok(!/[\u202a-\u202e]/.test(r.f.listBlygs()[0].title));
+  assert.ok(!/[\u202a-\u202e]/.test((await r.f.listBlygs())[0].title));
   // §5.8: a post's page may be on another host (kept, as an outbound link); one that is not a web address is not kept
   site.put(makeDoc({ id: idOf(2), origin: A, page: 'https://elsewhere.web.test/steal/' }));
   site.put(makeDoc({ id: idOf(3), origin: A, page: 'javascript:alert(1)' }));
   const s = await r.f.refresh();
   assert.equal(s.invalid, 1);
-  assert.equal(items(r).length, 2);
-  assert.equal(items(r).find(i => i.id === idOf(2)).opens_on, 'elsewhere.web.test', 'labelled as opening elsewhere');
+  assert.equal((await items(r)).length, 2);
+  assert.equal((await items(r)).find(i => i.id === idOf(2)).opens_on, 'elsewhere.web.test', 'labelled as opening elsewhere');
   r.done();
 });
 
@@ -582,32 +583,32 @@ test('identityFor: the list alone never supplies identity; the page\'s own links
   await r.f.refresh();
   const page = `${A}f/${id}/`;
   const hints = { blyg: `${A}blyg.json`, json: `${A}items/${id}.json` };
-  assert.equal(r.f.identityFor('https://other.web.test/x', hints).verdict, 'none');
+  assert.equal((await r.f.identityFor('https://other.web.test/x', hints)).verdict, 'none');
   // no links at all: the list is NOT used, detection runs
-  const bare = r.f.identityFor(page, null);
+  const bare = await r.f.identityFor(page, null);
   assert.equal(bare.verdict, 'unconfirmed');
   assert.equal(bare.result, undefined);
-  assert.equal(r.f.identityFor(page, { blyg: '', json: '' }).result, undefined, 'the extension sends empty links for a page with none');
+  assert.equal((await r.f.identityFor(page, { blyg: '', json: '' })).result, undefined, 'the extension sends empty links for a page with none');
   // one of the two links is not enough, though nothing contradicts it
-  assert.equal(r.f.identityFor(page, { blyg: hints.blyg, json: '' }).verdict, 'unconfirmed');
-  assert.equal(r.f.identityFor(page, { blyg: '', json: hints.json }).verdict, 'unconfirmed');
+  assert.equal((await r.f.identityFor(page, { blyg: hints.blyg, json: '' })).verdict, 'unconfirmed');
+  assert.equal((await r.f.identityFor(page, { blyg: '', json: hints.json })).verdict, 'unconfirmed');
   // both agree: the list's origin, id and version are used, and the answer says where it came from
-  const ok = r.f.identityFor(page, hints);
+  const ok = await r.f.identityFor(page, hints);
   assert.equal(ok.verdict, 'agrees');
   assert.deepEqual([ok.result.status, ok.result.source, ok.result.item.origin, ok.result.item.id, ok.result.item.version], ['blyg', 'from-list', A, id, 2]);
-  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).identity, 'agrees');
+  assert.equal((await r.f.itemByKey(await r.f.keyFor(A, id))).identity, 'agrees');
   // a link naming another post, or another blyg: not used, and the entry says so
-  const bad = r.f.identityFor(page, { blyg: hints.blyg, json: `${A}items/${idOf(2)}.json` });
+  const bad = await r.f.identityFor(page, { blyg: hints.blyg, json: `${A}items/${idOf(2)}.json` });
   assert.equal(bad.verdict, 'disagrees');
   assert.equal(bad.result, undefined, 'a disagreeing page gets no result from the list');
   assert.match(bad.reason, /names post/);
-  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).identity, 'disagrees');
-  assert.equal(r.f.view().entries[0].head.identity, 'disagrees');
-  assert.equal(r.f.identityFor(page, { blyg: 'https://evil.web.test/blyg.json', json: hints.json }).verdict, 'disagrees');
+  assert.equal((await r.f.itemByKey(await r.f.keyFor(A, id))).identity, 'disagrees');
+  assert.equal((await r.f.view()).entries[0].head.identity, 'disagrees');
+  assert.equal((await r.f.identityFor(page, { blyg: 'https://evil.web.test/blyg.json', json: hints.json })).verdict, 'disagrees');
   // what comes back cannot be used to change the list
-  const copy = r.f.identityFor(page, hints).item;
+  const copy = (await r.f.identityFor(page, hints)).item;
   copy.version = 99;
-  assert.equal(r.f.itemByKey(r.f.keyFor(A, id)).version, 2);
+  assert.equal((await r.f.itemByKey(await r.f.keyFor(A, id))).version, 2);
   r.done();
 });
 
@@ -620,22 +621,22 @@ test('identityFor: a page outside the blyg\'s mount (§5.8) is identified when I
   site.put(makeDoc({ id, origin: MOUNT, page: 'https://site.web.test/some-post' }));
   await follow(r, MOUNT);
   await r.f.refresh();
-  assert.equal(items(r).length, 1);
+  assert.equal((await items(r)).length, 1);
   const hints = { blyg: `${MOUNT}blyg.json`, json: `${MOUNT}items/${id}.json` };
-  const ok = r.f.identityFor('https://site.web.test/some-post', hints);
+  const ok = await r.f.identityFor('https://site.web.test/some-post', hints);
   assert.equal(ok.verdict, 'agrees', 'the page is outside the mount, its own links agree: identity used');
   assert.equal(ok.result.item.id, id);
-  const bare = r.f.identityFor('https://site.web.test/some-post', { blyg: '', json: '' });
+  const bare = await r.f.identityFor('https://site.web.test/some-post', { blyg: '', json: '' });
   assert.equal(bare.verdict, 'unconfirmed', 'the same page with no links: detection');
   assert.equal(bare.result, undefined);
   // and a post whose page is on ANOTHER host is an outbound link, labelled, with the same rule
   const far = makeDoc({ id: idOf(5), origin: MOUNT, page: 'https://other.web.test/p/5' });
   site.put(far);
   await r.f.refresh();
-  const e = items(r).find(i => i.id === idOf(5));
+  const e = (await items(r)).find(i => i.id === idOf(5));
   assert.equal(e.opens_on, 'other.web.test');
-  assert.equal(r.f.identityFor('https://other.web.test/p/5', { blyg: '', json: '' }).result, undefined);
-  assert.equal(r.f.identityFor('https://other.web.test/p/5', { blyg: `${MOUNT}blyg.json`, json: `${MOUNT}items/${idOf(5)}.json` }).verdict, 'agrees');
+  assert.equal((await r.f.identityFor('https://other.web.test/p/5', { blyg: '', json: '' })).result, undefined);
+  assert.equal((await r.f.identityFor('https://other.web.test/p/5', { blyg: `${MOUNT}blyg.json`, json: `${MOUNT}items/${idOf(5)}.json` })).verdict, 'agrees');
   r.done();
 });
 
@@ -650,20 +651,20 @@ test('identityFor: a blyg cannot claim another blyg\'s page, on a shared host or
   evil.put(makeDoc({ id: eid, origin: EVIL, page: victimPage }));
   await follow(r, EVIL);
   await r.f.refresh();
-  assert.equal(items(r).length, 1, 'the claim is held (as an address to open)…');
+  assert.equal((await items(r)).length, 1, 'the claim is held (as an address to open)…');
   // …but never supplies identity: the victim page's own links name the victim
   const victimHints = { blyg: `${VICTIM}blyg.json`, json: `${VICTIM}items/${vid}.json` };
-  const a = r.f.identityFor(victimPage, victimHints);
+  const a = await r.f.identityFor(victimPage, victimHints);
   assert.equal(a.verdict, 'disagrees');
   assert.equal(a.result, undefined);
-  assert.equal(r.f.identityFor(victimPage, { blyg: '', json: '' }).result, undefined, 'no links: detection');
+  assert.equal((await r.f.identityFor(victimPage, { blyg: '', json: '' })).result, undefined, 'no links: detection');
   // a json-only link with the SAME id on another origin is not used either
   r.web.add('https://reuse.web.test/b/').put(makeDoc({ id: eid, origin: 'https://reuse.web.test/b/' }));
-  const reused = r.f.identityFor(victimPage, { blyg: '', json: `https://reuse.web.test/b/items/${eid}.json` });
+  const reused = await r.f.identityFor(victimPage, { blyg: '', json: `https://reuse.web.test/b/items/${eid}.json` });
   assert.equal(reused.verdict, 'disagrees');
   assert.equal(reused.result, undefined);
   // the evil blyg's own links on the victim page (a page that really did link it) are the only way, and then it IS that blyg's
-  assert.equal(r.f.identityFor(victimPage, { blyg: `${EVIL}blyg.json`, json: `${EVIL}items/${eid}.json` }).verdict, 'agrees');
+  assert.equal((await r.f.identityFor(victimPage, { blyg: `${EVIL}blyg.json`, json: `${EVIL}items/${eid}.json` })).verdict, 'agrees');
   r.done();
 });
 
@@ -690,7 +691,7 @@ test('the default transport really is netguard.guardedGet', async () => {
   const guard = await import('../netguard.mjs');
   // a private address is refused by the guard before any request: proof the default path goes through it
   const f = F.createFollowing({ file: path.join(os.tmpdir(), `bfp-fg-${process.pid}.json`) });
-  await assert.rejects(() => f.follow('http://127.0.0.1:9/'), /could not ask|refused|no Blygger|not asked/);
+  await assert.rejects(async () => await f.follow('http://127.0.0.1:9/'), /could not ask|refused|no Blygger|not asked/);
   assert.equal(typeof guard.guardedGet, 'function');
 });
 
@@ -727,11 +728,11 @@ test('fetch scope: a manifest cannot send the companion to another host for its 
     const orig = r.web.get;
     const f = F.createFollowing({ file: path.join(r.dir, 'scope.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
       get: async (u, o) => (u === `${A}blyg.json` ? { status: 200, url: u, text: JSON.stringify({ blyg: '0.4', title: 't', ...manifest }) } : orig(u, o)) });
-    f.confirmImport([{ origin: A }]);
+    await f.confirmImport([{ origin: A }]);
     const s = await f.refresh();
     assert.ok(s.refused >= 1, `${what}: refused`);
     assert.equal(r.web.requests.filter(u => !u.startsWith(A) || /\/other\//.test(u)).length, 0, `${what}: nothing outside the blyg was requested`);
-    assert.match(f.listBlygs()[0].last_error, /outside the blyg's own origin/, `${what}: the reason is named`);
+    assert.match((await f.listBlygs())[0].last_error, /outside the blyg's own origin/, `${what}: the reason is named`);
     r.done();
   }
   // a document that arrives from somewhere else after a redirect is not accepted
@@ -741,11 +742,11 @@ test('fetch scope: a manifest cannot send the companion to another host for its 
   const orig = r.web.get;
   const f = F.createFollowing({ file: path.join(r.dir, 'redir.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
     get: async (u, o) => { const x = await orig(u, o); return /items\/0/.test(u) ? { ...x, url: 'https://third.web.test/items/x.json' } : x; } });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   const s = await f.refresh();
   assert.equal(s.refused, 1);
-  assert.equal(f.view().entries.length, 0);
-  assert.match(f.listBlygs()[0].last_error, /served from outside/);
+  assert.equal((await f.view()).entries.length, 0);
+  assert.match((await f.listBlygs())[0].last_error, /served from outside/);
   r.done();
 });
 
@@ -761,14 +762,14 @@ test('an index that lies about versions is not chased: one fetch, not one per ru
       if (!u.endsWith('items/index.json')) return x;
       const j = JSON.parse(x.text); j.items[0].version = 1; return { ...x, text: JSON.stringify(j) };
     } });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   let s = await f.refresh();
   assert.equal(s.mismatched, 1);
   assert.equal(r.web.itemRequests().length, 1);
   for (let n = 0; n < 3; n++) s = await f.refresh();
   assert.equal(r.web.itemRequests().length, 1, 'the lie is not refetched every run');
-  assert.equal(f.view().entries[0].head.version, 3, 'the document is the ground truth (§13.1)');
-  assert.deepEqual(f.itemByKey(f.keyFor(A, id)).index_mismatch, { index: 1, document: 3 });
+  assert.equal((await f.view()).entries[0].head.version, 3, 'the document is the ground truth (§13.1)');
+  assert.deepEqual((await f.itemByKey(await f.keyFor(A, id))).index_mismatch, { index: 1, document: 3 });
   r.done();
 });
 
@@ -783,10 +784,10 @@ test('an index that lies the other way (a version the document does not have) is
       if (!u.endsWith('items/index.json')) return x;
       const j = JSON.parse(x.text); j.items[0].version = 5; return { ...x, text: JSON.stringify(j) };
     } });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   for (let n = 0; n < 4; n++) await f.refresh();
   assert.equal(r.web.itemRequests().length, 1, 'fetched once, not on every run');
-  assert.equal(f.itemByKey(f.keyFor(A, idOf(1))).index_version, 5);
+  assert.equal((await f.itemByKey(await f.keyFor(A, idOf(1)))).index_version, 5);
   r.done();
 });
 
@@ -799,27 +800,28 @@ test('fetching off: refresh makes no request, the timer disarms, every route tha
   const timers = { set: [], cleared: 0 };
   const f = F.createFollowing({ file: path.join(dir, 'f.json'), get: web.get, now: () => clock.t, mayFetch: () => on,
     getSettings: () => SETTINGS(), timers: { set: (fn, ms) => { const h = { fn, ms }; timers.set.push(h); return h; }, clear: () => { timers.cleared++; } } });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   assert.equal(f.scheduleMode(), 'scheduled');
   on = false;
   web.requests.length = 0;
   const off = await f.refresh();
   assert.equal(off.started, false);
   assert.match(off.reason, /off/);
-  await assert.rejects(() => f.follow(A), /could not ask|off/);
+  await assert.rejects(async () => await f.follow(A), /could not ask|off/);
   await assert.rejects(() => f.previewImport({ url: 'https://roll.web.test/x.opml' }), /off|fetch/);
   assert.equal(web.requests.length, 0, 'not one request');
   // the timer fires once more, finds fetching off, and disarms itself
   timers.set.at(-1).fn();
+  await new Promise(res => setTimeout(res, 20)); // (it disarms itself asynchronously: the follow list is read from the store)
   assert.equal(f.scheduleMode(), 'off');
   // actions that re-arm the timer do not while fetching is off
-  f.confirmImport([{ origin: Bo }]);
-  f.setBlygState(Bo, 'pause');
-  assert.equal(f.unfollow(Bo), true);
-  assert.equal(f.reschedule(), 'off');
+  await f.confirmImport([{ origin: Bo }]);
+  await f.setBlygState(Bo, 'pause');
+  assert.equal(await f.unfollow(Bo), true);
+  assert.equal(await f.reschedule(), 'off');
   assert.equal(web.requests.length, 0);
   on = true;
-  assert.equal(f.reschedule(), 'scheduled');
+  assert.equal(await f.reschedule(), 'scheduled');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -831,23 +833,27 @@ test('unfollow during a refresh leaves no orphan posts, and orphans are pruned o
   r.web.delayMs = 15;
   const run = r.f.refresh();
   await new Promise(res => setTimeout(res, 50));
-  assert.equal(r.f.unfollow(A), true);
+  assert.equal(await r.f.unfollow(A), true);
   const atUnfollow = r.web.requests.length;
   const s = await run;
   assert.equal(s.started, true);
   assert.ok(r.web.requests.length - atUnfollow <= 1, 'once unfollowed, the blyg is not asked for more (at most the request already in flight)');
   assert.ok(s.aborted >= 1);
-  assert.equal(r.f.view().entries.length, 0);
-  assert.equal(r.f.view({ view: 'background' }).background.length, 0);
-  const onDisk = JSON.parse(fs.readFileSync(r.file, 'utf8'));
-  assert.deepEqual(Object.keys(onDisk.items), [], 'nothing of an unfollowed blyg is on disk');
-  // an orphan left by an older version is dropped when the file is loaded
-  onDisk.items['x\ny'] = { key: 'k', origin: 'https://gone.web.test/', id: 'y', kind: 'fragment', version: 1, read: 'new' };
-  fs.writeFileSync(r.file, JSON.stringify(onDisk));
+  assert.equal((await r.f.view()).entries.length, 0);
+  assert.equal((await r.f.view({ view: 'background' })).background.length, 0);
+  assert.deepEqual(Object.keys(readLayout(r.file).items), [], 'nothing of an unfollowed blyg is on disk');
+  // an orphan left by an older version (a document of the older layout, posts inside it) is dropped when the file is loaded
+  const old = JSON.parse(fs.readFileSync(r.file, 'utf8'));
+  delete old.layout;
+  old.items = { 'x\ny': { key: 'k', origin: 'https://gone.web.test/', id: 'y', kind: 'fragment', version: 1, read: 'new' } };
+  fs.writeFileSync(r.file, JSON.stringify(old));
   const again = r.reload();
-  again.listBlygs();
+  await again.listBlygs();
   await again.refresh();
-  assert.ok(!('x\ny' in JSON.parse(fs.readFileSync(r.file, 'utf8')).items));
+  const now = JSON.parse(fs.readFileSync(r.file, 'utf8'));
+  assert.equal(now.layout, 2);
+  assert.ok(!('items' in now), 'converted: no post in the main document');
+  assert.deepEqual(Object.keys(readLayout(r.file).items), []);
   r.done();
 });
 
@@ -856,21 +862,21 @@ test('the key a page carries is random per record (not computable from the post)
   r.web.add(A).put(makeDoc({ id: idOf(1), origin: A }));
   await follow(r, A);
   await r.f.refresh();
-  const key = r.f.keyFor(A, idOf(1));
+  const key = await r.f.keyFor(A, idOf(1));
   assert.match(key, /^[0-9a-f]{24}$/);
   const crypto = await import('node:crypto');
   assert.notEqual(key, crypto.createHash('sha1').update(`${A}\n${idOf(1)}`).digest('hex').slice(0, 20));
-  assert.equal(r.f.itemByKey(F.identOf(A, idOf(1))), null, 'the post\'s own identity is not a key');
-  r.f.unfollow(A);
+  assert.equal(await r.f.itemByKey(F.identOf(A, idOf(1))), null, 'the post\'s own identity is not a key');
+  await r.f.unfollow(A);
   await follow(r, A);
   await r.f.refresh();
-  assert.notEqual(r.f.keyFor(A, idOf(1)), key, 'a new record, a new key');
-  const rec = r.f.itemByKey(r.f.keyFor(A, idOf(1)));
+  assert.notEqual(await r.f.keyFor(A, idOf(1)), key, 'a new record, a new key');
+  const rec = await r.f.itemByKey(await r.f.keyFor(A, idOf(1)));
   rec.read = 'responded'; rec.title = 'tampered';
-  assert.equal(r.f.itemByKey(r.f.keyFor(A, idOf(1))).read, 'new');
-  const snap = r.f.breakerSnapshot('alpha.web.test');
+  assert.equal((await r.f.itemByKey(await r.f.keyFor(A, idOf(1)))).read, 'new');
+  const snap = await r.f.breakerSnapshot('alpha.web.test');
   assert.throws(() => { 'use strict'; snap.state = 'open'; }, TypeError);
-  assert.equal(r.f.runState(), 'idle');
+  assert.equal(await r.f.runState(), 'idle');
   r.done();
 });
 
@@ -881,14 +887,14 @@ test('open: a post becomes opened and the answer is its ORIGINAL address; withdr
   site.put(makeDoc({ id: idOf(2), origin: A, created: '2026-11-02T10:00:00Z' }));
   await follow(r, A);
   await r.f.refresh();
-  const k1 = r.f.keyFor(A, idOf(1)), k2 = r.f.keyFor(A, idOf(2));
-  assert.deepEqual(r.f.open(k1), { url: `${A}f/${idOf(1)}/`, opens_on: '' });
-  assert.equal(r.f.itemByKey(k1).read, 'opened');
+  const k1 = await r.f.keyFor(A, idOf(1)), k2 = await r.f.keyFor(A, idOf(2));
+  assert.deepEqual(await r.f.open(k1), { url: `${A}f/${idOf(1)}/`, opens_on: '' });
+  assert.equal((await r.f.itemByKey(k1)).read, 'opened');
   site.put(makeDoc({ id: idOf(2), origin: A, kind: 'withdrawn', title: '', version: 2, created: '2026-11-02T10:00:00Z', updated: '2026-11-05T10:00:00Z' }));
   await r.f.refresh();
-  assert.throws(() => r.f.open(k2), /no such post/);
-  assert.throws(() => r.f.open('nope'), /no such post or mention/);
-  assert.throws(() => r.f.readMove(k2, 'open'), /no such post/);
+  await assert.rejects(async () => await r.f.open(k2), /no such post/);
+  await assert.rejects(async () => await r.f.open('nope'), /no such post or mention/);
+  await assert.rejects(async () => await r.f.readMove(k2, 'open'), /no such post/);
   r.done();
 });
 
@@ -900,13 +906,13 @@ test('clock skew: a post dated in the future cannot sit on top (ordering uses at
   await follow(r, A);
   r.clock.t = Date.parse('2026-11-10T12:00:00Z');
   await r.f.refresh();
-  const titles = r.f.view().entries.map(e => e.head.title);
+  const titles = (await r.f.view()).entries.map(e => e.head.title);
   assert.deepEqual(titles, ['From the future', 'Honest'], 'newest fetched is first, but not by claiming 2099');
-  assert.ok(Date.parse(r.f.view().entries[0].head.shown_at) <= r.clock.t, 'and its shown date is not in the future');
+  assert.ok(Date.parse((await r.f.view()).entries[0].head.shown_at) <= r.clock.t, 'and its shown date is not in the future');
   r.clock.t += 5 * 3600 * 1000;
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Later honest', created: '2026-11-10T14:00:00Z' }));
   await r.f.refresh();
-  assert.equal(r.f.view().entries[0].head.title, 'Later honest', 'a later real post goes above the forged one');
+  assert.equal((await r.f.view()).entries[0].head.title, 'Later honest', 'a later real post goes above the forged one');
   r.done();
 });
 
@@ -958,28 +964,28 @@ test('Background: maintenance and barely-changed versions, burst members, withdr
   site.put(makeDoc({ id: gone, origin: A, title: 'Soon gone', created: '2026-11-02T10:00:00Z' }));
   await follow(r, A);
   await r.f.refresh();
-  openAll(r);
+  await openAll(r);
   site.put(makeDoc({ id: maint, origin: A, title: 'Maint', body, version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   site.put(makeDoc({ id: minor, origin: A, title: 'Minor', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   site.put(makeDoc({ id: edited, origin: A, title: 'Edited', body: 'something else entirely, rewritten from the ground up. '.repeat(8), version: 2, created: '2026-11-01T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   site.put(makeDoc({ id: gone, origin: A, kind: 'withdrawn', title: '', version: 2, created: '2026-11-02T10:00:00Z', updated: '2026-11-06T10:00:00Z' }));
   const s = await r.f.refresh();
   assert.deepEqual([s.maintenance, s.minor, s.edited], [1, 1, 1]);
-  const bg = Object.fromEntries(inBackground(r).map(b => [b.post.id, b.reason]));
+  const bg = Object.fromEntries((await inBackground(r)).map(b => [b.post.id, b.reason]));
   assert.deepEqual(bg, { [maint]: 'no new words', [minor]: 'barely changed', [frag]: 'part of a burst', [gone]: 'withdrawn' });
-  const feed = r.f.view().entries.map(e => e.head.id);
+  const feed = (await r.f.view()).entries.map(e => e.head.id);
   assert.ok(feed.includes(edited) && feed.includes(th) && !feed.includes(maint) && !feed.includes(minor) && !feed.includes(frag));
-  assert.equal(r.f.view().entries.find(e => e.head.id === th).members.length, 1);
-  assert.equal(r.f.view().tabs.background, 4);
+  assert.equal((await r.f.view()).entries.find(e => e.head.id === th).members.length, 1);
+  assert.equal((await r.f.view()).tabs.background, 4);
   // a real new version brings a background post back
   site.put(makeDoc({ id: maint, origin: A, title: 'Maint', body: 'now actually different words, all of them. '.repeat(8), version: 3, created: '2026-11-01T10:00:00Z', updated: '2026-11-07T10:00:00Z' }));
   await r.f.refresh();
-  assert.ok(r.f.view().entries.some(e => e.head.id === maint), 'back in the Feed');
-  assert.ok(!inBackground(r).some(b => b.post && b.post.id === maint));
+  assert.ok((await r.f.view()).entries.some(e => e.head.id === maint), 'back in the Feed');
+  assert.ok(!(await inBackground(r)).some(b => b.post && b.post.id === maint));
   // a paused blyg's posts are background
-  r.f.setBlygState(A, 'pause');
-  assert.equal(r.f.view().entries.length, 0);
-  assert.ok(inBackground(r).every(b => b.reason === 'paused blyg' || b.reason === 'withdrawn'));
+  await r.f.setBlygState(A, 'pause');
+  assert.equal((await r.f.view()).entries.length, 0);
+  assert.ok((await inBackground(r)).every(b => b.reason === 'paused blyg' || b.reason === 'withdrawn'));
   r.done();
 });
 
@@ -1010,7 +1016,7 @@ test('NO OTHER WAY OUT: with every outbound primitive of the process made to thr
     r.web.add(Bo).put(makeDoc({ id: idOf(9), origin: Bo }));
     await r.f.follow(`${A}f/${idOf(1)}/`);
     await r.f.previewImport({ text: JSON.stringify([{ origin: Bo, title: 'B' }]) });
-    r.f.confirmImport([{ origin: Bo }]);
+    await r.f.confirmImport([{ origin: Bo }]);
     const s = await r.f.refresh();
     assert.equal(s.new, 4);
     assert.ok(r.web.requests.length > 0, 'the injected transport carried everything');
@@ -1031,24 +1037,24 @@ test('an unread post is never hidden: a burst folds its members only under a hea
   site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', body, created: '2026-11-05T10:01:00Z', transclusions: [{ origin: A, id: old, version: 1 }] }));
   await follow(r, A);
   await r.f.refresh();
-  r.f.readMove(r.f.keyFor(A, th), 'open');          // the reader opened the thread...
-  r.f.readMove(r.f.keyFor(A, old), 'open');
+  await r.f.readMove(await r.f.keyFor(A, th), 'open');          // the reader opened the thread...
+  await r.f.readMove(await r.f.keyFor(A, old), 'open');
   // ...and it is republished barely changed, now transcluding a NEW fragment
   site.put(makeDoc({ id: fresh, origin: A, title: 'Fresh fragment', created: '2026-11-08T10:00:00Z' }));
   site.put(makeDoc({ id: th, origin: A, kind: 'thread', title: 'Thread', body: body.replace('invented', 'imagined'), version: 2, created: '2026-11-05T10:01:00Z',
     updated: '2026-11-08T10:01:00Z', transclusions: [{ origin: A, id: old, version: 1 }, { origin: A, id: fresh, version: 1 }] }));
   const s = await r.f.refresh();
   assert.equal(s.minor, 1);
-  const feed = r.f.view().entries.map(e => e.head.id);
+  const feed = (await r.f.view()).entries.map(e => e.head.id);
   assert.ok(feed.includes(fresh), 'the unread fragment is in the Feed');
-  assert.ok(r.f.view({ filter: 'new' }).entries.some(e => e.head.id === fresh), 'and in New');
-  assert.equal(r.f.view().tabs.feed, feed.length);
+  assert.ok((await r.f.view({ filter: 'new' })).entries.some(e => e.head.id === fresh), 'and in New');
+  assert.equal((await r.f.view()).tabs.feed, feed.length);
   assert.ok(!feed.includes(th), 'the barely changed, already opened thread went to Background');
-  const bg = Object.fromEntries(inBackground(r).map(b => [b.post.id, b.reason]));
+  const bg = Object.fromEntries((await inBackground(r)).map(b => [b.post.id, b.reason]));
   assert.equal(bg[th], 'barely changed');
   assert.ok(!(fresh in bg));
   // when the head IS in the Feed, its members fold under it as before
-  openAll(r);
+  await openAll(r);
   const pure = F.buildView({ items: [{ origin: A, id: th, kind: 'thread', read: 'new', last_change: 'new-words', created: '2026-11-05T10:01:00Z', updated: '2026-11-05T10:01:00Z',
     refs: [{ origin: A, id: old }], key: 'h' }, { origin: A, id: old, kind: 'fragment', read: 'new', last_change: 'new-words', created: '2026-11-05T10:00:00Z', updated: '2026-11-05T10:00:00Z', refs: [], key: 'm' }],
     blygs: { [A]: { state: 'active' } } });
@@ -1088,7 +1094,7 @@ test('versions and pins are read from the changelog of the document already fetc
   await follow(r, A);
   const before = r.web.requests.length;
   await r.f.refresh();
-  const rec = r.f.itemByKey(r.f.keyFor(A, id));
+  const rec = await r.f.itemByKey(await r.f.keyFor(A, id));
   assert.deepEqual(rec.versions.map(v => [v.version, v.pin]), [[1, 'pinned'], [2, 'unpinned'], [3, 'unpinned'], [4, 'pinned'], [5, 'unpinned']]);
   assert.deepEqual(F.pinnedOf(rec), [1, 4]);
   assert.equal(rec.versions[1].note, '', 'a null note is empty');
@@ -1102,7 +1108,7 @@ test('versions and pins are read from the changelog of the document already fetc
   assert.ok(!asked.some(u => /\/v\d+(\.json|\/)/.test(u)), 'no pinned document or page was requested');
   assert.ok(!r.web.requests.some(u => /\/v\d+(\.json|\/)/.test(u)));
   // the view's entry
-  const head = r.f.view().entries[0].head;
+  const head = (await r.f.view()).entries[0].head;
   assert.equal(head.versions_note, '5 versions');
   assert.deepEqual(head.pinned_list, [1, 4]);
   assert.deepEqual(head.history.map(v => [v.version, v.mark]), [[5, ''], [4, 'link'], [3, ''], [2, ''], [1, 'link']], 'newest first; a pin of a directory-style page links');
@@ -1118,15 +1124,15 @@ test('a pinned version\'s page is linked only when it can be told from what is h
   site.put(makeDoc({ id: noSlash, origin: A, version: 2, updated: '2026-11-02T10:00:00Z', changelog: pins, page: 'https://alpha.web.test/some-post' }));
   await follow(r, A);
   await r.f.refresh();
-  const k1 = r.f.keyFor(A, withSlash), k2 = r.f.keyFor(A, noSlash);
-  const marks = id => r.f.view().entries.find(e => e.head.id === id).head.history.find(v => v.version === 1).mark;
-  assert.equal(marks(withSlash), 'link');
-  assert.equal(marks(noSlash), 'plain', 'a page that is not directory-style: the mark without a link');
-  assert.equal(r.f.open(k1).url, `${A}f/${withSlash}/`, 'Open is the current version');
-  assert.equal(r.f.open(k1, 1).url, `${A}f/${withSlash}/v1/`, 'a pin only when asked for');
-  assert.throws(() => r.f.open(k1, 2), /not pinned/, 'an unpinned version has no page to open');
-  assert.throws(() => r.f.open(k1, 7), /not pinned/);
-  assert.throws(() => r.f.open(k2, 1), /not pinned|cannot be told/);
+  const k1 = await r.f.keyFor(A, withSlash), k2 = await r.f.keyFor(A, noSlash);
+  const marks = async id => (await r.f.view()).entries.find(e => e.head.id === id).head.history.find(v => v.version === 1).mark;
+  assert.equal(await marks(withSlash), 'link');
+  assert.equal(await marks(noSlash), 'plain', 'a page that is not directory-style: the mark without a link');
+  assert.equal((await r.f.open(k1)).url, `${A}f/${withSlash}/`, 'Open is the current version');
+  assert.equal((await r.f.open(k1, 1)).url, `${A}f/${withSlash}/v1/`, 'a pin only when asked for');
+  await assert.rejects(async () => await r.f.open(k1, 2), /not pinned/, 'an unpinned version has no page to open');
+  await assert.rejects(async () => await r.f.open(k1, 7), /not pinned/);
+  await assert.rejects(async () => await r.f.open(k2, 1), /not pinned|cannot be told/);
   assert.equal(F.pinPageOf({ versions: [{ version: 3, pin: 'pinned' }], page: 'javascript:alert(1)' }, 3), '');
   r.done();
 });
@@ -1145,13 +1151,13 @@ test('the identity stamp says which version is read, as one named value: current
   site.put(makeDoc({ id, origin: A, version: 2, updated: '2026-11-02T10:00:00Z', changelog: [{ version: 1, at: 'a', note: '', pinned: true }, { version: 2, at: 'b', note: '' }] }));
   await follow(r, A);
   await r.f.refresh();
-  let got = r.f.identityFor(`${A}f/${id}/`, hints);
+  let got = await r.f.identityFor(`${A}f/${id}/`, hints);
   assert.equal(B.versionStateOf(got.result.item), 'current-unpinned', 'the current version is not the pinned one');
   assert.deepEqual(got.result.item.pinned_versions, [1]);
   assert.equal(B.stampFor(got.result).version_state, 'current-unpinned');
   site.put(makeDoc({ id, origin: A, version: 3, updated: '2026-11-03T10:00:00Z', changelog: [{ version: 1, at: 'a', note: '', pinned: true }, { version: 2, at: 'b', note: '' }, { version: 3, at: 'c', note: '', pinned: true }] }));
   await r.f.refresh();
-  got = r.f.identityFor(`${A}f/${id}/`, hints);
+  got = await r.f.identityFor(`${A}f/${id}/`, hints);
   assert.equal(B.stampFor(got.result).version_state, 'current-pinned');
   assert.equal(got.result.item.pinned, true);
   r.done();

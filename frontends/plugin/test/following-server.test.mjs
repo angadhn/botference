@@ -6,6 +6,7 @@
 // .web.test get a public address), serving invented blygs from memory
 // (test/following-fake.mjs). Bots are off. Nothing leaves this machine.
 import fs from 'node:fs';
+import { readLayout } from './hub-layout.mjs';
 import path from 'node:path';
 import http from 'node:http';
 import net from 'node:net';
@@ -113,7 +114,7 @@ await test('follow by a post URL, refresh, and the data route lists it newest fi
   assert.match(page.body, /2 versions/);
   // stored in the profile's data folder, in a file of its own
   assert.ok(fs.existsSync(path.join(root, '.botference', 'plugin', 'following.json')));
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root, '.botference', 'plugin', 'following.json'), 'utf8')).items[`${A}\n${ID1}`].version, 2);
+  assert.equal(readLayout(path.join(root, '.botference', 'plugin', 'following.json')).items[`${A}\n${ID1}`].version, 2);
 });
 
 await test('a second refresh while one runs is refused, not run alongside', async () => {
@@ -198,7 +199,7 @@ await test('read: only tick, untick and renew are asked of this route; illegal m
   const key = await keyOfPost(ID1);
   let r = await POST(B, '/following/read', { key, move: 'see' });
   assert.equal(r.status, 400, 'there is no "seen" any more');
-  assert.match(r.json.error, /tick, untick or renew/);
+  assert.match(r.json.error, /tick, untick, renew, star or unstar/);
   r = await POST(B, '/following/read', { key, move: 'respond' });
   assert.equal(r.status, 400, 'responded is set by the export alone');
   r = await POST(B, '/following/read', { all: true });

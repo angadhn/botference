@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readLayout, writeLayout } from './hub-layout.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 process.env.BOTFERENCE_PROJECT_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubread-'));
@@ -40,14 +41,14 @@ function putHostile(site, id, over = {}) {
   d.content_html = HOSTILE;
   return site.put(d);
 }
-const view = h => articleView({ page: store.readPage(h.page.url), key: h.key, me: { handle: 'owner', owner: true }, snapshot: store.readSnapshot(h.key), info: null, nonce: 'N',
-  hub: hubInfoOf(store.readPage(h.page.url), {}) });
+const view = async h => articleView({ page: store.readPage(h.page.url), key: h.key, me: { handle: 'owner', owner: true }, snapshot: store.readSnapshot(h.key), info: null, nonce: 'N',
+  hub: await hubInfoOf(store.readPage(h.page.url), {}) });
 const seeded = async (r, id, over = {}) => {
   const site = r.web.sites.get(A) || r.web.add(A, { title: 'Alpha Notes', author: 'Alpha Author' });
   site.put(doc(id, over));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  return r.f.keyFor(A, id);
+  return await r.f.keyFor(A, id);
 };
 
 test('hostile content_html is neutralised in the article view (and in the Feed): every dangerous tag, attribute and scheme', async () => {
@@ -55,12 +56,12 @@ test('hostile content_html is neutralised in the article view (and in the Feed):
   const site = r.web.add(A, { title: 'Alpha Notes' });
   const id = idOf(1);
   putHostile(site, id);
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const key = r.f.keyFor(A, id);
+  const key = await r.f.keyFor(A, id);
   const post = await r.f.fetchPost(key);
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post });
-  const html = view(held);
+  const html = await view(held);
   const art = /<article id="bfp-article"[^>]*>([\s\S]*?)<\/article>/.exec(html)[1];
   for (const bad of [/<script/i, /<iframe/i, /<form/i, /<input/i, /<button/i, /<meta/i, /<base/i, /<svg/i, /<math/i, /<object/i, /<embed/i, /<link/i, /<style(?! nonce)/i,
     /\son\w+\s*=/i, /\sstyle\s*=/i, /srcset/i, /javascript:/i, /data:text/i, /vbscript:/i, /evil\.example/i, /http:\/\/img\.example/i, /data:image/i]) {
@@ -77,8 +78,8 @@ test('hostile content_html is neutralised in the article view (and in the Feed):
   assert.equal(imgs.length, 1, 'only the https image is kept');
   assert.match(imgs[0], /^<img src="https:\/\/img\.example\.test\/a\.png" alt="ok" loading="lazy" decoding="async" referrerpolicy="no-referrer">$/);
   // the same body in the Feed
-  r.f.refresh();
-  const feed = followingPage({ data: r.f.view(), settings: SETTINGS(), nonce: 'N' });
+  await r.f.refresh();
+  const feed = followingPage({ data: await r.f.view(), settings: SETTINGS(), nonce: 'N' });
   const entry = feed.split('<div class="hub-entry-body"')[1] || '';
   assert.match(entry, /Honest words before/);
   for (const bad of [/<script(?! nonce)/i, /\son\w+\s*=/i, /\sstyle\s*=/i, /javascript:/i, /<iframe/i, /<form/i, /srcset/i]) assert.ok(!bad.test(entry.split('</article>')[0]), `the Feed body has no ${bad}`);
@@ -122,7 +123,7 @@ test('the identity on the page record is the item document\'s, named item-docume
   const page = store.readPage(`${A}t/${id}/`);
   store.addThread(page, { quote: 'Some invented words', text: 'from the extension', author: 'owner' });
   store.savePage(page);
-  const shown = JSON.parse(/<script type="application\/json" id="bfp-data" nonce="N">([\s\S]*?)<\/script>/.exec(view(held))[1]);
+  const shown = JSON.parse(/<script type="application\/json" id="bfp-data" nonce="N">([\s\S]*?)<\/script>/.exec(await view(held))[1]);
   assert.equal(shown.threads.length, 1);
   assert.equal(shown.threads[0].quote, 'Some invented words');
   r.done();
@@ -132,15 +133,15 @@ test('Read here marks the post opened; exporting a note marks THE SAME post resp
   const r = rig();
   const id = idOf(3);
   const key = await seeded(r, id);
-  assert.equal(r.f.itemByKey(key).read, 'new');
+  assert.equal((await r.f.itemByKey(key)).read, 'new');
   await r.f.fetchPost(key);
-  assert.equal(r.f.openedHere(key), 'opened');
+  assert.equal(await r.f.openedHere(key), 'opened');
   const post = await r.f.fetchPost(key);
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post });
   const item = store.readPage(held.page.url).blyg.item;
-  assert.equal(r.f.markResponded(item.origin, item.id), true, 'what the export calls');
-  assert.equal(r.f.itemByKey(key).read, 'responded');
-  assert.equal(r.f.openedHere(key), 'responded', 'reading again never takes a response back');
+  assert.equal(await r.f.markResponded(item.origin, item.id), true, 'what the export calls');
+  assert.equal((await r.f.itemByKey(key)).read, 'responded');
+  assert.equal(await r.f.openedHere(key), 'responded', 'reading again never takes a response back');
   r.done();
 });
 
@@ -150,23 +151,23 @@ test('a newer version: the page says so, loading keeps highlights whose quotes s
   const body = n => `<p>The first paragraph stays exactly as it was.</p><p>${n}</p><p>The last paragraph also stays.</p>`;
   const site = r.web.add(A, { title: 'Alpha Notes' });
   site.put(Object.assign(doc(id, { version: 1 }), { content_html: body('A middle sentence that will be rewritten.') }));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const key = r.f.keyFor(A, id);
+  const key = await r.f.keyFor(A, id);
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post: await r.f.fetchPost(key) });
   const page = store.readPage(held.page.url);
   for (const q of ['first paragraph stays exactly', 'middle sentence that will be rewritten', 'last paragraph also']) {
     store.addThread(page, { quote: q, prefix: '', suffix: '', text: 'note on ' + q, author: 'owner' });
   }
   store.savePage(page);
-  assert.equal(hubInfoOf(store.readPage(held.page.url), { following: r.f }).newer, null, 'no newer version yet');
+  assert.equal((await hubInfoOf(store.readPage(held.page.url), { following: r.f })).newer, null, 'no newer version yet');
   // the blyg publishes version 2 and the Hub's refresh sees it
   const d2 = Object.assign(doc(id, { version: 2, updated: '2026-11-12T10:00:00Z', body: 'x' }), { content_html: body('A completely different middle.') });
   d2.content_md = 'a different md'; d2.content_hash = (await import('node:crypto')).createHash('sha256').update(d2.content_md).digest('hex').replace(/^/, 'sha256:');
   site.put(d2);
   r.clock.t += 3600e3;
   await r.f.refresh();
-  const info = hubInfoOf(store.readPage(held.page.url), { following: r.f });
+  const info = await hubInfoOf(store.readPage(held.page.url), { following: r.f });
   assert.deepEqual([info.newer.version, info.version], [2, 1], 'the page says a newer version (v2) exists');
   assert.match(info.newer.key, /^[0-9a-f]{24}$/);
   const before = store.readSnapshot(held.key);
@@ -184,7 +185,7 @@ test('a newer version: the page says so, loading keeps highlights whose quotes s
   assert.deepEqual(Object.fromEntries(after.threads.map(t => [t.quote.slice(0, 12), !!t.orphaned])), { 'first paragr': false, 'middle sente': true, 'last paragra': false });
   assert.equal(after.hub.version, 2);
   assert.equal(after.blyg.item.version, 2);
-  assert.equal(hubInfoOf(after, { following: r.f }).newer, null);
+  assert.equal((await hubInfoOf(after, { following: r.f })).newer, null);
   // an extension capture with highlights is kept unless the reader asks
   const url2 = 'https://alpha.web.test/notes/f/captured/';
   const cap = store.upsertPage({ url: url2, title: 'captured' });
@@ -202,7 +203,7 @@ test('a newer version: the page says so, loading keeps highlights whose quotes s
   const kept2 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...(await r.f.fetchPost(key)), page_url: url2 } });
   assert.equal(kept2.text_from, 'captured');
   assert.match(store.readSnapshot(store.pageKey(url2)), /Captured words/, 'never swapped under existing highlights');
-  assert.match(hubInfoOf(store.readPage(url2), {}).source_note, /captured/);
+  assert.match((await hubInfoOf(store.readPage(url2), {})).source_note, /captured/);
   r.done();
 });
 
@@ -221,14 +222,14 @@ test('fetches stay origin-scoped and counted; fetching off fetches nothing', asy
       const x = await orig(u, o);
       return mode === 'redirect' && /items\/0/.test(u) && !/index/.test(u) ? { ...x, url: 'https://third.web.test/x.json' } : x;
     } });
-  f2.confirmImport([{ origin: A }]);
+  await f2.confirmImport([{ origin: A }]);
   await f2.refresh();
-  const k2 = f2.keyFor(A, idOf(5));
+  const k2 = await f2.keyFor(A, idOf(5));
   assert.ok(k2, 'the post is held');
   mode = 'template';
   const before = r.web.requests.length;
   await f2.refresh();
-  assert.match(f2.listBlygs()[0].last_error, /outside the blyg's own origin/, 'a template that leads outside the origin is refused, with the reason');
+  assert.match((await f2.listBlygs())[0].last_error, /outside the blyg's own origin/, 'a template that leads outside the origin is refused, with the reason');
   assert.ok(!r.web.requests.slice(before).some(u => u.startsWith('https://third.web.test')), 'nothing outside the origin was asked');
   const third = r.web.requests.length;
   assert.equal((await f2.fetchPost(k2)).meta.id, idOf(5), 'the default address (inside the origin) is used instead');
@@ -238,14 +239,14 @@ test('fetches stay origin-scoped and counted; fetching off fetches nothing', asy
   await f2.refresh();
   assert.equal((await f2.fetchPost(k2)).meta.id, idOf(5), 'back to normal: fine');
   mode = 'redirect';
-  await assert.rejects(() => f2.fetchPost(k2), /served from outside/);
+  await assert.rejects(async () => await f2.fetchPost(k2), /served from outside/);
   // fetching off
   let on = true;
   const g = rig({ mayFetch: () => on });
   const gk = await seeded(g, idOf(6));
   on = false;
   g.web.requests.length = 0;
-  await assert.rejects(() => g.f.fetchPost(gk), /fetching is off/);
+  await assert.rejects(async () => await g.f.fetchPost(gk), /fetching is off/);
   assert.equal(g.web.requests.length, 0);
   r.done(); g.done();
 });
@@ -259,20 +260,20 @@ test('every post\'s text is kept in a file of its own beside the list; capped, t
   big.content_html = '<p>' + 'word '.repeat(12000) + '</p><p>second block</p>';
   site.put(big);
   site.put(doc(gone, { body: 'soon gone' }));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
   const files = fs.readdirSync(r.bodies);
   assert.equal(files.length, 3);
-  const state = JSON.parse(fs.readFileSync(r.file, 'utf8'));
-  assert.ok(!JSON.stringify(state).includes('second block'), 'the text is not in following.json (only a clipped excerpt is)');
+  const state = readLayout(r.file);
+  assert.ok(!JSON.stringify(state).includes('second block'), 'the text is not in the documents of the list (only a clipped excerpt is)');
   assert.ok(fs.statSync(r.file).size < 20000, 'following.json holds records, not text');
   const sizes = files.map(f => fs.statSync(path.join(r.bodies, f)).size);
   assert.ok(Math.max(...sizes) <= F.LIMITS.bodyBytes + 200, `no body over the cap (${Math.max(...sizes)})`);
   const items = Object.fromEntries(Object.values(state.items).map(i => [i.id, i]));
   assert.deepEqual([items[short].body_state, items[long].body_state], ['whole', 'truncated']);
   assert.deepEqual(F.BODY_STATES, ['whole', 'truncated', 'none']);
-  assert.match(fs.readFileSync(path.join(r.bodies, `${items[short].key}.html`), 'utf8'), /a short fragment/);
-  assert.ok(fs.readFileSync(path.join(r.bodies, `${items[long].key}.html`), 'utf8').endsWith('</p>'), 'a truncated body is still well formed');
+  assert.match(fs.readFileSync(path.join(r.bodies, `${items[short].body}.html`), 'utf8'), /a short fragment/);
+  assert.ok(fs.readFileSync(path.join(r.bodies, `${items[long].body}.html`), 'utf8').endsWith('</p>'), 'a truncated body is still well formed');
   // withdrawn: its file goes
   const w = doc(gone, { kind: 'withdrawn', title: '', version: 2, updated: '2026-11-09T10:00:00Z' });
   site.put(w);
@@ -283,15 +284,15 @@ test('every post\'s text is kept in a file of its own beside the list; capped, t
   await r.f.refresh();
   assert.equal(fs.readdirSync(r.bodies).length, 1);
   // unfollow: all gone
-  r.f.unfollow(A);
+  await r.f.unfollow(A);
   assert.equal(fs.readdirSync(r.bodies).length, 0);
   // a hand-edited body is sanitised again on the way out
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   site.put(doc(short, { body: 'back again' }));
   await r.f.refresh();
-  const k = r.f.keyFor(A, short);
-  fs.writeFileSync(path.join(r.bodies, `${k}.html`), '<p>ok</p><script>alert(1)</script><p onclick="x()">fine</p>');
-  assert.equal(r.f.bodyHtml(k), '<p>ok</p><p>fine</p>');
+  const k = await r.f.keyFor(A, short);
+  fs.writeFileSync(path.join(r.bodies, `${(await r.f.itemByKey(k)).body}.html`), '<p>ok</p><script>alert(1)</script><p onclick="x()">fine</p>');
+  assert.equal(await r.f.bodyHtml(k), '<p>ok</p><p>fine</p>');
   r.done();
 });
 
@@ -302,17 +303,17 @@ test('a truncated body is said so on its page, in the one vocabulary (BODY_STATE
   const big = doc(id, { kind: 'thread', transclusions: [] });
   big.content_html = '<p>' + 'word '.repeat(12000) + '</p><p>tail</p>';
   site.put(big);
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const key = r.f.keyFor(A, id);
-  assert.equal(r.f.heldPost(key).text_state, 'truncated');
-  assert.ok(F.BODY_STATES.includes(r.f.heldPost(key).text_state));
-  const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post: r.f.heldPost(key) });
+  const key = await r.f.keyFor(A, id);
+  assert.equal((await r.f.heldPost(key)).text_state, 'truncated');
+  assert.ok(F.BODY_STATES.includes((await r.f.heldPost(key)).text_state));
+  const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post: await r.f.heldPost(key) });
   assert.equal(held.page.hub.text_state, 'truncated');
-  assert.match(view(held), /Only the first part of this post is held here/);
+  assert.match(await view(held), /Only the first part of this post is held here/);
   const whole = await r.f.fetchPost(key);
   assert.equal(holdPost({ store, applyAnswer: blyg.applyAnswer, post: whole, replace: true }).page.hub.text_state, 'whole');
-  assert.ok(!/Only the first part/.test(view({ page: store.readPage(held.page.url), key: held.key })), 'once the whole text is loaded the note goes');
+  assert.ok(!/Only the first part/.test(await view({ page: store.readPage(held.page.url), key: held.key })), 'once the whole text is loaded the note goes');
   r.done();
 });
 
@@ -326,9 +327,9 @@ test('the Feed shows each post in place: full when short, clipped at a block bou
   t1.content_html = `${para(30)}<blockquote>${para(30)}</blockquote>${para(30)}${para(30)}`; site.put(t1);
   const h1 = doc(huge, { kind: 'thread', transclusions: [], created: '2026-11-03T10:00:00Z' });
   h1.content_html = para(9000) + '<p>end</p>'; site.put(h1);
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const v = r.f.view();
+  const v = await r.f.view();
   const by = Object.fromEntries(v.entries.map(e => [e.head.id, e.head]));
   assert.equal(by[frag].body_rest, '', 'a fragment (200 words, over the clip, in two paragraphs) is always shown in full');
   assert.ok(by[frag].body_head.length > 900);
@@ -356,15 +357,15 @@ test('excerpts are plain text: markdown links, images, emphasis, headings, direc
   const d = doc(id, { title: '' });
   d.content_html = '<p>See [the post](https://x.test/p) and **this** ![[abcdefghjkmnpqrstvwxyz0123]]</p>';
   site.put(d);
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  assert.equal(r.f.view().entries[0].head.excerpt, 'See the post and this', 'cleaned when kept');
+  assert.equal((await r.f.view()).entries[0].head.excerpt, 'See the post and this', 'cleaned when kept');
   // a record stored before the cleaning existed is cleaned when shown
-  const raw = JSON.parse(fs.readFileSync(r.file, 'utf8'));
+  const raw = readLayout(r.file);
   for (const i of Object.values(raw.items)) i.excerpt = '> [old](https://x.test/o) **stored** text';
-  fs.writeFileSync(r.file, JSON.stringify(raw));
+  writeLayout(r.file, raw);
   const again = F.createFollowing({ file: r.file, getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} } });
-  assert.equal(again.view().entries[0].head.excerpt, 'old stored text', 'and cleaned when shown');
+  assert.equal((await again.view()).entries[0].head.excerpt, 'old stored text', 'and cleaned when shown');
   r.done();
 });
 
@@ -380,12 +381,12 @@ test('dates: "Nov 22, 2026" or "22 Nov 2026" by the viewer\'s locale, with the t
   assert.equal(F.readingLabel(440), '2 min');
   const r = rig();
   const key = await seeded(r, idOf(1), { created: '2026-11-05T10:00:00Z', updated: '2026-11-05T10:00:00Z' });
-  const view = r.f.view();
+  const view = await r.f.view();
   const gb = followingPage({ data: view, settings: SETTINGS(), nonce: 'N', locale: 'en-GB' });
   const us = followingPage({ data: view, settings: SETTINGS(), nonce: 'N', locale: 'en-US' });
   assert.match(gb, /5 Nov 2026/);
   assert.match(us, /Nov 5, 2026/);
-  assert.equal(r.f.itemByKey(key).updated, '2026-11-05T10:00:00Z', 'the stored value is not changed');
+  assert.equal((await r.f.itemByKey(key)).updated, '2026-11-05T10:00:00Z', 'the stored value is not changed');
   assert.match(gb, /Last refresh 10 Nov 2026, \d\d:\d\d/);
   r.done();
 });
@@ -397,9 +398,9 @@ test('"in response to" shows the target\'s title when it is a followed post held
   site.put(doc(target, { title: 'The target post' }));
   site.put(doc(reply, { kind: 'thread', stub_of: { origin: A, id: target }, transclusions: [], created: '2026-11-02T10:00:00Z' }));
   site.put(doc(stray, { kind: 'thread', stub_of: { origin: 'https://elsewhere.web.test/blyg/', id: idOf(77) }, transclusions: [], created: '2026-11-03T10:00:00Z' }));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const by = Object.fromEntries(r.f.view().entries.map(e => [e.head.id, e.head]));
+  const by = Object.fromEntries((await r.f.view()).entries.map(e => [e.head.id, e.head]));
   assert.equal(by[reply].in_response_to.label, 'The target post');
   assert.equal(by[stray].in_response_to.label, 'elsewhere.web.test');
   r.done();
@@ -411,10 +412,10 @@ test('the Feed entry reads like the reference: meta line, version lines, title l
   const id = idOf(1);
   const log = [1, 2, 3, 4, 5].map(n => ({ version: n, at: `2026-11-0${n}T10:00:00Z`, note: n === 3 ? `<script>x</script>${String.fromCharCode(0x202e)}hostile` : n === 2 ? null : `note ${n}`, pinned: n === 1 }));
   site.put(doc(id, { kind: 'thread', title: 'A <b>title</b>', version: 5, updated: '2026-11-05T10:00:00Z', changelog: log, transclusions: [], body: 'Body words here.' }));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
   const mine = [A];
-  const data = r.f.view({ mine });
+  const data = await r.f.view({ mine });
   const html = followingPage({ data, settings: SETTINGS({ my_origins: mine }), nonce: 'N', locale: 'en-US' });
   const body = html.replace(/<script nonce="N">[\s\S]*?<\/script>/, '[ours]');
   assert.match(body, /<span class="dot" title="unread">/);
@@ -447,9 +448,9 @@ test('no token or secret reaches the article view or the Feed', async () => {
   const r = rig({ settings: { inbox_api_url: 'https://inbox.web.test/api', inbox_token_file: '/nonexistent/token' } });
   const key = await seeded(r, idOf(1));
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post: await r.f.fetchPost(key) });
-  const all = view(held) + followingPage({ data: r.f.view(), settings: SETTINGS(), nonce: 'N' }) + JSON.stringify(store.readPage(held.page.url)) + fs.readFileSync(r.file, 'utf8');
+  const all = await view(held) + followingPage({ data: await r.f.view(), settings: SETTINGS(), nonce: 'N' }) + JSON.stringify(store.readPage(held.page.url)) + fs.readFileSync(r.file, 'utf8');
   assert.ok(!all.includes(TOKEN));
-  assert.ok(!/authorization|bearer/i.test(view(held)));
+  assert.ok(!/authorization|bearer/i.test(await view(held)));
   r.done();
 });
 
@@ -464,13 +465,13 @@ test('a hostile post cannot take over a page record: one named outside its blyg\
   const site = r.web.add(A, { title: 'Hostile' });
   const id = idOf(1);
   site.put(doc(id, { title: 'Hostile', body: 'ATTACKER TEXT', page: VICTIM }));
-  r.f.confirmImport([{ origin: A }]);
+  await r.f.confirmImport([{ origin: A }]);
   await r.f.refresh();
-  const key = r.f.keyFor(A, id);
-  const rec = r.f.itemByKey(key);
+  const key = await r.f.keyFor(A, id);
+  const rec = await r.f.itemByKey(key);
   assert.equal(rec.page, VICTIM, 'the page is kept as what it says (a link to open)');
-  assert.equal(r.f.recordUrlOf(rec), `${A}items/${id}.json`, 'the record is kept under the post\'s own document address');
-  for (const post of [r.f.heldPost(key), await r.f.fetchPost(key)]) {
+  assert.equal(await r.f.recordUrlOf(rec), `${A}items/${id}.json`, 'the record is kept under the post\'s own document address');
+  for (const post of [await r.f.heldPost(key), await r.f.fetchPost(key)]) {
     const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post, replace: true });
     assert.equal(held.page.url, `${A}items/${id}.json`);
     assert.equal(held.page.hub.origin, A);
@@ -481,7 +482,7 @@ test('a hostile post cannot take over a page record: one named outside its blyg\
   assert.equal(store.readSnapshot(store.pageKey(VICTIM)), '<p>the owner captured text</p>', 'its text is untouched');
   assert.equal(v.threads.length, 1);
   assert.ok(!v.threads[0].orphaned);
-  assert.deepEqual(r.f.view().entries[0].head.record_url, `${A}items/${id}.json`);
+  assert.deepEqual((await r.f.view()).entries[0].head.record_url, `${A}items/${id}.json`);
   r.done();
 });
 
@@ -492,25 +493,25 @@ test('a blyg whose origin contains another site\'s pages still cannot take over 
   const site = r.web.add(SHARED, { title: 'Evil' });
   const id = idOf(2);
   site.put(doc(id, { origin: SHARED, title: 'Evil', body: 'ATTACKER TEXT', page }));
-  r.f.confirmImport([{ origin: SHARED }]);
+  await r.f.confirmImport([{ origin: SHARED }]);
   await r.f.refresh();
-  const key = r.f.keyFor(SHARED, id);
-  assert.equal(r.f.recordUrlOf(r.f.itemByKey(key)), page, 'inside the origin: the page is the key');
-  const attempt = () => holdPost({ store, applyAnswer: blyg.applyAnswer, post: r.f.heldPost(key), replace: true });
+  const key = await r.f.keyFor(SHARED, id);
+  assert.equal(await r.f.recordUrlOf(await r.f.itemByKey(key)), page, 'inside the origin: the page is the key');
+  const attempt = async () => holdPost({ store, applyAnswer: blyg.applyAnswer, post: await r.f.heldPost(key), replace: true });
   // a plain capture the owner made of the victim page
   store.upsertPage({ url: page, title: 'Victim capture' });
   store.saveSnapshot(page, '<p>victim words</p>');
-  assert.throws(attempt, /left alone/);
+  await assert.rejects(attempt, /left alone/);
   // a record that is another post of another blyg
   const p2 = store.readPage(page);
   p2.blyg = { status: 'blyg', checked: 'x', site: { origin: 'https://victim.web.test/' }, item: { origin: 'https://victim.web.test/', id: idOf(5), version: 1 } };
   store.savePage(p2);
-  assert.throws(attempt, /left alone/);
+  await assert.rejects(attempt, /left alone/);
   // a record the Hub made for ANOTHER post
   const p3 = store.readPage(page);
   p3.hub = { origin: 'https://victim.web.test/', id: idOf(5), version: 1, text_from: 'item-document' };
   store.savePage(p3);
-  assert.throws(attempt, /left alone/);
+  await assert.rejects(attempt, /left alone/);
   const after = store.readPage(page);
   assert.equal(after.title, 'Victim capture');
   assert.equal(store.readSnapshot(store.pageKey(page)), '<p>victim words</p>');
@@ -523,7 +524,7 @@ test('holding a post from the Hub\'s own text makes ZERO outbound requests; a ca
   const id = idOf(3);
   const key = await seeded(r, id);
   r.web.requests.length = 0;
-  const post = r.f.heldPost(key);
+  const post = await r.f.heldPost(key);
   const held = holdPost({ store, applyAnswer: blyg.applyAnswer, post });
   assert.deepEqual(r.web.requests, [], 'not one request');
   assert.equal(held.text_from, 'item-document');
@@ -537,7 +538,7 @@ test('holding a post from the Hub\'s own text makes ZERO outbound requests; a ca
   const k1 = holdPost({ store, applyAnswer: blyg.applyAnswer, post: { ...post, page_url: page } });
   assert.equal(k1.text_from, 'captured', 'with no highlights on it either');
   assert.match(store.readSnapshot(store.pageKey(page)), /Captured words/);
-  const info = hubInfoOf(store.readPage(page), { following: r.f });
+  const info = await hubInfoOf(store.readPage(page), { following: r.f });
   assert.equal(info.use_document.key, key, 'the article view offers the post\'s own text');
   const html = articleView({ page: store.readPage(page), key: store.pageKey(page), me: { handle: 'o', owner: true }, snapshot: store.readSnapshot(store.pageKey(page)), info: null, nonce: 'N', hub: info });
   assert.match(html, /<form class="hubnewer" method="post" action="\/following\/read-here">[\s\S]*Use the post's own text/);
@@ -558,25 +559,25 @@ test('a manifest cannot move where a post\'s record is kept: an item template le
   const f = F.createFollowing({ file: path.join(r.dir, 'sq.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} },
     get: async (u, o) => (u === `${A}blyg.json` ? { status: 200, url: u, text: JSON.stringify({ blyg: '0.4', title: 't', item: template }) }
       : u.startsWith(A + 'items/') ? orig(u, o) : orig(u, o)) });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   const s = await f.refresh();
   assert.ok(s.refused >= 1);
-  assert.match(f.listBlygs()[0].last_error, /outside the blyg's own origin/, 'the template is refused, with a named reason');
+  assert.match((await f.listBlygs())[0].last_error, /outside the blyg's own origin/, 'the template is refused, with a named reason');
   const stored = JSON.parse(fs.readFileSync(path.join(r.dir, 'sq.json'), 'utf8'));
   assert.equal(stored.blygs[A].item_template, '', 'and not kept');
   // with the template refused, the default (inside the origin) is used: the post is held, and its record is under ITS OWN document address
-  const key = f.keyFor(A, id);
+  const key = await f.keyFor(A, id);
   assert.ok(key);
-  assert.equal(f.recordUrlOf(f.itemByKey(key)), `${A}items/${id}.json`);
-  assert.ok(!f.heldPost(key).page_url.startsWith(VICTIM));
+  assert.equal(await f.recordUrlOf(await f.itemByKey(key)), `${A}items/${id}.json`);
+  assert.ok(!(await f.heldPost(key)).page_url.startsWith(VICTIM));
   // a template already stored by an older version is not trusted either
   stored.blygs[A].item_template = `${VICTIM}items/{id}.json`;
   fs.writeFileSync(path.join(r.dir, 'sq.json'), JSON.stringify(stored));
   const again = F.createFollowing({ file: path.join(r.dir, 'sq.json'), getSettings: () => SETTINGS(), timers: { set: () => 1, clear: () => {} }, get: orig });
-  const k2 = again.keyFor(A, id);
-  assert.equal(again.recordUrlOf(again.itemByKey(k2)), '', 'no address a record may be kept under');
-  assert.throws(() => again.heldPost(k2), /outside the blyg's own origin/);
-  assert.equal(again.view().entries.find(e => e.head.id === id).head.record_url, '');
+  const k2 = await again.keyFor(A, id);
+  assert.equal(await again.recordUrlOf(await again.itemByKey(k2)), '', 'no address a record may be kept under');
+  await assert.rejects(async () => await again.heldPost(k2), /outside the blyg's own origin/);
+  assert.equal((await again.view()).entries.find(e => e.head.id === id).head.record_url, '');
   // a template inside the origin is fine
   template = 'docs/{id}.json';
   r.done();

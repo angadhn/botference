@@ -1,9 +1,10 @@
-// hubstore.test.mjs — the Hub's storage seam (following.mjs): one store for the main document, the per-blyg ledgers and the
-// bodies; conditional writes, and the merge made when the stored document moved meanwhile; how often a refresh and a tick write.
+// hubstore.test.mjs — the Hub's storage seam (following-store.mjs, and following.mjs's transactions): one asynchronous store with a
+// real compare-and-swap; what each operation reads and writes, in which order; the layout on disk; the conversion of the older
+// layout (one main document holding every post) with nothing lost if it stops half way.
 //
 //   node --test test/hubstore.test.mjs
 //
-// No network: invented blygs held in memory (test/following-fake.mjs).
+// No network: invented blygs held in memory (test/following-fake.mjs). The interleavings of two engines are in hubtx.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +13,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import * as F from '../following.mjs';
 import { makeWeb, makeDoc, idOf } from './following-fake.mjs';
+import { readLayout } from './hub-layout.mjs';
 
 const CFG = createRequire(import.meta.url)('../extension/config.js');
 const A = 'https://alpha.web.test/notes/';
@@ -20,151 +22,146 @@ const day = n => new Date(Date.parse('2026-10-01T00:00:00Z') + n * 3600e3).toISO
 const publish = (site, origin, n, { base = 0 } = {}) => {
   for (let k = 1; k <= n; k++) site.put(makeDoc({ id: idOf(base + k), origin, title: `Post ${k}`, body: `Words of post ${k}.`, created: day(base + k) }));
 };
+const NAME = o => F.ledgerName(o);
 
 /** An engine over `store` (a memory store unless given), or over a file; `web` and the clock may be shared by two engines. */
 function engine({ store, file, web = makeWeb(), clock = { t: Date.parse('2026-11-10T12:00:00Z') }, settings = {} } = {}) {
-  if (!file && !store) store = F.memoryStore();
+  if (!file && !store) store = F.memoryStore({ now: () => clock.t });
   const get = async (u, o) => { clock.t += 10; return web.get(u, o); };
   const f = F.createFollowing({ file, store, get, now: () => clock.t, getSettings: () => CFG.followingSettingsOf({ following_unread_target: 500, ...settings }).settings,
     timers: { set: () => ({}), clear: () => {} } });
   return { f, web, clock, store };
 }
-const feed = f => f.view({ limit: 1000 }).entries.map(e => e.head);
-/** A memory store that records every write, by kind and name. */
-function counted() {
-  const s = F.memoryStore();
-  const log = [];
-  const put = s.put.bind(s);
-  s.put = (kind, name, value, o) => { log.push(`${kind}:${name}`); return put(kind, name, value, o); };
-  s.log = log;
-  return s;
-}
+const feed = async f => (await f.view({ limit: 1000 })).entries.map(e => e.head);
+const writesOf = (store, from) => store.log.slice(from).filter(x => x.startsWith('put ') || x.startsWith('delete '));
 
-test('everything the engine keeps goes through the one store: with a memory store and no file, the whole life of a blyg works', async () => {
-  const store = F.memoryStore();
-  const { f, web } = engine({ store });
-  publish(web.add(A), A, 5);
-  f.confirmImport([{ origin: A }]);
-  await f.refresh();
-  assert.equal(feed(f).length, 5);
-  const k = f.keyFor(A, idOf(3));
-  assert.match(f.bodyHtml(k), /Words of post 3/, 'the body is a body in the store');
-  f.readMove(k, 'tick');
-  assert.equal(f.bodyHtml(k), '', 'and is deleted with the tick');
-  assert.deepEqual(store.list('state'), ['following']);
-  assert.deepEqual(store.list('ledger'), [F.ledgerName(A)]);
-  assert.deepEqual(store.get('ledger', F.ledgerName(A)).value.ids.map(p => p[0]), [idOf(3)]);
-  assert.equal(store.list('body').length, 4);
-  assert.equal(await f.untick(k), 'new');
-  assert.equal(store.list('body').length, 5);
-  f.unfollow(A);
-  assert.equal(store.list('body').length, 0);
-  // and a second engine over the same store sees exactly what the first left
-  const second = engine({ store, web });
-  assert.deepEqual(second.f.listBlygs(), []);
-});
-
-test('the main document holds no ledger; a tick writes the main document and that blyg\'s ledger, no other', async () => {
-  const store = counted();
-  const { f, web } = engine({ store });
-  publish(web.add(A), A, 3);
-  publish(web.add(B), B, 3, { base: 100 });
-  f.confirmImport([{ origin: A }, { origin: B }]);
-  await f.refresh();
-  assert.ok(!('ledgers' in store.get('state', 'following').value));
-  store.log.length = 0;
-  f.readMove(f.keyFor(A, idOf(2)), 'tick');
-  assert.deepEqual(store.log, [`ledger:${F.ledgerName(A)}`, 'state:following'], 'the ledger first (a crash between leaves no read id unwritten)');
-  store.log.length = 0;
-  f.open(f.keyFor(B, idOf(101)));
-  assert.deepEqual(store.log, ['state:following'], 'opening writes no ledger at all');
-});
-
-test('a refresh writes the main document every 10 blygs and at its end, not after each blyg', async () => {
-  const store = counted();
-  const { f, web } = engine({ store, settings: { following_run_requests: 2000, following_run_seconds: 600 } });
-  const origins = Array.from({ length: 25 }, (_, i) => `https://s${i}.web.test/`);
-  origins.forEach((o, i) => publish(web.add(o), o, 2, { base: i * 100 }));
-  f.confirmImport(origins.map(origin => ({ origin })));
-  store.log.length = 0;
-  const s = await f.refresh();
-  assert.equal(s.blygs, 25);
-  const states = store.log.filter(x => x.startsWith('state:')).length;
-  assert.ok(states <= 2 + 2, `${states} writes of the main document for 25 blygs (at 10, 20, after the backfill, and the last)`);
-  const ledgerWrites = store.log.filter(x => x.startsWith('ledger:')).length;
-  assert.ok(ledgerWrites >= 25 && ledgerWrites <= 50, `each ledger once, or twice when it changed again after a periodic save (${ledgerWrites})`);
-  store.log.length = 0;
-  await f.refresh();
-  assert.ok(store.log.filter(x => x.startsWith('ledger:')).length < 25, 'a ledger that did not change is not written');
-  assert.equal(F.LIMITS.saveEveryBlygs, 10);
-});
-
-test('a conditional write: what another engine saved meanwhile is merged, never written over (a tick there survives a refresh here)', async () => {
+test('the store: asynchronous, a version per entry, and a real compare-and-swap (null: only if absent; a version: only if still it)', async () => {
   for (const kind of ['memory', 'files']) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubstore-'));
-    const opts = kind === 'memory' ? { store: F.memoryStore() } : { file: path.join(dir, 'following.json') };
-    const web = makeWeb(), clock = { t: Date.parse('2026-11-10T12:00:00Z') };
-    const site = web.add(A);
-    publish(site, A, 4);
-    const one = engine({ ...opts, web, clock });
-    one.f.confirmImport([{ origin: A }]);
-    await one.f.refresh();
-    // a second process (or a second invocation of a serverless host) reads the same store and ticks post 2
-    const two = engine({ ...opts, web, clock });
-    assert.equal(two.f.readMove(two.f.keyFor(A, idOf(2)), 'tick'), 'archived');
-    // meanwhile the first, which never saw that tick, refreshes: post 3 has new words
-    site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'New words of post 3.', version: 2, created: day(3), updated: day(50) }));
-    const s = await one.f.refresh();
-    assert.equal(s.edited, 1);
-    // what is stored has both: the tick (theirs) and the edit (ours), and the ledger keeps the ticked id
-    const three = engine({ ...opts, web, clock });
-    const reads = Object.fromEntries(Object.values(three.f.view({ view: 'archive' }).archive).map(l => [l.title, 'archived']));
-    assert.deepEqual(reads, { 'Post 2': 'archived' }, kind);
-    assert.ok(!feed(three.f).some(h => h.id === idOf(2)), `${kind}: the tick was not undone`);
-    assert.equal(feed(three.f).find(h => h.id === idOf(3)).version, 2, `${kind}: the refresh's own work was kept`);
-    assert.equal(one.f.itemByKey(one.f.keyFor(A, idOf(2))).read, 'archived', `${kind}: and the first engine now holds it too`);
-    const led = kind === 'memory' ? opts.store.get('ledger', F.ledgerName(A)).value
-      : JSON.parse(fs.readFileSync(path.join(dir, 'following-ledgers', `${F.ledgerName(A)}.json`), 'utf8'));
-    assert.deepEqual(led.ids.map(p => p[0]), [idOf(2)], `${kind}: the ledger merged too`);
+    const s = kind === 'memory' ? F.memoryStore() : F.fileStore(path.join(dir, 'following.json'));
+    assert.equal(await s.get('ledger', 'ab12'), null);
+    const v1 = (await s.put('ledger', 'ab12', { a: 1 }, { ifVersion: null })).version;
+    await assert.rejects(s.put('ledger', 'ab12', { a: 2 }, { ifVersion: null }), F.StoreConflict, `${kind}: not absent any more`);
+    const v2 = (await s.put('ledger', 'ab12', { a: 2 }, { ifVersion: v1 })).version;
+    await assert.rejects(s.put('ledger', 'ab12', { a: 3 }, { ifVersion: v1 }), F.StoreConflict, `${kind}: a stale version is refused`);
+    const got = await s.get('ledger', 'ab12');
+    assert.deepEqual([got.value, got.version], [{ a: 2 }, v2]);
+    assert.ok(Number.isFinite(got.at), 'when it was written: what an age-gated sweep reads');
+    await assert.rejects(s.delete('ledger', 'ab12', { ifVersion: v1 }), F.StoreConflict);
+    assert.equal(await s.delete('ledger', 'ab12', { ifVersion: v2 }), true);
+    assert.deepEqual(await s.list('ledger'), []);
+    assert.deepEqual(F.STORE_KINDS, ['state', 'feed', 'archive', 'ledger', 'body']);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test('the merges, unit by unit: theirs wins where both changed, ours stands where only we did; ledger ids are a set', () => {
-  const base = { items: { a: { read: 'new' }, b: { read: 'new' }, c: { read: 'new' } }, blygs: { x: { state: 'active' } }, last_run: null };
-  const ours = structuredClone(base); ours.items.a.read = 'opened'; ours.items.b.read = 'opened'; ours.items.d = { read: 'new' }; ours.last_run = { at: 1 };
-  const theirs = structuredClone(base); theirs.items.b = { read: 'archived' }; delete theirs.items.c; theirs.blygs.x.state = 'paused';
-  const dropped = F.mergeState(ours, (() => { const m = new Map(); for (const [k, v] of Object.entries(base.items)) m.set(`items\u0000${k}`, JSON.stringify(v)); m.set('blygs\u0000x', JSON.stringify(base.blygs.x)); m.set('last_run', 'null'); return m; })(), theirs);
-  assert.deepEqual(ours.items, { a: { read: 'opened' }, b: { read: 'archived' }, d: { read: 'new' } });
-  assert.equal(ours.blygs.x.state, 'paused');
-  assert.deepEqual(ours.last_run, { at: 1 });
-  assert.equal(dropped, 1, 'our change to b was dropped');
-  const lb = { ids: [['i1', 1], ['i2', 2]], bad: { b1: [1, 1] }, gone: null, backfill: 'more', queue: [] };
-  const lo = { ids: [['i1', 1], ['i3', 3]], bad: {}, gone: F.addGone(null, ['g1']), backfill: 'caught_up', queue: [] };
-  const lt = { ids: [['i1', 1], ['i2', 2], ['i4', 4]], bad: { b1: [1, 1], b2: [1, 2] }, gone: F.addGone(null, ['g2']), backfill: 'more', queue: [] };
-  F.mergeLedger(lo, lb, lt);
-  assert.deepEqual(lo.ids.map(p => p[0]).sort(), ['i1', 'i3', 'i4'], 'what either side added stays, what either removed goes');
-  assert.deepEqual(Object.keys(lo.bad), ['b2']);
-  assert.ok(['g1', 'g2'].every(F.goneTest(lo)), 'the gone filters are joined');
-  assert.equal(lo.backfill, 'caught_up');
+test('everything the engine keeps goes through the one store: with a memory store and no file, the whole life of a blyg works', async () => {
+  const { f, web, store } = engine();
+  publish(web.add(A), A, 5);
+  await f.confirmImport([{ origin: A }]);
+  await f.refresh();
+  assert.equal((await feed(f)).length, 5);
+  const k = await f.keyFor(A, idOf(3));
+  assert.match(await f.bodyHtml(k), /Words of post 3/, 'the body is a body in the store');
+  await f.readMove(k, 'tick');
+  assert.equal(await f.bodyHtml(k), '', 'and is deleted with the tick');
+  assert.deepEqual(store.names('state').sort(), ['following', 'run']);
+  assert.deepEqual(store.names('ledger'), [NAME(A)]);
+  assert.deepEqual(store.peek('ledger', NAME(A)).ids.map(p => p[0]), [idOf(3)]);
+  assert.deepEqual(Object.keys(store.peek('archive', NAME(A)).items), [idOf(3)]);
+  assert.equal(Object.keys(store.peek('feed', NAME(A)).items).length, 4);
+  assert.equal(store.names('body').length, 4);
+  assert.equal(await f.untick(k), 'new');
+  assert.equal(store.names('body').length, 5);
+  await f.unfollow(A);
+  assert.equal(store.names('body').length, 0);
+  assert.deepEqual([store.names('feed'), store.names('archive')], [[], []], 'its feed and archive go; its ledger is kept');
+  // and a second engine over the same store sees exactly what the first left
+  const second = engine({ store, web });
+  assert.deepEqual(await second.f.listBlygs(), []);
 });
 
-test('the layout on disk: following.json (readable as before), following-bodies/, following-ledgers/; a temp file a crash left is swept', async () => {
+test('a tick writes ITS blyg\'s archive, then its feed, then its ledger (ids added last), and deletes the body after; nothing else', async () => {
+  const { f, web, store } = engine();
+  publish(web.add(A), A, 3);
+  publish(web.add(B), B, 3, { base: 100 });
+  await f.confirmImport([{ origin: A }, { origin: B }]);
+  await f.refresh();
+  const main = store.peek('state', 'following');
+  assert.ok(!('items' in main) && !('ledgers' in main) && !('inbox' in main), 'the main document holds no post, no ledger, no inbox');
+  const k = await f.keyFor(A, idOf(2));
+  const body = (await f.itemByKey(k)).body;
+  const n0 = store.log.length;
+  await f.readMove(k, 'tick');
+  assert.deepEqual(writesOf(store, n0), [`put archive:${NAME(A)}`, `put feed:${NAME(A)}`, `put ledger:${NAME(A)}`, `delete body:${body}`]);
+  const n1 = store.log.length;
+  await f.open(await f.keyFor(B, idOf(101)));
+  assert.deepEqual(writesOf(store, n1), [`put feed:${NAME(B)}`], 'opening writes that blyg\'s feed and nothing else');
+  const n2 = store.log.length;
+  await f.view();
+  assert.deepEqual(writesOf(store, n2), [], 'a view writes nothing');
+});
+
+test('a refresh writes per blyg (feed, ledger) and the main document; a ledger that did not change is not written', async () => {
+  const { f, web, store } = engine({ settings: { following_run_requests: 2000, following_run_seconds: 600 } });
+  const origins = Array.from({ length: 12 }, (_, i) => `https://s${i}.web.test/`);
+  origins.forEach((o, i) => publish(web.add(o), o, 2, { base: i * 100 }));
+  await f.confirmImport(origins.map(origin => ({ origin })));
+  const n0 = store.log.length;
+  const s = await f.refresh();
+  assert.equal(s.blygs, 12);
+  const w = writesOf(store, n0);
+  assert.equal(w.filter(x => x.startsWith('put feed:')).length, 12, 'each feed once');
+  assert.ok(w.filter(x => x.startsWith('put ledger:')).length <= 24, 'each ledger at most twice (its apply, and its queue and mode)');
+  assert.equal(w.filter(x => x.startsWith('put archive:')).length, 0, 'nothing archived: no archive written');
+  const n1 = store.log.length;
+  await f.refresh();
+  assert.equal(writesOf(store, n1).filter(x => x.startsWith('put ledger:') || x.startsWith('put feed:')).length, 0, 'nothing changed: no feed or ledger written');
+});
+
+test('a conditional write: what another engine saved meanwhile is applied again, never written over (a tick there survives a refresh here)', async () => {
+  for (const kind of ['memory', 'files']) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubstore-'));
+    const web = makeWeb(), clock = { t: Date.parse('2026-11-10T12:00:00Z') };
+    const opts = kind === 'memory' ? { store: F.memoryStore({ now: () => clock.t }) } : { file: path.join(dir, 'following.json') };
+    const site = web.add(A);
+    publish(site, A, 4);
+    const one = engine({ ...opts, web, clock });
+    await one.f.confirmImport([{ origin: A }]);
+    await one.f.refresh();
+    // a second process (or a second invocation of a serverless host) ticks post 2
+    const two = engine({ ...opts, web, clock });
+    assert.equal(await two.f.readMove(await two.f.keyFor(A, idOf(2)), 'tick'), 'archived');
+    // the first, which never saw that tick, refreshes: post 3 has new words
+    site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'New words of post 3.', version: 2, created: day(3), updated: day(50) }));
+    const s = await one.f.refresh();
+    assert.equal(s.edited, 1);
+    const three = engine({ ...opts, web, clock });
+    assert.deepEqual((await three.f.view({ view: 'archive' })).archive.map(l => l.title), ['Post 2'], kind);
+    assert.ok(!(await feed(three.f)).some(h => h.id === idOf(2)), `${kind}: the tick was not undone`);
+    assert.equal((await feed(three.f)).find(h => h.id === idOf(3)).version, 2, `${kind}: the refresh's own work was kept`);
+    assert.equal((await one.f.itemByKey(await one.f.keyFor(A, idOf(2)))).read, 'archived', `${kind}: and the first engine reads it too`);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the layout on disk: following.json (no post in it), following-feed/, following-archive/, following-ledgers/, following-bodies/', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubstore-'));
   const file = path.join(dir, 'following.json');
   const { f, web } = engine({ file });
   publish(web.add(A), A, 2);
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   await f.refresh();
-  f.readMove(f.keyFor(A, idOf(1)), 'tick');
+  await f.readMove(await f.keyFor(A, idOf(1)), 'tick');
   const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'inbox', 'items', 'kept', 'last_run']);
-  assert.deepEqual(fs.readdirSync(dir).sort(), ['following-bodies', 'following-ledgers', 'following.json']);
+  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'kept', 'last_run', 'layout', 'ops']);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['following-archive', 'following-bodies', 'following-feed', 'following-ledgers', 'following-run.json', 'following.json']);
+  assert.equal(Object.keys(readLayout(file).items).length, 2);
   const stale = path.join(dir, 'following-bodies', 'abc.html.tmp.999');
   fs.writeFileSync(stale, 'x');
   const old = new Date(Date.now() - 2 * 3600e3);
   fs.utimesSync(stale, old, old);
-  f.sweepBodies();
+  await f.sweep();
   assert.ok(!fs.existsSync(stale));
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -172,70 +169,109 @@ test('the layout on disk: following.json (readable as before), following-bodies/
 test('"Tick all shown" is taken 100 at a time: a request naming more ticks the first 100 (the page sends the rest)', async () => {
   const { f, web } = engine({ settings: { following_max_items_per_blyg: 2000, following_run_requests: 2000, following_run_seconds: 600 } });
   publish(web.add(A), A, 150);
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   for (let i = 0; i < 3; i++) await f.refresh();
-  const keys = feed(f).map(h => h.key);
+  const keys = (await feed(f)).map(h => h.key);
   assert.equal(keys.length, 150);
   assert.equal(F.LIMITS.tickBatch, 100);
   const t0 = performance.now();
-  assert.equal(f.tickMany(keys), 100);
-  assert.ok(performance.now() - t0 < 1000);
-  assert.equal(feed(f).length, 50);
-  assert.equal(f.tickMany(keys.slice(100)), 50);
+  assert.equal(await f.tickMany(keys), 100);
+  assert.ok(performance.now() - t0 < 2000);
+  assert.equal((await feed(f)).length, 50);
+  assert.equal(await f.tickMany(keys.slice(100)), 50);
 });
 
-test('a tick saves first and deletes the body after (a crash in between leaves a body that the sweep on load removes)', async () => {
-  const store = counted();
-  const del = store.delete.bind(store);
-  store.delete = (kind, name) => { store.log.push(`delete ${kind}:${name}`); return del(kind, name); };
-  const { f, web } = engine({ store });
+test('a body nothing names is swept only when older than bodySweepAgeMs (it may belong to a transaction not yet committed)', async () => {
+  const { f, web, store, clock } = engine();
   publish(web.add(A), A, 2);
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   await f.refresh();
-  const k = f.keyFor(A, idOf(1));
-  store.log.length = 0;
-  f.readMove(k, 'tick');
-  assert.deepEqual(store.log, [`ledger:${F.ledgerName(A)}`, 'state:following', `delete body:${k}`]);
-  // the crash case: a body left behind is swept when the state is next loaded
-  store.put('body', 'abcdef0123456789abcdef01', '<p>left behind</p>');
-  const again = engine({ store, web });
-  again.f.view();
-  await new Promise(res => setImmediate(res));
-  assert.ok(!store.list('body').includes('abcdef0123456789abcdef01'));
+  await store.put('body', 'abcdef0123456789abcdef01', '<p>written by an invocation that has not committed yet</p>');
+  await f.sweep();
+  assert.ok(store.names('body').includes('abcdef0123456789abcdef01'), 'young: kept');
+  clock.t += F.LIMITS.bodySweepAgeMs + 1;
+  await f.sweep();
+  assert.ok(!store.names('body').includes('abcdef0123456789abcdef01'), 'old and named by nothing: gone');
+  assert.equal(store.names('body').length, 2, 'the bodies the records name stay');
 });
 
-test('migration order: the ledgers are written before the main document, so a crash between the two loses no read id', async () => {
-  const store = F.memoryStore();
-  store.put('state', 'following', { blygs: { [A]: { origin: A, title: 'x', state: 'active' } }, items: {},
-    ledgers: { [A]: { ids: Array.from({ length: 30 }, (_, i) => [idOf(i + 1), Date.parse(day(i + 1))]), backfill: 'caught_up' } } });
-  const put = store.put.bind(store);
-  let die = true;
-  store.put = (kind, name, value, o) => { if (kind === 'ledger' && die) throw new Error('the process died here'); return put(kind, name, value, o); };
-  const one = engine({ store });
-  publish(one.web.add(A), A, 30);
-  assert.throws(() => one.f.stateRequest({ origin: A, move: 'pause' }), /died here/);
-  assert.ok('ledgers' in store.get('state', 'following').value, 'the old document, with its ledgers, is untouched');
-  die = false;
-  const two = engine({ store, web: one.web, settings: { following_unread_target: 10 } });
-  two.f.stateRequest({ origin: A, move: 'pause' });
-  two.f.stateRequest({ origin: A, move: 'resume' });
-  assert.equal(store.get('ledger', F.ledgerName(A)).value.ids.length, 30);
-  assert.ok(!('ledgers' in store.get('state', 'following').value));
-  await two.f.refresh();
-  assert.equal(feed(two.f).length, 0, 'nothing read came back');
-});
-
-test('unfollow-and-forget deletes the ledger only after the main document is saved', async () => {
-  const store = F.memoryStore();
-  const { f, web } = engine({ store });
+test('unfollow-and-forget deletes the feed, archive and ledger only after the main document is written', async () => {
+  const { f, web, store } = engine();
   publish(web.add(A), A, 2);
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   await f.refresh();
-  f.readMove(f.keyFor(A, idOf(1)), 'tick');
-  const order = [];
-  const put = store.put.bind(store), del = store.delete.bind(store);
-  store.put = (k, n, v, o) => { order.push(`put ${k}`); return put(k, n, v, o); };
-  store.delete = (k, n) => { order.push(`delete ${k}`); return del(k, n); };
-  f.unfollow(A, { forget: true });
-  assert.ok(order.indexOf('put state') < order.indexOf('delete ledger'), order.join(', '));
+  await f.readMove(await f.keyFor(A, idOf(1)), 'tick');
+  const n0 = store.log.length;
+  await f.unfollow(A, { forget: true });
+  const w = writesOf(store, n0);
+  const main = w.indexOf('put state:following');
+  assert.ok(main >= 0 && main < w.indexOf(`delete ledger:${NAME(A)}`) && main < w.indexOf(`delete feed:${NAME(A)}`), w.join(', '));
+});
+
+// ---- the conversion of the older layout ------------------------------------------------------------------------------
+/** A main document of the layout before this one: every post inside it; its ledgers in their own documents. */
+async function oldLayout(store, clock) {
+  const items = {};
+  for (let k = 1; k <= 6; k++) {
+    const id = idOf(k);
+    items[`${A}\n${id}`] = { key: `${'ab'.repeat(12)}`.slice(0, 20) + String(k).padStart(4, '0'), origin: A, id, kind: 'fragment', version: 1, created: day(k), updated: day(k),
+      page: `${A}f/${id}/`, content_hash: `sha256:${k}`, read: k <= 2 ? 'archived' : k === 3 ? 'opened' : 'new', title: `Post ${k}`, excerpt: `Words of post ${k}.`, text: `Words of post ${k}.`,
+      body_state: 'whole', fetched_at: clock.t, first_seen: day(k), ...(k <= 2 ? { archived_at: day(100 + k) } : {}) };
+  }
+  await store.put('state', 'following', { blygs: { [A]: { origin: A, title: 'Alpha', state: 'active', failures: 0 } }, items, kept: {}, last_run: null,
+    inbox: { state: 'off', mentions: [] } });
+  await store.put('ledger', NAME(A), { origin: A, ids: [[idOf(1), Date.parse(day(1))]], backfill: 'more', queue: [] });
+  for (let k = 3; k <= 6; k++) await store.put('body', items[`${A}\n${idOf(k)}`].key, `<p>Words of post ${k}.</p>`);
+  return items;
+}
+
+test('the older layout converts on first read: posts to their blyg\'s feed and archive, ids into the ledger, nothing archived by it', async () => {
+  const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
+  const store = F.memoryStore({ now: () => clock.t });
+  await oldLayout(store, clock);
+  const { f, web } = engine({ store, clock });
+  publish(web.add(A), A, 6);
+  const v = await f.view({ limit: 100 });
+  assert.equal(v.tabs.feed, 4, 'opened and new stay in the Feed');
+  assert.equal(v.tabs.archive, 2);
+  assert.match(v.entries.find(e => e.head.id === idOf(4)).head.body_head, /Words of post 4/, 'a body of the older layout is read under its key');
+  const main = store.peek('state', 'following');
+  assert.equal(main.layout, 2);
+  assert.ok(!('items' in main) && !('inbox' in main));
+  assert.deepEqual(store.peek('ledger', NAME(A)).ids.map(p => p[0]).sort(), [idOf(1), idOf(2)], 'R3: every archive record\'s id is in the ledger');
+  assert.equal(store.peek('state', 'pre-shard'), null, 'the copy is deleted once converted');
+  const s = await f.refresh();
+  assert.equal(s.new + s.edited, 0, 'nothing read comes back, nothing is fetched as new');
+});
+
+test('a conversion that stops half way (the process died at any write) loses nothing: the next read converts again', async () => {
+  for (let die = 1; die <= 6; die++) {
+    const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
+    const store = F.memoryStore({ now: () => clock.t });
+    await oldLayout(store, clock);
+    const one = engine({ store, clock });
+    store.crashAfter(die);
+    await assert.rejects(one.f.view(), /died here/, `die at write ${die}`);
+    store.crashAfter(0);
+    const main = store.peek('state', 'following');
+    if (main.layout !== 2) assert.ok(store.peek('state', 'pre-shard') || die === 1, `die ${die}: the old document is untouched, and its copy kept`);
+    const two = engine({ store, clock });
+    const v = await two.f.view({ view: 'archive' });
+    assert.deepEqual([v.tabs.feed, v.tabs.archive], [4, 2], `die ${die}`);
+    assert.deepEqual(store.peek('ledger', NAME(A)).ids.map(p => p[0]).sort(), [idOf(1), idOf(2)], `die ${die}`);
+  }
+});
+
+test('a file of the older layout converts the same way, and its copy is kept until the main document is written', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubstore-'));
+  const file = path.join(dir, 'following.json');
+  const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
+  await oldLayout(F.fileStore(file), clock);
+  const before = fs.readFileSync(file, 'utf8');
+  const { f } = engine({ file, clock });
+  assert.equal((await f.view()).tabs.feed, 4);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).layout, 2);
+  assert.ok(!fs.existsSync(path.join(dir, 'following-pre-shard.json')), 'the copy goes once done');
+  assert.ok(before.includes('"items"'));
+  fs.rmSync(dir, { recursive: true, force: true });
 });

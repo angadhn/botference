@@ -35,9 +35,9 @@ async function feedWindow({ threads = {}, holdReply = null, long = false } = {})
     d.content_html = `<p>${'first block words '.repeat(30)}</p><p>${'second block words '.repeat(30)}</p>`; site.put(d);
   }
   const f = F.createFollowing({ file: path.join(dir, 'f.json'), get: web.get, getSettings: () => CFG.followingSettingsOf({ following_feed_clip_words: 50 }).settings, timers: { set: () => 1, clear: () => {} } });
-  f.confirmImport([{ origin: A }]);
+  await f.confirmImport([{ origin: A }]);
   await f.refresh();
-  const data = f.view();
+  const data = await f.view();
   for (const e of data.entries) e.head.threads = threads[e.head.id] || [];
   const html = followingPage({ data, settings: CFG.followingSettingsOf({}).settings, nonce: 'N' });
   const w = new GlobalWindow({ url: 'http://127.0.0.1:4189/hub' });

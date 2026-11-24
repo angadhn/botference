@@ -72,14 +72,14 @@ export function holdPost({ store, applyAnswer, post, replace = false, now = () =
 }
 
 /** What the article view shows above a Hub page's text. null for any other page. */
-export function hubInfoOf(page, { following, locale = 'en-US' } = {}) {
+export async function hubInfoOf(page, { following, locale = 'en-US' } = {}) {
   const h = page && page.hub;
   if (!h) return null;
-  const held = following ? following.heldVersion(h.origin, h.id) : 0;
-  const key = following ? following.keyFor(h.origin, h.id) : '';
+  const held = following ? await following.heldVersion(h.origin, h.id) : 0;
+  const key = following ? await following.keyFor(h.origin, h.id) : '';
   const versions = Array.isArray(h.versions) ? h.versions : [];
   const pinned = versions.filter(v => v.pin === 'pinned').map(v => v.version);
-  const resp = following ? following.responseOf(h.stub_of) : null;
+  const resp = following ? await following.responseOf(h.stub_of) : null;
   return {
     blyg_title: h.blyg_title || '', author: h.author || '', kind: h.kind || '', date: formatDate(h.updated || h.created, locale),
     version: h.version, versions_note: h.version > 1 ? `${h.version} versions` : '', pinned,

@@ -14,6 +14,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import * as F from '../following.mjs';
 import { makeWeb, makeDoc, idOf } from './following-fake.mjs';
+import { readLayout, writeLayout, layoutBytes } from './hub-layout.mjs';
 
 const CFG = createRequire(import.meta.url)('../extension/config.js');
 const A = 'https://alpha.web.test/notes/';
@@ -31,7 +32,9 @@ function rig({ settings = {} } = {}) {
   const get = async (u, o) => { clock.t += 10; return web.get(u, o); };
   const make = () => F.createFollowing({ file, get, now: () => clock.t, getSettings: SETTINGS, timers: { set: () => ({}), clear: () => {} } });
   const r = { f: make(), web, clock, dir, file, make, SETTINGS,
-    json: () => JSON.parse(fs.readFileSync(file, 'utf8')),
+    // what is kept, read back as one picture (the main document, and every post of the feeds and archives in `items`)
+    json: () => readLayout(file),
+    setJson: j => writeLayout(file, j),
     // a blyg's ledger is a document of its own (following-ledgers/<digest of the origin>.json)
     ledgerFile: o => path.join(dir, 'following-ledgers', `${F.ledgerName(o)}.json`),
     ledger: o => { try { return JSON.parse(fs.readFileSync(r.ledgerFile(o), 'utf8')); } catch { return undefined; } },
@@ -45,11 +48,11 @@ function rig({ settings = {} } = {}) {
 const publish = (site, origin, n, { from = 1, base = 0 } = {}) => {
   for (let k = from; k <= n; k++) site.put(makeDoc({ id: idOf(base + k), origin, title: `Post ${k}`, body: `Words of post ${k} on ${new URL(origin).host}.`, created: day(k) }));
 };
-const follow = (r, ...origins) => r.f.confirmImport(origins.map(origin => ({ origin, title: 'x' })));
-const feed = r => r.f.view({ limit: 1000 }).entries.map(e => e.head);
-const titles = r => feed(r).map(h => h.title);
-const keyOf = (r, origin, n, base = 0) => r.f.keyFor(origin, idOf(base + n));
-const archive = (r, extra = {}) => r.f.view({ view: 'archive', ...extra });
+const follow = async (r, ...origins) => await r.f.confirmImport(origins.map(origin => ({ origin, title: 'x' })));
+const feed = async r => (await r.f.view({ limit: 1000 })).entries.map(e => e.head);
+const titles = async r => (await feed(r)).map(h => h.title);
+const keyOf = async (r, origin, n, base = 0) => await r.f.keyFor(origin, idOf(base + n));
+const archive = async (r, extra = {}) => await r.f.view({ view: 'archive', ...extra });
 
 // ---- the state list and the moves -----------------------------------------------------------------------------------------
 
@@ -84,31 +87,31 @@ test('tick: the post leaves the Feed, its text is deleted, a small record stays;
   const r = rig();
   const site = r.web.add(A, { title: 'Alpha Notes' });
   publish(site, A, 6);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  assert.equal(feed(r).length, 6);
+  assert.equal((await feed(r)).length, 6);
   assert.equal(r.bodyFiles().length, 6);
-  const key = keyOf(r, A, 3);
-  assert.equal(r.f.readMove(key, 'tick'), 'archived');
-  assert.equal(feed(r).length, 5);
-  assert.ok(!titles(r).includes('Post 3'));
-  assert.equal(r.f.view().tabs.feed, 5);
-  assert.equal(r.f.view().tabs.archive, 1);
+  const key = await keyOf(r, A, 3);
+  assert.equal(await r.f.readMove(key, 'tick'), 'archived');
+  assert.equal((await feed(r)).length, 5);
+  assert.ok(!(await titles(r)).includes('Post 3'));
+  assert.equal((await r.f.view()).tabs.feed, 5);
+  assert.equal((await r.f.view()).tabs.archive, 1);
   assert.equal(r.bodyFiles().length, 5, 'the body file is deleted when ticked');
-  assert.equal(r.f.bodyHtml(key), '', 'and nothing reads it back');
+  assert.equal(await r.f.bodyHtml(key), '', 'and nothing reads it back');
   // the record: exactly these fields, small, no text
   const rec = r.json().items[`${A}\n${idOf(3)}`];
   assert.deepEqual(Object.keys(rec).sort(), ['archived_at', 'content_hash', 'created', 'fetched_at', 'fp', 'id', 'index_version', 'key', 'kind', 'origin',
-    'page', 'read', 'text', 'text_chars', 'title', 'updated', 'version']);
+    'page', 'read', 'title', 'updated', 'version']);
   assert.ok(JSON.stringify(rec.fp).length <= 60, 'a fingerprint of the words read, about 30 bytes');
   assert.equal(rec.read, 'archived');
-  assert.equal(rec.text, '');
+  assert.ok(!('text' in rec), 'no text field at all');
   assert.equal(rec.title, 'Post 3');
   assert.ok(JSON.stringify(rec).length < 700, `a record is about half a kilobyte (${JSON.stringify(rec).length} bytes)`);
   assert.ok(!JSON.stringify(rec).includes('Words of post'), 'none of the post\'s words is kept');
   assert.deepEqual(r.ledgerIds(A), [idOf(3)], 'its id is remembered in its blyg\'s ledger');
   // ticking twice is refused, and the engine says so
-  assert.throws(() => r.f.readMove(key, 'tick'), /cannot tick while archived/);
+  await assert.rejects(async () => await r.f.readMove(key, 'tick'), /cannot tick while archived/);
   r.done();
 });
 
@@ -117,10 +120,10 @@ test('a record keeps at most 120 characters of title; a post with no heading kee
   const site = r.web.add(A);
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'T'.repeat(400), body: 'x', created: day(1) }));
   site.put(makeDoc({ id: idOf(2), origin: A, title: '', body: 'first words of a fragment with no heading '.repeat(10), created: day(2) }));
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.tickMany([keyOf(r, A, 1), keyOf(r, A, 2)]);
-  const lines = archive(r).archive;
+  await r.f.tickMany([await keyOf(r, A, 1), await keyOf(r, A, 2)]);
+  const lines = (await archive(r)).archive;
   assert.equal(lines.length, 2);
   for (const l of lines) assert.ok(l.title.length <= F.LIMITS.archiveTitleChars);
   assert.ok(lines.find(l => /^first words of a fragment/.test(l.title)));
@@ -131,22 +134,22 @@ test('the Archive lists the newest ticked first, in pages; a line is light (no t
   const r = rig();
   const site = r.web.add(A, { title: 'Alpha Notes' });
   publish(site, A, 8);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  for (const n of [2, 7, 4]) { r.clock.t += 1000; r.f.readMove(keyOf(r, A, n), 'tick'); }
-  let a = archive(r);
+  for (const n of [2, 7, 4]) { r.clock.t += 1000; await r.f.readMove(await keyOf(r, A, n), 'tick'); }
+  let a = await archive(r);
   assert.deepEqual(a.archive.map(l => l.title), ['Post 4', 'Post 7', 'Post 2'], 'newest ticked first');
   assert.equal(a.archive_total, 3);
-  assert.deepEqual(Object.keys(a.archive[0]).sort(), ['archived_at', 'blyg_label', 'blyg_title', 'created', 'key', 'kind', 'newer_version', 'opens_on', 'origin', 'page', 'read', 'title', 'updated', 'version']);
+  assert.deepEqual(Object.keys(a.archive[0]).sort(), ['archived_at', 'blyg_label', 'blyg_title', 'created', 'key', 'kind', 'newer_version', 'opens_on', 'origin', 'page', 'read', 'star', 'title', 'updated', 'version']);
   assert.deepEqual(a.entries, [], 'the Feed list is not carried on the Archive tab');
-  assert.equal(archive(r, { limit: 2 }).archive.length, 2);
-  assert.equal(archive(r, { limit: 2 }).archive_total, 3);
-  assert.deepEqual(archive(r, { q: 'post 7' }).archive.map(l => l.title), ['Post 7']);
-  assert.deepEqual(archive(r, { q: 'alpha notes' }).archive.length, 3, 'by blyg');
-  assert.deepEqual(archive(r, { q: 'nothing like this' }).archive, []);
+  assert.equal((await archive(r, { limit: 2 })).archive.length, 2);
+  assert.equal((await archive(r, { limit: 2 })).archive_total, 3);
+  assert.deepEqual((await archive(r, { q: 'post 7' })).archive.map(l => l.title), ['Post 7']);
+  assert.deepEqual((await archive(r, { q: 'alpha notes' })).archive.length, 3, 'by blyg');
+  assert.deepEqual((await archive(r, { q: 'nothing like this' })).archive, []);
   assert.ok(!JSON.stringify(a).includes('Words of post'), 'no body text on the tab');
   // the Archive never holds the Feed's other views' posts
-  assert.equal(r.f.view({ view: 'background' }).background.length, 0);
+  assert.equal((await r.f.view({ view: 'background' })).background.length, 0);
   r.done();
 });
 
@@ -154,22 +157,22 @@ test('opening the original, or reading a post here, never archives it; only the 
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const key = keyOf(r, A, 2);
-  r.f.open(key);
-  assert.equal(r.f.itemByKey(key).read, 'opened');
-  r.f.openedHere(key);
-  r.f.markResponded(A, idOf(2));
-  assert.equal(r.f.itemByKey(key).read, 'responded');
-  assert.equal(feed(r).length, 3, 'still in the Feed');
+  const key = await keyOf(r, A, 2);
+  await r.f.open(key);
+  assert.equal((await r.f.itemByKey(key)).read, 'opened');
+  await r.f.openedHere(key);
+  await r.f.markResponded(A, idOf(2));
+  assert.equal((await r.f.itemByKey(key)).read, 'responded');
+  assert.equal((await feed(r)).length, 3, 'still in the Feed');
   // and once archived, opening the original moves nothing
-  r.f.readMove(key, 'tick');
-  const out = r.f.open(key);
-  assert.equal(out.url, r.f.itemByKey(key).page, 'the original opens');
-  assert.equal(r.f.itemByKey(key).read, 'archived');
-  assert.equal(r.f.markResponded(A, idOf(2)), false, 'a note exported for an archived post does not move it');
-  assert.equal(r.f.itemByKey(key).read, 'archived');
+  await r.f.readMove(key, 'tick');
+  const out = await r.f.open(key);
+  assert.equal(out.url, (await r.f.itemByKey(key)).page, 'the original opens');
+  assert.equal((await r.f.itemByKey(key)).read, 'archived');
+  assert.equal(await r.f.markResponded(A, idOf(2)), false, 'a note exported for an archived post does not move it');
+  assert.equal((await r.f.itemByKey(key)).read, 'archived');
   r.done();
 });
 
@@ -177,14 +180,14 @@ test('tick all shown: exactly the keys named are archived; a key that is withdra
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 5);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const keys = [1, 2, 3].map(n => keyOf(r, A, n));
-  r.f.readMove(keys[0], 'tick');
-  assert.equal(r.f.tickMany([...keys, 'nope', 42, null]), 2);
-  assert.deepEqual(titles(r).sort(), ['Post 4', 'Post 5']);
-  assert.equal(r.f.tickMany([]), 0);
-  assert.equal(r.f.tickMany('not a list'), 0);
+  const keys = (await Promise.all([1, 2, 3].map(async n => await keyOf(r, A, n))));
+  await r.f.readMove(keys[0], 'tick');
+  assert.equal(await r.f.tickMany([...keys, 'nope', 42, null]), 2);
+  assert.deepEqual((await titles(r)).sort(), ['Post 4', 'Post 5']);
+  assert.equal(await r.f.tickMany([]), 0);
+  assert.equal(await r.f.tickMany('not a list'), 0);
   r.done();
 });
 
@@ -194,28 +197,28 @@ test('untick: the post is fetched again and goes back to the Feed as new; its id
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const key = keyOf(r, A, 2);
-  r.f.readMove(key, 'tick');
+  const key = await keyOf(r, A, 2);
+  await r.f.readMove(key, 'tick');
   assert.equal(r.bodyFiles().length, 2);
   // not reachable: it stays archived, with the reason
   site.down = 'connection reset';
-  await assert.rejects(() => r.f.untick(key), /could not fetch the post/);
-  assert.equal(r.f.itemByKey(key).read, 'archived');
+  await assert.rejects(async () => await r.f.untick(key), /could not fetch the post/);
+  assert.equal((await r.f.itemByKey(key)).read, 'archived');
   assert.deepEqual(r.ledgerIds(A), [idOf(2)]);
   site.down = null;
   const before = r.web.itemRequests().length;
   assert.equal(await r.f.untick(key), 'new');
   assert.equal(r.web.itemRequests().length, before + 1, 'one request');
-  assert.equal(r.f.itemByKey(key).read, 'new');
-  assert.equal(r.f.itemByKey(key).key, key, 'the same key');
+  assert.equal((await r.f.itemByKey(key)).read, 'new');
+  assert.equal((await r.f.itemByKey(key)).key, key, 'the same key');
   assert.deepEqual(r.ledgerIds(A), []);
   assert.equal(r.bodyFiles().length, 3, 'its text is back');
-  assert.match(r.f.bodyHtml(key), /Words of post 2/);
-  assert.equal(feed(r).length, 3);
-  await assert.rejects(() => r.f.untick(key), /not in the Archive/);
-  await assert.rejects(() => r.f.untick('nope'), /no such post/);
+  assert.match(await r.f.bodyHtml(key), /Words of post 2/);
+  assert.equal((await feed(r)).length, 3);
+  await assert.rejects(async () => await r.f.untick(key), /not in the Archive/);
+  await assert.rejects(async () => await r.f.untick('nope'), /no such post/);
   r.done();
 });
 
@@ -223,22 +226,22 @@ test('untick refuses when the post was withdrawn meanwhile, or when fetching is 
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const key = keyOf(r, A, 1), key3 = keyOf(r, A, 3);
-  r.f.tickMany([key, key3]);
+  const key = await keyOf(r, A, 1), key3 = await keyOf(r, A, 3);
+  await r.f.tickMany([key, key3]);
   site.put(makeDoc({ id: idOf(1), origin: A, kind: 'withdrawn', title: '', version: 2, created: day(1), updated: day(40) }));
-  await assert.rejects(() => r.f.untick(key), /withdrawn/);
-  assert.equal(r.f.itemByKey(key).read, 'archived');
+  await assert.rejects(async () => await r.f.untick(key), /withdrawn/);
+  assert.equal((await r.f.itemByKey(key)).read, 'archived');
   // a document that names another id is not accepted
   site.put(makeDoc({ id: idOf(77), origin: A, title: 'Liar', created: day(3) }));
   site.docs.set(idOf(3), { ...site.docs.get(idOf(77)) });
-  await assert.rejects(() => r.f.untick(key3), /stays in the Archive/);
-  assert.equal(r.f.itemByKey(key3).read, 'archived');
+  await assert.rejects(async () => await r.f.untick(key3), /stays in the Archive/);
+  assert.equal((await r.f.itemByKey(key3)).read, 'archived');
   let on = true;
   const off = F.createFollowing({ file: r.file, get: r.web.get, now: () => r.clock.t, getSettings: r.SETTINGS, mayFetch: () => on, timers: { set: () => ({}), clear: () => {} } });
   on = false;
-  await assert.rejects(() => off.untick(key3), /fetching is off/);
+  await assert.rejects(async () => await off.untick(key3), /fetching is off/);
   r.done();
 });
 
@@ -248,54 +251,54 @@ test('an edit to an archived post: the same words stay archived (version recorde
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 4);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.tickMany([keyOf(r, A, 2), keyOf(r, A, 3)]);
+  await r.f.tickMany([await keyOf(r, A, 2), await keyOf(r, A, 3)]);
   // post 2: version 2 with the SAME words (maintenance); post 3: version 2 with new words
   site.put(makeDoc({ id: idOf(2), origin: A, title: 'Post 2', body: 'Words of post 2 on alpha.web.test.', version: 2, created: day(2), updated: day(60) }));
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'Entirely different words now, rewritten.', version: 2, created: day(3), updated: day(61) }));
   const s = await r.f.refresh();
-  assert.equal(r.f.itemByKey(keyOf(r, A, 2)).read, 'archived', 'a maintenance version stays archived');
-  assert.equal(r.f.itemByKey(keyOf(r, A, 2)).version, 2, 'and its record knows the version');
-  assert.equal(r.f.itemByKey(keyOf(r, A, 3)).read, 'edited', 'changed words: back in the Feed, as edited');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 2))).read, 'archived', 'a maintenance version stays archived');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 2))).version, 2, 'and its record knows the version');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 3))).read, 'edited', 'changed words: back in the Feed, as edited');
   assert.equal(s.edited, 1);
-  const h = feed(r).find(x => x.title === 'Post 3');
+  const h = (await feed(r)).find(x => x.title === 'Post 3');
   assert.equal(h.version, 2);
   assert.equal(h.read_version, 1, 'it remembers which version was read');
   assert.ok(!('edited_after_read' in h), 'no marker beside the read state');
-  assert.match(r.f.bodyHtml(h.key), /Entirely different/);
+  assert.match(await r.f.bodyHtml(h.key), /Entirely different/);
   assert.deepEqual(r.ledgerIds(A).sort(), [idOf(2), idOf(3)].sort(), 'its id stays in the ledger: it was read');
-  assert.equal(r.f.readMove(h.key, 'open'), 'edited', 'opening an edited post leaves it edited');
+  assert.equal(await r.f.readMove(h.key, 'open'), 'edited', 'opening an edited post leaves it edited');
   // a further real edit within the week: it does NOT come back; it is held in the Archive as "edited again"
-  r.f.readMove(h.key, 'tick');
+  await r.f.readMove(h.key, 'tick');
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'Entirely different words now, rewritten!', version: 3, created: day(3), updated: day(70) }));
   const s2 = await r.f.refresh();
   assert.equal(s2.held, 1);
-  let rec = r.f.itemByKey(h.key);
+  let rec = await r.f.itemByKey(h.key);
   assert.equal(rec.read, 'archived_changed');
   assert.equal(rec.version, 2, 'the record is still the version read');
   assert.deepEqual([rec.newer.version, typeof rec.newer.hash], [3, 'string'], 'the newer version is recorded');
-  assert.equal(archive(r).archive[0].read, 'archived_changed');
+  assert.equal((await archive(r)).archive[0].read, 'archived_changed');
   // within its window it is not fetched again, even for a further version: only what the index said is updated
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'Yet more words.', version: 4, created: day(3), updated: day(71) }));
   let n = r.web.itemRequests().length;
   await r.f.refresh();
   assert.equal(r.web.itemRequests().length, n, 'not fetched within its window');
-  assert.equal(r.f.itemByKey(h.key).index_version, 4);
+  assert.equal((await r.f.itemByKey(h.key)).index_version, 4);
   // once the week has passed, a refresh releases it to the Feed (fetched once, with the newest words)
   r.clock.t += F.LIMITS.editReturnGapMs;
   const s3 = await r.f.refresh();
   assert.equal(s3.released, 1);
-  rec = r.f.itemByKey(h.key);
+  rec = await r.f.itemByKey(h.key);
   assert.deepEqual([rec.read, rec.version], ['edited', 4]);
-  assert.match(r.f.bodyHtml(h.key), /Yet more words/);
+  assert.match(await r.f.bodyHtml(h.key), /Yet more words/);
   // an archived post that the index now lists as withdrawn stays in the Archive, and is not fetched
-  r.f.readMove(h.key, 'tick');
+  await r.f.readMove(h.key, 'tick');
   site.put(makeDoc({ id: idOf(3), origin: A, kind: 'withdrawn', title: '', version: 5, created: day(3), updated: day(80) }));
   n = r.web.itemRequests().length;
   await r.f.refresh();
   assert.equal(r.web.itemRequests().length, n);
-  assert.equal(r.f.itemByKey(h.key).read, 'archived');
+  assert.equal((await r.f.itemByKey(h.key)).read, 'archived');
   r.done();
 });
 
@@ -303,32 +306,32 @@ test('"edited again" in the Archive: Mark read keeps it read at the newer wordin
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const k1 = keyOf(r, A, 1), k2 = keyOf(r, A, 2), k3 = keyOf(r, A, 3);
-  r.f.tickMany([k1, k2, k3]);
+  const k1 = await keyOf(r, A, 1), k2 = await keyOf(r, A, 2), k3 = await keyOf(r, A, 3);
+  await r.f.tickMany([k1, k2, k3]);
   // all three edited; each first comes back, then is ticked and edited again within the week: held
   for (const n of [1, 2, 3]) site.put(makeDoc({ id: idOf(n), origin: A, title: `Post ${n}`, body: `Second words ${n}.`, version: 2, created: day(n), updated: day(100) }));
   await r.f.refresh();
-  r.f.tickMany([k1, k2, k3]);
+  await r.f.tickMany([k1, k2, k3]);
   for (const n of [1, 2, 3]) site.put(makeDoc({ id: idOf(n), origin: A, title: `Post ${n}`, body: `Third words ${n}.`, version: 3, created: day(n), updated: day(101) }));
   await r.f.refresh();
-  assert.deepEqual([k1, k2, k3].map(k => r.f.itemByKey(k).read), ['archived_changed', 'archived_changed', 'archived_changed']);
+  assert.deepEqual((await Promise.all([k1, k2, k3].map(async k => (await r.f.itemByKey(k)).read))), ['archived_changed', 'archived_changed', 'archived_changed']);
   // Mark read (the tick, from the Archive line): read at version 3, so the same version later is not an edit
   assert.equal((await r.f.readRequest({ key: k1, move: 'tick' })).read, 'archived');
-  assert.equal(r.f.itemByKey(k1).version, 3);
+  assert.equal((await r.f.itemByKey(k1)).version, 3);
   // untick: fetched again, the newest words, in the Feed as new
   assert.equal(await r.f.untick(k2), 'new');
-  assert.match(r.f.bodyHtml(k2), /Third words 2/);
+  assert.match(await r.f.bodyHtml(k2), /Third words 2/);
   // opening the original from the line moves nothing
-  r.f.open(k3);
-  assert.equal(r.f.itemByKey(k3).read, 'archived_changed');
+  await r.f.open(k3);
+  assert.equal((await r.f.itemByKey(k3)).read, 'archived_changed');
   // the blyg goes back to the wording that was read (version 4, same hash as version 2): nothing newer remains
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'Second words 3.', version: 4, created: day(3), updated: day(102) }));
   r.clock.t += F.LIMITS.editReturnGapMs;
   await r.f.refresh();
-  assert.deepEqual([r.f.itemByKey(k3).read, r.f.itemByKey(k3).version], ['archived', 4]);
-  assert.ok(!('newer' in r.f.itemByKey(k3)));
+  assert.deepEqual([(await r.f.itemByKey(k3)).read, (await r.f.itemByKey(k3)).version], ['archived', 4]);
+  assert.ok(!('newer' in await r.f.itemByKey(k3)));
   r.done();
 });
 
@@ -337,10 +340,10 @@ test('the edit storm: 400 read posts all changed: per refresh at most 5 fetched 
   const site = r.web.add(A);
   const at = n => new Date(Date.parse('2026-06-01T00:00:00Z') + n * 3600e3).toISOString();
   for (let k = 1; k <= 400; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: `Words of post ${k}.`, created: at(k) }));
-  follow(r, A);
-  for (let round = 0; round < 12; round++) { await r.f.refresh(); r.f.tickMany(feed(r).map(h => h.key)); }
-  assert.equal(archive(r).archive_total, 400);
-  assert.equal(feed(r).length, 0);
+  await follow(r, A);
+  for (let round = 0; round < 12; round++) { await r.f.refresh(); await r.f.tickMany((await feed(r)).map(h => h.key)); }
+  assert.equal((await archive(r)).archive_total, 400);
+  assert.equal((await feed(r)).length, 0);
   for (let k = 1; k <= 400; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: `Words of post ${k}!`, created: at(k), updated: at(5000), version: 2 }));
   for (let dayN = 0; dayN < 3; dayN++) {
     let returned = 0;
@@ -349,15 +352,15 @@ test('the edit storm: 400 read posts all changed: per refresh at most 5 fetched 
       const s = await r.f.refresh();
       assert.ok(r.web.itemRequests().length - n0 <= F.LIMITS.archivedDocsPerRun);
       assert.ok(s.edited <= F.LIMITS.editReturnsPerRun);
-      assert.ok(feed(r).length <= F.LIMITS.editedPerBlyg, `at most ${F.LIMITS.editedPerBlyg} in the Feed at once (${feed(r).length})`);
+      assert.ok((await feed(r)).length <= F.LIMITS.editedPerBlyg, `at most ${F.LIMITS.editedPerBlyg} in the Feed at once (${(await feed(r)).length})`);
       returned += s.edited;
-      if (run % 6 === 5) r.f.tickMany(feed(r).map(h => h.key));
+      if (run % 6 === 5) await r.f.tickMany((await feed(r)).map(h => h.key));
       r.clock.t += 3600e3 - 1000;
     }
     assert.ok(returned <= F.LIMITS.editReturnsPerDay, `day ${dayN}: ${returned} returned`);
     if (dayN === 0) assert.ok(returned <= F.LIMITS.massEditPerDay, `the first day of a mass edit: ${returned} returned before it was seen as one`);
   }
-  const v = archive(r, { limit: 1000 });
+  const v = await archive(r, { limit: 1000 });
   assert.equal(v.archive_notices.length, 1, 'ONE notice for the blyg');
   assert.ok(v.archive_notices[0].held > F.LIMITS.massEditPerDay);
   r.done();
@@ -369,27 +372,27 @@ test('a one-character change to a long post you read keeps it read (judged by it
   const words = Array.from({ length: 300 }, (_, i) => `word${i}`).join(' ');
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words, created: day(1) }));
   site.put(makeDoc({ id: idOf(2), origin: A, title: 'Short', body: 'Six words in this short post.', created: day(2) }));
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.tickMany([keyOf(r, A, 1), keyOf(r, A, 2)]);
+  await r.f.tickMany([await keyOf(r, A, 1), await keyOf(r, A, 2)]);
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.replace('word150', 'word15O'), version: 2, created: day(1), updated: day(9) }));
   site.put(makeDoc({ id: idOf(2), origin: A, title: 'Short', body: 'Six words in this short post!', version: 2, created: day(2), updated: day(9) }));
   const s = await r.f.refresh();
-  assert.deepEqual([r.f.itemByKey(keyOf(r, A, 1)).read, r.f.itemByKey(keyOf(r, A, 1)).version], ['archived', 2], 'a typo: recorded, still read, no "edited again"');
-  assert.equal(r.f.itemByKey(keyOf(r, A, 2)).read, 'edited', 'in a six-word post one word is not "barely": it comes back');
+  assert.deepEqual([(await r.f.itemByKey(await keyOf(r, A, 1))).read, (await r.f.itemByKey(await keyOf(r, A, 1))).version], ['archived', 2], 'a typo: recorded, still read, no "edited again"');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 2))).read, 'edited', 'in a six-word post one word is not "barely": it comes back');
   assert.equal(s.minor, 1);
   // a rewrite of the long one comes back
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.split(' ').map((w, i) => (i % 5 ? w : 'new')).join(' '), version: 3, created: day(1), updated: day(10) }));
   await r.f.refresh();
-  assert.equal(r.f.itemByKey(keyOf(r, A, 1)).read, 'edited');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 1))).read, 'edited');
   // a record ticked before fingerprints (none kept): any edit counts, as before
-  r.f.readMove(keyOf(r, A, 1), 'tick');
-  const j = r.json(); delete j.items[`${A}\n${idOf(1)}`].fp; fs.writeFileSync(r.file, JSON.stringify(j));
+  await r.f.readMove(await keyOf(r, A, 1), 'tick');
+  const j = r.json(); delete j.items[`${A}\n${idOf(1)}`].fp; r.setJson(j);
   const f2 = r.make();
   r.clock.t += F.LIMITS.editReturnGapMs;
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Long', body: words.split(' ').map((w, i) => (i % 5 ? w : 'new')).join(' ').replace('word151', 'word15l'), version: 4, created: day(1), updated: day(11) }));
   await f2.refresh();
-  assert.equal(f2.itemByKey(keyOf(r, A, 1)).read, 'edited');
+  assert.equal((await f2.itemByKey(await keyOf(r, A, 1))).read, 'edited');
   r.done();
 });
 
@@ -397,16 +400,16 @@ test('an edit-return counts against the per-blyg unread cap: at the cap the post
   const r = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 10 } });
   const site = r.web.add(A);
   publish(site, A, 12);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  assert.equal(feed(r).length, 10);
-  r.f.readMove(keyOf(r, A, 12), 'tick');
+  assert.equal((await feed(r)).length, 10);
+  await r.f.readMove(await keyOf(r, A, 12), 'tick');
   await r.f.refresh(); // the eleventh comes in: at the cap again
-  assert.equal(feed(r).length, 10);
+  assert.equal((await feed(r)).length, 10);
   site.put(makeDoc({ id: idOf(12), origin: A, title: 'Post 12', body: 'New words.', version: 2, created: day(12), updated: day(200) }));
   const s = await r.f.refresh();
   assert.equal(s.edited, 0);
-  assert.equal(feed(r).length, 10);
+  assert.equal((await feed(r)).length, 10);
   r.done();
 });
 
@@ -414,39 +417,39 @@ test('a post known only by id (its record trimmed past 2,000) is never fetched a
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.readMove(keyOf(r, A, 2), 'tick');
+  await r.f.readMove(await keyOf(r, A, 2), 'tick');
   const j = r.json();
   delete j.items[`${A}\n${idOf(2)}`]; // as trimArchive drops the oldest-ticked past archiveRecords
-  fs.writeFileSync(r.file, JSON.stringify(j));
+  r.setJson(j);
   const f2 = r.make();
   site.put(makeDoc({ id: idOf(2), origin: A, title: 'Post 2', body: 'Rewritten entirely.', version: 2, created: day(2), updated: day(300) }));
   r.web.requests.length = 0;
   const s = await f2.refresh();
   assert.equal(r.web.itemRequests().length, 0, 'its document is not asked for');
   assert.equal(s.edited, 0);
-  assert.ok(!f2.view().entries.some(e => e.head.id === idOf(2)));
+  assert.ok(!(await f2.view()).entries.some(e => e.head.id === idOf(2)));
   r.done();
 });
 
-test('trimArchive: at most 2,000 records, the oldest ticked dropped first; their ids stay in the ledgers', async () => {
+test('trimArchive: at most 1,000 records per blyg, the oldest ticked dropped first; their ids stay in the ledgers', async () => {
   const r = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 2000, following_run_requests: 2000, following_run_seconds: 600 } });
   const site = r.web.add(A);
   const at = n => new Date(Date.parse('2026-06-01T00:00:00Z') + n * 3600e3).toISOString();
   for (let k = 1; k <= 2005; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: 'w', created: at(k) }));
-  follow(r, A);
+  await follow(r, A);
   // read in the order the backfill brings them (newest first), ticking everything shown each time
   for (let i = 0; i < 50 && r.ledgerIds(A).length < 2005; i++) {
     await r.f.refresh();
-    const keys = feed(r).map(h => h.key);
-    for (let j = 0; j < keys.length; j += 100) { r.f.tickMany(keys.slice(j, j + 100)); r.clock.t += 1000; }
+    const keys = (await feed(r)).map(h => h.key);
+    for (let j = 0; j < keys.length; j += 100) { await r.f.tickMany(keys.slice(j, j + 100)); r.clock.t += 1000; }
   }
-  assert.equal(feed(r).length, 0);
-  assert.equal(archive(r).archive_total, F.LIMITS.archiveRecords);
-  assert.equal(F.LIMITS.archiveRecords, 2000);
+  assert.equal((await feed(r)).length, 0);
+  assert.equal((await archive(r, { limit: 1000 })).archive_total, F.LIMITS.archiveRecordsPerBlyg);
+  assert.equal(F.LIMITS.archiveRecordsPerBlyg, 1000);
   assert.equal(r.ledgerIds(A).length, 2005, 'every id is remembered');
-  assert.equal(r.f.keyFor(A, idOf(2005)), '', 'the first ticked (the newest post) was dropped from the list');
+  assert.equal(await r.f.keyFor(A, idOf(2005)), '', 'the first ticked (the newest post) was dropped from the list');
   r.done();
 });
 
@@ -454,12 +457,12 @@ test('an unread post edited in the Feed is handled as before (resurface from ope
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 2);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.readMove(keyOf(r, A, 1), 'tick');
+  await r.f.readMove(await keyOf(r, A, 1), 'tick');
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Post 1', body: 'older', version: 1, created: day(1), updated: day(90) }));
   await r.f.refresh();
-  assert.equal(r.f.itemByKey(keyOf(r, A, 1)).read, 'archived');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 1))).read, 'archived');
   r.done();
 });
 
@@ -469,78 +472,78 @@ test('backfill order: the newest unfetched first, so a blyg is read backwards in
   const r = rig({ settings: { following_unread_target: 5 } });
   const site = r.web.add(A);
   publish(site, A, 30);
-  follow(r, A);
+  await follow(r, A);
   let s = await r.f.refresh();
   assert.equal(s.backfilled, 5);
-  assert.deepEqual(titles(r), ['Post 30', 'Post 29', 'Post 28', 'Post 27', 'Post 26']);
+  assert.deepEqual(await titles(r), ['Post 30', 'Post 29', 'Post 28', 'Post 27', 'Post 26']);
   assert.equal(r.ledger(A).backfill, 'more');
   // nothing to do while the Feed holds the target: only manifest and index are asked
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.equal(r.web.itemRequests().length, 0);
   // tick the two newest, then the next two older ones come
-  r.f.tickMany([keyOf(r, A, 30), keyOf(r, A, 29)]);
+  await r.f.tickMany([await keyOf(r, A, 30), await keyOf(r, A, 29)]);
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.deepEqual(r.web.itemRequests().map(u => idOf(0) && u.split('/').pop()), [`${idOf(25)}.json`, `${idOf(24)}.json`]);
-  assert.deepEqual(titles(r), ['Post 28', 'Post 27', 'Post 26', 'Post 25', 'Post 24']);
+  assert.deepEqual(await titles(r), ['Post 28', 'Post 27', 'Post 26', 'Post 25', 'Post 24']);
   // a post published since is FRESH: fetched at once, though the Feed is full, and it goes to the top
   site.put(makeDoc({ id: idOf(31), origin: A, title: 'Post 31', body: 'brand new', created: day(31) }));
   r.web.requests.length = 0;
   s = await r.f.refresh();
   assert.deepEqual(r.web.itemRequests().map(u => u.split('/').pop()), [`${idOf(31)}.json`]);
-  assert.equal(titles(r)[0], 'Post 31');
-  assert.equal(feed(r).length, 6, 'fresh posts are not held back by the target');
+  assert.equal((await titles(r))[0], 'Post 31');
+  assert.equal((await feed(r)).length, 6, 'fresh posts are not held back by the target');
   r.done();
 });
 
 test('backfill fairness: round-robin, one per blyg per round; the blyg backfilled longest ago starts, so the odd post alternates', async () => {
   const r = rig({ settings: { following_unread_target: 3 } });
   for (const [o, base] of [[A, 0], [B, 100]]) { const s = r.web.add(o); publish(s, o, 20, { base }); }
-  follow(r, A, B);
+  await follow(r, A, B);
   await r.f.refresh();
-  const heldOf = o => feed(r).filter(h => h.origin === o).length;
-  const first = [heldOf(A), heldOf(B)];
+  const heldOf = async o => (await feed(r)).filter(h => h.origin === o).length;
+  const first = [await heldOf(A), await heldOf(B)];
   assert.deepEqual(first.slice().sort(), [1, 2], 'three posts over two blyg: 2 and 1');
   const richer = first[0] === 2 ? A : B, poorer = richer === A ? B : A;
   // empty the Feed; the one that had the extra post goes second this time
-  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.tickMany((await feed(r)).map(h => h.key));
   await r.f.refresh();
-  assert.equal(heldOf(poorer), 2, 'the other one starts and gets the odd post');
-  assert.equal(heldOf(richer), 1);
+  assert.equal(await heldOf(poorer), 2, 'the other one starts and gets the odd post');
+  assert.equal(await heldOf(richer), 1);
   r.done();
 });
 
 test('backfill with 3 blygs, target 50, a budget of 60 requests: manifest and index per blyg (6), then 50 documents, shared 17/17/16; nothing is an error', async () => {
   const r = rig({ settings: { following_unread_target: 50, following_run_requests: 60 } });
   for (const [o, base] of [[A, 0], [B, 1000], [C, 2000]]) { const s = r.web.add(o); publish(s, o, 100, { base }); }
-  follow(r, A, B, C);
+  await follow(r, A, B, C);
   const s = await r.f.refresh();
   assert.equal(s.requests, 56, '3 × 2 + 50');
   assert.equal(r.web.itemRequests().length, 50);
-  assert.equal(feed(r).length, 50, 'the target is met exactly');
-  assert.deepEqual([A, B, C].map(o => feed(r).filter(h => h.origin === o).length).sort(), [16, 17, 17]);
+  assert.equal((await feed(r)).length, 50, 'the target is met exactly');
+  assert.deepEqual((await Promise.all([A, B, C].map(async o => (await feed(r)).filter(h => h.origin === o).length))).sort(), [16, 17, 17]);
   assert.equal(s.errors, 0);
   assert.equal(s.deferred, 0, 'stopped because the target was met, not because anything was cut');
-  assert.ok(r.f.listBlygs().every(b => b.state === 'active' && b.failures === 0));
-  assert.ok(r.f.listBlygs().every(b => b.backfill === 'more'));
+  assert.ok((await r.f.listBlygs()).every(b => b.state === 'active' && b.failures === 0));
+  assert.ok((await r.f.listBlygs()).every(b => b.backfill === 'more'));
   r.done();
 });
 
 test('the same, with a budget of 30 requests: 6 for manifests and indexes, 24 documents; the rest is deferred, with no error and no mark against any blyg', async () => {
   const r = rig({ settings: { following_unread_target: 50, following_run_requests: 30 } });
   for (const [o, base] of [[A, 0], [B, 1000], [C, 2000]]) { const s = r.web.add(o); publish(s, o, 100, { base }); }
-  follow(r, A, B, C);
+  await follow(r, A, B, C);
   let s = await r.f.refresh();
   assert.equal(s.requests, 30);
-  assert.equal(feed(r).length, 24);
+  assert.equal((await feed(r)).length, 24);
   assert.equal(s.errors, 0);
   assert.ok(s.deferred > 0, 'what is left is counted as deferred');
-  assert.ok(r.f.listBlygs().every(b => b.state === 'active' && b.failures === 0 && !b.last_error));
+  assert.ok((await r.f.listBlygs()).every(b => b.state === 'active' && b.failures === 0 && !b.last_error));
   s = await r.f.refresh();
-  assert.equal(feed(r).length, 48, 'the next refresh carries on');
+  assert.equal((await feed(r)).length, 48, 'the next refresh carries on');
   s = await r.f.refresh();
-  assert.equal(feed(r).length, 50, 'and stops exactly at the target');
+  assert.equal((await feed(r)).length, 50, 'and stops exactly at the target');
   r.done();
 });
 
@@ -548,11 +551,11 @@ test('many blygs: with 40 followed and a target of 50, every one is asked first 
   const r = rig({ settings: { following_unread_target: 50, following_run_requests: 200 } });
   const origins = Array.from({ length: 40 }, (_, i) => `https://b${i}.web.test/`);
   origins.forEach((o, i) => publish(r.web.add(o), o, 10, { base: i * 100 }));
-  follow(r, ...origins);
+  await follow(r, ...origins);
   const s = await r.f.refresh();
-  assert.equal(feed(r).length, 50);
+  assert.equal((await feed(r)).length, 50);
   assert.equal(s.requests, 80 + 50);
-  const per = origins.map(o => feed(r).filter(h => h.origin === o).length);
+  const per = (await Promise.all(origins.map(async o => (await feed(r)).filter(h => h.origin === o).length)));
   assert.ok(Math.max(...per) <= 2 && Math.min(...per) >= 1, `spread over the blygs: ${per.join(',')}`);
   assert.equal(s.errors, 0);
   r.done();
@@ -575,13 +578,14 @@ test('one huge blyg (a 100,000-entry index): the Hub reads at most 20,000 entrie
     return realGet(url, o);
   };
   void site;
-  follow(r, A, B);
+  await follow(r, A, B);
   const s = await r.f.refresh();
   assert.ok(s.requests <= 200, `requests ${s.requests} within the 200 allowed`);
-  assert.equal(feed(r).length, 50);
-  assert.ok(feed(r).filter(h => h.origin === B).length >= 10, 'the small blyg is not starved: all of its ten are there');
-  assert.ok(fs.statSync(r.file).size < 300 * 1024, `state stays small (${fs.statSync(r.file).size} bytes)`);
-  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'inbox', 'items', 'kept', 'last_run'], 'the ledgers are documents of their own');
+  assert.equal((await feed(r)).length, 50);
+  assert.ok((await feed(r)).filter(h => h.origin === B).length >= 10, 'the small blyg is not starved: all of its ten are there');
+  assert.ok(layoutBytes(r.file) < 300 * 1024, `state stays small (${layoutBytes(r.file)} bytes)`);
+  assert.ok(fs.statSync(r.file).size < 4 * 1024, `the main document holds no post (${fs.statSync(r.file).size} bytes)`);
+  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'items', 'kept', 'last_run', 'layout'], 'the ledgers, feeds, archives and inbox are documents of their own');
   assert.ok(fs.statSync(r.ledgerFile(A)).size < 64 * 1024, 'and the big blyg\'s ledger is small too');
   r.done();
 });
@@ -601,17 +605,17 @@ test('an index that changes on every fetch cannot make a run exceed its budget o
     if (String(url).startsWith(A) && m) return { status: 200, url: String(url), contentType: 'application/json', text: JSON.stringify(makeDoc({ id: m[1], origin: A, title: 'x', created: day(1) })) };
     return realGet(url, o);
   };
-  follow(r, A);
+  await follow(r, A);
   const sizes = [];
   for (let i = 0; i < 6; i++) {
     const s = await r.f.refresh();
     assert.ok(s.requests <= 40);
-    assert.ok(feed(r).length <= 12, 'per-blyg cap of unread held posts');
+    assert.ok((await feed(r)).length <= 12, 'per-blyg cap of unread held posts');
     sizes.push(fs.statSync(r.file).size);
   }
   assert.ok(Math.max(...sizes) < sizes[0] * 1.5 + 2000, `the stored state does not grow with the index: ${sizes.join(' ')}`);
   assert.deepEqual(r.ledgerIds(A), []);
-  assert.ok(feed(r).length <= 12);
+  assert.ok((await feed(r)).length <= 12);
   r.done();
 });
 
@@ -631,25 +635,25 @@ test('the holding caps count UNREAD posts only: archived records do not count, s
   const r = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 10, following_max_items_total: 50 } });
   const site = r.web.add(A);
   publish(site, A, 40);
-  follow(r, A);
+  await follow(r, A);
   let s = await r.f.refresh();
-  assert.equal(feed(r).length, 10, 'the per-blyg cap');
+  assert.equal((await feed(r)).length, 10, 'the per-blyg cap');
   assert.equal(s.capped, 30, 'the rest waits, counted as capped');
-  r.f.tickMany(feed(r).slice(0, 4).map(h => h.key));
-  assert.equal(r.f.listBlygs()[0].items, 6, 'unread held');
-  assert.equal(r.f.listBlygs()[0].archived, 4);
+  await r.f.tickMany((await feed(r)).slice(0, 4).map(h => h.key));
+  assert.equal((await r.f.listBlygs())[0].items, 6, 'unread held');
+  assert.equal((await r.f.listBlygs())[0].archived, 4);
   s = await r.f.refresh();
-  assert.equal(feed(r).length, 10, 'four archived posts took no room: four more were read back');
-  assert.deepEqual(titles(r).slice(-4), ['Post 30', 'Post 29', 'Post 28', 'Post 27'], 'the next older ones, newest first');
+  assert.equal((await feed(r)).length, 10, 'four archived posts took no room: four more were read back');
+  assert.deepEqual((await titles(r)).slice(-4), ['Post 30', 'Post 29', 'Post 28', 'Post 27'], 'the next older ones, newest first');
   // the total cap, across blygs
   const t = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 100, following_max_items_total: 50 } });
   for (const [o, base] of [[A, 0], [B, 1000]]) publish(t.web.add(o), o, 40, { base });
-  follow(t, A, B);
+  await follow(t, A, B);
   s = await t.f.refresh();
-  assert.equal(feed(t).length, 50);
-  t.f.tickMany(feed(t).slice(0, 5).map(h => h.key));
+  assert.equal((await feed(t)).length, 50);
+  await t.f.tickMany((await feed(t)).slice(0, 5).map(h => h.key));
   await t.f.refresh();
-  assert.equal(feed(t).length, 50);
+  assert.equal((await feed(t)).length, 50);
   assert.equal(t.json().items && Object.values(t.json().items).filter(i => i.read === 'archived').length, 5);
   t.done(); r.done();
 });
@@ -660,19 +664,19 @@ test('a ticked post never comes back as unread: not when its record is gone from
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 6);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const key = keyOf(r, A, 4);
-  r.f.readMove(key, 'tick');
+  const key = await keyOf(r, A, 4);
+  await r.f.readMove(key, 'tick');
   // the record is dropped (as the oldest-ticked are, past the cap)
   const doc = r.json();
   delete doc.items[`${A}\n${idOf(4)}`];
-  fs.writeFileSync(r.file, JSON.stringify(doc));
+  r.setJson(doc);
   const f2 = r.make();
   r.web.requests.length = 0;
   await f2.refresh();
   assert.ok(!r.web.itemRequests().some(u => u.endsWith(`${idOf(4)}.json`)), 'its document is not fetched');
-  assert.ok(!f2.view().entries.some(e => e.head.id === idOf(4)));
+  assert.ok(!(await f2.view()).entries.some(e => e.head.id === idOf(4)));
   // an index that lists it twice, at two versions, is still one read post
   const real = r.web.get;
   r.web.get = async (url, o) => {
@@ -687,32 +691,32 @@ test('a ticked post never comes back as unread: not when its record is gone from
   r.web.requests.length = 0;
   await f2.refresh();
   assert.ok(!r.web.itemRequests().some(u => u.endsWith(`${idOf(4)}.json`)));
-  assert.ok(!f2.view().entries.some(e => e.head.id === idOf(4)));
+  assert.ok(!(await f2.view()).entries.some(e => e.head.id === idOf(4)));
   r.done();
 });
 
 test('at its bound a ledger moves its oldest ids into a gone filter (by id, never by date): no read post returns, even re-dated or undated', async () => {
   for (const [label, createdOf, redate] of [['undated (1970)', () => '1970-01-01T00:00:00Z', null], ['re-dated after the trim', k => day(k - 6000 + 7000), k => day(k + 20)]]) {
     const store = F.memoryStore();
-    store.put('ledger', F.ledgerName(A), { origin: A, ids: Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => [idOf(i + 1), 0]), backfill: 'more' });
     const web = makeWeb(); const clock = { t: Date.parse('2026-11-10T12:00:00Z') };
     const f = F.createFollowing({ store, get: async (u, o) => { clock.t += 10; return web.get(u, o); }, now: () => clock.t,
       getSettings: () => CFG.followingSettingsOf({ following_unread_target: 30, following_run_requests: 200 }).settings, timers: { set: () => ({}), clear: () => {} } });
     const site = web.add(A);
     for (let k = 1; k <= F.LIMITS.archiveIdsPerBlyg + 1; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `P${k}`, body: `w${k}`, created: createdOf(k) }));
-    f.confirmImport([{ origin: A }]);
+    await f.confirmImport([{ origin: A }]);
+    await store.put('ledger', F.ledgerName(A), { origin: A, epoch: store.peek('state', 'following').blygs[A].epoch, ids: Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => [idOf(i + 1), 0]), backfill: 'more' });
     await f.refresh();
-    const first = f.view({ limit: 1000 }).entries.map(e => e.head);
+    const first = (await f.view({ limit: 1000 })).entries.map(e => e.head);
     assert.deepEqual(first.map(h => h.id), [idOf(F.LIMITS.archiveIdsPerBlyg + 1)], `${label}: only the unread one`);
-    f.readMove(first[0].key, 'tick');
-    const led = store.get('ledger', F.ledgerName(A)).value;
+    await f.readMove(first[0].key, 'tick');
+    const led = store.peek('ledger', F.ledgerName(A));
     assert.equal(led.ids.length, F.LIMITS.archiveIdsPerBlyg + 1 - F.LIMITS.ledgerTrim, `${label}: the oldest went`);
     assert.equal(led.gone.n, F.LIMITS.ledgerTrim);
     assert.ok(!('floor' in led), 'no date floor');
     if (redate) for (let k = 1; k <= F.LIMITS.archiveIdsPerBlyg + 1; k++) { const d = site.docs.get(idOf(k)); site.put({ ...d, created: redate(k), updated: redate(k) }); }
     clock.t += 3600e3;
     await f.refresh();
-    assert.equal(f.view({ limit: 1000 }).entries.length, 0, `${label}: none of the 5,001 read posts came back`);
+    assert.equal((await f.view({ limit: 1000 })).entries.length, 0, `${label}: none of the 5,001 read posts came back`);
   }
 });
 
@@ -733,14 +737,14 @@ test('ticking a post of one blyg never touches another blyg\'s reading, however 
   const r = rig({ settings: { following_unread_target: 500 } });
   const origins = Array.from({ length: 6 }, (_, i) => `https://t${i}.web.test/`);
   origins.forEach((o, i) => publish(r.web.add(o), o, 3, { base: i * 100 }));
-  follow(r, ...origins);
+  await follow(r, ...origins);
   await r.f.refresh();
   origins.slice(0, 5).forEach((o, i) => { r.setLedger(o, l => { l.ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, k) => [idOf(10000000 + i * 20000 + k), 1]); }); });
   assert.equal(F.LIMITS.archiveIdsTotal, undefined, 'there is no total bound any more: a per-blyg bound and at most followMax blygs');
   const f = r.make();
-  f.readMove(f.keyFor(origins[5], idOf(500 + 1)), 'tick');
+  await f.readMove(await f.keyFor(origins[5], idOf(500 + 1)), 'tick');
   assert.deepEqual(r.ledgerIds(origins[5]), [idOf(501)], 'remembered');
-  assert.ok(f.listBlygs().every(b => b.backfill === 'caught_up'), 'no blyg is stopped or paused by it');
+  assert.ok((await f.listBlygs()).every(b => b.backfill === 'caught_up'), 'no blyg is stopped or paused by it');
   r.done();
 });
 
@@ -758,9 +762,9 @@ test('documents that cannot be used are remembered with the index\'s version and
     if (badIds.has(String(url).slice(-31, -5))) return { status: 200, url: String(url), text: '{"not": "a document"}' };
     return real(url, o);
   };
-  follow(r, A);
+  await follow(r, A);
   const s = await r.f.refresh();
-  assert.equal(feed(r).length, 5, 'the five real ones are read');
+  assert.equal((await feed(r)).length, 5, 'the five real ones are read');
   assert.equal(r.ledger(A).backfill, 'more', 'at 50 documents a run, the unusable ones are still being counted');
   assert.equal(s.invalid, 45, 'the first run: 5 real documents and 45 unusable ones make its 50 (the per-blyg document cap)');
   for (let i = 0; i < 4; i++) await r.f.refresh();
@@ -768,17 +772,17 @@ test('documents that cannot be used are remembered with the index\'s version and
   assert.equal(Object.keys(led.bad).length, 100);
   assert.ok(Object.values(led.bad).every(([v, at]) => v === 1 && at > 0), 'each with the version the index gave, and when');
   assert.equal(led.backfill, 'paused_bad_documents', 'the bound is reached: reading back pauses, and says why');
-  assert.equal(r.f.listBlygs()[0].bad_documents, 100);
+  assert.equal((await r.f.listBlygs())[0].bad_documents, 100);
   // fresh posts still come in while it is paused
   site.put(makeDoc({ id: idOf(70000), origin: A, title: 'Brand new', created: day(200) }));
   index.push({ id: idOf(70000), kind: 'fragment', created: day(200), updated: day(200), version: 1 });
   await r.f.refresh();
-  assert.ok(feed(r).some(h => h.title === 'Brand new'), 'a paused blyg still fetches FRESH posts');
+  assert.ok((await feed(r)).some(h => h.title === 'Brand new'), 'a paused blyg still fetches FRESH posts');
   assert.equal(r.ledger(A).backfill, 'paused_bad_documents');
   // the owner's Retry clears the list and reads afresh
-  assert.equal(r.f.stateRequest({ origin: A, move: 'retry' }), 'unknown');
+  assert.equal(await r.f.stateRequest({ origin: A, move: 'retry' }), 'unknown');
   assert.deepEqual(r.ledger(A).bad, {});
-  assert.throws(() => r.f.stateRequest({ origin: A, move: 'retry' }), /not paused/);
+  await assert.rejects(async () => await r.f.stateRequest({ origin: A, move: 'retry' }), /not paused/);
   // and, left alone, entries expire after badExpiryMs: the blyg recovers by itself
   for (let i = 0; i < 4; i++) await r.f.refresh();
   assert.equal(r.ledger(A).backfill, 'paused_bad_documents');
@@ -799,7 +803,7 @@ test('documents that cannot be used are remembered with the index\'s version and
     if (String(url).endsWith(`${idOf(900)}.json`)) { q.web.requests.push(String(url)); return { status: 200, url: String(url), text: 'not json at all' }; }
     return real2(url, o);
   };
-  follow(q, A);
+  await follow(q, A);
   await q.f.refresh();
   assert.equal(q.web.itemRequests().filter(u => u.endsWith(`${idOf(900)}.json`)).length, 1);
   q.web.requests.length = 0;
@@ -817,7 +821,7 @@ test('fetch TROUBLE is never marked against a document: 429, 404, 410, 403, 503 
     const r = rig({ settings: { following_unread_target: 500, following_run_requests: 2000, following_max_items_per_blyg: 2000 } });
     const site = r.web.add(A);
     publish(site, A, 300);
-    follow(r, A);
+    await follow(r, A);
     let trouble = true;
     const real = r.web.get;
     r.web.get = async (u, o) => {
@@ -833,7 +837,7 @@ test('fetch TROUBLE is never marked against a document: 429, 404, 410, 403, 503 
     assert.notEqual(led.backfill, 'paused_bad_documents', `${status}`);
     trouble = false;
     for (let i = 0; i < 8; i++) { r.clock.t += 7 * 3600e3; await r.f.refresh(); }
-    assert.equal(feed(r).length, 300, `${status}: once the host answers again, everything is read`);
+    assert.equal((await feed(r)).length, 300, `${status}: once the host answers again, everything is read`);
     assert.equal(r.ledger(A).backfill, 'caught_up');
     r.done();
   }
@@ -858,9 +862,9 @@ test('hostile index entries: malformed ids, an id that is not a string, a docume
   site.docs.set(idOf(12), makeDoc({ id: idOf(55), origin: A, title: 'Names another id', created: day(4) }));
   r.web.get = async (url, o) => (String(url) === `${A}items/index.json`
     ? { status: 200, url: String(url), contentType: 'application/json', text: JSON.stringify({ items: [...junk, ...good, good[0], { ...good[0], version: 1 }] }) } : real(url, o));
-  follow(r, A);
+  await follow(r, A);
   const s = await r.f.refresh();
-  assert.deepEqual(titles(r).sort(), ['Post 1', 'Post 2', 'Post 3']);
+  assert.deepEqual((await titles(r)).sort(), ['Post 1', 'Post 2', 'Post 3']);
   assert.equal(s.invalid, 1, 'only the document that named another id was fetched and refused');
   assert.deepEqual(Object.keys(r.ledger(A).bad), [idOf(12)]);
   const asked = r.web.itemRequests().map(u => u.split('/').pop());
@@ -876,9 +880,9 @@ test('id reuse: an archived id listed with a higher version is an edit (back as 
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 3);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.readMove(keyOf(r, A, 2), 'tick');
+  await r.f.readMove(await keyOf(r, A, 2), 'tick');
   // the index claims version 9 but the document is still version 1 with the same words: nothing comes back
   const real = r.web.get;
   r.web.get = async (url, o) => {
@@ -887,7 +891,7 @@ test('id reuse: an archived id listed with a higher version is an edit (back as 
     return got;
   };
   const s = await r.f.refresh();
-  assert.equal(r.f.itemByKey(keyOf(r, A, 2)).read, 'archived');
+  assert.equal((await r.f.itemByKey(await keyOf(r, A, 2))).read, 'archived');
   assert.equal(s.mismatched, 1);
   r.web.requests.length = 0;
   await r.f.refresh();
@@ -900,10 +904,10 @@ test('withdrawn items are never fetched, backfilled or held', async () => {
   const site = r.web.add(A);
   publish(site, A, 4);
   site.put(makeDoc({ id: idOf(70), origin: A, kind: 'withdrawn', title: '', created: day(2), updated: day(2) }));
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
   assert.ok(!r.web.itemRequests().some(u => u.endsWith(`${idOf(70)}.json`)));
-  assert.equal(feed(r).length, 4);
+  assert.equal((await feed(r)).length, 4);
   assert.equal(r.ledger(A).backfill, 'caught_up', 'a withdrawn item is not "more to fetch"');
   r.done();
 });
@@ -914,32 +918,32 @@ test('caught up: per blyg, and overall only when every blyg that is not paused i
   const r = rig({ settings: { following_unread_target: 500 } });
   publish(r.web.add(A), A, 3);
   publish(r.web.add(B), B, 2, { base: 100 });
-  follow(r, A, B);
-  assert.equal(r.f.view().read_all, false, 'nothing read yet: not "read everything"');
-  assert.deepEqual(r.f.listBlygs().map(b => b.backfill), ['unknown', 'unknown']);
+  await follow(r, A, B);
+  assert.equal((await r.f.view()).read_all, false, 'nothing read yet: not "read everything"');
+  assert.deepEqual((await r.f.listBlygs()).map(b => b.backfill), ['unknown', 'unknown']);
   await r.f.refresh();
-  assert.deepEqual(r.f.listBlygs().map(b => b.backfill), ['caught_up', 'caught_up']);
-  assert.equal(r.f.view().read_all, false, 'the Feed still holds five unread posts');
-  r.f.tickMany(feed(r).map(h => h.key));
-  let v = r.f.view();
+  assert.deepEqual((await r.f.listBlygs()).map(b => b.backfill), ['caught_up', 'caught_up']);
+  assert.equal((await r.f.view()).read_all, false, 'the Feed still holds five unread posts');
+  await r.f.tickMany((await feed(r)).map(h => h.key));
+  let v = await r.f.view();
   assert.equal(v.tabs.feed, 0);
   assert.equal(v.read_all, true);
   assert.equal(v.tabs.archive, 5);
   // a paused blyg does not stand in the way; an unreachable one does
-  r.f.setBlygState(B, 'pause');
-  assert.equal(r.f.view().read_all, true);
-  r.f.setBlygState(B, 'resume');
+  await r.f.setBlygState(B, 'pause');
+  assert.equal((await r.f.view()).read_all, true);
+  await r.f.setBlygState(B, 'resume');
   r.web.sites.get(B).down = 'reset';
   r.clock.t += 1000;
   await r.f.refresh();
-  assert.equal(r.f.listBlygs().find(b => b.origin === B).state, 'unreachable');
-  assert.equal(r.f.view().read_all, false, 'a blyg that could not be asked is not "read"');
+  assert.equal((await r.f.listBlygs()).find(b => b.origin === B).state, 'unreachable');
+  assert.equal((await r.f.view()).read_all, false, 'a blyg that could not be asked is not "read"');
   r.web.sites.get(B).down = null;
-  r.f.setBlygState(B, 'resume');
+  await r.f.setBlygState(B, 'resume');
   // a new post makes it "more" and unread
   r.web.sites.get(A).put(makeDoc({ id: idOf(40), origin: A, title: 'Newest', created: day(100) }));
   await r.f.refresh();
-  v = r.f.view();
+  v = await r.f.view();
   assert.equal(v.read_all, false);
   assert.equal(v.tabs.feed, 1);
   r.done();
@@ -948,15 +952,15 @@ test('caught up: per blyg, and overall only when every blyg that is not paused i
 test('caught up is reached by reading backwards: with a target the blyg is "more" until the last old post is fetched or ticked', async () => {
   const r = rig({ settings: { following_unread_target: 4 } });
   publish(r.web.add(A), A, 6);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
   assert.equal(r.ledger(A).backfill, 'more');
-  for (let round = 0; round < 3; round++) { r.f.tickMany(feed(r).map(h => h.key)); await r.f.refresh(); }
+  for (let round = 0; round < 3; round++) { await r.f.tickMany((await feed(r)).map(h => h.key)); await r.f.refresh(); }
   assert.equal(r.ledger(A).backfill, 'caught_up');
-  r.f.tickMany(feed(r).map(h => h.key));
-  assert.equal(feed(r).length, 0);
-  assert.equal(r.f.view().read_all, true);
-  assert.equal(r.f.view().tabs.archive, 6);
+  await r.f.tickMany((await feed(r)).map(h => h.key));
+  assert.equal((await feed(r)).length, 0);
+  assert.equal((await r.f.view()).read_all, true);
+  assert.equal((await r.f.view()).tabs.archive, 6);
   r.done();
 });
 
@@ -978,37 +982,37 @@ test('a document written before the Archive loads unchanged: nothing is archived
   };
   fs.writeFileSync(r.file, JSON.stringify(old));
   const f = r.make();
-  assert.equal(f.view().tabs.archive, 0, 'nothing is archived by migration');
-  assert.equal(f.view().tabs.feed, 5);
-  const reads = Object.fromEntries(feed({ f }).map(h => [h.id, h.read]));
+  assert.equal((await f.view()).tabs.archive, 0, 'nothing is archived by migration');
+  assert.equal((await f.view()).tabs.feed, 5);
+  const reads = Object.fromEntries((await feed({ f })).map(h => [h.id, h.read]));
   assert.deepEqual(reads, { [idOf(1)]: 'new', [idOf(2)]: 'new', [idOf(3)]: 'opened', [idOf(4)]: 'responded', [idOf(5)]: 'new' }, 'seen loads as new; opened and responded are kept');
   // the engine behaves: a refresh keeps them, and reads the older posts the index lists (6..8) back
   const s = await f.refresh();
   assert.equal(r.web.itemRequests().filter(u => [1, 2, 3, 4, 5].some(n => u.endsWith(`${idOf(n)}.json`))).length, 0, 'what was held is not fetched again');
   assert.equal(s.new, 3);
-  assert.equal(f.view().tabs.feed, 8);
-  assert.equal(f.listBlygs()[0].backfill, 'caught_up');
+  assert.equal((await f.view()).tabs.feed, 8);
+  assert.equal((await f.listBlygs())[0].backfill, 'caught_up');
   // and the first tick on migrated state works
-  assert.equal(f.readMove(f.keyFor(A, idOf(2)), 'tick'), 'archived');
+  assert.equal(await f.readMove(await f.keyFor(A, idOf(2)), 'tick'), 'archived');
   assert.equal(r.ledger(A).ids.length, 1);
   assert.ok(!('ledgers' in r.json()), 'the ledgers live in their own documents');
   r.done();
 });
 
-test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up mode are dropped; the lists are cut to their bounds', () => {
+test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up mode are dropped; the lists are cut to their bounds', async () => {
   const r = rig();
   publish(r.web.add(A), A, 1);
   fs.writeFileSync(r.file, JSON.stringify({ blygs: { [A]: { origin: A, title: 't', state: 'active' } }, items: {}, ledgers: {
     [A]: { ids: [idOf(1), idOf(1), 'nope', 5, null, idOf(2)], bad: { [idOf(3)]: 2, nope: 1, [idOf(4)]: 'x', [idOf(5)]: 0 }, backfill: 'sleepy' },
     'https://gone.web.test/': { ids: [idOf(1)], bad: {}, backfill: 'more' } } }));
-  r.f.listBlygs();
-  r.f.confirmImport([]);
+  await r.f.listBlygs();
+  await r.f.confirmImport([]);
   const f = r.make();
-  f.listBlygs();
-  assert.deepEqual(f.listBlygs().map(b => b.backfill), ['unknown']);
+  await f.listBlygs();
+  assert.deepEqual((await f.listBlygs()).map(b => b.backfill), ['unknown']);
   // saved on the next change: the ledger of a blyg that is not followed is dropped, the rest is clean
   // (a document written before the split carried its ledgers inside it: each becomes a document of its own, written on the next save)
-  f.setBlygState(A, 'pause');
+  await f.setBlygState(A, 'pause');
   assert.ok(!('ledgers' in r.json()));
   assert.deepEqual(fs.readdirSync(path.dirname(r.ledgerFile(A))), [path.basename(r.ledgerFile(A))], 'the ledger of a blyg that is not followed is not carried over');
   const led = r.ledger(A);
@@ -1020,38 +1024,38 @@ test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up
 test('unfollow keeps what was read there (a refollow brings nothing read back as unread); unfollow-and-forget does not; kept ledgers are bounded', async () => {
   const r = rig({ settings: { following_unread_target: 500, following_run_requests: 2000, following_run_seconds: 600, following_max_items_per_blyg: 2000 } });
   publish(r.web.add(A), A, 120);
-  follow(r, A);
+  await follow(r, A);
   for (let i = 0; i < 3; i++) await r.f.refresh();
-  const keys = feed(r).map(h => h.key);
-  r.f.tickMany(keys.slice(0, 100)); r.f.tickMany(keys.slice(100));
-  assert.equal(r.f.view().tabs.archive, 120);
-  r.f.unfollow(A);
-  assert.equal(r.f.view().tabs.archive, 0, 'its records go');
+  const keys = (await feed(r)).map(h => h.key);
+  await r.f.tickMany(keys.slice(0, 100)); await r.f.tickMany(keys.slice(100));
+  assert.equal((await r.f.view()).tabs.archive, 120);
+  await r.f.unfollow(A);
+  assert.equal((await r.f.view()).tabs.archive, 0, 'its records go');
   assert.deepEqual(r.json().items, {});
   assert.equal(r.ledgerIds(A).length, 120, 'its read ids stay');
-  assert.equal(typeof r.json().kept[A], 'number');
-  follow(r, A);
+  assert.equal(typeof r.json().kept[A].at, 'number');
+  await follow(r, A);
   for (let i = 0; i < 3; i++) await r.f.refresh();
-  assert.equal(feed(r).length, 0, 'unfollow + refollow: nothing read comes back as unread');
-  assert.equal(r.f.listBlygs()[0].backfill, 'caught_up');
+  assert.equal((await feed(r)).length, 0, 'unfollow + refollow: nothing read comes back as unread');
+  assert.equal((await r.f.listBlygs())[0].backfill, 'caught_up');
   assert.ok(!('kept' in r.json()) || !r.json().kept[A]);
   // forget: the ledger goes too, and a refollow reads everything again
-  r.f.unfollow(A, { forget: true });
+  await r.f.unfollow(A, { forget: true });
   assert.equal(r.ledger(A), undefined);
-  follow(r, A);
+  await follow(r, A);
   for (let i = 0; i < 3; i++) await r.f.refresh();
-  assert.equal(feed(r).length, 120);
+  assert.equal((await feed(r)).length, 120);
   // bounded: at most keptMax kept ledgers, none older than keptMs
   const many = Array.from({ length: F.LIMITS.keptMax + 3 }, (_, i) => `https://k${i}.web.test/`);
   many.forEach((o, i) => publish(r.web.add(o), o, 1, { base: 1000 + i }));
-  follow(r, ...many);
+  await follow(r, ...many);
   await r.f.refresh();
-  for (const o of many) { r.f.readMove(feed(r).find(h => h.origin === o).key, 'tick'); r.clock.t += 1000; r.f.unfollow(o); }
+  for (const o of many) { await r.f.readMove((await feed(r)).find(h => h.origin === o).key, 'tick'); r.clock.t += 1000; await r.f.unfollow(o); }
   assert.equal(Object.keys(r.json().kept).length, F.LIMITS.keptMax);
   assert.equal(r.ledger(many[0]), undefined, 'the oldest kept ledger was forgotten');
   assert.ok(r.ledger(many.at(-1)));
   r.clock.t += F.LIMITS.keptMs + 1;
-  r.f.setBlygState(A, 'pause');
+  await r.f.setBlygState(A, 'pause');
   assert.deepEqual(r.json().kept, {}, 'and none outlives keptMs');
   r.done();
 });
@@ -1063,36 +1067,36 @@ test('ticking a thread WITHOUT the parts the page showed (an older page, or the 
   const site = r.web.add(A);
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Frag', created: '2026-11-05T10:00:00Z' }));
   site.put(makeDoc({ id: idOf(2), origin: A, kind: 'thread', title: 'Thread', created: '2026-11-05T10:01:00Z', transclusions: [{ origin: A, id: idOf(1), version: 1 }] }));
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  assert.equal(feed(r).length, 1, 'folded: one entry');
-  r.f.readMove(keyOf(r, A, 2), 'tick');
-  assert.deepEqual(titles(r), ['Frag'], 'nothing is archived that the owner did not see ticked (with the members: test/hubburst.test.mjs)');
+  assert.equal((await feed(r)).length, 1, 'folded: one entry');
+  await r.f.readMove(await keyOf(r, A, 2), 'tick');
+  assert.deepEqual(await titles(r), ['Frag'], 'nothing is archived that the owner did not see ticked (with the members: test/hubburst.test.mjs)');
   r.done();
 });
 
 // ---- the engine's request: what the page may ask -------------------------------------------------------------------------------
 
-test('readRequest: tick, untick and renew only; a tick answers with the unread count and whether a top-up is worth asking for', async () => {
+test('readRequest: tick, untick, renew, star and unstar only; a tick answers with the unread count and whether a top-up is worth asking for', async () => {
   const r = rig({ settings: { following_unread_target: 3 } });
   publish(r.web.add(A), A, 10);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const key = feed(r)[0].key;
+  const key = (await feed(r))[0].key;
   let out = await r.f.readRequest({ key, move: 'tick' });
   assert.deepEqual([out.read, out.unread, out.target, out.topup], ['archived', 2, 3, true]);
-  out = await r.f.readRequest({ keys: [feed(r)[0].key] });
+  out = await r.f.readRequest({ keys: [(await feed(r))[0].key] });
   assert.equal(out.archived, 1);
   for (const bad of [{ key, move: 'see' }, { key, move: 'open' }, { key, move: 'respond' }, { key }, {}, { all: true }, { key, move: 'resurface' }, null]) {
-    await assert.rejects(() => r.f.readRequest(bad), /tick, untick or renew/, JSON.stringify(bad));
+    await assert.rejects(async () => await r.f.readRequest(bad), /tick, untick, renew, star or unstar/, JSON.stringify(bad));
   }
-  await assert.rejects(() => r.f.readRequest({ key: 'nope', move: 'tick' }), /no such post/);
+  await assert.rejects(async () => await r.f.readRequest({ key: 'nope', move: 'tick' }), /no such post/);
   // when every blyg is caught up there is nothing to top up from
   const q = rig({ settings: { following_unread_target: 50 } });
   publish(q.web.add(A), A, 4);
-  follow(q, A);
+  await follow(q, A);
   await q.f.refresh();
-  out = await q.f.readRequest({ key: feed(q)[0].key, move: 'tick' });
+  out = await q.f.readRequest({ key: (await feed(q))[0].key, move: 'tick' });
   assert.equal(out.topup, false);
   q.done(); r.done();
 });
@@ -1104,18 +1108,18 @@ test('re-dating a held post (to 1970, or to no date at all) does not make every 
     const r = rig({ settings: { following_unread_target: 5 } });
     const site = r.web.add(A);
     publish(site, A, 300);
-    follow(r, A);
+    await follow(r, A);
     await r.f.refresh();
-    assert.equal(feed(r).length, 5);
+    assert.equal((await feed(r)).length, 5);
     await r.f.refresh();
-    assert.equal(feed(r).length, 5, 'an honest second run fetches nothing');
-    const held = feed(r)[0];
+    assert.equal((await feed(r)).length, 5, 'an honest second run fetches nothing');
+    const held = (await feed(r))[0];
     const d = site.docs.get(held.id);
     site.put({ ...d, updated: lie, created: lie || d.created });
     for (let i = 0; i < 3; i++) {
       const s = await r.f.refresh();
       assert.equal(s.new, 0, `"${lie}" run ${i + 1}: nothing new`);
-      assert.equal(feed(r).length, 5, `"${lie}": the target holds`);
+      assert.equal((await feed(r)).length, 5, `"${lie}": the target holds`);
     }
     r.done();
   }
@@ -1125,9 +1129,9 @@ test('lying dates on unfetched posts cannot jump the queue: future, NaN, strings
   const r = rig({ settings: { following_unread_target: 3 } });
   const site = r.web.add(A);
   publish(site, A, 20);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  assert.deepEqual(titles(r), ['Post 20', 'Post 19', 'Post 18']);
+  assert.deepEqual(await titles(r), ['Post 20', 'Post 19', 'Post 18']);
   // the index now lies about five old unfetched posts; the documents themselves keep their own dates
   const lies = { 1: '2999-01-01T00:00:00Z', 2: 'NaN', 3: 'yesterday', 4: '-000001-01-01T00:00:00Z', 5: 1e308 };
   const real = r.web.get;
@@ -1140,17 +1144,17 @@ test('lying dates on unfetched posts cannot jump the queue: future, NaN, strings
   };
   const s = await r.f.refresh();
   assert.equal(s.new, 0, 'none of them is fresh: the Feed is at its target, so nothing is fetched');
-  assert.equal(feed(r).length, 3);
+  assert.equal((await feed(r)).length, 3);
   // a real new post (dated now) is still fresh
   r.clock.t += 60e3;
   site.put(makeDoc({ id: idOf(99), origin: A, title: 'Really new', created: new Date(r.clock.t).toISOString() }));
   const s2 = await r.f.refresh();
   assert.equal(s2.new, 1);
-  assert.ok(titles(r).includes('Really new'));
+  assert.ok((await titles(r)).includes('Really new'));
   // and when the Feed is short, the future-dated one is read first (as "now"), the undated ones last
-  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.tickMany((await feed(r)).map(h => h.key));
   await r.f.refresh();
-  assert.ok(titles(r).includes('Post 1'), 'the future-dated entry sorts as now: first in the backfill');
+  assert.ok((await titles(r)).includes('Post 1'), 'the future-dated entry sorts as now: first in the backfill');
   r.done();
 });
 
@@ -1160,13 +1164,13 @@ test('30 ticks in 30 seconds over 20 blygs: at most two top-ups, no index read, 
   const r = rig();
   const os = Array.from({ length: 20 }, (_, i) => `https://s${i}.web.test/`);
   for (const [i, o] of os.entries()) publish(r.web.add(o), o, 100, { base: i * 1000 });
-  follow(r, ...os);
+  await follow(r, ...os);
   await r.f.refresh();
-  assert.equal(feed(r).length, 50);
+  assert.equal((await feed(r)).length, 50);
   const n0 = r.web.requests.length;
   let topups = 0, started = 0;
   for (let i = 0; i < 30; i++) {
-    const ans = await r.f.readRequest({ key: feed(r)[0].key, move: 'tick' });
+    const ans = await r.f.readRequest({ key: (await feed(r))[0].key, move: 'tick' });
     if (ans.topup) { topups++; const t = await r.f.topUp(); if (t.started) started++; }
     r.clock.t += 1000;
   }
@@ -1174,12 +1178,12 @@ test('30 ticks in 30 seconds over 20 blygs: at most two top-ups, no index read, 
   assert.ok(started <= 2, `${started} top-ups`);
   assert.equal(asked.filter(u => /index\.json$|blyg\.json$/.test(u)).length, 0, 'no manifest and no index is read by a top-up');
   assert.ok(asked.length <= started * F.LIMITS.topupRequests, `${asked.length} requests`);
-  assert.ok(feed(r).length >= 20, 'and the Feed did get topped up');
+  assert.ok((await feed(r)).length >= 20, 'and the Feed did get topped up');
   // a refresh while a top-up runs is refused, and the other way round
   r.clock.t += F.LIMITS.topupGapMs;
-  r.f.readRequest({ key: feed(r)[0].key, move: 'tick' });
-  const t = r.f.topUp();
-  assert.equal(r.f.runState(), 'topping_up');
+  await r.f.readRequest({ key: (await feed(r))[0].key, move: 'tick' });
+  const t = r.f.topUp(); // (not awaited: the refresh below is asked while it runs)
+  assert.equal(await r.f.runState(), 'topping_up');
   assert.match((await r.f.refresh()).reason, /topped up/);
   await t;
   const ref = r.f.refresh();
@@ -1194,7 +1198,7 @@ test('the queue a top-up reads is validated, bounded, and every entry is checked
   const r = rig({ settings: { following_unread_target: 3 } });
   const site = r.web.add(A);
   publish(site, A, 40);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
   const led = r.ledger(A);
   assert.equal(led.queue.length, F.LIMITS.queuePerBlyg);
@@ -1202,7 +1206,7 @@ test('the queue a top-up reads is validated, bounded, and every entry is checked
   // hand-edited: junk is dropped on load, and an entry read meanwhile is skipped
   r.setLedger(A, l => { l.queue = [{ id: 'nope', kind: 'fragment', version: 1 }, { id: idOf(37), kind: 'thread?', version: 1 }, { id: idOf(36), kind: 'fragment', version: 0 }, { id: idOf(1), kind: 'withdrawn', version: 2 }, ...l.queue]; l.ids.push([idOf(37), 1]); });
   const f2 = r.make();
-  f2.readMove(f2.keyFor(A, idOf(40)), 'tick');
+  await f2.readMove(await f2.keyFor(A, idOf(40)), 'tick');
   r.web.requests.length = 0;
   const t = await f2.topUp();
   assert.deepEqual(t, { started: true, new: 1, requests: 1 });
@@ -1217,13 +1221,13 @@ test('the archive record keeps a long page address whole; an address past pageCh
   const d1 = makeDoc({ id: idOf(1), origin: A, title: 'Long', created: day(1), page: long });
   const d2 = makeDoc({ id: idOf(2), origin: A, title: 'Too long', created: day(2), page: `${A}t/${'b'.repeat(F.LIMITS.pageChars)}/` });
   site.put(d1); site.put(d2);
-  follow(r, A);
+  await follow(r, A);
   const s = await r.f.refresh();
   assert.equal(s.invalid, 1, 'the one past the bound is refused');
-  const k = keyOf(r, A, 1);
-  r.f.readMove(k, 'tick');
-  assert.equal(r.f.itemByKey(k).page, long, 'kept whole (it was clipped to 500 before)');
-  assert.equal(r.f.open(k).url, long, 'so "Open original" opens the right address');
+  const k = await keyOf(r, A, 1);
+  await r.f.readMove(k, 'tick');
+  assert.equal((await r.f.itemByKey(k)).page, long, 'kept whole (it was clipped to 500 before)');
+  assert.equal((await r.f.open(k)).url, long, 'so "Open original" opens the right address');
   r.done();
 });
 
@@ -1231,16 +1235,16 @@ test('untick and Read here never fetch from a blyg the owner paused (or one that
   const r = rig();
   const site = r.web.add(A);
   publish(site, A, 2);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  const k1 = keyOf(r, A, 1), k2 = keyOf(r, A, 2);
-  r.f.readMove(k1, 'tick');
-  r.f.setBlygState(A, 'pause');
+  const k1 = await keyOf(r, A, 1), k2 = await keyOf(r, A, 2);
+  await r.f.readMove(k1, 'tick');
+  await r.f.setBlygState(A, 'pause');
   const n = r.web.requests.length;
-  await assert.rejects(() => r.f.untick(k1), /that blyg is paused, so nothing is fetched from it: resume it first/);
-  await assert.rejects(() => r.f.fetchPost(k2), /that blyg is paused/);
+  await assert.rejects(async () => await r.f.untick(k1), /that blyg is paused, so nothing is fetched from it: resume it first/);
+  await assert.rejects(async () => await r.f.fetchPost(k2), /that blyg is paused/);
   assert.equal(r.web.requests.length, n, 'not one request');
-  r.f.setBlygState(A, 'resume');
+  await r.f.setBlygState(A, 'resume');
   assert.equal(await r.f.untick(k1), 'new');
   r.done();
 });
@@ -1251,9 +1255,9 @@ test('the index is read to its 20,000th entry and no further: a post listed afte
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 2);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  assert.equal(feed(r).length, 2);
+  assert.equal((await feed(r)).length, 2);
   const real = r.web.get;
   r.web.get = async (url, o) => {
     if (String(url) !== `${A}items/index.json`) return real(url, o);
@@ -1269,7 +1273,7 @@ test('the index is read to its 20,000th entry and no further: a post listed afte
   assert.equal(F.LIMITS.indexEntries, 20000);
   assert.equal(r.web.itemRequests().length, 0, 'the post past the 20,000th entry is not read');
   assert.equal(s.removed, 0, 'and the index was cut, so posts 1 and 2 missing from what was read proves nothing');
-  assert.equal(feed(r).length, 2);
+  assert.equal((await feed(r)).length, 2);
   r.done();
 });
 
@@ -1277,7 +1281,7 @@ test('fresh posts are bounded by the per-blyg document cap too: 80 published at 
   const r = rig({ settings: { following_unread_target: 1, following_run_requests: 2000 } });
   const site = r.web.add(A);
   publish(site, A, 2);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
   for (let k = 0; k < 80; k++) site.put(makeDoc({ id: idOf(500 + k), origin: A, title: `Fresh ${k}`, created: new Date(Date.parse('2026-11-10T11:00:00Z') + k * 1000).toISOString() }));
   const s = await r.f.refresh();
@@ -1291,7 +1295,7 @@ test('a host that answers 429 is asked at most BREAKER.threshold times in a run,
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 40);
-  follow(r, A);
+  await follow(r, A);
   const real = r.web.get;
   r.web.get = async (u, o) => (/items\/(?!index)/.test(String(u)) ? (r.web.requests.push(String(u)), { status: 429, url: String(u), text: 'slow down' }) : real(u, o));
   const s = await r.f.refresh();
@@ -1299,13 +1303,17 @@ test('a host that answers 429 is asked at most BREAKER.threshold times in a run,
   assert.ok(s.deferred > 0);
   assert.deepEqual(r.ledger(A).bad, {});
   assert.deepEqual(r.ledger(A).later, {}, '429 is the host\'s trouble, not a missing document');
-  assert.equal(r.f.breakerSnapshot('alpha.web.test').state, 'open');
+  assert.equal((await r.f.breakerSnapshot('alpha.web.test')).state, 'open');
   r.done();
 });
 
-test('every mode in the engine is one named list: the ledger copy too (stored or taken), moved by one function', () => {
-  assert.deepEqual(F.LEDGER_COPIES, ['stored', 'taken']);
+test('every mode in the engine is one named list: the run lease and the star too, each moved by one function', () => {
   assert.deepEqual(F.RUN_STATES, ['idle', 'running', 'topping_up']);
+  assert.deepEqual(F.STAR_STATES, ['plain', 'starred']);
+  const lease = { state: 'running', until: 1000 };
+  assert.throws(() => F.moveRun(lease, 'lapse', 999), /cannot lapse before until/);
+  assert.equal(F.moveRun(lease, 'lapse', 1000), 'idle');
+  assert.throws(() => F.moveStar({ star: 'starred' }, 'star'), /cannot star while starred/);
   assert.deepEqual(F.ARCHIVE_STATES, ['archived', 'archived_changed']);
   assert.ok(F.ARCHIVE_STATES.every(s => F.READ_STATES.includes(s)));
 });
@@ -1314,9 +1322,9 @@ test('at most 5 documents of read posts are fetched per blyg per refresh, even w
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   publish(site, A, 20);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.tickMany((await feed(r)).map(h => h.key));
   for (let k = 1; k <= 20; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: `Words of post ${k} on alpha.web.test.`, created: day(k), updated: day(100), version: 2 }));
   r.web.requests.length = 0;
   const s = await r.f.refresh();
@@ -1331,11 +1339,11 @@ test('at most 5 documents of read posts are fetched per blyg per refresh, even w
 test('a top-up is refused within topupGapMs of the last one, by the engine itself (not only by what the page is told)', async () => {
   const r = rig({ settings: { following_unread_target: 3 } });
   publish(r.web.add(A), A, 30);
-  follow(r, A);
+  await follow(r, A);
   await r.f.refresh();
-  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.tickMany((await feed(r)).map(h => h.key));
   assert.equal((await r.f.topUp()).started, true);
-  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.tickMany((await feed(r)).map(h => h.key));
   const second = await r.f.topUp();
   assert.deepEqual(second, { started: false, reason: 'topped up a moment ago' });
   r.clock.t += F.LIMITS.topupGapMs;
@@ -1355,7 +1363,7 @@ test('a blyg listing 2,000 "fresh" entries that 404 takes 3 requests of a run, t
   const hs = r.web.add(H);
   hs.put(makeDoc({ id: idOf(1), origin: H, created: day(1) }));
   for (const o of honest) publish(r.web.add(o), o, 400);
-  follow(r, H, ...honest);
+  await follow(r, H, ...honest);
   await r.f.refresh();
   const redate = () => { for (let k = 0; k < 2000; k++) { const id = idOf(100000 + k); dead.add(id); hs.put(makeDoc({ id, origin: H, created: new Date(r.clock.t + 60e3).toISOString() })); } };
   let hostile = 0;
@@ -1386,7 +1394,7 @@ test('fresh posts take a fair share of a run: one blyg publishing 80 at once doe
   const r = rig({ settings: { following_unread_target: 500, following_run_requests: 60 } });
   const os = Array.from({ length: 6 }, (_, i) => `https://f${i}.web.test/`);
   for (const [i, o] of os.entries()) publish(r.web.add(o), o, 30, { base: i * 1000 });
-  follow(r, ...os);
+  await follow(r, ...os);
   await r.f.refresh(); await r.f.refresh();
   for (let k = 0; k < 80; k++) r.web.sites.get(os[0]).put(makeDoc({ id: idOf(9000 + k), origin: os[0], title: `Spam ${k}`, created: new Date(r.clock.t + 1000).toISOString() }));
   r.clock.t += 5000;
@@ -1408,10 +1416,10 @@ test('a blyg\'s follow state is one named list moved by one function: follow, re
   publish(r.web.add(A), A, 1);
   fs.writeFileSync(r.file, JSON.stringify({ blygs: { [A]: { origin: A, title: 't', state: 'active' } }, items: {}, kept: { [A]: r.clock.t, 'not an origin': 5 } }));
   const f = r.make();
-  f.setBlygState(A, 'pause');
+  await f.setBlygState(A, 'pause');
   assert.deepEqual(r.json().kept, {});
-  assert.equal(f.unfollow(A), true);
-  assert.equal(f.unfollow(A), false, 'a kept blyg cannot be unfollowed again');
-  assert.equal(typeof r.json().kept[A], 'number');
+  assert.equal(await f.unfollow(A), true);
+  assert.equal(await f.unfollow(A), false, 'a kept blyg cannot be unfollowed again');
+  assert.equal(typeof r.json().kept[A].at, 'number');
   r.done();
 });

@@ -128,35 +128,35 @@ test('the inbox state is named: off, pending, paused, ok, unauthorised, unreacha
   assert.throws(() => F.moveInbox({ state: 'off' }, 'succeed'), /cannot succeed while off/);
   assert.throws(() => F.moveInbox({ state: 'off' }, 'unset'), /cannot unset while off/);
   const r = rig();
-  assert.equal(r.f.inboxState(), 'off');
-  r.f.confirmImport([]);
+  assert.equal(await r.f.inboxState(), 'off');
+  await r.f.confirmImport([]);
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok');
+  assert.equal(await r.f.inboxState(), 'ok');
   r.box.answer = { status: 401, body: {} };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'unauthorised');
+  assert.equal(await r.f.inboxState(), 'unauthorised');
   r.box.answer = { throw: 'timeout', kind: 'timeout' };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'unreachable');
+  assert.equal(await r.f.inboxState(), 'unreachable');
   r.box.answer = { status: 200, body: 'not json' };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'unreadable', 'it answered, but not with anything readable');
+  assert.equal(await r.f.inboxState(), 'unreadable', 'it answered, but not with anything readable');
   r.box.answer = { status: 502, body: {} };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'unreachable');
+  assert.equal(await r.f.inboxState(), 'unreachable');
   r.box.answer = { status: 200, body: FIXTURE };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok');
+  assert.equal(await r.f.inboxState(), 'ok');
   const none = F.createFollowing({ file: path.join(r.dir, 'none.json'), getSettings: () => CFG.followingSettingsOf({}).settings, get: async () => { throw new Error('no request expected'); } });
   await none.refresh();
-  assert.equal(none.inboxState(), 'off', 'nothing set: off, and nothing asked');
+  assert.equal(await none.inboxState(), 'off', 'nothing set: off, and nothing asked');
   // a token file that may not be used: unauthorised, with the reason, and no request
   const bad = rig({ forbidden: [rig().tokenDir] });
   const g = F.createFollowing({ file: path.join(bad.dir, 'g.json'), getSettings: bad.cfg, get: async () => { throw new Error('no request expected'); },
     tokenForbidden: [bad.tokenDir] });
   await g.refresh();
-  assert.equal(g.inboxState(), 'unauthorised');
-  assert.match(g.view({ view: 'mentions' }).inbox.error, /may not be inside/);
+  assert.equal(await g.inboxState(), 'unauthorised');
+  assert.match((await g.view({ view: 'mentions' })).inbox.error, /may not be inside/);
   r.done(); bad.done();
 });
 
@@ -164,20 +164,20 @@ test('the token goes to the inbox as a bearer header and nowhere else: not to di
   const r = rig();
   await r.f.refresh();
   assert.deepEqual(r.seen.map(x => x.headers), [{ authorization: `Bearer ${TOKEN}` }]);
-  const everything = [fs.readFileSync(r.file, 'utf8'), JSON.stringify(r.f.view({ view: 'mentions' })), JSON.stringify(r.f.view({ view: 'background' })),
-    JSON.stringify(r.f.view()), JSON.stringify(r.cfg())];
+  const everything = [fs.readFileSync(r.file, 'utf8'), JSON.stringify(await r.f.view({ view: 'mentions' })), JSON.stringify(await r.f.view({ view: 'background' })),
+    JSON.stringify(await r.f.view()), JSON.stringify(r.cfg())];
   for (const text of everything) assert.ok(!text.includes(TOKEN), 'the token is nowhere in the stored or served data');
   // an inbox that echoes the token back, in a mention or in an error, is scrubbed
   const echoed = JSON.parse(JSON.stringify(FIXTURE));
   echoed.mentions[0].quote = `your token is ${TOKEN}`;
   r.box.answer = { status: 200, body: echoed };
   await r.f.refresh();
-  const shown = JSON.stringify(r.f.view({ view: 'mentions' })) + fs.readFileSync(r.file, 'utf8');
+  const shown = JSON.stringify(await r.f.view({ view: 'mentions' })) + fs.readFileSync(r.file, 'utf8');
   assert.ok(!shown.includes(TOKEN));
   assert.ok(shown.includes('[redacted]'));
   r.box.answer = { throw: `connect failed for ${TOKEN}`, kind: 'network' };
   await r.f.refresh();
-  assert.ok(!JSON.stringify(r.f.view({ view: 'mentions' })).includes(TOKEN));
+  assert.ok(!JSON.stringify(await r.f.view({ view: 'mentions' })).includes(TOKEN));
   assert.ok(!fs.readFileSync(r.file, 'utf8').includes(TOKEN));
   r.done();
 });
@@ -202,15 +202,15 @@ test('netguard sends the extra header only to the origin the fetch started at (a
 test('Mentions: responses and plain mentions here (plain apart, labelled), notices in Background as "linked from" / "reposted by", unknown class labelled', async () => {
   const r = rig();
   await r.f.refresh();
-  const mentions = r.f.view({ view: 'mentions' });
+  const mentions = await r.f.view({ view: 'mentions' });
   assert.equal(mentions.inbox.state, 'ok');
   const reasons = Object.fromEntries(mentions.mentions.map(m => [m.ident, m.reason]));
   assert.deepEqual(reasons, { 'id:m1': 'response', 'id:m2': 'response', 'id:m5': 'plain mention (lower class)', 'id:m6': 'class unknown', 'id:m7': 'response' });
   assert.equal(mentions.mentions[0].ident, 'id:m1', 'newest first');
-  const bg = r.f.view({ view: 'background' }).background.filter(b => b.type === 'mention');
+  const bg = (await r.f.view({ view: 'background' })).background.filter(b => b.type === 'mention');
   assert.deepEqual(Object.fromEntries(bg.map(b => [b.mention.ident, b.reason])), { 'id:m3': 'linked from', 'id:m4': 'reposted by' });
   assert.ok(!mentions.mentions.some(m => m.class === 'notice'), 'notices MUST NOT appear in a responses list (§15.5)');
-  const tabs = r.f.view().tabs;
+  const tabs = (await r.f.view()).tabs;
   assert.deepEqual([tabs.mentions, tabs.mentions_unseen], [5, 5]);
   r.done();
 });
@@ -220,27 +220,27 @@ test('Mentions: seen state survives a refresh; Open marks a mention seen and ans
   const site = r.web.add(ADA, { title: "Ada's Notes" });
   const id = idOf(1);
   site.put(makeDoc({ id, origin: ADA, kind: 'thread', title: 'Ada replies', transclusions: [] }));
-  r.f.confirmImport([{ origin: ADA }]);
+  await r.f.confirmImport([{ origin: ADA }]);
   await r.f.refresh();
-  let v = r.f.view({ view: 'mentions' });
+  let v = await r.f.view({ view: 'mentions' });
   const m1 = v.mentions.find(m => m.ident === 'id:m1');
-  assert.equal(m1.feed_key, r.f.keyFor(ADA, id), 'it links to the entry in the feed');
+  assert.equal(m1.feed_key, await r.f.keyFor(ADA, id), 'it links to the entry in the feed');
   const m2 = v.mentions.find(m => m.ident === 'id:m2');
   assert.equal(m2.feed_key, '');
   assert.match(m1.key, /^[0-9a-f]{24}$/);
   // Open: the one path
-  assert.deepEqual(r.f.open(m1.key), { url: 'https://ada.example.test/a/t/00000000000000000000000001/', opens_on: '' });
-  assert.equal(r.f.itemByKey(r.f.keyFor(ADA, id)).read, 'opened', 'the followed post it is, opened');
-  assert.deepEqual(r.f.open(m2.key), { url: 'https://bo.example.test/f/bbbbbbbbbbbbbbbbbbbbbbbbbb/', opens_on: '' });
-  assert.throws(() => r.f.open(v.mentions.find(m => m.ident === 'id:m6').key), /no link/);
-  assert.equal(r.f.view().tabs.mentions_unseen, 3);
+  assert.deepEqual(await r.f.open(m1.key), { url: 'https://ada.example.test/a/t/00000000000000000000000001/', opens_on: '' });
+  assert.equal((await r.f.itemByKey(await r.f.keyFor(ADA, id))).read, 'opened', 'the followed post it is, opened');
+  assert.deepEqual(await r.f.open(m2.key), { url: 'https://bo.example.test/f/bbbbbbbbbbbbbbbbbbbbbbbbbb/', opens_on: '' });
+  await assert.rejects(async () => await r.f.open(v.mentions.find(m => m.ident === 'id:m6').key), /no link/);
+  assert.equal((await r.f.view()).tabs.mentions_unseen, 3);
   await r.f.refresh();
-  assert.equal(r.f.view().tabs.mentions_unseen, 3, 'a refresh does not make seen mentions unseen again');
-  assert.equal(r.f.view({ view: 'mentions' }).mentions.find(m => m.ident === 'id:m1').key, m1.key, 'and keys are stable');
-  assert.equal(r.f.mentionSeen(m1.key), 'seen');
-  assert.equal(r.f.allMentionsSeen(), 5, 'the three left in Mentions and the two notices in Background');
-  assert.equal(r.f.view().tabs.mentions_unseen, 0);
-  assert.throws(() => r.f.mentionSeen('nope'), /no such mention/);
+  assert.equal((await r.f.view()).tabs.mentions_unseen, 3, 'a refresh does not make seen mentions unseen again');
+  assert.equal((await r.f.view({ view: 'mentions' })).mentions.find(m => m.ident === 'id:m1').key, m1.key, 'and keys are stable');
+  assert.equal(await r.f.mentionSeen(m1.key), 'seen');
+  assert.equal(await r.f.allMentionsSeen(), 5, 'the three left in Mentions and the two notices in Background');
+  assert.equal((await r.f.view()).tabs.mentions_unseen, 0);
+  await assert.rejects(async () => await r.f.mentionSeen('nope'), /no such mention/);
   assert.throws(() => F.moveMention({ read: 'seen' }, 'see'), /cannot see while seen/);
   r.done();
 });
@@ -248,7 +248,7 @@ test('Mentions: seen state survives a refresh; Open marks a mention seen and ans
 test('the Mentions page: grouped by your post, passage, details as escaped JSON, never-verified line, hostile fields escaped', async () => {
   const r = rig();
   await r.f.refresh();
-  const data = r.f.view({ view: 'mentions' });
+  const data = await r.f.view({ view: 'mentions' });
   const settings = r.cfg();
   const html = followingPage({ data, settings, nonce: 'N0NCE' });
   const body = html.replace(/<script nonce="N0NCE">[\s\S]*?<\/script>/, '[our script]');
@@ -267,7 +267,7 @@ test('the Mentions page: grouped by your post, passage, details as escaped JSON,
   { const sc = scriptsOf(html); assert.deepEqual([sc.inline, sc.nonced === sc.all], [1, true]); assert.ok(sc.sources.every(u => u === '/assets/anchor.js')); }
   assert.ok(!html.includes(TOKEN));
   // the Background page names the reasons
-  const bg = followingPage({ data: r.f.view({ view: 'background' }), settings, nonce: 'N0NCE' });
+  const bg = followingPage({ data: await r.f.view({ view: 'background' }), settings, nonce: 'N0NCE' });
   assert.match(bg, /linked from/);
   assert.match(bg, /reposted by/);
   r.done();
@@ -304,9 +304,9 @@ test('the token is scrubbed from the whole document before anything is read out 
   doc.failure_log = { never_verified: 3, note: TOKEN };
   const r = rig({ answer: { status: 200, body: doc } });
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok');
-  const out = JSON.stringify([r.f.view({ view: 'mentions' }), r.f.view({ view: 'background' }), r.f.view()]) + fs.readFileSync(r.file, 'utf8')
-    + followingPage({ data: r.f.view({ view: 'mentions' }), settings: r.cfg(), nonce: 'N' });
+  assert.equal(await r.f.inboxState(), 'ok');
+  const out = JSON.stringify([await r.f.view({ view: 'mentions' }), await r.f.view({ view: 'background' }), await r.f.view()]) + fs.readFileSync(r.file, 'utf8')
+    + followingPage({ data: await r.f.view({ view: 'mentions' }), settings: r.cfg(), nonce: 'N' });
   for (const piece of [TOKEN, TOKEN.slice(0, 8), TOKEN.slice(-8)]) assert.ok(!out.includes(piece), `no piece of the token (${piece})`);
   assert.ok(out.includes('[redacted]'));
   assert.deepEqual(I.scrubDeep({ a: [TOKEN, { [TOKEN]: 1 }] }, TOKEN), { a: ['[redacted]', { '[redacted]': 1 }] });
@@ -321,23 +321,23 @@ test('a very deeply nested inbox cannot overflow the stack: bounded, and never l
   const nested = '{"mentions":[{"who":' + '{"name":'.repeat(60000) + '"x"' + '}'.repeat(60000) + ',"action":"replied"}]}';
   const r = rig({ answer: { status: 200, body: nested } });
   await r.f.refresh();
-  const v = r.f.view({ view: 'mentions' });
+  const v = await r.f.view({ view: 'mentions' });
   assert.notEqual(v.inbox.state, 'pending');
   assert.ok(['ok', 'unreadable'].includes(v.inbox.state));
   if (v.inbox.state === 'unreadable') assert.match(v.inbox.error, /cannot read/);
-  assert.equal(r.f.runState(), 'idle');
+  assert.equal(await r.f.runState(), 'idle');
   r.done();
 });
 
 test('an inbox that answers from another origin than the one set (a redirect) is unreachable, with the reason', async () => {
   const r = rig({ answer: { status: 200, body: FIXTURE, url: 'https://elsewhere.web.test/api/mentions' } });
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'unreachable');
-  assert.match(r.f.view({ view: 'mentions' }).inbox.error, /another origin/);
-  assert.equal(r.f.view({ view: 'mentions' }).mentions.length, 0, 'what it said is not taken');
+  assert.equal(await r.f.inboxState(), 'unreachable');
+  assert.match((await r.f.view({ view: 'mentions' })).inbox.error, /another origin/);
+  assert.equal((await r.f.view({ view: 'mentions' })).mentions.length, 0, 'what it said is not taken');
   r.box.answer = { status: 200, body: FIXTURE, url: `${URL_}?page=2` };
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok', 'the same origin, another path, is fine');
+  assert.equal(await r.f.inboxState(), 'ok', 'the same origin, another path, is fine');
   r.done();
 });
 
@@ -346,11 +346,11 @@ test('the inbox has its own small request budget: blygs cannot starve it', async
   for (const [n, o] of ['https://one.web.test/', 'https://two.web.test/', 'https://three.web.test/'].entries()) {
     const site = r.web.add(o);
     for (let k = 1; k <= 8; k++) site.put(makeDoc({ id: idOf(n * 10 + k), origin: o }));
-    r.f.confirmImport([{ origin: o }]);
+    await r.f.confirmImport([{ origin: o }]);
   }
   const s = await r.f.refresh();
   assert.ok(s.deferred > 0, 'the blygs spent the run\'s budget');
-  assert.equal(r.f.inboxState(), 'ok', 'and the inbox was asked all the same');
+  assert.equal(await r.f.inboxState(), 'ok', 'and the inbox was asked all the same');
   assert.equal(r.seen.length, 1);
   r.done();
 });
@@ -358,7 +358,7 @@ test('the inbox has its own small request budget: blygs cannot starve it', async
 test('configured but fetching is off: the inbox says it is paused, not that none is set; back on, it is asked again', async () => {
   let on = false;
   const r = rig({ mayFetch: () => on });
-  const v = r.f.view({ view: 'mentions' });
+  const v = await r.f.view({ view: 'mentions' });
   assert.equal(v.inbox.state, 'paused');
   const html = followingPage({ data: v, settings: r.cfg(), nonce: 'N' });
   assert.match(html, /paused: Blygger checks are off/);
@@ -367,13 +367,13 @@ test('configured but fetching is off: the inbox says it is paused, not that none
   assert.equal(r.seen.length, 0, 'nothing was asked');
   on = true;
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok');
+  assert.equal(await r.f.inboxState(), 'ok');
   on = false;
-  assert.equal(r.f.view({ view: 'mentions' }).inbox.state, 'paused');
-  assert.equal(r.f.view({ view: 'mentions' }).mentions.length, 5, 'what was already listed stays');
+  assert.equal((await r.f.view({ view: 'mentions' })).inbox.state, 'paused');
+  assert.equal((await r.f.view({ view: 'mentions' })).mentions.length, 5, 'what was already listed stays');
   // and with nothing configured it still says so
   const none = F.createFollowing({ file: path.join(r.dir, 'n.json'), getSettings: () => CFG.followingSettingsOf({}).settings, mayFetch: () => false });
-  assert.equal(none.view().inbox.state, 'off');
+  assert.equal((await none.view()).inbox.state, 'off');
   r.done();
 });
 
@@ -422,14 +422,14 @@ test('a token file that other users can read is warned about (never refused); on
   assert.match(I.tokenFileWarning(r.tokenFile), /other users/);
   assert.equal(I.readTokenFile(r.tokenFile), TOKEN, 'still usable');
   await r.f.refresh();
-  assert.equal(r.f.inboxState(), 'ok', 'and the inbox is asked all the same');
-  const v = r.f.view({ view: 'mentions' });
+  assert.equal(await r.f.inboxState(), 'ok', 'and the inbox is asked all the same');
+  const v = await r.f.view({ view: 'mentions' });
   assert.match(v.inbox.token_warning, /chmod 600/);
   const html = followingPage({ data: v, settings: r.cfg(), nonce: 'N' });
   assert.match(html, /can be read by other users/);
   fs.chmodSync(r.tokenFile, 0o600);
   assert.equal(I.tokenFileWarning(r.tokenFile), '');
-  assert.equal(r.f.view({ view: 'mentions' }).inbox.token_warning, '');
+  assert.equal((await r.f.view({ view: 'mentions' })).inbox.token_warning, '');
   assert.equal(I.tokenFileWarning(path.join(r.tokenDir, 'missing')), '');
   r.done();
 });
