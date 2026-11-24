@@ -234,8 +234,11 @@ const SCRIPT = `
   document.querySelectorAll('.hub-entry-body template').forEach(function(t){t.parentNode.insertBefore(t.content,t);t.remove();});
   var msg=document.getElementById('msg');
   function say(s,bad){msg.textContent=s;msg.className=bad?'warn':'mut';}
+  // every request answers, never rejects: a companion that is restarting (the fetch itself fails) is {ok:false} too, so each
+  // mode that waits on an answer (a row sending, a top-up or refresh asked) comes back to a resting state
   function post(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})})
-    .then(function(r){return r.json().catch(function(){return {ok:false,error:'HTTP '+r.status};});});}
+    .then(function(r){return r.json().catch(function(){return {ok:false,error:'HTTP '+r.status};});},
+      function(){return {ok:false,error:'could not reach the Hub'};});}
   function done(r,okText){if(r&&r.ok){say(okText||'done');setTimeout(function(){location.reload();},400);}else say((r&&r.error)||'failed',true);}
   document.addEventListener('click',function(ev){
     var b=ev.target.closest&&ev.target.closest('button[data-act]');if(!b)return;

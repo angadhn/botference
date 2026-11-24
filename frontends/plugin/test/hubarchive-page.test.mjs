@@ -369,3 +369,23 @@ test('a mass edit is ONE line at the top of the Archive for that blyg, in words'
   assert.equal(lines[0].textContent, 'Alpha Notes changed 37 posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.');
   x.done();
 });
+
+test('a companion that cannot be reached (the request itself fails): the row, the top-up and Refresh now all come back to rest and say so', async () => {
+  const x = await hub({ n: 3 });
+  const p = x.run();
+  p.w.fetch = globalThis.fetch = async () => { throw new TypeError('Failed to fetch'); };
+  const box = p.doc.querySelector('input.tick');
+  box.checked = true;
+  p.change(box);
+  await p.settle();
+  const row = box.closest('article');
+  assert.equal(row.dataset.tick, 'ready', 'the row is not left sending');
+  assert.equal(box.disabled, false);
+  assert.equal(box.checked, false);
+  assert.equal(p.doc.getElementById('msg').textContent, 'could not reach the Hub');
+  p.doc.querySelector('button[data-act=refresh]').click();
+  await p.settle();
+  assert.equal(p.doc.documentElement.getAttribute('data-hub-fetch'), 'idle', 'Refresh now is not left refreshing');
+  assert.equal(p.doc.getElementById('msg').textContent, 'could not reach the Hub');
+  x.done();
+});
