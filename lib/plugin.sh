@@ -52,7 +52,9 @@ Options:
   --hosted     Hosted mode without the tunnel: PLUGIN_PASSWORD gates
                every remote visitor, localhost stays the owner.
                PLUGIN_OWNER_PASSWORD (optional) signs the owner in from
-               another device
+               another device. PLUGIN_GUESTS=off turns guests off: only
+               the owner may sign in (the guest password and guest
+               cookies are refused; PLUGIN_PASSWORD is then not needed)
   --service    Run detached under the managed service lifecycle
                (name 'plugin-web', or 'plugin-share' with --share);
                stop with 'botference service stop <name>'
@@ -976,7 +978,7 @@ run_plugin_mode() {
   if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
     PLUGIN_PASSWORD=$(_plugin_password_read || true)
   fi
-  if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ]; then
+  if $hosted && ! $share && [ -z "${PLUGIN_PASSWORD:-}" ] && [ "${PLUGIN_GUESTS:-on}" != "off" ]; then
     echo "✗ --hosted requires PLUGIN_PASSWORD to be set, e.g." >&2
     echo "   PLUGIN_PASSWORD=… botference plugin --hosted" >&2
     echo "   (or use --share, which generates one and opens a tunnel for you;" >&2

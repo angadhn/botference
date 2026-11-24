@@ -17,10 +17,11 @@
 //
 // Run:    node frontends/plugin/server.mjs
 // Flags:  --no-agents   never spawn the bridge (annotations still work)
-//         --hosted      shared-URL mode; requires PLUGIN_PASSWORD
+//         --hosted      shared-URL mode; requires PLUGIN_PASSWORD (unless PLUGIN_GUESTS=off)
 // Env:    PORT, BOTFERENCE_PROJECT_ROOT, BOTFERENCE_HOME,
 //         PLUGIN_PASSWORD (hosted: the shared password),
 //         PLUGIN_OWNER_PASSWORD (hosted, optional: signs the owner in remotely),
+//         PLUGIN_GUESTS (hosted: on (default) | off — off lets the owner alone sign in),
 //         PLUGIN_BRIDGE_CMD (tests: JSON argv array replacing the python bridge),
 //         SSE_HEARTBEAT_MS (default 15000: idle event-stream keep-alive),
 //         PLUGIN_DECISION_DEBOUNCE_MS (default 100: decision-log write settle),
@@ -47,7 +48,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
 import { runOneShot, codexJail } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
-import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
+import { createHosted, hostedPeopleOf, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
@@ -125,9 +126,16 @@ if (HOSTED) {
   }
 }
 const access = ACCESS_CFG ? createAccess(ACCESS_CFG) : null;
-if (HOSTED && HOSTED_AUTH !== 'access' && !process.env.PLUGIN_PASSWORD) {
+// HOSTED_PEOPLE: who may sign in (hosted.mjs), from PLUGIN_GUESTS (on | off), read once, here; an unknown value refuses to start
+const HOSTED_PEOPLE_SETTING = (() => {
+  if (!HOSTED) return 'owner-and-guests';
+  const got = hostedPeopleOf(process.env);
+  if (got.error) { console.error(`--hosted: ${got.error}`); process.exit(1); }
+  return got.people;
+})();
+if (HOSTED && HOSTED_AUTH !== 'access' && HOSTED_PEOPLE_SETTING === 'owner-and-guests' && !process.env.PLUGIN_PASSWORD) {
   console.error('--hosted requires PLUGIN_PASSWORD to be set, e.g.  PLUGIN_PASSWORD=… botference plugin --hosted');
-  console.error("(or use 'botference plugin --share', which generates one and opens a tunnel for you)");
+  console.error("(or use 'botference plugin --share', which generates one and opens a tunnel for you; or PLUGIN_GUESTS=off for the owner alone)");
   process.exit(1);
 }
 // identity, auth and the guest-agent budget all live in one place
@@ -141,7 +149,13 @@ const hosted = createHosted({
   authMode: HOSTED_AUTH,
   // the names Access collaborators appear under: a password guest may not take them (hosted.mjs identity)
   reservedHandles: () => (ACCESS_CFG ? [...ACCESS_CFG.people.values()].flatMap(p => (p.handle ? [p.handle, p.alt] : [])) : []),
+  people: HOSTED_PEOPLE_SETTING,
 });
+// owner-only in password mode: the owner password is the only way in, so there must be one
+if (HOSTED && HOSTED_AUTH !== 'access' && HOSTED_PEOPLE_SETTING === 'owner-only' && !hosted.ownerPassword()) {
+  console.error('--hosted with PLUGIN_GUESTS=off needs an owner password (PLUGIN_OWNER_PASSWORD, or the review hub\'s shared one), and none could be found');
+  process.exit(1);
+}
 const NO_GRANT_REASON = "the owner hasn't granted you bot access";
 // …and when the owner's grants (or the daily count) file is damaged: the bots
 // are off for guests until the owner fixes it, and nobody's file is rewritten
@@ -7064,7 +7078,7 @@ if (process.env.PLUGIN_NO_LISTEN !== '1') {
         : '--hosted: remote visitors need the password; localhost stays the owner');
       console.log(`  reading room: /pages   agent grants: ${hosted.grantsFile}`);
       // what this companion trusts, said once at start (no secrets, no emails): the sign-in mode, the public names, the memorizer's name
-      console.log(`  sign-in: ${HOSTED_AUTH}   trusted names: ${PUBLIC_HOSTS.join(', ') || '(none)'}   memorizer: ${[...MEMORY_HOSTS].join(', ') || '(none)'}`);
+      console.log(`  sign-in: ${HOSTED_AUTH}   people: ${HOSTED_PEOPLE_SETTING === 'owner-only' ? 'owner only' : 'owner and guests'}   trusted names: ${PUBLIC_HOSTS.join(', ') || '(none)'}   memorizer: ${[...MEMORY_HOSTS].join(', ') || '(none)'}`);
     }
     // One anonymous "someone started this today", at most once a day, and only
     // if this build was given an api secret at all (beacon.mjs). Deliberately

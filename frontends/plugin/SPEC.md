@@ -13483,3 +13483,26 @@ blyg-home.json`, then `botference blyg-home set blyg-home.json`; `/blyg-home/pag
 - Commands are argv lists (no shell), run in the work tree that holds `folder`, so `scripts/blyg-publish` is relative to the blog checkout.
 - Check before the first use: start the companion the way you will always start it and press Publish on a throwaway thread with
   `confirm: "always"`; the check command names what is missing in plain words.
+
+## Amendment (2026-11-24): a hosted companion for its owner alone (`PLUGIN_GUESTS=off`)
+
+The owner's hosted companion "is just for me". Who may sign in is one named setting, `hosted.mjs HOSTED_PEOPLE =
+['owner-and-guests', 'owner-only']`, held in one field (`people`), read once at start from `PLUGIN_GUESTS` (`on`, the default and
+today's behaviour, or `off`; `hostedPeopleOf`); any other value refuses to start with a plain sentence. It is never changed while
+the companion runs.
+
+In `owner-only`:
+- The shared guest password is accepted nowhere: not as a Bearer header, not as `?auth=`, not in the sign-in form (which answers
+  only "wrong password — try again", whatever name was typed). No guest cookie is issued; a guest cookie signed earlier is refused at
+  once (it is not a session at all: never refreshed, never turned into anything else). SSE and WebSocket connections opened as a guest
+  cannot reconnect. Guest handles no longer matter.
+- `--hosted` needs no `PLUGIN_PASSWORD` (the launcher and the server both): only an owner password (`PLUGIN_OWNER_PASSWORD`, or the
+  review hub's shared one); with none the companion refuses to start.
+- With Cloudflare Access (`access`, `either`) the collaborators list is ignored: a verified person who is not the owner gets 403
+  "this companion is for its owner only".
+- The loopback is the owner, as always. The start line says `people: owner only`; `/auth-mode` says nothing new.
+- The guest-specific protections stay in the code for `owner-and-guests` (for example a guest never receives a TK gap).
+
+To turn guests off: start the companion with `PLUGIN_GUESTS=off` in its launch environment (`botference plugin --hosted` reads it).
+Tests: `test/hosted-people.test.mjs` (every route as a holder of the guest password, by header and query, and of a guest cookie from
+before; the form; streams; the owner's form, Bearer, SSE and WebSocket; startup validation; Access with owner-only).

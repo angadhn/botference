@@ -240,7 +240,28 @@ const safeNext = n => (n && n.startsWith('/') && !n.startsWith('//')) ? n : '/pa
 
 // hosted = false gives a no-op object: every call answers "owner, always" so
 // the local companion keeps behaving exactly as it did before this file existed.
-export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password', reservedHandles = () => [] }) {
+// WHO MAY SIGN IN to a hosted companion: one named setting, in one field (`people`), read once at start from PLUGIN_GUESTS
+// (hostedPeopleOf) and never changed while the companion runs.
+//   owner-and-guests  the owner and guests (the shared password, or Access collaborators): what a hosted companion always did
+//   owner-only        the owner alone. The shared guest password is never accepted (Bearer, ?auth=, the sign-in form, which then
+//                     says only "wrong password"); no guest cookie is issued, and one issued before is refused at once (never
+//                     turned into anything else); SSE and WebSocket connections opened as a guest cannot reconnect; with
+//                     Cloudflare Access the collaborators list is ignored and any verified non-owner is refused ("this companion
+//                     is for its owner only"). The loopback is the owner, as always.
+export const HOSTED_PEOPLE = Object.freeze(['owner-and-guests', 'owner-only']);
+const GUEST_SETTING = Object.freeze({ on: 'owner-and-guests', off: 'owner-only' });
+export const OWNER_ONLY_LINE = 'this companion is for its owner only';
+/** PLUGIN_GUESTS (on | off; unset = on) → { people } or { error } with a plain sentence (the value is named, it is no secret). */
+export function hostedPeopleOf(env = process.env) {
+  const raw = env.PLUGIN_GUESTS;
+  if (raw === undefined || raw === '') return { people: 'owner-and-guests' };
+  if (Object.hasOwn(GUEST_SETTING, raw)) return { people: GUEST_SETTING[raw] };
+  return { error: `PLUGIN_GUESTS must be "on" or "off" (it is ${JSON.stringify(String(raw).slice(0, 40))})` };
+}
+export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPassword = '', authMode = 'password', reservedHandles = () => [],
+  people = 'owner-and-guests' }) {
+  if (!HOSTED_PEOPLE.includes(people)) throw new Error(`hosted: no such people setting ${people}`);
+  const guestsAllowed = people === 'owner-and-guests';
   // `access`: only a Cloudflare Access token counts; the password routes, login page and cookie are off.
   // `either`: a token when one is present, otherwise the password path. See access.mjs.
   const grantsFile = path.join(dir, 'grants.json');
@@ -280,6 +301,8 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
     const [exp, role, handle, sig] = parts;
     if (!/^\d+$/.test(exp) || Date.now() > Number(exp)) return null;
     if (role !== 'owner' && role !== 'guest') return null;
+    // owner-only: a guest's cookie, however valid its signature, is no session at all
+    if (role === 'guest' && !guestsAllowed) return null;
     if (!/^[\w-]{1,40}$/.test(handle)) return null;
     return safeEqual(sig, mac(exp, role, handle)) ? { role, handle } : null;
   }
@@ -346,12 +369,12 @@ export function createHosted({ hosted, dir, ownerHandle, password = '', ownerPas
   function authorized(req) {
     if (!hosted || isLocalDirect(req)) return true;
     const tv = tokenVerdict(req);
-    if (tv) return tv.verdict === 'owner' || tv.verdict === 'guest';
+    if (tv) return tv.verdict === 'owner' || (tv.verdict === 'guest' && guestsAllowed);
     if (approvedDevice(req)) return true;
     const t = tokenOf(req);
     if (t) {
       const opw = ownerPw();
-      return safeEqual(t, password) || (!!opw && safeEqual(t, opw));
+      return (guestsAllowed && !!password && safeEqual(t, password)) || (!!opw && safeEqual(t, opw));
     }
     return !!cookieSession(req);
   }
@@ -471,11 +494,13 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
         }).end();
         return;
       }
+      // owner-only: nothing but the owner password opens the gate, and the answer says only that the password was wrong
+      if (!guestsAllowed) { sendPage(res, 401, gatePage(next, true, '')); return; }
       if (!handle) {
         sendPage(res, 401, gatePage(next, 'enter a name so your comments can be saved', raw));
         return;
       }
-      if (!safeEqual(given, password)) {
+      if (!password || !safeEqual(given, password)) {
         sendPage(res, 401, gatePage(next, true, raw));
         return;
       }
@@ -502,7 +527,8 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   // told so plainly (nothing else: no address, no list); no token is a 401; a service token is refused.
   function deniedByToken(req, res, tv) {
     const wantsPage = req.method === 'GET' && /text\/html/.test(req.headers.accept || '');
-    const [code, line] = tv.verdict === 'unlisted' ? [403, "this account is not on this companion's list"]
+    const [code, line] = tv.verdict === 'guest' && !guestsAllowed ? [403, OWNER_ONLY_LINE]
+      : tv.verdict === 'unlisted' ? [403, "this account is not on this companion's list"]
       : tv.verdict === 'service' ? [403, 'service tokens are not accepted here']
       : [401, 'sign-in required: open this address in a browser and sign in with Cloudflare Access'];
     if (wantsPage) { sendPage(res, code, NOTICE_PAGE(code === 401 ? 'Sign-in required' : 'Not allowed', line)); return; }
@@ -576,9 +602,9 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
   }
 
   return {
-    hosted, authMode, grantsFile, usageFile,
+    hosted, authMode, people, grantsFile, usageFile,
     // did an Access token (not a password, not the loopback) let this request in?
-    tokenAuthenticated: req => { const tv = hosted && !isLocalDirect(req) ? tokenVerdict(req) : null; return !!tv && (tv.verdict === 'owner' || tv.verdict === 'guest'); },
+    tokenAuthenticated: req => { const tv = hosted && !isLocalDirect(req) ? tokenVerdict(req) : null; return !!tv && (tv.verdict === 'owner' || (tv.verdict === 'guest' && guestsAllowed)); },
     authorized, isOwner, identity, denied, authEndpoint, gatePage,
     grantFor, grantUsed, grantSpend,
     refreshCookies, signOutCookies, ownerPassword: ownerPw,
