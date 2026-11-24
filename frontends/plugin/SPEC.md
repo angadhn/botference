@@ -13141,6 +13141,13 @@ it; `server.mjs viewHead` applies it to the views.
 | `/test-page` (a fixture for the extension's tests) | `script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'` (styles and images left open so the injected drawer looks as elsewhere) |
 | stored files (`/files/`, `/run-figure`, `/hub/theme/`) | `sandbox` (unchanged) |
 
+**What a script on the companion's own origin could still do** (if one ever ran despite the CSP): it can no longer change what runs
+(the command set is not writable over HTTP) and cannot start, advance or read a publish (only the pinned extension's worker can).
+It acts as the owner's own page everywhere else: it could read `GET /blyg-home` (the setting, with paths, on the machine), write
+comments and threads as the owner (which the server stamps owner-typed, so the drawer would then OFFER them for Publish as blyg:
+publishing still needs the owner's own click in the drawer, which shows the note first with `confirm: always`), and use the
+companion's other owner routes as before this feature.
+
 A value written into an inline script goes through `views.mjs scriptString` (escapes `<`, `>`, `&` and the line separators);
 `test/csp-pages.test.mjs` walks every route above and runs the reviewer's two probes (a page whose address breaks out of the reload
 script, made locally and by a hosted guest).
@@ -13318,6 +13325,8 @@ blyg-home.json`, then `botference blyg-home set blyg-home.json`; `/blyg-home/pag
 }
 ```
 
+- Start with `confirm: "always"` (what `botference blyg-home example` prints): the drawer shows the note and the plan before anything
+  goes live. Switch to `"never"` once a few publishes went as expected.
 - `confirm: "never"` publishes on the one click; it needs a `plan_guard`, which is appended to plan, apply and publish. `--only-note`
   makes the site's plan refuse anything but this note and the import files of the posts it quotes; `--quick` (only valid with it) skips the
   code-level test files (the build, the generated-site test, the checker and the live check still run), taking a publish from about 15
