@@ -24,7 +24,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["vendor/katex/katex.min.js", "anchor.js", "blockdiff.js", "adapters.js", "config.js", "hubbind.js", "tkgrammar.js", "drawer.js", "content.js"],
+      "js": ["vendor/katex/katex.min.js", "anchor.js", "blockdiff.js", "adapters.js", "config.js", "hubbind.js", "tkgrammar.js", "drawer.js", "pubtoast.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }

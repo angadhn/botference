@@ -608,6 +608,8 @@ function forceReconnect() {
 // drawer can have it open, so it goes to all of them. (`bfp://library` is a
 // scheme no tab can ever be showing, so the match loop would find nobody.)
 function routeEvent(ev) {
+  // a publish run moved (owner-only events): the background watch looks at how it stands
+  if (ev && ev.type === 'blyg-publish') pubWatchCheck(ev.run && ev.run.id);
   if (ev.url && !isLibraryUrl(ev.url)) {
     const nu = normUrl(ev.url);
     for (const [tabId, tabUrl] of tabUrls) {
@@ -628,15 +630,21 @@ function broadcastAll(msg) {
 }
 
 // ---- badge ---------------------------------------------------------------
+// (a publish going on in the background, or how it ended and not yet seen, takes the badge over on every tab: config.js pubBadgeMark)
 function setBadge(tabId, count) {
-  const text = count > 0 ? String(count) : '';
+  const mark = CFG.pubBadgeMark ? CFG.pubBadgeMark(pubWatch) : '';
+  const text = mark || (count > 0 ? String(count) : '');
   chrome.action.setBadgeText({ tabId, text }).catch(() => {});
-  if (count > 0) {
+  if (text) {
     chrome.action.setBadgeBackgroundColor({ tabId, color: '#d97757' }).catch(() => {});
     chrome.action.setBadgeTextColor && chrome.action.setBadgeTextColor({ tabId, color: '#ffffff' }).catch(() => {});
   }
 }
 function refreshAllBadges() {
+  // the default badge (every tab the worker has no page for: a browser page, a new tab) carries the publish mark alone
+  const mark = CFG.pubBadgeMark ? CFG.pubBadgeMark(pubWatch) : '';
+  chrome.action.setBadgeText({ text: mark }).catch(() => {});
+  if (mark) chrome.action.setBadgeBackgroundColor({ color: '#d97757' }).catch(() => {});
   for (const [tabId, nu] of tabUrls) {
     if (tabCounts.has(tabId)) { setBadge(tabId, tabCounts.get(tabId)); continue; }
     const e = indexEntryFor(nu);
@@ -1102,7 +1110,67 @@ async function blygPublish(msg, tabId) {
   if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null };
   if (spec.reply === 'image') return { ok: true, image: (r.data && r.data.image) || '' };
   if (spec.offer === 'grants') blygOffers.offer(offerKey(String(msg.act)));
+  // the owner set a run going (or a drawer found one going): watch it in the background
+  // (a start that will stop for the owner's look in the dialog is not watched: the owner is looking at it; a one-click start, a
+  // Publish, a Try again or a Carry on are; and a run found going past the owner's look)
+  { const run = r.data && r.data.run;
+    const watch = run && (['confirm', 'retry', 'continue'].indexOf(op) !== -1 || (op === 'start' && run.confirm === 'never')
+      || (op === 'run' && CFG.pubViewOf(run.mode, run.confirm) === 'running'));
+    if (watch) pubWatchStart(run).catch(() => {}); }
   return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '' };
+}
+
+// ---- Publish as blyg in the BACKGROUND: the watch and the notice ------------------------------------------------------------
+// After the owner presses Publish (or starts a one-click run) the drawer steps out of the way; this worker watches that run
+// (config.js PUB_WATCH_STATES, moved only by pubWatchMove) and tells the owner how it ended: a badge on the toolbar icon on every
+// tab, and a toast drawn by the content script of the tab they are looking at (pubtoast.js), or of the next page that opens. The
+// watch is kept in storage.local with the run's id, so a worker that was suspended and restarted carries on, and tells once.
+const PUB_WATCH_KEY = 'bfp:pub-watch';
+// (var: the badge code above may run before this line; an undefined watch reads as idle)
+var pubWatch = { state: 'idle', run: '', notice: null };
+const pubWatchReady = (async () => {
+  try { const got = await chrome.storage.local.get(PUB_WATCH_KEY); const w = got && got[PUB_WATCH_KEY];
+    if (w && CFG.PUB_WATCH_STATES.indexOf(w.state) !== -1) pubWatch = { state: w.state, run: String(w.run || ''), notice: w.notice || null }; } catch { /* none */ }
+  refreshAllBadges();
+})();
+async function pubWatchTo(move, patch) {
+  if (!CFG.pubWatchCan(pubWatch, move)) return false;
+  pubWatch = CFG.pubWatchMove(pubWatch, move, patch);
+  try { await chrome.storage.local.set({ [PUB_WATCH_KEY]: pubWatch }); } catch { /* the badge still says it */ }
+  refreshAllBadges();
+  return true;
+}
+// a run the owner set going: watch it (only a run that is under way; a finished one is nothing to wait for)
+async function pubWatchStart(run) {
+  await pubWatchReady;
+  if (!run || !run.id || CFG.pubNoticeOf(run)) return;
+  if (pubWatch.state === 'watching' && pubWatch.run === run.id) return;
+  await pubWatchTo('watch', { run: run.id });
+}
+// how the watched run stands now (an event about it, the keep-alive alarm, a worker start): once it ended, tell the owner, once
+let pubChecking = null;
+async function pubWatchCheck(runId) {
+  await pubWatchReady;
+  if (pubWatch.state !== 'watching' || (runId && runId !== pubWatch.run)) return;
+  if (pubChecking) return pubChecking;
+  pubChecking = (async () => {
+    const r = await api('GET', '/blyg-publish/run');
+    const run = r && r.ok && r.data ? r.data.run : null;
+    if (!run || pubWatch.state !== 'watching') return;
+    if (run.id !== pubWatch.run) { await pubWatchTo('quiet'); return; }   // another run replaced it (that one is watched when started)
+    const notice = CFG.pubNoticeOf(run);
+    const view = CFG.pubViewOf(run.mode, run.confirm);
+    if (!notice) { if (view !== 'working' && view !== 'running') await pubWatchTo('quiet'); return; }
+    if (await pubWatchTo('end', { notice })) pubTell();
+  })().finally(() => { pubChecking = null; });
+  return pubChecking;
+}
+// the toast on the tab the owner is looking at (if it has no content script, the badge alone says it, and the next page shows it)
+async function pubTell(tabId) {
+  if (pubWatch.state !== 'notice' || !pubWatch.notice) return;
+  let target = tabId;
+  if (target == null) { try { const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); target = tab ? tab.id : null; } catch { target = null; } }
+  if (target != null) send(target, { t: 'pub-notice', notice: pubWatch.notice });
 }
 
 // ---- message router ------------------------------------------------------
@@ -1125,6 +1193,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         // under). The configuration lives here and nowhere else in the page's
         // world, so a content script has no other way to learn it.
         await configReady;
+        // a notice the owner has not seen yet: this page shows it
+        await pubWatchReady;
+        if (tabId != null && pubWatch.state === 'notice') setTimeout(() => pubTell(tabId), 400);
         return { ok: true, known: !!entry, threads: entry ? (entry.threads || 0) : 0,
                  socket: wsState, index: indexCache, base: CONF.base };
       }
@@ -1152,6 +1223,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { ok: true };
       }
       case 'blyg-publish': return blygPublish(msg, tabId);
+      // the toast was shown (a live notice is then spent), or the owner dismissed it or opened the steps from it
+      case 'pub-notice-shown': {
+        await pubWatchReady;
+        if (pubWatch.state === 'notice' && pubWatch.notice && pubWatch.notice.run === msg.run && pubWatch.notice.kind === 'live') await pubWatchTo('seen');
+        return { ok: true };
+      }
+      case 'pub-notice-done': {
+        await pubWatchReady;
+        if (pubWatch.state === 'notice' && pubWatch.notice && pubWatch.notice.run === msg.run) await pubWatchTo('seen');
+        return { ok: true };
+      }
       case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'pdf-bypass': return pdfBypass(msg.url);
@@ -1238,7 +1320,7 @@ chrome.action.onClicked.addListener(tab => {
     // content script not present (chrome:// page, or injected before install)
     chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      files: ['anchor.js', 'adapters.js', 'config.js', 'drawer.js', 'content.js'],
+      files: ['anchor.js', 'adapters.js', 'config.js', 'drawer.js', 'pubtoast.js', 'content.js'],
     }).then(() => chrome.tabs.sendMessage(tab.id, { t: 'toggle' })).catch(() => openInPdfViewer(tab));
   });
 });
@@ -1290,7 +1372,11 @@ chrome.alarms.onAlarm.addListener(a => {
   // by more than one tick, whoever's worker wrote it
   sweepBypass();
   if (wsState === 'connected') refreshIndex(true);
+  // a bounded poll while a publish is watched (the event stream is the fast path; this catches a missed event or a restart)
+  pubWatchCheck();
 });
+// a worker that has just started looks at a run it was watching before it was suspended
+pubWatchReady.then(() => pubWatchCheck()).catch(() => {});
 
 chrome.runtime.onInstalled.addListener(() => { ensureSocket(); refreshIndex(true); reopenViewerTabs(); });
 

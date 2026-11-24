@@ -4189,6 +4189,20 @@
       sendResponse({ ok: true, url: IDENT_HREF, active });
       return;
     }
+    // a post published in the background is live, or needs the owner: the notice on this tab (pubtoast.js), drawer open or not
+    if (msg.t === 'pub-notice') {
+      const T = window.BFPPubToast;
+      const n = msg.notice || {};
+      if (T && (n.kind === 'live' || n.kind === 'attention')) {
+        T.show(n, {
+          onShown: x => bg({ t: 'pub-notice-shown', run: x.run }).catch(() => {}),
+          onDone: x => bg({ t: 'pub-notice-done', run: x.run }).catch(() => {}),
+          onOpen: () => { activate().then(d => { if (d) { d.open(); if (d.pubShowRun) d.pubShowRun(); } }).catch(() => {}); },
+        });
+      }
+      sendResponse({ ok: true });
+      return;
+    }
     if (msg.t === 'toggle') {
       if (!active) activate();
       else drawer.toggle();

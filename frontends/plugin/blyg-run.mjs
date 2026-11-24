@@ -925,6 +925,8 @@ export function createPublisher(deps) {
   function retry({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
     { const t = taintOf(book.run); if (t) return fail(409, t); }
+    // a press that arrives while the step is already being tried again (a second press, a late one): said plainly, nothing done
+    if (RUNNING_MODES.includes(book.mode) || book.mode === 'applied') return { ...fail(409, 'It is already trying again.'), view: current() };
     const to = RETRY_FOR[book.mode] || '';
     if (!to || !canMove(book.mode, to)) return fail(409, 'There is no failed step to try again.');
     if (to === 'planning' || to === 'preparing') runPlan().catch(() => {});

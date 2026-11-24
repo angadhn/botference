@@ -1651,3 +1651,20 @@ test('an edit aimed at another post\'s note: the id check, the address check and
   r = await b.start('t1');
   assert.ok(r.ok, r.error);
 });
+
+test('a second press of Try again while the retry is already running is answered "It is already trying again." and does nothing', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const b = boot(rig);
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  rig.control({ apply: 'fail' });
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'failed_apply', 'failed');
+  rig.control({ apply: 'sleep' });
+  v = b.pub.current();
+  assert.ok((await b.pub.retry({ id: v.id, token: v.token })).ok);
+  await until(() => b.mode() === 'applying' && rig.calls().filter(c => c.step === 'apply').length === 2, 'retrying');
+  const late = await b.pub.retry({ id: v.id, token: v.token });
+  assert.deepEqual([late.ok, late.status, late.error, late.view.mode, late.view.can], [false, 409, 'It is already trying again.', 'applying', []]);
+  assert.equal(rig.calls().filter(c => c.step === 'apply').length, 2, 'nothing ran twice');
+  b.pub.stopAll();
+});

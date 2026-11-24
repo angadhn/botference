@@ -102,29 +102,30 @@ eq('started: working', [view(), C.mode], ['working', 'planning']);
 await moved('failed_plan');
 eq('the plan failed: one sentence, and Try again', [view(), q('.pubdlg p.puberr').textContent, !!q('[data-act="pub-retry"]')], ['problem', 'Something went wrong while checking that only this note changes.', true]);
 await press('pub-retry');
-eq('Try again went through the worker', [C.mode, view()], ['planning', 'working']);
+eq('Try again went through the worker, and the box stepped out of the way (the run goes on in the background)', [C.mode, view()], ['planning', 'closed']);
 await moved('planned');
+await drawer.pubShowRun(); await tick(30);
 eq('planned: the preview with a Publish button', [view(), !!q('[data-act="pub-confirm"]')], ['confirming', true]);
 await press('pub-confirm');
-eq('(b) Publish after a retry WORKS: the companion is applying, the drawer is running', [C.mode, view(), drawer.pub.error], ['applying', 'running', '']);
-// …and the same through Carry on
+eq('(b) Publish after a retry WORKS: the companion is applying, the box is out of the way', [C.mode, view(), drawer.pub.error], ['applying', 'closed', '']);
+// …and the same through Carry on (the notice's "Show what happened" opens the run's own view)
 await moved('interrupted_applying');
-drawer.pub.view === 'running' || eq('(set up) interrupted', view(), 'problem');
-if (view() !== 'problem') { drawer.blygPublishMoved(); await tick(30); }
+eq('(set up) interrupted while the box was closed: nothing pops up', view(), 'closed');
+await drawer.pubShowRun(); await tick(30);
 eq('interrupted: Carry on', [view(), !!q('[data-act="pub-continue"]')], ['problem', true]);
 await press('pub-continue');
-eq('Carry on went through', [C.mode, view()], ['applying', 'running']);
+eq('Carry on went through', [C.mode, view()], ['applying', 'closed']);
 await moved('failed_apply');
+await drawer.pubShowRun(); await tick(30);
 eq('then a failure: Try again', [view(), !!q('[data-act="pub-retry"]')], ['problem', true]);
 await press('pub-retry');
-eq('the act after a Carry on works too', [C.mode, view()], ['applying', 'running']);
-// (c) Close at running, and the plane on ANOTHER thread brings the run back (never the scope choice, never a refused start)
+eq('the act after a Carry on works too', [C.mode, view()], ['applying', 'closed']);
+// (c) the plane on ANOTHER thread brings the run back (never the scope choice, never a refused start)
 await moved('planned');
-press('pub-close'); await settle(); await tick(30);
 q('.thr-pub[data-target="t2"]').click(); await tick(30);
 eq('(c) after Close, the plane on another thread shows the live run', [view(), !!q('[data-act="pub-scope"]'), !!q('[data-act="pub-confirm"]')], ['confirming', false, true]);
 await press('pub-confirm');
-eq('(c) …and its Publish works, with no reload', [C.mode, view()], ['applying', 'running']);
+eq('(c) …and its Publish works, with no reload', [C.mode, view()], ['applying', 'closed']);
 eq('the companion was never asked to start a second run', C.seen.filter(p => p === '/blyg-publish/start').length, 1);
 delete document.elementsFromPoint;
 

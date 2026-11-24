@@ -3075,6 +3075,7 @@
         blyg: shadow.querySelector('.hdr .blyg'),
         filein: shadow.querySelector('.hdr .iconbtn.filein'),
         quiz: shadow.querySelector('.hdr .iconbtn.quiz'),
+        pubprog: shadow.querySelector('.hdr .iconbtn.pubprog'),
         light: shadow.querySelector('.lightbox'),
         pubdlg: shadow.querySelector('.pubdlg'),
         grip: shadow.querySelector('.grip'),
@@ -3195,6 +3196,8 @@ ${markPickHtml()}
       <button class="iconbtn quiz" data-act="quiz" type="button" title="Quiz — questions you asked to be reminded of" aria-label="Open the quiz" hidden>?<span class="qdue" hidden></span></button>
       <!-- Hub: the reader's console for blygs, a page of the companion's own -->
       <button class="iconbtn following" data-act="following" type="button" title="Hub — your blygs, mentions and background" aria-label="Open the Hub"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 3.5a9.5 9.5 0 0 1 9.5 9.5M3 7.5a5.5 5.5 0 0 1 5.5 5.5"/><circle cx="3.8" cy="12.2" r="1" fill="currentColor" stroke="none"/></svg></button>
+      <!-- a publish running in the background: a small mark that opens its plain steps (no modal until pressed) -->
+      <button class="iconbtn pubprog" data-act="pub-progress" type="button" title="Publishing in the background: show the steps" aria-label="Publishing in the background: show the steps" hidden><span class="pubprogdot" aria-hidden="true"></span></button>
       <button class="iconbtn" data-act="models" type="button" title="Models" aria-label="Models">⚙</button>
       <button class="iconbtn obsidian" data-act="export" type="button" title="Export to Obsidian" aria-label="Export to Obsidian">${OBSIDIAN_SVG}</button>
       <button class="iconbtn" data-act="close" type="button" title="Close (Esc)">✕</button>
@@ -7026,6 +7029,7 @@ ${bubbleShellHtml()}`;
     // scroll offsets are restored after.
     function render() {
       if (!D.mounted) return;
+      if (D.el.pubprog) D.el.pubprog.hidden = !(D.owner && D.pub.view === 'closed' && pubLive(D.pub.run));
       // an edit whose message is no longer here (deleted, another page) ends
       if (editMode(D.edit) === 'open' && !findMsg(D.edit.target, D.edit.ts, D.edit.author)) moveEdit('leave');
       const cTop = D.el.comments.scrollTop, chTop = D.el.chat.scrollTop;
@@ -8393,6 +8397,7 @@ ${bubbleShellHtml()}`;
       'pub-forget': () => pubAct('forget'),
       'pub-pic-refresh': () => { if (D.pub.view === 'confirming') { pubPic('waiting', { tries: 0 }); paintPub(); pubPicAsk(true); } },
       'pub-review': () => pubReview(),
+      'pub-progress': () => pubProgress(),
       'pub-close': () => pubClose(),
       'export-response': () => toggleResponse(),
       'gap': (btn) => gapAction(btn),
@@ -10718,13 +10723,51 @@ ${bubbleShellHtml()}`;
     // with confirm 'never' the dialog stays out of the way while a run THIS drawer started goes through: the thread carries one line
     const pubQuiet = () => D.pub.opener === 'start' && (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
       && (D.pub.view === 'starting' ? D.pub.shown : (D.pub.run && D.pub.run.confirm)) === 'never';
+    // A run that is under way on the companion (being written, planned, built or published): it goes on in the BACKGROUND, the
+    // owner carries on reading; the thread shows a quiet chip and the header a small mark that opens the steps.
+    const pubLive = r => !!r && !!r.id && ['working', 'running'].indexOf(CFG.pubViewOf(r.mode, r.confirm)) !== -1;
+    const PUB_BACKGROUND_SAY = 'Publishing in the background. You\'ll be told when it\'s live.';
+    // the dialog steps out of the way once the owner has pressed (the run keeps going on the companion; a notice says how it ended)
+    function pubToBackground() {
+      if (!pubLive(D.pub.run)) return;
+      if (D.pub.view !== 'closed' && !pubGo('closed', { error: '' })) return;
+      setFootNote('info', PUB_BACKGROUND_SAY);
+      render();
+    }
+    // the notice's "Show what happened": the drawer opens on the run's own view (asked of the companion afresh)
+    async function pubShowRun() {
+      if (!D.owner || typeof opts.onBlygPublish !== 'function') return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (!r || !r.ok || !r.run || !r.run.id) return;
+      D.pub.run = r.run;
+      const target = CFG.pubViewOf(r.run.mode, r.run.confirm);
+      if (D.pub.view === target) { paintPub(); return; }
+      if (D.pub.view !== 'closed') pubGo('closed', { error: '' });
+      pubGo(target, { run: r.run, opener: 'plane', error: '' });
+    }
+    function pubProgress() {
+      if (!D.owner || D.pub.view !== 'closed' || !D.pub.run) return;
+      pubGo(CFG.pubViewOf(D.pub.run.mode, D.pub.run.confirm), { run: D.pub.run, opener: 'plane', error: '' });
+    }
+    // the drawer is told a run moved while its dialog is closed: the run is read again for the chip and the mark (no view changes)
+    async function pubRefreshQuiet() {
+      if (!D.owner || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      if (D.pub.view !== 'closed' || !r || !r.ok) return;
+      D.pub.run = r.run && r.run.id ? r.run : null;
+      render();
+    }
     const pubElapsed = ms => { const s = Math.max(0, Math.round((ms || 0) / 1000)); return s < 60 ? s + ' s' : Math.floor(s / 60) + ' min ' + (s % 60) + ' s'; };
     // THE ONE LINE on a thread: what a one-click run that has this thread in it is doing now (the owner's words), then the link
     function pubLine(t) {
       if (!D.owner) return '';
       const r = D.pub.run;
       if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.shown === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
-      if (!r || r.confirm !== 'never' || (r.thread_ids || []).indexOf(t.id) === -1) return '';
+      if (!r || (r.thread_ids || []).indexOf(t.id) === -1) return '';
+      // any run under way while the dialog is closed: a quiet chip (the header's mark opens the steps)
+      if (r.confirm !== 'never') return pubLive(r) && D.pub.view === 'closed' ? '<div class="publine pubchip" role="status">publishing…</div>' : '';
       if (r.mode === 'published') {
         if (pubPublished(t) && D.pub.view === 'closed') return '';
         const a = safeHttp((r.published || {}).address);
@@ -10747,6 +10790,7 @@ ${bubbleShellHtml()}`;
       if (!D.owner || !D.mounted) return D;
       if (D.pub.view === 'working' || D.pub.view === 'running') pubRefresh();
       else if (D.pub.view === 'confirming' && D.pub.pic.state === 'waiting') pubPicAsk(false);
+      else if (D.pub.view === 'closed') pubRefreshQuiet();
       return D;
     }
     // opening the drawer: is a run under way that this drawer did not start (a reload, another tab)? Offered, never forced.
@@ -10756,6 +10800,9 @@ ${bubbleShellHtml()}`;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
       if (PUB_DONE_MODES.indexOf(r.run.mode) !== -1) return;
+      // a run going on in the BACKGROUND is not put in front of the owner: the thread's chip and the header's mark say it (and the
+      // notice tells how it ended); only a run that waits for the owner is offered
+      if (pubLive(r.run)) { D.pub.run = r.run; render(); return; }
       pubGo('waiting', { run: r.run, opener: 'drawer' });
     }
     // THE PLANE on any thread FIRST asks the companion for its run: a live one is shown as it is (with the post it is for), never the
@@ -10909,6 +10956,7 @@ ${bubbleShellHtml()}`;
       try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown }); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'The publish did not start.', run: null }); return; }
       pubApply(r.run);
+      if (D.pub.shown === 'never') setFootNote('info', PUB_BACKGROUND_SAY);
     }
     // THE BUTTONS THAT ACT ON THE RUN, each carrying the run's own id and token. The three that start something (confirm, retry,
     // continue) first ARM: from this trusted click, the worker opens a one-use offer for exactly this act, which the act spends. One
@@ -10932,7 +10980,7 @@ ${bubbleShellHtml()}`;
       const sure = op === 'forget' && D.pub.ask === 'forget';
       pubAskMove('none');
       // the view changes first for the one that publishes, so a second click finds nothing to press
-      if (op === 'confirm' && !pubGo('running')) return;
+      if (starts && D.pub.view !== 'running' && !pubGo('running')) return;
       if (starts) {
         const armed = await cb('onBlygPublish')('arm', { act: op }).catch(() => null);
         if (!armed || !armed.ok || !armed.run || armed.run.id !== run.id) {
@@ -10961,6 +11009,7 @@ ${bubbleShellHtml()}`;
       }
       D.pub.error = '';
       pubApply(r.run);
+      if (starts) pubToBackground();
     }
     function pubReview() {
       if (D.pub.view !== 'waiting' || !D.owner || !D.pub.run) return;
@@ -14469,7 +14518,7 @@ ${bubbleShellHtml()}`;
 
     Object.assign(D, {
       mount, open, close, toggle, render, setPage, setOrphans, setConn, noteTimeout, setTheme, setWarning, setAuthor,
-      setExportMode, setOwner, setProject, setRound, setBlog, blogRoot, blygPublishMoved,
+      setExportMode, setOwner, setProject, setRound, setBlog, blogRoot, blygPublishMoved, pubShowRun,
       // {hosts, pageOwns} — the page's own review UI, and which margin the
       // reader has given this page to. Re-rendered, never remounted: the
       // switch flips in place.

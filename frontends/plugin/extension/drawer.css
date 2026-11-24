@@ -2751,3 +2751,10 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
   .pubcard { width: 100%; max-height: 92vh; border-radius: 12px 12px 0 0; padding: 14px 14px 18px }
   .pubbtns .pbtn { flex: 1 1 100% }
 }
+/* a publish going on in the background: a small mark in the header (opens the steps) and a quiet chip on the thread */
+.iconbtn.pubprog { display: inline-flex; align-items: center; justify-content: center }
+.iconbtn.pubprog[hidden] { display: none }
+.pubprogdot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pubprog 1.6s ease-in-out infinite }
+@keyframes pubprog { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) { .pubprogdot { animation: none } }
+.publine.pubchip { display: inline-block; border-left: none; border-radius: 999px; padding: 1px 9px; background: var(--rail); font-size: 11px }

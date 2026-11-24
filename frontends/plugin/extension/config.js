@@ -298,6 +298,49 @@
     const k = pubKeyOfStep(run.failed_step, run) || 'note';
     return 'Something went wrong while ' + PUB_STEP_DOING[k] + '.';
   }
+  // ---- the worker's watch over a run publishing in the background (background.js) --------------------------------------------
+  // ONE named state (persisted with the watched run id, so a suspended and restarted worker carries on), moved only by pubWatchMove:
+  //   idle      nothing is being watched, nothing to tell
+  //   watching  a run the owner set going is under way: the toolbar badge shows a dot; the end is learned from the owner-only event
+  //             stream, or by a bounded poll (the worker's keep-alive alarm) while watching
+  //   notice    the run ended and the owner has not seen how yet: a tick (live) or "!" (needs attention) on the badge, and a toast
+  //             on the tab the owner is looking at (or the next page that opens). A live notice is spent when it is shown; one that
+  //             needs attention when the owner dismisses it or opens the steps from it.
+  const PUB_WATCH_STATES = Object.freeze(['idle', 'watching', 'notice']);
+  const PUB_WATCH_MOVES = Object.freeze({
+    watch: Object.freeze(['idle', 'watching', 'notice']),   // a run was set going (a new run replaces an unseen notice)
+    end: Object.freeze(['watching']),                      // the watched run ended: tell the owner (once: only from watching)
+    quiet: Object.freeze(['watching']),                    // it ended with nothing to tell (cancelled, abandoned)
+    seen: Object.freeze(['notice']),                       // the owner saw it
+  });
+  const PUB_WATCH_TO = Object.freeze({ watch: 'watching', end: 'notice', quiet: 'idle', seen: 'idle' });
+  function pubWatchMove(w, move, patch) {
+    const from = (w && w.state) || 'idle';
+    if (!PUB_WATCH_MOVES[move]) throw new Error('publish watch: no such move ' + move);
+    if (PUB_WATCH_MOVES[move].indexOf(from) === -1) throw new Error('publish watch: cannot ' + move + ' from ' + from);
+    const to = PUB_WATCH_TO[move];
+    const next = { state: to, run: to === 'idle' ? '' : String((patch && patch.run) || (w && w.run) || ''), notice: to === 'notice' ? (patch && patch.notice) || null : null };
+    return next;
+  }
+  const pubWatchCan = (w, move) => !!PUB_WATCH_MOVES[move] && PUB_WATCH_MOVES[move].indexOf((w && w.state) || 'idle') !== -1;
+  /** How a run that was going in the background ended, for the owner: { kind: 'live' | 'attention', sentence, link? } or null (still
+   *  going, or ended with nothing to tell). The link is the address the COMPANION recorded for the post (http(s) only). */
+  const PUB_NOTICE_KINDS = Object.freeze(['live', 'attention']);
+  function pubNoticeOf(run) {
+    if (!run || !run.id) return null;
+    const view = pubViewOf(run.mode, run.confirm);
+    if (view === 'working' || view === 'running') return null;
+    if (run.mode === 'published') {
+      let link = '';
+      try { const u = new URL(String((run.published && run.published.address) || '')); if ((u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password) link = u.href; } catch (_) { link = ''; }
+      return { kind: 'live', run: run.id, sentence: 'Your post is live.', link };
+    }
+    if (view === 'problem') return { kind: 'attention', run: run.id, sentence: pubFailureOf(run) || (/^interrupted_/.test(String(run.mode)) ? 'The companion stopped while your post was being published.' : run.mode === 'abandon_failed' ? 'Your site could not give this publish up.' : 'Something went wrong while publishing.'), link: '' };
+    if (view === 'confirming') return { kind: 'attention', run: run.id, sentence: 'Your post is ready for your look before it is published.', link: '' };
+    return null;
+  }
+  /** The toolbar badge's mark for the watch, or '' (the page's own count shows then). */
+  const pubBadgeMark = w => (!w || w.state === 'idle' ? '' : w.state === 'watching' ? '•' : (w.notice && w.notice.kind === 'live' ? '✓' : '!'));
   /** How long "Building and checking your site" takes: quick (the guard has the site's quick flag), or about N minutes from the last
    *  full run recorded for this site, or nothing when none is recorded (never a guess). */
   function pubPaceWords(run) {
@@ -777,7 +820,8 @@
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
-    PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
+    PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
+    PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,

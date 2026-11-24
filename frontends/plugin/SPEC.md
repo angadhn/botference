@@ -13564,3 +13564,30 @@ gap), `hosted-people`, `blyg-run` (refusal table with every refusal of the examp
 cleanup outcome, edit aimed at another note, preview moves), `blyg-note` (TK refusals, block boxes, showsLiquid), `blyg-home`
 ({changelog} whole argument), `blyg-publish-server` (remote owner gets no preview_url), `blygpublish-drawer` (framed, ask, unsure,
 marks), `tkdrawer` (needs an edit, the hint), `blyg-liquid-build` (each TK kind refused; code published; inline gap a block; marks).
+
+### Publishing in the background, and the notice (2026-11-24, the owner: "backgrounding it and then giving me a notif")
+The checks are unchanged (the guarded quick path: build, generated-site test, checker, push, wait for the site, live check,
+mentions). What changed is where the owner waits:
+- **The box steps out of the way.** After Publish (and Try again, Carry on; at once for a one-click start) the dialog closes by
+  itself and the footbar says, fading: "Publishing in the background. You'll be told when it's live." The run goes on on the
+  companion as before. A run found going when the drawer opens is not put in front of the owner (only one that waits for them is).
+- **Quiet status.** The thread shows a "publishing…" chip; the drawer's header a small pulsing mark (`pub-progress`) that opens the
+  plain steps view (no Try again while a step runs).
+- **The notice** (no new extension permission). The worker watches the run it saw the owner set going: `config.js
+  PUB_WATCH_STATES = idle | watching | notice`, moved only by `pubWatchMove` (watch, end, quiet, seen; an end only from watching, so
+  it is told once), kept in `storage.local` with the run id, so a suspended and restarted worker carries on. It learns of the end
+  from the owner-only event stream, or the keep-alive alarm's bounded poll (every 30 s) while watching. Then: a mark on the toolbar
+  badge on every tab and as the default (• while publishing; ✓ or ! after; cleared when seen), and a toast (`pubtoast.js`) drawn
+  by the content script of the tab the owner is looking at (or the next page that opens): "Your post is live." with "Open your
+  post" (the address the companion recorded, http(s) only), gone after about 10 s; or, when it needs attention, ONE fixed sentence
+  (`pubNoticeOf`: the site's prepared refusal, else "Something went wrong while …", an interruption, or "Your post is ready for your
+  look before it is published.") with "Show what happened", which opens the drawer on the run's own view (Try again / Start over /
+  Forget, as the mode allows); it stays until dismissed. The toast is in a closed shadow root; its buttons act only on a trusted
+  click that lands on it (a page's overlay gets nothing) or the keyboard; Escape dismisses. A live notice is spent when shown, one
+  needing attention when dismissed or acted on. A start that stops in the dialog for the owner's look is not watched (they are
+  looking at it). A system notification was not needed: no `notifications` permission.
+- **A late press.** Try again while the step is already being tried again: 409 "It is already trying again." with the run as it is
+  (running, no Try again offered); the drawer moves to the running view before it sends, so a second click finds nothing to press.
+Tests: `blygpublish-notice` (the watch table; dot, tick, "!"; the toast on another tab than the one that started; a worker restart
+mid-run tells once, never twice; the toast's words, link, trusted and uncovered clicks, keyboard), `blygpublish-drawer` (the box
+closes, the chip, the mark, nothing pops up when it ends), `blygpublish-walk`, `blyg-run` (the late press).

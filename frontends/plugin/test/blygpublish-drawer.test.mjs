@@ -60,7 +60,7 @@ function companion(first) {
     if (op === 'run' || op === 'arm') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' }, confirm: state.confirm || 'always' };
     if (op === 'preview') return { ok: true, state: state.picture || 'off' };
     if (op === 'preview-image') return { ok: true, image: 'data:image/png;base64,iVBORw0KGgo=' };
-    if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', ok: true, ms: 1 }] }); return { ok: true, run: state.run }; }
+    if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', ok: true, ms: 1 }], thread_ids: state.run.thread_ids || ['t1'] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
     if (op === 'continue') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
@@ -166,9 +166,16 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   const before = server.calls.length;
   await settle(); click(q('[data-act="pub-confirm"]')); await tick();
   eq('Publish arms THIS act from the click, then sends the run\'s id and token', server.calls.slice(-2), [{ op: 'arm', body: { act: 'confirm' } }, { op: 'confirm', body: { run: 'r1', token: 'tok1' } }]);
-  eq('and the view is running at once', view(), 'running');
-  click(q('.pubdlg [data-act="pub-close"]')); await tick();
+  // IN THE BACKGROUND: the box closes by itself, one line says so and fades; the thread shows a quiet chip, the header a mark
+  eq('the box closes by itself; one line says it goes on in the background', [view(), dlg().hidden, drawer.footNote.mode, drawer.footNote.text], ['closed', true, 'info', 'Publishing in the background. You\'ll be told when it\'s live.']);
+  eq('the thread\'s quiet chip', qa('.pubchip').map(c => c.textContent), ['publishing…']);
+  const mark = q('.hdr .pubprog');
+  eq('the header\'s small mark', [!!mark, mark && mark.hidden], [true, false]);
   eq('there is nothing left to press twice: no Publish button while running', [qa('[data-act="pub-confirm"]').length, server.calls.filter(c => c.op === 'confirm').length], [0, 1]);
+  click(mark); await tick();
+  eq('the mark opens the plain steps (no Try again while it runs)', [view(), qa('.pubdlg [data-act="pub-retry"]').length, !!q('.pubsteps')], ['running', 0, true]);
+  click(q('.pubdlg [data-act="pub-close"]')); await tick();
+  eq('closed again: the mark stays while the run goes on', [view(), q('.hdr .pubprog').hidden], ['closed', false]);
   void before;
 }
 {
@@ -179,6 +186,8 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('published', { steps: [{ step: 'plan', ok: true }, { step: 'apply', ok: true }, { step: 'publish', ok: true }],
     published: { at: 'now', title: 'My first thought', permalink: '/b/my-first-thought', address: 'https://site.example.test/b/my-first-thought' } });
   drawer.blygPublishMoved(); await tick(5);
+  eq('published while the box was closed: no dialog pops up (the worker\'s notice tells), the chip and the mark are gone', [view(), qa('.pubchip').length, q('.hdr .pubprog').hidden], ['closed', 0, true]);
+  await drawer.pubShowRun(); await tick(5);
   eq('published: Live, the link, and every step ticked', [view(), q('.pubdlg h2').textContent, q('.pubdlg a').getAttribute('href'), qa('.pubsteps li').map(li => li.className)], ['done', 'Live', 'https://site.example.test/b/my-first-thought', ['done', 'done', 'done', 'done', 'done', 'done']]);
   ok('the link is safe', q('.pubdlg a').getAttribute('rel') === 'noopener noreferrer' && q('.pubdlg a').getAttribute('target') === '_blank');
   server.run = server.make('published', { published: { title: 't', permalink: '/b/t', address: 'javascript:alert(1)' } });
@@ -531,7 +540,7 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
     eq('the buttons, in the owner\'s words', qa('.pubdlg .pbtn').map(b => b.textContent), ['Try again', 'Start over', 'Close']);
     await settle(); click(q('[data-act="pub-retry"]')); await tick();
     eq('a retry is the owner\'s click: it arms THIS act and then retries, with the run\'s token', server.calls.slice(-2), [{ op: 'arm', body: { act: 'retry' } }, { op: 'retry', body: { run: 'r1', token: 'tok1' } }]);
-    eq('and the view follows the run', view(), 'running');
+    eq('and it goes on in the background: the box closes by itself', view(), 'closed');
   } else {
     click(q('[data-act="pub-abandon"]')); await tick();
     eq('abandon sends the run\'s id and token', [server.calls.at(-1), view()], [{ op: 'abandon', body: { run: 'r1', token: 'tok1' } }, 'closed']);
@@ -586,8 +595,10 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   server.run = server.make(mode, { thread_ids: ['t1'], failed_step: mode === 'failed_plan' ? 'plan' : '', interrupted_from: mode === 'interrupted_publishing' ? 'publishing' : '', steps: [] });
   const { q, qa, view, click, drawer } = await make({ server });
   await tick(10);
-  eq(`${mode}: (set up) found on opening`, view(), 'waiting');
-  click(q('[data-act="pub-close"]')); await tick();
+  const live = ['working', 'running'].includes(view0);
+  // a run going on in the background is not put in front of the owner on opening: the chip and the header mark say it
+  eq(`${mode}: (set up) found on opening`, [view(), q('.hdr .pubprog').hidden], live ? ['closed', false] : ['waiting', true]);
+  if (!live) { click(q('[data-act="pub-close"]')); await tick(); }
   for (const tid of ['t1', 't2']) {
     click(q(`.thr-pub[data-target="${tid}"]`)); await tick();
     eq(`${mode}: the plane on ${tid} shows the run, never the scope choice`, [view(), qa('[data-act="pub-scope"]').length, /For “My first thought”/.test(q('.pubdlg').textContent)], [view0, 0, true]);
