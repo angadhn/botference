@@ -46,7 +46,7 @@ const PAGE = () => ({ url: 'https://example.com/article', title: 'An article', p
 function companion(first) {
   const state = { run: first || { mode: 'idle', can: [] }, calls: [] };
   const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', note_rel: '_notes/my-first-thought.md', note_text: '---\ntitle: x\n---\nBody <img src=x onerror=alert(1)> {{ x }}\n',
-    steps: [], can: { planned: ['confirm', 'cancel'], failed: ['retry', 'abandon'], interrupted: ['continue', 'abandon'] }[mode] || [], ...extra });
+    steps: [], can: mode === 'planned' ? ['confirm', 'cancel'] : /^failed_/.test(mode) ? ['retry', 'abandon'] : /^interrupted_(applying|applied|publishing)$/.test(mode) ? ['continue', 'abandon'] : /^interrupted_/.test(mode) ? ['abandon'] : [], ...extra });
   state.run = first || run('idle');
   state.make = run;
   state.onBlygPublish = async (op, body) => {
@@ -88,8 +88,8 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     else { let threw = false; try { CFG.pubMove(from, to); } catch (_) { threw = true; } ok(`pubMove ${from} → ${to} refused`, threw); illegal++; }
   }
   ok('the table has legal and illegal moves', legal >= 20 && illegal >= 40, `${legal}/${illegal}`);
-  eq('server modes → views', ['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published', 'failed', 'interrupted', 'cancelled', 'abandoned'].map(CFG.pubViewOf),
-    ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'closed', 'closed']);
+  eq('server modes → views', ['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published', 'failed_prepare', 'failed_plan', 'failed_apply', 'failed_publish', 'interrupted_drafted', 'interrupted_planning', 'interrupted_applying', 'interrupted_publishing', 'interrupted_unknown', 'cancelled', 'abandoned'].map(CFG.pubViewOf),
+    ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
   eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'continue', 'cancel', 'abandon']);
@@ -201,7 +201,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('published', { confirm: 'never', thread_ids: ['t1'], published: { title: 't', permalink: '/b/t', address: 'https://site.example.test/b/t' } });
   drawer.blygPublishMoved(); await tick(5);
   eq('published: the link on the thread, the view free again', [view(), q('.publine.done a').getAttribute('href'), dlg().hidden], ['closed', 'https://site.example.test/b/t', true]);
-  server.run = server.make('failed', { confirm: 'never', thread_ids: ['t1'], failed_step: 'plan', failed_reason: 'plan exited with code 1', steps: [{ step: 'plan', exit: 1, output: 'Refused: this plan would change more than the note' }] });
+  server.run = server.make('failed_plan', { confirm: 'never', thread_ids: ['t1'], failed_step: 'plan', failed_reason: 'plan exited with code 1', steps: [{ step: 'plan', exit: 1, output: 'Refused: this plan would change more than the note' }] });
   drawer.pub.view = 'running'; drawer.pub.run = server.run;
   drawer.blygPublishMoved(); await tick(5);
   eq('a failure brings the dialog back, with the step, the output and the choices', [view(), dlg().hidden, /Refused: this plan would change more than the note/.test(dlg().textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', false, true, ['pub-retry', 'pub-abandon', 'pub-close']]);
@@ -283,7 +283,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     document.elementsFromPoint = real.efp;
   }
   // confirm, retry and continue each get the same check (a mutant that dropped it from one of them survived)
-  for (const [mode, act, op, extra] of [['planned', 'pub-confirm', 'confirm', {}], ['failed', 'pub-retry', 'retry', { failed_step: 'publish', failed_reason: 'x' }], ['interrupted', 'pub-continue', 'continue', { interrupted_from: 'publishing', interrupted_why: 'x' }]]) {
+  for (const [mode, act, op, extra] of [['planned', 'pub-confirm', 'confirm', {}], ['failed_publish', 'pub-retry', 'retry', { failed_step: 'publish', failed_reason: 'x' }], ['interrupted_publishing', 'pub-continue', 'continue', { interrupted_from: 'publishing', interrupted_why: 'x' }]]) {
     const server = companion();
     server.run = server.make(mode, { steps: [{ step: 'plan', exit: 0, output: 'P' }], ...extra });
     const { q, view, click, drawer } = await make({ server });
@@ -333,7 +333,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // ---- F9: an earlier step still running, and a record that cannot be trusted ----------------------------------------------------------
 {
   const server = companion();
-  server.run = server.make('interrupted', { interrupted_from: 'publishing', interrupted_why: 'x', earlier_step_running: true, steps: [{ step: 'apply', exit: 0, output: 'A' }] });
+  server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', interrupted_why: 'x', earlier_step_running: true, steps: [{ step: 'apply', exit: 0, output: 'A' }] });
   server.run.can = ['stop-and-continue', 'abandon'];
   const { q, qa, view, click } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
@@ -347,7 +347,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 }
 {
   const server = companion();
-  server.run = server.make('interrupted', { interrupted_from: 'publishing', interrupted_why: 'x', tainted: 'This run\'s record names a note outside the notes folder, so nothing will be run or removed with it.', steps: [] });
+  server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', interrupted_why: 'x', tainted: 'This run\'s record names a note outside the notes folder, so nothing will be run or removed with it.', steps: [] });
   server.run.can = ['abandon'];
   const { q, qa, click } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
@@ -403,7 +403,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('Review resumes (which is what opens the worker\'s one-use offer) and continues from the run\'s own mode', [server.calls.at(-1).op, view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['resume', 'confirming', ['pub-confirm', 'pub-cancel']]);
   void drawer;
 }
-for (const [mode, buttons] of [['failed', ['pub-retry', 'pub-abandon', 'pub-close']], ['interrupted', ['pub-continue', 'pub-abandon', 'pub-close']]]) {
+for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', 'pub-close']], ['interrupted_publishing', ['pub-continue', 'pub-abandon', 'pub-close']]]) {
   const server = companion();
   server.run = server.make(mode, { failed_step: 'publish', failed_reason: 'publish exited with code 1', interrupted_why: 'the companion stopped while this run was under way',
     steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 1, output: 'boom\nrun the same --push again, or --abandon' }] });
@@ -413,7 +413,7 @@ for (const [mode, buttons] of [['failed', ['pub-retry', 'pub-abandon', 'pub-clos
   eq(`${mode}: a problem view with what happened and only what the mode allows`, [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', buttons]);
   ok(`${mode}: the command's own words are on screen`, /run the same --push again, or --abandon/.test(dlg().textContent));
   ok(`${mode}: and nothing is retried by itself`, !server.calls.some(c => ['retry', 'confirm'].includes(c.op)));
-  if (mode === 'failed') {
+  if (mode === 'failed_publish') {
     ok('the step that failed is named on the button', /Try publish again/.test(q('[data-act="pub-retry"]').textContent));
     click(q('[data-act="pub-retry"]')); await tick();
     eq('a retry is the owner\'s click: it resumes (the offer) and then retries, with the run\'s token', server.calls.slice(-2), [{ op: 'resume', body: undefined }, { op: 'retry', body: { run: 'r1', token: 'tok1' } }]);
@@ -426,7 +426,7 @@ for (const [mode, buttons] of [['failed', ['pub-retry', 'pub-abandon', 'pub-clos
 // an action the run's mode does not allow is never sent (a drawer that is out of date cannot confirm a failed run)
 {
   const server = companion();
-  server.run = server.make('failed', { failed_step: 'plan', failed_reason: 'x', steps: [] });
+  server.run = server.make('failed_plan', { failed_step: 'plan', failed_reason: 'x', steps: [] });
   const { q, view, click, drawer } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
   drawer.shadow.querySelector('.pubdlg').insertAdjacentHTML('beforeend', '<button data-act="pub-confirm">forged</button>');

@@ -177,8 +177,8 @@
 
   // ── Publish as blyg: what the DRAWER is showing ───────────────────────────
   // One field (D.pub.view), one of PUB_VIEWS, moved only by pubMove's table. The RUN itself lives on the companion
-  // (blyg-run.mjs RUN_MODES: drafted, planning, planned, applying, applied, publishing, published, failed, cancelled,
-  // abandoned, interrupted); this list is the drawer's own, and pubViewOf says which view a run's mode is shown in.
+  // (blyg-run.mjs RUN_MODES: drafted, preparing, planning, planned, applying, applied, publishing, published, failed_<step>,
+  // cancelled, abandoned, interrupted_<mode>); this list is the drawer's own, and pubViewOf says which view a run's mode is shown in.
   //   closed      nothing is open
   //   choosing    the owner is choosing a scope ("just this comment", "this and the ones above")
   //   starting    the start request is out (the note is being written)
@@ -208,7 +208,11 @@
   }
   // the companion's run mode → the view it is shown in
   const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', preparing: 'working', planning: 'working', planned: 'confirming', applying: 'running',
-    applied: 'running', publishing: 'running', published: 'done', failed: 'problem', interrupted: 'problem', cancelled: 'closed', abandoned: 'closed' });
+    applied: 'running', publishing: 'running', published: 'done', cancelled: 'closed', abandoned: 'closed',
+    // a failed or interrupted run, whichever step (the step is part of the mode's name): 'problem'
+    failed_prepare: 'problem', failed_plan: 'problem', failed_apply: 'problem', failed_publish: 'problem',
+    interrupted_drafted: 'problem', interrupted_preparing: 'problem', interrupted_planning: 'problem', interrupted_planned: 'problem',
+    interrupted_applying: 'problem', interrupted_applied: 'problem', interrupted_publishing: 'problem', interrupted_unknown: 'problem' });
   // `confirm` ('never' | 'always', the companion's setting as carried on the run): with 'never' the run does not stop at
   // `planned`, so that moment is still "running", not a confirmation to press
   const pubViewOf = (mode, confirm) => (mode === 'planned' && confirm === 'never' ? 'running' : (PUB_VIEW_OF[mode] || 'problem'));

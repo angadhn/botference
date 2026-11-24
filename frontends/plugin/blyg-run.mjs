@@ -3,22 +3,26 @@
 // THE MODES, named once, held in ONE field (`run.mode`), changed by ONE function
 // (RunBook#move) that refuses a move RUN_MOVES does not list. Nothing else in
 // this file, the routes or the drawer sets a mode, and no flag or timer stands in
-// for one: what is in flight is the mode (`planning`, `applying`, `publishing`).
+// for one: what is in flight is the mode (`planning`, `applying`, `publishing`), and
+// WHICH step failed or was interrupted is part of the mode's name (one field says it all).
 //
-//   idle         no run (the field's value when nothing has been started)
-//   drafted      the note file is written (and nothing else has happened)
-//   preparing    the optional `prepare` command is running (stage the note, fetch what it quotes)
-//   planning     the `plan` command is running
-//   planned      the plan is in: with confirm 'always' the owner is looking at the note and the plan; with 'never' (the
-//                default) the run moves on to applying at once
-//   applying     the `apply` command is running (the owner clicked Publish)
-//   applied      apply is done; `publish` is next (a moment, not a place to wait)
-//   publishing   the `publish` command is running (this is the one that goes live)
-//   published    done: recorded on the thread(s)
-//   failed       a step failed (`failed_step` says which: prepare, plan, apply or publish); nothing is retried by itself
-//   cancelled    the owner cancelled at the confirmation; the draft was taken away
-//   abandoned    the owner gave the run up
-//   interrupted  the companion stopped mid-run; the record offers "continue" (an interrupted apply or publish) and "abandon"
+//   idle                 no run (the field's value when nothing has been started)
+//   drafted              the note file is written (and nothing else has happened)
+//   preparing            the optional `prepare` command is running (stage the note, fetch what it quotes)
+//   planning             the `plan` command is running
+//   planned              the plan is in: with confirm 'always' the owner is looking at the note and the plan; with 'never' (the
+//                        default) the run moves on to applying at once
+//   applying             the `apply` command is running
+//   applied              apply is done; `publish` is next (a moment, not a place to wait)
+//   publishing           the `publish` command is running (this is the one that goes live)
+//   published            done: recorded on the thread(s)
+//   failed_prepare | failed_plan | failed_apply | failed_publish
+//                        that step failed; nothing is retried by itself (the owner may retry THAT step, or abandon)
+//   cancelled            the owner cancelled at the confirmation; the draft was taken away
+//   abandoned            the owner gave the run up (or, when the site's own abandon could not, told the companion to forget it)
+//   interrupted_<mode>   the companion stopped while the run was in <mode> (drafted, preparing, planning, planned, applying,
+//                        applied, publishing); an interrupted apply or publish may be continued, any may be abandoned
+//   interrupted_unknown  a record from an older companion whose interrupted step is not known: only abandon (as after apply)
 //
 // ONE RUN AT A TIME for the whole companion: while any run is not finished a second
 // request is REFUSED (never queued). A run survives a drawer reload (it lives here and
@@ -39,61 +43,84 @@ import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runComm
 import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, newBlygId, showsLiquid, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
+/** The modes in which a command of ours is running right now, and the step each one runs. */
+export const STEP_OF = Object.freeze({ preparing: 'prepare', planning: 'plan', applying: 'apply', publishing: 'publish' });
+export const RUNNING_MODES = Object.freeze(Object.keys(STEP_OF));
+/** A failed step's mode, by step. */
+export const FAILED_OF = Object.freeze({ prepare: 'failed_prepare', plan: 'failed_plan', apply: 'failed_apply', publish: 'failed_publish' });
+export const FAILED_MODES = Object.freeze(Object.values(FAILED_OF));
+/** The modes a companion restart interrupts, and the mode each becomes. */
+export const INTERRUPTED_OF = Object.freeze({ drafted: 'interrupted_drafted', preparing: 'interrupted_preparing', planning: 'interrupted_planning',
+  planned: 'interrupted_planned', applying: 'interrupted_applying', applied: 'interrupted_applied', publishing: 'interrupted_publishing' });
+export const INTERRUPTED_MODES = Object.freeze([...Object.values(INTERRUPTED_OF), 'interrupted_unknown']);
 export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
-  'published', 'failed', 'cancelled', 'abandoned', 'interrupted']);
+  'published', ...FAILED_MODES, 'cancelled', 'abandoned', ...INTERRUPTED_MODES]);
 /** Finished: a new run may start. `idle` is "nothing yet". */
 export const RUN_FINISHED = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
 /** Not finished: a second run is refused. */
 export const RUN_LIVE = Object.freeze(RUN_MODES.filter(m => !RUN_FINISHED.includes(m)));
+/** Which move re-runs a failed step (the owner's click). */
+export const RETRY_FOR = Object.freeze({ failed_prepare: 'preparing', failed_plan: 'planning', failed_apply: 'applying', failed_publish: 'publishing' });
+/** Which move carries on an interrupted step: only apply and publish, which the site's command resumes by running the same step again. */
+export const CONTINUE_FOR = Object.freeze({ interrupted_applying: 'applying', interrupted_applied: 'publishing', interrupted_publishing: 'publishing' });
+const I = INTERRUPTED_OF;
 export const RUN_MOVES = Object.freeze({
   idle: Object.freeze(['drafted']),
   // `prepare` is optional: a run with none goes straight from drafted to planning
-  drafted: Object.freeze(['preparing', 'planning', 'cancelled', 'failed', 'interrupted']),
-  preparing: Object.freeze(['planning', 'failed', 'interrupted']),
-  planning: Object.freeze(['planned', 'failed', 'interrupted']),
-  planned: Object.freeze(['applying', 'cancelled', 'interrupted']),
-  applying: Object.freeze(['applied', 'failed', 'interrupted']),
-  applied: Object.freeze(['publishing', 'failed', 'interrupted']),
-  publishing: Object.freeze(['published', 'failed', 'interrupted']),
-  // a failed step is tried again only by the owner's click, and only that step
-  // (a restart leaves a failed run as it is: no step of it is running, and `failed_step` must survive for retry and for abandon)
-  failed: Object.freeze(['preparing', 'planning', 'applying', 'publishing', 'abandoned']),
-  // an interrupted apply or publish may be CONTINUED (the site's own command resumes by running the same step again): see CONTINUE_FOR
-  interrupted: Object.freeze(['applying', 'publishing', 'abandoned']),
+  drafted: Object.freeze(['preparing', 'planning', 'cancelled', 'failed_plan', I.drafted]),
+  preparing: Object.freeze(['planning', 'failed_prepare', I.preparing]),
+  planning: Object.freeze(['planned', 'failed_plan', I.planning]),
+  planned: Object.freeze(['applying', 'cancelled', I.planned]),
+  applying: Object.freeze(['applied', 'failed_apply', I.applying]),
+  applied: Object.freeze(['publishing', 'failed_publish', I.applied]),
+  publishing: Object.freeze(['published', 'failed_publish', I.publishing]),
+  // a failed step is tried again only by the owner's click, and only that step (a restart leaves a failed run as it is)
+  failed_prepare: Object.freeze(['preparing', 'abandoned']),
+  failed_plan: Object.freeze(['planning', 'abandoned']),
+  failed_apply: Object.freeze(['applying', 'abandoned']),
+  failed_publish: Object.freeze(['publishing', 'abandoned']),
+  interrupted_drafted: Object.freeze(['abandoned']),
+  interrupted_preparing: Object.freeze(['abandoned']),
+  interrupted_planning: Object.freeze(['abandoned']),
+  interrupted_planned: Object.freeze(['abandoned']),
+  interrupted_applying: Object.freeze(['applying', 'abandoned']),
+  interrupted_applied: Object.freeze(['publishing', 'abandoned']),
+  interrupted_publishing: Object.freeze(['publishing', 'abandoned']),
+  interrupted_unknown: Object.freeze(['abandoned']),
   published: Object.freeze(['drafted']),
   cancelled: Object.freeze(['drafted']),
   abandoned: Object.freeze(['drafted']),
 });
-/** Which move re-runs which failed step. */
-export const RETRY_FOR = Object.freeze({ prepare: 'preparing', plan: 'planning', apply: 'applying', publish: 'publishing' });
-/** Which move carries on an interrupted step (by the mode it was interrupted in): only apply and publish, which the site's command resumes. */
-export const CONTINUE_FOR = Object.freeze({ applying: 'applying', applied: 'publishing', publishing: 'publishing' });
-/** The modes before apply: nothing here has touched the site's published state. */
-export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned']);
-/** The modes in which a command of ours is running right now. */
-export const RUNNING_MODES = Object.freeze(['preparing', 'planning', 'applying', 'publishing']);
-/** Unfinished modes a companion restart does NOT turn into `interrupted`: nothing of the run is in flight and the owner acts next. */
-export const RESTART_KEEPS = Object.freeze(['failed', 'interrupted']);
+/** The modes in which nothing has touched the site's published state yet (abandon takes the draft away). */
+export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned', 'failed_prepare', 'failed_plan',
+  I.drafted, I.preparing, I.planning, I.planned]);
+/** The modes in which the site certainly published nothing: before apply, or apply itself failed (it works in a temporary copy, and
+ *  only publish pushes). A failed or interrupted PUBLISH may have pushed, so it is not one of these. */
+export const NOTHING_PUBLISHED_MODES = Object.freeze([...PRE_APPLY_MODES, 'failed_apply']);
+/** The modes in which no prepare or plan has begun (so a `discard` has nothing to undo). */
+export const NOTHING_BEGUN_MODES = Object.freeze(['drafted', I.drafted]);
 export class IllegalMove extends Error {}
-// has this run not reached apply? (derived from the one mode field and the step that failed or was interrupted)
-export const beforeApply = run => (run.mode === 'failed' ? ['prepare', 'plan'].includes(run.failed_step)
-  : run.mode === 'interrupted' ? PRE_APPLY_MODES.includes(run.interrupted_from) : PRE_APPLY_MODES.includes(run.mode));
-// did this run publish nothing for certain? Before apply, or when APPLY itself failed: the site's apply works in a temporary copy and
-// publish (the one step that pushes) never ran. A failed or interrupted PUBLISH may have pushed, so it is not one of these.
-export const publishedNothing = run => beforeApply(run) || (run.mode === 'failed' && run.failed_step === 'apply');
-// have prepare or plan begun (so a `discard` has something to undo)? never in `drafted`
-const workBegun = run => !(run.mode === 'drafted' || (run.mode === 'interrupted' && run.interrupted_from === 'drafted'));
-/** Is this move allowed for this record? (the table, plus the one guard on a retry) */
-export function canMove(from, to, run = {}) {
-  if (!RUN_MOVES[from] || !RUN_MOVES[from].includes(to)) return false;
-  if (from === 'failed' && to !== 'abandoned') return RETRY_FOR[run.failed_step] === to;
-  if (from === 'interrupted' && to !== 'abandoned') return CONTINUE_FOR[run.interrupted_from] === to;
-  return true;
-}
+export const beforeApply = run => PRE_APPLY_MODES.includes(run.mode);
+export const publishedNothing = run => NOTHING_PUBLISHED_MODES.includes(run.mode);
+const workBegun = run => !NOTHING_BEGUN_MODES.includes(run.mode);
+/** Is this move allowed? The table alone decides. */
+export const canMove = (from, to) => !!RUN_MOVES[from] && RUN_MOVES[from].includes(to);
+/** The step a failed or interrupted mode names ('' for the others): for the owner's view only, derived from the one field. */
+export const stepNamed = mode => (FAILED_MODES.includes(mode) ? mode.slice('failed_'.length)
+  : INTERRUPTED_MODES.includes(mode) ? mode.slice('interrupted_'.length) : '');
 
 /** What the owner may do in a mode (the drawer draws buttons from this; the routes enforce it by the table). */
-export const actionsOf = run => (run.mode === 'planned' ? ['confirm', 'cancel'] : run.mode === 'failed' ? ['retry', 'abandon']
-  : run.mode === 'interrupted' ? (CONTINUE_FOR[run.interrupted_from] ? ['continue', 'abandon'] : ['abandon']) : []);
+export const actionsOf = run => (run.mode === 'planned' ? ['confirm', 'cancel'] : FAILED_MODES.includes(run.mode) ? ['retry', 'abandon']
+  : INTERRUPTED_MODES.includes(run.mode) ? (CONTINUE_FOR[run.mode] ? ['continue', 'abandon'] : ['abandon']) : []);
+
+/** A record written by an older companion (mode 'failed' + failed_step, or 'interrupted' + interrupted_from) in today's one field. */
+export function migrateRecord(rec) {
+  if (!rec || typeof rec !== 'object') return rec;
+  if (rec.mode !== 'failed' && rec.mode !== 'interrupted' && !('failed_step' in rec) && !('interrupted_from' in rec)) return rec;
+  const { failed_step: step, interrupted_from: from, ...rest } = rec;
+  const now = rec.mode === 'failed' ? (FAILED_OF[step] || 'failed_publish') : rec.mode === 'interrupted' ? (INTERRUPTED_OF[from] || 'interrupted_unknown') : rec.mode;
+  return { ...rest, mode: now };
+}
 
 const nowIso = () => new Date().toISOString();
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
@@ -111,23 +138,26 @@ export class RunBook {
     this.load();
   }
   get mode() { return this.run.mode; }
-  /** Read the record; a run that was unfinished when the companion stopped becomes `interrupted` (unless RESTART_KEEPS its mode). */
+  /** Read the record (an older companion's is migrated); a run that was in a mode INTERRUPTED_OF names becomes that interrupted mode
+   *  (a failed or already interrupted run stays as it is: nothing of it was running). */
   load() {
     const got = this.file ? readJsonState(this.file) : { state: 'missing' };
-    if (got.state !== 'ok' || !got.value || !RUN_MODES.includes(got.value.mode)) return;
-    this.run = got.value;
-    if (RUN_LIVE.includes(this.run.mode) && !RESTART_KEEPS.includes(this.run.mode)) {
-      this.move('interrupted', { interrupted_from: this.run.mode, interrupted_why: 'the companion stopped while this run was under way' });
-    }
+    if (got.state !== 'ok' || !got.value) return;
+    const rec = migrateRecord(got.value);
+    if (!RUN_MODES.includes(rec.mode)) return;
+    this.run = rec;
+    if (INTERRUPTED_OF[this.run.mode]) this.move(INTERRUPTED_OF[this.run.mode], { interrupted_why: 'the companion stopped while this run was under way' });
+    else if (rec !== got.value) this.persist();
   }
   /** THE ONE FUNCTION THAT CHANGES THE MODE. */
   move(to, facts = {}) {
     if (!RUN_MODES.includes(to)) throw new Error(`publish run: no such mode ${String(to).slice(0, 30)}`);
     const from = this.run.mode;
-    if (!canMove(from, to, this.run)) throw new IllegalMove(`publish run: cannot go from ${from} to ${to}`);
+    if (!canMove(from, to)) throw new IllegalMove(`publish run: cannot go from ${from} to ${to}`);
     const base = RUN_FINISHED.includes(from) ? {} : this.run;
     this.run = { ...base, ...facts, mode: to, at: this.now() };
-    if (to !== 'failed') { delete this.run.failed_step; delete this.run.failed_reason; }
+    if (!FAILED_MODES.includes(to)) delete this.run.failed_reason;
+    if (!INTERRUPTED_MODES.includes(to)) delete this.run.interrupted_why;
     this.persist();
     this.onChange(this.run);
     return this.run;
@@ -162,8 +192,9 @@ export function viewOf(run) {
     id: run.id, token: run.token, mode: run.mode, confirm: run.confirm || 'always', at: run.at, scope: run.scope, title: run.title, permalink: run.permalink,
     note_rel: run.note_rel, note_text: run.note_text, thread_ids: run.thread_ids, page_url: run.page_url,
     steps: (run.steps || []).map(s => ({ step: s.step, exit: s.exit, signal: s.signal, timed_out: s.timed_out, spawn_error: s.spawn_error, ms: s.ms, truncated: s.truncated, output: s.output, at: s.at })),
-    failed_step: run.failed_step || '', failed_reason: run.failed_reason || '',
-    interrupted_from: run.interrupted_from || '', interrupted_why: run.interrupted_why || '',
+    // (derived from the one field, for the owner's words: which step failed or was interrupted)
+    failed_step: FAILED_MODES.includes(run.mode) ? stepNamed(run.mode) : '', failed_reason: run.failed_reason || '',
+    interrupted_from: INTERRUPTED_MODES.includes(run.mode) ? stepNamed(run.mode) : '', interrupted_why: run.interrupted_why || '',
     published: run.published || null, cleanup: run.cleanup || null, chained_to: run.chained_to || null,
     can: actionsOf(run),
   };
@@ -217,7 +248,9 @@ export function createPublisher(deps) {
   const exec = deps.exec || runCommand;
   const env = deps.env || process.env;
   const clock = () => (deps.now ? deps.now() : new Date());
-  let live = null;         // the running step as far as a client needs to see it: { step, started, last }
+  // facts about the command running right now (when it started, the last line it printed): not a mode. WHICH step is running is the
+  // mode (STEP_OF[book.mode]); these are shown only while the mode is one of RUNNING_MODES.
+  let progress = null;
   let stopHandle = null;   // how to stop the command that is running (meaningful only in RUNNING_MODES)
 
   const settingsNow = () => validateHome(deps.readConfig().blyg_home, { env });
@@ -257,9 +290,9 @@ export function createPublisher(deps) {
     const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
-    live = { step: name, started: Date.now(), last: '' };
-    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onLine: l => { if (live) live.last = l; }, onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
-    live = null;
+    progress = { started: Date.now(), last: '' };
+    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onLine: l => { if (progress) progress.last = l; }, onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
+    progress = null;
     if (book.run.child) { delete book.run.child; book.persist(); }
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
     let ok = r.exit === 0 && !r.timedOut && !r.signal && !r.spawnError;
@@ -276,20 +309,20 @@ export function createPublisher(deps) {
   const pushStep = rec => { if (rec) book.run.steps = [...(book.run.steps || []), rec]; };
 
   // ---- Step A --------------------------------------------------------------------
-  // Step A: the optional prepare, then plan. Each is a step with its own mode; a failure stops there (failed_step names it).
+  // Step A: the optional prepare, then plan. Each is a step with its own mode; a failure stops there (failed_prepare, failed_plan).
   async function runPlan() {
     const home = settingsNow();
     // prepare runs when the run has just been drafted or when prepare itself is what failed; a retried plan does not repeat it
-    if (home.ok && home.settings.commands.prepare && (book.mode === 'drafted' || book.run.failed_step === 'prepare')) {
+    if (home.ok && home.settings.commands.prepare && (book.mode === 'drafted' || book.mode === 'failed_prepare')) {
       book.move('preparing');
       const p = await step('prepare');
       pushStep(p.record);
-      if (!p.ok) return book.move('failed', { failed_step: 'prepare', failed_reason: p.reason, steps: book.run.steps });
+      if (!p.ok) return book.move('failed_prepare', { failed_reason: p.reason, steps: book.run.steps });
     }
     book.move('planning');
     const s = await step('plan');
     pushStep(s.record);
-    if (!s.ok) return book.move('failed', { failed_step: 'plan', failed_reason: s.reason, steps: book.run.steps });
+    if (!s.ok) return book.move('failed_plan', { failed_reason: s.reason, steps: book.run.steps });
     book.move('planned', { steps: book.run.steps });
     // confirm: 'never' — choosing Publish as blyg was the publish: carry straight on (apply, then publish)
     if (book.run.confirm === 'never') return runFrom('apply');
@@ -377,7 +410,7 @@ export function createPublisher(deps) {
       chained_to: earlier ? { title: earlier.title } : null, day: date,
     });
     // Step A's second half runs in the background; its end is announced by the mode
-    runPlan().catch(e => { try { book.move('failed', { failed_step: book.mode === 'preparing' ? 'prepare' : 'plan', failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* already moved */ } });
+    runPlan().catch(e => { try { book.move(book.mode === 'preparing' ? 'failed_prepare' : 'failed_plan', { failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* already moved */ } });
     return { ok: true, view: viewOf(run) };
   }
 
@@ -388,17 +421,17 @@ export function createPublisher(deps) {
         book.move('applying');
         const a = await step('apply');
         pushStep(a.record);
-        if (!a.ok) return book.move('failed', { failed_step: 'apply', failed_reason: a.reason, steps: book.run.steps });
+        if (!a.ok) return book.move('failed_apply', { failed_reason: a.reason, steps: book.run.steps });
         book.move('applied', { steps: book.run.steps });
       }
       book.move('publishing');
       const p = await step('publish');
       pushStep(p.record);
-      if (!p.ok) return book.move('failed', { failed_step: 'publish', failed_reason: p.reason, steps: book.run.steps });
+      if (!p.ok) return book.move('failed_publish', { failed_reason: p.reason, steps: book.run.steps });
       return finish(p.record ? p.record.output : '');
     } catch (e) {
-      if (!RUN_FINISHED.includes(book.mode) && book.mode !== 'interrupted') {
-        try { book.move('failed', { failed_step: book.mode === 'applying' ? 'apply' : 'publish', failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* moved already */ }
+      if (RUNNING_MODES.includes(book.mode) || book.mode === 'applied') {
+        try { book.move(book.mode === 'applying' ? 'failed_apply' : 'failed_publish', { failed_reason: String((e && e.message) || e).slice(0, 200) }); } catch { /* moved already */ }
       }
       return book.run;
     }
@@ -438,15 +471,15 @@ export function createPublisher(deps) {
   async function carryOn({ id, token, stop = false }) {
     const bad = owned(id, token); if (bad) return bad;
     { const t = taintOf(book.run); if (t) return fail(409, t); }
-    const to = book.mode === 'interrupted' ? CONTINUE_FOR[book.run.interrupted_from] : '';
-    if (!to || !canMove('interrupted', to, book.run)) return fail(409, 'only an interrupted apply or publish can be carried on; abandon this run instead');
+    const to = CONTINUE_FOR[book.mode] || '';
+    if (!to || !canMove(book.mode, to)) return fail(409, 'only an interrupted apply or publish can be carried on; abandon this run instead');
     // never two copies of a step: the earlier one may have outlived the companion
     if (childAlive(book.run.child)) {
       if (!stop) return fail(409, 'The earlier step is still running (process group ' + book.run.child.pgid + '). Wait for it, or choose to stop it and carry on.');
       if (!await stopGroup(book.run.child)) return fail(409, 'The earlier step would not stop; nothing was started.');
       delete book.run.child; book.persist();
     }
-    if (!canMove(book.mode, to, book.run)) return fail(409, 'the run moved on meanwhile');
+    if (!canMove(book.mode, to)) return fail(409, 'the run moved on meanwhile');
     runFrom(to === 'applying' ? 'apply' : 'publish');
     return { ok: true, view: viewOf(book.run) };
   }
@@ -454,8 +487,8 @@ export function createPublisher(deps) {
   function retry({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
     { const t = taintOf(book.run); if (t) return fail(409, t); }
-    const to = book.mode === 'failed' ? RETRY_FOR[book.run.failed_step] : '';
-    if (!to || !canMove('failed', to, book.run)) return fail(409, 'there is no failed step to try again');
+    const to = RETRY_FOR[book.mode] || '';
+    if (!to || !canMove(book.mode, to)) return fail(409, 'there is no failed step to try again');
     if (to === 'planning' || to === 'preparing') runPlan().catch(() => {});
     else runFrom(to === 'applying' ? 'apply' : 'publish');
     return { ok: true, view: viewOf(book.run) };
@@ -492,9 +525,9 @@ export function createPublisher(deps) {
   /** Cancel at the confirmation: the draft goes (if it is this run's and unchanged); the run ends. */
   async function cancel({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
-    if (!canMove(book.mode, 'cancelled', book.run)) return fail(409, `this run is ${book.mode}; it can be cancelled only while it waits for your answer`);
+    if (!canMove(book.mode, 'cancelled')) return fail(409, `this run is ${book.mode}; it can be cancelled only while it waits for your answer`);
     const cleanup = await undraft();
-    if (!canMove(book.mode, 'cancelled', book.run)) return fail(409, 'the run moved on meanwhile');
+    if (!canMove(book.mode, 'cancelled')) return fail(409, 'the run moved on meanwhile');
     book.move('cancelled', { cleanup });
     return { ok: true, view: viewOf(book.run) };
   }
@@ -503,7 +536,7 @@ export function createPublisher(deps) {
    *  note), so the next run is not refused by a note still staged. After a publish that failed or was interrupted the note is left. */
   async function abandon({ id, token }) {
     const bad = owned(id, token); if (bad) return bad;
-    if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, `this run is ${book.mode}; only a failed or interrupted run can be abandoned`);
+    if (!canMove(book.mode, 'abandoned')) return fail(409, `this run is ${book.mode}; only a failed or interrupted run can be abandoned`);
     let cleanup;
     const tainted = taintOf(book.run);
     if (tainted) cleanup = { removed: false, discard: '', note: tainted + ' Nothing was run or removed.' };
@@ -523,7 +556,7 @@ export function createPublisher(deps) {
           note: u.removed ? `apply failed, so nothing was published: ${cleanup.abandon !== undefined ? 'the site\'s own abandon was run and ' : ''}the draft was taken away` : u.note };
       }
     }
-    if (!canMove(book.mode, 'abandoned', book.run)) return fail(409, 'the run moved on meanwhile');
+    if (!canMove(book.mode, 'abandoned')) return fail(409, 'the run moved on meanwhile');
     book.move('abandoned', { cleanup });
     return { ok: true, view: viewOf(book.run) };
   }
@@ -531,10 +564,10 @@ export function createPublisher(deps) {
   function current() {
     const v = viewOf(book.run);
     // while a step runs: which one, how long, and the last line it printed (owner only, like everything here)
-    if (live && RUNNING_MODES.includes(book.mode)) v.running = { step: live.step, elapsed_ms: Date.now() - live.started, last_line: live.last };
+    if (progress && RUNNING_MODES.includes(book.mode)) v.running = { step: STEP_OF[book.mode], elapsed_ms: Date.now() - progress.started, last_line: progress.last };
     const taint = taintOf(book.run);
     if (taint) { v.can = ['abandon']; v.tainted = taint; }
-    else if (book.mode === 'interrupted' && childAlive(book.run.child)) { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }
+    else if (INTERRUPTED_MODES.includes(book.mode) && childAlive(book.run.child)) { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }
     if (!v.confirm || v.mode === 'idle') { const h = settingsNow(); v.confirm = h.ok ? h.settings.confirm : 'always'; }   // an idle view says which setting is in force
     return v;
   }

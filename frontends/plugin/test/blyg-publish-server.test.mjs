@@ -202,7 +202,7 @@ await test('the companion is killed mid-run: after a restart the record is inter
   try { process.kill(sleeper, 'SIGKILL'); } catch { /* already gone */ }
   srv = await startServer({ root: root2, args: ['--no-agents'] });
   const v = await runOf(srv.base);
-  assert.equal(v.mode, 'interrupted');
+  assert.equal(v.mode, 'interrupted_planning');
   assert.equal(v.interrupted_from, 'planning');
   assert.deepEqual(v.can, ['abandon']);
   for (const p of ['confirm', 'retry', 'cancel']) assert.equal((await POST(srv.base, `/blyg-publish/${p}`, { run: id, token })).status, 409, p);

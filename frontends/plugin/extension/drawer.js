@@ -10865,7 +10865,7 @@ ${bubbleShellHtml()}`;
         }
         case 'problem': {
           if (!run.id) return `<h2>Could not publish</h2><p class="puberr">${esc(P.error || 'something went wrong')}</p><div class="pubbtns">${closeBtn}</div>`;
-          const interrupted = run.mode === 'interrupted';
+          const interrupted = /^interrupted_/.test(String(run.mode || ''));
           const head = interrupted ? 'The companion stopped while this was under way' : 'The ' + esc(run.failed_step || 'last') + ' step did not finish';
           const why = interrupted ? esc(run.interrupted_why || '') : esc(run.failed_reason || '');
           const can = run.can || [];

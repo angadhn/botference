@@ -13124,17 +13124,27 @@ change after a run started stops that run's next step.
 
 ### The run (`blyg-run.mjs`)
 
-One field, `run.mode`, one of `RUN_MODES`, changed only by `RunBook#move`, which refuses a move the table
-does not list:
+One field, `run.mode`, one of `RUN_MODES`, changed only by `RunBook#move`, which refuses a move the explicit table
+`RUN_MOVES` does not list (`canMove(from, to)` looks at nothing else). WHICH step failed or was interrupted is part of the
+mode's name, so the one field says it all:
 
 ```
 idle → drafted → [preparing →] planning → planned → applying → applied → publishing → published
    (preparing only when a `prepare` command is set; drafted → planning otherwise)
-   drafted/planned → cancelled; any running mode → failed; any live mode but failed → interrupted on restart
-failed → preparing | planning | applying | publishing (only the step that failed, by the owner's click) | abandoned
-interrupted → applying | publishing (continue: only the step that was interrupted) | abandoned
+   drafted/planned → cancelled
+   preparing → failed_prepare; drafted/planning → failed_plan; applying → failed_apply; applied/publishing → failed_publish
+   on restart: drafted|preparing|planning|planned|applying|applied|publishing → interrupted_<that mode> (a failed run stays failed)
+failed_prepare → preparing | abandoned      failed_plan → planning | abandoned
+failed_apply → applying | abandoned         failed_publish → publishing | abandoned
+interrupted_applying → applying | abandoned;  interrupted_applied | interrupted_publishing → publishing | abandoned
+interrupted_drafted | _preparing | _planning | _planned | interrupted_unknown → abandoned
 published | cancelled | abandoned → drafted (a new run)
 ```
+
+A record written by an older companion (`failed` + `failed_step`, `interrupted` + `interrupted_from`) is migrated on load
+(`migrateRecord`; an interrupted step it cannot name becomes `interrupted_unknown`, which offers only abandon, as after apply). The
+owner's view still carries `failed_step`/`interrupted_from`, DERIVED from the mode for the words on screen. Which step is running is
+`STEP_OF[mode]`; the running command's start time and last line are facts shown only while the mode is a running one.
 
 One run at a time for the whole companion (a second start is refused, not queued). Step A (start): the note
 is written inside the notes folder (real path inside it; never over an existing file; never through a link;
