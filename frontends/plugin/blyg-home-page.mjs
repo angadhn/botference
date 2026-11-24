@@ -6,7 +6,7 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** The commands the page reports on, in order. */
-export const PAGE_COMMANDS = Object.freeze(['check', 'prepare', 'plan', 'apply', 'publish', 'discard', 'abandon']);
+export const PAGE_COMMANDS = Object.freeze(['check', 'prepare', 'plan', 'apply', 'publish', 'plan_edit', 'apply_edit', 'publish_edit', 'discard', 'abandon']);
 
 export function blygHomePage({ settings, valid, errors, defaults, nonce }) {
   const s = settings || {};
@@ -38,6 +38,8 @@ ${row('before it goes live', (s.confirm || defaults.confirm) === 'never' ? 'neve
 ${row('plan guard', (s.plan_guard || []).join(' ') || '(none)')}
 ${row('done marker', s.published_marker || '(none)')}
 ${row('passed to commands', (s.env_pass || []).join(' ') || '(nothing beyond the minimal environment)')}
+${row('preview address', s.preview_url || '(none: no picture of the draft)')}
+${row('preview element', s.preview_selector || 'article')}
 ${PAGE_COMMANDS.map(k => row(`command: ${k}`, cmds[k] ? JSON.stringify(cmds[k]) : '(not set)')).join('\n')}
 </table>
 <h2>To change it</h2>

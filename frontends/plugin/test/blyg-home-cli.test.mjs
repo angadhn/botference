@@ -23,7 +23,7 @@ test('blyg-home: example, check (every problem), set (validated, written to the 
   const config = path.join(root, '.botference', 'plugin', 'config.json');
   const ex = cli(root, 'example');
   assert.equal(ex.code, 0);
-  assert.deepEqual(Object.keys(JSON.parse(ex.out).commands), ['check', 'prepare', 'plan', 'apply', 'publish', 'discard', 'abandon']);
+  assert.deepEqual(Object.keys(JSON.parse(ex.out).commands), ['check', 'prepare', 'plan', 'apply', 'publish', 'plan_edit', 'apply_edit', 'publish_edit', 'discard', 'abandon']);
   const bad = path.join(root, 'bad.json');
   fs.writeFileSync(bad, JSON.stringify({ folder: 'relative', env_pass: ['RUBYOPT'], commands: { plan: ['/bin/sh', '-c', 'x {note}'] } }));
   const c = cli(root, 'check', bad);

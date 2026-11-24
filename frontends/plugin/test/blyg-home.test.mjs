@@ -60,10 +60,37 @@ test('a command has no stdin to prompt on (it is closed), and a missing program 
 
 test('the environment is stated exactly: a fixed list, copied only when set, plus the owner\'s named extras; nothing else of the companion\'s', () => {
   const from = { PATH: '/bin', HOME: '/h', USER: 'u', LANG: 'C', SECRET_TOKEN: 's', AWS_SECRET_ACCESS_KEY: 'a', GITHUB_TOKEN: 'g', EXTRA_OK: 'e', NODE_OPTIONS: '--evil' };
-  assert.deepEqual(H.minimalEnv([], from), { PATH: '/bin', HOME: '/h', USER: 'u', LANG: 'C', TERM: 'dumb', NO_COLOR: '1', CI: '1', GIT_TERMINAL_PROMPT: '0' });
+  assert.deepEqual(H.minimalEnv([], from), { PATH: '/bin', HOME: '/h', USER: 'u', LANG: 'C', TERM: 'dumb', NO_COLOR: '1', CI: '1', GIT_TERMINAL_PROMPT: '0' }, 'a locale the owner set is passed as it is');
+  // NO locale at all (a launch agent's environment): a UTF-8 one is given, so a site's Ruby never reads text as US-ASCII
+  const bare = H.minimalEnv([], { PATH: '/bin', HOME: '/h' });
+  assert.deepEqual([bare.LANG, bare.LC_ALL], [H.UTF8_LOCALE, H.UTF8_LOCALE]);
+  assert.match(H.UTF8_LOCALE, /^(en_US|C)\.UTF-8$/);
+  assert.equal(H.minimalEnv([], { PATH: '/bin', LC_CTYPE: 'en_GB.UTF-8' }).LANG, undefined, 'LC_CTYPE alone counts as a locale set');
   assert.equal(H.minimalEnv(['EXTRA_OK', 'NOT_SET'], from).EXTRA_OK, 'e');
   assert.ok(!('NOT_SET' in H.minimalEnv(['NOT_SET'], from)));
-  assert.deepEqual(H.BASE_ENV_NAMES.slice().sort(), ['HOME', 'LANG', 'LC_ALL', 'LOGNAME', 'PATH', 'TMPDIR', 'USER']);
+  assert.deepEqual(H.BASE_ENV_NAMES.slice().sort(), ['HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'LOGNAME', 'PATH', 'TMPDIR', 'USER']);
+});
+
+test('the edit commands go together, carry {changelog} as an argument of their own, and only they may; preview_url is an http(s) template', () => {
+  const d = tmp();
+  execFileSync('git', ['init', '-q', d]);
+  fs.mkdirSync(path.join(d, '_notes'));
+  const prog = process.execPath;
+  const base = { folder: path.join(d, '_notes'), commands: { plan: [prog, '{note}'], apply: [prog, '{note}'], publish: [prog, '{note}'] } };
+  const edits = { plan_edit: [prog, '{note}', '--edit', '--generated-note', '{changelog}'], apply_edit: [prog, '{note}', '{changelog}'], publish_edit: [prog, '{note}', '{changelog}'] };
+  assert.ok(H.validateHome({ ...base, commands: { ...base.commands, ...edits } }).ok);
+  assert.match(H.validateHome({ ...base, commands: { ...base.commands, plan_edit: edits.plan_edit } }).errors.join(), /go together/);
+  assert.match(H.validateHome({ ...base, commands: { ...base.commands, plan: [prog, '{note}', '{changelog}'] } }).errors.join(), /only for the edit commands/);
+  assert.match(H.validateHome({ ...base, commands: { ...base.commands, ...edits, apply_edit: [prog, '{note}', '--note={changelog}'] } }).errors.join(), /argument of its own/);
+  assert.deepEqual(H.expandArgv(edits.plan_edit, { rel: 'n.md', abs: '/n.md', changelog: 'Edited the second comment. --push ; rm' }), [prog, 'n.md', '--edit', '--generated-note', 'Edited the second comment. --push ; rm'], 'one argument, never split');
+  assert.deepEqual(H.COMMAND_FOR.edit, { plan: 'plan_edit', apply: 'apply_edit', publish: 'publish_edit' });
+  for (const [t, ok] of [['http://127.0.0.1:4000{permalink}', true], ['https://preview.example.test/{id}/', true], ['javascript:alert(1)//{permalink}', false], ['http://x.test/', false], ['http://u:p@x.test{permalink}', false], ['http://x.test/{title}', false]]) {
+    assert.equal(!H.previewUrlProblem(t), ok, t);
+  }
+  assert.equal(H.previewUrlFor('http://127.0.0.1:4000{permalink}', { permalink: '/b/0abc' }), 'http://127.0.0.1:4000/b/0abc');
+  assert.equal(H.previewUrlFor('http://127.0.0.1:4000{permalink}', { permalink: '/b/x"><script>' }), '', 'only a plain path is put in');
+  assert.match(H.validateHome({ ...base, preview_selector: 'article { } <x>' }).errors.join(), /preview_selector/);
+  fs.rmSync(d, { recursive: true, force: true });
 });
 
 test('{note} becomes ONE argument whatever it holds; it is never split, never interpreted, and never replaces the program', () => {
@@ -84,7 +111,7 @@ test('the file name pattern and the names it makes', () => {
 });
 
 test('the limits are the ones stated', () => {
-  assert.deepEqual(H.TIME_LIMITS_MS, { check: 15000, prepare: 300000, plan: 120000, apply: 1800000, publish: 1800000, discard: 60000, abandon: 60000 });
+  assert.deepEqual(H.TIME_LIMITS_MS, { check: 15000, prepare: 300000, plan: 120000, apply: 1800000, publish: 1800000, plan_edit: 120000, apply_edit: 1800000, publish_edit: 1800000, discard: 60000, abandon: 60000 });
   assert.deepEqual([H.OUTPUT.maxBuffer, H.OUTPUT.kept, H.ARGV.maxArgs, H.ARGV.maxArgChars], [4194304, 65536, 32, 400]);
 });
 

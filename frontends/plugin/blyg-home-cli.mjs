@@ -27,12 +27,19 @@ export const EXAMPLE = Object.freeze({
   plan_guard: ['--only-note', '--quick'],
   published_marker: 'State: merged_back',
   env_pass: ['BLYG_CHECKER'],
+  // the owner's local preview site (it serves the working branch's drafts); the drawer shows a picture of the draft from it
+  preview_url: 'http://127.0.0.1:4000{permalink}',
+  preview_selector: 'article',
   commands: {
     check: ['scripts/blyg-publish', '--preflight'],
     prepare: ['scripts/blyg-publish', '{note}', '--prepare-note'],
     plan: ['scripts/blyg-publish', '{note}'],
     apply: ['scripts/blyg-publish', '{note}', '--apply'],
     publish: ['scripts/blyg-publish', '{note}', '--push'],
+    // publishing again: a new version of a post already published from here (the changelog line is written by the companion)
+    plan_edit: ['scripts/blyg-publish', '{note}', '--edit', '--generated-note', '{changelog}'],
+    apply_edit: ['scripts/blyg-publish', '{note}', '--edit', '--generated-note', '{changelog}', '--apply'],
+    publish_edit: ['scripts/blyg-publish', '{note}', '--edit', '--generated-note', '{changelog}', '--push'],
     discard: ['scripts/blyg-publish', '{note}', '--unstage-note'],
     abandon: ['scripts/blyg-publish', '--abandon', '{note}'],
   },

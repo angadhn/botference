@@ -28,10 +28,18 @@ import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone
 
 // ---- the limits, stated once ---------------------------------------------------
 export const STEPS = Object.freeze(['plan', 'apply', 'publish']);
+// PUBLISHING AGAIN (a new version of a post already published from here) runs the same three steps in their EDIT form: optional
+// commands of their own, all three or none, each with `{note}` and the changelog line as `{changelog}` (ONE argument, written by the
+// companion from the difference, never by a model). Example site: the same commands plus `--edit --generated-note {changelog}`.
+export const EDIT_STEPS = Object.freeze(['plan_edit', 'apply_edit', 'publish_edit']);
+/** Which command a step runs, by the run's kind (blyg-run RUN_KINDS): a new post, or a new version of one. */
+export const COMMAND_FOR = Object.freeze({ new: Object.freeze({ plan: 'plan', apply: 'apply', publish: 'publish' }),
+  edit: Object.freeze({ plan: 'plan_edit', apply: 'apply_edit', publish: 'publish_edit' }) });
 // `prepare` (optional) runs before `plan`, after the note is written: for a site that has to stage the note or fetch what it
 // quotes first. `discard` (optional) undoes whatever prepare or plan did, when the owner cancels or abandons before apply.
-export const COMMAND_KEYS = Object.freeze(['check', 'prepare', ...STEPS, 'discard', 'abandon']);
-export const TIME_LIMITS_MS = Object.freeze({ check: 15_000, prepare: 300_000, plan: 120_000, apply: 1_800_000, publish: 1_800_000, discard: 60_000, abandon: 60_000 });
+export const COMMAND_KEYS = Object.freeze(['check', 'prepare', ...STEPS, ...EDIT_STEPS, 'discard', 'abandon']);
+export const TIME_LIMITS_MS = Object.freeze({ check: 15_000, prepare: 300_000, plan: 120_000, apply: 1_800_000, publish: 1_800_000,
+  plan_edit: 120_000, apply_edit: 1_800_000, publish_edit: 1_800_000, discard: 60_000, abandon: 60_000 });
 export const OUTPUT = Object.freeze({
   maxBuffer: 4 * 1024 * 1024,   // a command that prints more than this is stopped
   kept: 64 * 1024,              // what is stored and shown: the first 8 KiB and the last 56 KiB
@@ -42,6 +50,7 @@ export const FILENAME_MAX = 100;
 const KILL_GRACE_MS = 5000;
 const NOTE_TOKEN = '{note}';
 const NOTE_ABS_TOKEN = '{note_abs}';
+const CHANGELOG_TOKEN = '{changelog}';
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'csh', 'tcsh', 'ksh', 'ash', 'cmd', 'cmd.exe', 'powershell', 'pwsh', 'env', 'sudo', 'su', 'xargs']);
 // `env_pass` is an ALLOW-list: BLYG_CHECKER (what the example site needs), plus any upper-case name the owner adds that is not one that
 // changes what a step's programs load, trust, fetch through, or are told (ENV_REFUSED). Values only ever come from the companion's own
@@ -79,15 +88,50 @@ export const PLAN_GUARD = Object.freeze({ maxArgs: 8, maxArgChars: 80 });
 
 /**
  * The environment a command gets. EXACTLY these, and nothing else of the companion's:
- *   PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR   copied when set (a git or a ruby needs them)
+ *   PATH, HOME, USER, LOGNAME, LANG, LC_ALL, LC_CTYPE, TMPDIR   copied when set (a git or a ruby needs them)
+ *   LANG and LC_ALL = UTF8_LOCALE when the companion's own environment names NO locale at all (none of LANG, LC_ALL,
+ *     LC_CTYPE): a launch agent's environment often has none, and then Ruby reads every file as US-ASCII and a site's
+ *     publish command fails on the first non-ASCII character (the owner's first real use did, in JSON.parse). A locale the
+ *     owner did set is passed as it is (the example site's pre-flight says plainly when it is not UTF-8).
  *   TERM=dumb, NO_COLOR=1, CI=1, GIT_TERMINAL_PROMPT=0   fixed: no colour, no prompts
  *   plus each name in `env_pass` (the owner's list) that is set in the companion's environment
  */
-export const BASE_ENV_NAMES = Object.freeze(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR']);
+export const BASE_ENV_NAMES = Object.freeze(['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TMPDIR']);
+// en_US.UTF-8 is present on every macOS; C.UTF-8 on current Linux C libraries (glibc 2.35+, musl), where en_US needs generating
+export const UTF8_LOCALE = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8';
 export function minimalEnv(pass = [], from = process.env) {
   const env = {};
   for (const k of [...BASE_ENV_NAMES, ...pass]) if (typeof from[k] === 'string') env[k] = from[k];
+  const named = ['LANG', 'LC_ALL', 'LC_CTYPE'].some(k => typeof from[k] === 'string' && from[k].trim());
+  if (!named) { env.LANG = UTF8_LOCALE; env.LC_ALL = UTF8_LOCALE; }
   return { ...env, TERM: 'dumb', NO_COLOR: '1', CI: '1', GIT_TERMINAL_PROMPT: '0' };
+}
+
+// `preview_url` (optional): where the owner's own PREVIEW site shows a note at its address before it is published (for the example
+// blog, its local preview server, which serves the working branch's drafts). A template with `{permalink}` (the post's path, from the
+// run's own note) and optionally `{slug}` and `{id}`; it must make an absolute http(s) address. The drawer offers it as one link, built
+// here from the setting and the run, never from anything a page supplied.
+export const PREVIEW_TOKENS = Object.freeze(['{permalink}', '{slug}', '{id}']);
+export function previewUrlProblem(t) {
+  if (t === undefined || t === null || t === '') return '';
+  if (typeof t !== 'string' || t.length > 300 || /[\s\u0000-\u001f]/.test(t)) return 'preview_url must be one address of at most 300 characters, without spaces';
+  const rest = t.replace(/\{(permalink|slug|id)\}/g, '');
+  if (/[{}]/.test(rest)) return 'preview_url may hold only the placeholders {permalink}, {slug} and {id}';
+  if (!t.includes('{permalink}') && !t.includes('{id}') && !t.includes('{slug}')) return 'preview_url must hold {permalink} (or {id} or {slug}), so it names this post';
+  let u;
+  try { u = new URL(t.replace(/\{permalink\}/g, '/b/x').replace(/\{slug\}/g, 'x').replace(/\{id\}/g, 'x')); } catch { return 'preview_url is not an address'; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return 'preview_url must be an http or https address';
+  if (u.username || u.password) return 'preview_url may not carry a user name or password';
+  return '';
+}
+/** The preview address for a run's post, or '' (no setting, or the parts are not plain). */
+export function previewUrlFor(template, { permalink = '', slug = '', id = '' } = {}) {
+  if (!template || previewUrlProblem(template)) return '';
+  if (!/^\/[A-Za-z0-9/_.-]*$/.test(permalink) || !/^[a-z0-9-]*$/.test(slug) || !/^[0-9a-z]*$/.test(id)) return '';
+  try {
+    const u = new URL(template.replace(/\{permalink\}/g, permalink).replace(/\{slug\}/g, slug).replace(/\{id\}/g, id));
+    return (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password ? u.href : '';
+  } catch { return ''; }
 }
 
 const posix = p => p.split(path.sep).join('/');
@@ -118,7 +162,7 @@ export function filenameFor(pattern, { slug, date }) {
 
 // `{note}` is required in every command, `abandon` too: the site's own end-the-run command is told WHICH note's run to end, so it
 // cannot end a run the owner started by hand for another note
-function checkArgv(key, argv, top, errors, { needNote = true } = {}) {
+function checkArgv(key, argv, top, errors, { needNote = true, changelog = false } = {}) {
   const at = `command “${key}”`;
   if (!Array.isArray(argv) || !argv.length) { errors.push(`${at} is not set (an argv list, for example ["scripts/publish", "{note}"])`); return null; }
   if (argv.length > ARGV.maxArgs) { errors.push(`${at} has more than ${ARGV.maxArgs} arguments`); return null; }
@@ -128,6 +172,9 @@ function checkArgv(key, argv, top, errors, { needNote = true } = {}) {
   if (!argv[0].trim()) { errors.push(`${at}: the program is empty`); return null; }
   if (argv[0].includes(NOTE_TOKEN) || argv[0].includes(NOTE_ABS_TOKEN)) { errors.push(`${at}: the program itself may not hold {note}`); return null; }
   if (needNote && !argv.slice(1).some(a => a.includes(NOTE_TOKEN) || a.includes(NOTE_ABS_TOKEN))) { errors.push(`${at} must have {note} in one of its arguments`); return null; }
+  if (argv[0].includes(CHANGELOG_TOKEN)) { errors.push(`${at}: the program itself may not hold {changelog}`); return null; }
+  if (!changelog && argv.some(a => a.includes(CHANGELOG_TOKEN))) { errors.push(`${at}: {changelog} is only for the edit commands (${EDIT_STEPS.join(', ')})`); return null; }
+  if (changelog && argv.some(a => a.includes(CHANGELOG_TOKEN) && a !== CHANGELOG_TOKEN)) { errors.push(`${at}: {changelog} must be an argument of its own`); return null; }
   if (SHELLS.has(path.basename(argv[0]).toLowerCase())) { errors.push(`${at}: a shell (or env, sudo, xargs) is not accepted as the program: name the program itself`); return null; }
   if (argv[0].includes('/')) {
     const abs = path.isAbsolute(argv[0]) ? argv[0] : path.resolve(top, argv[0]);
@@ -204,24 +251,34 @@ export function validateHome(raw, { env = process.env } = {}) {
   for (const k of ['prepare', 'discard', 'abandon']) {
     if (cmds[k] !== undefined && cmds[k] !== null) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors); if (a) commands[k] = a; }
   }
+  // the edit commands: all three, or none (then publishing again is not offered)
+  const editsSet = EDIT_STEPS.filter(k => cmds[k] !== undefined && cmds[k] !== null);
+  if (editsSet.length && editsSet.length !== EDIT_STEPS.length) errors.push(`the edit commands go together: set all of ${EDIT_STEPS.join(', ')}, or none`);
+  for (const k of editsSet) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors, { changelog: true }); if (a) commands[k] = a; }
   // `check` (optional): the pre-flight, run before ANYTHING is written; about the environment, so it has no {note}
   if (cmds.check !== undefined && cmds.check !== null) { const a = checkArgv('check', cmds.check, top || process.cwd(), errors, { needNote: false }); if (a) commands.check = a; }
+  const preview = r.preview_url === undefined || r.preview_url === null ? '' : r.preview_url;
+  { const p = previewUrlProblem(preview); if (p) errors.push(p); }
+  // `preview_selector`: the element of the preview page that IS the post (the picture is cropped to it); default `article`
+  const selector = r.preview_selector === undefined || r.preview_selector === null || r.preview_selector === '' ? 'article' : r.preview_selector;
+  if (typeof selector !== 'string' || selector.length > 120 || !/^[A-Za-z0-9 .#_>:()\[\]="'-]+$/.test(selector)) errors.push('preview_selector must be a CSS selector of at most 120 characters (for example “article”)');
   if (errors.length) return { ok: false, errors, settings: null };
-  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker } };
+  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker, preview_url: preview, preview_selector: selector } };
 }
 
 /** What is stored: only the fields the owner set, not the derived paths. */
 export const storable = raw => {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker };
+  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker, preview_url: r.preview_url, preview_selector: r.preview_selector };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };
+// (preview_url is left out of the fingerprint: it changes nothing that runs, and a run started before it was set may still show it)
 export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands, s.confirm, s.plan_guard, s.published_marker])).digest('hex');
 
-/** `{note}` made into one argument each: → the argv to run. */
-export function expandArgv(argv, { rel, abs }) {
-  return argv.map((a, i) => (i === 0 ? a : a.split(NOTE_TOKEN).join(rel).split(NOTE_ABS_TOKEN).join(abs)));
+/** `{note}` (and `{changelog}`) made into one argument each: → the argv to run. */
+export function expandArgv(argv, { rel, abs, changelog = '' }) {
+  return argv.map((a, i) => (i === 0 ? a : a === CHANGELOG_TOKEN ? String(changelog) : a.split(NOTE_TOKEN).join(rel).split(NOTE_ABS_TOKEN).join(abs)));
 }
 
 // ---- running a command ---------------------------------------------------------------
