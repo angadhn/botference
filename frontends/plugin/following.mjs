@@ -418,6 +418,7 @@ export const LIMITS = Object.freeze({
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
   burstMembersMax: 100,       // member keys one tick of a thread may name (a fold has at most refsKept members anyway)
+  backfillShare: 1 / 3,       // of a refresh's requests, kept for reading back while the Feed is short of its target
   queuePerBlyg: 20,           // the next unfetched index entries a refresh saves per blyg (validated), for the top-up
   topupRequests: 10,          // requests one top-up may make (documents only: a top-up reads no manifest and no index)
   topupSeconds: 15,           // ... and seconds
@@ -2314,8 +2315,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       opCtx = { unread: new Map(snap0.unread), bad: new Map(snap0.bad) };
       run.unread = snap0.feed; run.total = snap0.total; run.items = snap0.items; run.blygs = snap0.blygs;
       let renewAt = now() + leaseMs / 2;
+      // While the Feed is short of its target, a share of the run's requests is kept for reading back: with many blygs the
+      // manifests and indexes alone could take every request, every run, and nothing would ever be read back. The blygs not
+      // reached this run are the first next time (they are taken longest-tried first).
+      const reserve = run.unread < cfg.following_unread_target ? Math.floor(budget.cap * LIMITS.backfillShare) : 0;
       for (const o of snap0.todo) {
-        if (budget.spent()) { tally.deferred++; continue; }
+        if (budget.spent() || budget.requests + 2 > budget.cap - reserve) { tally.deferred++; continue; }
         try { await refreshBlyg(o, run); tally.blygs++; }
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
         if (now() >= renewAt) { if (!(await renewLease(holder, leaseMs))) break; renewAt = now() + leaseMs / 2; }

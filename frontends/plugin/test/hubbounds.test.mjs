@@ -225,3 +225,20 @@ test('the inbox: an answer that arrives after the inbox was set to another addre
   await run;
   assert.notEqual(await f.inboxState(), 'ok', 'the answer was for the address set before');
 });
+
+test('with many blygs and few requests, reading back still gets a third of a run: the Feed fills, the blygs not reached go first next time', async () => {
+  const E = engine({ settings: { following_unread_target: 50, following_run_requests: 60 } });
+  const origins = Array.from({ length: 40 }, (_, i) => `https://many${i}.web.test/`);
+  for (const [i, o] of origins.entries()) publish(E.web.add(o), 3, { base: i * 100 });
+  await E.f.confirmImport(origins.map(origin => ({ origin })));
+  const s1 = await E.f.refresh();
+  assert.ok(s1.requests <= 60);
+  assert.equal(s1.blygs, 20, 'two thirds of the requests for manifests and indexes: 20 blygs');
+  assert.ok(s1.backfilled >= 15, `read back: ${s1.backfilled}`);
+  E.clock.t += 1800e3;
+  const s2 = await E.f.refresh();
+  const asked = new Set(E.web.requests.filter(u => u.endsWith('/blyg.json')).map(u => new URL(u).host));
+  assert.equal(asked.size, 40, 'the other 20 were asked in the second run');
+  assert.ok(s2.backfilled > 0);
+  assert.equal(F.LIMITS.backfillShare, 1 / 3);
+});
