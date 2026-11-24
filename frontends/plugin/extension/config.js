@@ -207,7 +207,7 @@
     return to;
   }
   // the companion's run mode → the view it is shown in
-  const PUB_VIEW_OF = Object.freeze({ idle: 'closed', drafted: 'working', preparing: 'working', planning: 'working', planned: 'confirming', applying: 'running',
+  const PUB_VIEW_OF = Object.freeze({ idle: 'closed', checking: 'working', drafted: 'working', preparing: 'working', planning: 'working', planned: 'confirming', applying: 'running',
     applied: 'running', publishing: 'running', published: 'done', cancelled: 'closed', abandoned: 'closed',
     // a failed or interrupted run, whichever step (the step is part of the mode's name): 'problem'
     failed_prepare: 'problem', failed_plan: 'problem', failed_apply: 'problem', failed_publish: 'problem',

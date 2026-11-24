@@ -7,6 +7,8 @@
 // WHICH step failed or was interrupted is part of the mode's name (one field says it all).
 //
 //   idle                 no run (the field's value when nothing has been started)
+//   checking             a start is running the owner's pre-flight `check` (asynchronously); NOTHING is written yet. It holds the
+//                        companion's one run, so a second start is refused meanwhile; a refused check, or a restart, goes back to idle
 //   drafted              the note file is written (and nothing else has happened)
 //   preparing            the optional `prepare` command is running (stage the note, fetch what it quotes)
 //   planning             the `plan` command is running
@@ -42,7 +44,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
-import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheckSync, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
+import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
 import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, newBlygId, showsLiquid, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
@@ -56,7 +58,7 @@ export const FAILED_MODES = Object.freeze(Object.values(FAILED_OF));
 export const INTERRUPTED_OF = Object.freeze({ drafted: 'interrupted_drafted', preparing: 'interrupted_preparing', planning: 'interrupted_planning',
   planned: 'interrupted_planned', applying: 'interrupted_applying', applied: 'interrupted_applied', publishing: 'interrupted_publishing' });
 export const INTERRUPTED_MODES = Object.freeze([...Object.values(INTERRUPTED_OF), 'interrupted_unknown']);
-export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
+export const RUN_MODES = Object.freeze(['idle', 'checking', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
   'published', ...FAILED_MODES, 'cancelled', 'abandoned', ...INTERRUPTED_MODES, 'abandon_failed']);
 /** Finished: a new run may start. `idle` is "nothing yet". */
 export const RUN_FINISHED = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
@@ -68,7 +70,9 @@ export const RETRY_FOR = Object.freeze({ failed_prepare: 'preparing', failed_pla
 export const CONTINUE_FOR = Object.freeze({ interrupted_applying: 'applying', interrupted_applied: 'publishing', interrupted_publishing: 'publishing' });
 const I = INTERRUPTED_OF;
 export const RUN_MOVES = Object.freeze({
-  idle: Object.freeze(['drafted']),
+  idle: Object.freeze(['checking', 'drafted']),
+  // the pre-flight passed (the note is written: drafted), or it refused / the start stopped before writing (idle)
+  checking: Object.freeze(['drafted', 'idle']),
   // `prepare` is optional: a run with none goes straight from drafted to planning
   drafted: Object.freeze(['preparing', 'planning', 'cancelled', 'failed_plan', I.drafted]),
   preparing: Object.freeze(['planning', 'failed_prepare', I.preparing]),
@@ -93,9 +97,9 @@ export const RUN_MOVES = Object.freeze({
   interrupted_unknown: Object.freeze(['abandoned', 'abandon_failed']),
   // the site's abandon failed: try it again (abandoned, or abandon_failed again) or FORGET here (abandoned)
   abandon_failed: Object.freeze(['abandoned', 'abandon_failed']),
-  published: Object.freeze(['drafted']),
-  cancelled: Object.freeze(['drafted']),
-  abandoned: Object.freeze(['drafted']),
+  published: Object.freeze(['checking', 'drafted']),
+  cancelled: Object.freeze(['checking', 'drafted']),
+  abandoned: Object.freeze(['checking', 'drafted']),
 });
 /** The modes in which nothing has touched the site's published state yet (abandon takes the draft away). */
 export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned', 'failed_prepare', 'failed_plan',
@@ -154,6 +158,7 @@ export class RunBook {
     if (!RUN_MODES.includes(rec.mode)) return;
     this.run = rec;
     if (INTERRUPTED_OF[this.run.mode]) this.move(INTERRUPTED_OF[this.run.mode], { interrupted_why: 'the companion stopped while this run was under way' });
+    else if (this.run.mode === 'checking') this.move('idle');   // a start that had written nothing
     else if (rec !== got.value) this.persist();
   }
   /** THE ONE FUNCTION THAT CHANGES THE MODE. */
@@ -177,19 +182,33 @@ export class RunBook {
 // ---- a step's process, across a companion restart ----------------------------------------------------------------
 // The record keeps the process group of the step that is running (`child: { pgid, lstart }`), so that after a restart the owner is never
 // offered a second copy of a step whose first copy is still going. `lstart` is the process's start time as `ps` says (when ps can be run).
-const lstartOf = pid => { try { return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
-export function childAlive(child) {
-  if (!child || !Number.isInteger(child.pgid) || child.pgid <= 1) return false;
-  try { process.kill(-child.pgid, 0); } catch (e) { if (!(e && e.code === 'EPERM')) return false; }
-  if (child.lstart) { const now = lstartOf(child.pgid); if (now && now !== child.lstart) return false; }   // the number now belongs to another process
-  return true;
+export const lstartOf = pid => { try { return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { return ''; } };
+/** What we know about a recorded step process, named in one list:
+ *    none     no step process is recorded
+ *    gone     it no longer exists, or its number now belongs to another process (a different start time)
+ *    alive    it exists AND its start time is the recorded one: the same process
+ *    unknown  it may exist but cannot be identified (ps failed when it was recorded, or fails now): it is NEVER signalled and never
+ *             run a second time; the owner is offered abandon */
+export const CHILD_STATES = Object.freeze(['none', 'gone', 'alive', 'unknown']);
+export function childState(child, lstart = lstartOf) {
+  if (!child) return 'none';
+  if (!Number.isInteger(child.pgid) || child.pgid <= 1) return 'gone';
+  try { process.kill(-child.pgid, 0); } catch (e) { if (!(e && e.code === 'EPERM')) return 'gone'; }
+  if (!child.lstart) return 'unknown';
+  const now = lstart(child.pgid);
+  if (!now) return 'unknown';
+  return now === child.lstart ? 'alive' : 'gone';
 }
-const stopGroup = async child => {
+/** (kept for callers that only ask "is it certainly running?") */
+export const childAlive = (child, lstart = lstartOf) => childState(child, lstart) === 'alive';
+// stop a group we positively identified, and only that
+const stopGroup = async (child, lstart) => {
+  if (childState(child, lstart) !== 'alive') return childState(child, lstart) === 'gone';
   for (const sig of ['SIGTERM', 'SIGKILL']) {
     try { process.kill(-child.pgid, sig); } catch { return true; }
-    for (let i = 0; i < 30; i++) { await new Promise(r => setTimeout(r, 100)); if (!childAlive(child)) return true; }
+    for (let i = 0; i < 30; i++) { await new Promise(r => setTimeout(r, 100)); if (childState(child, lstart) === 'gone') return true; }
   }
-  return !childAlive(child);
+  return childState(child, lstart) === 'gone';
 };
 
 // ---- the owner's view of a run -----------------------------------------------------
@@ -255,6 +274,14 @@ export function createPublisher(deps) {
     onChange: run => { try { deps.broadcast({ type: 'blyg-publish', run: { id: run.id, mode: run.mode } }); } catch { /* nobody listening */ } },
   });
   const exec = deps.exec || runCommand;
+  const lstart = deps.lstartOf || lstartOf;
+  // the recorded step process, as last observed: `ps` runs once per record (a poll reads this), and again on an explicit action
+  let childSeen = { key: '', state: 'none' };
+  const childNow = (fresh = false) => {
+    const key = JSON.stringify([book.run.id, book.run.at, book.run.child || null]);
+    if (fresh || childSeen.key !== key) childSeen = { key, state: childState(book.run.child, lstart) };
+    return childSeen.state;
+  };
   const env = deps.env || process.env;
   const clock = () => (deps.now ? deps.now() : new Date());
   // facts about the command running right now (when it started, the last line it printed): not a mode. WHICH step is running is the
@@ -300,7 +327,7 @@ export function createPublisher(deps) {
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
     progress = { started: Date.now(), last: '' };
-    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onLine: l => { if (progress) progress.last = l; }, onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstartOf(pid), at: nowIso() }; book.persist(); } }, ...extra });
+    const r = await exec({ argv, cwd: home.settings.top, env: minimalEnv(home.settings.env_pass, env), limitMs: TIME_LIMITS_MS[name], onLine: l => { if (progress) progress.last = l; }, onChild: (stop, pid) => { stopHandle = stop; if (pid) { book.run.child = { pgid: pid, lstart: lstart(pid), at: nowIso() }; book.persist(); } }, ...extra });
     progress = null;
     if (book.run.child) { delete book.run.child; book.persist(); }
     const record = { step: name, exit: r.exit, signal: r.signal || '', timed_out: !!r.timedOut, spawn_error: r.spawnError || '', ms: r.ms, truncated: !!r.truncated, output: r.output, at };
@@ -342,16 +369,27 @@ export function createPublisher(deps) {
    * Start a run: → { ok, view } | { ok: false, status, error }. Writes the note file (the one side effect
    * outside the run's own record) and begins `plan` in the background.
    */
-  function start({ page, threadId, scope, shown }) {
+  /** Start a run (async: the pre-flight runs without holding the companion). A refusal after `checking` began goes back to idle. */
+  async function start(args) {
     if (RUN_LIVE.includes(book.mode)) return fail(409, `a publish run is already under way (${book.mode}); finish or abandon it first`);
+    let r;
+    try { r = await startChecked(args); } catch (e) { r = fail(500, `could not start: ${String((e && e.message) || e).slice(0, 200)}`); }
+    if (book.mode === 'checking') book.move('idle');
+    return r;
+  }
+  async function startChecked({ page, threadId, scope, shown }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     const home = settingsNow();
     if (!home.ok) return fail(409, `Publish as blyg is not set up: ${home.errors[0]}. Set “Where my blyg lives” on the companion first.`);
     const S = home.settings;
     // THE PRE-FLIGHT, before anything is written: a broken environment fails here, in about a second, with the check's own sentence
     if (S.commands.check) {
-      const c = (deps.check || runCheckSync)({ argv: S.commands.check, cwd: S.top, env: minimalEnv(S.env_pass, env) });
-      if (!c.ok) return fail(409, `Publish as blyg cannot start: ${c.message}`);
+      book.move('checking');
+      const c = await (deps.check || runCheck)({ argv: S.commands.check, cwd: S.top, env: minimalEnv(S.env_pass, env) });
+      if (!c || !c.ok) return fail(409, `Publish as blyg cannot start: ${(c && c.message) || 'the check did not answer'}`);
+      // the settings may not change while the check ran (they are read again, and must be the ones checked)
+      const again = settingsNow();
+      if (!again.ok || fingerprint(again.settings) !== fingerprint(S)) return fail(409, 'The “Where my blyg lives” settings changed while the check ran. Nothing was started.');
     }
     // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
     // first when one click publishes, or the reverse)
@@ -482,10 +520,12 @@ export function createPublisher(deps) {
     { const t = taintOf(book.run); if (t) return fail(409, t); }
     const to = CONTINUE_FOR[book.mode] || '';
     if (!to || !canMove(book.mode, to)) return fail(409, 'only an interrupted apply or publish can be carried on; abandon this run instead');
-    // never two copies of a step: the earlier one may have outlived the companion
-    if (childAlive(book.run.child)) {
+    // never two copies of a step: the earlier one may have outlived the companion (looked at afresh: this is an explicit action)
+    const earlier = childNow(true);
+    if (earlier === 'unknown') return fail(409, 'The earlier step may still be running, and its process cannot be identified safely, so it is neither stopped nor run a second time. Abandon this run, or carry on later.');
+    if (earlier === 'alive') {
       if (!stop) return fail(409, 'The earlier step is still running (process group ' + book.run.child.pgid + '). Wait for it, or choose to stop it and carry on.');
-      if (!await stopGroup(book.run.child)) return fail(409, 'The earlier step would not stop; nothing was started.');
+      if (!await stopGroup(book.run.child, lstart)) return fail(409, 'The earlier step would not stop; nothing was started.');
       delete book.run.child; book.persist();
     }
     if (!canMove(book.mode, to)) return fail(409, 'the run moved on meanwhile');
@@ -590,7 +630,11 @@ export function createPublisher(deps) {
     if (progress && RUNNING_MODES.includes(book.mode)) v.running = { step: STEP_OF[book.mode], elapsed_ms: Date.now() - progress.started, last_line: progress.last };
     const taint = taintOf(book.run);
     if (taint) { v.can = ['abandon']; v.tainted = taint; }
-    else if (INTERRUPTED_MODES.includes(book.mode) && childAlive(book.run.child)) { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }
+    else if (INTERRUPTED_MODES.includes(book.mode)) {
+      const earlier = childNow();
+      if (earlier === 'alive') { v.can = v.can.map(a => (a === 'continue' ? 'stop-and-continue' : a)); v.earlier_step_running = true; }
+      else if (earlier === 'unknown') { v.can = v.can.filter(a => a !== 'continue'); v.earlier_step_unknown = true; }
+    }
     if (!v.confirm || v.mode === 'idle') { const h = settingsNow(); v.confirm = h.ok ? h.settings.confirm : 'always'; }   // an idle view says which setting is in force
     return v;
   }

@@ -13205,12 +13205,16 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
   `confirm` in the start body; the companion refuses (409, nothing started) when it differs from the setting in force.
 - **The record on disk is not trusted.** On every read of a live run and before every step: `note_rel` must resolve (real path) inside the
   configured folder, exist, and match `note_sha`; otherwise the run offers only "abandon", which runs nothing and removes nothing. A step's
-  process group is recorded (`child: {pgid, lstart}`); `interrupted -> continue` is refused while it lives, and offers "stop it and carry
-  on" as the owner's explicit choice (`stop: 'yes'`).
+  process group is recorded (`child: {pgid, lstart}`) and judged by `childState`, one of none | gone | alive | unknown: alive only
+  when the group exists AND `ps` gives the recorded start time. While alive, continue is refused and "stop it and carry on" is the
+  owner's explicit choice (`stop: 'yes'`). UNKNOWN (ps failed when it was recorded, or fails now) is never signalled and never run a
+  second time: only abandon is offered (`earlier_step_unknown`). `ps` runs once per run record (a poll reads that), and again on an
+  explicit action.
 - **Progress.** While a step runs the run view carries `running: {step, elapsed_ms, last_line}` (owner only; a remote owner's view has paths
   scrubbed and no `note_rel`); the thread line and the dialog show it. `apply` has 1800 s, like `publish`.
-- **Pre-flight.** An optional `check` command (no `{note}`; 15 s) runs once, synchronously, before anything is written; its own plain
-  sentences refuse the start. The example site's is `scripts/blyg-publish --preflight`.
+- **Pre-flight.** An optional `check` command (no `{note}`; 15 s) runs once, ASYNCHRONOUSLY (in its own process group, stopped at the
+  limit), before anything is written; its own plain sentences refuse the start. Meanwhile the run is `checking` (nothing written; a second
+  start is refused; a refusal or a restart returns to `idle`). The example site's is `scripts/blyg-publish --preflight`.
 - **Environment (documented, not configured here).** See "Owner setup for Publish as blyg" below.
 - **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
   destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.

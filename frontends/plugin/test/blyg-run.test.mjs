@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import * as R from '../blyg-run.mjs';
@@ -15,14 +15,14 @@ import * as H from '../blyg-home.mjs';
 import { makeRig, until, sleep, thread, blygPage, stamp, mine, ID, FAKE } from './blyg-rig.mjs';
 
 const NOW = new Date('2026-11-23T12:00:00Z');
-function boot(rig, { page, config, hook } = {}) {
+function boot(rig, { page, config, hook, lstartOf } = {}) {
   const pages = new Map();
   const events = [];
   const pg = page || blygPage([thread('t1', 'A sentence.', 'First thought about liveness.', { blyg: stamp() })]);
   pages.set(pg.url, pg);
   const file = path.join(rig.out, 'run.json');
   const pub = R.createPublisher({
-    file, now: () => NOW, broadcast: ev => events.push(ev), hook,
+    file, now: () => NOW, broadcast: ev => events.push(ev), hook, ...(lstartOf ? { lstartOf } : {}),
     readConfig: () => ({ blyg_home: config === undefined ? rig.home : config }),
     readPage: url => pages.get(url), savePage: p => pages.set(p.url, p),
   });
@@ -93,7 +93,7 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   process.env.BLYG_TEST_SECRET = 'must-not-reach-the-command';
   t.after(() => { delete process.env.BLYG_TEST_SECRET; });
   const b = boot(rig);
-  const r = b.start();
+  const r = (await b.start());
   assert.ok(r.ok, r.error);
   await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
@@ -130,7 +130,7 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.ok(b.events.some(e => e.type === 'page'), 'the page is announced');
   assert.ok(b.events.filter(e => e.type === 'blyg-publish').length >= 6, 'every move is announced');
   // …and the same comment is not offered again
-  const again = b.start();
+  const again = (await b.start());
   assert.equal(again.ok, false);
   assert.match(again.error, /already published.*as an edit is not available/);
 });
@@ -145,7 +145,7 @@ test('scope "this and the ones above" is one post of the owner\'s earlier unpubl
     thread('t2', 'Two passage.', 'Second thought.', { blyg: stamp() }),
   ]);
   const b = boot(rig, { page });
-  const r = b.start('t2', 'above');
+  const r = (await b.start('t2', 'above'));
   assert.ok(r.ok, r.error);
   await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
@@ -157,7 +157,7 @@ test('scope "this and the ones above" is one post of the owner\'s earlier unpubl
   assert.deepEqual(page.threads.filter(x => x.blyg_published).map(x => x.id), ['t0', 't1', 't2']);
   // a later comment: chained to the post above (the most recent), one comment only
   page.threads.push(thread('t3', 'Three passage.', 'Third thought.', { blyg: stamp() }));
-  const next = b.start('t3', 'one');
+  const next = (await b.start('t3', 'one'));
   assert.ok(next.ok, next.error);
   await until(() => b.mode() === 'planned', 'planned again');
   assert.match(b.pub.current().note_text, /\n\nEarlier: \[Nothing to do with it\]\(https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}\)\n$/);
@@ -169,22 +169,22 @@ test('one run at a time for the whole companion: a second start is refused, not 
   const rig = makeRig(); t.after(rig.done);
   rig.control({ plan: 'sleep' });
   const b = boot(rig);
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => rig.calls().length === 1, 'plan started');
   assert.equal(b.mode(), 'planning');
-  for (const id of ['t1']) { const r = b.start(id); assert.equal(r.ok, false); assert.equal(r.status, 409); assert.match(r.error, /already under way \(planning\)/); }
+  for (const id of ['t1']) { const r = (await b.start(id)); assert.equal(r.ok, false); assert.equal(r.status, 409); assert.match(r.error, /already under way \(planning\)/); }
   assert.equal(rig.calls().length, 1, 'nothing was queued');
   b.pub.stopAll();
   await until(() => b.mode().startsWith('failed_'), 'killed plan fails');
   assert.equal(b.pub.current().failed_step, 'plan');
-  assert.equal(b.start().status, 409, 'a failed run still blocks');
+  assert.equal((await b.start()).status, 409, 'a failed run still blocks');
   assert.equal(fs.readdirSync(rig.folder).length, 1, 'and no second note was written');
 });
 
 test('cancel at the confirmation removes the draft only if this run made it and it is unchanged, and calls discard when one is set', async t => {
   const rig = makeRig({ discard: true }); t.after(rig.done);
   const b = boot(rig);
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   let v = b.pub.current();
   assert.equal((await b.pub.cancel({ id: v.id, token: 'wrong' })).status, 404, 'the run\'s own token is needed');
   assert.equal((await b.pub.cancel({ id: 'nope', token: v.token })).status, 404);
@@ -196,7 +196,7 @@ test('cancel at the confirmation removes the draft only if this run made it and 
   assert.equal(c.view.cleanup.removed, true);
   // changed since it was written: kept
   const b2 = boot(rig);
-  b2.start(); await until(() => b2.mode() === 'planned', 'planned 2');
+  (await b2.start()); await until(() => b2.mode() === 'planned', 'planned 2');
   v = b2.pub.current();
   fs.appendFileSync(noteOf(rig, v), '\nI edited this.\n');
   const c2 = await b2.pub.cancel({ id: v.id, token: v.token });
@@ -210,7 +210,7 @@ test('Publish is refused out of order: confirm only from planned, with the right
   const rig = makeRig(); t.after(rig.done);
   const b = boot(rig);
   assert.equal((await b.pub.confirm({ id: 'x', token: 'y' })).status, 404, 'no run at all');
-  b.start();
+  (await b.start());
   const v0 = b.pub.current();
   const early = await b.pub.confirm({ id: v0.id, token: v0.token });
   assert.ok(!early.ok && early.status === 409, 'not while planning');
@@ -229,7 +229,7 @@ for (const [stepName, after] of [['plan', []], ['apply', ['plan']], ['publish', 
     const rig = makeRig(); t.after(rig.done);
     rig.control({ [stepName]: 'fail' });
     const b = boot(rig);
-    b.start();
+    (await b.start());
     if (stepName !== 'plan') { await until(() => b.mode() === 'planned', 'planned'); const v = b.pub.current(); await b.pub.confirm({ id: v.id, token: v.token }); }
     await until(() => b.mode().startsWith('failed_'), 'failed');
     const v = b.pub.current();
@@ -257,7 +257,7 @@ test('abandon: before apply the draft goes; after apply nothing is touched and t
   const rig = makeRig(); t.after(rig.done);
   rig.control({ plan: 'fail' });
   const b = boot(rig);
-  b.start(); await until(() => b.mode().startsWith('failed_'), 'failed');
+  (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed');
   let v = b.pub.current();
   assert.ok(fs.existsSync(noteOf(rig, v)));
   const a = await b.pub.abandon({ id: v.id, token: v.token });
@@ -265,7 +265,7 @@ test('abandon: before apply the draft goes; after apply nothing is touched and t
   assert.equal(fs.existsSync(noteOf(rig, v)), false, 'a failed plan\'s draft is cleaned up');
   rig.control({ publish: 'fail' });
   const b2 = boot(rig);
-  b2.start(); await until(() => b2.mode() === 'planned', 'planned');
+  (await b2.start()); await until(() => b2.mode() === 'planned', 'planned');
   v = b2.pub.current();
   await b2.pub.confirm({ id: v.id, token: v.token });
   await until(() => b2.mode().startsWith('failed_'), 'failed at publish');
@@ -294,7 +294,7 @@ test('a companion restart mid-run leaves a record that offers only "show what ha
     assert.equal((await pub.confirm({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.retry({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.cancel({ id: 'abc', token: 'tok' })).status, 409);
-    assert.equal(pub.start({ page: blygPage([thread('t1', 'q', 'w')]), threadId: 't1', scope: 'one', shown: 'always' }).status, 409, 'and it blocks a new run');
+    assert.equal((await pub.start({ page: blygPage([thread('t1', 'q', 'w')]), threadId: 't1', scope: 'one', shown: 'always' })).status, 409, 'and it blocks a new run');
     const a = await pub.abandon({ id: 'abc', token: 'tok' });
     assert.ok(a.ok, mode);
     assert.equal(pub.current().mode, 'abandoned');
@@ -353,7 +353,7 @@ test('nothing runs unless the setting is complete: every rule has its refusal, a
     assert.equal(v.ok, false, name);
     assert.match(v.errors.join(' | '), re, name);
     const b = boot(rig, { config: cfg === undefined ? null : cfg });
-    const r = b.start();
+    const r = (await b.start());
     assert.equal(r.ok, false, name); assert.equal(r.status, 409, name);
     assert.match(r.error, /not set up/, name);
   }
@@ -367,7 +367,7 @@ test('a setting changed after the run started stops the next step (validated aga
   let cfg = rig.home;
   const pages = new Map(); const page = blygPage([thread('t1', 'q', 'A thought on this.', { blyg: stamp() })]); pages.set(page.url, page);
   const pub = R.createPublisher({ file: path.join(rig.out, 'run.json'), now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: cfg }), readPage: u => pages.get(u), savePage: () => {} });
-  assert.ok(pub.start({ page, threadId: 't1', scope: 'one', shown: 'always' }).ok);
+  assert.ok((await pub.start({ page, threadId: 't1', scope: 'one', shown: 'always' })).ok);
   await until(() => pub.current().mode === 'planned', 'planned');
   const v = pub.current();
   cfg = { ...rig.home, commands: { ...rig.home.commands, publish: [process.execPath, FAKE, rig.log, rig.ctl, 'evil', '{note}'] } };
@@ -385,7 +385,7 @@ test('the note file: never overwrites, never follows a link out, never leaves th
   fs.symlinkSync(elsewhere, path.join(rig.folder, 'first-thought-about-liveness-2.md'));
   fs.writeFileSync(path.join(rig.folder, 'other.md'), '---\ntitle: o\npermalink: /b/first-thought-about-liveness-3\n---\nx');
   const b = boot(rig);
-  const r = b.start();
+  const r = (await b.start());
   assert.ok(r.ok, r.error);
   const v = r.view;
   assert.equal(v.note_rel, '_notes/first-thought-about-liveness-3.md', 'past a file and a symlink; the file name is only the first words, the address is the id');
@@ -400,7 +400,7 @@ test('hostile comment text cannot change where the file goes', async t => {
   const rig = makeRig(); t.after(rig.done);
   for (const text of ['../../../etc/cron.d/x CON \\ nul: <b>', '.. / .', 'CON', '\u202eevil\u202c.md', '日本語 only', 'a'.repeat(400)]) {
     const b = boot(rig, { page: blygPage([thread('t1', 'q', text, { blyg: stamp() })]) });
-    const r = b.start();
+    const r = (await b.start());
     assert.ok(r.ok, `${text}: ${r.error}`);
     assert.match(r.view.note_rel, /^_notes\/[a-z0-9]+(-[a-z0-9]+)*\.md$/, text);
     assert.equal(path.dirname(path.join(rig.top, r.view.note_rel)), rig.folder);
@@ -417,7 +417,7 @@ test('with a prepare command the run goes drafted > preparing > planning > plann
   const b = boot(rig);
   const modes = [];
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'planned', 'planned');
   assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned']);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan']);
@@ -436,7 +436,7 @@ test('without a prepare command the run goes straight from drafted to planning, 
   const b = boot(rig);
   const modes = [];
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   assert.deepEqual(modes, ['drafted', 'planning', 'planned']);
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
 });
@@ -445,7 +445,7 @@ test('prepare fails: failed(prepare) with its output, plan never runs, nothing r
   const rig = makeRig({ prepare: true, discard: true }); t.after(rig.done);
   rig.control({ prepare: 'fail' });
   const b = boot(rig);
-  b.start(); await until(() => b.mode().startsWith('failed_'), 'failed');
+  (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed');
   let v = b.pub.current();
   assert.equal(v.failed_step, 'prepare');
   assert.match(v.failed_reason, /prepare exited with code 1/);
@@ -461,7 +461,7 @@ test('prepare fails: failed(prepare) with its output, plan never runs, nothing r
   const rig2 = makeRig({ prepare: true }); t.after(rig2.done);
   rig2.control({ plan: 'fail' });
   const b2 = boot(rig2);
-  b2.start(); await until(() => b2.mode().startsWith('failed_'), 'plan failed');
+  (await b2.start()); await until(() => b2.mode().startsWith('failed_'), 'plan failed');
   v = b2.pub.current();
   assert.equal(v.failed_step, 'plan');
   rig2.control({});
@@ -474,7 +474,7 @@ test('abandon after a failed prepare takes the draft away through discard', asyn
   const rig = makeRig({ prepare: true, discard: true }); t.after(rig.done);
   rig.control({ prepare: 'fail' });
   const b = boot(rig);
-  b.start(); await until(() => b.mode().startsWith('failed_'), 'failed');
+  (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed');
   const v = b.pub.current();
   const a = await b.pub.abandon({ id: v.id, token: v.token });
   assert.ok(a.ok);
@@ -489,7 +489,7 @@ test('a restart leaves a failed run failed: its retry is still offered, and aban
   const rig = makeRig({ prepare: true }); t.after(rig.done);
   rig.control({ plan: 'fail' });
   const b = boot(rig);
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => b.mode().startsWith('failed_'), 'failed at plan');
   const before = b.pub.current();
   assert.equal(before.failed_step, 'plan');
@@ -518,7 +518,7 @@ test('abandon after a failed apply: the site\'s abandon runs, then discard, and 
     const home = withAbandon ? { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } } : rig.home;
     rig.control({ apply: 'fail' });
     const b = boot(rig, { config: home });
-    assert.ok(b.start().ok);
+    assert.ok((await b.start()).ok);
     await until(() => b.mode() === 'planned', 'planned');
     const p = b.pub.current();
     assert.ok(b.pub.confirm({ id: p.id, token: p.token }).ok);
@@ -540,7 +540,7 @@ test('a restart leaves a failed apply failed: retry runs apply again', async t =
   const rig = makeRig(); t.after(rig.done);
   rig.control({ apply: 'fail' });
   const b = boot(rig);
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'planned', 'planned');
   const p = b.pub.current();
   assert.ok(b.pub.confirm({ id: p.id, token: p.token }).ok);
@@ -568,7 +568,7 @@ test('confirm never: prepare, plan, apply, publish run without stopping and the 
   const b = boot(rig);
   const modes = [];
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'published', 'published');
   assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published']);
   const calls = rig.calls();
@@ -583,7 +583,7 @@ test('confirm never: a plan that exits non-zero (the guard refusing, or anything
   const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   rig.control({ plan: 'fail' });
   const b = boot(rig);
-  b.start(); await until(() => b.mode().startsWith('failed_'), 'failed');
+  (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed');
   assert.equal(b.pub.current().failed_step, 'plan');
   await sleep(250);
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
@@ -593,7 +593,7 @@ test('confirm never: a plan that exits non-zero (the guard refusing, or anything
 test('confirm always: the guard is not added and the run waits at planned for the click', async t => {
   const rig = makeRig({ confirm: 'always', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   const b = boot(rig);
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   await sleep(250);
   assert.equal(b.mode(), 'planned', 'it waits');
   assert.ok(!rig.calls()[0].argv.includes('--only-note'));
@@ -623,7 +623,7 @@ test('the guard rides on every apply and publish, retries included (a failed pub
   const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   rig.control({ publish: 'fail' });
   const b = boot(rig);
-  b.start(); await until(() => b.mode().startsWith('failed_'), 'failed at publish');
+  (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed at publish');
   const v = b.pub.current();
   rig.control({});
   await b.pub.retry({ id: v.id, token: v.token });
@@ -647,7 +647,7 @@ test('the companion is killed mid-publish with the fake command; after a restart
   const mk = () => boot(rig);
   let b = mk();
   rig.control({ publish: 'sleep' });
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   let v = b.pub.current();
   await b.pub.confirm({ id: v.id, token: v.token });
   await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publish started');
@@ -681,7 +681,7 @@ test('restart, then abandon after apply: the site\'s own abandon command runs (n
   const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
   const rigx = { ...rig, home };
   const b = boot(rigx);
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   let v = b.pub.current();
   rig.control({ publish: 'sleep' });
   await b.pub.confirm({ id: v.id, token: v.token });
@@ -713,7 +713,7 @@ test('restart, then abandon after apply: the site\'s own abandon command runs (n
 test('a file that appears under the chosen name after the choice is never overwritten (O_EXCL), and nothing is run', async t => {
   const rig = makeRig(); t.after(rig.done);
   const b = boot(rig, { hook: { beforeWrite: target => fs.writeFileSync(target, 'THE OWNER\'S OWN FILE, appeared a moment ago') } });
-  const r = b.start();
+  const r = (await b.start());
   assert.equal(r.ok, false); assert.equal(r.status, 409);
   assert.match(r.error, /appeared meanwhile/);
   assert.equal(fs.readFileSync(path.join(rig.folder, 'first-thought-about-liveness.md'), 'utf8'), 'THE OWNER\'S OWN FILE, appeared a moment ago');
@@ -724,7 +724,7 @@ test('the notes folder swapped for a link to somewhere else after validation: no
   const rig = makeRig(); t.after(rig.done);
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-elsewhere-')); t.after(() => fs.rmSync(elsewhere, { recursive: true, force: true }));
   const b = boot(rig, { hook: { beforeWrite: () => { fs.renameSync(rig.folder, rig.folder + '-moved'); fs.symlinkSync(elsewhere, rig.folder); } } });
-  const r = b.start();
+  const r = (await b.start());
   assert.equal(r.ok, false);
   assert.match(r.error, /outside the notes folder/);
   assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing landed in the place the link points to');
@@ -733,7 +733,7 @@ test('the notes folder swapped for a link to somewhere else after validation: no
 test('cancel re-checks the note right before removing it: an edit made after the first check keeps the file', async t => {
   const rig = makeRig(); t.after(rig.done);
   const b = boot(rig, { hook: { beforeUnlink: abs => fs.appendFileSync(abs, '\nthe owner edited this at the last moment\n') } });
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   const c = await b.pub.cancel({ id: v.id, token: v.token });
   assert.ok(c.ok);
@@ -741,7 +741,7 @@ test('cancel re-checks the note right before removing it: an edit made after the
   assert.match(c.view.cleanup.note, /changed, so it was left/);
   // and a link put in its place is never followed or removed as the note
   const b2 = boot(rig, { hook: { beforeUnlink: abs => { const keep = abs + '.keep'; fs.renameSync(abs, keep); fs.symlinkSync(keep, abs); } } });
-  b2.start(); await until(() => b2.mode() === 'planned', 'planned 2');
+  (await b2.start()); await until(() => b2.mode() === 'planned', 'planned 2');
   const v2 = b2.pub.current();
   await b2.pub.cancel({ id: v2.id, token: v2.token });
   assert.ok(fs.lstatSync(path.join(rig.top, v2.note_rel)).isSymbolicLink(), 'a link is left, not unlinked as if it were the note');
@@ -752,7 +752,7 @@ test('published_marker: a publish that exits 0 without the done marker is failed
   const cmd = args => [process.execPath, '-e', `console.log("some output");console.log(${JSON.stringify(args)})`, 'x', '{note}'];
   const home = { ...rig.home, commands: { ...rig.home.commands, publish: cmd('State: applied') } };
   const b = boot(rig, { config: home });
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   await b.pub.confirm({ id: v.id, token: v.token });
   await until(() => b.mode().startsWith('failed_'), 'failed at publish');
@@ -767,13 +767,13 @@ test('published_marker: a publish that exits 0 without the done marker is failed
     const rig2 = makeRig({ confirm: 'always', extra: { published_marker: 'State: merged_back' } }); t.after(rig2.done);
     const c2 = o => [process.execPath, '-e', `console.log(${JSON.stringify(o)})`, 'x', '{note}'];
     const b2 = boot(rig2, { config: { ...rig2.home, commands: { ...rig2.home.commands, publish: c2(out) } } });
-    b2.start(); await until(() => b2.mode() === 'planned', 'p'); const v2 = b2.pub.current();
+    (await b2.start()); await until(() => b2.mode() === 'planned', 'p'); const v2 = b2.pub.current();
     await b2.pub.confirm({ id: v2.id, token: v2.token }); await until(() => b2.mode().startsWith('failed_'), 'f');
   }
   const okcmd = [process.execPath, '-e', 'console.log("State: merged_back")', 'x', '{note}'];
   const rig3 = makeRig({ confirm: 'always', extra: { published_marker: 'State: merged_back' } }); t.after(rig3.done);
   const b3 = boot(rig3, { config: { ...rig3.home, commands: { ...rig3.home.commands, publish: okcmd } } });
-  b3.start(); await until(() => b3.mode() === 'planned', 'p3'); const v3 = b3.pub.current();
+  (await b3.start()); await until(() => b3.mode() === 'planned', 'p3'); const v3 = b3.pub.current();
   await b3.pub.confirm({ id: v3.id, token: v3.token }); await until(() => b3.mode() === 'published', 'published with the marker');
   assert.ok(b3.pages.get(b3.page.url).threads[0].blyg_published);
   assert.match(H.validateHome({ ...rig.home, published_marker: 'a\nb' }).errors.join(), /published_marker must be one line/);
@@ -787,7 +787,7 @@ test('the abandon command must carry {note} (so the site\'s command ends only TH
   const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
   const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
   const b = boot(rig, { config: home });
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   rig.control({ publish: 'sleep' });
   await b.pub.confirm({ id: v.id, token: v.token });
@@ -820,7 +820,7 @@ test('F7: a start whose shown setting is not the one in force is refused with a 
   const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   const b = boot(rig);
   for (const shown of ['always', '', undefined, 'sometimes']) {
-    const r = b.start('t1', 'one', shown === undefined ? null : shown);
+    const r = (await b.start('t1', 'one', shown === undefined ? null : shown));
     assert.equal(r.ok, false, String(shown)); assert.equal(r.status, 409);
     assert.match(r.error, /The setting changed: your drawer showed .* but “never” is in force \(one click publishes\)\. Nothing was started/);
   }
@@ -829,9 +829,9 @@ test('F7: a start whose shown setting is not the one in force is refused with a 
   assert.equal(b.mode(), 'idle');
   const rig2 = makeRig({ confirm: 'always' }); t.after(rig2.done);
   const b2 = boot(rig2);
-  const r2 = b2.start('t1', 'one', 'never');
+  const r2 = (await b2.start('t1', 'one', 'never'));
   assert.match(r2.error, /“always” is in force \(you will see the note first\)/);
-  assert.ok(b2.start('t1', 'one', 'always').ok);
+  assert.ok((await b2.start('t1', 'one', 'always')).ok);
 });
 
 // ---- F9: the record on disk is not trusted -------------------------------------------------------------------------------------------
@@ -872,8 +872,10 @@ test('a crafted or damaged record is shown as interrupted with only "abandon": n
 
 test('a step whose process outlived the companion is never run twice: Continue is refused while it lives, and runs only after the owner chooses to stop it', async t => {
   const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
-  const b = boot(rig);
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  // a stand-in for `ps -o lstart=` that answers for a live pid (so this runs where ps cannot, e.g. in a sandbox)
+  const fakePs = pid => { try { process.kill(pid, 0); return `T${pid}`; } catch { return ''; } };
+  const b = boot(rig, { lstartOf: fakePs });
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   let v = b.pub.current();
   rig.control({ publish: 'sleep' });
   await b.pub.confirm({ id: v.id, token: v.token });
@@ -883,7 +885,7 @@ test('a step whose process outlived the companion is never run twice: Continue i
   assert.equal(rec.child.pgid, sleeper, 'the record keeps the step\'s process group');
   // the companion dies without taking the step with it: a new one reads the file
   const file = path.join(rig.out, 'run5.json'); fs.writeFileSync(file, JSON.stringify(rec));
-  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: rig.home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: fakePs, readConfig: () => ({ blyg_home: rig.home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
   v = pub.current();
   assert.deepEqual([v.mode.startsWith('interrupted_'), v.can, v.earlier_step_running], [true, ['stop-and-continue', 'abandon'], true]);
   const refused = await pub.carryOn({ id: v.id, token: v.token });
@@ -894,14 +896,25 @@ test('a step whose process outlived the companion is never run twice: Continue i
   const go = await pub.carryOn({ id: v.id, token: v.token, stop: true });
   assert.ok(go.ok, go.error);
   await until(() => pub.current().mode === 'published', 'published');
-  assert.equal(R.childAlive({ pgid: sleeper }), false, 'the earlier copy is gone');
+  assert.equal(R.childState({ pgid: sleeper, lstart: `T${sleeper}` }, fakePs), 'gone', 'the earlier copy is gone');
   assert.equal(rig.calls().filter(c => c.step === 'publish').length, 2);
   b.pub.stopAll();
 });
 
-test('childAlive: a group that does not exist, a malformed record, and (where ps can be run) a pid that now belongs to another process are all "not running"', () => {
-  assert.equal(R.childAlive(null), false); assert.equal(R.childAlive({ pgid: 'x' }), false); assert.equal(R.childAlive({ pgid: 1 }), false);
-  assert.equal(R.childAlive({ pgid: 2 ** 22 - 3 }), false);
+test('childState: none, gone (no such group, malformed, or the number now belongs to another process), alive (same start time), unknown (ps failed then or now)', () => {
+  assert.equal(R.childState(null), 'none'); assert.equal(R.childState({ pgid: 'x' }), 'gone'); assert.equal(R.childState({ pgid: 1 }), 'gone');
+  assert.equal(R.childState({ pgid: 2 ** 22 - 3, lstart: 'x' }), 'gone');
+  const me = process.pid;
+  // (process.kill(-pid) needs a group: this test process leads none, so a real group is made by a detached sleeper)
+  const sl = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: 'ignore' });
+  try {
+    const g = sl.pid;
+    assert.equal(R.childState({ pgid: g, lstart: 'S' }, () => 'S'), 'alive');
+    assert.equal(R.childState({ pgid: g, lstart: 'S' }, () => 'OTHER'), 'gone', 'same number, another start time: another process');
+    assert.equal(R.childState({ pgid: g, lstart: '' }, () => 'S'), 'unknown', 'ps failed when it was recorded');
+    assert.equal(R.childState({ pgid: g, lstart: 'S' }, () => ''), 'unknown', 'ps fails now');
+  } finally { try { process.kill(-sl.pid, 'SIGKILL'); } catch { /* gone */ } }
+  void me;
   let ps = false; try { ps = !!execFileSync('ps', ['-o', 'lstart=', '-p', String(process.pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { ps = false; }
   if (ps) assert.equal(R.childAlive({ pgid: process.pid, lstart: 'Mon Jan  1 00:00:00 2001' }), false, 'same number, different start time: another process');
 });
@@ -911,7 +924,7 @@ test('F10: while a step runs the view says which step, how long it has gone and 
   const slow = [process.execPath, '-e', 'console.log("first line");console.log("building page 3 of 9\\u001b[31m");setTimeout(()=>{},1200)', 'x', '{note}'];
   const home = { ...rig.home, commands: { ...rig.home.commands, apply: slow } };
   const b = boot(rig, { config: home });
-  b.start(); await until(() => b.mode() === 'planned', 'planned');
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   assert.equal(v.running, undefined, 'nothing running while it waits for the owner');
   await b.pub.confirm({ id: v.id, token: v.token });
@@ -928,18 +941,18 @@ test('the pre-flight check runs before anything is written; its own sentence ref
   const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
   const bad = [process.execPath, '-e', 'console.log("ruby 2.6.10 is on PATH, 3.2 needed");console.log("BLYG_CHECKER is not set");process.exit(1)'];
   const b = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: bad } } });
-  const r = b.start();
+  const r = (await b.start());
   assert.equal(r.ok, false); assert.equal(r.status, 409);
   assert.match(r.error, /^Publish as blyg cannot start: ruby 2\.6\.10 is on PATH, 3\.2 needed\nBLYG_CHECKER is not set$/);
   assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing written');
   assert.deepEqual(rig.calls(), []); assert.equal(b.mode(), 'idle');
   // a check that hangs is cut at its limit; one that cannot be started is a plain message
   const missing = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: ['no-such-check-xyz'] } } });
-  assert.match(missing.start().error, /The check could not be started \(ENOENT\)/);
+  assert.match((await missing.start()).error, /The check could not be started \(ENOENT\)/);
   // a passing check lets the run go on, and gets no {note} (the environment, not a note)
   const ok = [process.execPath, '-e', 'console.log("all good")'];
   const b2 = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: ok } } });
-  assert.ok(b2.start().ok);
+  assert.ok((await b2.start()).ok);
   await until(() => b2.mode() === 'planned', 'planned');
   assert.ok(H.validateHome({ ...rig.home, commands: { ...rig.home.commands, check: ok } }).ok);
   assert.match(H.validateHome({ ...rig.home, commands: { ...rig.home.commands, check: ['/bin/sh', '-c', 'x'] } }).errors.join(), /shell/);
@@ -959,7 +972,7 @@ test('a comment or a quoted passage that shows {{ or {% is refused at the start 
   ];
   for (const th of cases) {
     const b = boot(rig, { page: blygPage([th]) });
-    const r = b.start();
+    const r = (await b.start());
     assert.equal(r.status, 409, JSON.stringify(th));
     // (a code span holding them was already refused by the note writer, in its own words)
     assert.match(r.error, /`/.test(th.msgs[0].text) ? /code span or block in the comment holds “\{\{” or “\{%”/ : /shows “\{\{” or “\{%”.*Nothing was written/);
@@ -969,11 +982,11 @@ test('a comment or a quoted passage that shows {{ or {% is refused at the start 
   assert.deepEqual(rig.calls(), [], 'and nothing ran');
   // braces that do not open Liquid are fine, and a site that is not Jekyll (escape none) is not asked
   const ok = boot(rig, { page: blygPage([thread('t1', 'A sentence.', 'Sets like { {a}, {b} } and {: x} are fine.', { blyg: stamp() })]) });
-  assert.ok(ok.start().ok);
+  assert.ok((await ok.start()).ok);
   await until(() => ok.mode() === 'planned', 'planned');
   const rig2 = makeRig({ extra: { escape: 'none' } }); t.after(rig2.done);
   const none = boot(rig2, { page: blygPage([thread('t1', 'A sentence.', 'I would write {{ page.title }} here.', { blyg: stamp() })]) });
-  assert.ok(none.start().ok, 'escape none: not refused');
+  assert.ok((await none.start()).ok, 'escape none: not refused');
 });
 
 // The site's own abandon can fail for good (for example: the owner already ended that run by hand, and an older site command says
@@ -985,7 +998,7 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
   rig.control({ publish: 'fail' });
   const b = boot(rig, { config: home });
-  assert.ok(b.start().ok);
+  assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'planned', 'planned');
   let v = b.pub.current();
   await b.pub.confirm({ id: v.id, token: v.token });
@@ -1002,7 +1015,7 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   let pub = again();
   v = pub.current();
   assert.deepEqual([v.mode, v.can], ['abandon_failed', ['abandon', 'forget']]);
-  assert.equal(pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' }).status, 409);
+  assert.equal((await pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' })).status, 409);
   // abandon again still fails: still abandon_failed (and the site's abandon ran a second time)
   const a2 = await pub.abandon({ id: v.id, token: v.token });
   assert.deepEqual([a2.ok, a2.view.mode], [false, 'abandon_failed']);
@@ -1016,7 +1029,78 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   pub = again();
   assert.equal(pub.current().mode, 'abandoned', 'forgotten survives a restart');
   rig.control({});
-  const fresh = pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' });
+  const fresh = (await pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' }));
   assert.ok(fresh.ok, 'a new run may start: ' + fresh.error);
   await until(() => pub.current().mode === 'planned', 'the new run planned');
+});
+
+// Review item 8: a recorded step process that cannot be identified (ps failed when it was recorded) is never signalled and never run
+// twice: the owner is offered abandon only. And the companion does not run ps on every poll: once per record, again on an action.
+test('an unidentifiable earlier step (no start time recorded) is never signalled or continued; ps runs once per record, not per poll', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const b = boot(rig, { lstartOf: () => '' });   // ps fails, as in a sandbox
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  rig.control({ publish: 'sleep' });
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => rig.calls().filter(c => c.step === 'publish').length === 1, 'publish running');
+  const sleeper = rig.calls().at(-1).pid;
+  const rec = JSON.parse(fs.readFileSync(path.join(rig.out, 'run.json'), 'utf8'));
+  assert.equal(rec.child.lstart, '', 'no start time could be recorded');
+  const file = path.join(rig.out, 'run-u.json'); fs.writeFileSync(file, JSON.stringify(rec));
+  let psCalls = 0;
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: pid => { psCalls++; return `T${pid}`; }, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
+  for (let i = 0; i < 5; i++) v = pub.current();
+  assert.deepEqual([v.mode, v.can, v.earlier_step_unknown], ['interrupted_publishing', ['abandon'], true]);
+  const go = await pub.carryOn({ id: v.id, token: v.token, stop: true });
+  assert.equal(go.status, 409);
+  assert.match(go.error, /cannot be identified safely/);
+  let alive = true; try { process.kill(-sleeper, 0); } catch { alive = false; }
+  assert.ok(alive, 'the possibly reused group was not signalled');
+  assert.equal(rig.calls().filter(c => c.step === 'publish').length, 1, 'and nothing ran a second time');
+  // ps per poll: with a start time recorded and the group alive, five polls look once; an explicit action looks again
+  const rec2 = { ...rec, child: { ...rec.child, lstart: 'T1' } };
+  fs.writeFileSync(file, JSON.stringify(rec2));
+  psCalls = 0;
+  const pub2 = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: () => { psCalls++; return 'T1'; }, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
+  let w;
+  for (let i = 0; i < 5; i++) w = pub2.current();
+  assert.equal(w.earlier_step_running, true);
+  assert.equal(psCalls, 1, `ps ran ${psCalls} times for five polls`);
+  assert.equal((await pub2.carryOn({ id: w.id, token: w.token })).status, 409, 'still running: refused without stop');
+  assert.equal(psCalls, 2, 'the explicit action looked afresh');
+  try { process.kill(-sleeper, 'SIGKILL'); } catch { /* gone */ }
+  b.pub.stopAll();
+});
+
+// Review item 8: the pre-flight `check` runs asynchronously (the companion keeps answering) and holds the one run in a named mode,
+// `checking`, in which nothing is written; a second start is refused meanwhile, and a restart during it goes back to idle.
+test('the check does not block: timers run while it does, the run is `checking` (nothing written), a second start is refused, restart → idle', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const slow = [process.execPath, '-e', 'setTimeout(() => console.log("ok"), 900)'];
+  const b = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: slow } } });
+  let ticks = 0;
+  const timer = setInterval(() => { ticks++; }, 50);
+  const first = b.start();
+  await sleep(200);
+  assert.equal(b.mode(), 'checking');
+  assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing written while checking');
+  const second = await b.start();
+  assert.equal(second.status, 409, 'a second start is refused while the first one checks');
+  assert.match(second.error, /already under way \(checking\)/);
+  // a restart while checking (the record says checking): back to idle, nothing to abandon
+  const copy = path.join(rig.out, 'run-checking.json'); fs.copyFileSync(b.file, copy);
+  assert.equal(new R.RunBook({ file: copy }).mode, 'idle');
+  const r = await first;
+  clearInterval(timer);
+  assert.ok(r.ok, r.error);
+  assert.ok(ticks >= 10, `the event loop kept turning while the check ran (${ticks} ticks)`);
+  await until(() => b.mode() === 'planned', 'planned');
+  // a refused check goes back to idle and writes nothing
+  const rig2 = makeRig(); t.after(rig2.done);
+  const no = boot(rig2, { config: { ...rig2.home, commands: { ...rig2.home.commands, check: [process.execPath, '-e', 'console.log("BLYG_CHECKER is not set"); process.exit(1)'] } } });
+  const refused = await no.start();
+  assert.deepEqual([refused.status, no.mode()], [409, 'idle']);
+  assert.match(refused.error, /BLYG_CHECKER is not set/);
+  assert.deepEqual(fs.readdirSync(rig2.folder), []);
 });

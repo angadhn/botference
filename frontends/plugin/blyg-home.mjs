@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone } from './blyg-note.mjs';
 
 // ---- the limits, stated once ---------------------------------------------------
@@ -292,15 +292,15 @@ export function runCommand({ argv, cwd, env, limitMs, onChild, onLine }) {
 }
 
 /**
- * The pre-flight: run the owner's `check` command ONCE, synchronously, before a run writes anything (it is about the environment and
- * should answer in about a second; the limit is TIME_LIMITS_MS.check, so the companion is never held longer than that).
- * → { ok, message }: `message` is the command's own plain words (the tail of what it printed), or why it could not run.
+ * The pre-flight: run the owner's `check` command ONCE, before a run writes anything. Asynchronous (the companion keeps answering while
+ * it runs), in its own process group like every step, stopped at TIME_LIMITS_MS.check. → Promise<{ ok, message }>: `message` is the
+ * command's own plain words (the tail of what it printed), or why it could not run or did not answer.
  */
-export function runCheckSync({ argv, cwd, env }) {
-  const r = spawnSync(argv[0], argv.slice(1), { cwd, env, shell: false, stdio: ['ignore', 'pipe', 'pipe'], timeout: TIME_LIMITS_MS.check, maxBuffer: 256 * 1024, encoding: 'utf8', windowsHide: true });
-  const text = capOutput(`${r.stdout || ''}${r.stderr ? `\n${r.stderr}` : ''}`).text.trim();
-  if (r.error && r.error.code === 'ETIMEDOUT') return { ok: false, message: `The check did not answer within ${TIME_LIMITS_MS.check / 1000} seconds.` };
-  if (r.error) return { ok: false, message: `The check could not be started (${r.error.code || r.error.message}).` };
-  if (r.status !== 0) return { ok: false, message: text.split('\n').slice(-8).join('\n') || `The check failed (exit ${r.status}).` };
+export async function runCheck({ argv, cwd, env, exec = runCommand }) {
+  const r = await exec({ argv, cwd, env, limitMs: TIME_LIMITS_MS.check });
+  const text = String(r.output || '').split('\n').filter(l => l !== '[stderr]').join('\n').trim();
+  if (r.timedOut) return { ok: false, message: `The check did not answer within ${TIME_LIMITS_MS.check / 1000} seconds.` };
+  if (r.spawnError) return { ok: false, message: `The check could not be started (${r.spawnError}).` };
+  if (r.exit !== 0) return { ok: false, message: text.split('\n').slice(-8).join('\n') || `The check failed (exit ${r.exit}).` };
   return { ok: true, message: text };
 }
