@@ -1210,3 +1210,45 @@ test('untick and Read here never fetch from a blyg the owner paused (or one that
   assert.equal(await r.f.untick(k1), 'new');
   r.done();
 });
+
+// ---- the bounds the review's mutants slipped past (finding 10) ---------------------------------------------------------------
+
+test('the index is read to its 20,000th entry and no further: a post listed after that is not seen, and a post missing then is not dropped', async () => {
+  const r = rig({ settings: { following_unread_target: 500 } });
+  const site = r.web.add(A);
+  publish(site, A, 2);
+  follow(r, A);
+  await r.f.refresh();
+  assert.equal(feed(r).length, 2);
+  const real = r.web.get;
+  r.web.get = async (url, o) => {
+    if (String(url) !== `${A}items/index.json`) return real(url, o);
+    // 20,000 withdrawn entries (never fetched) first, then a new post, and post 1 no longer listed in what is read
+    const items = Array.from({ length: F.LIMITS.indexEntries }, (_, i) => ({ id: idOf(100000 + i), kind: 'withdrawn', version: 2, created: day(0), updated: day(0) }));
+    items.push({ id: idOf(2), kind: 'fragment', version: 1, created: day(2), updated: day(2) });
+    items.push({ id: idOf(9), kind: 'fragment', version: 1, created: '2026-11-10T11:00:00Z', updated: '2026-11-10T11:00:00Z' });
+    return { status: 200, url: String(url), contentType: 'application/json', text: JSON.stringify({ items }) };
+  };
+  site.put(makeDoc({ id: idOf(9), origin: A, title: 'Past the cap', created: '2026-11-10T11:00:00Z' }));
+  r.web.requests.length = 0;
+  const s = await r.f.refresh();
+  assert.equal(F.LIMITS.indexEntries, 20000);
+  assert.equal(r.web.itemRequests().length, 0, 'the post past the 20,000th entry is not read');
+  assert.equal(s.removed, 0, 'and the index was cut, so posts 1 and 2 missing from what was read proves nothing');
+  assert.equal(feed(r).length, 2);
+  r.done();
+});
+
+test('fresh posts are bounded by the per-blyg document cap too: 80 published at once are fetched 50 in one run and the rest in the next', async () => {
+  const r = rig({ settings: { following_unread_target: 1, following_run_requests: 2000 } });
+  const site = r.web.add(A);
+  publish(site, A, 2);
+  follow(r, A);
+  await r.f.refresh();
+  for (let k = 0; k < 80; k++) site.put(makeDoc({ id: idOf(500 + k), origin: A, title: `Fresh ${k}`, created: new Date(Date.parse('2026-11-10T11:00:00Z') + k * 1000).toISOString() }));
+  const s = await r.f.refresh();
+  assert.equal(s.new, F.LIMITS.docsPerBlygRun, 'fresh, so fetched past the target of 1, but no more than 50 a run');
+  const s2 = await r.f.refresh();
+  assert.equal(s2.new, 30);
+  r.done();
+});

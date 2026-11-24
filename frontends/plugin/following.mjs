@@ -1608,8 +1608,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (out === 'aborted') return;
       if (out === 'host_trouble') plan.halted = true;
     }
-    // FRESH posts: published since, fetched now within the caps (target or not), each burst's thread before its fragments
-    for (const e of burstOrder(freshTodo)) {
+    // FRESH posts: published since, fetched now within the caps (target or not), each burst's thread before its fragments, and
+    // OLDEST first: what a cap or the budget leaves for the next run is then newer than everything fetched, so it is still fresh
+    for (const e of burstOrder(freshTodo.reverse())) {
       if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
       if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
       plan.docs++;
