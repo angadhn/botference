@@ -154,7 +154,7 @@ test('the layout on disk: following.json (readable as before), following-bodies/
   await f.refresh();
   f.readMove(f.keyFor(A, idOf(1)), 'tick');
   const doc = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'inbox', 'items', 'last_run']);
+  assert.deepEqual(Object.keys(doc).sort(), ['blygs', 'inbox', 'items', 'kept', 'last_run']);
   assert.deepEqual(fs.readdirSync(dir).sort(), ['following-bodies', 'following-ledgers', 'following.json']);
   const stale = path.join(dir, 'following-bodies', 'abc.html.tmp.999');
   fs.writeFileSync(stale, 'x');

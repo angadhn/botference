@@ -3522,11 +3522,8 @@ function handleFollowing(route, req, res) {
         return { url: held.page.url, path: `/a/${held.key}`, kept: held.kept };
       }
       case '/following/follow': followingNeedsChecks(); return await following.follow(String(data.url || ''));
-      case '/following/unfollow': return { removed: following.unfollow(String(data.origin || '')) };
-      case '/following/state': {
-        if (!['pause', 'resume'].includes(data.move)) throw new Error('move must be pause or resume');
-        return { state: following.setBlygState(String(data.origin || ''), data.move) };
-      }
+      case '/following/unfollow': return { removed: following.unfollow(String(data.origin || ''), { forget: data.forget === true }) };
+      case '/following/state': return { state: following.stateRequest(data) }; // pause, resume, or retry a paused reading back
       case '/following/import-preview':
         followingNeedsChecks();
         return { preview: await following.previewImport({ url: String(data.url || ''), text: String(data.text || '') }) };

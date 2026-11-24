@@ -83,7 +83,15 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 `;
 
 const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background', archive: 'Archive' });
-const BACKFILL_WORDS = Object.freeze({ unknown: '', more: 'more to fetch', caught_up: 'caught up', stopped: 'stopped: too many read posts to keep track of, nothing more is fetched' });
+// What each backfill mode (following.mjs BACKFILL_MODES) says in the Following table. A paused mode names its reason.
+const BACKFILL_WORDS = Object.freeze({ unknown: '', more: 'more to fetch', caught_up: 'caught up',
+  paused_bad_documents: 'reading back is paused: this blyg served documents that could not be used. New posts are still fetched.' });
+// The unfollow choice: two buttons, each saying what it does (no browser confirm box: the open panel is the confirmation)
+const unfollowChoice = origin => `<details class="menu unfollow"><summary>Unfollow</summary><div class="pop">
+  <button type="button" data-act="unfollow" data-origin="${escHtml(origin)}">Stop following</button>
+  <span class="mut">Its posts leave the Hub. The list of posts you have read there is kept, so if you follow it again they do not come back as unread.</span>
+  <button type="button" data-act="unfollow-forget" data-origin="${escHtml(origin)}">Stop following and forget what I have read there</button>
+  <span class="mut">The list goes too: if you follow it again, every post is unread again.</span></div></details>`;
 const INBOX_WORDS = Object.freeze({ off: 'no inbox is set', pending: 'not asked yet', ok: 'up to date', unauthorised: 'the inbox refused the token', unreachable: 'the inbox could not be reached', paused: 'paused: Blygger checks are off', unreadable: 'the inbox answered something this page cannot read' });
 const openBtn = (key, label = 'Open') => `<button type="button" class="btn" data-act="open" data-key="${escHtml(key)}">${escHtml(label)}</button>`;
 
@@ -244,8 +252,8 @@ const SCRIPT = `
     if(a==='mention-seen')return post('/following/mention-read',{key:b.dataset.key}).then(function(r){done(r);});
     if(a==='mention-seen-all')return post('/following/mention-read',{all:true}).then(function(r){done(r);});
     if(a==='pause'||a==='resume')return post('/following/state',{origin:b.dataset.origin,move:a}).then(function(r){done(r);});
-    if(a==='unfollow'){if(!confirm('Stop following this blyg and forget its posts here?'))return;
-      return post('/following/unfollow',{origin:b.dataset.origin}).then(function(r){done(r);});}
+    if(a==='retry')return post('/following/state',{origin:b.dataset.origin,move:'retry'}).then(function(r){done(r,'reading it again');});
+    if(a==='unfollow'||a==='unfollow-forget')return post('/following/unfollow',{origin:b.dataset.origin,forget:a==='unfollow-forget'}).then(function(r){done(r,'unfollowed');});
     if(a==='refresh'){say('refreshing…');b.disabled=true;return post('/following/refresh',{}).then(function(r){b.disabled=false;
       if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
   });
@@ -352,10 +360,10 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
   const last = data.last_run;
   const lastLine = last ? `Last refresh ${when(last.at)}: ${Number(last.new)} new${last.backfilled ? ` (${Number(last.backfilled)} read back from earlier)` : ''}, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
   const blygs = data.blygs.map(b => `<tr><td class="b-name">${t(b.title || b.origin, 160)}<div class="mut">${addr(b.origin, 60)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
-      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}${BACKFILL_WORDS[b.backfill] ? `<div class="mut">${escHtml(BACKFILL_WORDS[b.backfill])}</div>` : ''}</td><td class="b-posts">${Number(b.items)} unread${b.archived ? `<div class="mut">${Number(b.archived)} archived</div>` : ''}</td>
+      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}${BACKFILL_WORDS[b.backfill] ? `<div class="${String(b.backfill).startsWith('paused_') ? 'warn' : 'mut'} b-backfill">${escHtml(BACKFILL_WORDS[b.backfill])}${b.bad_documents ? ` (${Number(b.bad_documents)} of them)` : ''}</div>` : ''}${String(b.backfill).startsWith('paused_') ? `<button type="button" data-act="retry" data-origin="${escHtml(b.origin)}" title="forget the documents it could not use, and read its list again">Retry</button>` : ''}</td><td class="b-posts">${Number(b.items)} unread${b.archived ? `<div class="mut">${Number(b.archived)} archived</div>` : ''}</td>
       <td class="b-acts">${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
         ${b.state === 'active' || b.state === 'unreachable' ? `<button type="button" data-act="pause" data-origin="${escHtml(b.origin)}">Pause</button>` : ''}
-        <button type="button" data-act="unfollow" data-origin="${escHtml(b.origin)}">Unfollow</button></td></tr>`).join('');
+        ${unfollowChoice(b.origin)}</td></tr>`).join('');
   const nums = Object.entries(FOLLOWING_NUMBERS).map(([k, spec]) => `<label>${escHtml(spec.what)} <input type="number" data-num name="${escHtml(k)}" min="${spec.min}" max="${spec.max}" value="${Number(settings[k])}"> <span class="mut">(${spec.min} to ${spec.max})</span></label>`).join('');
   const pane = data.view === 'mentions' ? mentionsPane(data)
     : data.view === 'archive' ? archivePane(data)

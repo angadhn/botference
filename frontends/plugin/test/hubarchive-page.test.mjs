@@ -259,3 +259,36 @@ test('Background and Mentions are unchanged by the Archive; the Following table 
   assert.match(x.html(), /2 archived/);
   x.done();
 });
+
+test('a blyg whose reading back is paused says why, in words, with a Retry that asks for exactly that', async () => {
+  const x = await hub({ n: 2 });
+  const real = x.f.view;
+  x.f.view = q => { const v = real(q); v.blygs[0].backfill = 'paused_bad_documents'; v.blygs[0].bad_documents = 100; return v; };
+  const p = x.run();
+  const cell = p.doc.querySelector('td.b-state');
+  assert.match(cell.textContent, /reading back is paused: this blyg served documents that could not be used\. New posts are still fetched\. \(100 of them\)/);
+  assert.ok(cell.querySelector('.b-backfill.warn'));
+  const retry = cell.querySelector('button[data-act=retry]');
+  retry.click();
+  await p.settle();
+  assert.deepEqual(p.calls.map(c => [c.url, c.body]), [['/following/state', { origin: A, move: 'retry' }]]);
+  x.f.view = real;
+  assert.ok(!x.run().doc.querySelector('button[data-act=retry]'), 'no Retry when nothing is paused');
+  x.done();
+});
+
+test('Unfollow offers the choice plainly, says what each does, and sends which one was chosen; no browser confirm box', async () => {
+  const x = await hub({ n: 2 });
+  const p = x.run();
+  const box = p.doc.querySelector('details.unfollow');
+  assert.equal(box.querySelector('summary').textContent, 'Unfollow');
+  const text = box.textContent.replace(/\s+/g, ' ');
+  assert.match(text, /Stop following Its posts leave the Hub\. The list of posts you have read there is kept, so if you follow it again they do not come back as unread\./);
+  assert.match(text, /Stop following and forget what I have read there The list goes too: if you follow it again, every post is unread again\./);
+  box.querySelector('button[data-act=unfollow]').click();
+  box.querySelector('button[data-act=unfollow-forget]').click();
+  await p.settle();
+  assert.deepEqual(p.calls.map(c => c.body), [{ origin: A, forget: false }, { origin: A, forget: true }]);
+  assert.deepEqual(p.confirms, []);
+  x.done();
+});

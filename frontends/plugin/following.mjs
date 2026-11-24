@@ -133,20 +133,32 @@ const readMachine = machine('read state', READ_STATES, READ_MOVES);
 export const canMoveRead = (rec, ev) => readMachine.can(rec.read, ev);
 export function moveRead(rec, ev) { rec.read = readMachine.to(rec.read, ev); return rec.read; }
 
-// How far back one blyg has been read into the Feed (the backfill's own progress, kept per blyg beside its archived ids).
-//   unknown   — its index has not been read since it was followed
-//   more      — its index lists posts that are neither held, archived nor withdrawn: more to fetch (deferred: not an error)
-//   caught_up — nothing in its index is left to fetch: everything is held (unread), archived or withdrawn
-//   stopped   — a bound was reached (the archived ids of this blyg, or the documents it served that cannot be used): nothing new
-//               is fetched from it any more, so a post whose id could not be remembered can never come back as unread.
-//               It ends only when the blyg is unfollowed.
-export const BACKFILL_MODES = Object.freeze(['unknown', 'more', 'caught_up', 'stopped']);
+// How far back one blyg has been read into the Feed (the backfill's own progress, kept in its ledger). ONE field; a fault is
+// named in the mode itself, and every mode has a way out.
+//   unknown              — its index has not been read since it was followed (or since a Retry, or a refollow)
+//   more                 — its index lists posts that are neither held, read nor withdrawn: more to fetch (deferred: not an error)
+//   caught_up            — nothing in its index is left to fetch: everything is held (unread), read, withdrawn, or waiting for a
+//                          retry after the host could not answer
+//   paused_bad_documents — reading BACK is paused for this blyg only: it served `badPerBlyg` documents that could not be used
+//                          (or all blygs together served `badTotal`). New posts are still fetched. Out by the owner's Retry
+//                          (the list is cleared) or by itself, when entries expire (`badExpiryMs`) and the list is below the bound.
+// (Before this list there was a `stopped` mode with no way out but unfollowing: a stored `stopped` loads as `unknown`.)
+//   remain / finish  after a refresh: more to read, or nothing left
+//   pause_bad        the list of unusable documents is full
+//   retry            the owner's Retry: the list is cleared and the index read afresh
+//   recover          entries expired and the list is below its bounds again
+//   forget           the blyg was unfollowed (its read ids and floor are kept, the rest starts again on a refollow)
+export const BACKFILL_MODES = Object.freeze(['unknown', 'more', 'caught_up', 'paused_bad_documents']);
 export const BACKFILL_MOVES = Object.freeze({
   remain: { unknown: 'more', more: 'more', caught_up: 'more' },
   finish: { unknown: 'caught_up', more: 'caught_up', caught_up: 'caught_up' },
-  stop: { unknown: 'stopped', more: 'stopped', caught_up: 'stopped', stopped: 'stopped' },
+  pause_bad: { unknown: 'paused_bad_documents', more: 'paused_bad_documents', caught_up: 'paused_bad_documents' },
+  retry: { paused_bad_documents: 'unknown' },
+  recover: { paused_bad_documents: 'more' },
+  forget: { unknown: 'unknown', more: 'unknown', caught_up: 'unknown', paused_bad_documents: 'unknown' },
 });
 const backfillMachine = machine('backfill', BACKFILL_MODES, BACKFILL_MOVES);
+export const canMoveBackfill = (led, ev) => backfillMachine.can(led.backfill, ev);
 export function moveBackfill(led, ev) { led.backfill = backfillMachine.to(led.backfill, ev); return led.backfill; }
 
 // Whether a reconciliation is in flight. Never more than one.
@@ -264,9 +276,17 @@ export const LIMITS = Object.freeze({
   archiveShownMax: 1000,
   archiveRecords: 2000,       // archive records kept for display (~0.5 KB each); beyond it the oldest-ticked are dropped
   archiveTitleChars: 120,     // a record's title, or the first words of the post
-  archiveIdsPerBlyg: 10000,   // archived ids remembered per blyg (26 characters each, ~0.3 MB at the bound)
-  archiveIdsTotal: 50000,     // ... and in all blygs together
-  badPerBlyg: 100,            // ids whose document could not be used, remembered per blyg (with the version the index gave)
+  archiveIdsPerBlyg: 5000,    // read ids remembered per blyg, each with its post's `created` (~46 bytes each: ~0.23 MB at the
+                              // bound). At the bound the oldest `ledgerTrim` are dropped and the FLOOR rises to the newest of
+                              // them: an index entry created at or before the floor counts as read. A blyg is never stopped.
+  ledgerTrim: 500,            // ids dropped at once when a ledger is full (so it is not trimmed on every tick)
+  badPerBlyg: 100,            // ids whose document could not be used (a 2xx answer that failed its checks), per blyg, with the
+                              // version the index gave and when: at the bound reading back pauses for that blyg (fresh posts go on)
+  badTotal: 2000,             // ... and in all blygs together (the blyg that reaches it pauses the same way)
+  badExpiryMs: 7 * 24 * 3600e3, // an unusable document is asked for again after this long (or at once when the index names a new version)
+  laterPerBlyg: 200,          // ids whose document a host could not give (404, 410, 403), asked again after a doubling back-off
+  keptMax: 50,                // ledgers kept for blygs unfollowed without "forget" (their read ids and floor only) ...
+  keptMs: 365 * 24 * 3600e3,  // ... for at most this long; beyond either bound the oldest is forgotten
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
@@ -821,6 +841,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
   const prune = st => {
     for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k];
+    // the ledgers kept for blygs unfollowed (read ids and floor only): at most keptMax, none older than keptMs
+    const kept = Object.entries(st.kept).filter(([o]) => !st.blygs[o]).sort((a, b) => b[1] - a[1]);
+    for (const [i, [o, at]] of kept.entries()) if (i >= LIMITS.keptMax || now() - at > LIMITS.keptMs) { delete st.kept[o]; forgetLedger(o); }
+    for (const o of Object.keys(st.kept)) if (st.blygs[o]) delete st.kept[o];
   };
   // A blyg's ledger, a document of its own (so a tick or an open does not rewrite every blyg's ids): the ids of its posts the
   // owner ticked, each with the post's `created` (so a post that left the Archive's list is never fetched again as unread),
@@ -845,7 +869,16 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (ID_RE.test(id) && Number.isInteger(ver) && ver >= 1 && Number.isFinite(at)) bad[id] = [ver, at];
       }
     }
-    return { ids, bad, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    const later = {};
+    if (r.later && typeof r.later === 'object' && !Array.isArray(r.later)) {
+      for (const [id, v] of Object.entries(r.later)) {
+        if (Object.keys(later).length >= LIMITS.laterPerBlyg) break;
+        if (ID_RE.test(id) && Array.isArray(v) && Number.isFinite(v[0]) && Number.isInteger(v[1]) && v[1] >= 1 && v[1] < 64) later[id] = [v[0], v[1]];
+      }
+    }
+    const floor = Number.isFinite(r.floor) && r.floor > 0 ? r.floor : 0;
+    // `stopped` (the mode before this list) and anything made up load as unknown
+    return { ids, floor, bad, later, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
   const ledgerEntry = origin => {
@@ -881,7 +914,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   function saveLedgers() {
     for (const [origin, e] of ledgers) {
-      if (!e.dirty || !state.blygs[origin]) continue;
+      if (!e.dirty || !(state.blygs[origin] || state.kept[origin])) continue;
       try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { e.dirty = false; continue; } throw err; }
     }
   }
@@ -902,7 +935,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     stateVersion = got ? got.version : null;
     const v = got && got.value && typeof got.value === 'object' && !Array.isArray(got.value) ? got.value : {};
     base = unitsOf(v);
-    state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {},
+    const kept = {};
+    for (const [o, at] of Object.entries(v.kept && typeof v.kept === 'object' ? v.kept : {})) if (originOf(o) === o && Number.isFinite(at)) kept[o] = at;
+    // kept: origin → when it was unfollowed, for the blygs unfollowed whose read ids are kept (so a refollow does not show them again)
+    state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {}, kept,
       last_run: v.last_run || null, inbox: { ...emptyInbox(), ...(v.inbox && typeof v.inbox === 'object' ? v.inbox : {}) } };
     // a hand-edited record never makes the engine fetch something the reader paused
     for (const b of Object.values(state.blygs)) if (!BLYG_STATES.includes(b.state)) b.state = 'paused';
@@ -924,9 +960,17 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
     prune(state);
     trimArchive(state);
-    queueMicrotask(() => { try { sweepBodies(); } catch { /* nothing to sweep */ } });
+    queueMicrotask(() => { try { sweepBodies(); sweepLedgers(); } catch { /* nothing to sweep */ } });
     return state;
   };
+  // A ledger document whose blyg is neither followed nor kept (unfollowed with "forget", or a crash between the two writes) goes.
+  function sweepLedgers() {
+    const st = load();
+    const keep = new Set([...Object.keys(st.blygs), ...Object.keys(st.kept)].map(ledgerName));
+    let n = 0;
+    for (const name of store.list('ledger')) if (!keep.has(name)) { store.delete('ledger', name); n++; }
+    return n;
+  }
   /** Write the main document (and the ledgers changed), conditionally on the version read; on a conflict, merge and write again. */
   const save = () => {
     const st = load();
@@ -994,19 +1038,22 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     let r;
     try { r = await get(String(url), { maxBytes, accept, timeoutMs: Math.max(1, Math.min(timeoutMs, budget.left())), ...(headers ? { headers } : {}) }); }
     catch (e) { if (!e || e.kind !== 'refused') breakerFail(host); throw e; }
-    if (Number(r.status) >= 500) breakerFail(host); else breakerOk(host);
+    // a 5xx, or a 429 (the host asks to be asked less), counts against the host's breaker like a failure to connect
+    if (Number(r.status) >= 500 || Number(r.status) === 429) breakerFail(host); else breakerOk(host);
     return r;
   };
   // → { status: 'ok', json, url } | { status: 'absent', code } | { status: 'trouble', kind, message }
+  // → { status: 'ok', json, url } | { status: 'garbled', code } (a 2xx that is not a JSON object) | { status: 'absent', code } (any other
+  //   answer below 500 but 429) | { status: 'trouble', kind, message } (could not ask, out of budget, a 5xx or a 429)
   const fetchJson = async (g, url, maxBytes) => {
     let r;
     try { r = await g(url, { maxBytes }); }
     catch (e) { return { status: 'trouble', kind: (e && e.kind) || 'network', message: cleanText(String((e && e.message) || 'could not fetch'), 200) }; }
     const code = Number(r.status) || 0;
-    if (code >= 500) return { status: 'trouble', kind: 'network', message: `HTTP ${code}` };
+    if (code >= 500 || code === 429) return { status: 'trouble', kind: 'network', message: `HTTP ${code}` };
     if (code < 200 || code >= 300) return { status: 'absent', code };
-    try { const j = JSON.parse(String(r.text ?? '')); return j && typeof j === 'object' ? { status: 'ok', json: j, url: String(r.url || url) } : { status: 'absent', code }; }
-    catch { return { status: 'absent', code }; }
+    try { const j = JSON.parse(String(r.text ?? '')); return j && typeof j === 'object' ? { status: 'ok', json: j, url: String(r.url || url) } : { status: 'garbled', code }; }
+    catch { return { status: 'garbled', code }; }
   };
 
   const settings = () => getSettings();
@@ -1041,6 +1088,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (Object.keys(st.blygs).length >= LIMITS.followMax) throw new Error(`at most ${LIMITS.followMax} blygs can be followed`);
     st.blygs[origin] = { origin, title: cleanText(title, 200), author: cleanText(author, 200), state: 'active', added: new Date(now()).toISOString(),
       via, failures: 0, absent_runs: 0, retry_after: 0, last_try: 0, last_ok: 0, last_error: '' };
+    // followed again after an unfollow that kept what was read: its ledger (read ids and floor) is used as it is
+    delete st.kept[origin];
     return true;
   }
   async function follow(url) {
@@ -1053,13 +1102,42 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     save(); reschedule(); onChange();
     return { ...r, added };
   }
-  function unfollow(origin) {
+  /**
+   * Stop following. Its posts and archive records go either way. `forget: false` (the page's "Stop following") KEEPS its ledger's
+   * read ids and floor (a few kilobytes; at most keptMax blygs, for at most keptMs), so following it again does not bring back as
+   * unread what was read there; `forget: true` ("Stop following and forget what I have read there") deletes the ledger too.
+   */
+  function unfollow(origin, { forget = false } = {}) {
     const st = load();
     if (!st.blygs[origin]) return false;
-    delete st.blygs[origin];
-    forgetLedger(origin);
+    if (forget) { delete st.blygs[origin]; delete st.kept[origin]; forgetLedger(origin); }
+    else {
+      const led = ledgerFor(origin);
+      led.bad = {}; led.later = {};
+      moveBackfill(led, 'forget');
+      delete st.blygs[origin];
+      st.kept[origin] = now();
+    }
     save(); sweepBodies(); reschedule(); onChange(); // save() prunes its posts
     return true;
+  }
+  /** What /following/state may ask: pause or resume a blyg (BLYG_STATES), or Retry its reading back (BACKFILL_MODES). */
+  function stateRequest(data) {
+    const d = data && typeof data === 'object' ? data : {};
+    const origin = String(d.origin || '');
+    if (d.move === 'retry') return retryBackfill(origin);
+    if (!['pause', 'resume'].includes(d.move)) throw new Error('move must be pause, resume or retry');
+    return setBlygState(origin, d.move);
+  }
+  /** The owner's Retry on a blyg whose reading back is paused: its list of unusable documents is cleared and its index read afresh. */
+  function retryBackfill(origin) {
+    if (!load().blygs[origin]) throw new Error('not followed');
+    const led = ledgerFor(origin);
+    if (!canMoveBackfill(led, 'retry')) throw new Error('reading back is not paused for that blyg');
+    moveBackfill(led, 'retry');
+    led.bad = {}; led.later = {};
+    save(); onChange();
+    return led.backfill;
   }
   function setBlygState(origin, ev) {
     const b = load().blygs[origin];
@@ -1070,7 +1148,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return b.state;
   }
   const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: unreadOf(b.origin),
-    archived: itemsOf(b.origin).filter(i => i.read === 'archived').length, backfill: ledgerOf(b.origin).backfill }));
+    archived: itemsOf(b.origin).filter(i => i.read === 'archived').length, backfill: ledgerOf(b.origin).backfill,
+    bad_documents: Object.keys(ledgerOf(b.origin).bad).length }));
 
   // ---- importing a blogroll or directory ----
   /** What WOULD be added from OPML or a directory document (a URL, or pasted text). Adds nothing. */
@@ -1164,12 +1243,21 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
    */
   async function pull(b, id, g, tally, alive) {
     const url = itemUrlFor({ item: b.item_template }, b.origin, id);
-    if (!isWebUrl(url)) { tally.invalid++; return { out: 'unusable' }; }
-    if (!within(b.origin, url)) { b.last_error = REFUSALS.item; tally.refused++; return { out: 'unusable' }; }
+    // an address that is not a web address, or outside the blyg: the manifest's template, not this document, is at fault
+    if (!isWebUrl(url) || !within(b.origin, url)) { b.last_error = REFUSALS.item; tally.refused++; return { out: 'refused' }; }
     const r = await fetchJson(g, url, LIMITS.itemBytes);
     if (!alive()) { tally.aborted++; return { out: 'aborted' }; }
-    if (r.status === 'trouble') { if (NOT_THE_BLYGS_FAULT.includes(r.kind)) tally.deferred++; else tally.errors++; return { out: 'trouble', message: r.message }; }
-    if (r.status === 'ok' && !within(b.origin, r.url)) { b.last_error = REFUSALS.redirect; tally.refused++; return { out: 'unusable' }; }
+    // TROUBLE is never marked against the document: out of budget, the breaker open or fetching off ('trouble': asked again next
+    // run), or the host could not answer (a timeout, a refused connection, a 5xx, a 429: 'host_trouble', counted by the breaker,
+    // and this blyg's documents are not asked for again in this run)
+    if (r.status === 'trouble') {
+      if (NOT_THE_BLYGS_FAULT.includes(r.kind)) { tally.deferred++; return { out: 'trouble', message: r.message }; }
+      tally.errors++; return { out: 'host_trouble', message: r.message };
+    }
+    // an answer that is not a document (404, 410, 403, any other 4xx but 429): MISSING, asked again after a back-off (`later`)
+    if (r.status === 'absent') { tally.missing++; return { out: 'missing', message: `HTTP ${r.code}` }; }
+    // a 2xx: from here on what cannot be used is the document's own fault (UNUSABLE, remembered in the ledger's `bad`)
+    if (!within(b.origin, r.url)) { b.last_error = REFUSALS.redirect; tally.refused++; return { out: 'unusable' }; }
     const doc = r.json;
     if (r.status !== 'ok' || docRefusal(doc, { id, origin: b.origin })) { tally.invalid++; return { out: 'unusable' }; }
     const rec = recordFromDoc(doc, b.origin, b);
@@ -1178,10 +1266,33 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   const iso = () => new Date(now()).toISOString();
   const dropArchivedId = (origin, id) => { const led = ledgerFor(origin); const i = led.ids.findIndex(p => p[0] === id); if (i >= 0) led.ids.splice(i, 1); };
-  /** A document that cannot be used is remembered (with the version the index gave) so it is not asked for again until the index changes. At the bound the blyg is stopped. */
-  function markBad(led, e) {
-    if (led.bad[e.id] === undefined && Object.keys(led.bad).length >= LIMITS.badPerBlyg) { moveBackfill(led, 'stop'); return; }
-    led.bad[e.id] = [e.version, now()];
+  const badTotal = () => Object.keys(load().blygs).reduce((n, o) => n + Object.keys(ledgerOf(o).bad).length, 0);
+  const badFull = led => Object.keys(led.bad).length >= LIMITS.badPerBlyg || badTotal() >= LIMITS.badTotal;
+  /** A document the host could not give (404, 410, 403): asked for again after a back-off that doubles each time (not a mark against it). */
+  function later(led, id) {
+    const n = led.later[id] ? led.later[id][1] + 1 : 1;
+    if (!led.later[id] && Object.keys(led.later).length >= LIMITS.laterPerBlyg) return; // the list is full: simply asked again next run
+    led.later[id] = [now() + backoffMs(n), Math.min(n, 63)];
+  }
+  /**
+   * A document that was served (2xx) and cannot be used is remembered with the version the index gave and when, so it is not asked for
+   * again until the index names a new version or `badExpiryMs` has passed. When the list is full (`badPerBlyg` for this blyg, or
+   * `badTotal` in all) it waits like a missing one instead, and reading BACK pauses for this blyg (paused_bad_documents); fresh posts
+   * are still fetched.
+   */
+  function markBad(p, e) {
+    const led = p.led;
+    if (led.bad[e.id] === undefined && badFull(led)) later(led, e.id);
+    else led.bad[e.id] = [e.version, now()];
+    if (badFull(led) && canMoveBackfill(led, 'pause_bad')) moveBackfill(led, 'pause_bad');
+  }
+  /** What one fetch's outcome leaves in its blyg's ledger and plan: the same for a fresh post, the backfill and the top-up. */
+  function outcome(p, e, out) {
+    if (out === 'stored' || out === 'kept') { delete p.led.later[e.id]; delete p.led.bad[e.id]; return; }
+    if (out === 'unusable') return markBad(p, e);
+    if (out === 'missing') later(p.led, e.id);
+    if (out === 'host_trouble') p.halted = true;
+    p.left++;
   }
   /**
    * Fetch one post's document and put it in the list. `held` is what is held for it (a post in the Feed, an archive record, a
@@ -1291,26 +1402,36 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // cut at `indexEntries`, when its absence proves nothing. An archive record stays: it is the owner's record of having read it.
     if (raw.length <= LIMITS.indexEntries) {
       for (const i of itemsOf(b.origin)) if (i.read !== 'archived' && !inIndex.has(i.id)) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
+      // and the ledger's lists forget ids the index no longer names
+      for (const k of ['bad', 'later']) for (const id of Object.keys(led[k])) if (!inIndex.has(id)) delete led[k][id];
     }
+    // an unusable document is asked for again once it has been remembered for badExpiryMs
+    for (const [id, [, at]] of Object.entries(led.bad)) if (now() - at >= LIMITS.badExpiryMs) delete led.bad[id];
+    // a read id remembered without its post's date (from a ledger written before dates were kept) takes the index's, for the floor
+    for (const p of led.ids) if (!p[1] && byId.has(p[0])) { const c = Date.parse(byId.get(p[0]).created); if (Number.isFinite(c) && c > 0 && c <= now()) p[1] = c; }
+    const belowFloor = e => { const c = Date.parse(e.created); return led.floor > 0 && Number.isFinite(c) && c <= led.floor; };
+    const paused = led.backfill === 'paused_bad_documents';
     // The newest entry that is already known (held, archived, or an unusable document) bounds what is FRESH (newer than it:
     // published since, fetched now, within the caps); what lies beyond it is BACKFILL, fetched only while the Feed is short.
     const known = e => !!st.items[identOf(b.origin, e.id)] || archivedIds.has(e.id) || led.bad[e.id] !== undefined;
     let edge = -1;
     entries.forEach((e, i) => { if (known(e)) edge = i; });
-    const plan = { b, led, backfill: [], left: 0, docs: 0 };
+    const plan = { b, led, backfill: [], left: 0, docs: 0, halted: false };
     for (const [n, e] of entries.entries()) {
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
       if (!held) {
-        // withdrawn items are never fetched; ticked ones are read; an unusable one waits for the index to name a new version
-        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || (led.bad[e.id] && led.bad[e.id][0] === e.version) || led.backfill === 'stopped') continue;
-        if (n > edge) { plan.backfill.push(e); continue; }
+        // withdrawn items are never fetched; ticked ones are read, and so is anything created at or before the floor; an unusable
+        // one waits for the index to name a new version (or for its entry to expire); a missing one for its back-off
+        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || belowFloor(e) || (led.bad[e.id] && led.bad[e.id][0] === e.version)) continue;
+        if (led.later[e.id] && led.later[e.id][0] > now()) { plan.left++; continue; }
+        if (n > edge) { if (paused) plan.left++; else plan.backfill.push(e); continue; }
         if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
-        if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
+        if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
         plan.docs++;
         const out = await ingest(b, e, undefined, cfg, g, tally, alive);
         if (out === 'aborted') return;
-        if (out === 'unusable') markBad(led, e); else if (out === 'trouble' || out === 'deferred') plan.left++;
+        outcome(plan, e, out);
         continue;
       }
       // what the INDEX said last time we looked: a document that disagrees with its index entry
@@ -1323,9 +1444,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         st.items[ident] = tombstone(held, e); if (!isWithdrawn(held)) tally.withdrawn++;
         continue;
       }
-      if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
       plan.docs++;
-      if (await ingest(b, e, held, cfg, g, tally, alive) === 'aborted') return;
+      const out = await ingest(b, e, held, cfg, g, tally, alive);
+      if (out === 'aborted') return;
+      if (out === 'host_trouble') plan.halted = true;
     }
     return plan;
   }
@@ -1338,14 +1461,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
    * what is left waits for the next refresh (no error, nothing marked against the blyg). All requests go through the run's one getter.
    */
   async function backfill(plans, g, cfg, tally) {
-    const turn = plans.filter(p => load().blygs[p.b.origin] === p.b && p.led.backfill !== 'stopped' && p.backfill.length)
+    const turn = plans.filter(p => load().blygs[p.b.origin] === p.b && p.led.backfill !== 'paused_bad_documents' && p.backfill.length)
       .sort((a, c) => (a.b.last_backfill || 0) - (c.b.last_backfill || 0));
     let unread = unreadCount(), moved = true;
     rounds: while (moved && unread < cfg.following_unread_target && !g.budget.spent()) {
       moved = false;
       for (const p of turn) {
         if (unread >= cfg.following_unread_target || g.budget.spent()) break rounds;
-        if (p.led.backfill === 'stopped' || !p.backfill.length || p.docs >= LIMITS.docsPerBlygRun) continue;
+        if (p.led.backfill === 'paused_bad_documents' || p.halted || !p.backfill.length || p.docs >= LIMITS.docsPerBlygRun) continue;
         if (totalItems() >= cfg.following_max_items_total) break rounds;
         if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg) continue;
         const e = p.backfill.shift();
@@ -1354,22 +1477,22 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         moved = true;
         const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
         if (out === 'aborted') p.backfill = [];
-        else if (out === 'unusable') markBad(p.led, e);
-        else if (out === 'trouble' || out === 'deferred') p.left++;
-        else if (out === 'stored') tally.backfilled++;
+        else outcome(p, e, out);
+        if (out === 'stored') tally.backfilled++;
         unread = unreadCount();
       }
     }
     // What is left is deferred, not failed: counted by why it was left (the run's budget or per-blyg document cap; or a holding cap).
     for (const p of turn) {
-      if (!p.backfill.length || p.led.backfill === 'stopped') continue;
+      if (!p.backfill.length || p.led.backfill === 'paused_bad_documents') continue;
       if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) tally.capped += p.backfill.length;
       else if (unread < cfg.following_unread_target) tally.deferred += p.backfill.length;
     }
   }
-  /** A blyg's backfill mode after a run: more to fetch, or caught up. (A stopped blyg stays stopped.) */
+  /** A blyg's backfill mode after a run: more to fetch, or caught up; a paused one recovers once its list is below its bounds. */
   function settle(plan) {
-    if (plan.led.backfill === 'stopped' || load().blygs[plan.b.origin] !== plan.b) return;
+    if (load().blygs[plan.b.origin] !== plan.b) return;
+    if (plan.led.backfill === 'paused_bad_documents') { if (!badFull(plan.led)) moveBackfill(plan.led, 'recover'); return; }
     moveBackfill(plan.led, plan.backfill.length + plan.left > 0 ? 'remain' : 'finish');
   }
 
@@ -1435,7 +1558,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const budget = newBudget(cfg, now);
     const g = getter(budget); g.budget = budget;
     const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
+      errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
     const plans = [];
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
@@ -1487,6 +1610,18 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     title: cleanText(plainText(rec.title) || plainText(rec.excerpt), LIMITS.archiveTitleChars), text: '', text_chars: 0, read: rec.read, archived_at: iso(),
   });
   /** The owner's tick: the post leaves the Feed (its text is deleted, a small record stays) and its id is remembered in its blyg's ledger. */
+  /**
+   * A ledger at its bound drops its `ledgerTrim` oldest ids (by the post's `created`, as kept at the tick; an id whose date is not
+   * known is dropped last) and raises its FLOOR to the newest date among them: from then on every index entry created at or before
+   * the floor counts as read. A blyg is never stopped for having been read a lot. → the floor.
+   */
+  function trimLedger(led) {
+    const dropped = led.ids.map((p, i) => [p[1] || Infinity, i]).sort((a, b) => a[0] - b[0]).slice(0, LIMITS.ledgerTrim);
+    for (const [c] of dropped) if (Number.isFinite(c)) led.floor = Math.max(led.floor, c);
+    const drop = new Set(dropped.map(x => x[1]));
+    led.ids = led.ids.filter((_, i) => !drop.has(i));
+    return led.floor;
+  }
   function tickRec(rec) {
     const st = load();
     const next = archiveRecordOf(rec);
@@ -1495,10 +1630,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     deleteBody(rec.key);
     const led = ledgerFor(rec.origin);
     if (!led.ids.some(p => p[0] === rec.id)) {
-      const all = Object.keys(st.blygs).reduce((n, o) => n + ledgerOf(o).ids.length, 0);
-      // At the bound the id cannot be remembered, so the blyg is STOPPED: nothing new is fetched from it, which is what keeps this post read.
-      if (led.ids.length >= LIMITS.archiveIdsPerBlyg || all >= LIMITS.archiveIdsTotal) moveBackfill(led, 'stop');
-      else led.ids.push([rec.id, Math.max(0, stamp(rec.created, now()))]);
+      led.ids.push([rec.id, Math.max(0, stamp(rec.created, now()))]);
+      if (led.ids.length > LIMITS.archiveIdsPerBlyg) trimLedger(led);
     }
   }
   function readMove(key, ev) {
@@ -1532,12 +1665,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (!mayFetch()) throw new Error('fetching is off (blyg_checks), so the post cannot be fetched again');
     const b = load().blygs[rec.origin];
     if (!b) throw new Error('that blyg is not followed');
-    const tally = { deferred: 0, errors: 0, invalid: 0, refused: 0, aborted: 0 };
+    const tally = { deferred: 0, errors: 0, invalid: 0, missing: 0, refused: 0, aborted: 0 };
     const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
     const got = await pull(b, rec.id, g, tally, () => load().items[identOf(rec.origin, rec.id)] === rec);
     // re-read after the await (pull's own check runs before this function resumes, so it is checked here again)
     if (got.out === 'aborted' || load().items[identOf(rec.origin, rec.id)] !== rec) throw new Error('that post changed meanwhile (it was ticked, unticked or refreshed): look again and retry');
-    if (got.out === 'trouble') throw new Error(`could not fetch the post: ${got.message}`);
+    if (['trouble', 'host_trouble', 'missing'].includes(got.out)) throw new Error(`could not fetch the post: ${got.message}`);
+    if (got.out === 'refused') throw new Error(REFUSALS.item);
     if (got.out !== 'ok') throw new Error('the blyg does not serve that post as it was, so it stays in the Archive');
     if (isWithdrawn(got.rec)) throw new Error('that post has been withdrawn');
     const next = { ...got.rec, body_state: got.body.state, index_version: got.rec.version, fetched_at: now(), key: rec.key, read: rec.read,
@@ -1799,7 +1933,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   const itemByKey = key => copy(byKey(key));
 
-  return { follow, unfollow, setBlygState, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove,
+  return { follow, unfollow, setBlygState, stateRequest, retryBackfill, listBlygs, previewImport, confirmImport, refresh, reschedule, readMove,
     markResponded, tickMany, untick, readRequest, unreadCount, mentionSeen, allMentionsSeen, open, identityFor, view, itemByKey, fetchPost, heldPost, recordUrlOf, openedHere, heldVersion, responseOf, bodyHtml: readBodyHtml, sweepBodies,
     keyFor: (origin, id) => { const r = heldItem(origin, id); return r ? r.key : ''; },
     runState: () => run.state, scheduleMode: () => schedule.mode, inboxState: () => load().inbox.state,
@@ -1821,8 +1955,8 @@ export const ROUTES = Object.freeze([
   { method: 'POST', path: '/following/read-here', what: 'keep the post\'s text as an annotatable page and open it (or load its newer version)' },
   { method: 'POST', path: '/following/hold', what: 'make the held text of a post its annotatable page (no request), so a highlight can be made on it from the Feed' },
   { method: 'POST', path: '/following/follow', what: 'follow a blyg by any URL on it' },
-  { method: 'POST', path: '/following/unfollow', what: 'stop following' },
-  { method: 'POST', path: '/following/state', what: 'pause or resume one' },
+  { method: 'POST', path: '/following/unfollow', what: 'stop following (keeping what was read there, or with forget: true forgetting it too)' },
+  { method: 'POST', path: '/following/state', what: 'pause or resume one, or retry its paused reading back' },
   { method: 'POST', path: '/following/import-preview', what: 'what a blogroll or directory would add' },
   { method: 'POST', path: '/following/import-confirm', what: 'add what was confirmed' },
   { method: 'POST', path: '/following/refresh', what: 'refresh now' },
