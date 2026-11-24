@@ -1066,6 +1066,7 @@ async function main() {
       { agent: 'gemini', model: 'claude-opus-5' },
       { agent: 'claude', model: 'claude opus 5; rm -rf /' },
       { agent: 'claude', model: 'gpt-5.5' },
+      { agent: 'claude', model: '--dangerously-skip-permissions' },
     ];
     for (const body of bad) {
       const r = await POST(base, '/model', body);

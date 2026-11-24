@@ -6902,7 +6902,7 @@ export function handler(req, res) {
       const agent = String(data.agent || '');
       const model = String(data.model || '');
       if (agent !== 'claude' && agent !== 'codex') return fail(res, 400, 'agent must be claude or codex');
-      if (!/^[\w.-]+$/.test(model)) return fail(res, 400, 'bad model id');
+      if (!store.MODEL_RE.test(model)) return fail(res, 400, 'bad model id');
       if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
       // when the bridge has published its lists — or the cache remembers the
       // ones it published last time — the model must be on them; before that we
@@ -6920,7 +6920,7 @@ export function handler(req, res) {
       const agent = String(data.agent || '');
       const level = String(data.level || '');
       if (agent !== 'claude' && agent !== 'codex') return fail(res, 400, 'agent must be claude or codex');
-      if (!/^[\w-]+$/.test(level)) return fail(res, 400, 'bad effort level');
+      if (!store.EFFORT_RE.test(level)) return fail(res, 400, 'bad effort level');
       if (NO_AGENTS) return fail(res, 409, AGENTS_OFF_REASON);
       const options = (chat.models().effort.options || {})[agent];
       if (options && options.length && !options.includes(level)) return fail(res, 400, `unknown effort level for ${agent}`);

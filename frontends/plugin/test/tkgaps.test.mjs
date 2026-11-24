@@ -194,6 +194,12 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
     const n = spawned.length;
     eq(`${a}: a model beginning with - is refused, nothing run`, [(await O.runOneShot(a, 'p', { model: '--dangerously-bypass-approvals-and-sandbox', spawn: fakeSpawn('x'), jail })).error, spawned.length - n], ['the model name may not begin with -', 0]);
   }
+  // …and what is stored never begins with - (store.mjs MODEL_RE / EFFORT_RE: the config and the /model and /effort routes)
+  { const St = await import('../store.mjs');
+    const a = St.normalizeAgents({ model: { claude: '-x', codex: '--dangerously-bypass-approvals-and-sandbox' }, effort: { claude: '-high', codex: 'high' },
+      model_options: { codex: ['gpt-x', '--yolo'] } });
+    eq('a stored model or effort that begins with - is dropped', [a.model.claude, a.model.codex, a.effort.claude, a.effort.codex, a.model_options.codex], [null, null, null, 'high', ['gpt-x']]);
+    eq('ordinary names pass', ['claude-opus-5', 'gpt-5.5', 'o3', '.x'].map(m => St.MODEL_RE.test(m)), [true, true, true, true]); }
   // WHERE THE JAIL CANNOT BE MADE, A CODEX GAP FAILS: nothing is started
   { const n = spawned.length;
     const r2 = await O.runOneShot('codex', 'p', { spawn: codexSpawn('x'), jail: o => O.codexJail({ ...o, platform: 'linux' }) });

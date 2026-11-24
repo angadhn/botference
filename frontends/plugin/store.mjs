@@ -134,8 +134,10 @@ export const AGENTS = ['claude', 'codex'];
 // bridge's stdin (`/model @claude <value>`), and config.json is a file a human
 // can edit. So the charset is the security boundary, not a formality: a value
 // carrying a newline would post a second command of its own choosing.
-const MODEL_RE = /^[\w.-]{1,64}$/;
-const EFFORT_RE = /^[\w-]{1,32}$/;
+// …and each is also passed to a CLI as an argument (oneshot.mjs: `--model=<v>`), so it never BEGINS with `-` (a value such as
+// `--dangerously-bypass-approvals-and-sandbox` would otherwise be a flag of its own).
+export const MODEL_RE = /^[\w.][\w.-]{0,63}$/;
+export const EFFORT_RE = /^\w[\w-]{0,31}$/;
 const OPTIONS_MAX = 64;
 const cleanPref = (v, re) => (typeof v === 'string' && re.test(v) ? v : null);
 const clampInt = (v, lo, hi, dflt) => {
