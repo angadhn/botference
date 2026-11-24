@@ -59,10 +59,10 @@ await test('the owner follows, refreshes, ticks one post: it leaves the Feed and
   assert.equal((await POST(B, '/following/read', { key, move: 'tick' })).status, 400, 'ticking twice is refused');
 });
 
-await test('the pages: /hub shows the tick boxes, /hub?view=archive the Archive lines with no text of the post, and ?q= searches all of them', async () => {
+await test('the pages: /hub shows a Read button per post, /hub?view=archive the Archive lines with no text of the post, and ?q= searches all of them', async () => {
   const feed = (await GET(B, '/hub', { accept: 'text/html' })).body;
   assert.equal((feed.match(/class="tick"/g) || []).length, N - 1);
-  assert.match(feed, /aria-label="Read: move to Archive"/);
+  assert.match(feed, /aria-label="Mark as read: move to Archive">\u2713 Read<\/button>/);
   const arc = (await GET(B, '/hub?view=archive', { accept: 'text/html' })).body;
   assert.match(arc, /hub-archive-line/);
   assert.match(arc, /Post 3/);

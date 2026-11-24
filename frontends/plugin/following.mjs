@@ -383,7 +383,8 @@ export const LIMITS = Object.freeze({
   archiveShownMax: 1000,
   archiveRecordsPerBlyg: 1000, // archive records kept per blyg for display (~0.5 KB each, in its archive document); beyond it the
                               // oldest-ticked are dropped (never a starred one). Their ids stay in the ledger: that keeps them read.
-  starsMax: 500,              // posts starred at once (the next star is refused, saying so)
+  starsMax: 500,
+  repairAgeMs: 10 * 60 * 1000, // a copy of a post in both its feed and its archive (a move between its writes) is repaired only this old              // posts starred at once (the next star is refused, saying so)
   bodySweepAgeMs: 3600e3,     // a body nothing names is deleted only when older than this (it may belong to a transaction not yet committed)
   leaseMarginMs: 30 * 1000,   // a run lease lasts the run's seconds and this much more (then another invocation may take it back)
   txAttempts: 6,              // a transaction that keeps meeting another's write is run this many times, then refused plainly
@@ -923,7 +924,8 @@ function newBudget(settings, now) {
 //      is RE-RUN on what is stored now (bounded: LIMITS.txAttempts, then a plain error). So an owner's move is never merged
 //      away: it is applied again on the fresh state, and refused there only if the table of its state machine refuses it.
 //      Each written document carries the ids of the last operations that wrote it (`ops`): a re-run does not write again a
-//      document that its own earlier attempt already wrote, so nothing is applied twice.
+//      document whose LAST writer is its own earlier attempt (so nothing is applied twice); one written since by another is
+//      written again with the change re-applied on it.
 // A refresh does its network work OUTSIDE any transaction (it reads a snapshot, fetches, writes bodies) and then applies what
 // it fetched in a short transaction per blyg, re-checking each post's record against the snapshot: a conflict costs a
 // re-apply, never a re-fetch.
@@ -1072,7 +1074,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (originOf(o) === o && k && Number.isFinite(k.at) && typeof k.epoch === 'string' && !blygs[o]) kept[o] = { at: k.at, epoch: k.epoch };
     }
     state = { blygs, kept, items: {}, last_run: v.last_run || null, inbox: null, stars: null };
-    S = { docs, spec, feeds: new Set(), archives: new Set(), prevSummary: new Map(), bodies: new Map(), deletes: [], bodiesToDelete: [], run: cleanRun(docs.get('state/run') && docs.get('state/run').value) };
+    S = { docs, spec, keepArchive: [], feeds: new Set(), archives: new Set(), prevSummary: new Map(), bodies: new Map(), deletes: [], bodiesToDelete: [], run: cleanRun(docs.get('state/run') && docs.get('state/run').value) };
     const doc = (kind, o) => { const d = docs.get(docKey(kind, ledgerName(o))); const val = d && d.value && typeof d.value === 'object' && d.value.origin === o ? d.value : null; return val && val.epoch === epochOf(o) ? structuredClone(val) : null; };
     if (spec.inbox) {
       const d = docs.get('state/inbox');
@@ -1106,7 +1108,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (!i || typeof i !== 'object' || !ID_RE.test(String(i.id || ''))) continue;
         const ident = identOf(o, i.id);
         const inFeed = state.items[ident];
-        if (inFeed && S.feeds.has(o) && !ARCHIVE_STATES.includes(inFeed.read)) continue; // R1: the feed's copy is the later one
+        if (inFeed && S.feeds.has(o) && !ARCHIVE_STATES.includes(inFeed.read)) {
+          // R1: the feed's copy is the later one. The archive's copy is dropped from what is stored only once it is older than
+          // repairAgeMs: a younger one may be a tick (or an untick) still between its writes in another invocation, which will
+          // finish it; until then it is kept as it is and read as absent.
+          const at = Date.parse(i.archived_at) || 0;
+          if (now() - at < LIMITS.repairAgeMs) S.keepArchive.push(i);
+          continue;
+        }
         const rec = cleanRecord(i, o);
         if (!ARCHIVE_STATES.includes(rec.read)) rec.read = 'archived'; // a record in the archive is in the Archive
         state.items[ident] = rec;
@@ -1132,7 +1141,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       backfill: led ? led.backfill : (BACKFILL_MODES.includes(prev.backfill) ? prev.backfill : 'unknown'),
       bad: led ? Object.keys(led.bad).length : (Number(prev.bad) || 0),
       queue: led ? led.queue.length : (Number(prev.queue) || 0),
-      changes: led ? led.changes.filter(t => now() - t < 24 * 3600e3) : (Array.isArray(prev.changes) ? prev.changes.filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3).slice(-50) : []),
+      changes: led ? led.changes.filter(x => now() - x[0] < 24 * 3600e3).map(x => x[0]) : (Array.isArray(prev.changes) ? prev.changes.filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3).slice(-50) : []),
     };
   }
   const byIdOf = list => Object.fromEntries(list.map(i => [i.id, i]));
@@ -1143,7 +1152,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (state.inbox) out.set('state/inbox', state.inbox);
     if (state.stars) out.set('state/stars', { stars: state.stars });
     for (const o of S.feeds) if (state.blygs[o]) out.set(docKey('feed', ledgerName(o)), { origin: o, epoch: epochOf(o), items: byIdOf(itemsOf(o).filter(i => !ARCHIVE_STATES.includes(i.read) || !S.archives.has(o))), summary: summaryOf(o) });
-    for (const o of S.archives) if (state.blygs[o]) out.set(docKey('archive', ledgerName(o)), { origin: o, epoch: epochOf(o), items: byIdOf(itemsOf(o).filter(i => ARCHIVE_STATES.includes(i.read) || !S.feeds.has(o))) });
+    for (const o of S.archives) {
+      if (!state.blygs[o]) continue;
+      const items = byIdOf(itemsOf(o).filter(i => ARCHIVE_STATES.includes(i.read) || !S.feeds.has(o)));
+      // a young archive copy of a post the feed holds unread (R1) stays as stored, unless this operation archived the post itself
+      for (const r of S.keepArchive) if (r.origin === o && !items[r.id]) items[r.id] = r;
+      out.set(docKey('archive', ledgerName(o)), { origin: o, epoch: epochOf(o), items });
+    }
     for (const [o, led] of ledgers) if (state.blygs[o] || state.kept[o]) out.set(docKey('ledger', ledgerName(o)), { origin: o, epoch: epochOf(o), ...led });
     return out;
   }
@@ -1164,7 +1179,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const was = d && d.value && typeof d.value === 'object' ? d.value : null;
       if (canon(content(was)) === canon(value)) continue;
       if (!was && isDefaultDoc(k, value)) continue; // nothing stored, and nothing to store
-      if (attempt > 0 && was && Array.isArray(was.ops) && was.ops.includes(opId)) continue; // this operation's earlier attempt wrote it
+      // this operation's earlier attempt wrote it, and nobody has written it since: it stands as written (a re-run would apply the
+      // same change twice). If another wrote it after, the change is applied again on what they wrote (they may have undone it).
+      if (attempt > 0 && was && Array.isArray(was.ops) && was.ops[was.ops.length - 1] === opId) continue;
       const [kind, ...rest] = k.split('/');
       const name = rest.join('/');
       const stamped = { ...value, ops: [...(was && Array.isArray(was.ops) ? was.ops : []).slice(-(LIMITS.opsKept - 1)), opId] };
@@ -1378,8 +1395,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     // when posts of this blyg returned to the Feed through an edit, in the last 24 hours (editReturnsPerDay): never fewer than
     // stored, so a count is never lost (each a time; at most editReturnsPerDay are needed to refuse the next)
-    const returns = (Array.isArray(r.returns) ? r.returns : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-LIMITS.editReturnsPerDay);
-    const changes = (Array.isArray(r.changes) ? r.changes : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-50);
+    // each entry is [when, the post's id] (a bare time, from before entries named their post, is kept as one with no id): so an
+    // operation that is run again after a conflict does not count the same post's return or change twice
+    const timed = (list, max) => (Array.isArray(list) ? list : []).map(x => (Number.isFinite(x) ? [x, ''] : Array.isArray(x) && Number.isFinite(x[0]) ? [x[0], typeof x[1] === 'string' && ID_RE.test(x[1]) ? x[1] : ''] : null))
+      .filter(x => x && now() - x[0] < 24 * 3600e3 && x[0] <= now()).slice(-max);
+    const returns = timed(r.returns, LIMITS.editReturnsPerDay);
+    const changes = timed(r.changes, 50);
     const fresh = FRESH_MODES.includes(r.fresh) ? r.fresh : 'reading';
     const freshFailures = Number.isInteger(r.fresh_failures) && r.fresh_failures > 0 && r.fresh_failures < 64 ? r.fresh_failures : 0;
     const freshAfter = Number.isFinite(r.fresh_after) && r.fresh_after > 0 ? r.fresh_after : 0;
@@ -1415,10 +1436,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const html = S.bodies.get(name) || '';
     return html ? sanitizeStable(html, { max: LIMITS.bodyBytes + 4096, truncate: true, landmarks: false }).html : '';
   };
-  /** Write a body before any record names it. → its name, or '' when the store refused it (the record then keeps its excerpt). */
+  /** Write a body before any record names it. → its name. Throws when the store refused it. */
   async function putBody(key, html) {
     const name = newBodyName(key);
-    try { await store.put('body', name, String(html)); return name; } catch (e) { console.warn(`[following] a post's text was not kept: ${cleanText(String(e && e.message), 120)}`); return ''; }
+    await store.put('body', name, String(html));
+    return name;
   }
 
   // ---- the run lease, the top-up gap and the breakers: in the store's run document ----
@@ -1789,18 +1811,18 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (!g.returns) g.returns = new Map();
     if (held.returned_at && now() - held.returned_at < LIMITS.editReturnGapMs) return 'window';
     const led = ledgerOf(origin);
-    led.changes = led.changes.filter(t => now() - t < 24 * 3600e3);
+    led.changes = led.changes.filter(x => now() - x[0] < 24 * 3600e3);
     if (led.changes.length > LIMITS.massEditPerDay) return 'mass';
     if (itemsOf(origin).filter(i => i.read === 'edited').length >= LIMITS.editedPerBlyg) return 'edited';
     if ((g.returns.get(origin) || 0) >= LIMITS.editReturnsPerRun) return 'run';
-    led.returns = led.returns.filter(t => now() - t < 24 * 3600e3);
+    led.returns = led.returns.filter(x => now() - x[0] < 24 * 3600e3);
     if (led.returns.length >= LIMITS.editReturnsPerDay) return 'day';
     if (unreadOf(origin) >= cfg.following_max_items_per_blyg) return 'cap';
     return '';
   }
   const windowEnd = rec => (rec.returned_at || 0) + LIMITS.editReturnGapMs;
   /** What a refresh compares to see whether a post's record changed between its snapshot and its apply (the lost-update check). */
-  const sigOf = held => (held ? [held.key, ARCHIVE_STATES.includes(held.read) ? 'archive' : isWithdrawn(held) ? 'withdrawn' : 'feed', held.version, held.content_hash].join('|') : '-');
+  const sigOf = held => (held ? [held.key, ARCHIVE_STATES.includes(held.read) ? 'archive' : isWithdrawn(held) ? 'withdrawn' : 'feed', held.version, held.content_hash, held.archived_at || ''].join('|') : '-');
 
   /**
    * Put one fetched document in the list (no request: `got` was fetched before, outside the transaction). `sig` is what the post's
@@ -1816,7 +1838,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const held = st.items[ident];
     if (sigOf(held) !== sig) {
       // this very fetch was applied already, by an earlier attempt of this transaction (its body's name is unique to the fetch)
-      if (held && bodyName && held.body === bodyName) { if (sig === '-') tally.new++; return 'stored'; }
+      if (held && bodyName && held.body === bodyName) {
+        if (sig === '-') tally.new++;
+        S.keepArchive = S.keepArchive.filter(r => !(r.origin === b.origin && r.id === e.id)); // (an edit's return: its archive copy goes now)
+        return 'stored';
+      }
       tally.raced++; tally.deferred++; return 'deferred';
     }
     const { doc, rec, body } = got;
@@ -1848,7 +1874,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (held.read === 'archived_changed') { moveRead(held, 'revert'); delete held.newer; }
         Object.assign(held, { version: rec.version, ...common }); tally.minor++; return 'stored';
       }
-      if (held.read === 'archived') { const l = ledgerFor(b.origin); l.changes.push(now()); if (l.changes.length > 50) l.changes.splice(0, l.changes.length - 50); }
+      if (held.read === 'archived') {
+        const l = ledgerFor(b.origin);
+        if (!l.changes.some(x => x[1] === e.id)) l.changes.push([now(), e.id]); // (a post counts once in the 24 hours)
+        if (l.changes.length > 50) l.changes.splice(0, l.changes.length - 50);
+      }
       const why = editBlock(b.origin, held, cfg, g);
       if (why) {
         moveRead(held, 'hold');
@@ -1864,7 +1894,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       moveRead(back, held.read === 'archived' ? 'edit' : 'release');
       st.items[ident] = back;
       g.returns.set(b.origin, (g.returns.get(b.origin) || 0) + 1);
-      ledgerFor(b.origin).returns.push(now());
+      // (once per post: a post returns at most once in editReturnGapMs, so a second entry for it would be this same return again)
+      const lr = ledgerFor(b.origin).returns;
+      if (!lr.some(x => x[1] === e.id)) lr.push([now(), e.id]);
       tally.edited++;
     } else {
       const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
@@ -2022,7 +2054,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const got = await pull(b, e.id, g, tally);
     if (moved()) { tally.raced++; tally.deferred++; return { e, sig, got: { out: 'raced' }, bodyName: '', phase }; }
     let bodyName = '';
-    if (got.out === 'ok' && !isWithdrawn(got.rec) && !(heldHash && heldHash === got.rec.content_hash)) bodyName = await putBody(randomKey(b.origin), got.body.html);
+    if (got.out === 'ok' && !isWithdrawn(got.rec) && !(heldHash && heldHash === got.rec.content_hash)) {
+      // (a text the store refuses is not kept: a new post then shows its excerpt; an edit waits for the next refresh)
+      try { bodyName = await putBody(randomKey(b.origin), got.body.html); } catch (e) { if (e && e.code === 'ECRASH') throw e; console.warn(`[following] a post's text was not kept: ${cleanText(String(e && e.message), 120)}`); }
+    }
     return { e, sig, got, bodyName, phase };
   }
   /** Apply what was fetched for a blyg: what an index says, then each result, then (`finish`) its queue, backfill mode and parts. */
@@ -2544,6 +2579,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const bodyName = await putBody(pre.rec.key, got.body.html);
     const r = await tx({}, () => {
       const rec = byKey(k);
+      // this untick's own earlier attempt wrote the feed (its body is unique to it): finish it, the archive copy goes
+      if (rec && bodyName && rec.body === bodyName && !ARCHIVE_STATES.includes(rec.read)) {
+        S.keepArchive = S.keepArchive.filter(r => !(r.origin === rec.origin && r.id === rec.id));
+        dropArchivedId(rec.origin, rec.id);
+        return rec.read;
+      }
       // the record is no longer the one fetched for (ticked, unticked or refreshed meanwhile)
       if (!rec || sigOf(rec) !== pre.sig) throw new Error('that post changed meanwhile (it was ticked, unticked or refreshed): look again and retry');
       const next = { ...got.rec, body_state: got.body.state, index_version: got.rec.version, fetched_at: now(), key: rec.key, ...(bodyName ? { body: bodyName } : {}), read: rec.read,

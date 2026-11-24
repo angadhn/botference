@@ -431,9 +431,9 @@ test('the Feed entry reads like the reference: meta line, version lines, title l
   assert.match(body, /<div class="title hub-entry-title"><a href="#e-[0-9a-f]{24}" data-act="read"/);
   assert.match(body, /<div class="hub-entry-body" data-blyg-page="https:\/\/alpha\.web\.test\/notes\/t\/[^"]+" data-blyg-origin="https:\/\/alpha\.web\.test\/notes\/" data-blyg-id="[^"]+" data-blyg-version="5">/);
   assert.match(body, /<span class="addr" title="https:\/\/alpha\.web\.test\/notes\/t\/[^"]+">alpha\.web\.test\/notes\/t\/[^<]+<\/span>/);
-  assert.match(body, /class="acts right hub-entry-actions"><button type="button" data-act="respond"[^>]*>Respond<\/button><button type="button" data-act="read"[^>]*>Read here<\/button><button type="button" data-act="open"[^>]*>Open original<\/button><\/div>/);
+  assert.match(body, /class="acts right hub-entry-actions"><button type="button" data-act="respond"[^>]*>Respond<\/button><button type="button" data-act="read"[^>]*>Read here<\/button><button type="button" data-act="open"[^>]*>Open original<\/button><button type="button" class="tick" data-act="tick" data-key="[0-9a-f]{24}" aria-label="Mark as read: move to Archive">\u2713 Read<\/button><button type="button" class="star" data-act="star"[^>]*>\u2606 Star<\/button><\/div>/);
   assert.ok(!/Mark seen|data-act="see"/.test(body), 'there is no "seen" any more');
-  assert.match(body, /<div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="[0-9a-f]{24}" aria-label="Read: move to Archive"/, 'the tick is the first thing on the header line');
+  assert.match(body, /<div class="meta mut hub-entry-meta">(<span class="dot"[^>]*><\/span>)?<span class="kind">/, 'the meta line starts with the unread dot (no control on it)');
   assert.match(body, /<input type="search" id="hub-search" placeholder="search every word"/);
   assert.ok(!/[\u202a-\u202e]/.test(html));
   // the search is plain substring, case-insensitive, over the loaded page, in the page's script (no new fetch)
