@@ -1190,6 +1190,8 @@ test('the owner\'s view is plain: no output, no path; a failure is one recognise
   assert.ok(lines.some(l => l.ev === 'move' && l.from === 'planning' && l.to === 'failed_plan'), 'the moves, with times');
   assert.equal(R.plainLineOf('x\nRefused: release date 2027-01-01 is in the future\nState: planned'), 'Release date 2027-01-01 is in the future.');
   assert.equal(R.plainSentence('blyg-publish: main moved from abc to def after apply; run again to apply'), 'Main moved from abc to def after apply; run again to apply.');
+  assert.equal(R.plainLineOf('trace\nblyg-publish: main moved from abc1234 to def5678 after apply; run again to apply on top of it'), 'Main moved from abc1234 to def5678 after apply; run again to apply on top of it.');
+  assert.equal(R.plainLineOf('blyg-publish: _notes/a.md: already on main; use --edit to publish an edit'), 'The note: already on main; publish it as a new version instead.');
 });
 
 test('the log keeps the last 50 runs', async () => {

@@ -172,10 +172,16 @@ export const PLAIN_LINES = Object.freeze([
   /locale/i,
   /nothing was published \(State:/i,
   /Refused:/,
+  // (the example site's other plain lines, as its own agent listed them)
+  /already on main; use --edit|not on main; publish it as a new post|nothing would change on main|an Obsidian embed|which is not in the repository|has not been generated yet/i,
+  /main moved from [0-9a-f]+ to [0-9a-f]+ after apply|files changed after apply checked them|the live site does not match the plan|merging main into wip conflicts/i,
+  /this --push gives the (generated )?changelog note|has uncommitted changes; commit it yourself|other uncommitted changes|was changed after it was staged|wip has moved on from the staging commit/i,
+  /^Nothing to abandon for|the recorded run \(\S+\) is for/i,
 ]);
 /** One line of a site's command made fit for the owner's screen: no script name, no path, no flag. */
 export function plainSentence(line) {
   let t = String(line || '').replace(/^\s*(?:-\s+|Refused:\s*)?/, '').replace(/^blyg-publish(?: preflight)?:\s*/i, '').trim();
+  t = t.replace(/use --edit to publish an edit/, 'publish it as a new version instead').replace(/publish it as a new post \(without --edit\)/, 'publish it as a new post');
   t = t.replace(/\(?(?:ruby\s+)?scripts\/\S+(?:\s+(?:"[^"]*"|--?[\w-]+|_notes\/\S+))*\)?/g, '')
     .replace(/\b_notes\/[^\s,;:)]+\.md\b/g, 'the note')
     .replace(/(?<![\w:])\/(?:[^\s/"'<>()]+\/)+[^\s/"'<>(),;]*/g, 'a file on your site')
