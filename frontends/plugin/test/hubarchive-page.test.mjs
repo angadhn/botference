@@ -94,7 +94,7 @@ test('ticking: one click posts the tick, the post leaves the page in place (no r
   first.checked = true;
   p.change(first);
   await p.settle();
-  assert.deepEqual(p.calls, [{ url: '/following/read', body: { key, move: 'tick' } }]);
+  assert.deepEqual(p.calls, [{ url: '/following/read', body: { key, move: 'tick', members: [] } }]);
   assert.equal(p.doc.querySelectorAll('article.hub-entry').length, 3);
   assert.equal(p.doc.getElementById('e-' + key), null);
   assert.equal(countOf(p.doc, 'feed'), 3);
@@ -160,7 +160,7 @@ test('Tick all shown: asks first; sends exactly the posts shown (not the ones th
   await p.settle();
   assert.match(p.confirms[0], /Move the 1 post shown/);
   const shown = [...p.doc.querySelectorAll('article.hub-entry')].filter(e => !e.hidden).map(e => e.dataset.key);
-  assert.deepEqual(p.calls, [{ url: '/following/read', body: { keys: shown } }]);
+  assert.deepEqual(p.calls, [{ url: '/following/read', body: { ticks: shown.map(key => ({ key, members: [] })) } }]);
   assert.equal(shown.length, 1);
   x.done();
 });
@@ -315,5 +315,25 @@ test('an edited post says "edited since you read it" in the Feed; an "edited aga
   line.querySelector('button[data-act=mark-read]').click();
   await p.settle();
   assert.deepEqual(p.calls.map(c => c.body), [{ key: k, move: 'tick' }]);
+  x.done();
+});
+
+test('a thread with folded parts carries their keys; ticking it sends them, and the answer "and its N parts" is said', async () => {
+  const x = await hub({ n: 1 });
+  const parts = [2, 3].map(k => ({ origin: A, id: idOf(k), version: 1 }));
+  for (const k of [2, 3]) x.site.put(makeDoc({ id: idOf(k), origin: A, title: `Part ${k}`, created: '2026-11-05T10:00:00Z' }));
+  x.site.put(makeDoc({ id: idOf(9), origin: A, kind: 'thread', title: 'Thread', created: '2026-11-05T10:01:00Z', transclusions: parts }));
+  await x.f.refresh();
+  const head = x.f.keyFor(A, idOf(9));
+  const p = x.run({}, { reply: () => ({ ok: true, read: 'archived', parts: 2, unread: 1, target: 50, topup: false }) });
+  const art = p.doc.querySelector(`article[data-key="${head}"]`);
+  assert.deepEqual(art.dataset.members.split(' ').sort(), [x.f.keyFor(A, idOf(2)), x.f.keyFor(A, idOf(3))].sort());
+  const box = art.querySelector('input.tick');
+  box.checked = true;
+  p.change(box);
+  await p.settle();
+  assert.deepEqual(p.calls[0].body.members.sort(), art.dataset.members.split(' ').sort());
+  assert.equal(p.doc.getElementById('msg').textContent, 'archived, and its 2 parts');
+  assert.equal(countOf(p.doc, 'archive'), 3);
   x.done();
 });

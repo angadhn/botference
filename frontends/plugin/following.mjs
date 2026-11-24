@@ -304,9 +304,11 @@ export const LIMITS = Object.freeze({
   keptMs: 365 * 24 * 3600e3,  // ... for at most this long; beyond either bound the oldest is forgotten
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
+  burstWaitMs: 24 * 3600e3,   // a fragment of a burst whose thread is not held yet waits in Background this long, then stands alone
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
   saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
+  burstMembersMax: 100,       // parts of one burst a tick of its thread may archive with it
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
   skewMs: 5 * 60 * 1000,
   // AN EDIT OF A POST THE OWNER HAD READ (a fetched document of an archived post whose content_hash differs from the one read).
@@ -460,10 +462,11 @@ function firstHeading(html) {
   const m = /<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]\s*>/i.exec(String(html || ''));
   return m ? cleanText(textContent(m[1]).replace(/\n+/g, ' '), LIMITS.titleChars) : '';
 }
+// A transclusion as kept: origin and id, and the version the thread named (§13.7: a fold covers the versions published in the burst)
 const refOf = (r, dflt) => {
   if (!r || typeof r !== 'object' || !ID_RE.test(String(r.id || ''))) return null;
   const origin = originOf(r.origin || dflt);
-  return origin ? { origin, id: r.id } : null;
+  return origin ? { origin, id: r.id, ...(Number.isInteger(r.version) && r.version >= 1 ? { version: r.version } : {}) } : null;
 };
 /**
  * → the record to keep for a verified item document, or { invalid: why }. `page` is
@@ -551,6 +554,7 @@ export function changeOf(held, rec, percent) {
 // the entry. An entry moves between views only because this function says so.
 export const PLACEMENTS = Object.freeze(['feed', 'mentions', 'background', 'archive', 'hidden']);
 export const REASONS = Object.freeze({
+  waiting: 'waiting for its thread',
   notFollowed: 'not followed', archived: 'ticked as read', archivedChanged: 'edited again since you read it', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
   burst: 'part of a burst', maintenance: 'no new words', minor: 'barely changed',
   response: 'response', unknown: 'class unknown', plain: 'plain mention (lower class)',
@@ -575,6 +579,9 @@ export function placementOf(entry) {
   if (isWithdrawn(p)) return { placement: 'background', reason: (entry.mine || []).includes(p.origin) ? REASONS.withdrawnOwn : REASONS.withdrawn };
   if (entry.blyg.state === 'paused') return { placement: 'background', reason: REASONS.paused };
   if (entry.burstHead) return { placement: 'background', reason: REASONS.burst };
+  // a fragment fetched before the thread of its burst (by its index dates): Background until the thread is held, for at most
+  // burstWaitMs, then it stands on its own (buildView works out `waiting`)
+  if (entry.waiting) return { placement: 'background', reason: REASONS.waiting };
   const unopened = p.read === 'new' || p.read === 'edited';
   if (!unopened && p.last_change === 'maintenance') return { placement: 'background', reason: REASONS.maintenance };
   if (!unopened && p.last_change === 'minor') return { placement: 'background', reason: REASONS.minor };
@@ -594,6 +601,37 @@ const isResponseToMe = (it, mine) => !mine.includes(it.origin)
 // companion fetched that version (§13.7: a future-dated post cannot sit on top).
 const stamp = (iso, at) => { const t = Date.parse(iso); const f = Number.isFinite(at) ? at : Infinity; return Number.isFinite(t) ? Math.min(t, f) : (f === Infinity ? 0 : f); };
 export const sortTime = it => Math.max(stamp(it.updated, it.fetched_at), stamp(it.created, it.fetched_at));
+
+// The times at which each thread of a list was published (its created and updated), sorted: for finding a burst's thread.
+export function threadMarks(threads) {
+  const marks = [];
+  for (const t of threads) for (const v of new Set([t.created, t.updated])) { const x = Date.parse(v); if (Number.isFinite(x)) marks.push([x, t]); }
+  return marks.sort((a, b) => a[0] - b[0]);
+}
+/** The threads (from threadMarks) published within burstMs of time `c`, nearest first; [] when `c` is not a date. */
+export function nearThreads(marks, c) {
+  if (!Number.isFinite(c) || !marks.length) return [];
+  let lo = 0, hi = marks.length;
+  while (lo < hi) { const mid = (lo + hi) >> 1; if (marks[mid][0] < c - LIMITS.burstMs) lo = mid + 1; else hi = mid; }
+  const out = [];
+  for (let i = lo; i < marks.length && marks[i][0] <= c + LIMITS.burstMs; i++) out.push(marks[i]);
+  return [...new Map(out.sort((a, b) => Math.abs(a[0] - c) - Math.abs(b[0] - c)).map(([, t]) => [t.id, t])).values()];
+}
+/**
+ * A fetch order (newest first) in which every thread comes before any fragment of the list created within burstMs of the
+ * thread's created or updated (§13.7, finding 4a): so a burst's parts are never fetched, and shown, before their thread.
+ */
+export function burstOrder(list) {
+  const marks = threadMarks(list.filter(e => e.kind === 'thread'));
+  if (!marks.length) return list;
+  const out = [], placed = new Set();
+  for (const e of list) {
+    if (placed.has(e.id)) continue;
+    if (e.kind === 'fragment') for (const t of nearThreads(marks, Date.parse(e.created))) if (!placed.has(t.id)) { out.push(t); placed.add(t.id); }
+    out.push(e); placed.add(e.id);
+  }
+  return out;
+}
 
 /**
  * Burst folding (§13.7), display only. A thread and the posts of the SAME blyg its
@@ -615,6 +653,13 @@ export function foldBursts(items) {
       if (!m || k === identOf(t.origin, t.id) || m.kind === 'thread' || claimed.has(k)) continue;
       const c = Date.parse(m.created);
       if (!Number.isFinite(c) || !near.some(n => Math.abs(n - c) <= LIMITS.burstMs)) continue;
+      // §13.7, "a fold covers the versions published in the burst, not the item": folded only while its words are those of the
+      // version the thread named (a later maintenance version keeps them), or while its `updated` lies within the burst itself.
+      // A part edited later is its own arrival (an ordinary update; for a post already read, the edit rule).
+      const wordsAt = Number.isInteger(m.words_version) ? m.words_version : m.version;
+      const named = Number.isInteger(r.version) && wordsAt <= r.version;
+      const u = Date.parse(m.updated);
+      if (!named && !(Number.isFinite(u) && near.some(n => Math.abs(n - u) <= LIMITS.burstMs))) continue;
       claimed.add(k);
       heads.get(identOf(t.origin, t.id)).members.push(m);
     }
@@ -627,8 +672,10 @@ export function foldBursts(items) {
  *   feed: { entries: [{ head, members }], counts, filter }, background: [{ type, post|mention, reason }],
  *   mentions: [mention + reason], archive: [post], tabs: { feed (the unread count), mentions, mentions_unseen, background, archive } }
  */
-export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all' }) {
+export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all', now = Date.now() }) {
   const posts = items.filter(i => blygs[i.origin]);
+  const heldIdents = new Set(items.map(i => identOf(i.origin, i.id)));
+  const waiting = p => !!p.awaits && !heldIdents.has(identOf(p.origin, p.awaits)) && now < (Date.parse(p.first_seen) || 0) + LIMITS.burstWaitMs;
   // an archived post is never folded into (or under) a burst: the Archive lists it on its own
   const live = posts.filter(i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read));
   // A burst folds its members only under a head that is itself in the Feed. A head that goes elsewhere (a barely
@@ -639,7 +686,7 @@ export function buildView({ items, blygs, mentions = [], mine = [], filter = 'al
   const memberOf = new Map(); // ident → head
   for (const e of folded) for (const m of e.members) memberOf.set(identOf(m.origin, m.id), e.head);
   const place = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine,
-    burstHead: memberOf.get(identOf(p.origin, p.id)) || null });
+    burstHead: memberOf.get(identOf(p.origin, p.id)) || null, waiting: waiting(p) });
   const placed = new Map(posts.map(p => [p, place(p)]));
   const at = view => posts.filter(p => placed.get(p).placement === view);
   // the feed: heads (bursts folded) placed in the feed, with their members counted
@@ -1257,7 +1304,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const totalItems = () => Object.values(load().items).filter(isUnreadHeld).length;
   const unreadOf = origin => itemsOf(origin).filter(isUnreadHeld).length;
   /** The Feed's count: what the Feed tab shows (bursts folded, paused blygs and Background left out). */
-  const unreadCount = () => { const st = load(); return buildView({ items: Object.values(st.items), blygs: st.blygs }).tabs.feed; };
+  const unreadCount = () => { const st = load(); return buildView({ items: Object.values(st.items), blygs: st.blygs, now: now() }).tabs.feed; };
   const itemUrlFor = (manifest, origin, id) => {
     const t = typeof manifest.item === 'string' && manifest.item ? manifest.item : 'items/{id}.json';
     try { return new URL(t.replace(/\{(\w+)\}/g, (_, k) => encodeURIComponent(k === 'id' ? id : '')), origin).href; } catch { return ''; }
@@ -1376,7 +1423,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     const change = changeOf(held, rec, cfg.following_barely_changed_percent);
     if (!held || isWithdrawn(held)) {
-      st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words', ...mismatch };
+      st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words',
+        words_version: rec.version, ...(e.awaits && rec.kind === 'fragment' ? { awaits: e.awaits } : {}), ...mismatch };
       tally.new++;
     } else if (archived) {
       // THE EDIT RULE for a post the owner had read. The same content_hash as the one read is maintenance: nothing moves, the
@@ -1395,7 +1443,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         tally.held++;
         return 'stored';
       }
-      const back = { ...rec, ...common, key: held.key, read: held.read, identity: 'unverified', first_seen: iso(), last_change: 'new-words', maintenance: 0,
+      const back = { ...rec, ...common, key: held.key, read: held.read, identity: 'unverified', first_seen: iso(), last_change: 'new-words', maintenance: 0, words_version: rec.version,
         read_version: held.version, returned_at: now(), ...mismatch };
       if (held.read === 'archived_changed') tally.released++;
       moveRead(back, held.read === 'archived' ? 'edit' : 'release');
@@ -1405,6 +1453,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       tally.edited++;
     } else {
       const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
+        // the version at which its words last changed (a maintenance version keeps them): what a burst's fold compares (§13.7)
+        words_version: change === 'maintenance' ? (held.words_version ?? held.version) : rec.version,
         maintenance: (held.maintenance || 0) + (change === 'maintenance' ? 1 : 0) };
       if (doc.version === e.version) delete next.index_mismatch; else next.index_mismatch = { index: e.version, document: doc.version };
       st.items[ident] = next;
@@ -1497,7 +1547,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     led.seen_until = Math.max(led.seen_until || 0, ...itemsOf(b.origin).map(i => stamp(i.created, i.fetched_at)).filter(t => t > 0), 0);
     const isFresh = e => { const c = Date.parse(e.created); return led.seen_until > 0 && Number.isFinite(c) && c > led.seen_until && c <= readAt + LIMITS.skewMs; };
     const plan = { b, led, backfill: [], left: 0, docs: 0, halted: false };
-    const archivedTodo = [];
+    const archivedTodo = [], freshTodo = [];
+    // BURSTS (§13.7, finding 4a). The threads of this index that are not held (nor read): a fragment created within burstMs of
+    // one's created or updated waits for it (`awaits`, Background until the thread is held, at most burstWaitMs), and every
+    // fetch order below puts such a thread before its fragments (burstOrder).
+    const marks = threadMarks(entries.filter(e => e.kind === 'thread' && !st.items[identOf(b.origin, e.id)] && !archivedIds.has(e.id)));
+    const awaitsOf = e => { const t = nearThreads(marks, Date.parse(e.created))[0]; return t ? t.id : ''; };
     for (const e of entries) {
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
@@ -1506,13 +1561,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         // one waits for the index to name a new version (or for its entry to expire); a missing one for its back-off
         if (e.kind === 'withdrawn' || archivedIds.has(e.id) || belowFloor(e) || (led.bad[e.id] && led.bad[e.id][0] === e.version)) continue;
         if (led.later[e.id] && led.later[e.id][0] > now()) { plan.left++; continue; }
+        if (e.kind === 'fragment') { const t = awaitsOf(e); if (t) e.awaits = t; }
         if (!isFresh(e)) { if (paused) plan.left++; else plan.backfill.push(e); continue; }
-        if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
-        if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
-        plan.docs++;
-        const out = await ingest(b, e, undefined, cfg, g, tally, alive);
-        if (out === 'aborted') return;
-        outcome(plan, e, out);
+        freshTodo.push(e);
         continue;
       }
       // what the INDEX said last time we looked: a document that disagrees with its index entry
@@ -1538,6 +1589,16 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (out === 'aborted') return;
       if (out === 'host_trouble') plan.halted = true;
     }
+    // FRESH posts: published since, fetched now within the caps (target or not), each burst's thread before its fragments
+    for (const e of burstOrder(freshTodo)) {
+      if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
+      if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
+      plan.docs++;
+      const out = await ingest(b, e, undefined, cfg, g, tally, alive);
+      if (out === 'aborted') return;
+      outcome(plan, e, out);
+    }
+    plan.backfill = burstOrder(plan.backfill);
     // The documents of posts the owner had read whose index entry moved (or that wait for release): at most archivedDocsPerRun per
     // blyg per refresh, and none while no edit of this blyg could return now (its quota or cap): they wait, and are not asked for.
     let archivedDocs = 0;
@@ -1743,19 +1804,41 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     save(); onChange();
     return load().items[identOf(rec.origin, rec.id)].read;
   }
-  /** Tick every post named (the page's "Tick all shown" names the keys it shows); a key that cannot be ticked is skipped. → how many were. */
-  function tickMany(keys) {
-    let n = 0;
+  /** The members the Feed folds under each head right now: head key → Set of member keys (worked out, as the page shows it). */
+  const foldedNow = () => {
+    const st = load();
+    const v = buildView({ items: Object.values(st.items), blygs: st.blygs, now: now() });
+    return new Map(v.feed.entries.filter(e => e.members.length).map(e => [e.head.key, new Set(e.members.map(m => m.key))]));
+  };
+  /**
+   * Tick posts the page showed: each entry a key, or { key, members } (a burst's head and the member keys the page showed folded under
+   * it, finding 4b). A head's members are ticked with it only if they are STILL folded under that head (worked out before anything is
+   * ticked); a member the page named that is not (a link-only one, §13.7, or one that stands alone now) stays where it is. At most
+   * `tickBatch` entries and `burstMembersMax` members each; an entry that cannot be ticked is skipped. → { archived, parts }.
+   */
+  function tickBatch(entries) {
     const st = load();
     const index = new Map(Object.values(st.items).map(i => [i.key, i]));
-    for (const k of (Array.isArray(keys) ? keys : []).slice(0, LIMITS.tickBatch)) {
-      const rec = index.get(String(k));
+    const folded = foldedNow();
+    let archived = 0, parts = 0;
+    for (const x of (Array.isArray(entries) ? entries : []).slice(0, LIMITS.tickBatch)) {
+      const key = String(x && typeof x === 'object' ? x.key : x);
+      const rec = index.get(key);
       if (!rec || isWithdrawn(rec) || !canMoveRead(rec, 'tick')) continue;
-      tickRec(rec); n++;
+      const members = x && typeof x === 'object' && Array.isArray(x.members) ? x.members.slice(0, LIMITS.burstMembersMax).map(String) : [];
+      const under = folded.get(key) || new Set();
+      tickRec(rec); archived++;
+      for (const mk of members) {
+        const m = index.get(mk);
+        if (!under.has(mk) || !m || !canMoveRead(m, 'tick')) continue;
+        tickRec(m); parts++;
+      }
     }
-    if (n) { trimArchive(st); save(); onChange(); }
-    return n;
+    if (archived) { trimArchive(st); save(); onChange(); }
+    return { archived, parts };
   }
+  /** Tick every post named (keys, or { key, members }); → how many heads were ticked. */
+  const tickMany = entries => tickBatch(entries).archived;
   /**
    * The owner's untick: the post goes back to the Feed as `new`. Its text was deleted when it was ticked, so it is fetched again (one
    * request, through the same guarded getter and the same checks); if that fails the post stays in the Archive and the error says why.
@@ -1777,7 +1860,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (got.out !== 'ok') throw new Error('the blyg does not serve that post as it was, so it stays in the Archive');
     if (isWithdrawn(got.rec)) throw new Error('that post has been withdrawn');
     const next = { ...got.rec, body_state: got.body.state, index_version: got.rec.version, fetched_at: now(), key: rec.key, read: rec.read,
-      identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words' };
+      identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words', words_version: got.rec.version,
+      ...(rec.returned_at ? { returned_at: rec.returned_at } : {}) };
     moveRead(next, 'untick');
     load().items[identOf(rec.origin, rec.id)] = next;
     dropArchivedId(rec.origin, rec.id);
@@ -1791,10 +1875,22 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   /** What the page may ask of /following/read: tick (one post, or the keys it shows), untick, or the owner's own "mark new". */
   async function readRequest(data) {
     const d = data && typeof data === 'object' ? data : {};
-    if (Array.isArray(d.keys)) { const n = tickMany(d.keys); return { archived: n, unread: unreadCount(), target: settings().following_unread_target }; }
+    // "Tick all shown": { ticks: [{ key, members }] } (or the older { keys }), at most tickBatch a request: the page sends the rest
+    if (Array.isArray(d.ticks) || Array.isArray(d.keys)) {
+      const r = tickBatch(Array.isArray(d.ticks) ? d.ticks : d.keys);
+      return { ...r, unread: unreadCount(), target: settings().following_unread_target, topup: wantsTopUp() };
+    }
     const move = String(d.move || '');
     if (!['tick', 'untick', 'renew'].includes(move)) throw new Error('move must be tick, untick or renew');
-    const read = move === 'untick' ? await untick(String(d.key || '')) : readMove(String(d.key || ''), move);
+    const key = String(d.key || '');
+    if (move === 'tick') {
+      const rec = byKey(key);
+      if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+      if (!canMoveRead(rec, 'tick')) throw new Error(`read state: cannot tick while ${rec.read}`);
+      const r = tickBatch([{ key, members: Array.isArray(d.members) ? d.members : [] }]);
+      return { read: load().items[identOf(rec.origin, rec.id)].read, parts: r.parts, unread: unreadCount(), target: settings().following_unread_target, topup: wantsTopUp() };
+    }
+    const read = move === 'untick' ? await untick(key) : readMove(key, move);
     return { read, unread: unreadCount(), target: settings().following_unread_target, topup: wantsTopUp() };
   }
   /** A note for this post was exported: its read state becomes `responded`. → false when the post is not on the list, or is archived (only a tick or an untick moves that). */
@@ -1990,7 +2086,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   // ---- what the page shows ----
   function view({ view: tab = 'feed', filter = 'all', mine = [], limit = LIMITS.feedEntries, q = '' } = {}) {
     const st = load();
-    const v = buildView({ items: Object.values(st.items), blygs: st.blygs, mentions: st.inbox.mentions, mine, filter });
+    const v = buildView({ items: Object.values(st.items), blygs: st.blygs, mentions: st.inbox.mentions, mine, filter, now: now() });
     const titleOf = o => (st.blygs[o] && st.blygs[o].title) || '';
     const cfg = settings();
     const decorate = (i, withBody = false) => {

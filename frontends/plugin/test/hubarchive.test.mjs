@@ -1024,7 +1024,7 @@ test('unfollow keeps what was read there (a refollow brings nothing read back as
 
 // ---- a burst whose head is archived ------------------------------------------------------------------------------------------
 
-test('ticking a thread whose posts are folded under it leaves those posts in the Feed, each standing alone', async () => {
+test('ticking a thread WITHOUT the parts the page showed (an older page, or the engine called directly) leaves its parts in the Feed, standing alone', async () => {
   const r = rig({ settings: { following_unread_target: 500 } });
   const site = r.web.add(A);
   site.put(makeDoc({ id: idOf(1), origin: A, title: 'Frag', created: '2026-11-05T10:00:00Z' }));
@@ -1033,7 +1033,7 @@ test('ticking a thread whose posts are folded under it leaves those posts in the
   await r.f.refresh();
   assert.equal(feed(r).length, 1, 'folded: one entry');
   r.f.readMove(keyOf(r, A, 2), 'tick');
-  assert.deepEqual(titles(r), ['Frag']);
+  assert.deepEqual(titles(r), ['Frag'], 'nothing is archived that the owner did not see ticked (with the members: test/hubburst.test.mjs)');
   r.done();
 });
 

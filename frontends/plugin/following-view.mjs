@@ -131,7 +131,9 @@ function entry(e) {
   const title = h.title ? `<div class="title hub-entry-title"><a href="#e-${k}" data-act="read" data-key="${k}">${t(h.title, 200)}</a></div>` : '';
   const menu = h.read === 'opened' ? `<details class="menu"><summary aria-label="more actions">\u22ef</summary><div class="pop"><button type="button" data-act="renew" data-key="${k}">Mark new</button></div></details>` : '';
   const edited = h.read === 'edited' ? `<span class="badge hub-edited" title="${h.read_version ? `you had read version ${Number(h.read_version)}` : 'you had read an earlier version'}">edited since you read it</span>` : '';
-  return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}">
+  // the keys of the parts folded under this post as shown: a tick of it sends them, and the companion archives those still folded
+  const members = e.members.map(m => escHtml(m.key)).join(' ');
+  return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}"${members ? ` data-members="${members}"` : ''}>
     <div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="${k}" aria-label="Read: move to Archive" title="Read: move to Archive">${h.read === 'new' || h.read === 'edited' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
       <span>${day(h.shown_at || h.updated || h.created)}</span><span>${t(h.reading || '', 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>${h.maintenance ? `<span>${Number(h.maintenance)} maintenance</span>` : ''}</div>
     ${versions(h)}${pins}${title}${resp}${bodyOf(h)}${ident}${folded}
@@ -249,10 +251,15 @@ const SCRIPT = `
     if(a==='more'){var box=b.closest('.hub-entry-body');if(box)setMore(box,box.dataset.more==='expanded'?'collapsed':'expanded');return;}
     if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
     if(a==='mark-read')return post('/following/read',{key:b.dataset.key,move:'tick'}).then(function(r){done(r,'kept as read');});
-    if(a==='tick-all'){var keys=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)keys.push(e.dataset.key);});
-      if(!keys.length)return;
-      if(!confirm('Move the '+keys.length+' post'+(keys.length===1?'':'s')+' shown to the Archive?'))return;
-      return post('/following/read',{keys:keys}).then(function(r){done(r,'archived');});}
+    if(a==='tick-all'){var ticks=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)ticks.push({key:e.dataset.key,members:membersOf(e)});});
+      if(!ticks.length)return;
+      if(!confirm('Move the '+ticks.length+' post'+(ticks.length===1?'':'s')+' shown to the Archive?'))return;
+      // 100 a request (the companion takes no more at once), one request after another
+      var total=0,parts=0,i=0;
+      var next=function(){if(i>=ticks.length){done({ok:true},'archived '+total+(parts?', and '+parts+' parts':''));return;}
+        var batch=ticks.slice(i,i+100);i+=100;
+        return post('/following/read',{ticks:batch}).then(function(r){if(!(r&&r.ok)){say((r&&r.error)||'failed',true);return;}total+=Number(r.archived)||0;parts+=Number(r.parts)||0;return next();});};
+      return next();}
     if(a==='mention-seen')return post('/following/mention-read',{key:b.dataset.key}).then(function(r){done(r);});
     if(a==='mention-seen-all')return post('/following/mention-read',{all:true}).then(function(r){done(r);});
     if(a==='pause'||a==='resume')return post('/following/state',{origin:b.dataset.origin,move:a}).then(function(r){done(r);});
@@ -263,14 +270,16 @@ const SCRIPT = `
   });
   // The tick (Feed) and the untick (Archive): a checkbox each, handled here and nowhere else. A post's own text is inert and
   // cannot hold one (the sanitiser removes inputs, ids and classes), and a control inside a post's text is ignored anyway.
+  function membersOf(row){var m=row&&row.dataset&&row.dataset.members;return m?m.split(' ').filter(Boolean):[];}
   function count(name,d){document.querySelectorAll('[data-n="'+name+'"]').forEach(function(n){n.textContent=String(Math.max(0,(Number(n.textContent)||0)+d));});}
   document.addEventListener('change',function(ev){
     var c=ev.target;if(!c||!c.matches||!c.matches('input.tick,input.untick')||c.closest('.hub-entry-body'))return;
     var un=c.classList.contains('untick'),row=c.closest('article,.aline');
     c.disabled=true;if(un)say('putting it back in the Feed…');
-    post('/following/read',{key:c.dataset.key,move:un?'untick':'tick'}).then(function(r){
+    post('/following/read',un?{key:c.dataset.key,move:'untick'}:{key:c.dataset.key,move:'tick',members:membersOf(row)}).then(function(r){
       if(!(r&&r.ok)){c.disabled=false;c.checked=un;say((r&&r.error)||'failed',true);return;}
-      if(row)row.remove();count('feed',un?1:-1);count('archive',un?-1:1);say(un?'back in the Feed':'');
+      var parts=Number(r.parts)||0;
+      if(row)row.remove();count('feed',un?1:-1);count('archive',un?-1:1+parts);say(un?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
       // the Feed fell below its target and a blyg has more to read: one refresh tops it up (a second one while it runs is refused, not queued)
       if(!un&&r.topup){say('reading further back…');post('/following/refresh',{}).then(function(r2){
         if(r2&&r2.ok&&r2.started&&Number(r2.new)>0)location.reload();else say('');});}
