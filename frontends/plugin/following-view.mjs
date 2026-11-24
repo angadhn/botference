@@ -64,6 +64,8 @@ details.menu{position:relative;display:inline-block}details.menu summary{list-st
 details.menu summary::-webkit-details-marker{display:none}
 details.menu .pop{position:absolute;right:0;z-index:5;display:flex;flex-direction:column;gap:.3rem;padding:.4rem;margin-top:.2rem;background:var(--card);border:1px solid var(--line);border-radius:.3rem;min-width:8rem}
 ul.history{margin:.3rem 0;padding-left:1.1rem}
+details.unfollow{display:block}details.unfollow[open]{flex-basis:100%}details.unfollow summary{display:inline-block}
+details.unfollow .pop{position:static;margin-top:.4rem;min-width:0;max-width:28rem}details.unfollow .pop button{text-align:left}
 .badge{font-size:.78em;padding:0 .4rem;border:1px solid var(--line);border-radius:.6rem}
 .warn{color:var(--new)}input[type=search]{width:100%;font:inherit;padding:.4rem .6rem;border:1px solid var(--line);border-radius:.3rem;background:var(--card);color:var(--fg)}
 table{border-collapse:collapse;width:100%}td,th{padding:.25rem .4rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
