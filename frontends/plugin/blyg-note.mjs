@@ -280,7 +280,7 @@ export function scopeText(text, { block = false, escape = 'liquid' } = {}) {
   return t.split(/\n[ \t]*\n/).map(p => p.split('\n').map(l => escapeScopeLine(l, { escape })).filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
 }
 const scopeInstruction = (instruction, { escape = 'liquid' } = {}) => {
-  let i = studioInstruction(oneLine(instruction)).replace(/</g, '&lt;').replace(/\[(?==\])/g, '&#91;');
+  let i = studioInstruction(oneLine(instruction)).replace(/</g, '&lt;').replace(/\[(?==\]|\/?TK\])/gi, '&#91;');
   if (escape === 'liquid') i = liquidEntities(i);
   return i || 'passage';
 };

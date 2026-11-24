@@ -1261,7 +1261,7 @@ test('the site\'s refusals: each to a fixed sentence; only lines that start with
     ['id-clash', plan(`${N}: blyg_id 0abc is also written in _notes/y.md`)],
     ['embed', plan(`${N}: an Obsidian embed ![[x]] does not publish on this site; replace it with a link or image`)],
     ['missing-file', plan(`${N}: refers to assets/x.png, which is not in the repository`)],
-    ['sitemap', 'blyg-publish: could not read https://angadh.com/sitemap.xml (HTTP 500)'],
+    ['sitemap', 'blyg-publish: could not read https://example.com/sitemap.xml (HTTP 500)'],
     ['git-failed', 'blyg-publish: git push origin main failed:\nrejected'],
     ['not-pushed', 'blyg-publish: nothing was published (State: applied). Read the output above, then run the same --push again.'],
     ['ruby', pre('Ruby 2.6.10 is the one on PATH, but this site needs 3.2.1 (.ruby-version): put that Ruby first on the PATH of the program that runs this')],

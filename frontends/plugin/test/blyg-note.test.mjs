@@ -482,4 +482,6 @@ test('showsLiquid reads the TEXT of an agent\'s box (only the never-shown instru
   assert.equal(N.showsLiquid(`${fm}Words.\n\n[TK]impyrt m=Pasted &#123;% x %&#125;[/TK]\n`), true, 'a character reference is still shown as the brace');
   const scope = N.agentScope({ instruction: 'a <b> [=] c {{x}}', text: 't', mode: 'filled-by-agent' }, { block: true });
   assert.equal(scope, '[TK] a &lt;b> &#91;=] c &#123;&#123;x&#125;&#125; [=]t[/TK]', 'the instruction: no HTML, no [=] that would end it early, no Liquid');
+  assert.equal(N.agentScope({ instruction: 'about [/TK] and [tk] marks', text: 't', mode: 'filled-by-agent' }, { block: true }),
+    '[TK] about &#91;/TK] and &#91;tk] marks [=]t[/TK]', 'the instruction: none of the site\'s own marks, which would end or nest the scope');
 });

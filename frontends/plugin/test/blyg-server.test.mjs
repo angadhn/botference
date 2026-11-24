@@ -470,6 +470,18 @@ await test('the library and local files are never asked about', async () => {
     assert.equal(guest.status, 200, guest.body);
     for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS', '"gaps"']) assert.ok(!guest.body.includes(secret), secret);
     assert.equal(guest.json.threads[0].msgs[0].text, "Mine. [an agent's passage] and\n[an agent's passage]\nend");
+    // the reading room's HTML (the list and each page a guest may open) is a guest's copy too
+    const list = await GET(GB, '/pages', GUESTH);
+    assert.equal(list.status, 200);
+    const rooms = [...list.body.matchAll(/href="(\/p\/[^"?#]+)/g)].map(m => m[1]);
+    let sawPassage = false;
+    for (const href of new Set(rooms)) {
+      const room = await GET(GB, href, GUESTH);
+      for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS']) assert.ok(!room.body.includes(secret), `${href}: ${secret}`);
+      if (room.body.includes('an agent&#39;s passage') || room.body.includes("an agent's passage")) sawPassage = true;
+    }
+    for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS']) assert.ok(!list.body.includes(secret), `/pages: ${secret}`);
+    assert.ok(sawPassage, 'the guest opened the page with the gaps in the reading room and saw them masked');
     // a guest's reply is answered with the thread: still nothing of the gaps
     const rep = await POST(GB, '/reply', { url: u, thread_id: th.json.thread.id, text: 'a guest reply' }, GUESTH);
     for (const secret of ['ONESHOT filled text.', 'SECRET-INSTRUCTION', 'PASTED-AGENT-WORDS', '"gaps"']) assert.ok(!rep.body.includes(secret), `reply: ${secret}`);

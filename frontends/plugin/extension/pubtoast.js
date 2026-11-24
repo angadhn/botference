@@ -52,11 +52,13 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
       + '<button class="x" type="button" data-act="dismiss" aria-label="Dismiss" title="Dismiss">×</button>';
     shadow.appendChild(box);
     (doc.documentElement || doc.body).appendChild(host);
-    let gone = false;
+    // the toast's modes, in one list and one field: shown -> closing, never back (the `going` class is drawn from it)
+    const TOAST_MODES = ['shown', 'closing'];
+    let mode = TOAST_MODES[0];
     let timer = 0;
     const close = (done = true) => {
-      if (gone) return;
-      gone = true;
+      if (mode !== 'shown') return;
+      mode = 'closing';
       clearTimeout(timer);
       box.classList.add('going');
       setTimeout(() => host.remove(), 400);

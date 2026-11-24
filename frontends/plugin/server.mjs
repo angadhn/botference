@@ -3843,7 +3843,8 @@ export function handler(req, res) {
     // one conversation about the whole list underneath
     const nonce = newNonce();
     const html = pagesView({ index, me: hosted.identity(req), snapshots, nonce,
-      library: store.readPage(store.LIBRARY_URL),
+      // a guest's copy of the library carries no gap, as everywhere else (tkgaps.forGuest)
+      library: hosted.isOwner(req) ? store.readPage(store.LIBRARY_URL) : forGuest(store.readPage(store.LIBRARY_URL)),
       libraryKey: store.pageKey(store.LIBRARY_URL),
       kind: q.get('kind') || '', tag: q.get('tag') || '',
       // how many questions are waiting, for the owner's own link to the quiz
@@ -3858,7 +3859,8 @@ export function handler(req, res) {
     const notice = q.get('notice') || '';
     const nonce = newNonce();
     const html = pageView({ nonce,
-      page, key, me: hosted.identity(req), notice, snapshot: store.hasSnapshot(key),
+      // a guest's copy of the page carries no gap, as everywhere else (tkgaps.forGuest)
+      page: hosted.isOwner(req) ? page : forGuest(page), key, me: hosted.identity(req), notice, snapshot: store.hasSnapshot(key),
       // whose threads to show — the reading room has no client state, so a
       // margin narrowed to one commenter is a LINK, exactly as a filtered
       // archive is
