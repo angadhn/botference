@@ -13196,6 +13196,11 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
 - **Environment (documented, not configured here).** See "Owner setup for Publish as blyg" below.
 - **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
   destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.
+- **Liquid-looking text is refused at the start (escape `liquid`).** The note makes `{{`/`{%` inert, but a reader still sees them, and a
+  Jekyll site may keep such text out of what it publishes at all (the example blog's generated-publication test refuses an item whose
+  `content_md` holds `{{` or `{%`, so it failed the post at the END of apply). `blyg-note.mjs showsLiquid` reads the note as the reader
+  sees it (character references and `\{` decoded); a start whose comment or quoted passage shows either is refused with a plain
+  sentence before anything is written. `{ {`, `{:` and lone braces are fine; escape `none` is not asked.
 
 ### Owner setup for Publish as blyg
 

@@ -36,7 +36,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheckSync, TIME_LIMITS_MS, STEPS } from './blyg-home.mjs';
-import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, newBlygId, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, eligibleThread, isPublishedThread, slugOf, dayOf, newBlygId, showsLiquid, SCOPES, LIMITS } from './blyg-note.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
 export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
@@ -337,6 +337,11 @@ export function createPublisher(deps) {
     const taken = permalinksIn(S.folder);
     const first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier });
     if (!first.ok) return fail(409, first.error);
+    // a Jekyll site ('liquid') may refuse a post that SHOWS `{{` or `{%` (inert or not): say so now, before anything is written, rather
+    // than at the end of a long apply
+    if (S.escape === 'liquid' && showsLiquid(first.text)) {
+      return fail(409, 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.');
+    }
     const base = slugOf(first.title, { date });
     let rendered = null;
     let name = '';

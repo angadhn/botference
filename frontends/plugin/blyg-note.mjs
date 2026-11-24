@@ -204,6 +204,15 @@ export function neutraliseHtml(text) {
   }
   return res.replace(/^(\s{0,3}\[[^\]]+\]:\s*)(\S+)/gm, (m, a, d) => (bad(d) ? a + '#' : m));
 }
+// WHAT A READER WOULD SEE. A Jekyll site may keep Liquid-looking text out of what it publishes altogether (the example site's own
+// generated-publication test refuses any item whose content_md holds `{{` or `{%`), so a note that DISPLAYS either one, however inert
+// it was made here, is refused by that site at the end of its apply. → true when the note's body, read as the reader sees it
+// (character references and backslash escapes of braces decoded), shows `{{` or `{%`. blyg-run.mjs refuses such a start at once.
+export function showsLiquid(noteText) {
+  const body = String(noteText || '').replace(/^---\n[\s\S]*?\n---\n/, '');
+  const seen = body.replace(/&#0*123;|&#x0*7b;|&lbrace;|&lcub;/gi, '{').replace(/&#0*125;|&#x0*7d;|&rbrace;|&rcub;/gi, '}').replace(/\\([{}%])/g, '$1');
+  return /\{[{%]/.test(seen);
+}
 const LIQUID_IN_CODE = /\{[{%]/;
 const codeHasLiquid = text => {
   const mask = Grammar.codeMask(text);

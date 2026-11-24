@@ -924,3 +924,33 @@ test('the pre-flight check runs before anything is written; its own sentence ref
   assert.match(H.validateHome({ ...rig.home, commands: { ...rig.home.commands, check: ['/bin/sh', '-c', 'x'] } }).errors.join(), /shell/);
   assert.equal(H.TIME_LIMITS_MS.check, 15000);
 });
+
+// A Jekyll site may keep Liquid-looking text out of what it publishes at all (the example blog's generated-publication test refuses an
+// item whose content_md holds `{{` or `{%`). The note makes such text inert, but the reader still SEES it, so that site refused the post
+// at the end of its apply (found by the end-to-end run, 20 minutes in). The start now refuses it at once, before anything is written.
+test('a comment or a quoted passage that shows {{ or {% is refused at the start when the site is Jekyll; nothing is written or run', async t => {
+  const rig = makeRig({ prepare: true }); t.after(rig.done);
+  const cases = [
+    thread('t1', 'A sentence.', 'I would write {{ page.title }} here.', { blyg: stamp() }),
+    thread('t1', 'A passage with {% raw %} in it.', 'Plain words of mine.'),
+    thread('t1', 'A sentence.', 'Typed as a reference: &#123;&#123; x', { blyg: stamp() }),
+    thread('t1', 'A sentence.', 'In code: `{% include x %}`', { blyg: stamp() }),
+  ];
+  for (const th of cases) {
+    const b = boot(rig, { page: blygPage([th]) });
+    const r = b.start();
+    assert.equal(r.status, 409, JSON.stringify(th));
+    // (a code span holding them was already refused by the note writer, in its own words)
+    assert.match(r.error, /`/.test(th.msgs[0].text) ? /code span or block in the comment holds “\{\{” or “\{%”/ : /shows “\{\{” or “\{%”.*Nothing was written/);
+    assert.equal(b.mode(), 'idle');
+  }
+  assert.deepEqual(fs.readdirSync(rig.folder), [], 'no note was written');
+  assert.deepEqual(rig.calls(), [], 'and nothing ran');
+  // braces that do not open Liquid are fine, and a site that is not Jekyll (escape none) is not asked
+  const ok = boot(rig, { page: blygPage([thread('t1', 'A sentence.', 'Sets like { {a}, {b} } and {: x} are fine.', { blyg: stamp() })]) });
+  assert.ok(ok.start().ok);
+  await until(() => ok.mode() === 'planned', 'planned');
+  const rig2 = makeRig({ extra: { escape: 'none' } }); t.after(rig2.done);
+  const none = boot(rig2, { page: blygPage([thread('t1', 'A sentence.', 'I would write {{ page.title }} here.', { blyg: stamp() })]) });
+  assert.ok(none.start().ok, 'escape none: not refused');
+});
