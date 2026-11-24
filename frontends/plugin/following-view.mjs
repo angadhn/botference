@@ -179,7 +179,7 @@ function archivePane(data) {
   const q = data.archive_query || '';
   const more = data.archive_total > data.archive.length
     ? `<p class="mut">${data.archive.length} of ${Number(data.archive_total)} shown. <a href="/hub?view=archive&amp;${q ? `q=${encodeURIComponent(q)}&amp;` : ''}n=${Math.min(1000, data.archive.length + 50)}">show more</a></p>` : '';
-  return `<p class="mut">Posts you ticked as read. Only a small record of each is kept, not its text; untick one to bring it back to the Feed (it is fetched again).</p>
+  return `<p class="mut">Posts you ticked as read. Only a small record of each is kept, not its text; press Unread on one to bring it back to the Feed (it is fetched again).</p>
     <form method="get" action="/hub" role="search"><input type="hidden" name="view" value="archive"><input type="search" name="q" value="${escHtml(q)}" placeholder="search titles and blygs" aria-label="search the Archive"></form>
     ${(data.archive_notices || []).map(n => `<p class="warn hub-mass-edit">${t(n.blyg_title || n.origin, 160)} changed ${Number(n.held)} posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.</p>`).join('')}
     <section aria-label="archive" id="hub-archive">${data.archive.length ? data.archive.map(archiveLine).join('') : `<p class="mut">${q ? 'Nothing in the Archive matches that.' : 'Nothing archived yet. Tick a post in the Feed when you have read it.'}</p>`}</section>${more}`;
