@@ -29,6 +29,8 @@ let pass = 0, fail = 0; const failures = [];
 const ok = (name, cond, detail) => { if (cond) pass++; else { fail++; failures.push(name + (detail ? '\n      ' + detail : '')); } };
 const eq = (name, got, want) => ok(name, JSON.stringify(got) === JSON.stringify(want), 'got  ' + JSON.stringify(got) + '\n      want ' + JSON.stringify(want));
 const tick = (ms = 0) => new Promise(r => setTimeout(r, ms));
+// a click that starts or carries on a publish counts only once the dialog has been on screen, unobstructed and still for 500 ms
+const settle = () => tick(560);
 
 const mine = (text, extra = {}) => ({ author: 'owner', ts: '2026-11-22T10:00:00Z', text, provenance: 'owner-typed', ...extra });
 const th = (id, text, extra = {}) => ({ id, quote: 'passage ' + id, msgs: [mine(text)], ...extra });
@@ -132,7 +134,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   click(qa('.thr-pub')[1]); await tick();                                   // the second comment: there is one above it
   eq('choosing', [view(), dlg().hidden], ['choosing', false]);
   eq('both scopes are offered, the second with its count', qa('.pubdlg [data-act="pub-scope"]').map(b => [b.dataset.scope, b.textContent]), [['one', 'Just this comment'], ['above', 'This and the 1 above']]);
-  click(q('[data-act="pub-scope"][data-scope="above"]')); await tick();
+  await settle(); click(q('[data-act="pub-scope"][data-scope="above"]')); await tick();
   eq('start sends the thread, the scope and the setting the owner was shown, nothing else', server.calls.at(-1), { op: 'start', body: { thread_id: 't2', scope: 'above', confirm: 'always' } });
   eq('planning is shown as working', view(), 'working');
   ok('and says nothing is published', /Nothing is published/.test(dlg().textContent));
@@ -145,7 +147,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   ok('and says what Publish does', /live site and cannot be undone/.test(q('.pubwarn').textContent));
   eq('Publish and Cancel, nothing else that acts', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-confirm', 'pub-cancel']);
   const before = server.calls.length;
-  click(q('[data-act="pub-confirm"]')); await tick();
+  await settle(); click(q('[data-act="pub-confirm"]')); await tick();
   eq('Publish sends the run\'s id and token', server.calls.at(-1), { op: 'confirm', body: { run: 'r1', token: 'tok1' } });
   eq('and the view is running at once', view(), 'running');
   click(q('.pubdlg [data-act="pub-close"]')); await tick();
@@ -154,9 +156,9 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 }
 {
   const { server, q, dlg, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
-  click(q('[data-act="pub-confirm"]')); await tick();
+  await settle(); click(q('[data-act="pub-confirm"]')); await tick();
   server.run = server.make('published', { steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 0, output: 'U' }],
     published: { at: 'now', title: 'My first thought', permalink: '/b/my-first-thought', address: 'https://site.example.test/b/my-first-thought' } });
   drawer.blygPublishMoved(); await tick(5);
@@ -191,7 +193,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   const { q, qa, dlg, view, click, drawer } = await make({ server });
   click(qa('.thr-pub')[0]); await tick();
   ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
-  click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one', confirm: 'never' } }, true, 'working']);
   eq('the thread carries ONE line of progress', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking what would change']);
   server.run = server.make('planned', { confirm: 'never', thread_ids: ['t1'], steps: [{ step: 'plan', exit: 0, output: 'P' }] });
@@ -227,6 +229,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     const { q, qa, view, click, dlg, drawer } = await make({ server });
     click(qa('.thr-pub')[0]); await tick();
     eq(name + ': (set up: choosing)', view(), 'choosing');
+    await settle();   // the buttons are ready; the page lays something over them at the last moment
     set();
     const ev = new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
     q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev); await tick();
@@ -239,9 +242,58 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   const { q, qa, view, click, drawer } = await make({ server });
   click(qa('.thr-pub')[0]); await tick();
   document.elementsFromPoint = () => [drawer.host];
-  q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
+  await settle(); q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
   eq('with the drawer on top and no top layer, the start goes out', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
   document.elementsFromPoint = real.efp;
+}
+
+// ---- review item 7: fail closed, the host's position, and a button that must have been ready for 500 ms ---------------------------
+{
+  const real = { efp: document.elementsFromPoint, gcs: globalThis.getComputedStyle };
+  const ev = () => new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 });
+  // a page that makes the check throw gets nothing (it used to pass)
+  {
+    const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]); await tick(); await settle();
+    document.elementsFromPoint = () => [drawer.host];
+    globalThis.getComputedStyle = () => { throw new Error('a page broke getComputedStyle'); };
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    globalThis.getComputedStyle = real.gcs;
+    eq('an exception while checking: refused (fails closed)', [server.calls.some(c => c.op === 'start'), view()], [false, 'problem']);
+    document.elementsFromPoint = real.efp;
+  }
+  // the host moved or unpinned: refused, as an overlay is
+  for (const [name, set] of [['top moved', h => { h.style.setProperty('top', '300px', 'important'); }], ['left moved', h => { h.style.setProperty('left', '-40px', 'important'); }],
+    ['bottom moved', h => { h.style.setProperty('bottom', '200px', 'important'); }], ['position not fixed', h => { h.style.setProperty('position', 'absolute', 'important'); }],
+    ['inset changed', h => { h.style.setProperty('inset', '10px', 'important'); }]]) {
+    const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
+    click(qa('.thr-pub')[0]); await tick(); await settle();
+    const h = drawer.host; set(h);
+    document.elementsFromPoint = () => [h];
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq(`the host's ${name}: blocked`, [server.calls.some(c => c.op === 'start'), view()], [false, 'problem']);
+    for (const k of ['top', 'left', 'right', 'bottom', 'position', 'inset']) h.style.removeProperty(k);
+    document.elementsFromPoint = real.efp;
+  }
+  // readiness: a click the moment the buttons appear does not count; after 500 ms on screen and still, it does; a dialog that moved
+  // must settle again
+  {
+    const server = companion(); const { q, qa, view, click, drawer, dlg } = await make({ server });
+    document.elementsFromPoint = () => [drawer.host];
+    click(qa('.thr-pub')[0]); await tick();
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq('a click right after the buttons appear: nothing is started, and it says to wait', [server.calls.some(c => c.op === 'start'), view(), /only just appeared or moved/.test(dlg().textContent)], [false, 'choosing', true]);
+    await settle();
+    const box = drawer.shadow.querySelector('.pubdlg');
+    let at = 0; box.getBoundingClientRect = () => ({ left: at, top: 0, right: at + 300, bottom: 400, width: 300, height: 400 });
+    at = 50;   // the page slid the dialog after it was ready
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq('the dialog moved after it was ready: not counted', server.calls.some(c => c.op === 'start'), false);
+    await settle();
+    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    eq('ready again after 500 ms in the same place: the start goes out', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
+    document.elementsFromPoint = real.efp;
+  }
 }
 
 // ---- F8: the stronger check, on every action that publishes or carries on ----------------------------------------------------------
@@ -256,17 +308,18 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   // a top-layer element that does NOT meet the drawer's box is none of our business (it must not block)
   {
     const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
-    click(qa('.thr-pub')[0]); await tick();
     drawer.shadow.querySelector('.pubdlg').getBoundingClientRect = () => MINE;
+    click(qa('.thr-pub')[0]); await tick();
     document.querySelectorAll = sel => (sel === ':modal' ? [{ getBoundingClientRect: () => FAR }] : real.qa(sel));
     document.elementsFromPoint = () => [drawer.host];
-    q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
+    await settle(); q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
     eq('a modal far from the drawer does not block', [server.calls.some(c => c.op === 'start'), view()], [true, 'working']);
     document.querySelectorAll = real.qa;
     // …but one over it does
     const s2 = companion(); const x = await make({ server: s2 });
-    x.click(x.qa('.thr-pub')[0]); await tick();
     x.drawer.shadow.querySelector('.pubdlg').getBoundingClientRect = () => MINE;
+    x.click(x.qa('.thr-pub')[0]); await tick();
+    await settle();
     document.querySelectorAll = sel => (sel === ':popover-open' ? [{ getBoundingClientRect: () => BIG }] : real.qa(sel));
     document.elementsFromPoint = () => [x.drawer.host];
     x.q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
@@ -277,6 +330,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   for (const [name, set] of [['opacity', h => { h.style.opacity = '0.4'; }], ['filter', h => { h.style.filter = 'blur(2px)'; }], ['clip-path', h => { h.style.clipPath = 'inset(0 50% 0 0)'; }], ['visibility', h => { h.style.visibility = 'hidden'; }], ['transform on the host', h => { h.style.transform = 'scale(0.1)'; }], ['opacity on an ancestor', h => { h.parentElement.style.opacity = '0.5'; }]]) {
     const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
     click(qa('.thr-pub')[0]); await tick();
+    await settle();
     const h = drawer.host; set(h);
     document.elementsFromPoint = () => [h];
     q('[data-act="pub-scope"][data-scope="one"]').dispatchEvent(ev()); await tick();
@@ -292,37 +346,41 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     await tick(10); click(q('[data-act="pub-review"]')); await tick();
     const before = server.calls.length;
     document.elementsFromPoint = () => [{ id: 'cover' }];
-    q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
+    await settle(); q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
     eq(`${op}: an overlay at the click point stops it (nothing sent)`, [server.calls.slice(before).some(c => c.op === op || c.op === 'resume'), /Close the page's overlay and try again/.test(drawer.shadow.querySelector('.pubdlg').textContent)], [false, true]);
     document.elementsFromPoint = () => [drawer.host];
-    q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
+    await settle(); q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
     eq(`${op}: and goes through when the drawer is on top`, server.calls.slice(before).some(c => c.op === op), true);
     document.elementsFromPoint = real.efp;
   }
   // IntersectionObserver v2, where it exists: act only if isVisible was true
   {
-    const seen = []; let cb = null;
+    // every publish-buttons observer (one per drawer: drawers made by earlier tests make theirs too), and a report delivered to the
+    // observer that watches that button, as a browser would
+    const seen = []; const watchers = [];
+    const cb = entries => { for (const o of watchers) { const its = entries.filter(en => o.els.includes(en.target)); if (its.length) o.f(its); } };
     globalThis.IntersectionObserverEntry = class { get isVisible() { return true; } };
-    globalThis.IntersectionObserver = class { constructor(f) { cb = f; } observe(el) { seen.push(el); } disconnect() {} };
+    // (only the publish buttons' observer asks for trackVisibility: another observer the drawer makes must not take its callback)
+    globalThis.IntersectionObserver = class { constructor(f, o) { this.mine = !!(o && o.trackVisibility); this.f = f; this.els = []; if (this.mine) watchers.push(this); } observe(el) { if (this.mine) { seen.push(el); this.els.push(el); } } unobserve() {} disconnect() {} };
     w.IntersectionObserver = globalThis.IntersectionObserver; w.IntersectionObserverEntry = globalThis.IntersectionObserverEntry;
     const server = companion(); const { q, qa, view, click, drawer } = await make({ server });
     click(qa('.thr-pub')[0]); await tick();
     ok('the buttons are watched with v2', seen.length >= 2 && seen.every(b => b.classList && b.classList.contains('pbtn')));
-    const btn = q('[data-act="pub-scope"][data-scope="one"]');
+    await settle(); const btn = q('[data-act="pub-scope"][data-scope="one"]');
     document.elementsFromPoint = () => [drawer.host];
     // no report yet that it is visible: refused (the browser has not vouched for it)
     btn.dispatchEvent(ev()); await tick();
     eq('v2 has not said visible: refused', [server.calls.some(c => c.op === 'start'), view()], [false, 'problem']);
     const s2 = companion(); const y = await make({ server: s2 });
     y.click(y.qa('.thr-pub')[0]); await tick();
-    const b2 = y.q('[data-act="pub-scope"][data-scope="one"]');
+    await settle(); const b2 = y.q('[data-act="pub-scope"][data-scope="one"]');
     cb([{ target: b2, isVisible: false, intersectionRatio: 1 }]);
     document.elementsFromPoint = () => [y.drawer.host];
     b2.dispatchEvent(ev()); await tick();
     eq('v2 says NOT visible (covered or filtered): refused', [s2.calls.some(c => c.op === 'start'), y.view()], [false, 'problem']);
     const s3 = companion(); const z = await make({ server: s3 });
     z.click(z.qa('.thr-pub')[0]); await tick();
-    const b3 = z.q('[data-act="pub-scope"][data-scope="one"]');
+    await settle(); const b3 = z.q('[data-act="pub-scope"][data-scope="one"]');
     cb([{ target: b3, isVisible: true, intersectionRatio: 1 }]);
     document.elementsFromPoint = () => [z.drawer.host];
     b3.dispatchEvent(ev()); await tick();
@@ -342,9 +400,9 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('the earlier step is still running: no plain Carry on, a choice to stop it first', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act), /still running on this machine/.test(q('.pubdlg').textContent)], ['problem', ['pub-stop-continue', 'pub-abandon', 'pub-close'], true]);
   const before = server.calls.length;
   document.elementsFromPoint = () => [{ id: 'x' }];
-  click(q('[data-act="pub-stop-continue"]')); await tick();
+  await settle(); click(q('[data-act="pub-stop-continue"]')); await tick();
   document.elementsFromPoint = undefined; delete document.elementsFromPoint;
-  click(q('[data-act="pub-stop-continue"]')); await tick();
+  await settle(); click(q('[data-act="pub-stop-continue"]')); await tick();
   eq('the owner\'s choice sends continue with stop: yes', server.calls.slice(before).filter(c => c.op === 'continue').map(c => c.body), [{ run: 'r1', token: 'tok1', stop: 'yes' }]);
 }
 {
@@ -371,14 +429,14 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // ---- cancel, and Escape --------------------------------------------------------------------------
 {
   const { server, q, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   click(q('[data-act="pub-cancel"]')); await tick();
   eq('Cancel sends the run\'s id and token and closes', [server.calls.at(-1), view()], [{ op: 'cancel', body: { run: 'r1', token: 'tok1' } }, 'closed']);
 }
 {
   const { server, q, drawer, view, click, qa } = await make();
-  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   drawer.escape();
   eq('Escape closes the dialog and sends nothing (the run stays where it is)', [view(), server.calls.filter(c => ['cancel', 'confirm', 'abandon'].includes(c.op)).length], ['closed', 0]);
@@ -388,7 +446,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 {
   const server = companion(); server.fail = { start: 'Publish as blyg is not set up: the notes folder is not set <script>x</script>' };
   const { q, view, click, qa, dlg } = await make({ server });
-  click(qa('.thr-pub')[0]); await tick(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('a refusal is shown as words in a problem view', [view(), dlg().textContent.includes('the notes folder is not set <script>x</script>'), qa('.pubdlg script').length], ['problem', true, 0]);
   eq('with only Close', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-close']);
 }
@@ -417,7 +475,7 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
   ok(`${mode}: and nothing is retried by itself`, !server.calls.some(c => ['retry', 'confirm'].includes(c.op)));
   if (mode === 'failed_publish') {
     ok('the step that failed is named on the button', /Try publish again/.test(q('[data-act="pub-retry"]').textContent));
-    click(q('[data-act="pub-retry"]')); await tick();
+    await settle(); click(q('[data-act="pub-retry"]')); await tick();
     eq('a retry is the owner\'s click: it resumes (the offer) and then retries, with the run\'s token', server.calls.slice(-2), [{ op: 'resume', body: undefined }, { op: 'retry', body: { run: 'r1', token: 'tok1' } }]);
     eq('and the view follows the run', view(), 'running');
   } else {
@@ -445,7 +503,7 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
   const { q, view, click, drawer } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
   drawer.shadow.querySelector('.pubdlg').insertAdjacentHTML('beforeend', '<button data-act="pub-confirm">forged</button>');
-  click(q('[data-act="pub-confirm"]')); await tick();
+  await settle(); click(q('[data-act="pub-confirm"]')); await tick();
   eq('a confirm on a failed run is not sent', [server.calls.some(c => c.op === 'confirm'), view()], [false, 'problem']);
 }
 // untrusted clicks on every dialog button

@@ -13259,6 +13259,11 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
   limit), before anything is written; its own plain sentences refuse the start. Meanwhile the run is `checking` (nothing written; a second
   start is refused; a refusal or a restart returns to `idle`). The example site's is `scripts/blyg-publish --preflight`.
 - **Environment (documented, not configured here).** See "Owner setup for Publish as blyg" below.
+- **Clickjacking (review item 7).** `pubOverlay` FAILS CLOSED (an exception while checking is a refusal), checks the host's pinned
+  geometry (computed `position: fixed` and top/left/right/bottom/inset 0, as the drawer pinned them) besides its transform, opacity,
+  filter, clip-path and visibility, and a click that starts or carries on a publish counts only when the dialog's buttons are READY:
+  one named mode in one field (`D.pub.arm.state`: settling | ready, moved only by `pubArm`); new buttons, a scroll, a resize or a
+  dialog that moved make it settling, and it becomes ready after 500 ms on screen, unobstructed and in the same place.
 - **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
   destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.
 - **Links and images in the owner's words are checked at the start.** A link destination must be a web address (http or https;

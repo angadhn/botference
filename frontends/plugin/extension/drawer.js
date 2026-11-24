@@ -10738,6 +10738,13 @@ ${bubbleShellHtml()}`;
       } catch (_) { pubIO = null; }
     }
     const boxesMeet = (a, b) => !!a && !!b && a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0 && a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    // THE HOST'S PINNED GEOMETRY (drawer create: position fixed, inset 0). A page that moves the host (top/left/right/bottom/inset,
+    // position) can slide the drawer under its own content or off its place: refused like an overlay.
+    const HOST_PIN = Object.freeze({ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0 });
+    const hostMoved = cs => cs.position !== HOST_PIN.position
+      || ['top', 'left', 'right', 'bottom'].some(k => !(parseFloat(cs[k]) === HOST_PIN[k]))
+      || (cs.inset && !/^0(px)?(\s+0(px)?){0,3}$/.test(String(cs.inset).trim()));
+    // FAILS CLOSED: any exception while looking is a refusal (a page that makes the check throw must not get a free click)
     function pubOverlay(e, btn) {
       try {
         if (typeof document === 'undefined' || !D.host) return '';
@@ -10749,6 +10756,7 @@ ${bubbleShellHtml()}`;
           if (!cs) continue;
           if (parseFloat(cs.opacity) < 1 || (cs.filter && cs.filter !== 'none') || (cs.clipPath && cs.clipPath !== 'none') || cs.visibility === 'hidden') return PUB_OVERLAY_SAY;
           if (el === D.host && cs.transform && cs.transform !== 'none') return PUB_OVERLAY_SAY;
+          if (el === D.host && hostMoved(cs)) return PUB_OVERLAY_SAY;
         }
         // 3. on screen
         const panel = D.el && (D.el.pubdlg && !D.el.pubdlg.hidden ? D.el.pubdlg : D.el.panel);
@@ -10772,13 +10780,51 @@ ${bubbleShellHtml()}`;
           const at = document.elementsFromPoint(e.clientX, e.clientY);
           if (Array.isArray(at) && at.length && at[0] !== D.host) return PUB_OVERLAY_SAY;
         }
-      } catch (_) { return ''; }
+      } catch (_) { return PUB_OVERLAY_SAY; }
       return '';
+    }
+    // THE DIALOG'S BUTTONS' READINESS, one named mode in one field (D.pub.arm.state), moved only by pubArm:
+    //   settling  the buttons were just drawn, or the page scrolled, resized, or the dialog moved: a click that would start or carry on
+    //             a publish does not count yet
+    //   ready     the dialog has been on screen, unobstructed and in the same place for PUB_ARM_MS: such a click counts
+    // (A page that slides a button under the pointer at the last moment, or shows it for a blink, gets nothing.)
+    const PUB_ARM_MS = 500;
+    const PUB_ARM_STATES = Object.freeze(['settling', 'ready']);
+    const PUB_ARM_MOVES = Object.freeze({ settling: Object.freeze(['settling', 'ready']), ready: Object.freeze(['settling']) });
+    const PUB_ARM_SAY = 'The buttons have only just appeared or moved. Wait a moment, then press again.';
+    const pubDlgBox = () => { const el = D.el && D.el.pubdlg; const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null; return r ? [r.left, r.top, r.width, r.height].join(',') : ''; };
+    let pubArmTimer = null;
+    function pubArm(to) {
+      if (PUB_ARM_STATES.indexOf(to) === -1) throw new Error('publish buttons: no such readiness ' + to);
+      const from = D.pub.arm ? D.pub.arm.state : 'settling';
+      if (D.pub.arm && PUB_ARM_MOVES[from].indexOf(to) === -1) throw new Error('publish buttons: cannot go from ' + from + ' to ' + to);
+      D.pub.arm = { state: to, since: Date.now(), box: pubDlgBox() };
+      if (to === 'settling') { clearTimeout(pubArmTimer); pubArmTimer = setTimeout(pubArmCheck, PUB_ARM_MS); }
+    }
+    function pubArmCheck() {
+      const a = D.pub.arm;
+      if (!a || a.state !== 'settling') return;
+      // still the same place, long enough, and nothing over it (pubOverlay without a click: the style chain, on screen, the top layer)
+      if (Date.now() - a.since >= PUB_ARM_MS && a.box === pubDlgBox() && !pubOverlay(null, null)) pubArm('ready');
+      else pubArm('settling');
+    }
+    // → '' when a click that starts or carries on a publish may count, else the sentence to show
+    function pubArmRefusal() {
+      const a = D.pub.arm;
+      if (!a || a.state !== 'ready') return PUB_ARM_SAY;
+      if (a.box !== pubDlgBox()) { pubArm('settling'); return PUB_ARM_SAY; }
+      return '';
+    }
+    if (typeof window !== 'undefined' && window.addEventListener) {
+      for (const ev of ['scroll', 'resize']) window.addEventListener(ev, () => { if (D.pub && D.pub.view !== 'closed') pubArm('settling'); }, { passive: true, capture: true });
     }
     async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
+      const early = pubArmRefusal();
+      if (early) { D.pub.error = early; paintPub(); return; }
       const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null);
       if (over) { pubGo('problem', { error: over, run: null }); return; }
+      D.pub.error = '';
       const thread = D.pub.thread;
       if (!pubGo('starting', { scope })) return;
       let r = null;
@@ -10790,7 +10836,11 @@ ${bubbleShellHtml()}`;
     async function pubAct(op, e, stop) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
-      if (op === 'confirm' || op === 'retry' || op === 'continue') { const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null); if (over) { D.pub.error = over; paintPub(); return; } }
+      if (op === 'confirm' || op === 'retry' || op === 'continue') {
+        const early = pubArmRefusal();
+        if (early) { D.pub.error = early; paintPub(); return; }
+        const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null); if (over) { D.pub.error = over; paintPub(); return; }
+      }
       const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', forget: 'forget', continue: stop ? 'stop-and-continue' : 'continue' }[op];
       if (!may || (run.can || []).indexOf(may) === -1) return;
       // the view changes first for the two that start something, so a second click finds nothing to press
@@ -10839,7 +10889,7 @@ ${bubbleShellHtml()}`;
           const t = ((D.page && D.page.threads) || []).find(x => x && x.id === P.thread);
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
           const n = pubAbove(P.thread).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
             <p>${P.shown === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${P.shown === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.shown === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
@@ -10890,8 +10940,9 @@ ${bubbleShellHtml()}`;
       const el = D.el && D.el.pubdlg;
       if (!D.mounted || !el) return;
       if (D.pub.view === 'closed' || pubQuiet()) { el.hidden = true; el.innerHTML = ''; if (typeof render === 'function') render(); return; }
-      el.innerHTML = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
-      el.hidden = false;
+      const html = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
+      // new buttons (or a dialog that was hidden) start settling; the same markup painted again changes nothing
+      if (html !== el.innerHTML || el.hidden) { el.innerHTML = html; el.hidden = false; pubArm('settling'); }
       pubWatchButtons();
       if (typeof render === 'function') render();
     }
