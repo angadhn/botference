@@ -256,6 +256,9 @@ const blygPublish = createPublisher({
   readPage: url => store.readPage(url),
   savePage: page => store.savePage(page),
   broadcast: ev => broadcast(ev),
+  // a new version's one changelog line, from the cheap Claude one-shot (no tools; only the two texts of the post in the prompt)
+  askChangelog: ({ prompt, model, timeoutMs }) => (NO_AGENTS ? Promise.resolve(null)
+    : runOneShot('claude', prompt, { model, timeoutMs, ...oneshotOverride() })),
 });
 // --- the review's decision log, kept in step ------------------------------
 //
@@ -2245,15 +2248,16 @@ function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
   // the model and effort the owner set for that agent in the companion's own settings (the chat's /model and /effort); the model is
   // not invented when none is set, the effort is medium then
   const { model, effort } = agentSetting(agent);
+  return runOneShot(agent, prompt, { model, effort, timeoutMs, ...oneshotOverride() });
+}
+// (tests: PLUGIN_ONESHOT_CMD replaces the CLI; the stand-in is told where to log, which is the one name added to the child's minimal
+// environment, and the jail is made with the CLI's name, since the stand-in runs in its place)
+function oneshotOverride() {
   const override = process.env.PLUGIN_ONESHOT_CMD ? JSON.parse(process.env.PLUGIN_ONESHOT_CMD) : null;
-  // (tests: the stand-in is told where to log, which is the one name added to the child's minimal environment, and the jail is
-  // made with the CLI's name, since the stand-in runs in its place)
-  const spawnFn = override
-    ? (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
-      { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } })
-    : undefined;
-  return runOneShot(agent, prompt, { model, effort, timeoutMs,
-    ...(spawnFn ? { spawn: spawnFn, jail: o => codexJail({ ...o, bin: 'codex' }) } : {}) });
+  if (!override) return {};
+  return { spawn: (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
+    { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } }),
+  jail: o => codexJail({ ...o, bin: 'codex' }) };
 }
 function agentSetting(agent) {
   const a = store.readConfig().agents || {};

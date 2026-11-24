@@ -46,7 +46,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
 
@@ -138,6 +138,17 @@ export const RUN_KINDS = Object.freeze(['new', 'edit']);
  *    add   the comment is added to that post (the most recent one from this page): a new VERSION of it, kind 'edit'
  *    new   the comment becomes a post of its own, as when there is no earlier post */
 export const JOINS = Object.freeze(['add', 'new']);
+/** WHERE A NEW VERSION'S CHANGELOG LINE CAME FROM (both are a program's: the site marks either `"generated": true`), one value on the
+ *  run (`changelog_from`), moved only by changelogFromMove:
+ *    program-fixed  the fixed line written from the difference (changelogLine): always there first
+ *    program-model  a model's one line about the two texts, used when changelogAnswerOk accepted it within CHANGELOG_ASK_MS */
+export const CHANGELOG_FROM = Object.freeze(['program-fixed', 'program-model']);
+export const CHANGELOG_FROM_MOVES = Object.freeze({ 'program-fixed': Object.freeze(['program-model']), 'program-model': Object.freeze([]) });
+export function changelogFromMove(from, to) {
+  if (!CHANGELOG_FROM.includes(to) || !(CHANGELOG_FROM_MOVES[from] || []).includes(to)) throw new IllegalMove(`changelog line: cannot go from ${from} to ${to}`);
+  return to;
+}
+export const CHANGELOG_ASK_MS = 15000;
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** Why a run stops at `planned` for the owner's look (`run.review`), one of:
  *    setting      the owner's setting is confirm 'always'
@@ -657,7 +668,33 @@ export function createPublisher(deps) {
 
   // ---- Step A --------------------------------------------------------------------
   // Step A: the optional prepare, then plan. Each is a step with its own mode; a failure stops there (failed_prepare, failed_plan).
+  // A NEW VERSION'S LINE, asked of a model when the companion can (deps.askChangelog: the Claude one-shot, no tools, the
+  // changelog_model setting). Only the two texts of the post as they read go in; the answer is used only when changelogAnswerOk
+  // accepts it; a refusal, a failure or no answer within CHANGELOG_ASK_MS keeps the fixed line. Publishing never waits longer and never
+  // fails because of it. Runs while the run is `drafted` (one run at a time holds), before prepare and plan, which carry the line.
+  async function modelChangelog() {
+    const run = book.run;
+    if (run.kind !== 'edit' || run.changelog_from !== 'program-fixed' || typeof deps.askChangelog !== 'function') return;
+    const home = settingsNow();
+    const before = postTextOf(run.prev_text || '');
+    const after = postTextOf(run.note_text || '');
+    let answer = null;
+    let timer = null;
+    try {
+      answer = await Promise.race([
+        Promise.resolve(deps.askChangelog({ prompt: changelogPrompt(before, after), model: home.ok ? home.settings.changelog_model : '', timeoutMs: CHANGELOG_ASK_MS })).catch(() => null),
+        new Promise(res => { timer = setTimeout(() => res(null), deps.changelogAskMs !== undefined ? deps.changelogAskMs : CHANGELOG_ASK_MS); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    const line = answer && answer.ok ? changelogAnswerOk(answer.text, { before, after }) : '';
+    logNote(`changelog line: ${line ? 'the model\'s' : `the fixed one (${!answer ? 'no answer in time' : !answer.ok ? 'the model failed' : 'the answer was refused'})`}`);
+    if (!line || book.run.id !== run.id || book.mode !== 'drafted') return;
+    book.run.changelog_from = changelogFromMove(book.run.changelog_from, 'program-model');
+    book.run.changelog = line;
+    book.persist();
+  }
   async function runPlan() {
+    if (book.mode === 'drafted') await modelChangelog();
     const home = settingsNow();
     // prepare runs when the run has just been drafted or when prepare itself is what failed; a retried plan does not repeat it
     if (home.ok && home.settings.commands.prepare && (book.mode === 'drafted' || book.mode === 'failed_prepare')) {
@@ -892,7 +929,7 @@ export function createPublisher(deps) {
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit',
-      version: (Number(pub.version) || 1) + 1, extra: { changelog, prev_text: before, prev_sha: sha(before), chained_to: null } });
+      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {

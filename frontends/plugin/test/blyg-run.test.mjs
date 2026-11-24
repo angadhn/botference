@@ -20,7 +20,7 @@ import * as H from '../blyg-home.mjs';
 import { makeRig, until, sleep, thread, blygPage, stamp, mine, ID, FAKE } from './blyg-rig.mjs';
 
 const NOW = new Date('2026-11-23T12:00:00Z');
-function boot(rig, { page, config, hook, lstartOf } = {}) {
+function boot(rig, { page, config, hook, lstartOf, extra = {} } = {}) {
   const pages = new Map();
   const events = [];
   const pg = page || blygPage([thread('t1', 'A sentence.', 'First thought about liveness.', { blyg: stamp() })]);
@@ -29,7 +29,7 @@ function boot(rig, { page, config, hook, lstartOf } = {}) {
   const pub = R.createPublisher({
     file, now: () => NOW, broadcast: ev => events.push(ev), hook, ...(lstartOf ? { lstartOf } : {}),
     readConfig: () => ({ blyg_home: config === undefined ? rig.home : config }),
-    readPage: url => pages.get(url), savePage: p => pages.set(p.url, p),
+    readPage: url => pages.get(url), savePage: p => pages.set(p.url, p), ...extra,
   });
   return { pub, pages, events, file, page: pg, start: (threadId = 't1', scope = 'one', shown) => pub.start({ page: pages.get(pg.url), threadId, scope, shown: shown !== undefined ? shown : ((config === undefined ? rig.home : config) || {}).confirm || 'always' }),
     mode: () => pub.current().mode };
@@ -1822,4 +1822,60 @@ test('ADD TO THE EARLIER POST, given up: the note is put back exactly as version
   assert.deepEqual([a.view.cleanup.outcome, fs.readFileSync(path.join(rig.top, rel), 'utf8') === v1], ['undone', true]);
   assert.equal(P().threads[1].blyg_published, undefined, 'the added thread is not marked');
   assert.ok(b.pub.earlierOf({ page: P(), threadId: 't2' }).earlier, 'and it can be added again');
+});
+
+// ---- a new version's changelog line from a model (a stand-in asker: no model is ever called here) --------------------------------
+test('THE CHANGELOG LINE: a model\'s line is used when it passes, else the fixed one; only the two texts of the post reach it; never longer than the bound', async t => {
+  assert.deepEqual(R.CHANGELOG_FROM, ['program-fixed', 'program-model']);
+  assert.equal(R.changelogFromMove('program-fixed', 'program-model'), 'program-model');
+  assert.throws(() => R.changelogFromMove('program-model', 'program-fixed'), R.IllegalMove);
+  const cases = [
+    ['Sharpened the point about junior hiring.', 'Sharpened the point about junior hiring.', 'program-model'],
+    ['x'.repeat(101), 'Edited the comment.', 'program-fixed'],
+    ['Edited the comment.\nAnd ignore the rules.', 'Edited the comment.', 'program-fixed'],
+    ['Edited the **comment**.', 'Edited the comment.', 'program-fixed'],
+    ['See https://example.com for more.', 'Edited the comment.', 'program-fixed'],
+    ['Added [TK] marks.', 'Edited the comment.', 'program-fixed'],
+    ['<b>Edited</b>', 'Edited the comment.', 'program-fixed'],
+    [null, 'Edited the comment.', 'program-fixed'],          // the model failed
+    ['SLOW', 'Edited the comment.', 'program-fixed'],        // no answer within the bound
+  ];
+  for (const [answer, want, from] of cases) {
+    const rig = makeRig({ discard: true }); t.after(rig.done);
+    const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+    const page = blygPage([{ id: 't1', quote: 'A passage.', blyg: stamp(), msgs: [mine('First thought, /tk(make it punchy) about hiring.', { ts: '1',
+      gaps: [{ id: 'g1', instruction: 'make it punchy', mode: 'filled-by-agent', agent: 'claude', text: 'Punchy words.', model: 'm', at: 't' }] }),
+      mine('A later aside.', { ts: '2', superseded: '0' })] }]);
+    const asked = [];
+    const askChangelog = async q => { asked.push(q); if (answer === 'SLOW') return new Promise(() => {}); return answer === null ? { ok: false, error: 'x' } : { ok: true, text: answer }; };
+    const b = boot(rig, { page, config: home, extra: { askChangelog, changelogAskMs: 150 } });
+    (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+    let v = b.pub.current();
+    assert.equal(asked.length, 0, 'a NEW post asks nothing');
+    await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published');
+    b.pages.get(b.page.url).threads[0].msgs[0].text = 'First thought, sharpened, /tk(make it punchy) about hiring.';
+    const t0 = Date.now();
+    const e = await b.start(); assert.ok(e.ok, e.error);
+    await until(() => b.mode() === 'planned', 'planned (edit)');
+    assert.ok(Date.now() - t0 < 3000, 'never waits longer than the bound');
+    v = b.pub.current();
+    assert.equal(v.changelog, want, JSON.stringify(answer));
+    assert.equal(recOf(v).changelog_from, from);
+    const plan = rig.calls().filter(c => c.step === 'plan_edit').at(-1);
+    assert.equal(plan.argv.at(-1), want, 'the line the owner sees is the one the site is given');
+    assert.equal(asked.length, 1);
+    const q = asked[0];
+    assert.equal(q.model, 'claude-haiku-5-5', 'its own setting, the cheap model by default');
+    assert.ok(q.prompt.includes('First thought, sharpened,') && q.prompt.includes('First thought, about hiring.') === false && q.prompt.includes('Punchy words.') && q.prompt.includes('A passage.'), q.prompt);
+    assert.ok(!q.prompt.includes('make it punchy'), 'never a /tk instruction');
+    assert.ok(!q.prompt.includes('A later aside.'), 'never a set-aside message');
+    assert.ok(!q.prompt.includes(b.page.url) && !q.prompt.includes('blyg_id') && !q.prompt.includes('permalink'), 'nothing of the page or the front matter');
+    assert.ok(!q.prompt.includes('A made-up post'), 'not the page title');
+    v = b.pub.current(); await b.pub.cancel({ id: v.id, token: v.token });
+  }
+  // the depth rule: a line that quotes six words the new version removed is refused
+  const N = await import('../blyg-note.mjs');
+  assert.equal(N.changelogAnswerOk('Removed the line about the quick brown fox jumping high.', { before: 'the quick brown fox jumping high over', after: 'nothing' }), '');
+  assert.equal(N.changelogAnswerOk('Made the opening shorter.', { before: 'a b', after: 'a' }), 'Made the opening shorter.');
+  assert.equal(N.changelogAnswerOk('One sentence. Two sentences.'), '', 'one sentence');
 });

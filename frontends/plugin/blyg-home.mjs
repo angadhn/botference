@@ -265,14 +265,20 @@ export function validateHome(raw, { env = process.env } = {}) {
   // `preview_theme_attribute` (optional): the attribute on <html> by which the site picks its theme (the example blog: data-theme)
   const themeAttr = r.preview_theme_attribute === undefined || r.preview_theme_attribute === null ? '' : r.preview_theme_attribute;
   if (typeof themeAttr !== 'string' || (themeAttr && !/^[a-z][a-z0-9-]{0,40}$/.test(themeAttr))) errors.push('preview_theme_attribute must be an attribute name such as “data-theme”');
+  // `changelog_model` (optional): the Claude model asked for a new version's one-line changelog (the cheapest current one by default);
+  // its own setting, never the model set for /tk
+  const clModel = r.changelog_model === undefined || r.changelog_model === null || r.changelog_model === '' ? DEFAULT_CHANGELOG_MODEL : r.changelog_model;
+  if (typeof clModel !== 'string' || !/^[\w.][\w.-]{0,63}$/.test(clModel)) errors.push('changelog_model must be a model name such as “claude-haiku-5-5”');
   if (errors.length) return { ok: false, errors, settings: null };
-  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker, preview_url: preview, preview_selector: selector, preview_theme_attribute: themeAttr } };
+  return { ok: true, errors: [], settings: { folder, top, filename, template, escape, timezone, env_pass: pass, commands, confirm, plan_guard: guardRaw.slice(), published_marker: marker, preview_url: preview, preview_selector: selector, preview_theme_attribute: themeAttr, changelog_model: clModel } };
 }
 
+/** The model asked for a new version's changelog line unless the setting names another (blyg-run CHANGELOG_FROM). */
+export const DEFAULT_CHANGELOG_MODEL = 'claude-haiku-5-5';
 /** What is stored: only the fields the owner set, not the derived paths. */
 export const storable = raw => {
   const r = raw && typeof raw === 'object' ? raw : {};
-  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker, preview_url: r.preview_url, preview_selector: r.preview_selector, preview_theme_attribute: r.preview_theme_attribute };
+  const out = { folder: r.folder, filename: r.filename, template: r.template, escape: r.escape, timezone: r.timezone, env_pass: r.env_pass, commands: r.commands, confirm: r.confirm, plan_guard: r.plan_guard, published_marker: r.published_marker, preview_url: r.preview_url, preview_selector: r.preview_selector, preview_theme_attribute: r.preview_theme_attribute, changelog_model: r.changelog_model };
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };

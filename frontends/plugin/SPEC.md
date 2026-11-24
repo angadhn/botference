@@ -12940,7 +12940,7 @@ snapshot (hashes of each comment as published, per thread, and of the quote). Th
   with `{note}` and `{changelog}` as an argument of its own; example site: the same commands plus `--edit --generated-note {changelog}`).
   Cancel or abandon before apply puts the published text back exactly (after `discard`). After `published` the post's record and the
   thread's `blyg_published.version` are N+1.
-- The changelog line is written WITHOUT any model (`blyg-note changelogLine`), from the two snapshots (hashes: the old words are never
+- The changelog line is written WITHOUT any model (SUPERSEDED below: a small model's line when it passes, this one otherwise) (`blyg-note changelogLine`), from the two snapshots (hashes: the old words are never
   kept, so the line cannot quote them): "Added a comment.", "Edited the second comment.", "Removed a comment.", "Edited two comments and
   added one.", "Changed the quoted passage.", "Edited the comment." (a post of one comment). A post published before snapshots were kept
   gets "Edited the post.". The site marks it `"generated": true` (spec §5.2).
@@ -13657,3 +13657,20 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
   was then told only by the next 30 s poll, or not at all if the browser stopped the worker first. Now every event gets a look of its
   own, in turn (`pubWatchCheck`). And a toast drawn on a tab that is not showing waits: it is spent, and a live one's time starts, only
   when the tab is shown (`pubtoast.js`). Tests: `blygpublish-notice`.
+
+### A new version's changelog line from a small model
+- When a NEW VERSION is drafted (kind `edit`; never a new post), the run asks, while it is `drafted` and before prepare and plan
+  (`blyg-run modelChangelog`), the Claude one-shot (`oneshot.mjs`: no tools, minimal environment) with the model of the setting
+  `blyg_home.changelog_model` (default `claude-haiku-5-5`, `blyg-home DEFAULT_CHANGELOG_MODEL`; never the model set for /tk) for one
+  line about what changed. The prompt holds only the post's two texts as they read (`blyg-note postTextOf`: words, quotes, agent
+  passages' text; never a /tk instruction, a set-aside message, the front matter, the page or the thread), as JSON strings marked as
+  data (`changelogPrompt`).
+- The answer is untrusted: `changelogAnswerOk` accepts one line of plain text, at most 100 characters and 25 words, one sentence, no
+  markup or brackets, no quotation marks, no address, no `[TK]`, and no run of six words from text the new version removed (the
+  site's depth rule). Otherwise, on a failure, or with no answer within `CHANGELOG_ASK_MS` (15 s), the fixed line stays. Publishing
+  never waits longer and never fails because of it; with `--no-agents` nothing is asked.
+- Where the line came from is one value on the run, `changelog_from`, one of `CHANGELOG_FROM` (`program-fixed`, `program-model`),
+  moved only by `changelogFromMove` (fixed → model, once). Both go to the site as `--generated-note` (spec §5.2: `"generated": true`;
+  the spec asks no model name). The owner sees the line in the dialog before publishing; with one click it goes out unseen.
+- Tests (`blyg-run`, a stand-in asker; no model is called): accepted; too long, two lines, markup, an address, `[TK]`, a failure and no
+  answer in time fall back; the prompt holds the two texts and nothing else; the depth rule.
