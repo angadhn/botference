@@ -110,8 +110,14 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.ok(['drafted', 'planning', 'planned'].includes(s.json.run.mode));
   const planned = await waitFor(async () => { const r = await runOf(B); return r.mode === 'planned' ? r : null; }, 'planned');
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
-  assert.match(planned.note_text, /^---\ncreated: \d{4}-\d\d-\d\d\n/);
-  assert.match(planned.note_text, /\nA third view on this story, which is the one I will publish\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n$/);
+  const noteText = fs.readFileSync(path.join(rig.folder, fs.readdirSync(rig.folder).find(n => n.endsWith('.md'))), 'utf8');
+  assert.match(noteText, /^---\ncreated: \d{4}-\d\d-\d\d\n/);
+  assert.match(noteText, /\nA third view on this story, which is the one I will publish\.\n\n> Hiring is slowing for junior roles\.\n>\n> https:\/\/notes\.web\.test\/post\n$/);
+  assert.deepEqual(planned.reading, [{ kind: 'words', text: 'A third view on this story, which is the one I will publish.' }, { kind: 'quote', text: 'Hiring is slowing for junior roles.\n\nhttps://notes.web.test/post' }], 'the note as it will read, in parts');
+  assert.ok(!('note_text' in planned) && !('note_rel' in planned) && !JSON.stringify(planned.steps).includes('output'), 'no note file, no command output in the owner\'s view');
+  assert.match(planned.log.path, /blyg-publish-logs\/[0-9a-f]{16}\.jsonl$/, 'the log file, for the owner on this machine');
+  assert.equal(fs.statSync(planned.log.path).mode & 0o777, 0o600, 'owner-only');
+  assert.match(fs.readFileSync(planned.log.path, 'utf8'), /"ev":"step","step":"plan"/, 'every step, with its argv and output, is in the log');
   assert.ok(!JSON.stringify(planned).includes(rig.top), 'no absolute path of the work tree in what the client is shown');
   assert.equal((await POST(B, '/blyg-publish/confirm', { run: planned.id, token: 'wrong' }, X)).status, 404);
   assert.equal((await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X)).status, 409, 'one run at a time');
@@ -174,7 +180,8 @@ await test('the setting changed while a run waits at the confirmation: its next 
   const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token }, X);
   assert.equal(c.status, 200);
   const failed = await waitFor(async () => { const r = await runOf(B); return r.mode === 'failed_apply' ? r : null; }, 'failed at apply');
-  assert.match(failed.failed_reason, /settings changed after this run started/);
+  assert.deepEqual([failed.failed_step, failed.failure], ['apply', ''], 'the owner reads one sentence; why is in the log');
+  assert.match(fs.readFileSync(failed.log.path, 'utf8'), /settings changed after this run started/);
   assert.equal(rig.calls().length, calls, 'apply never ran');
   setHome(root, settingsOf(rig));
   const a = await POST(B, '/blyg-publish/abandon', { run: planned.id, token: planned.token }, X);
@@ -202,11 +209,35 @@ await test('confirm never (with a guard): one start is the publish, end to end, 
   setHome(root, { ...never, plan_guard: ['not-a-flag'] });
   assert.equal((await GET(B, '/blyg-home')).json.valid, false);
   setHome(root, never);
-  const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: 'always' }, X);
+  const tid2 = await comment(B, 'A sixth view, offered with a stale wording.');
+  const stale = await POST(B, '/blyg-publish/start', { url: PAGE, thread_id: tid2, scope: 'one', confirm: 'always' }, X);
   assert.equal(stale.status, 409, 'a drawer that showed the other wording is refused');
   assert.match(stale.json.error, /The setting changed/);
   setHome(root, settingsOf(rig));   // back to confirming for the rest of the suite
   shownNow = 'always';
+});
+
+// ---- which door a message came through, and the picture's routes -----------------------------------------------------------------
+await test('an owner message records its CHANNEL from the request (drawer, reading-room page, other API), never from its body', async () => {
+  const byDoor = async (headers, text) => {
+    const r = await POST(B, '/thread', { url: PAGE, quote: 'q', msg: { text, channel: 'drawer', provenance: 'owner-typed' } }, headers);
+    assert.equal(r.status, 200, r.body);
+    return r.json.thread.msgs[0];
+  };
+  const viaDrawer = await byDoor(X, 'through the drawer');
+  const viaRoom = await byDoor({ origin: B, 'sec-fetch-site': 'same-origin' }, 'through the reading room');
+  const viaApi = await byDoor({}, 'through a script');
+  assert.deepEqual([viaDrawer.channel, viaRoom.channel, viaApi.channel], ['drawer', 'reading-room', 'api']);
+  assert.ok([viaDrawer, viaRoom, viaApi].every(m => m.provenance === 'owner-typed'));
+});
+
+await test('the picture routes: the run id and token, the pinned extension only, a PNG with nosniff and no caching when there is one; nothing to show: off / 404', async () => {
+  const run = await runOf(B, X);
+  const forPage = await request(B, 'POST', '/blyg-publish/preview', { run: run.id, token: run.token }, { origin: B, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' });
+  assert.equal(forPage.status, 403, 'the companion\'s own page cannot ask');
+  assert.equal((await POST(B, '/blyg-publish/preview', { run: run.id, token: 'wrong' }, X)).status, 404, 'the token is needed');
+  assert.equal((await POST(B, '/blyg-publish/preview', { run: run.id, token: run.token, url: 'https://evil.example/' }, X)).json.state, 'off', 'a run not waiting on the owner (or no preview address): off; no address is taken from the client');
+  assert.equal((await POST(B, '/blyg-publish/preview-image', { run: run.id, token: run.token }, X)).status, 404, 'no picture');
 });
 
 // ---- crash and restart ------------------------------------------------------------------------------
@@ -333,8 +364,9 @@ await test('hosted: a remote owner\'s run view names no note path and no absolut
   const run = (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, OWNER)).json.run;
   const local = (await request(hosted.base, 'GET', '/blyg-publish/run', undefined, {})).json.run;
   assert.equal(run.id, local.id);
-  assert.ok(local.note_rel, 'on the machine: the relative note path');
-  assert.ok(!('note_rel' in run), 'remote: none');
+  assert.ok(local.log && local.log.path, 'on the machine: the log file\'s path (for troubleshooting)');
+  assert.deepEqual(run.log, { id: run.id }, 'remote: the run id only');
+  assert.ok(!('note_rel' in run) && !('note_rel' in local), 'nobody\'s view names the note file');
   const flat = JSON.stringify(run);
   assert.ok(!flat.includes(hrig.top) && !flat.includes(hrig.folder), 'no absolute path of the work tree');
   assert.ok(JSON.stringify(local).includes(hrig.top) || true);

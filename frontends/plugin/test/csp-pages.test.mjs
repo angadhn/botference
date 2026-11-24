@@ -65,6 +65,8 @@ await test('every HTML route of the local companion carries the CSP: /p/, /pages
     assert.ok(r.status < 500, `${p}: ${r.status}`);
     if (!/text\/html/.test(String(r.headers['content-type'] || ''))) continue;
     checkPage(r, p);
+    // review item (e): the article view says its type is final, like the others
+    if (p.startsWith('/a/')) assert.equal(r.headers['x-content-type-options'], 'nosniff', `${p}: nosniff`);
   }
   for (const must of ['/pages', '/a/', '/quiz', '/project-network/view', '/test-page', '/blyg-home/page'].map(x => x)) {
     assert.ok([...checked].some(c => c === must || (must === '/a/' && c.startsWith('/a/'))), `${must} was actually checked (${[...checked].join(' ')})`);

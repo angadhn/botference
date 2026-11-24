@@ -42,7 +42,7 @@ import { createPool } from './pool.mjs';
 import { exportPage, exportMode, logExportedPaper } from './export.mjs';
 import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
-import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, askForGap, gapMove, canGapMove,
+import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
   GAP_LIMITS } from './tkgaps.mjs';
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
@@ -2224,13 +2224,18 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
 // replaces the bridge.
 function askGap(page, prompt, { agent = 'claude', timeoutMs = 90000 } = {}) {
   if (NO_AGENTS) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
-  // the model the agent is set to run as, when the reader chose one; not invented otherwise
-  const model = (store.readConfig().agents.model || {})[agent] || '';
+  // the model and effort the owner set for that agent in the companion's own settings (the chat's /model and /effort); the model is
+  // not invented when none is set, the effort is medium then
+  const { model, effort } = agentSetting(agent);
   const override = process.env.PLUGIN_ONESHOT_CMD ? JSON.parse(process.env.PLUGIN_ONESHOT_CMD) : null;
   const spawnFn = override
     ? (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args], o)
     : undefined;
-  return runOneShot(agent, prompt, { model, timeoutMs, ...(spawnFn ? { spawn: spawnFn } : {}) });
+  return runOneShot(agent, prompt, { model, effort, timeoutMs, ...(spawnFn ? { spawn: spawnFn } : {}) });
+}
+function agentSetting(agent) {
+  const a = store.readConfig().agents || {};
+  return { model: String((a.model || {})[agent] || ''), effort: String((a.effort || {})[agent] || 'medium') };
 }
 
 // ---- the question vault ---------------------------------------------------
@@ -3108,8 +3113,14 @@ function blygOnto(page, answer) {
 // carry it; an edit by anyone but the owner takes it away.
 function markTyped(req, msg) {
   if (!msg) return;
-  if (hosted.isOwner(req) && !msg.origin) msg.provenance = OWNER_TYPED;
-  else delete msg.provenance;
+  if (hosted.isOwner(req) && !msg.origin) { msg.provenance = OWNER_TYPED; msg.channel = channelOf(req); }
+  else { delete msg.provenance; delete msg.channel; }
+}
+// the door a request came through (tkgaps MSG_CHANNELS), from its Origin as the origin rule judged it
+function channelOf(req) {
+  const raw = String(req.headers.origin || '').trim().toLowerCase();
+  if (!raw || originOf(req) !== 'trusted') return 'api';
+  return raw.startsWith('chrome-extension://') ? 'drawer' : 'reading-room';
 }
 // ---- gaps the owner asks an agent to write, at send ----------------------
 // A message the owner typed is read for gaps (`/tk …`, tkgrammar.js) when it
@@ -3128,7 +3139,7 @@ function gapBudget(url) {
 // what is stored on a message, from its text (an edit keeps unchanged fills)
 function attachGaps(req, msg) {
   if (!msg || !ownerTyped(msg)) { if (msg) delete msg.gaps; return []; }
-  const { gaps, fresh } = buildGaps(msg.text, msg.gaps);
+  const { gaps, fresh } = buildGaps(msg.text, msg.gaps, { modelOf: agent => agentSetting(agent).model });
   if (gaps.length) msg.gaps = gaps; else delete msg.gaps;
   return fresh;
 }
@@ -3142,8 +3153,8 @@ async function fillGapsOf(url, target, ts, ids) {
     const msg = page && findMsg(page, target, ts);
     const gap = msg && (msg.gaps || []).find(g => g.id === id);
     if (!gap || gap.mode !== 'pending') continue;
-    const cfg = store.readConfig();
-    const { agent } = gapAgentOf(cfg.gap_agent);
+    // the agent the owner named (`/tk-claude`, `/tk-codex`; plain `/tk` is Claude), recorded on the gap with the model it ran as
+    const agent = gap.agent === 'codex' ? 'codex' : 'claude';
     const budget = gapBudget(url);
     let r;
     if (budget.left <= 0) r = { mode: 'failed', reason: `the hourly limit of ${GAP_LIMITS.perPageHour} agent passages for this page is reached; try again later` };
@@ -4231,18 +4242,19 @@ export function handler(req, res) {
     // THE COMMAND SET IS SET ON THE MACHINE, never over a tunnel: it decides what gets run here. A remote owner session can use
     // the feature and read a redacted view (no paths, no commands), but cannot read the page or change the setting.
     const here = isLocalDirect(req);
-    // A REMOTE owner session sees the run without where it is on this machine: no note path, and absolute paths in what the commands
-    // printed are replaced (the owner on the machine sees everything).
+    // THE OWNER'S VIEW IS PLAIN (blyg-run viewOf: no command output, no note path). What differs by where the owner is: the
+    // troubleshooting log's PATH is given only to the owner on this machine (a remote owner gets the run id only), and a sentence
+    // that holds an absolute path (a refusal of the site's) has it replaced for a remote owner.
     const scrub = t => String(t == null ? '' : t).replace(/(?<![\w:/.-])(?:\/[^\s/"'<>()\[\]]+){2,}\/?/g, '<path>');
     const runFor = v => {
-      if (here || !v) return v;
+      if (!v) return v;
       const c = { ...v };
-      delete c.note_rel;
-      c.steps = (v.steps || []).map(s => ({ ...s, output: scrub(s.output) }));
-      c.failed_reason = scrub(v.failed_reason); c.interrupted_why = scrub(v.interrupted_why);
+      if (here) { if (v.log && v.log.id) c.log = { id: v.log.id, path: blygPublish.log.pathOf(v.log.id) }; return c; }
+      c.failure = scrub(v.failure); c.interrupted_why = scrub(v.interrupted_why); c.abandon_failure = scrub(v.abandon_failure);
       if (v.tainted) c.tainted = scrub(v.tainted);
-      if (v.cleanup) c.cleanup = Object.fromEntries(Object.entries(v.cleanup).map(([k, x]) => [k, typeof x === 'string' ? scrub(x) : x]));
-      if (v.running) c.running = { ...v.running, last_line: scrub(v.running.last_line) };
+      if (v.cleanup) c.cleanup = { ...v.cleanup, said: scrub(v.cleanup.said) };
+      // the preview site's address names this machine's server: no use to a remote owner (the picture is)
+      c.preview_url = '';
       return c;
     };
     const homeView = () => {
@@ -4269,6 +4281,19 @@ export function handler(req, res) {
       return ok(res, { run: runFor(blygPublish.current()), confirm: v.ok ? v.settings.confirm : 'always' });
     }
     const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon', '/blyg-publish/forget': 'forget' };
+    // THE PICTURE OF THE DRAFT (preview_url): the run id and token, never an address from the client. `/preview` says its state (and
+    // starts a render when none is held, or `fresh` asks again); `/preview-image` answers the PNG bytes themselves, owner and pinned
+    // extension only like every route here, with an image type, nosniff, no caching, at most preview-render MAX_PNG_BYTES.
+    if (req.method === 'POST' && (url === '/blyg-publish/preview' || url === '/blyg-publish/preview-image')) {
+      return readBody(req, res, data => {
+        const r = blygPublish.previewOf({ id: String(data.run || ''), token: String(data.token || ''), theme: data.theme === 'dark' ? 'dark' : 'light', fresh: url === '/blyg-publish/preview' && data.fresh === 'yes' });
+        if (!r.ok) return fail(res, r.status, r.error);
+        if (url === '/blyg-publish/preview') return ok(res, { state: r.state });
+        if (r.state !== 'ready' || !r.png) return fail(res, 404, 'no picture yet');
+        return res.writeHead(200, { 'content-type': 'image/png', 'content-length': r.png.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+          'content-security-policy': "default-src 'none'; sandbox", 'cross-origin-resource-policy': 'same-origin' }).end(r.png);
+      });
+    }
     if (req.method === 'POST' && url === '/blyg-publish/start') {
       return readBody(req, res, async data => {
         const page = pageOf(req, res, data);
@@ -4280,7 +4305,7 @@ export function handler(req, res) {
     }
     if (req.method === 'POST' && acts[url]) {
       return readBody(req, res, async data => {
-        const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes' });
+        const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes', sure: data.sure === 'yes' });
         if (r.ok) return ok(res, { run: runFor(r.view) });
         // a refusal that MOVED the run (the site's abandon failed: the run now offers Forget) carries the run as it now is
         if (r.view) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, run: runFor(r.view) }));
@@ -5369,6 +5394,7 @@ export function handler(req, res) {
         "frame-ancestors 'none'",
       ].join('; '),
       'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
     }).end(html);
   }
 
