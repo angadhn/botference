@@ -1225,7 +1225,7 @@ if (typeof document !== 'undefined') {
     let paths = '', over = '';
     for (const { p, tiles } of sc.routes) {
       const P = tiles.map(t => { const c = iso(t[0] + 0.5, t[1] + 0.5); c.y -= sc.zAt(t[0], t[1]); return pt(c); }).join(' '), l = p.link, ends = `data-link="${esc(l.id)}" data-a="${esc(l.a)}" data-b="${esc(l.b)}"`;
-      over += `<polyline class="rb ${p.kind}" ${ends} points="${P}"/><polyline class="fo-case ${p.kind}" ${ends} points="${P}"/><polyline class="fo ${p.kind}${l.stale ? ' stale' : ''}" ${ends} points="${P}"/>`;
+      over += `<polyline class="rb ${esc(p.kind)}" ${ends} points="${P}"/><polyline class="fo-case ${esc(p.kind)}" ${ends} points="${P}"/><polyline class="fo ${esc(p.kind)}${l.stale ? ' stale' : ''}" ${ends} points="${P}"/>`;
       paths += `<polyline class="fp-hit" ${ends} points="${P}" aria-hidden="true"/><polyline class="fp-case ${p.kind}" ${ends} points="${P}" aria-hidden="true"/><polyline class="fp ${p.kind}${l.stale ? ' stale' : ''}" ${ends} points="${P}" tabindex="0" role="button" aria-label="${esc(`Path: ${originText(l)}: ${projectTitle(l.a)} ${relText(l.relation)} ${projectTitle(l.b)}`)}"/>`;
     }
     const things = sc.lifted.map(s => ({ depth: s.depth, u: s.u, html: useAt(s.id, s.at, s.folk ? 'scn folk' : 'scn', s.s || 1, s.flip) }));
@@ -1259,7 +1259,7 @@ if (typeof document !== 'undefined') {
     // activity: newest change first, one line each; this week and this month open, the rest folded
     $('week').textContent = weekSummary(m.items, now);
     const row = x => { const c = x.changes[0], more = x.changes.filter(e => now - e.t <= WEEK).length - 1, tag = x.shut ? x.p.status : x.status === 'unknown' ? '?' : x.status === 'done' ? '✓' : '';
-      return `<li><button type="button" class="row cg-${esc(x.gid)} st-${x.status}${x.shut ? ' shut' : ''}" data-project="${esc(x.id)}" title="${esc(`${x.title}${c ? `\n${c.what}, ${ago(c.t)}` : ''}${more > 0 ? `\nand ${more} more this week` : ''}`)}">`
+      return `<li><button type="button" class="row cg-${esc(x.gid)} st-${esc(x.status)}${x.shut ? ' shut' : ''}" data-project="${esc(x.id)}" title="${esc(`${x.title}${c ? `\n${c.what}, ${ago(c.t)}` : ''}${more > 0 ? `\nand ${more} more this week` : ''}`)}">`
         + `<span class="r-t">${esc(x.short)}</span><span class="r-w">${esc(c ? c.what : 'nothing dated yet')}${more > 0 ? ` <i>+${more}</i>` : ''}</span>${tag ? `<span class="r-s">${esc(tag)}</span>` : ''}<time>${c ? esc(agoShort(c.t)) : ''}</time></button></li>`; };
     const band = x => !x.t ? 3 : now - x.t <= WEEK ? 0 : now - x.t <= 30 * DAY ? 1 : 2, newest = [...m.items].sort((x, y) => (y.t - x.t) || x.short.localeCompare(y.short));
     const of = n => newest.filter(x => band(x) === n), older = [...of(2), ...of(3)];

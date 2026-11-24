@@ -24,6 +24,10 @@ const AGENTS = new Set(['claude', 'codex']);
 // exactly as normUrl is duplicated): the two copies must agree byte for byte
 // or the phone paints a tag one color and the drawer another —
 // test/tags.test.mjs holds them together.
+// A tag's hue is set by a CLASS (th-<hue>, one rule per hue in STYLE), never a style attribute: the pages carry a CSP that allows
+// no inline style attribute.
+export const hueClass = h => `th-${Math.max(0, Math.min(359, Math.trunc(Number(h) || 0)))}`;
+export const HUE_RULES = Array.from({ length: 360 }, (_, i) => `.th-${i}{--th:${i}}`).join('');
 export function tagHue(name) {
   const s = String(name == null ? '' : name).trim().toLowerCase();
   let h = 0x811c9dc5;
@@ -198,9 +202,10 @@ export const FAVICON_LINK = '<link rel="icon" type="image/png" href="/favicon.ic
 // `extra` is one page's own stylesheet, appended to the shared one rather than
 // dropped into the body: a view with a look of its own (the quiz) still gets
 // the palette, the shell and the viewport from the same place as every other.
-const shell = (title, body, extra = '') => `<!doctype html><html><head><meta charset="utf-8">
+// `nonce`: the page's CSP nonce (server.mjs htmlCsp); its one style element and its one script carry it, nothing else may run.
+const shell = (title, body, extra = '', nonce = '') => `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escHtml(title)}</title>${FAVICON_LINK}<style>${STYLE}${extra}</style></head><body>
+<title>${escHtml(title)}</title>${FAVICON_LINK}<style nonce="${escHtml(nonce)}">${STYLE}${HUE_RULES}${extra}</style></head><body>
 <main>${body}</main></body></html>`;
 
 const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.owner ? ' · owner' : ''}`
@@ -217,7 +222,7 @@ export const scriptString = value => JSON.stringify(String(value))
   .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
   .replace(LINE_SEPARATORS, c => '\\u' + c.charCodeAt(0).toString(16));
 
-const liveScript = url => `<script>
+const liveScript = (url, nonce = '') => `<script nonce="${escHtml(nonce)}">
 (function(){
   var URL_=${scriptString(url)}, timer=null;
   function busy(){var t=document.getElementsByTagName('textarea');
@@ -353,7 +358,7 @@ export function commentersOf(threads) {
   return [...seen.values()].map(c => ({ key: c.key, name: c.name, count: c.threads.size }));
 }
 
-export function pageView({ page, key, me, notice, snapshot, by = '' }) {
+export function pageView({ page, key, me, notice, snapshot, by = '', nonce = '' }) {
   const ctx = { key, owner: !!(me && me.owner) };
   const everyThread = page.threads || [];
   const who = String(by || '').toLowerCase();
@@ -385,7 +390,7 @@ export function pageView({ page, key, me, notice, snapshot, by = '' }) {
   ? `<a href="${escHtml(page.url)}" rel="noreferrer noopener">${escHtml(name)}</a>`
   : escHtml(name)}</h1>
 <p class="sub">${escHtml(page.site || '')} · <a href="/pages">all annotated pages</a>${snapshot ? ` · <a href="/a/${escHtml(key)}">read the article ›</a>` : ''}</p>
-${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}" style="--th:${tagHue(t)}">${escHtml(t)}</a>`).join('')}</div>` : ''}
+${tags.length ? `<div class="rail tags">${tags.map(t => `<a href="/pages?tag=${encodeURIComponent(t)}" class="${hueClass(tagHue(t))}">${escHtml(t)}</a>`).join('')}</div>` : ''}
 ${me && me.owner ? metaEdit(page, key) : ''}
 </header>
 ${notice ? `<div class="notice">${escHtml(notice)}</div>` : ''}
@@ -406,7 +411,7 @@ ${resolved}
 ${chat || '<p class="empty">No general discussion of this page yet.</p>'}
 ${composer(page.url, key, '__page__', 'ask about this page…')}
 </section>
-${liveScript(page.url)}`);
+${liveScript(page.url, nonce)}`, '', nonce);
 }
 
 // --- the quiz: the question vault, asked back ------------------------------
@@ -721,7 +726,7 @@ const quizHref = (scope, extra = {}) => {
 };
 
 export function quizView({ me, card, reveal, session, counts, facets, scope = {},
-                           read = false, trace = null, home = '', gone = '', dup = null }) {
+                           read = false, trace = null, home = '', gone = '', dup = null, nonce = '' }) {
   const sc = { project: scope.project || '', tag: scope.tag || '' };
   // The rail: one bank, seen from an angle. Each chip carries how many of that
   // topic are due, and wears a ✗ where the reader has lapsed on it — which is
@@ -731,13 +736,13 @@ export function quizView({ me, card, reveal, session, counts, facets, scope = {}
     const to = quizHref(kind === 'project'
       ? { project: on ? '' : row.id, tag: sc.tag }
       : { project: sc.project, tag: on ? '' : row.id });
-    const cls = [on ? 'on' : '', row.lapses ? 'weak' : ''].filter(Boolean).join(' ');
+    const cls = [on ? 'on' : '', row.lapses ? 'weak' : '', kind === 'tag' ? hueClass(tagHue(row.id)) : ''].filter(Boolean).join(' ');
     // the ✗ is the only analytics here and it is one number: how many times
     // this topic has been got wrong. It says where to revise deliberately.
     const why = `${row.due} due of ${row.count}`
       + (row.lapses ? ` · got wrong ${row.lapses} time${row.lapses === 1 ? '' : 's'}` : '');
     return `<a href="${escHtml(to)}"${cls ? ` class="${cls}"` : ''}${on ? ' aria-current="true"' : ''}`
-      + ` title="${escHtml(why)}"${kind === 'tag' ? ` style="--th:${tagHue(row.id)}"` : ''}>${escHtml(row.id)}`
+      + ` title="${escHtml(why)}">${escHtml(row.id)}`
       + `<span class="n"> ${row.due}</span></a>`;
   };
   const projects = (facets && facets.projects) || [];
@@ -848,7 +853,7 @@ ${score}
 ${card_}
 ${margin}
 ${acts}
-</div>`, QUIZ_STYLE);
+</div>`, QUIZ_STYLE, nonce);
 }
 
 // --- the article view: the review-doc experience, for any article ---------
@@ -1006,11 +1011,12 @@ const filterHref = (kind, tag) => {
   return '/pages' + (s ? `?${s}` : '');
 };
 // `hue` is only ever set for tag links: a tag wears its own color everywhere
-const railLink = (href, label, on, hue) =>
-  `<a href="${escHtml(href)}"${on ? ' class="on" aria-current="true"' : ''}`
-  + `${hue == null ? '' : ` style="--th:${hue}"`}>${escHtml(label)}</a>`;
+const railLink = (href, label, on, hue) => {
+  const cls = [on ? 'on' : '', hue == null ? '' : hueClass(hue)].filter(Boolean).join(' ');
+  return `<a href="${escHtml(href)}"${cls ? ` class="${cls}"` : ''}${on ? ' aria-current="true"' : ''}>${escHtml(label)}</a>`;
+};
 
-export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '', due = 0 }) {
+export function pagesView({ index, me, snapshots, library, libraryKey, kind = '', tag = '', due = 0, nonce = '' }) {
   const has = k => !!(snapshots && snapshots.has && snapshots.has(k));
   const wantKind = PAGE_KINDS.includes(String(kind)) ? String(kind) : '';
   const wantTag = String(tag || '').trim();
@@ -1042,7 +1048,7 @@ export function pagesView({ index, me, snapshots, library, libraryKey, kind = ''
     // still opens its conversation, which is all there has ever been.
     .map(([key, row]) => `<li><a href="${has(key) ? '/a/' : '/p/'}${escHtml(key)}">${escHtml(row.title || row.url)}</a>
 <div class="meta">${escHtml(rowAddress(row.url))} · ${escHtml(KIND_NAME[rowKind(row)] || KIND_NAME.article)} · ${Number(row.threads) || 0} highlight${Number(row.threads) === 1 ? '' : 's'}${row.has_session ? ' · bot chat' : ''} · ${escHtml(shortTime(row.updated_at))}${has(key) ? ` · <a href="/p/${escHtml(key)}">comments</a>` : ''}</div>${
-  rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}" style="--th:${tagHue(t)}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
+  rowTags(row).length ? `<div class="meta tags">${rowTags(row).map(t => `<a href="${escHtml(filterHref(wantKind, t))}" class="${hueClass(tagHue(t))}">${escHtml(t)}</a>`).join(' ')}</div>` : ''
 }</li>`)
     .join('\n');
   // the same conversation the drawer shows above its own list, with the phone's
@@ -1071,5 +1077,5 @@ ${rows ? `<ul class="pages">${rows}</ul>`
     : (all.length
       ? `<p class="empty">Nothing here under this filter — <a href="/pages">show everything</a>.</p>`
       : '<p class="empty">No pages have been annotated yet.</p>')}
-${liveScript(LIBRARY_URL)}`);
+${liveScript(LIBRARY_URL, nonce)}`, '', nonce);
 }

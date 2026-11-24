@@ -38,6 +38,21 @@ export const AUTH_TTL_MS = 30 * 24 * 3600 * 1000; // 30 days, renewed as you go
 export const DEFAULT_CAP = 5;                    // guest mentions per day
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
 const HTML_HEAD = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+// THE POLICY EVERY HTML PAGE OF THE COMPANION'S OWN ORIGIN CARRIES (review item 1). A script that runs on this origin runs as the
+// companion's own, trusted page, so nothing runs that the page did not itself put there with this response's nonce: no inline handler,
+// no injected <script>, no style attribute, no other origin's script, no framing, no <base>. `forms`: the page posts forms (to itself).
+export const newNonce = () => crypto.randomBytes(16).toString('base64');
+export function pageCsp(nonce, { forms = false, img = "'self'", connect = "'none'", script, style } = {}) {
+  const n = nonce ? `'nonce-${nonce}'` : "'none'";
+  return ["default-src 'none'", `script-src ${script || n}`, `style-src ${style || n}`, `img-src ${img}`, `connect-src ${connect}`,
+    "frame-ancestors 'none'", "base-uri 'none'", `form-action ${forms ? "'self'" : "'none'"}`].join('; ');
+}
+// a page of this module (the gate, a notice): no script at all; its one <style> gets the nonce; a page with a form may post it to itself
+const sendPage = (res, code, html) => {
+  const nonce = newNonce();
+  res.writeHead(code, { ...HTML_HEAD, 'x-content-type-options': 'nosniff', 'content-security-policy': pageCsp(nonce, { forms: /<form\b/i.test(html), script: "'none'" }) })
+    .end(String(html).replace(/<style>/g, `<style nonce="${nonce}">`));
+};
 
 // The remote extension is an installed browser extension talking to a public
 // hostname: its requests are cross-origin, so preflights have to be answered.
@@ -457,20 +472,20 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
         return;
       }
       if (!handle) {
-        res.writeHead(401, HTML_HEAD).end(gatePage(next, 'enter a name so your comments can be saved', raw));
+        sendPage(res, 401, gatePage(next, 'enter a name so your comments can be saved', raw));
         return;
       }
       if (!safeEqual(given, password)) {
-        res.writeHead(401, HTML_HEAD).end(gatePage(next, true, raw));
+        sendPage(res, 401, gatePage(next, true, raw));
         return;
       }
       if (handle === sanitizeHandle(owner())) {
-        res.writeHead(401, HTML_HEAD).end(gatePage(next,
+        sendPage(res, 401, gatePage(next,
           `“${handle}” is the owner's name here — please pick another`, ''));
         return;
       }
       if (reservedNames().has(handle)) {
-        res.writeHead(401, HTML_HEAD).end(gatePage(next, `“${handle}” belongs to someone else here — please pick another`, ''));
+        sendPage(res, 401, gatePage(next, `“${handle}” belongs to someone else here — please pick another`, ''));
         return;
       }
       res.writeHead(303, { 'set-cookie': setCookies(req, 'guest', handle), location: next }).end();
@@ -490,7 +505,7 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
     const [code, line] = tv.verdict === 'unlisted' ? [403, "this account is not on this companion's list"]
       : tv.verdict === 'service' ? [403, 'service tokens are not accepted here']
       : [401, 'sign-in required: open this address in a browser and sign in with Cloudflare Access'];
-    if (wantsPage) { res.writeHead(code, HTML_HEAD).end(NOTICE_PAGE(code === 401 ? 'Sign-in required' : 'Not allowed', line)); return; }
+    if (wantsPage) { sendPage(res, code, NOTICE_PAGE(code === 401 ? 'Sign-in required' : 'Not allowed', line)); return; }
     // `signin` tells the extension this is a sign-in matter (not a wrong password, not an outage)
     res.writeHead(code, JSON_HEAD).end(JSON.stringify(code === 401 ? { ok: false, error: line, signin: true } : { ok: false, error: line }));
   }
@@ -498,7 +513,7 @@ ${bad ? `<div class="err">${escHtml(bad === true ? 'wrong password — try again
     const tv = tokenVerdict(req);
     if (tv || authMode === 'access') return deniedByToken(req, res, tv || { verdict: 'absent' });
     if (req.method === 'GET' && /text\/html/.test(req.headers.accept || '')) {
-      res.writeHead(401, HTML_HEAD).end(gatePage(safeNext(String(req.url || '').split('?')[0]), false));
+      sendPage(res, 401, gatePage(safeNext(String(req.url || '').split('?')[0]), false));
       return;
     }
     // the CORS headers, when this request earned any, were set by the

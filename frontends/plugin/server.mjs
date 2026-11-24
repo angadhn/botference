@@ -47,7 +47,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
 import { runOneShot } from './oneshot.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
-import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused } from './hosted.mjs';
+import { createHosted, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
 import { pageView, pagesView, articleView, quizView } from './views.mjs';
 import * as questions from './questions.mjs';
 import { sanitizeArticle } from './sanitize.mjs';
@@ -154,6 +154,11 @@ const BLOG_UNCONFIRMED_REASON = 'this page is served from a repo you have not co
 const BLOG_UNCONFIRMED_ERROR = 'confirm the blog repo in the drawer before the bots can edit this draft';
 const HEARTBEAT_MS = Number(process.env.SSE_HEARTBEAT_MS) || 15000;
 const JSON_HEAD = { 'content-type': 'application/json', 'cache-control': 'no-store' };
+// AN HTML VIEW of the companion's own origin (the reading room, the list, the memorizer, sign out): always with hosted.mjs pageCsp and
+// this response's nonce, so only the page's own nonced <style> and <script> apply (review item 1). The views connect back over the
+// WebSocket (connect-src 'self'), show the owner's figures and images (img-src 'self' https: data:), and post their forms to themselves.
+const viewHead = (nonce, html, extra = {}) => ({ 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+  'content-security-policy': pageCsp(nonce, { forms: /<form\b/i.test(html), img: "'self' https: data:", connect: "'self'", ...extra }) });
 // THE HEADERS OF A STORED FILE. Anything whose bytes come from disk (the workspace's files, a run's figures, the owner's theme files) is
 // whatever somebody put there: a prompt-injected bot, a script in a site's sources. Served on the companion's own origin it would run
 // as the companion's own page, which is TRUSTED (hosted.mjs sourceVerdict) and may POST. So it is served inert: `sandbox` (no scripts,
@@ -3665,10 +3670,11 @@ export function handler(req, res) {
   if (HOSTED && url === '/signout') {
     if (req.method === 'POST') { req.resume(); return res.writeHead(303, { 'set-cookie': hosted.signOutCookies(), location: '/pages' }).end(); }
     if (req.method !== 'GET' && req.method !== 'HEAD') { req.resume(); return fail(res, 405, 'sign out with a POST'); }
-    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(
-      '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign out</title></head>'
-      + '<body style="font:16px/1.6 -apple-system,Helvetica,Arial,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem">'
-      + '<h1>Sign out?</h1><form method="POST" action="/signout"><button type="submit">Sign out</button></form> <a href="/pages">Back</a></body></html>');
+    const nonce = newNonce();
+    const html = '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign out</title>'
+      + `<style nonce="${nonce}">body{font:16px/1.6 -apple-system,Helvetica,Arial,sans-serif;max-width:30rem;margin:4rem auto;padding:0 1rem}</style></head><body>`
+      + '<h1>Sign out?</h1><form method="POST" action="/signout"><button type="submit">Sign out</button></form> <a href="/pages">Back</a></body></html>';
+    return res.writeHead(200, viewHead(nonce, html, { script: "'none'", connect: "'none'", img: "'self'" })).end(html);
   }
   // The tab icon, AHEAD of the gate on purpose. Browsers ask for /favicon.ico
   // whether or not a page linked one, and a gated one is a 401 in the network
@@ -3716,7 +3722,10 @@ export function handler(req, res) {
     const file = path.join(PLUGIN, '../shared/network-ui', name);
     return fs.readFile(file, (err, data) => {
       if (err) return fail(res, 404, 'Project connections interface unavailable');
-      res.writeHead(200, { 'content-type': name.endsWith('.css') ? 'text/css' : name.endsWith('.js') ? 'text/javascript' : 'text/html', 'cache-control': 'no-store' }).end(data);
+      // the page itself: its script and stylesheet are files of this origin (no inline script or style), it fetches and listens here
+      const page = !name.endsWith('.css') && !name.endsWith('.js');
+      res.writeHead(200, { 'content-type': name.endsWith('.css') ? 'text/css' : name.endsWith('.js') ? 'text/javascript' : 'text/html; charset=utf-8', 'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff', ...(page ? { 'content-security-policy': pageCsp('', { script: "'self'", style: "'self'", img: "'self' data:", connect: "'self'" }) } : {}) }).end(data);
     });
   }
   if (url === '/project-network' && req.method === 'GET') {
@@ -3793,13 +3802,14 @@ export function handler(req, res) {
     const q = new URLSearchParams(req.url.split('?')[1] || '');
     // the library rides at the top of this view rather than as a row in it —
     // one conversation about the whole list underneath
-    const html = pagesView({ index, me: hosted.identity(req), snapshots,
+    const nonce = newNonce();
+    const html = pagesView({ index, me: hosted.identity(req), snapshots, nonce,
       library: store.readPage(store.LIBRARY_URL),
       libraryKey: store.pageKey(store.LIBRARY_URL),
       kind: q.get('kind') || '', tag: q.get('tag') || '',
       // how many questions are waiting, for the owner's own link to the quiz
       due: hosted.isOwner(req) ? questions.counts(questions.readVault()).due : 0 });
-    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+    return res.writeHead(200, viewHead(nonce, html)).end(html);
   }
   if (req.method === 'GET' && url.startsWith('/p/')) {
     const key = url.slice(3);
@@ -3807,14 +3817,15 @@ export function handler(req, res) {
     if (!page || !mayRead(page, hosted.isOwner(req))) return fail(res, 404, 'unknown page');
     const q = new URLSearchParams(req.url.split('?')[1] || '');
     const notice = q.get('notice') || '';
-    const html = pageView({
+    const nonce = newNonce();
+    const html = pageView({ nonce,
       page, key, me: hosted.identity(req), notice, snapshot: store.hasSnapshot(key),
       // whose threads to show — the reading room has no client state, so a
       // margin narrowed to one commenter is a LINK, exactly as a filtered
       // archive is
       by: q.get('by') || '',
     });
-    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+    return res.writeHead(200, viewHead(nonce, html)).end(html);
   }
 
   if (req.method === 'GET' && url === '/health') {
@@ -5364,7 +5375,10 @@ export function handler(req, res) {
   if (req.method === 'GET' && url === '/test-page') {
     return fs.readFile(path.join(PLUGIN, 'test', 'fixtures', 'article.html'), (err, buf) => {
       if (err) return fail(res, 404, 'fixture missing');
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(buf);
+      // a fixed fixture for the extension's tests, no script of its own: nothing may run on it (its styles and images are left to load,
+      // so the extension's own drawer, injected into it, looks as it does elsewhere)
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
+        'content-security-policy': "script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" }).end(buf);
     });
   }
 
@@ -6694,7 +6708,8 @@ export function handler(req, res) {
     // where the reading room is, from here: relative on its own hostname,
     // absolute on the vault's own (they are two addresses for one companion)
     const home = readingRoomOrigin(req);
-    const html = quizView({
+    const nonce = newNonce();
+    const html = quizView({ nonce,
       me,
       card: shown,
       home,
@@ -6718,7 +6733,7 @@ export function handler(req, res) {
       // the one-line receipt for a card just taken out of the rotation
       gone: ['discarded', 'flagged'].includes(q.get('gone')) ? q.get('gone') : '',
     });
-    return res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+    return res.writeHead(200, viewHead(nonce, html)).end(html);
   }
   // Ask for the paragraph again — the same job /resolve queues, on demand, for
   // a thread whose summary landed while the bridge was down or which has moved

@@ -13112,6 +13112,29 @@ the owner's click, the same step again, which is how the site's command resumes)
 apply, so no state needs hand-editing. A `failed` run is not interrupted by a restart: nothing of it is running, so it keeps its
 `failed_step`, its retry and its abandon (an abandon of a run that failed before apply still discards and removes the draft).
 
+### Every HTML page of the companion's own origin carries a CSP (review item 1)
+
+A script that runs on the companion's origin runs as its own, trusted page. So every HTML response has a policy, and only the
+page's own nonced `<style>`/`<script>` (or a same-origin file the policy names) can apply; no inline handler, no style attribute
+(a tag's hue is a class, `th-<hue>`), no framing, no `<base>`. `hosted.mjs pageCsp(nonce, {forms, img, connect, script, style})` builds
+it; `server.mjs viewHead` applies it to the views.
+
+| route | policy |
+|---|---|
+| `/p/<key>`, `/pages`, `/quiz` (memorizer) | `default-src 'none'; script-src 'nonce-…'; style-src 'nonce-…'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` when the page has a form (else `'none'`) |
+| `/a/<key>` (article) | its own nonce policy (unchanged: `img-src https:`, nonced scripts and styles) |
+| `/hub`, `/following` (the Hub) | `hubCsp` (nonce; theme stylesheet) |
+| `/signout` | `default-src 'none'; script-src 'none'; style-src 'nonce-…'; img-src 'self'; connect-src 'none'; … form-action 'self'` |
+| sign-in gate, notice pages (hosted.mjs) | `default-src 'none'; script-src 'none'; style-src 'nonce-…'; img-src 'self'; … form-action 'self'` (gate) / `'none'` (notice) |
+| `/blyg-home/page` | `default-src 'none'; style-src 'nonce-…'; script-src 'none'; connect-src 'none'; form-action 'none'` (read only) |
+| `/project-network/view` | `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; …` (its script and stylesheet are files of this origin) |
+| `/test-page` (a fixture for the extension's tests) | `script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'` (styles and images left open so the injected drawer looks as elsewhere) |
+| stored files (`/files/`, `/run-figure`, `/hub/theme/`) | `sandbox` (unchanged) |
+
+A value written into an inline script goes through `views.mjs scriptString` (escapes `<`, `>`, `&` and the line separators);
+`test/csp-pages.test.mjs` walks every route above and runs the reviewer's two probes (a page whose address breaks out of the reload
+script, made locally and by a hosted guest).
+
 ### The setting: "Where my blyg lives" (owner only, on the companion)
 
 `blyg_home` in config.json, changed with `botference blyg-home set <file.json>` (or by hand): `folder` (absolute, exists,

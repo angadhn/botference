@@ -110,18 +110,20 @@ function contrast(fg, bg) {
     },
   };
   const html = views.pagesView({ index, me: { owner: true, handle: 'angadh' }, snapshots: new Set() });
+  // (the hue is a CLASS, th-<hue>, whose rule sets --th: the pages carry a CSP that allows no style attribute)
   ok('the tag rail carries each tag\'s own hue',
-    html.includes(`style="--th:${hue('fluids')}"`) && html.includes(`style="--th:${hue('rail')}"`), html);
+    html.includes(`class="th-${hue('fluids')}"`) && html.includes(`class="th-${hue('rail')}"`) && html.includes(`.th-${hue('fluids')}{--th:${hue('fluids')}}`), html);
+  ok('…with no style attribute anywhere', !/<[a-z][^<>]*\sstyle=/i.test(html));
   const railAt = html.indexOf('rail tags');
   ok('…and the row chips carry the SAME hue as the rail (one tag, one color)',
-    html.indexOf(`--th:${hue('fluids')}`, railAt) !== -1 &&
-    html.lastIndexOf(`--th:${hue('fluids')}`) > html.indexOf(`--th:${hue('fluids')}`));
+    html.indexOf(`th-${hue('fluids')}"`, railAt) !== -1 &&
+    html.lastIndexOf(`th-${hue('fluids')}"`) > html.indexOf(`th-${hue('fluids')}"`));
   const page = {
     url: 'https://x.test/one', title: 'One', site: 'x.test', tags: ['fluids'],
     threads: [], page_chat: [],
   };
   const pv = views.pageView({ page, key: 'a'.repeat(40), me: { owner: true, handle: 'angadh' }, notice: '', snapshot: false });
-  ok('the conversation view\'s tag rail wears it too', pv.includes(`--th:${hue('fluids')}`), pv.slice(0, 400));
+  ok('the conversation view\'s tag rail wears it too', pv.includes(`class="th-${hue('fluids')}"`), pv.slice(0, 400));
 }
 
 // ---- report -------------------------------------------------------------------
