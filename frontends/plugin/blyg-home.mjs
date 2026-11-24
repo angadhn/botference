@@ -43,8 +43,24 @@ const KILL_GRACE_MS = 5000;
 const NOTE_TOKEN = '{note}';
 const NOTE_ABS_TOKEN = '{note_abs}';
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'csh', 'tcsh', 'ksh', 'ash', 'cmd', 'cmd.exe', 'powershell', 'pwsh', 'env', 'sudo', 'su', 'xargs']);
+// `env_pass` is an ALLOW-list: BLYG_CHECKER (what the example site needs), plus any upper-case name the owner adds that is not one that
+// changes what a step's programs load, trust, fetch through, or are told (ENV_REFUSED). Values only ever come from the companion's own
+// launch environment; this list decides which of them a step may see.
+export const ENV_EXPECTED = Object.freeze(['BLYG_CHECKER']);
 const ENV_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const ENV_REFUSED = /^(PATH|HOME|PWD|OLDPWD|SHELL|IFS|LD_.*|DYLD_.*|NODE_OPTIONS|BASH_ENV|ENV|GIT_(SSH|ASKPASS|EXEC_PATH|CONFIG.*|DIR|WORK_TREE))$/;
+export const ENV_REFUSED = new RegExp('^(' + [
+  'PATH', 'HOME', 'PWD', 'OLDPWD', 'SHELL', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'EDITOR', 'VISUAL', 'TZ', 'XDG_CONFIG_HOME',
+  'LD_.*', 'DYLD_.*',
+  'RUBYOPT', 'RUBYLIB', 'BUNDLE_.*', 'GEM_HOME', 'GEM_PATH', 'RBENV_.*', 'JEKYLL_ENV',
+  'NODE_OPTIONS', 'NODE_PATH', 'NODE_EXTRA_CA_CERTS',
+  'PERL5OPT', 'PERL5LIB', 'PYTHON.*',
+  'GIT_.*',
+  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE',
+  // the example site's own run variables (a step must never become a preparing or pinning run): only BLYG_CHECKER is expected
+  'BLYG_(?!CHECKER$).*', 'LINK_CARD_.*',
+].join('|') + ')$', 'i');
+export const envPassable = n => typeof n === 'string' && (ENV_EXPECTED.includes(n) || (ENV_NAME.test(n) && !ENV_REFUSED.test(n)));
 
 export const DEFAULT_FILENAME = '${slug}.md';
 
@@ -172,8 +188,11 @@ export function validateHome(raw, { env = process.env } = {}) {
   const marker = r.published_marker === undefined || r.published_marker === null ? '' : r.published_marker;
   if (typeof marker !== 'string' || marker.length > 80 || /[\n\r\u0000]/.test(marker)) errors.push('published_marker must be one line of at most 80 characters (for example “State: merged_back”)');
   const passRaw = r.env_pass === undefined ? [] : r.env_pass;
-  const pass = Array.isArray(passRaw) && passRaw.every(n => typeof n === 'string' && ENV_NAME.test(n) && !ENV_REFUSED.test(n)) && passRaw.length <= 16 ? passRaw.slice() : null;
-  if (!pass) errors.push('env_pass must be a list (at most 16) of upper-case variable names, none of PATH, HOME, LD_*, DYLD_*, NODE_OPTIONS, GIT_* paths and the like');
+  const pass = Array.isArray(passRaw) && passRaw.every(envPassable) && passRaw.length <= 16 ? passRaw.slice() : null;
+  if (!pass) {
+    const bad = Array.isArray(passRaw) ? passRaw.filter(n => !envPassable(n)).map(n => JSON.stringify(n).slice(0, 40)) : [];
+    errors.push(`env_pass must be a list (at most 16) of upper-case names a step may see: BLYG_CHECKER, or a name of your own that is not one that changes what programs load or trust (PATH, HOME, RUBYOPT, BUNDLE_*, GEM_*, NODE_*, PYTHON*, PERL5*, GIT_*, proxies, CA files, TZ, BLYG_* run variables and the like)${bad.length ? `; refused: ${bad.join(', ')}` : ''}`);
+  }
   // commands
   const cmds = r.commands && typeof r.commands === 'object' && !Array.isArray(r.commands) ? r.commands : {};
   if (!r.commands) errors.push('the commands (plan, apply, publish) are not set');

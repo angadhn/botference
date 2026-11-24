@@ -13117,7 +13117,11 @@ list with `{note}` (the note's path relative to the work tree, ONE argument; `{n
 absolute path). Run in the work tree, never through a shell, in their own process group, with stdin
 closed, a time limit (plan 120 s, apply 1800 s, publish 1800 s, discard and abandon 60 s), a minimal environment
 (PATH, HOME, USER, LOGNAME, LANG, LC_ALL, TMPDIR when set; TERM=dumb, NO_COLOR=1, CI=1,
-GIT_TERMINAL_PROMPT=0; plus the owner's `env_pass`), and captured output (stopped past 4 MiB, kept to
+GIT_TERMINAL_PROMPT=0; plus the owner's `env_pass`, an ALLOW-list: `BLYG_CHECKER`, or an upper-case name of the owner's that is not
+one that changes what a step's programs load, trust or fetch through, nor one of the site's run variables: `blyg-home.mjs ENV_REFUSED`
+refuses PATH, HOME, RUBYOPT, RUBYLIB, BUNDLE_*, GEM_HOME, GEM_PATH, RBENV_*, NODE_OPTIONS, NODE_PATH, NODE_EXTRA_CA_CERTS, PERL5OPT,
+PERL5LIB, PYTHON*, GIT_*, the proxies, SSL_CERT_FILE/DIR, CURL_CA_BUNDLE, XDG_CONFIG_HOME, ZDOTDIR, EDITOR, VISUAL, TZ, JEKYLL_ENV,
+LD_*/DYLD_*, BLYG_* other than BLYG_CHECKER and the like), and captured output (stopped past 4 MiB, kept to
 64 KiB, ANSI and control characters removed). A shell, `env`, `sudo` or `xargs` as the program is
 refused. Nothing runs unless all of it is valid; it is validated when saved and before every step, and a
 change after a run started stops that run's next step.

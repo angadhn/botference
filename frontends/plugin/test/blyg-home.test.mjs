@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import * as H from '../blyg-home.mjs';
 import { FAKE, sleep } from './blyg-rig.mjs';
 
@@ -148,4 +148,26 @@ test('the settings page has a field for every stored key and command, and its Sa
   assert.equal(els.out.className, '', els.out.textContent);
   assert.equal(posted.url, '/blyg-home');
   assert.deepEqual(JSON.parse(posted.opts.body).settings, settings, 'a save from the page keeps every field, check, abandon and published_marker included');
+});
+
+// Review item 9: env_pass is an allow-list. BLYG_CHECKER passes; an owner's own upper-case name passes; every name that changes what a
+// step's programs load, trust or fetch through is refused (one rule, case-insensitive), and so are the site's other run variables.
+test('env_pass: BLYG_CHECKER and an owner\'s own name pass; loaders, proxies, CA files, GIT_*, BLYG_* run variables and lower case are refused', () => {
+  const ok = ['BLYG_CHECKER', 'MY_SITE_TOKEN_NAME', 'NETLIFY_SITE', 'LANGUAGE_X'];
+  const refused = ['PATH', 'HOME', 'RUBYOPT', 'RUBYLIB', 'BUNDLE_GEMFILE', 'BUNDLE_PATH', 'GEM_HOME', 'GEM_PATH', 'RBENV_VERSION', 'NODE_PATH',
+    'NODE_OPTIONS', 'NODE_EXTRA_CA_CERTS', 'PERL5OPT', 'PERL5LIB', 'PYTHONPATH', 'PYTHONSTARTUP', 'GIT_DIR', 'GIT_SSH_COMMAND', 'GIT_ANYTHING',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'CURL_CA_BUNDLE',
+    'XDG_CONFIG_HOME', 'ZDOTDIR', 'EDITOR', 'VISUAL', 'TZ', 'JEKYLL_ENV', 'BLYG_RUN_MODE', 'BLYG_PIN_CLOCK', 'BLYG_PREPARE', 'BLYG_NOTE',
+    'BLYG_CHECKERX', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'BASH_ENV', 'ENV', 'lower', '1ABC', 'A-B', '', 5];
+  for (const n of ok) assert.ok(H.envPassable(n), n);
+  for (const n of refused) assert.equal(H.envPassable(n), false, String(n));
+  const d = tmp();
+  try {
+    execFileSync('git', ['init', '-q', d]); fs.mkdirSync(path.join(d, '_notes'));
+    const base = { folder: path.join(d, '_notes'), commands: { plan: ['plan', '{note}'], apply: ['apply', '{note}'], publish: ['publish', '{note}'] } };
+    assert.ok(H.validateHome({ ...base, env_pass: ['BLYG_CHECKER'] }).ok);
+    const v = H.validateHome({ ...base, env_pass: ['BLYG_CHECKER', 'RUBYOPT'] });
+    assert.equal(v.ok, false);
+    assert.match(v.errors.join(' '), /refused: "RUBYOPT"/);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
