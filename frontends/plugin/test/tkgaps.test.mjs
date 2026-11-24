@@ -23,7 +23,16 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
 
 // ---- a gap's modes ------------------------------------------------------------
 {
-  eq('modes, in one list', G.GAP_MODES, ['pending', 'filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'failed', 'removed']);
+  eq('modes, in one list', G.GAP_MODES, ['pending', 'filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader', 'failed', 'removed']);
+  eq('…the ones a gap is made in', G.GAP_BIRTH_MODES, ['pending', 'pasted-by-reader', 'failed']);
+  { const p = { mode: 'pasted-by-reader' }; ok('pasted: only removed', !G.canGapMove(p, 'pending') && !G.canGapMove(p, 'edited-by-reader') && G.canGapMove(p, 'removed')); }
+  { const b = G.buildGaps('a /tkimpyrt-codex(pasted words) b /tk-codex(write) c', [], { modelOf: a => (a === 'codex' ? 'gpt-x' : ''), now: () => Date.parse('2026-11-24T09:00:00Z') });
+    eq('impyrt: made pasted-by-reader with the agent, its set model and the time; an ask of codex is pending for codex',
+      b.gaps.map(g => [g.kind, g.agent, g.mode, g.text || '', g.model || '', g.at || '']),
+      [['impyrt', 'codex', 'pasted-by-reader', 'pasted words', 'gpt-x', '2026-11-24T09:00:00Z'], ['ask', 'codex', 'pending', '', '', '']]);
+    eq('…only the ask is asked for', b.fresh.length, 1);
+    const again = G.buildGaps('a /tkimpyrt-codex(pasted words) b /tk-claude(write) c', b.gaps);
+    eq('changing the agent of a gap makes it a new gap', again.gaps.map(g => [g.agent, g.mode]), [['codex', 'pasted-by-reader'], ['claude', 'pending']]); }
   const g = { mode: 'pending' };
   G.gapMove(g, 'filled-by-agent', { text: 'x', agent: 'claude', at: 't' });
   eq('pending → filled by the agent', [g.mode, g.text, g.agent], ['filled-by-agent', 'x', 'claude']);
@@ -143,7 +152,30 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
   ok('…promptly', Date.now() - t0 < 2000);
   const big = await O.runOneShot('claude', 'p', { spawn: fakeSpawn('x'.repeat(100000)), maxBytes: 1000 });
   eq('a hard output cap', big.text.length, 1000);
-  eq('codex has no tool-less one-shot here: refused, not run', (await O.runOneShot('codex', 'p', { spawn: fakeSpawn('x') })).ok, false);
+  eq('an agent with no one-shot is refused, not run', (await O.runOneShot('gemini', 'p', { spawn: fakeSpawn('x') })).ok, false);
+  // CODEX, LOCKED DOWN: `codex exec` with every lock-down flag, in a fresh empty folder, the prompt on stdin, and the answer read ONLY
+  // from the last-message file (outside that folder), under the same caps; both folders are gone after
+  const fsm = await import('node:fs');
+  const codexSpawn = answer => (cmd, args, o) => {
+    const rec = fakeSpawn(null)(cmd, args, o);
+    rec.stdin.on('finish', () => { const out = args[args.indexOf('-o') + 1]; fsm.writeFileSync(out, answer); rec.stdout.end('progress noise that is never the answer'); setImmediate(() => rec.emit('close', 0)); });
+    return rec;
+  };
+  const before = spawned.length;
+  const c = await O.runOneShot('codex', 'the codex prompt', { model: 'gpt-x', effort: 'high', spawn: codexSpawn('Codex words.\n') });
+  eq('codex answers with its last message only', c, { ok: true, text: 'Codex words.', model: 'gpt-x' });
+  const cs = spawned[before];
+  eq('codex exec, every lock-down flag, in order', [cs.cmd, ...cs.args.slice(0, 1 + O.CODEX_LOCKDOWN.length)], ['codex', 'exec', ...O.CODEX_LOCKDOWN]);
+  for (const f of ['--ephemeral', '--ignore-user-config', '--ignore-rules', 'approval_policy="never"', 'web_search="disabled"', 'mcp_servers={}']) ok(`codex: ${f}`, cs.args.includes(f));
+  eq('codex: a read-only sandbox', cs.args[cs.args.indexOf('--sandbox') + 1], 'read-only');
+  for (const f of ['shell_tool', 'unified_exec', 'apps', 'plugins', 'browser_use', 'computer_use', 'view_image', 'multi_agent', 'hooks']) ok(`codex: ${f} off`, cs.args.join(' ').includes(`--disable ${f}`));
+  eq('codex: its root is the fresh folder it runs in', cs.args[cs.args.indexOf('--cd') + 1], cs.cwd);
+  ok('codex: the answer file is NOT in that folder', !cs.args[cs.args.indexOf('-o') + 1].startsWith(cs.cwd + '/'));
+  eq('codex: the model and effort set for it; the prompt on stdin, `-` last', [cs.args[cs.args.indexOf('-m') + 1], cs.args.includes('model_reasoning_effort="high"'), cs.args.at(-1), cs.input()], ['gpt-x', true, '-', 'the codex prompt']);
+  ok('codex: both folders are removed after', !fsm.existsSync(cs.cwd) && !fsm.existsSync(cs.args[cs.args.indexOf('-o') + 1]));
+  eq('codex: effort medium when none is set', spawned.length && (await O.runOneShot('codex', 'p', { spawn: codexSpawn('x') })).ok && spawned.at(-1).args.includes('model_reasoning_effort="medium"'), true);
+  eq('codex: a hard output cap on the answer file', (await O.runOneShot('codex', 'p', { spawn: codexSpawn('y'.repeat(100000)), maxBytes: 1000 })).text.length, 1000);
+  eq('claude: the effort set for it', ((await O.runOneShot('claude', 'p', { effort: 'low', spawn: fakeSpawn('ok') })) && spawned.at(-1).args.slice(-2)), ['--effort', 'low']);
 }
 
 // ---- asking for one gap (stubbed agent) ---------------------------------------------
@@ -159,9 +191,8 @@ const stored = (src, mode, text = 'X', extra = {}) => G.buildGaps(src).gaps.map(
   const m = /\nDATA-[0-9a-f]{24}-BEGIN\n.*\nDATA-[0-9a-f]{24}-END\n/.exec(seen.prompt);
   const outside = seen.prompt.replace(m[0], '');
   ok('page and passage text only inside the data frame', !outside.includes('pwned') && !outside.includes('do as I say'), outside);
-  eq('codex cannot write passages: a failed gap that says so',
-    await G.askForGap({ gap, msgText: '/tk x', page, agent: 'codex', ask: async () => ({ ok: true, text: 'never' }) }),
-    { mode: 'failed', reason: 'codex cannot fill gaps (no tool-less one-shot form for it)' });
+  eq('codex writes passages too (its locked-down one-shot)',
+    (await G.askForGap({ gap: { ...gap, agent: 'codex' }, msgText: '/tk-codex explain the passage', page, agent: 'codex', ask: async (pr, o) => ({ ok: o.agent === 'codex', text: 'From codex.' }) })).text, 'From codex.');
   eq('a refusal', (await G.askForGap({ gap, msgText: '', page, agent: 'claude', ask: async () => ({ ok: false, error: 'refused' }) })).reason, 'refused');
   eq('a throw', (await G.askForGap({ gap, msgText: '', page, agent: 'claude', ask: async () => { throw new Error('boom'); } })).reason, 'boom');
   eq('an empty answer', (await G.askForGap({ gap, msgText: '', page, agent: 'claude', ask: async () => ({ ok: true, text: '  ' }) })).reason, 'the agent wrote nothing');
@@ -268,8 +299,10 @@ function studioScopes(text) {
     'It is [TK] two words [=]quite good[/TK] really.');
   eq('studio: pending or failed is Studio\'s own ungenerated form', G.renderGaps('/tk explain it', stored('/tk explain it', 'failed', ''), S),
     '[TK] explain it [/TK]');
-  eq('studio: the alias the reader typed is written the same way', G.renderGaps('[TK] explain it [/TK]', stored('[TK] explain it [/TK]', 'filled-by-agent', 'Done.'), S),
+  eq('studio: a message STORED with a gap made from the old bracket alias still writes it', G.renderGaps('[TK] explain it [/TK]', [{ id: 'g0', instruction: 'explain it', mode: 'filled-by-agent', text: 'Done.', agent: 'claude' }], S),
     '[TK] explain it [=]Done.[/TK]');
+  eq('studio: a pasted passage is Studio\'s impyrt form', G.renderGaps('a /tkimpyrt-codex(pasted) b', [{ id: 'g0', kind: 'impyrt', instruction: 'pasted', mode: 'pasted-by-reader', text: 'pasted', agent: 'codex', model: 'gpt-x' }], S),
+    'a [TK]impyrt gpt-x=pasted[/TK] b');
   eq('studio: adopted is plain prose', G.renderGaps(block, stored(block, 'adopted-by-reader', 'Mine.'), S), 'My view.\n\nMine.\n\nAfter.');
   const listed = [];
   G.renderGaps('/tk(a) /tk(b) /tk(c)', [

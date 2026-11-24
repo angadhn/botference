@@ -1,8 +1,9 @@
 // tkgaps.mjs — gaps in the reader's own message that an agent writes.
 //
-// The reader types `/tk an instruction` (or `/tk(…)` mid-sentence, or Blygger
-// Studio's `[TK] … [/TK]`; extension/tkgrammar.js has the grammar) in a
-// comment or page-chat message. When the OWNER SENDS that message, the
+// The reader types `/tk an instruction` (or `/tk(…)` mid-sentence; `/tk-claude`,
+// `/tk-codex` name the agent, plain `/tk` is Claude; `/tkimpyrt-claude(…)` and
+// `/tkimpyrt-codex(…)` mark text the reader pasted from that maker's tool;
+// extension/tkgrammar.js has the grammar) in a comment or page-chat message. When the OWNER SENDS that message, the
 // companion asks one agent to write each gap; the message is saved at once
 // with each gap pending, and each fill lands in place when it comes. The
 // drawer shows it as an agent block inside the reader's own message. Export
@@ -49,6 +50,13 @@ const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 export const MSG_PROVENANCE = Object.freeze(['owner-typed']);
 export const OWNER_TYPED = 'owner-typed';
 export const ownerTyped = m => !!m && m.provenance === OWNER_TYPED && !m.origin;
+// WHICH DOOR an owner-typed message came through, one word in one list (`msg.channel`, written by the server with the provenance,
+// from the request, never from its body):
+//   drawer        the extension's drawer (a request carrying the extension's own Origin)
+//   reading-room  the companion's own pages (a request from the companion's own origin)
+//   api           anything else (a script on the machine, a tool): no Origin the server recognises
+// One-click publishing (confirm 'never') counts only drawer-typed threads in "this and the ones above".
+export const MSG_CHANNELS = Object.freeze(['drawer', 'reading-room', 'api']);
 
 // ---- a gap's modes, named once ---------------------------------------------
 // Stored on the message (`msg.gaps`, in the order the gaps appear), each
@@ -60,14 +68,25 @@ export const ownerTyped = m => !!m && m.provenance === OWNER_TYPED && !m.origin;
 //                     marked as the agent's draft (disclosed as such)
 //   adopted-by-reader the reader said "this is now my text": written as the
 //                     reader's own prose, with no agent disclosure
+//   pasted-by-reader  text the reader PASTED from an agent's tool (`/tkimpyrt-<agent>`): no agent
+//                     was asked; it is that agent's text, brought in by the reader (`agent`, the
+//                     model set for that agent when there is one, the time it was sent)
 //   failed            not written; `reason` says why
 //   removed           the reader took the gap out
-export const GAP_MODES = Object.freeze(['pending', 'filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'failed', 'removed']);
+// A gap is MADE in one of three modes (buildGaps): pending (an ask), pasted-by-reader (an impyrt), or
+// failed (too long to send); every later change is a move.
+export const GAP_MODES = Object.freeze(['pending', 'filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader', 'failed', 'removed']);
+export const GAP_BIRTH_MODES = Object.freeze(['pending', 'pasted-by-reader', 'failed']);
+/** The modes whose text an agent wrote, in whole or in part (a note writes each in the agent's box). */
+export const AGENT_TEXT_MODES = Object.freeze(['filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader']);
+/** …and of those, the ones the reader had a hand in (the box says "<Agent> + <owner>"). */
+export const READER_HAND_MODES = Object.freeze(['edited-by-reader', 'adopted-by-reader']);
 const GAP_MOVES = Object.freeze({
   pending: Object.freeze(['filled-by-agent', 'failed', 'removed']),
   'filled-by-agent': Object.freeze(['pending', 'edited-by-reader', 'adopted-by-reader', 'removed']),
   'edited-by-reader': Object.freeze(['pending', 'edited-by-reader', 'adopted-by-reader', 'removed']),
   'adopted-by-reader': Object.freeze(['removed']),
+  'pasted-by-reader': Object.freeze(['removed']),
   failed: Object.freeze(['pending', 'removed']),
   removed: Object.freeze([]),
 });
@@ -123,31 +142,51 @@ export const GAP_LIMITS = Object.freeze({
   perPageHour: 30,                            // fills asked for one page in an hour
 });
 
-const gid = (i, instruction) => `g${i}-${crypto.createHash('sha1').update(String(instruction)).digest('hex').slice(0, 8)}`;
+const gid = (i, key) => `g${i}-${crypto.createHash('sha1').update(String(key)).digest('hex').slice(0, 8)}`;
 /**
- * The gaps of `text`, as stored on its message: [{ id, instruction, mode, … }].
- * `prior` is the message's gaps before an edit: a gap whose instruction did
+ * The gaps of `text`, as stored on its message: [{ id, kind, agent, instruction, mode, … }].
+ * `prior` is the message's gaps before an edit: a gap whose word, agent and instruction did
  * not change keeps what it had (in order, first match), every other one is
- * new and pending. → { gaps, fresh } — `fresh` the ids to ask for.
+ * new: pending (an ask), pasted-by-reader (an impyrt, with `modelOf(agent)` and `now()`),
+ * or failed (too long). → { gaps, fresh } — `fresh` the ids to ask for.
  */
-export function buildGaps(text, prior = []) {
+export function buildGaps(text, prior = [], { modelOf = () => '', now = () => new Date() } = {}) {
   const found = Grammar.parseGaps(text);
+  const keyOf = g => Grammar.gapKey({ kind: g.kind || 'ask', agent: g.agent || 'claude', instruction: g.instruction });
   const unused = Array.isArray(prior) ? prior.filter(g => g && g.mode !== 'removed').slice() : [];
   const gaps = [];
   const fresh = [];
+  const born = new Set();
   found.forEach((f, i) => {
-    const k = unused.findIndex(g => g.instruction === f.instruction);
-    if (k !== -1) { gaps.push({ ...unused[k], id: gid(i, f.instruction) }); unused.splice(k, 1); return; }
-    const g = { id: gid(i, f.instruction), instruction: f.instruction, mode: 'pending' };
+    const key = keyOf(f);
+    const k = unused.findIndex(g => keyOf(g) === key);
+    if (k !== -1) { gaps.push({ ...unused[k], kind: f.kind, agent: f.agent, id: gid(i, key) }); unused.splice(k, 1); return; }
+    if (f.kind === 'impyrt') {
+      const g = { id: gid(i, key), kind: 'impyrt', agent: f.agent, instruction: f.instruction, mode: 'pasted-by-reader' };
+      if (f.instruction.length > Grammar.PASTED_MAX) { g.mode = 'failed'; g.reason = `the pasted text is longer than ${Grammar.PASTED_MAX} characters`; }
+      else {
+        g.text = f.instruction;
+        const model = String(modelOf(f.agent) || '');
+        if (model) g.model = model;
+        g.at = new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      }
+      gaps.push(g); born.add(g);
+      return;
+    }
+    const g = { id: gid(i, key), kind: 'ask', agent: f.agent, instruction: f.instruction, mode: 'pending' };
     if (f.instruction.length > GAP_LIMITS.instructionChars) {
-      gapMove(g, 'failed', { reason: `the instruction is longer than ${GAP_LIMITS.instructionChars} characters` });
+      g.mode = 'failed'; g.reason = `the instruction is longer than ${GAP_LIMITS.instructionChars} characters`;
     } else fresh.push(g.id);
-    gaps.push(g);
+    gaps.push(g); born.add(g);
   });
-  // a gap the reader removed stays removed while its words are still there
+  // a gap the reader removed stays removed while its words are still there (only a gap made just now, never one kept from before)
   for (const r of (prior || []).filter(g => g && g.mode === 'removed')) {
-    const same = gaps.find(g => g.instruction === r.instruction && g.mode === 'pending');
-    if (same) { same.mode = 'removed'; fresh.splice(fresh.indexOf(same.id), 1); }
+    const same = gaps.find(g => born.has(g) && keyOf(g) === keyOf(r) && (g.mode === 'pending' || g.mode === 'pasted-by-reader'));
+    if (!same) continue;
+    if (same.mode === 'pending') fresh.splice(fresh.indexOf(same.id), 1);
+    for (const k of ['text', 'model', 'at', 'reason']) delete same[k];
+    same.mode = 'removed';
+    born.delete(same);
   }
   return { gaps, fresh };
 }
@@ -279,7 +318,7 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
   filled = DEFAULT_FILLED_FORM, prose: proseOf = null } = {}) {
   const s = String(text || '');
   if (!FILLED_FORMS.includes(filled)) throw new Error(`renderGaps: no such filled form ${filled}`);
-  const found = Grammar.parseGaps(s);
+  const found = Grammar.gapsFor(s, gaps);
   // the reader's own words between gaps: `\/tk` written as the letters, and
   // no bare TK grammar (or, when the caller has a stricter rule for the
   // grammar it writes into, that rule)
@@ -297,8 +336,9 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
       at = f.end;
       return;
     }
-    const written = (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader') && include;
-    const reason = !include && (g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader')
+    const agentText = g.mode === 'filled-by-agent' || g.mode === 'edited-by-reader' || g.mode === 'pasted-by-reader';
+    const written = agentText && include;
+    const reason = !include && agentText
       ? 'agent text left out of this export' : g.mode === 'pending' ? 'still being written' : (g.reason || 'not written');
     if (style === 'studio') {
       // a gap on a line of its own is a paragraph of its own (a scope glued
@@ -320,8 +360,8 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
       // text generated elsewhere (`[TK]impyrt <model>=…[/TK]`), disclosed as
       // generated whatever its history.
       const out1 = studioOutput(g.text, { inline: !block });
-      const scope = !written ? `[TK] ${instr} [/TK]`
-        : filled === 'imported' ? `[TK]impyrt${importedModel(g.model)}=${out1}[/TK]`
+      const scope = !written ? (g.mode === 'pasted-by-reader' ? '' : `[TK] ${instr} [/TK]`)
+        : (filled === 'imported' || g.mode === 'pasted-by-reader') ? `[TK]impyrt${importedModel(g.model)}=${out1}[/TK]`
           : `[TK] ${instr} [=]${out1}[/TK]`;
       // still marked as the agent's (edited or not): listed as generated
       if (written && onGenerated) onGenerated(g);
@@ -335,9 +375,9 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
     if (g.mode === 'removed') return;
     const who = agentName(g.agent || 'agent');
     const body = written
-      ? agentCallout(g.mode === 'edited-by-reader' ? `${who} draft, edited by you` : who, neutral(g.text), calloutType)
+      ? agentCallout(g.mode === 'edited-by-reader' ? `${who} draft, edited by you` : g.mode === 'pasted-by-reader' ? `${who}, pasted by you` : who, neutral(g.text), calloutType)
       : agentCallout('Not filled', neutral(reason), 'warning');
-    out += `${out.trim() ? (out.endsWith('\n') ? '\n' : '\n\n') : ''}${commentLine(f.instruction)}\n${body}\n\n`;
+    out += `${out.trim() ? (out.endsWith('\n') ? '\n' : '\n\n') : ''}${g.mode === 'pasted-by-reader' ? '' : commentLine(f.instruction) + '\n'}${body}\n\n`;
   });
   out += prose(s.slice(at));
   return out.replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').replace(/\n+$/, '');
@@ -350,10 +390,11 @@ export function renderGaps(text, gaps, { style = DEFAULT_GAP_STYLE, calloutType 
  * Never throws; bounded by GAP_LIMITS.
  */
 export async function askForGap({ gap, msgText, quote = '', page, post = null, agent, ask, now = Date.now }) {
-  if (!ONESHOT_AGENTS.includes(agent)) return { mode: 'failed', reason: `${agent} cannot fill gaps (no tool-less one-shot form for it)` };
+  if (!ONESHOT_AGENTS.includes(agent)) return { mode: 'failed', reason: `${agent} cannot fill gaps here` };
   if (typeof ask !== 'function') return { mode: 'failed', reason: 'no agent is available' };
   const s = String(msgText || '');
-  const f = Grammar.parseGaps(s).find(x => x.instruction === gap.instruction);
+  const f = Grammar.parseGaps(s).find(x => Grammar.gapKey(x) === Grammar.gapKey({ kind: 'ask', agent: gap.agent || 'claude', instruction: gap.instruction }))
+    || Grammar.parseGaps(s).find(x => x.instruction === gap.instruction);
   const comment = f ? s.slice(0, f.start) + '[GAP]' + s.slice(f.end) : s;
   const prompt = gapPrompt({ instruction: gap.instruction, comment, passage: quote,
     title: (page && (page.custom_title || page.title)) || '', url: (page && page.url) || '', post,
@@ -367,14 +408,17 @@ export async function askForGap({ gap, msgText, quote = '', page, post = null, a
     at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z') };
 }
 
-/** blyg_generated: one entry per filled gap written in 'studio' style, in note order. */
+/** blyg_generated: one entry per agent-written gap (filled, edited, adopted or pasted) in note order: model, at, edited_by_author. */
 export function generatedLines(entries) {
   if (!entries || !entries.length) return [];
   const clean = v => String(v).replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 100);
   return ['blyg_generated:', ...entries.map(e => {
     const model = e.model ? clean(e.model) : '';
     const at = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(String(e.at || '')) ? e.at : '';
-    if (!model && !at) return '  - {}';
-    return [model ? `  - model: ${JSON.stringify(model)}` : `  - at: ${at}`, ...(model && at ? [`    at: ${at}`] : [])].join('\n');
+    // `edited_by_author: true`: the author edited or adopted this agent text (the example site shows "<Agent> + <author>" on the page;
+    // it never reaches the Blygger wire)
+    const members = [...(model ? [`model: ${JSON.stringify(model)}`] : []), ...(at ? [`at: ${at}`] : []), ...(e.edited_by_author ? ['edited_by_author: true'] : [])];
+    if (!members.length) return '  - {}';
+    return members.map((m, i) => (i ? '    ' : '  - ') + m).join('\n');
   })];
 }

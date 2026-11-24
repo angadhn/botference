@@ -62,7 +62,8 @@ def test_quit_is_terminal_only_and_plugin_gets_what_the_drawer_handles():
     plugin = {r["cmd"] for r in command_help("plugin")}
     assert "/quit" not in council and "/quit" not in plugin
     assert "/help" in council and "/help" in plugin
-    assert plugin == {"@claude", "@codex", "@all", "/parallel", "/lasso", "/draft-blog", "/tk", "/help"}
+    assert plugin == {"@claude", "@codex", "@all", "/parallel", "/lasso", "/draft-blog", "/tk", "/tk-claude", "/tk-codex",
+                      "/tkimpyrt-claude", "/tkimpyrt-codex", "/help"}
     assert next(r for r in command_help("plugin") if r["cmd"] == "/draft-blog")["args"] == "[what to write]"
     assert next(r for r in command_help("council") if r["cmd"] == "/draft")["args"] == "[rounds]"
 
