@@ -13100,7 +13100,10 @@ owner session sees a redacted `GET /blyg-home` (valid, confirm; no paths, no com
 
 Liquid and kramdown attribute lists are made inert with character references (`&#123;`), never a backslash. A passage, an
 agent's or owner-edited `/tk` fill, and a label are escaped as plain text; only an ADOPTED gap and the owner's own comment are the
-owner's markdown (a `{{`/`{%` inside the owner's code span is refused with a message). A web address inside a passage is a code span
+owner's markdown (a `{{`/`{%` inside the owner's code span is refused with a message). In a passage and an agent's or edited fill,
+square brackets are character references (`&#91;` `&#93;`) and are percent-encoded inside an address, so a site's own bracket syntax
+(the example blog's sidenote converter reads `[^1]` and `[^1]: …` in the raw markdown, backslash or not) never reads hostile text; the
+reference renders as the same character, so a quote still matches its source. A web address inside a passage is a code span
 (never a paragraph that is only a URL, so no link card is made from a hostile page's URL); the note's own source line is
 the bare URL that makes the card. A message an edit set aside (`superseded`) is not part of the post.
 
@@ -13111,6 +13114,13 @@ the owner's click, the same step again, which is how the site's command resumes)
 (example site: `scripts/blyg-publish --abandon {note}`; it carries `{note}` so it ends only this note's run) is run on abandon after
 apply, so no state needs hand-editing. A `failed` run is not interrupted by a restart: nothing of it is running, so it keeps its
 `failed_step`, its retry and its abandon (an abandon of a run that failed before apply still discards and removes the draft).
+
+### The real-build guard
+
+`test/blyg-liquid-build.test.mjs` builds generated notes with REAL Jekyll in a copy of the example blog and reads the built pages at each
+note's permalink (`/b/<id>`): Liquid, raw HTML, attributes, a URL-only passage line, and a passage in the site's sidenote syntax all stay
+text. It runs whenever `BLYG_BLOG_TREE` names a checkout of the blog (set it in the environment of `node --test test/` and
+`run-all.mjs`); without it the test is skipped and says so on stderr. Run it inside the network sandbox too.
 
 ### Every HTML page of the companion's own origin carries a CSP (review item 1)
 
