@@ -183,3 +183,23 @@ test('"Tick all shown" is taken 100 at a time: a request naming more ticks the f
   assert.equal(feed(f).length, 50);
   assert.equal(f.tickMany(keys.slice(100)), 50);
 });
+
+test('a tick saves first and deletes the body after (a crash in between leaves a body that the sweep on load removes)', async () => {
+  const store = counted();
+  const del = store.delete.bind(store);
+  store.delete = (kind, name) => { store.log.push(`delete ${kind}:${name}`); return del(kind, name); };
+  const { f, web } = engine({ store });
+  publish(web.add(A), A, 2);
+  f.confirmImport([{ origin: A }]);
+  await f.refresh();
+  const k = f.keyFor(A, idOf(1));
+  store.log.length = 0;
+  f.readMove(k, 'tick');
+  assert.deepEqual(store.log, ['state:following', `ledger:${F.ledgerName(A)}`, `delete body:${k}`]);
+  // the crash case: a body left behind is swept when the state is next loaded
+  store.put('body', 'abcdef0123456789abcdef01', '<p>left behind</p>');
+  const again = engine({ store, web });
+  again.f.view();
+  await new Promise(res => setImmediate(res));
+  assert.ok(!store.list('body').includes('abcdef0123456789abcdef01'));
+});

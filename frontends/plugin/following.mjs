@@ -307,6 +307,7 @@ export const LIMITS = Object.freeze({
   laterPerBlyg: 200,          // ids whose document a host could not give (404, 410, 403), asked again after a doubling back-off
   keptMax: 50,                // ledgers kept for blygs unfollowed without "forget" (their read ids and floor only) ...
   keptMs: 365 * 24 * 3600e3,  // ... for at most this long; beyond either bound the oldest is forgotten
+  pageChars: 2048,            // a post's page address (refused beyond it, never cut: a cut address opens something else)
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   burstWaitMs: 24 * 3600e3,   // a fragment of a burst whose thread is not held yet waits in Background this long, then stands alone
@@ -487,6 +488,7 @@ export function recordFromDoc(doc, origin, blyg = {}) {
   let page = '';
   try { page = new URL(typeof doc.page === 'string' && doc.page ? doc.page : `${doc.kind === 'fragment' ? 'f' : 't'}/${doc.id}/`, origin).href; } catch { page = ''; }
   if (!isWebUrl(page)) return { invalid: 'its page is not a web address' };
+  if (page.length > LIMITS.pageChars) return { invalid: `its page address is longer than ${LIMITS.pageChars} characters` };
   const base = { origin, id: doc.id, kind: doc.kind, version: doc.version,
     created: cleanText(doc.created, 40), updated: cleanText(doc.updated, 40), page, content_hash: doc.content_hash,
     stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [], title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [], words: 0, body_state: 'none' };
@@ -1837,7 +1839,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const archiveRecordOf = rec => ({
     key: rec.key, origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.newer ? rec.newer.version : rec.version,
     index_version: Math.max(rec.index_version ?? rec.version, rec.newer ? rec.newer.version : 0),
-    created: rec.created, updated: rec.updated, fetched_at: rec.fetched_at, page: cleanText(rec.page, 500), content_hash: rec.newer ? rec.newer.hash : rec.content_hash,
+    created: rec.created, updated: rec.updated, fetched_at: rec.fetched_at,
+    // the whole address, as checked when the document was read (bounded there by pageChars); one longer (a record from before) keeps no link
+    page: typeof rec.page === 'string' && rec.page.length <= LIMITS.pageChars && isWebUrl(rec.page) ? rec.page : '', content_hash: rec.newer ? rec.newer.hash : rec.content_hash,
     title: cleanText(plainText(rec.title) || plainText(rec.excerpt), LIMITS.archiveTitleChars), text: '', text_chars: 0, read: rec.read, archived_at: iso(),
     ...(rec.returned_at ? { returned_at: rec.returned_at } : {}),
   });
@@ -1854,12 +1858,15 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     led.ids = led.ids.filter((_, i) => !drop.has(i));
     return led.floor;
   }
+  const bodiesToDelete = [];
+  /** Save, and only then delete the bodies of the posts just ticked. */
+  const saveThenDeleteBodies = () => { save(); while (bodiesToDelete.length) deleteBody(bodiesToDelete.pop()); };
   function tickRec(rec) {
     const st = load();
     const next = archiveRecordOf(rec);
     moveRead(next, 'tick'); // refuses a post that is archived already
     st.items[identOf(rec.origin, rec.id)] = next;
-    deleteBody(rec.key);
+    bodiesToDelete.push(rec.key); // deleted AFTER the save (a crash between the two leaves a body the sweep on load removes)
     const led = ledgerFor(rec.origin);
     if (!led.ids.some(p => p[0] === rec.id)) {
       led.ids.push([rec.id, Math.max(0, stamp(rec.created, now()))]);
@@ -1870,7 +1877,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const rec = byKey(key);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     if (ev === 'tick') { tickRec(rec); trimArchive(load()); } else moveRead(rec, ev);
-    save(); onChange();
+    saveThenDeleteBodies(); onChange();
     return load().items[identOf(rec.origin, rec.id)].read;
   }
   /** The members the Feed folds under each head right now: head key → Set of member keys (worked out, as the page shows it). */
@@ -1903,7 +1910,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         tickRec(m); parts++;
       }
     }
-    if (archived) { trimArchive(st); save(); onChange(); }
+    if (archived) { trimArchive(st); saveThenDeleteBodies(); onChange(); }
     return { archived, parts };
   }
   /** Tick every post named (keys, or { key, members }); → how many heads were ticked. */
@@ -1912,6 +1919,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
    * The owner's untick: the post goes back to the Feed as `new`. Its text was deleted when it was ticked, so it is fetched again (one
    * request, through the same guarded getter and the same checks); if that fails the post stays in the Archive and the error says why.
    */
+  /** A blyg the owner paused, or one that is gone, is asked nothing until it is resumed: not even for one post. */
+  function refuseIfNotAsked(b) {
+    if (b.state === 'paused') throw new Error('that blyg is paused, so nothing is fetched from it: resume it first');
+    if (b.state === 'gone') throw new Error('that blyg has no manifest any more, so nothing is fetched from it: resume it to try again');
+  }
   async function untick(key) {
     const rec = byKey(key);
     if (!rec) throw new Error('no such post');
@@ -1919,6 +1931,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (!mayFetch()) throw new Error('fetching is off (blyg_checks), so the post cannot be fetched again');
     const b = load().blygs[rec.origin];
     if (!b) throw new Error('that blyg is not followed');
+    refuseIfNotAsked(b);
     const tally = { deferred: 0, errors: 0, invalid: 0, missing: 0, refused: 0, aborted: 0 };
     const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
     const got = await pull(b, rec.id, g, tally, () => load().items[identOf(rec.origin, rec.id)] === rec);
@@ -2034,6 +2047,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     const b = load().blygs[rec.origin];
     if (!b) throw new Error('that blyg is not followed');
+    refuseIfNotAsked(b);
     const g = getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now));
     const url = itemUrlFor({ item: b.item_template }, rec.origin, rec.id);
     if (!isWebUrl(url)) throw new Error('the blyg\'s item address is not a web address');

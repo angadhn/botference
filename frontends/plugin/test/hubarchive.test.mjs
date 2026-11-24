@@ -1175,3 +1175,38 @@ test('the queue a top-up reads is validated, bounded, and every entry is checked
   assert.deepEqual(r.web.itemRequests().map(u => u.slice(-31, -5)), [idOf(36)], 'the junk and the read one were not asked for');
   r.done();
 });
+
+test('the archive record keeps a long page address whole; an address past pageChars is refused when the document is read, never cut', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  const long = `${A}t/${'a'.repeat(600)}/`;
+  const d1 = makeDoc({ id: idOf(1), origin: A, title: 'Long', created: day(1), page: long });
+  const d2 = makeDoc({ id: idOf(2), origin: A, title: 'Too long', created: day(2), page: `${A}t/${'b'.repeat(F.LIMITS.pageChars)}/` });
+  site.put(d1); site.put(d2);
+  follow(r, A);
+  const s = await r.f.refresh();
+  assert.equal(s.invalid, 1, 'the one past the bound is refused');
+  const k = keyOf(r, A, 1);
+  r.f.readMove(k, 'tick');
+  assert.equal(r.f.itemByKey(k).page, long, 'kept whole (it was clipped to 500 before)');
+  assert.equal(r.f.open(k).url, long, 'so "Open original" opens the right address');
+  r.done();
+});
+
+test('untick and Read here never fetch from a blyg the owner paused (or one that is gone); they say so plainly', async () => {
+  const r = rig();
+  const site = r.web.add(A);
+  publish(site, A, 2);
+  follow(r, A);
+  await r.f.refresh();
+  const k1 = keyOf(r, A, 1), k2 = keyOf(r, A, 2);
+  r.f.readMove(k1, 'tick');
+  r.f.setBlygState(A, 'pause');
+  const n = r.web.requests.length;
+  await assert.rejects(() => r.f.untick(k1), /that blyg is paused, so nothing is fetched from it: resume it first/);
+  await assert.rejects(() => r.f.fetchPost(k2), /that blyg is paused/);
+  assert.equal(r.web.requests.length, n, 'not one request');
+  r.f.setBlygState(A, 'resume');
+  assert.equal(await r.f.untick(k1), 'new');
+  r.done();
+});

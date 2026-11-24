@@ -87,7 +87,7 @@ await test('untick through the route fetches the post again (one request); tick-
   const all = await POST(B, '/following/read', { keys });
   assert.equal(all.json.archived, 2);
   assert.deepEqual((await dataOf('?view=archive')).archive.map(l => l.title).sort(), ['Post 1', 'Post 2']);
-  // a thousand keys fit in one request
+  // a thousand keys fit in one request (the engine takes the first 100 of them)
   const big = await POST(B, '/following/read', { keys: Array.from({ length: 1000 }, (_, i) => String(i).padStart(24, '0')) });
   assert.equal(big.status, 200);
   assert.equal(big.json.archived, 0);
@@ -122,6 +122,32 @@ await test('settings: the unread target is 1 to 500; 0, 501, text and fractions 
   assert.equal((await POST(B, '/following/settings', { following_unread_target: 500 })).status, 200);
   assert.equal((await POST(B, '/following/settings', { following_unread_target: 1 })).status, 200);
   await POST(B, '/following/settings', { following_unread_target: 50 });
+});
+
+await test('the new routes: /following/topup (no index read), Retry on /following/state, unfollow keeping or forgetting what was read', async () => {
+  const t = await POST(B, '/following/topup', {});
+  assert.equal(t.status, 200, t.body);
+  assert.equal(typeof t.json.started, 'boolean');
+  const again = await POST(B, '/following/topup', {});
+  assert.equal(again.json.started, false, 'not twice within 30 seconds');
+  const retry = await POST(B, '/following/state', { origin: A, move: 'retry' });
+  assert.equal(retry.status, 400);
+  assert.match(retry.json.error, /not paused/);
+  assert.equal((await POST(B, '/following/state', { origin: A, move: 'stop' })).status, 400);
+  for (const hdr of [{ origin: 'https://evil.example' }, { 'sec-fetch-site': 'cross-site' }]) {
+    assert.equal((await request(B, 'POST', '/following/topup', {}, hdr)).status, 403);
+  }
+  const archived = (await dataOf('?view=archive')).tabs.archive;
+  assert.ok(archived > 0);
+  assert.equal((await POST(B, '/following/unfollow', { origin: A })).status, 200);
+  assert.equal((await POST(B, '/following/follow', { url: `${A}f/${idOf(1)}/` })).status, 200);
+  await POST(B, '/following/refresh', {});
+  const back = await dataOf();
+  assert.equal(back.tabs.feed, N - archived, 'a refollow does not bring back what was read');
+  assert.equal((await POST(B, '/following/unfollow', { origin: A, forget: true })).status, 200);
+  assert.equal((await POST(B, '/following/follow', { url: `${A}f/${idOf(1)}/` })).status, 200);
+  await POST(B, '/following/refresh', {});
+  assert.equal((await dataOf()).tabs.feed, N, 'forgotten: everything is unread again');
 });
 
 const hosted = await startServer({ root: tmp('hosted'), args: ['--hosted', '--no-agents'],
