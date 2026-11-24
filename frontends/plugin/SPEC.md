@@ -12900,7 +12900,10 @@ Settings (all required for `access` and `either`):
 ```
 
 `extension_ids` is required (a list of 32-letter ids): with Access the browser's cookie is the credential, so which extensions may
-call is never "any". Find the id on the browser's extensions page (brave://extensions or chrome://extensions, Developer mode on):
+call is never "any". The extension's manifest carries a public key, so its id is the same wherever it is loaded:
+`jgfkgfajcgcnmndmbkomeabkcolnecdc` (test/extension-id.test.mjs). A copy loaded before the key was added had an id made
+from its folder, and its saved settings stay with that old id: remove it, load the folder again, and enter the companion's
+address once more. To confirm the id, look on the browser's extensions page (brave://extensions or chrome://extensions, Developer mode on):
 it is shown under the extension's name. An unpacked extension's id follows the folder it was loaded from: loading it from another
 folder changes the id, so update the list. `certs_url_for_tests` is refused unless the process was started with
 `PLUGIN_ACCESS_TEST_CERTS=1` (the test suite): the key list is always the team's, over https.

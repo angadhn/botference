@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Botference Discuss",
   "version": "1.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo3v8W6Lz4Db6mYs2x3jzjz8cncpX1vps9nOgOt2lKs0r1mul/vkxlbz4xPuvtJC1zy345NVRhdw1jT4Dg3kj8ebc3ZkASSoO4FQ7tZBt8W6RyWqaa7eI6UcFIWhKTGb4lM6jXQn0VdRrM0N6KLNeNUn/eGaLfnFTBPSk1eYQ12tQ4QKlGnL3cH7We6Ml2aPIpVSO+pCfGcT2qQWbuKchVCmp+zb5r0IN6+rUR/+G/b1bvwr5myqwUK51Fjgcmm4vNBOV1vHpS4Jho/oTiOE6P3Rqio2EbQm0G3jw3Yct3nisuXMGUobgFAWFlctUPUQfiHYpyzyVHYQcahhVZh68zQIDAQAB",
   "description": "Discuss any page with Claude and Codex: highlight, comment, @-mention the bots, export to Obsidian. Needs the companion: run 'botference discuss'.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "activeTab", "scripting", "alarms", "tabs", "declarativeNetRequest"],
