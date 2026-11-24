@@ -242,7 +242,7 @@ test('the Archive pages: 50 lines at a time with "show more"; a search that matc
   const none = await x.run({ view: 'archive', q: 'zzzz', limit: 50 });
   assert.match(none.html, /Nothing in the Archive matches that\./);
   const empty = await hub({ n: 1 });
-  assert.match((await empty.run({ view: 'archive' })).html, /Nothing archived yet\. Tick a post in the Feed/);
+  assert.match((await empty.run({ view: 'archive' })).html, /Nothing archived yet\. Press ✓ Read under a post in the Feed/);
   empty.done(); x.done();
 });
 
