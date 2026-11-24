@@ -917,6 +917,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   function saveLedgers() {
     for (const [origin, e] of ledgers) {
       if (!e.dirty || !(state.blygs[origin] || state.kept[origin])) continue;
+      if (JSON.stringify(e.led) === e.base) { e.dirty = false; continue; } // taken to change, but nothing changed: not written
       try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { e.dirty = false; continue; } throw err; }
     }
   }

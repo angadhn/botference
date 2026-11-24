@@ -91,7 +91,11 @@ test('a refresh writes the main document every 10 blygs and at its end, not afte
   assert.equal(s.blygs, 25);
   const states = store.log.filter(x => x.startsWith('state:')).length;
   assert.ok(states <= 2 + 2, `${states} writes of the main document for 25 blygs (at 10, 20, after the backfill, and the last)`);
-  assert.equal(store.log.filter(x => x.startsWith('ledger:')).length, 25, 'each ledger once');
+  const ledgerWrites = store.log.filter(x => x.startsWith('ledger:')).length;
+  assert.ok(ledgerWrites >= 25 && ledgerWrites <= 50, `each ledger once, or twice when it changed again after a periodic save (${ledgerWrites})`);
+  store.log.length = 0;
+  await f.refresh();
+  assert.ok(store.log.filter(x => x.startsWith('ledger:')).length < 25, 'a ledger that did not change is not written');
   assert.equal(F.LIMITS.saveEveryBlygs, 10);
 });
 
