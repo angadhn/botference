@@ -12887,7 +12887,7 @@ not UTF-8, and its publisher sets Ruby's encodings to UTF-8 itself.
 
 - **The owner's view is plain** (`blyg-run viewOf`): no command output, no note path, no script name. `steps` are the CURRENT attempt
   only (the last record of each step, `{step, ok, ms}`); `tries` counts how often the failed step ran; `failure` is ONE recognised plain
-  line of the site's (`PLAIN_LINES`, cleaned by `plainSentence`: no script name, no path, no flag) or `''`. `reading` is the note as it
+  line of the site's (SUPERSEDED 2026-11-24, review round 5: `SITE_REFUSALS`, a fixed sentence per refusal) or `''`. `reading` is the note as it
   will read (`blyg-note readingOf`: words, quotes, and each agent's passage with its label, never bracket grammar); `notify` says who the
   site will tell ("Venkatesh Rao will be told you responded"; an ordinary web page: nobody); `running` is `{step, elapsed_ms, phase?}`
   (`phase: 'wait'` once the publish printed that it pushed: "Waiting for your site to update"), never a line of output.
@@ -12973,7 +12973,8 @@ whatever `confirm` says (`run.review = 'agent-text'`).
   model_reasoning_effort="<effort>" -`, the prompt on stdin, only the last message read (as text, 64 KB then 4000 characters), both folders
   removed, killed after 90 s. What it can still do: a read-only sandbox lets a command READ any file the owner can; the protection is that
   no tool that runs a command or opens a file is left on, which these flags say but which cannot be proven here without running a model
-  (`unified_exec` still reports itself on in `codex features list` whatever is passed). Hence the agent-text rule above.
+  (`unified_exec` still reports itself on in `codex features list` whatever is passed). Hence the agent-text rule above. (SUPERSEDED
+  2026-11-24, review round 5: Codex is jailed and the tool list was recorded against a mock provider; see "Review round 5".)
 - The drawer draws pasted and adopted passages as agent blocks too ("pasted by you", "made yours"; remove only).
 
 ### Review follow-ups
@@ -13506,3 +13507,60 @@ In `owner-only`:
 To turn guests off: start the companion with `PLUGIN_GUESTS=off` in its launch environment (`botference plugin --hosted` reads it).
 Tests: `test/hosted-people.test.mjs` (every route as a holder of the guest password, by header and query, and of a guest cookie from
 before; the form; streams; the owner's form, Bearer, SSE and WebSocket; startup validation; Access with owner-only).
+
+## Amendment (2026-11-24): Publish as blyg, review round 5
+
+### Containing the one-shots (`oneshot.mjs`)
+- **Codex is jailed, or not run.** `sandbox-exec -f oneshot-codex.sb -D HOME=… -D CLI_HOME=… -D WORK=… -D OUT=… -D CLI_BIN=… <codex> exec
+  <CODEX_LOCKDOWN> --cd WORK -o OUT/last.txt [--model=<m>] -c model_reasoning_effort="<e>" -` (`codexJail`). The profile denies every
+  file read and write under `/Users` and `/Volumes` except the CLI's own folder (`$CODEX_HOME`, else `~/.codex`: it writes its state
+  and sign-in refresh there) and the two fresh folders; denies starting any program but the CLI's own binary (its nested sandbox,
+  a shell, git: refused); denies all outbound network but TCP to port 443 and the system's name lookups (a seatbelt rule cannot name
+  a host, so the provider cannot be singled out; the fill is escaped, boxed and shown to the owner before anything is published).
+  Without `sandbox-exec` (anything but macOS) a `/tk-codex` gap fails: "Codex cannot be contained on this system".
+- **The tool list, recorded.** `codex exec` (0.167.2) pointed at a local mock provider (`-c model_providers.mock=…`, a fresh
+  `CODEX_HOME`, so no real sign-in was read) inside a loopback-only sandbox: with CODEX_LOCKDOWN the request offers ONE tool,
+  `request_user_input` (asks the user; runs and reads nothing); without the `--disable` flags it offers `exec_command`, `write_stdin`,
+  `view_image`, `multi_agent_v1`, `get_goal`, `create_goal`, `update_goal`, `web_search`. A model that calls `exec_command` anyway
+  gets "unsupported call"; with the tool offered but the jail on, "Operation not permitted". No CLI flag removes `request_user_input`.
+- **A minimal environment** for both CLIs (`oneshotEnv`): HOME, PATH, TMPDIR, LANG (UTF-8 when unset), USER, LOGNAME, and the CLI's
+  sign-in names (`ONESHOT_AUTH_ENV`: claude ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, CLAUDE_CONFIG_DIR; codex
+  OPENAI_API_KEY, CODEX_API_KEY, CODEX_HOME). Nothing else of the companion's environment reaches the child.
+- Claude is not jailed (it is tool-less; whether its keychain sign-in works in a jail could be shown only by a model call).
+- A model or effort is ONE argument (`--model=<v>`, `--effort=<v>`) and never begins with `-` (store `MODEL_RE`, `EFFORT_RE`).
+
+### Guests never receive a gap (`tkgaps.forGuest`)
+Always, not only until the owner acts: an answer, `/page`, and SSE/WebSocket events to anyone but the owner carry no `gaps`, and
+each gap's span in the message text is shown as "[an agent's passage]" (the instruction and pasted words included).
+
+### The site's own marks
+`[TK]`/`[/TK]` that a post would show outside code are refused at the start, before anything is written (`blyg-note`
+`OWNER_TK_SAY` "Your comment contains the letters [TK]; remove them or put them in code formatting", the only sentence naming
+them; `AGENT_TK_SAY` for an agent's passage, which the drawer shows as "needs an edit"; `PASSAGE_TK_SAY` for the quote).
+
+### The box: marked, never named, always a block
+Every agent passage is written between blank lines (an inline `/tk(…)` publishes as words, box, words); the drawer says so once
+(`TK_BLOCK_HINTS`, `tkHintMove`). The preview's parts are `{kind: 'agent', by: 'ai' | 'ai-and-author', name}`; the drawer draws a
+robot (and the site's crimson "A" for ai-and-author) with that accessible name and tooltip, no names. The example site does the same.
+
+### The site's refusals in prepared words (`blyg-run SITE_REFUSALS`)
+A line counts only when it starts with the publisher's own prefix (`blyg-publish: `, `Nothing to abandon for `, or `- ` under its own
+`Refused:` / pre-flight heading), holds no quotation, and is not a line of the note; it maps to a FIXED sentence (the table in
+blyg-run.mjs); anything else is "Something went wrong while <step>.".
+
+### Giving up a new version
+`NOTHING_PUBLISHED_MODES` adds interrupted_applying and interrupted_applied; abandon_failed keeps `abandoned_from`. There the published
+text is put back (when the note is what the run wrote). After a failed or interrupted publish (or interrupted_unknown) an edit's note
+is left, the view says `unsure` (`EDIT_UNSURE_SAY`) and Forget is offered. `cleanup` is `{outcome: undone | left | forgotten, said}`
+(`CLEANUP_OUTCOMES`; older records migrated).
+
+### Drawer
+Publish acts are refused when `window.top !== window` (the PDF viewer can be framed). `D.pub.ask` moves only by `pubAskMove`;
+the publisher's picture state only by `previewMove`.
+
+### Tests
+`tkgaps` (jail argv, environment, model names, no-sandbox refusal), `blyg-server` (canary env, codex through sandbox-exec, guest sees no
+gap), `hosted-people`, `blyg-run` (refusal table with every refusal of the example publisher and hostile lines, edit restore per mode,
+cleanup outcome, edit aimed at another note, preview moves), `blyg-note` (TK refusals, block boxes, showsLiquid), `blyg-home`
+({changelog} whole argument), `blyg-publish-server` (remote owner gets no preview_url), `blygpublish-drawer` (framed, ask, unsure,
+marks), `tkdrawer` (needs an edit, the hint), `blyg-liquid-build` (each TK kind refused; code published; inline gap a block; marks).
