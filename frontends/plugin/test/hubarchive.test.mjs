@@ -1398,3 +1398,20 @@ test('fresh posts take a fair share of a run: one blyg publishing 80 at once doe
   assert.ok(s.backfilled > 0, 'and the others are still read back');
   r.done();
 });
+
+test('a blyg\'s follow state is one named list moved by one function: follow, refollow, unfollow_keep, unfollow_forget, expire', async () => {
+  assert.deepEqual(F.FOLLOW_STATES, ['followed', 'kept', 'forgotten']);
+  const legal = new Set(['follow forgotten', 'refollow kept', 'unfollow_keep followed', 'unfollow_forget followed', 'expire kept']);
+  for (const ev of Object.keys(F.FOLLOW_MOVES)) for (const from of F.FOLLOW_STATES) assert.equal(Object.prototype.hasOwnProperty.call(F.FOLLOW_MOVES[ev], from), legal.has(`${ev} ${from}`), `${ev} ${from}`);
+  // a hand-edited document that names one blyg as followed AND kept is repaired on load: it is followed
+  const r = rig();
+  publish(r.web.add(A), A, 1);
+  fs.writeFileSync(r.file, JSON.stringify({ blygs: { [A]: { origin: A, title: 't', state: 'active' } }, items: {}, kept: { [A]: r.clock.t, 'not an origin': 5 } }));
+  const f = r.make();
+  f.setBlygState(A, 'pause');
+  assert.deepEqual(r.json().kept, {});
+  assert.equal(f.unfollow(A), true);
+  assert.equal(f.unfollow(A), false, 'a kept blyg cannot be unfollowed again');
+  assert.equal(typeof r.json().kept[A], 'number');
+  r.done();
+});

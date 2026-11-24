@@ -114,6 +114,7 @@ test('a part fetched while its thread cannot be: Background, "waiting for its th
   r.clock.t += 2 * 3600e3;
   await r.f.refresh();
   assert.deepEqual(r.where(), { feed: 1, feedParts: 0, folded: 4, bg: 4, tabFeed: 1 });
+  assert.ok(Object.values(r.f.view({ view: 'background' }).background).every(b => b.post.part === 'folded'));
   // and if it never had: after burstWaitMs they stand on their own
   const q = rig({ following_unread_target: 3 });
   build(q.site, { n: 2, old: 0 });
@@ -121,8 +122,16 @@ test('a part fetched while its thread cannot be: Background, "waiting for its th
   q.web.get = async (u, o) => (String(u).endsWith(`${idOf(99)}.json`) ? { status: 404, url: String(u), text: 'never' } : real2(u, o));
   await q.f.refresh();
   assert.equal(q.where().tabFeed, 0);
-  q.clock.t += F.LIMITS.burstWaitMs + 1;
-  assert.equal(q.where().feedParts, 2, 'the wait is bounded');
+  q.clock.t += F.LIMITS.burstWaitMs - 1000;
+  await q.f.refresh();
+  assert.equal(q.where().feedParts, 0, 'still awaiting just before the bound');
+  q.clock.t += 2000;
+  await q.f.refresh();
+  assert.equal(q.where().feedParts, 2, 'the wait is bounded: at the next refresh after it, they stand alone');
+  assert.ok(q.feed().every(e => e.head.part === 'standalone'));
+  assert.deepEqual(F.PART_STATES, ['awaiting', 'folded', 'standalone']);
+  assert.throws(() => F.movePart({ part: 'awaiting', awaits_until: 100 }, 'wait_over', 50), /before awaits_until/);
+  assert.throws(() => F.movePart({ part: 'folded' }, 'thread_held'), /cannot/);
   q.done(); r.done();
 });
 

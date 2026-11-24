@@ -30,9 +30,11 @@
 //   INBOX_STATES    the mentions inbox's standing:        moveInbox
 //   MENTION_READ    a mention's read state:               moveMention
 //   LEDGER_COPIES   whether a cached ledger awaits writing: moveLedgerCopy
+//   FRESH_MODES     whether a blyg's new posts are fetched or wait (failing): moveFresh
+//   FOLLOW_STATES   followed, kept (unfollowed, read ids kept), forgotten: moveFollow
+//   PART_STATES     a burst part fetched before its thread: movePart
 // and, as values a function works out rather than states that move:
-//   PLACEMENTS (placementOf: which view an entry belongs to, and why: a burst part waiting for its thread is worked out
-//   from the record's `awaits` and the time), IDENTITY_VERDICTS (identityFor), ANSWER_SOURCES, LAST_CHANGES.
+//   PLACEMENTS (placementOf: which view an entry belongs to, and why), IDENTITY_VERDICTS (identityFor), ANSWER_SOURCES, LAST_CHANGES.
 //
 // WHAT IS KEPT goes through ONE store (fileStore by default; see "the storage seam"): the main document, one ledger per blyg,
 // one body per held post. Per post (never the whole HTML): origin, id, kind, current version, created, updated, title (first
@@ -113,6 +115,38 @@ export const BLYG_MOVES = Object.freeze({
 });
 const blygMachine = machine('blyg state', BLYG_STATES, BLYG_MOVES);
 export const canMoveBlyg = (b, ev) => blygMachine.can(b.state, ev);
+
+// Whether a blyg is followed, ONE list and ONE function (the engine's moveFollow) for its moves. Where it is held says which:
+// `blygs` (followed) or `kept` (unfollowed, its read ids kept), never both (moveFollow is the only writer of either map's
+// membership; a hand-edited document with both is repaired on load).
+//   followed  — in the follow list: refreshed, its posts held
+//   kept      — unfollowed with "Stop following": its ledger (read ids and gone filter) is kept, so a refollow shows none again
+//   forgotten — nothing kept (never followed, unfollowed with "forget", or a kept ledger expired: keptMax, keptMs)
+//   follow           forgotten → followed
+//   refollow         kept → followed (its ledger is used as it is)
+//   unfollow_keep    followed → kept
+//   unfollow_forget  followed → forgotten
+//   expire           kept → forgotten
+// A burst part fetched before its thread (§13.7, finding 4a), ONE field `part` on its record, moved by movePart:
+//   awaiting   — in Background, "waiting for its thread", until the thread is held or `awaits_until` (data: fetched + burstWaitMs)
+//   folded     — the thread it waited for is held: from now on foldBursts alone decides whether it folds under it
+//   standalone — the wait is over and the thread never came: it is an ordinary post
+//   thread_held  awaiting → folded
+//   wait_over    awaiting → standalone (refused before awaits_until: the time is data that gates the move)
+// A post that never waited has no `part`.
+export const PART_STATES = Object.freeze(['awaiting', 'folded', 'standalone']);
+export const PART_MOVES = Object.freeze({ thread_held: { awaiting: 'folded' }, wait_over: { awaiting: 'standalone' } });
+const partMachine = machine('burst part', PART_STATES, PART_MOVES);
+export function movePart(rec, ev, at = Date.now()) {
+  if (ev === 'wait_over' && at < (rec.awaits_until || 0)) throw new Error('burst part: cannot wait_over before awaits_until');
+  rec.part = partMachine.to(rec.part, ev); return rec.part;
+}
+export const FOLLOW_STATES = Object.freeze(['followed', 'kept', 'forgotten']);
+export const FOLLOW_MOVES = Object.freeze({
+  follow: { forgotten: 'followed' }, refollow: { kept: 'followed' },
+  unfollow_keep: { followed: 'kept' }, unfollow_forget: { followed: 'forgotten' }, expire: { kept: 'forgotten' },
+});
+const followMachine = machine('follow', FOLLOW_STATES, FOLLOW_MOVES);
 /** The one way a followed blyg's state changes. Throws for a move the table does not allow. */
 export function moveBlyg(b, ev) { b.state = blygMachine.to(b.state, ev); return b.state; }
 
@@ -701,9 +735,8 @@ export function placementOf(entry) {
   if (isWithdrawn(p)) return { placement: 'background', reason: (entry.mine || []).includes(p.origin) ? REASONS.withdrawnOwn : REASONS.withdrawn };
   if (entry.blyg.state === 'paused') return { placement: 'background', reason: REASONS.paused };
   if (entry.burstHead) return { placement: 'background', reason: REASONS.burst };
-  // a fragment fetched before the thread of its burst (by its index dates): Background until the thread is held, for at most
-  // burstWaitMs, then it stands on its own (buildView works out `waiting`)
-  if (entry.waiting) return { placement: 'background', reason: REASONS.waiting };
+  // a fragment fetched before the thread of its burst (by its index dates): Background while its part status is `awaiting`
+  if (p.part === 'awaiting') return { placement: 'background', reason: REASONS.waiting };
   const unopened = p.read === 'new' || p.read === 'edited';
   if (!unopened && p.last_change === 'maintenance') return { placement: 'background', reason: REASONS.maintenance };
   if (!unopened && p.last_change === 'minor') return { placement: 'background', reason: REASONS.minor };
@@ -796,8 +829,6 @@ export function foldBursts(items) {
  */
 export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all', now = Date.now() }) {
   const posts = items.filter(i => blygs[i.origin]);
-  const heldIdents = new Set(items.map(i => identOf(i.origin, i.id)));
-  const waiting = p => !!p.awaits && !heldIdents.has(identOf(p.origin, p.awaits)) && now < (Date.parse(p.first_seen) || 0) + LIMITS.burstWaitMs;
   // an archived post is never folded into (or under) a burst: the Archive lists it on its own
   const live = posts.filter(i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read));
   // A burst folds its members only under a head that is itself in the Feed. A head that goes elsewhere (a barely
@@ -808,7 +839,7 @@ export function buildView({ items, blygs, mentions = [], mine = [], filter = 'al
   const memberOf = new Map(); // ident → head
   for (const e of folded) for (const m of e.members) memberOf.set(identOf(m.origin, m.id), e.head);
   const place = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine,
-    burstHead: memberOf.get(identOf(p.origin, p.id)) || null, waiting: waiting(p) });
+    burstHead: memberOf.get(identOf(p.origin, p.id)) || null });
   const placed = new Map(posts.map(p => [p, place(p)]));
   const at = view => posts.filter(p => placed.get(p).placement === view);
   // the feed: heads (bursts folded) placed in the feed, with their members counted
@@ -1035,10 +1066,21 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const prune = st => {
     for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k];
     // the ledgers kept for blygs unfollowed (read ids and gone filter only): at most keptMax, none older than keptMs
-    const kept = Object.entries(st.kept).filter(([o]) => !st.blygs[o]).sort((a, b) => b[1] - a[1]);
-    for (const [i, [o, at]] of kept.entries()) if (i >= LIMITS.keptMax || now() - at > LIMITS.keptMs) { delete st.kept[o]; forgetLedger(o); }
-    for (const o of Object.keys(st.kept)) if (st.blygs[o]) delete st.kept[o];
+    const kept = Object.entries(st.kept).sort((a, b) => b[1] - a[1]);
+    for (const [i, [o, at]] of kept.entries()) if (i >= LIMITS.keptMax || now() - at > LIMITS.keptMs) moveFollow(st, o, 'expire');
   };
+  const followStateOf = (st, origin) => (st.blygs[origin] ? 'followed' : st.kept[origin] !== undefined ? 'kept' : 'forgotten');
+  /**
+   * The ONE way a blyg's follow state changes (FOLLOW_STATES): refuses a move the table does not allow, then makes the maps say
+   * the new state. `record` is the blyg's record for follow and refollow. → the new state.
+   */
+  function moveFollow(st, origin, ev, record = null) {
+    const to = followMachine.to(followStateOf(st, origin), ev);
+    if (to === 'followed') { st.blygs[origin] = record; delete st.kept[origin]; }
+    else if (to === 'kept') { delete st.blygs[origin]; st.kept[origin] = now(); }
+    else { delete st.blygs[origin]; delete st.kept[origin]; forgetLedger(origin); }
+    return to;
+  }
   // A blyg's ledger, a document of its own (so a tick or an open does not rewrite every blyg's ids): the ids of its posts the
   // owner ticked, each with the post's `created` (so a post that left the Archive's list is never fetched again as unread),
   // the ids whose document could not be used (with the index's version, so they are not asked for again until it changes),
@@ -1152,7 +1194,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     base = unitsOf(v);
     const kept = {};
     for (const [o, at] of Object.entries(v.kept && typeof v.kept === 'object' ? v.kept : {})) if (originOf(o) === o && Number.isFinite(at)) kept[o] = at;
-    // kept: origin → when it was unfollowed, for the blygs unfollowed whose read ids are kept (so a refollow does not show them again)
+    // kept: origin → when it was unfollowed, for the blygs unfollowed whose read ids are kept (so a refollow does not show them again);
+    // a hand-edited document that has an origin in both maps is repaired: it is followed (FOLLOW_STATES)
+    for (const o of Object.keys(kept)) if (v.blygs && typeof v.blygs === 'object' && v.blygs[o]) delete kept[o];
     state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {}, kept,
       last_run: v.last_run || null, inbox: { ...emptyInbox(), ...(v.inbox && typeof v.inbox === 'object' ? v.inbox : {}) } };
     // a hand-edited record never makes the engine fetch something the reader paused
@@ -1167,6 +1211,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
       if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
       if (!i.key) i.key = randomKey();
+      // a burst part from before its status was named (an `awaits` alone) awaits until first seen + burstWaitMs; an unknown status stands alone
+      if (i.awaits && !('part' in i)) { i.part = 'awaiting'; i.awaits_until = (Date.parse(i.first_seen) || 0) + LIMITS.burstWaitMs; }
+      if ('part' in i && !PART_STATES.includes(i.part)) i.part = 'standalone';
       // the newer wording is data of archived_changed alone: a hand-edited record that has one without the other is made whole
       if (i.read !== 'archived_changed') delete i.newer;
       else if (!i.newer || !Number.isInteger(i.newer.version) || typeof i.newer.hash !== 'string') { delete i.newer; moveRead(i, 'revert'); }
@@ -1314,10 +1361,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const st = load();
     if (st.blygs[origin]) return false;
     if (Object.keys(st.blygs).length >= LIMITS.followMax) throw new Error(`at most ${LIMITS.followMax} blygs can be followed`);
-    st.blygs[origin] = { origin, title: cleanText(title, 200), author: cleanText(author, 200), state: 'active', added: new Date(now()).toISOString(),
-      via, failures: 0, absent_runs: 0, retry_after: 0, last_try: 0, last_ok: 0, last_error: '' };
     // followed again after an unfollow that kept what was read: its ledger (read ids and gone filter) is used as it is
-    delete st.kept[origin];
+    moveFollow(st, origin, followStateOf(st, origin) === 'kept' ? 'refollow' : 'follow', { origin, title: cleanText(title, 200), author: cleanText(author, 200),
+      state: 'active', added: new Date(now()).toISOString(), via, failures: 0, absent_runs: 0, retry_after: 0, last_try: 0, last_ok: 0, last_error: '' });
     return true;
   }
   async function follow(url) {
@@ -1338,13 +1384,12 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   function unfollow(origin, { forget = false } = {}) {
     const st = load();
     if (!st.blygs[origin]) return false;
-    if (forget) { delete st.blygs[origin]; delete st.kept[origin]; forgetLedger(origin); }
+    if (forget) moveFollow(st, origin, 'unfollow_forget');
     else {
       const led = ledgerFor(origin);
       led.bad = {}; led.later = {};
       moveBackfill(led, 'forget');
-      delete st.blygs[origin];
-      st.kept[origin] = now();
+      moveFollow(st, origin, 'unfollow_keep');
     }
     save(); sweepBodies(); reschedule(); onChange(); // save() prunes its posts
     return true;
@@ -1577,7 +1622,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const change = changeOf(held, rec, cfg.following_barely_changed_percent);
     if (!held || isWithdrawn(held)) {
       st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words',
-        words_version: rec.version, ...(e.awaits && rec.kind === 'fragment' ? { awaits: e.awaits } : {}), ...mismatch };
+        words_version: rec.version, ...(e.awaits && rec.kind === 'fragment' ? { awaits: e.awaits, part: 'awaiting', awaits_until: now() + LIMITS.burstWaitMs } : {}), ...mismatch };
       tally.new++;
     } else if (archived) {
       // THE EDIT RULE for a post the owner had read. The same content_hash as the one read is maintenance: nothing moves, the
@@ -1828,6 +1873,15 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       else if (unread < cfg.following_unread_target) tally.deferred += p.backfill.length;
     }
   }
+  /** Each burst part still awaiting its thread: folded once the thread is held, standing alone once its wait is over (PART_STATES). */
+  function settleParts() {
+    const st = load();
+    for (const i of Object.values(st.items)) {
+      if (i.part !== 'awaiting') continue;
+      if (st.items[identOf(i.origin, i.awaits)]) movePart(i, 'thread_held');
+      else if (now() >= (i.awaits_until || 0)) movePart(i, 'wait_over', now());
+    }
+  }
   /** A blyg's backfill mode after a run: more to fetch, or caught up; a paused one recovers once its list is below its bounds. */
   function settle(plan) {
     if (load().blygs[plan.b.origin] !== plan.b) return;
@@ -1918,6 +1972,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       }
       try { await backfill(plans, g, cfg, tally); } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
       for (const p of plans) settle(p);
+      settleParts();
       save();
       try { await refreshInbox(getter(newBudget({ following_run_requests: 3, following_run_seconds: 30 }, now)), cfg); } catch (e) { tally.errors++; console.warn(`[following] inbox: ${cleanText(String(e && e.message), 200)}`); }
       tally.requests = budget.requests;
@@ -1969,6 +2024,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
           if (out !== 'aborted') outcome(p, e, out);
         }
       }
+      settleParts();
       save();
     } finally { run.topup_after = now() + LIMITS.topupGapMs; moveRun(run, 'end'); }
     onChange();
