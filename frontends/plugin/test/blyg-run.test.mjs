@@ -808,12 +808,18 @@ test('abandon after apply runs the site\'s abandon command only with the setting
   const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
   const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
   const file = path.join(rig.out, 'run4.json');
-  fs.writeFileSync(file, JSON.stringify({ mode: 'publishing', id: 'abc', token: 'tok', note_rel: '_notes/x.md', settings_fp: 'not-the-fingerprint-of-these-settings', steps: [{ step: 'apply', exit: 0, output: 'A' }], thread_ids: ['t1'], page_url: 'u' }));
+  // a REAL note, unchanged (not a tainted record: that path runs nothing for another reason, so it never tested this check — mutant M23)
+  fs.writeFileSync(path.join(rig.folder, 'x.md'), 'T');
+  const noteSha = crypto.createHash('sha256').update('T').digest('hex');
+  fs.writeFileSync(file, JSON.stringify({ mode: 'publishing', id: 'abc', token: 'tok', note_rel: '_notes/x.md', note_sha: noteSha, settings_fp: 'not-the-fingerprint-of-these-settings', steps: [{ step: 'apply', exit: 0, output: 'A' }], thread_ids: ['t1'], page_url: 'u' }));
   const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: () => null, savePage: () => {} });
-  assert.ok(pub.current().mode.startsWith('interrupted_'));
+  const v = pub.current();
+  assert.ok(v.mode.startsWith('interrupted_'));
+  assert.ok(!v.tainted, 'the record is sound: only the settings changed');
   const a = await pub.abandon({ id: 'abc', token: 'tok' });
-  assert.ok(a.ok);
+  assert.deepEqual([a.ok, a.view && a.view.mode], [true, 'abandoned'], JSON.stringify(a).slice(0, 300));
   assert.deepEqual(rig.calls(), [], 'no command ran under changed settings');
+  assert.ok(fs.existsSync(path.join(rig.folder, 'x.md')), 'and the note is left (after apply)');
 });
 
 test('F7: a start whose shown setting is not the one in force is refused with a plain message and starts nothing (a stale drawer cannot promise a look first, or the reverse)', async t => {
