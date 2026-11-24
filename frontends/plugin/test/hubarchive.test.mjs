@@ -32,7 +32,11 @@ function rig({ settings = {} } = {}) {
   const make = () => F.createFollowing({ file, get, now: () => clock.t, getSettings: SETTINGS, timers: { set: () => ({}), clear: () => {} } });
   const r = { f: make(), web, clock, dir, file, make, SETTINGS,
     json: () => JSON.parse(fs.readFileSync(file, 'utf8')),
-    ledger: o => r.json().ledgers[o],
+    // a blyg's ledger is a document of its own (following-ledgers/<digest of the origin>.json)
+    ledgerFile: o => path.join(dir, 'following-ledgers', `${F.ledgerName(o)}.json`),
+    ledger: o => { try { return JSON.parse(fs.readFileSync(r.ledgerFile(o), 'utf8')); } catch { return undefined; } },
+    ledgerIds: o => (r.ledger(o) || { ids: [] }).ids.map(p => p[0]),
+    setLedger: (o, fn) => { const l = r.ledger(o); fn(l); fs.writeFileSync(r.ledgerFile(o), JSON.stringify(l)); },
     bodyFiles: () => { try { return fs.readdirSync(path.join(dir, 'following-bodies')); } catch { return []; } },
     done: () => fs.rmSync(dir, { recursive: true, force: true }) };
   return r;
@@ -96,7 +100,7 @@ test('tick: the post leaves the Feed, its text is deleted, a small record stays;
   assert.equal(rec.title, 'Post 3');
   assert.ok(JSON.stringify(rec).length < 700, `a record is about half a kilobyte (${JSON.stringify(rec).length} bytes)`);
   assert.ok(!JSON.stringify(rec).includes('Words of post'), 'none of the post\'s words is kept');
-  assert.deepEqual(r.ledger(A).ids, [idOf(3)], 'its id is remembered in its blyg\'s ledger');
+  assert.deepEqual(r.ledgerIds(A), [idOf(3)], 'its id is remembered in its blyg\'s ledger');
   // ticking twice is refused, and the engine says so
   assert.throws(() => r.f.readMove(key, 'tick'), /cannot tick while archived/);
   r.done();
@@ -193,14 +197,14 @@ test('untick: the post is fetched again and goes back to the Feed as new; its id
   site.down = 'connection reset';
   await assert.rejects(() => r.f.untick(key), /could not fetch the post/);
   assert.equal(r.f.itemByKey(key).read, 'archived');
-  assert.deepEqual(r.ledger(A).ids, [idOf(2)]);
+  assert.deepEqual(r.ledgerIds(A), [idOf(2)]);
   site.down = null;
   const before = r.web.itemRequests().length;
   assert.equal(await r.f.untick(key), 'new');
   assert.equal(r.web.itemRequests().length, before + 1, 'one request');
   assert.equal(r.f.itemByKey(key).read, 'new');
   assert.equal(r.f.itemByKey(key).key, key, 'the same key');
-  assert.deepEqual(r.ledger(A).ids, []);
+  assert.deepEqual(r.ledgerIds(A), []);
   assert.equal(r.bodyFiles().length, 3, 'its text is back');
   assert.match(r.f.bodyHtml(key), /Words of post 2/);
   assert.equal(feed(r).length, 3);
@@ -254,7 +258,7 @@ test('an edit to an archived post: the same words (same content hash) stay archi
   assert.equal(h.version, 2);
   assert.equal(h.edited_after_read, 1, 'it remembers which version was read');
   assert.match(r.f.bodyHtml(h.key), /Entirely different/);
-  assert.deepEqual(r.ledger(A).ids, [idOf(2)], 'the one that returned is no longer in the ledger');
+  assert.deepEqual(r.ledgerIds(A), [idOf(2)], 'the one that returned is no longer in the ledger');
   // and a tiny change counts as a change too: no text is kept to measure it by (the rule of "barely changed" needs both texts)
   r.f.readMove(h.key, 'tick');
   site.put(makeDoc({ id: idOf(3), origin: A, title: 'Post 3', body: 'Entirely different words now, rewritten!', version: 3, created: day(3), updated: day(70) }));
@@ -401,7 +405,8 @@ test('one huge blyg (a 100,000-entry index): the Hub reads at most 20,000 entrie
   assert.equal(feed(r).length, 50);
   assert.ok(feed(r).filter(h => h.origin === B).length >= 10, 'the small blyg is not starved: all of its ten are there');
   assert.ok(fs.statSync(r.file).size < 300 * 1024, `state stays small (${fs.statSync(r.file).size} bytes)`);
-  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'inbox', 'items', 'last_run', 'ledgers']);
+  assert.deepEqual(Object.keys(r.json()).sort(), ['blygs', 'inbox', 'items', 'last_run'], 'the ledgers are documents of their own');
+  assert.ok(fs.statSync(r.ledgerFile(A)).size < 64 * 1024, 'and the big blyg\'s ledger is small too');
   r.done();
 });
 
@@ -429,7 +434,7 @@ test('an index that changes on every fetch cannot make a run exceed its budget o
     sizes.push(fs.statSync(r.file).size);
   }
   assert.ok(Math.max(...sizes) < sizes[0] * 1.5 + 2000, `the stored state does not grow with the index: ${sizes.join(' ')}`);
-  assert.deepEqual(r.ledger(A).ids, []);
+  assert.deepEqual(r.ledgerIds(A), []);
   assert.ok(feed(r).length <= 12);
   r.done();
 });
@@ -519,14 +524,12 @@ test('at the bound the ledger stops that blyg ("stopped"), and a post whose id c
   follow(r, A, B);
   await r.f.refresh();
   // the blyg already remembers as many ids as it may (invented ids, not in its index)
-  const doc = r.json();
-  doc.ledgers[A].ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => idOf(7000000 + i));
-  fs.writeFileSync(r.file, JSON.stringify(doc));
+  r.setLedger(A, l => { l.ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, i) => [idOf(7000000 + i), 1]); });
   const f2 = r.make();
   const k = f2.keyFor(A, idOf(5));
   f2.readMove(k, 'tick');
   assert.equal(f2.listBlygs().find(b => b.origin === A).backfill, 'stopped');
-  const led = JSON.parse(fs.readFileSync(r.file, 'utf8')).ledgers[A];
+  const led = r.ledger(A);
   assert.equal(led.ids.length, F.LIMITS.archiveIdsPerBlyg, 'nothing is added past the bound');
   // even when its record is gone and the index lists it
   const j = JSON.parse(fs.readFileSync(r.file, 'utf8'));
@@ -550,15 +553,13 @@ test('the total bound on remembered ids stops a blyg in the same way, though its
   origins.forEach((o, i) => publish(r.web.add(o), o, 3, { base: i * 100 }));
   follow(r, ...origins);
   await r.f.refresh();
-  const doc = r.json();
   // five blygs each remember the most they may: 50,000 in all (invented ids that are in no index)
-  origins.slice(0, 5).forEach((o, i) => { doc.ledgers[o].ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, k) => idOf(10000000 + i * 20000 + k)); });
+  origins.slice(0, 5).forEach((o, i) => { r.setLedger(o, l => { l.ids = Array.from({ length: F.LIMITS.archiveIdsPerBlyg }, (_, k) => [idOf(10000000 + i * 20000 + k), 1]); }); });
   assert.equal(5 * F.LIMITS.archiveIdsPerBlyg, F.LIMITS.archiveIdsTotal);
-  fs.writeFileSync(r.file, JSON.stringify(doc));
   const f = r.make();
   f.readMove(f.keyFor(origins[5], idOf(500 + 1)), 'tick');
   assert.equal(f.listBlygs().find(b => b.origin === origins[5]).backfill, 'stopped');
-  assert.deepEqual(JSON.parse(fs.readFileSync(r.file, 'utf8')).ledgers[origins[5]].ids, [], 'not remembered');
+  assert.deepEqual(r.ledger(origins[5]).ids, [], 'not remembered');
   assert.equal(f.listBlygs().find(b => b.origin === origins[0]).backfill, 'caught_up', 'the others are not stopped');
   r.done();
 });
@@ -755,7 +756,8 @@ test('a document written before the Archive loads unchanged: nothing is archived
   assert.equal(f.listBlygs()[0].backfill, 'caught_up');
   // and the first tick on migrated state works
   assert.equal(f.readMove(f.keyFor(A, idOf(2)), 'tick'), 'archived');
-  assert.equal(r.json().ledgers[A].ids.length, 1);
+  assert.equal(r.ledger(A).ids.length, 1);
+  assert.ok(!('ledgers' in r.json()), 'the ledgers live in their own documents');
   r.done();
 });
 
@@ -771,10 +773,11 @@ test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up
   f.listBlygs();
   assert.deepEqual(f.listBlygs().map(b => b.backfill), ['unknown']);
   // saved on the next change: the ledger of a blyg that is not followed is dropped, the rest is clean
+  // (a document written before the split carried its ledgers inside it: each becomes a document of its own, written on the next save)
   f.setBlygState(A, 'pause');
-  const led = r.json().ledgers;
-  assert.deepEqual(Object.keys(led), [A]);
-  assert.deepEqual(led[A], { ids: [idOf(1), idOf(2)], bad: { [idOf(3)]: 2 }, backfill: 'unknown' });
+  assert.ok(!('ledgers' in r.json()));
+  assert.deepEqual(fs.readdirSync(path.dirname(r.ledgerFile(A))), [path.basename(r.ledgerFile(A))], 'the ledger of a blyg that is not followed is not carried over');
+  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], bad: { [idOf(3)]: [2, r.clock.t] }, backfill: 'unknown' });
   r.done();
 });
 
@@ -787,7 +790,7 @@ test('unfollowing a blyg forgets its archive records and its ledger (the confirm
   assert.equal(r.f.view().tabs.archive, 3);
   r.f.unfollow(A);
   assert.equal(r.f.view().tabs.archive, 0);
-  assert.deepEqual(r.json().ledgers, {});
+  assert.equal(r.ledger(A), undefined);
   assert.deepEqual(r.json().items, {});
   r.done();
 });

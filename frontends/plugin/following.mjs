@@ -55,7 +55,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { guardedGet as netGet, FetchTrouble, urlRefusal } from './netguard.mjs';
-import { readJsonState, writeJson, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
+import { readJsonState, refuseIfUnreadable, warnUnreadable } from './fsjson.mjs';
 import { session, findManifest, identityOf, isManifest, ID_RE, clip, textContent, isWebUrl, samePage,
   docRefusal, cleanHints, candidateBase, pageLinks, LIMITS as BLYG_LIMITS } from './blyg.mjs';
 import { sanitizeArticle, sanitizeStable } from './sanitize.mjs';
@@ -270,6 +270,8 @@ export const LIMITS = Object.freeze({
   textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
+  saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
+  tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
 });
 const KINDS = ['fragment', 'thread', 'withdrawn'];
@@ -635,38 +637,255 @@ function newBudget(settings, now) {
     } };
 }
 
+// ---- the storage seam -------------------------------------------------------------------
+// EVERYTHING the engine keeps goes through ONE store, so a host that keeps it elsewhere (a blob store with conditional
+// writes, one blob per body) supplies its own and this file does not change. Three kinds of thing are kept:
+//   'state'  — the one main document (the follow list, the held posts and archive records, the inbox, the last run);
+//   'ledger' — one small document per blyg (its read ids and floor, its unusable documents, its backfill mode, its queue);
+//   'body'   — one sanitised body per held post, named by the post's random key.
+// The interface (every method synchronous; a host whose store is asynchronous wraps the engine's calls, not this file):
+//   get(kind, name)                     → null (nothing stored) | { value, version } | { unreadable: Error, version }
+//                                          value: parsed JSON for 'state' and 'ledger', a string for 'body'
+//   put(kind, name, value, { ifVersion }) → { version }. ifVersion undefined: write whatever is stored; null: only if
+//                                          nothing is stored; a string: only if the stored version is still that one.
+//                                          Otherwise it throws StoreConflict and writes nothing.
+//   delete(kind, name), list(kind)      → the names stored of that kind
+// A version is opaque. The engine writes the state and a ledger with the version it read, and on a conflict merges what
+// it changed into what is stored now (mergeState, mergeLedger) instead of writing over it.
+export const STORE_KINDS = Object.freeze(['state', 'ledger', 'body']);
+export class StoreConflict extends Error {
+  constructor(kind, name) { super(`${kind} ${name} was changed by someone else meanwhile`); this.name = 'StoreConflict'; this.code = 'ESTORECONFLICT'; }
+}
+/** The name a blyg's ledger is kept under: a digest of its origin (an origin is not a safe file name). */
+export const ledgerName = origin => crypto.createHash('sha256').update(String(origin)).digest('hex').slice(0, 32);
+/**
+ * The default store: files, laid out as before the seam existed (`file` is following.json; bodies in following-bodies/
+ * beside it, `<key>.html`; ledgers in following-ledgers/, `<ledgerName>.json`). A version is the file's inode, size and
+ * modification time in nanoseconds; a conditional put compares it just before its atomic rename (a check-then-rename on
+ * one machine, so two processes can still race inside that instant: a host that needs better supplies a real
+ * compare-and-swap). A state or ledger file that is not JSON is never written over (fsjson's rule).
+ */
+export function fileStore(file) {
+  const dir = path.dirname(file);
+  const dirs = { body: path.join(dir, 'following-bodies'), ledger: path.join(dir, 'following-ledgers') };
+  const safe = name => String(name).replace(/[^0-9a-f]/g, '');
+  const where = (kind, name) => {
+    if (kind === 'state') return file;
+    if (kind === 'ledger') return path.join(dirs.ledger, `${safe(name)}.json`);
+    if (kind === 'body') return path.join(dirs.body, `${safe(name)}.html`);
+    throw new Error(`store: no such kind ${kind}`);
+  };
+  const versionOf = f => {
+    try { const s = fs.statSync(f, { bigint: true }); return `${s.ino}-${s.size}-${s.mtimeNs}`; }
+    catch (e) { if (e && e.code === 'ENOENT') return null; throw e; }
+  };
+  return {
+    kind: 'files',
+    get(kind, name) {
+      const f = where(kind, name);
+      const version = versionOf(f);
+      if (version === null) return null;
+      if (kind === 'body') { try { return { value: fs.readFileSync(f, 'utf8'), version }; } catch { return null; } }
+      const got = readJsonState(f);
+      if (got.state === 'missing') return null;
+      if (got.state === 'unreadable') return { unreadable: got.error, version };
+      return { value: got.value, version };
+    },
+    put(kind, name, value, { ifVersion } = {}) {
+      const f = where(kind, name);
+      if (kind !== 'body') refuseIfUnreadable(f);
+      if (ifVersion !== undefined && versionOf(f) !== ifVersion) throw new StoreConflict(kind, name);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      const tmp = `${f}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, kind === 'body' ? String(value) : (typeof value === 'string' ? value : JSON.stringify(value)));
+      fs.renameSync(tmp, f);
+      return { version: versionOf(f) };
+    },
+    delete(kind, name) { try { fs.unlinkSync(where(kind, name)); } catch { /* not there */ } },
+    list(kind) {
+      if (kind === 'state') return fs.existsSync(file) ? ['following'] : [];
+      let names = [];
+      try { names = fs.readdirSync(dirs[kind]); } catch { return []; }
+      const ext = kind === 'body' ? '.html' : '.json';
+      // a temp file a crash left behind (older than an hour, so never one being written now) goes
+      for (const n of names) {
+        if (!/\.tmp\.\d+$/.test(n)) continue;
+        try { const p = path.join(dirs[kind], n); if (Date.now() - fs.statSync(p).mtimeMs > 3600e3) fs.unlinkSync(p); } catch { /* gone */ }
+      }
+      return names.filter(n => n.endsWith(ext)).map(n => n.slice(0, -ext.length));
+    },
+  };
+}
+/**
+ * A store held in memory, with the same contract (and a real compare-and-swap): for tests, and as the shape a serverless host's
+ * blob store takes (state and ledgers as JSON documents, bodies as text, a version per entry). `writes` counts puts per kind.
+ */
+export function memoryStore() {
+  const m = new Map();
+  let n = 0;
+  const writes = { state: 0, ledger: 0, body: 0 };
+  const k = (kind, name) => { if (!STORE_KINDS.includes(kind)) throw new Error(`store: no such kind ${kind}`); return `${kind}/${name}`; };
+  return {
+    kind: 'memory', writes, entries: m,
+    get(kind, name) { const e = m.get(k(kind, name)); return e ? { value: kind === 'body' ? e.text : JSON.parse(e.text), version: e.version } : null; },
+    put(kind, name, value, { ifVersion } = {}) {
+      const e = m.get(k(kind, name));
+      if (ifVersion !== undefined && (e ? e.version : null) !== ifVersion) throw new StoreConflict(kind, name);
+      const version = `v${++n}`;
+      m.set(k(kind, name), { text: kind === 'body' ? String(value) : (typeof value === 'string' ? value : JSON.stringify(value)), version });
+      writes[kind]++;
+      return { version };
+    },
+    delete(kind, name) { m.delete(k(kind, name)); },
+    list(kind) { return [...m.keys()].filter(x => x.startsWith(`${kind}/`)).map(x => x.slice(kind.length + 1)); },
+  };
+}
+
+// The main document, as units a merge can compare: each entry of these maps is one unit, every other top-level member one.
+const UNIT_MAPS = ['items', 'blygs', 'kept'];
+const SEP = '\u0000';
+function unitsOf(doc) {
+  const m = new Map();
+  for (const [k, v] of Object.entries(doc)) {
+    if (UNIT_MAPS.includes(k)) for (const [n, x] of Object.entries(v || {})) m.set(`${k}${SEP}${n}`, JSON.stringify(x));
+    else if (v !== undefined) m.set(k, JSON.stringify(v));
+  }
+  return m;
+}
+/** The document's JSON, built from its units (so a save serialises each unit once). */
+function textOfUnits(units, doc) {
+  const parts = [];
+  for (const k of Object.keys(doc)) {
+    if (UNIT_MAPS.includes(k)) {
+      const inner = [];
+      for (const n of Object.keys(doc[k] || {})) inner.push(`${JSON.stringify(n)}:${units.get(`${k}${SEP}${n}`)}`);
+      parts.push(`${JSON.stringify(k)}:{${inner.join(',')}}`);
+    } else if (units.has(k)) parts.push(`${JSON.stringify(k)}:${units.get(k)}`);
+  }
+  return `{${parts.join(',')}}`;
+}
+/**
+ * A three-way merge of the main document, made when the stored one moved since this engine read it (another process, or
+ * another invocation of a serverless host, wrote it meanwhile). Unit by unit: a unit the other writer did not change keeps
+ * ours; a unit the other writer changed takes theirs, EVEN IF we changed it too (so the owner's tick in another process is
+ * never undone by a refresh here: the refresh's write to that post is dropped, as it is in one process, finding 1). `ours`
+ * is changed in place. → how many units of ours were dropped.
+ */
+export function mergeState(ours, base, theirs) {
+  const tu = unitsOf(theirs), ou = unitsOf(ours);
+  let dropped = 0;
+  for (const key of new Set([...tu.keys(), ...ou.keys(), ...base.keys()])) {
+    const b = base.get(key), o = ou.get(key), t = tu.get(key);
+    if (t === b) continue;
+    if (o !== b && o !== t) dropped++;
+    const [top, name] = key.includes(SEP) ? key.split(SEP) : [key, null];
+    const v = t === undefined ? undefined : JSON.parse(t);
+    if (name === null) { if (v === undefined) delete ours[top]; else ours[top] = v; continue; }
+    if (!ours[top] || typeof ours[top] !== 'object') ours[top] = {};
+    if (v === undefined) delete ours[top][name]; else ours[top][name] = v;
+  }
+  return dropped;
+}
+/**
+ * A three-way merge of one ledger: the read ids and the unusable and later-again lists are SETS (what either side added
+ * stays, what either side removed goes), the floor and the newest-seen date take the larger, and the rest (backfill mode,
+ * queue, returns) takes ours where we changed it and theirs otherwise. `ours` is changed in place.
+ */
+export function mergeLedger(ours, base, theirs) {
+  const setMerge = (o, b, t) => {
+    const out = new Map(t);
+    for (const [k, v] of o) if (!b.has(k)) out.set(k, v);
+    for (const k of b.keys()) if (!o.has(k)) out.delete(k);
+    return out;
+  };
+  const pairs = l => new Map((l.ids || []).map(p => [p[0], p]));
+  ours.ids = [...setMerge(pairs(ours), pairs(base), pairs(theirs)).values()];
+  for (const k of ['bad', 'later']) {
+    ours[k] = Object.fromEntries(setMerge(new Map(Object.entries(ours[k] || {})), new Map(Object.entries(base[k] || {})), new Map(Object.entries(theirs[k] || {}))));
+  }
+  ours.floor = Math.max(ours.floor || 0, theirs.floor || 0);
+  ours.seen_until = Math.max(ours.seen_until || 0, theirs.seen_until || 0);
+  for (const k of ['backfill', 'queue', 'returns']) if (JSON.stringify(ours[k]) === JSON.stringify(base[k])) ours[k] = theirs[k];
+  return ours;
+}
+
 // ---- the engine -----------------------------------------------------------------------
-export function createFollowing({ file, get = netGet, now = Date.now, getSettings = () => followingSettingsOf({}).settings,
+export function createFollowing({ file, store = fileStore(file), get = netGet, now = Date.now, getSettings = () => followingSettingsOf({}).settings,
   mayFetch = () => true, readToken = readTokenFile, tokenWarning = tokenFileWarning, tokenForbidden = [],
   timers = { set: (fn, ms) => setInterval(fn, ms), clear: h => clearInterval(h) }, onChange = () => {} } = {}) {
-  let state = null; // { blygs, items (by identOf), ledgers (by origin), last_run, inbox }
+  let state = null; // { blygs, items (by identOf), last_run, inbox } — the ledgers are documents of their own (ledgerOf)
+  let stateVersion = null; // the stored version this engine read or last wrote (StoreConflict when it moved)
+  let base = new Map(); // the stored document's units as last read or written: what a merge compares against
+  let unreadableState = null; // the stored state could not be read: it is never written over (the store refuses)
   const emptyInbox = () => ({ state: 'off', fetched_at: 0, generated_at: '', count: 0, error: '', never_verified: [], never_verified_count: 0, blocked_count: 0, mentions: [] });
   // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
-  // (and so with its ledger: unfollowing forgets what was read from it, as the confirmation says)
   const prune = st => {
     for (const [k, i] of Object.entries(st.items)) if (!st.blygs[i.origin]) delete st.items[k];
-    for (const o of Object.keys(st.ledgers)) if (!st.blygs[o]) delete st.ledgers[o];
   };
-  // A blyg's ledger: the ids of its posts the owner ticked (so a post that left the Archive's list is never fetched again as
-  // unread), the ids whose document could not be used (with the index's version, so they are not asked for again until it
-  // changes), and its backfill mode. Read as untrusted: a hand-edited file is cleaned, bounded and de-duplicated.
+  // A blyg's ledger, a document of its own (so a tick or an open does not rewrite every blyg's ids): the ids of its posts the
+  // owner ticked, each with the post's `created` (so a post that left the Archive's list is never fetched again as unread),
+  // the ids whose document could not be used (with the index's version, so they are not asked for again until it changes),
+  // and its backfill mode. Read as untrusted: a hand-edited document is cleaned, bounded and de-duplicated.
   const cleanLedger = raw => {
     const r = raw && typeof raw === 'object' ? raw : {};
-    const ids = [...new Set((Array.isArray(r.ids) ? r.ids : []).filter(x => typeof x === 'string' && ID_RE.test(x)))].slice(0, LIMITS.archiveIdsPerBlyg);
+    const seenIds = new Set();
+    const ids = [];
+    for (const x of Array.isArray(r.ids) ? r.ids : []) {
+      const [id, c] = typeof x === 'string' ? [x, 0] : Array.isArray(x) ? x : [null, 0];
+      if (typeof id !== 'string' || !ID_RE.test(id) || seenIds.has(id)) continue;
+      seenIds.add(id);
+      ids.push([id, Number.isFinite(c) && c > 0 ? Math.floor(c) : 0]);
+      if (ids.length >= LIMITS.archiveIdsPerBlyg) break;
+    }
     const bad = {};
     if (r.bad && typeof r.bad === 'object' && !Array.isArray(r.bad)) {
       for (const [id, v] of Object.entries(r.bad)) {
         if (Object.keys(bad).length >= LIMITS.badPerBlyg) break;
-        if (ID_RE.test(id) && Number.isInteger(v) && v >= 1) bad[id] = v;
+        const [ver, at] = Array.isArray(v) ? v : [v, now()]; // (a ledger written before bad entries expired kept the version alone)
+        if (ID_RE.test(id) && Number.isInteger(ver) && ver >= 1 && Number.isFinite(at)) bad[id] = [ver, at];
       }
     }
     return { ids, bad, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
-  const ledgerOf = origin => {
-    const st = load();
-    if (!st.ledgers[origin]) st.ledgers[origin] = cleanLedger(null);
-    return st.ledgers[origin];
+  const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
+  const ledgerEntry = origin => {
+    let e = ledgers.get(origin);
+    if (!e) {
+      const got = store.get('ledger', ledgerName(origin));
+      if (got && got.unreadable) warnUnreadable(`the Hub's ledger of ${origin}`, got.unreadable);
+      const raw = got && !got.unreadable && got.value && got.value.origin === origin ? got.value : null;
+      const led = cleanLedger(raw);
+      e = { led, version: got ? got.version : null, base: JSON.stringify(led), dirty: false };
+      ledgers.set(origin, e);
+    }
+    return e;
   };
+  /** A blyg's ledger, to read. */
+  const ledgerOf = origin => { load(); return ledgerEntry(origin).led; };
+  /** A blyg's ledger, to change: it is written with the next save (and only the ledgers changed are). */
+  const ledgerFor = origin => { load(); const e = ledgerEntry(origin); e.dirty = true; return e.led; };
+  function writeLedger(origin, e) {
+    const name = ledgerName(origin);
+    for (let i = 0; ; i++) {
+      try {
+        e.version = store.put('ledger', name, { origin, ...e.led }, { ifVersion: e.version }).version;
+        e.base = JSON.stringify(e.led); e.dirty = false;
+        return;
+      } catch (err) {
+        if (!(err instanceof StoreConflict) || i >= 4) throw err;
+        const got = store.get('ledger', name);
+        mergeLedger(e.led, JSON.parse(e.base), cleanLedger(got && got.value && got.value.origin === origin ? got.value : null));
+        e.version = got ? got.version : null;
+      }
+    }
+  }
+  function saveLedgers() {
+    for (const [origin, e] of ledgers) {
+      if (!e.dirty || !state.blygs[origin]) continue;
+      try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { e.dirty = false; continue; } throw err; }
+    }
+  }
+  const forgetLedger = origin => { ledgers.delete(origin); store.delete('ledger', ledgerName(origin)); };
   // The oldest-ticked archive records beyond the cap are dropped. Their ids stay in their ledgers: that is what keeps them read.
   const trimArchive = st => {
     const arch = Object.entries(st.items).filter(([, i]) => i.read === 'archived');
@@ -678,11 +897,12 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
   };
   const load = () => {
     if (state) return state;
-    const got = readJsonState(file);
-    if (got.state === 'unreadable') warnUnreadable(file, got.error);
-    const v = got.state === 'ok' && got.value && typeof got.value === 'object' ? got.value : {};
+    const got = store.get('state', 'following');
+    if (got && got.unreadable) { unreadableState = got.unreadable; warnUnreadable(file || 'the Hub state', got.unreadable); }
+    stateVersion = got ? got.version : null;
+    const v = got && got.value && typeof got.value === 'object' && !Array.isArray(got.value) ? got.value : {};
+    base = unitsOf(v);
     state = { blygs: v.blygs && typeof v.blygs === 'object' ? v.blygs : {}, items: v.items && typeof v.items === 'object' ? v.items : {},
-      ledgers: v.ledgers && typeof v.ledgers === 'object' ? v.ledgers : {},
       last_run: v.last_run || null, inbox: { ...emptyInbox(), ...(v.inbox && typeof v.inbox === 'object' ? v.inbox : {}) } };
     // a hand-edited record never makes the engine fetch something the reader paused
     for (const b of Object.values(state.blygs)) if (!BLYG_STATES.includes(b.state)) b.state = 'paused';
@@ -692,7 +912,14 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
       if (!i.key) i.key = randomKey();
     }
-    for (const o of Object.keys(state.blygs)) state.ledgers[o] = cleanLedger(state.ledgers[o]);
+    // A document written before the ledgers were split out kept them inside it: each becomes a ledger document of its own
+    // (written with the next save), unless one is already stored.
+    const old = v.ledgers && typeof v.ledgers === 'object' ? v.ledgers : {};
+    for (const [o, raw] of Object.entries(old)) {
+      if (!state.blygs[o] || store.get('ledger', ledgerName(o))) continue;
+      const led = cleanLedger(raw);
+      ledgers.set(o, { led, version: null, base: JSON.stringify(led), dirty: true });
+    }
     if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
     prune(state);
@@ -700,32 +927,44 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     queueMicrotask(() => { try { sweepBodies(); } catch { /* nothing to sweep */ } });
     return state;
   };
-  const save = () => { refuseIfUnreadable(file); prune(load()); writeJson(file, load()); };
-  // The sanitised body of each post lives in a file of its own beside the list (so following.json stays small and each
-  // body is written atomically), named by the record's random key, and is swept away with its post.
-  const bodiesDir = path.join(path.dirname(file), 'following-bodies');
-  const bodyFile = key => path.join(bodiesDir, `${String(key).replace(/[^0-9a-f]/g, '')}.html`);
-  const hasBody = key => fs.existsSync(bodyFile(key));
-  const deleteBody = key => { try { fs.unlinkSync(bodyFile(key)); } catch { /* none to delete */ } };
-  let bodiesDirMade = false; // the folder is made once, not once per post
-  const writeBody = (key, html) => {
-    if (!bodiesDirMade) { fs.mkdirSync(bodiesDir, { recursive: true }); bodiesDirMade = true; }
-    const f = bodyFile(key), tmp = `${f}.tmp.${process.pid}`;
-    fs.writeFileSync(tmp, String(html));
-    fs.renameSync(tmp, f);
+  /** Write the main document (and the ledgers changed), conditionally on the version read; on a conflict, merge and write again. */
+  const save = () => {
+    const st = load();
+    prune(st);
+    for (let i = 0; ; i++) {
+      const units = unitsOf(st);
+      try {
+        stateVersion = store.put('state', 'following', textOfUnits(units, st), { ifVersion: stateVersion }).version;
+        base = units; unreadableState = null;
+        break;
+      } catch (err) {
+        if (!(err instanceof StoreConflict) || i >= 4) throw err;
+        const got = store.get('state', 'following');
+        // deleted meanwhile (the owner removed the file): what this engine holds is written again, as before the seam
+        if (!got) { stateVersion = null; base = new Map(); continue; }
+        if (got.unreadable || !got.value || typeof got.value !== 'object') throw err;
+        mergeState(st, base, got.value);
+        base = unitsOf(got.value); stateVersion = got.version;
+        prune(st);
+      }
+    }
+    saveLedgers();
   };
+  // The sanitised body of each post is a 'body' of its own in the store (so the main document stays small and each body is
+  // written whole), named by the record's random key, and is swept away with its post.
+  const hasBody = key => !!store.get('body', key);
+  const deleteBody = key => store.delete('body', key);
+  const writeBody = (key, html) => store.put('body', key, String(html));
   // read back through the sanitiser again: a file edited by hand is no more trusted than the web
   const readBodyHtml = key => {
-    let s = '';
-    try { s = fs.readFileSync(bodyFile(key), 'utf8'); } catch { return ''; }
-    return sanitizeStable(s, { max: LIMITS.bodyBytes + 4096, truncate: true, landmarks: false }).html;
+    const got = store.get('body', key);
+    if (!got || typeof got.value !== 'string') return '';
+    return sanitizeStable(got.value, { max: LIMITS.bodyBytes + 4096, truncate: true, landmarks: false }).html;
   };
   function sweepBodies() {
-    let names = [];
-    try { names = fs.readdirSync(bodiesDir); } catch { return 0; }
-    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn' && i.read !== 'archived').map(i => `${i.key}.html`));
+    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn' && i.read !== 'archived').map(i => i.key));
     let n = 0;
-    for (const f of names) if (!keep.has(f)) { try { fs.unlinkSync(path.join(bodiesDir, f)); n++; } catch { /* gone already */ } }
+    for (const name of store.list('body')) if (!keep.has(name)) { deleteBody(name); n++; }
     return n;
   }
   const run = { state: 'idle' };
@@ -818,6 +1057,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     const st = load();
     if (!st.blygs[origin]) return false;
     delete st.blygs[origin];
+    forgetLedger(origin);
     save(); sweepBodies(); reschedule(); onChange(); // save() prunes its posts
     return true;
   }
@@ -937,11 +1177,11 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     return { out: 'ok', doc, rec, body: bodyOf(doc) };
   }
   const iso = () => new Date(now()).toISOString();
-  const dropArchivedId = (origin, id) => { const led = ledgerOf(origin); const i = led.ids.indexOf(id); if (i >= 0) led.ids.splice(i, 1); };
+  const dropArchivedId = (origin, id) => { const led = ledgerFor(origin); const i = led.ids.findIndex(p => p[0] === id); if (i >= 0) led.ids.splice(i, 1); };
   /** A document that cannot be used is remembered (with the version the index gave) so it is not asked for again until the index changes. At the bound the blyg is stopped. */
   function markBad(led, e) {
     if (led.bad[e.id] === undefined && Object.keys(led.bad).length >= LIMITS.badPerBlyg) { moveBackfill(led, 'stop'); return; }
-    led.bad[e.id] = e.version;
+    led.bad[e.id] = [e.version, now()];
   }
   /**
    * Fetch one post's document and put it in the list. `held` is what is held for it (a post in the Feed, an archive record, a
@@ -1026,7 +1266,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     // What is read out of the index (hostile input): at most `indexEntries` entries, a well-formed 26-character id (a string, not
     // something that prints as one), a kind and a version this code knows. An id listed twice is ONE post, at its highest version.
     // Nothing of the index is stored: only what is fetched from it, so what is kept per blyg is bounded by the caps below and by the ledger.
-    const led = ledgerOf(b.origin);
+    const led = ledgerFor(b.origin);
     const raw = idx.json.items;
     const byId = new Map();
     for (const x of raw.slice(0, LIMITS.indexEntries)) {
@@ -1038,7 +1278,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     // newest first: a blyg is read backwards in time
     const entries = [...byId.values()].sort((a, c) => (Date.parse(c.updated) || 0) - (Date.parse(a.updated) || 0) || (a.id < c.id ? -1 : a.id > c.id ? 1 : 0));
     const inIndex = new Set(entries.map(e => e.id));
-    const archivedIds = new Set(led.ids);
+    const archivedIds = new Set(led.ids.map(p => p[0]));
     // A held unread post the index no longer lists is dropped (the index lists every post ever published, §6.2), unless the index was
     // cut at `indexEntries`, when its absence proves nothing. An archive record stays: it is the owner's record of having read it.
     if (raw.length <= LIMITS.indexEntries) {
@@ -1055,7 +1295,7 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
       const held = st.items[ident];
       if (!held) {
         // withdrawn items are never fetched; ticked ones are read; an unusable one waits for the index to name a new version
-        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || led.bad[e.id] === e.version || led.backfill === 'stopped') continue;
+        if (e.kind === 'withdrawn' || archivedIds.has(e.id) || (led.bad[e.id] && led.bad[e.id][0] === e.version) || led.backfill === 'stopped') continue;
         if (n > edge) { plan.backfill.push(e); continue; }
         if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
         if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
@@ -1191,7 +1431,10 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
         if (budget.spent()) { tally.deferred++; continue; }
         try { const plan = await reconcileBlyg(b, g, cfg, tally); if (plan) plans.push(plan); tally.blygs++; }
         catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
-        save();
+        // Saved every `saveEveryBlygs` blygs and at the end, not after each one. A crash mid-run loses at most the progress of
+        // the blygs since the last save (their bodies, already written, are swept as orphans on the next load); nothing the
+        // owner did is lost, since every move of the owner's saves at once.
+        if (tally.blygs % LIMITS.saveEveryBlygs === 0) save();
       }
       try { await backfill(plans, g, cfg, tally); } catch (e) { tally.errors++; console.warn(`[following] ${cleanText(String(e && e.message), 200)}`); }
       for (const p of plans) settle(p);
@@ -1237,31 +1480,32 @@ export function createFollowing({ file, get = netGet, now = Date.now, getSetting
     moveRead(next, 'tick'); // refuses a post that is archived already
     st.items[identOf(rec.origin, rec.id)] = next;
     deleteBody(rec.key);
-    const led = ledgerOf(rec.origin);
-    if (!led.ids.includes(rec.id)) {
-      const all = Object.values(st.ledgers).reduce((n, l) => n + l.ids.length, 0);
+    const led = ledgerFor(rec.origin);
+    if (!led.ids.some(p => p[0] === rec.id)) {
+      const all = Object.keys(st.blygs).reduce((n, o) => n + ledgerOf(o).ids.length, 0);
       // At the bound the id cannot be remembered, so the blyg is STOPPED: nothing new is fetched from it, which is what keeps this post read.
       if (led.ids.length >= LIMITS.archiveIdsPerBlyg || all >= LIMITS.archiveIdsTotal) moveBackfill(led, 'stop');
-      else led.ids.push(rec.id);
+      else led.ids.push([rec.id, Math.max(0, stamp(rec.created, now()))]);
     }
-    trimArchive(st);
   }
   function readMove(key, ev) {
     const rec = byKey(key);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
-    if (ev === 'tick') tickRec(rec); else moveRead(rec, ev);
+    if (ev === 'tick') { tickRec(rec); trimArchive(load()); } else moveRead(rec, ev);
     save(); onChange();
     return load().items[identOf(rec.origin, rec.id)].read;
   }
   /** Tick every post named (the page's "Tick all shown" names the keys it shows); a key that cannot be ticked is skipped. → how many were. */
   function tickMany(keys) {
     let n = 0;
-    for (const k of (Array.isArray(keys) ? keys : []).slice(0, LIMITS.archiveShownMax)) {
-      const rec = byKey(String(k));
+    const st = load();
+    const index = new Map(Object.values(st.items).map(i => [i.key, i]));
+    for (const k of (Array.isArray(keys) ? keys : []).slice(0, LIMITS.tickBatch)) {
+      const rec = index.get(String(k));
       if (!rec || isWithdrawn(rec) || !canMoveRead(rec, 'tick')) continue;
       tickRec(rec); n++;
     }
-    if (n) { save(); onChange(); }
+    if (n) { trimArchive(st); save(); onChange(); }
     return n;
   }
   /**
