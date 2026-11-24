@@ -103,31 +103,46 @@ export const canMoveBlyg = (b, ev) => blygMachine.can(b.state, ev);
 /** The one way a followed blyg's state changes. Throws for a move the table does not allow. */
 export function moveBlyg(b, ev) { b.state = blygMachine.to(b.state, ev); return b.state; }
 
-// Where a post is, in ONE field: the Feed holds the unread posts (new, opened, responded), the Archive the ones the
-// owner ticked. There is no separate "archived" flag.
-//   new        — in the Feed, not opened
-//   opened     — in the Feed; its original (or its text here) was opened. Opening never archives it.
-//   responded  — in the Feed; a note for it was exported
-//   archived   — ticked by the owner (and only by the owner's own tick); it keeps a small record and no text
-// There used to be a `seen` state (the dot only; the post stayed in the Feed). A Feed of unread posts has no use for it:
-// the tick is the one mark that a post is read. A stored `seen` is loaded as `new`.
+// Where a post is, in ONE field. The Feed holds the unread posts (new, opened, responded, edited), the Archive the ones the
+// owner ticked (archived, archived_changed). There is no separate "archived" flag and no "edited" marker beside this field.
+//   new              — in the Feed, not opened
+//   opened           — in the Feed; its original (or its text here) was opened. Opening never archives it.
+//   responded        — in the Feed; a note for it was exported
+//   edited           — in the Feed again: the owner had ticked it, and a real edit (a new content_hash) brought it back
+//                      ("edited since you read it")
+//   archived         — ticked by the owner (and only by the owner's own tick); it keeps a small record and no text
+//   archived_changed — still in the Archive, but a newer wording exists that the owner has not read: it could not come back
+//                      yet (its window, or its blyg's quota or cap, see LIMITS.edit*); the Archive says "edited again"
+// There used to be a `seen` state (the dot only) and an `edited_after_read` marker beside `new`: a stored `seen` loads as `new`, a
+// stored `edited_after_read` as `edited`.
 //
-//   tick      the owner's tick: Feed → Archive                       (the text is deleted, a small record stays)
-//   untick    the owner's untick: Archive → Feed, as `new`            (the post is fetched again: its text is gone)
-//   reopen    a new version of an archived post whose words may have changed (see changeOf) → Feed, as `new`
-//   open      the original was opened
-//   respond   a note for the post was exported (an archived post is not moved by one: only a tick or an untick moves it)
-//   resurface a real edit to a post that was opened → new
+//   tick      the owner's tick: Feed → Archive, or the owner's "Mark read" on an archived_changed line (the text is deleted)
+//   untick    the owner's untick: Archive → Feed, as `new` (the post is fetched again: its text is gone)
+//   edit      a fetched document of an archived post whose content_hash differs from the one read, when its bounds allow it
+//             to return (archived → edited); a further real edit of an `edited` post keeps it edited
+//   hold      the same, when they do not (archived → archived_changed; and a further version while held is recorded)
+//   release   at a refresh, an archived_changed post whose window has passed, when its blyg's quota is free (→ edited)
+//   revert    a held post whose current document is again the wording the owner read (→ archived): the newer one is gone
+//   open      the original was opened (an edited post stays edited)
+//   respond   a note for the post was exported (a post in the Archive is not moved by one)
+//   resurface a real edit to a post that was opened (and is still unread) → new
 //   renew     the owner's own "mark new" on an opened post
-export const READ_STATES = Object.freeze(['new', 'opened', 'responded', 'archived']);
+// Anything else is refused. A MAINTENANCE version (the same content_hash, §13.2) moves nothing, in any state: its version is
+// recorded and it never counts as an edit.
+export const READ_STATES = Object.freeze(['new', 'opened', 'responded', 'edited', 'archived', 'archived_changed']);
+/** The read states that are in the Archive (everything else held, and not withdrawn, is unread). */
+export const ARCHIVE_STATES = Object.freeze(['archived', 'archived_changed']);
 export const READ_MOVES = Object.freeze({
-  open: { new: 'opened', opened: 'opened' },
-  respond: { new: 'responded', opened: 'responded', responded: 'responded' },
+  open: { new: 'opened', edited: 'edited' },
+  respond: { new: 'responded', opened: 'responded', edited: 'responded' },
   resurface: { opened: 'new' },
   renew: { opened: 'new' },
-  tick: { new: 'archived', opened: 'archived', responded: 'archived' },
-  untick: { archived: 'new' },
-  reopen: { archived: 'new' },
+  tick: { new: 'archived', opened: 'archived', responded: 'archived', edited: 'archived', archived_changed: 'archived' },
+  untick: { archived: 'new', archived_changed: 'new' },
+  edit: { archived: 'edited', edited: 'edited' },
+  hold: { archived: 'archived_changed', archived_changed: 'archived_changed' },
+  release: { archived_changed: 'edited' },
+  revert: { archived_changed: 'archived' },
 });
 const readMachine = machine('read state', READ_STATES, READ_MOVES);
 export const canMoveRead = (rec, ev) => readMachine.can(rec.read, ev);
@@ -293,7 +308,15 @@ export const LIMITS = Object.freeze({
   saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
-  skewMs: 5 * 60 * 1000,      // a `created` further in the future than this is a lie: it never makes a post fresh
+  skewMs: 5 * 60 * 1000,
+  // AN EDIT OF A POST THE OWNER HAD READ (a fetched document of an archived post whose content_hash differs from the one read).
+  // The owner wants edits, but not often: it returns to the Feed (`edited`) only within all of these; otherwise it stays in the
+  // Archive as archived_changed ("edited again") and is released at a later refresh when they allow it.
+  editReturnGapMs: 7 * 24 * 3600e3, // a post returns to the Feed at most once in this long (`returned_at` on its record)
+  editReturnsPerRun: 3,       // edit-returns per blyg per refresh
+  editReturnsPerDay: 10,      // ... and per blyg in any 24 hours (the ledger's `returns`)
+  archivedDocsPerRun: 5,      // documents of archived posts fetched per blyg per refresh (only while a return is possible)
+  // (an edit-return also counts against following_max_items_per_blyg, the per-blyg unread cap: at the cap the post is held)      // a `created` further in the future than this is a lie: it never makes a post fresh
 });
 const KINDS = ['fragment', 'thread', 'withdrawn'];
 export const isWithdrawn = rec => rec.kind === 'withdrawn';
@@ -528,7 +551,7 @@ export function changeOf(held, rec, percent) {
 // the entry. An entry moves between views only because this function says so.
 export const PLACEMENTS = Object.freeze(['feed', 'mentions', 'background', 'archive', 'hidden']);
 export const REASONS = Object.freeze({
-  notFollowed: 'not followed', archived: 'ticked as read', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
+  notFollowed: 'not followed', archived: 'ticked as read', archivedChanged: 'edited again since you read it', withdrawn: 'withdrawn', withdrawnOwn: 'withdrawn (your own)', paused: 'paused blyg',
   burst: 'part of a burst', maintenance: 'no new words', minor: 'barely changed',
   response: 'response', unknown: 'class unknown', plain: 'plain mention (lower class)',
   linked: 'linked from', reposted: 'reposted by',
@@ -548,12 +571,13 @@ export function placementOf(entry) {
   }
   const p = entry.post;
   if (!entry.blyg) return { placement: 'hidden', reason: REASONS.notFollowed };
-  if (p.read === 'archived') return { placement: 'archive', reason: REASONS.archived };
+  if (ARCHIVE_STATES.includes(p.read)) return { placement: 'archive', reason: p.read === 'archived_changed' ? REASONS.archivedChanged : REASONS.archived };
   if (isWithdrawn(p)) return { placement: 'background', reason: (entry.mine || []).includes(p.origin) ? REASONS.withdrawnOwn : REASONS.withdrawn };
   if (entry.blyg.state === 'paused') return { placement: 'background', reason: REASONS.paused };
   if (entry.burstHead) return { placement: 'background', reason: REASONS.burst };
-  if (p.read !== 'new' && p.last_change === 'maintenance') return { placement: 'background', reason: REASONS.maintenance };
-  if (p.read !== 'new' && p.last_change === 'minor') return { placement: 'background', reason: REASONS.minor };
+  const unopened = p.read === 'new' || p.read === 'edited';
+  if (!unopened && p.last_change === 'maintenance') return { placement: 'background', reason: REASONS.maintenance };
+  if (!unopened && p.last_change === 'minor') return { placement: 'background', reason: REASONS.minor };
   return { placement: 'feed', reason: '' };
 }
 
@@ -606,7 +630,7 @@ export function foldBursts(items) {
 export function buildView({ items, blygs, mentions = [], mine = [], filter = 'all' }) {
   const posts = items.filter(i => blygs[i.origin]);
   // an archived post is never folded into (or under) a burst: the Archive lists it on its own
-  const live = posts.filter(i => !isWithdrawn(i) && i.read !== 'archived');
+  const live = posts.filter(i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read));
   // A burst folds its members only under a head that is itself in the Feed. A head that goes elsewhere (a barely
   // changed thread you have read) must not take an unread post with it: each member then stands on its own.
   const alone = p => placementOf({ type: 'post', post: p, blyg: blygs[p.origin] || null, mine, burstHead: null });
@@ -624,7 +648,7 @@ export function buildView({ items, blygs, mentions = [], mine = [], filter = 'al
   const flat = posts.filter(p => ['feed'].includes(placed.get(p).placement) || placed.get(p).reason === REASONS.burst);
   const pick = {
     all: () => feedHeads,
-    new: () => feedHeads.filter(e => e.head.read === 'new' || e.members.some(m => m.read === 'new')),
+    new: () => feedHeads.filter(e => ['new', 'edited'].includes(e.head.read) || e.members.some(m => ['new', 'edited'].includes(m.read))),
     threads: () => flat.filter(i => i.kind === 'thread').map(head => ({ head, members: [] })),
     fragments: () => flat.filter(i => i.kind === 'fragment').map(head => ({ head, members: [] })),
     responses: () => flat.filter(i => isResponseToMe(i, mine)).map(head => ({ head, members: [] })),
@@ -879,8 +903,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     }
     const floor = Number.isFinite(r.floor) && r.floor > 0 ? r.floor : 0;
     const seenUntil = Number.isFinite(r.seen_until) && r.seen_until > 0 && r.seen_until <= now() ? r.seen_until : 0;
+    // when posts of this blyg returned to the Feed through an edit, in the last 24 hours (for editReturnsPerDay)
+    const returns = (Array.isArray(r.returns) ? r.returns : []).filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3 && t <= now()).slice(-LIMITS.editReturnsPerDay);
     // `stopped` (the mode before this list) and anything made up load as unknown
-    return { ids, floor, bad, later, seen_until: seenUntil, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    return { ids, floor, bad, later, seen_until: seenUntil, returns, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
   const ledgerEntry = origin => {
@@ -909,7 +935,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       } catch (err) {
         if (!(err instanceof StoreConflict) || i >= 4) throw err;
         const got = store.get('ledger', name);
-        mergeLedger(e.led, JSON.parse(e.base), cleanLedger(got && got.value && got.value.origin === origin ? got.value : null));
+        mergeLedger(e.led, JSON.parse(e.base) || cleanLedger(null), cleanLedger(got && got.value && got.value.origin === origin ? got.value : null));
         e.version = got ? got.version : null;
       }
     }
@@ -924,7 +950,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const forgetLedger = origin => { ledgers.delete(origin); store.delete('ledger', ledgerName(origin)); };
   // The oldest-ticked archive records beyond the cap are dropped. Their ids stay in their ledgers: that is what keeps them read.
   const trimArchive = st => {
-    const arch = Object.entries(st.items).filter(([, i]) => i.read === 'archived');
+    const arch = Object.entries(st.items).filter(([, i]) => ARCHIVE_STATES.includes(i.read));
     if (arch.length <= LIMITS.archiveRecords) return 0;
     arch.sort((a, b) => (Date.parse(a[1].archived_at) || 0) - (Date.parse(b[1].archived_at) || 0));
     const drop = arch.slice(0, arch.length - LIMITS.archiveRecords);
@@ -947,6 +973,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const b of Object.values(state.blygs)) if (!BLYG_STATES.includes(b.state)) b.state = 'paused';
     for (const i of Object.values(state.items)) {
       if (i.read === 'seen' || !READ_STATES.includes(i.read)) i.read = 'new'; // a document from before the Archive: `seen` posts stay in the Feed
+      // the `edited_after_read` marker beside `read` (this branch's first version) is the read state `edited` now
+      if ('edited_after_read' in i) {
+        if (i.read === 'new' && Number.isInteger(i.edited_after_read)) { i.read = 'edited'; i.read_version = i.edited_after_read; i.returned_at = Date.parse(i.first_seen) || i.fetched_at || 0; }
+        delete i.edited_after_read;
+      }
       if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
       if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
       if (!i.key) i.key = randomKey();
@@ -957,7 +988,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const [o, raw] of Object.entries(old)) {
       if (!state.blygs[o] || store.get('ledger', ledgerName(o))) continue;
       const led = cleanLedger(raw);
-      ledgers.set(o, { led, version: null, base: JSON.stringify(led), dirty: true });
+      ledgers.set(o, { led, version: null, base: 'null', dirty: true }); // (nothing stored yet: written with the next save)
     }
     if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
@@ -1009,7 +1040,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return sanitizeStable(got.value, { max: LIMITS.bodyBytes + 4096, truncate: true, landmarks: false }).html;
   };
   function sweepBodies() {
-    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn' && i.read !== 'archived').map(i => i.key));
+    const keep = new Set(Object.values(load().items).filter(i => i.kind !== 'withdrawn' && !ARCHIVE_STATES.includes(i.read)).map(i => i.key));
     let n = 0;
     for (const name of store.list('body')) if (!keep.has(name)) { deleteBody(name); n++; }
     return n;
@@ -1151,7 +1182,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return b.state;
   }
   const listBlygs = () => Object.values(load().blygs).map(b => ({ ...b, items: unreadOf(b.origin),
-    archived: itemsOf(b.origin).filter(i => i.read === 'archived').length, backfill: ledgerOf(b.origin).backfill,
+    archived: itemsOf(b.origin).filter(i => ARCHIVE_STATES.includes(i.read)).length, backfill: ledgerOf(b.origin).backfill,
     bad_documents: Object.keys(ledgerOf(b.origin).bad).length }));
 
   // ---- importing a blogroll or directory ----
@@ -1222,7 +1253,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     identity: held.identity || 'unverified', last_change: 'new-words', stub_of: null, transclusions: 0, links: 0, refs: [], ref_origins: [],
     title: '', excerpt: '', text: '', text_chars: 0, author: '', versions: [], first_seen: held.first_seen, maintenance: 0 });
   // What the caps and the target count: UNREAD held posts. A withdrawn marker costs nothing; an archived record is not held text.
-  const isUnreadHeld = i => !isWithdrawn(i) && i.read !== 'archived';
+  const isUnreadHeld = i => !isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read);
   const totalItems = () => Object.values(load().items).filter(isUnreadHeld).length;
   const unreadOf = origin => itemsOf(origin).filter(isUnreadHeld).length;
   /** The Feed's count: what the Feed tab shows (bursts folded, paused blygs and Background left out). */
@@ -1298,6 +1329,24 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     p.left++;
   }
   /**
+   * Why an edit of a post the owner had read may NOT return it to the Feed now ('' when it may): its last return was less than
+   * editReturnGapMs ago; its blyg has had editReturnsPerRun returns in this refresh or editReturnsPerDay in 24 hours; or its blyg
+   * holds as many unread posts as its cap allows. Everything here is data the Hub keeps (the record's `returned_at`, the ledger's
+   * `returns`), never something a blyg says.
+   */
+  function editBlock(origin, held, cfg, g) {
+    if (!g.returns) g.returns = new Map();
+    if (held.returned_at && now() - held.returned_at < LIMITS.editReturnGapMs) return 'window';
+    if ((g.returns.get(origin) || 0) >= LIMITS.editReturnsPerRun) return 'run';
+    const led = ledgerOf(origin);
+    led.returns = led.returns.filter(t => now() - t < 24 * 3600e3);
+    if (led.returns.length >= LIMITS.editReturnsPerDay) return 'day';
+    if (unreadOf(origin) >= cfg.following_max_items_per_blyg) return 'cap';
+    return '';
+  }
+  /** When a held (archived_changed) post may be fetched again: not before its last return's window has passed. */
+  const windowEnd = rec => (rec.returned_at || 0) + LIMITS.editReturnGapMs;
+  /**
    * Fetch one post's document and put it in the list. `held` is what is held for it (a post in the Feed, an archive record, a
    * withdrawn marker) or undefined. → 'stored' | 'kept' | 'unusable' | 'trouble' | 'aborted' | 'deferred'
    *
@@ -1320,7 +1369,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     rec.body_state = body.state;
     const common = { index_version: e.version, fetched_at: now() };
     const mismatch = doc.version === e.version ? {} : { index_mismatch: { index: e.version, document: doc.version } };
-    const archived = held && held.read === 'archived';
+    const archived = held && ARCHIVE_STATES.includes(held.read);
     if (isWithdrawn(rec)) {
       if (archived) { held.index_version = e.version; return 'kept'; } // read, and stays in the Archive
       st.items[ident] = { ...tombstone(held || { ...rec, key: randomKey() }, rec), index_version: e.version }; tally.withdrawn++; return 'stored';
@@ -1330,14 +1379,30 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       st.items[ident] = { ...rec, ...common, key: (held && held.key) || randomKey(), read: 'new', identity: 'unverified', first_seen: iso(), maintenance: 0, last_change: 'new-words', ...mismatch };
       tally.new++;
     } else if (archived) {
-      if (change === 'maintenance') { // the same words: it stays read
+      // THE EDIT RULE for a post the owner had read. The same content_hash as the one read is maintenance: nothing moves, the
+      // version is recorded (and a held post whose document is again the wording read has nothing newer: revert).
+      if (change === 'maintenance') {
+        if (held.read === 'archived_changed') { moveRead(held, 'revert'); delete held.newer; }
         Object.assign(held, { version: rec.version, ...common }); tally.maintenance++; return 'stored';
       }
-      // The words may have changed and no text is kept to measure by, so it is not "barely changed" (changeOf): back to the Feed.
+      // Its words changed (no text is kept to measure by, so it is never "barely changed"). It returns to the Feed only if its
+      // bounds allow it (editBlock); otherwise it is held in the Archive with the newer version recorded.
+      const why = editBlock(b.origin, held, cfg, g);
+      if (why) {
+        moveRead(held, 'hold');
+        held.newer = { version: rec.version, hash: rec.content_hash, at: now() };
+        held.index_version = e.version;
+        tally.held++;
+        return 'stored';
+      }
       const back = { ...rec, ...common, key: held.key, read: held.read, identity: 'unverified', first_seen: iso(), last_change: 'new-words', maintenance: 0,
-        edited_after_read: held.version, ...mismatch };
-      moveRead(back, 'reopen');
-      st.items[ident] = back; dropArchivedId(b.origin, e.id); tally.edited++;
+        read_version: held.version, returned_at: now(), ...mismatch };
+      if (held.read === 'archived_changed') tally.released++;
+      moveRead(back, held.read === 'archived' ? 'edit' : 'release');
+      st.items[ident] = back;
+      g.returns.set(b.origin, (g.returns.get(b.origin) || 0) + 1);
+      ledgerFor(b.origin).returns.push(now());
+      tally.edited++;
     } else {
       const next = { ...held, ...rec, ...common, key: held.key, read: held.read, identity: held.identity, first_seen: held.first_seen, last_change: change,
         maintenance: (held.maintenance || 0) + (change === 'maintenance' ? 1 : 0) };
@@ -1345,7 +1410,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       st.items[ident] = next;
       if (change === 'maintenance') tally.maintenance++;
       else if (change === 'minor') tally.minor++;
-      else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
+      else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); else if (canMoveRead(next, 'edit')) moveRead(next, 'edit'); tally.edited++; }
     }
     // the newest date the Hub has seen from this blyg, clamped to now: what decides "fresh" next time
     const seen = stamp(st.items[ident].created, now());
@@ -1413,7 +1478,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // A held unread post the index no longer lists is dropped (the index lists every post ever published, §6.2), unless the index was
     // cut at `indexEntries`, when its absence proves nothing. An archive record stays: it is the owner's record of having read it.
     if (raw.length <= LIMITS.indexEntries) {
-      for (const i of itemsOf(b.origin)) if (i.read !== 'archived' && !inIndex.has(i.id)) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
+      for (const i of itemsOf(b.origin)) if (!ARCHIVE_STATES.includes(i.read) && !inIndex.has(i.id)) { delete st.items[identOf(i.origin, i.id)]; tally.removed++; }
       // and the ledger's lists forget ids the index no longer names
       for (const k of ['bad', 'later']) for (const id of Object.keys(led[k])) if (!inIndex.has(id)) delete led[k][id];
     }
@@ -1432,6 +1497,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     led.seen_until = Math.max(led.seen_until || 0, ...itemsOf(b.origin).map(i => stamp(i.created, i.fetched_at)).filter(t => t > 0), 0);
     const isFresh = e => { const c = Date.parse(e.created); return led.seen_until > 0 && Number.isFinite(c) && c > led.seen_until && c <= readAt + LIMITS.skewMs; };
     const plan = { b, led, backfill: [], left: 0, docs: 0, halted: false };
+    const archivedTodo = [];
     for (const e of entries) {
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
@@ -1452,15 +1518,32 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       // what the INDEX said last time we looked: a document that disagrees with its index entry
       // (an index that lies about versions) is not fetched again until the entry changes
       const was = held.index_version ?? held.version;
+      // a post held in the Archive with a newer wording: released (fetched once more) when its window has passed; within it, a
+      // further version in the index only updates what the index said, and nothing is fetched
+      if (held.read === 'archived_changed' && e.kind !== 'withdrawn') {
+        if (now() < windowEnd(held)) { if (e.version > was) held.index_version = e.version; continue; }
+        if (e.version >= was) { archivedTodo.push([e, held]); continue; }
+      }
       if (e.version === was && (e.kind === 'withdrawn') === isWithdrawn(held)) continue;
       if (e.version < was) { tally.regressions++; continue; } // §13.3: a lower version is not adopted
       if (e.kind === 'withdrawn') {
-        if (held.read === 'archived') { held.index_version = e.version; continue; } // read: it stays in the Archive
+        if (ARCHIVE_STATES.includes(held.read)) { held.index_version = e.version; continue; } // read: it stays in the Archive
         st.items[ident] = tombstone(held, e); if (!isWithdrawn(held)) tally.withdrawn++;
         continue;
       }
+      if (ARCHIVE_STATES.includes(held.read)) { archivedTodo.push([e, held]); continue; }
       if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
       plan.docs++;
+      const out = await ingest(b, e, held, cfg, g, tally, alive);
+      if (out === 'aborted') return;
+      if (out === 'host_trouble') plan.halted = true;
+    }
+    // The documents of posts the owner had read whose index entry moved (or that wait for release): at most archivedDocsPerRun per
+    // blyg per refresh, and none while no edit of this blyg could return now (its quota or cap): they wait, and are not asked for.
+    let archivedDocs = 0;
+    for (const [e, held] of archivedTodo) {
+      if (archivedDocs >= LIMITS.archivedDocsPerRun || editBlock(b.origin, {}, cfg, g) || plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      archivedDocs++; plan.docs++;
       const out = await ingest(b, e, held, cfg, g, tally, alive);
       if (out === 'aborted') return;
       if (out === 'host_trouble') plan.halted = true;
@@ -1571,9 +1654,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     moveRun(run, 'begin');
     const cfg = settings();
     const budget = newBudget(cfg, now);
-    const g = getter(budget); g.budget = budget;
+    const g = getter(budget); g.budget = budget; g.returns = new Map(); // (edit-returns per blyg in this refresh)
     const tally = { reason, new: 0, edited: 0, minor: 0, maintenance: 0, withdrawn: 0, removed: 0, regressions: 0, capped: 0, deferred: 0,
-      errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
+      errors: 0, invalid: 0, missing: 0, absent: 0, unreachable: 0, refused: 0, mismatched: 0, aborted: 0, raced: 0, held: 0, released: 0, blygs: 0, skipped: 0, requests: 0, backfilled: 0 };
     const plans = [];
     try {
       const todo = Object.values(load().blygs).filter(due).sort((a, b) => (a.last_try || 0) - (b.last_try || 0));
@@ -1619,10 +1702,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
 
   // ---- reading state, identity ----
   /** The small record an archived post keeps: no text, no body. ≤ ~0.5 KB. */
+  // A post ticked from archived_changed ("Mark read" on an "edited again" line) is read at its newer wording: that version and hash
+  // become the record's. `returned_at` stays with the post (it bounds how often an edit can bring it back).
   const archiveRecordOf = rec => ({
-    key: rec.key, origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.version, index_version: rec.index_version ?? rec.version,
-    created: rec.created, updated: rec.updated, fetched_at: rec.fetched_at, page: cleanText(rec.page, 500), content_hash: rec.content_hash,
+    key: rec.key, origin: rec.origin, id: rec.id, kind: rec.kind, version: rec.newer ? rec.newer.version : rec.version,
+    index_version: Math.max(rec.index_version ?? rec.version, rec.newer ? rec.newer.version : 0),
+    created: rec.created, updated: rec.updated, fetched_at: rec.fetched_at, page: cleanText(rec.page, 500), content_hash: rec.newer ? rec.newer.hash : rec.content_hash,
     title: cleanText(plainText(rec.title) || plainText(rec.excerpt), LIMITS.archiveTitleChars), text: '', text_chars: 0, read: rec.read, archived_at: iso(),
+    ...(rec.returned_at ? { returned_at: rec.returned_at } : {}),
   });
   /** The owner's tick: the post leaves the Feed (its text is deleted, a small record stays) and its id is remembered in its blyg's ledger. */
   /**
@@ -1821,8 +1908,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
     const b = load().blygs[rec.origin];
     if (!b) throw new Error('that blyg is not followed');
-    const html = rec.read === 'archived' ? '' : readBodyHtml(rec.key);
-    if (!html.trim()) throw new Error(rec.read === 'archived' ? 'that post is in the Archive, and no text is kept for it' : 'no text is held for that post yet: use Read here');
+    const html = ARCHIVE_STATES.includes(rec.read) ? '' : readBodyHtml(rec.key);
+    if (!html.trim()) throw new Error(ARCHIVE_STATES.includes(rec.read) ? 'that post is in the Archive, and no text is kept for it' : 'no text is held for that post yet: use Read here');
     if (!recordUrlOf(rec)) throw new Error(REFUSALS.item);
     const pinned = pinnedOf(rec);
     return {
@@ -1921,7 +2008,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     };
     const mention = m => { const p = feedItemFor(m); return { ...copy(m), feed_key: p ? p.key : '' }; };
     // An Archive line: a light record, never any text of the post.
-    const line = i => ({ key: i.key, kind: i.kind, origin: i.origin, blyg_title: titleOf(i.origin), blyg_label: mine.includes(i.origin) ? 'you' : titleOf(i.origin),
+    const line = i => ({ key: i.key, read: i.read, newer_version: i.newer ? i.newer.version : 0, kind: i.kind, origin: i.origin, blyg_title: titleOf(i.origin), blyg_label: mine.includes(i.origin) ? 'you' : titleOf(i.origin),
       title: cleanText(plainText(i.title), LIMITS.archiveTitleChars), version: i.version, created: i.created, updated: i.updated, archived_at: i.archived_at,
       page: i.page, opens_on: i.page && hostOf(i.page) !== hostOf(i.origin) ? hostOf(i.page) : '' });
     const needle = cleanText(String(q || ''), 100).toLowerCase();

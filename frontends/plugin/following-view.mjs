@@ -130,9 +130,9 @@ function entry(e) {
   const k = escHtml(h.key);
   const title = h.title ? `<div class="title hub-entry-title"><a href="#e-${k}" data-act="read" data-key="${k}">${t(h.title, 200)}</a></div>` : '';
   const menu = h.read === 'opened' ? `<details class="menu"><summary aria-label="more actions">\u22ef</summary><div class="pop"><button type="button" data-act="renew" data-key="${k}">Mark new</button></div></details>` : '';
-  const edited = h.edited_after_read ? `<span class="badge" title="you had ticked version ${Number(h.edited_after_read)}">edited since you read it</span>` : '';
+  const edited = h.read === 'edited' ? `<span class="badge hub-edited" title="${h.read_version ? `you had read version ${Number(h.read_version)}` : 'you had read an earlier version'}">edited since you read it</span>` : '';
   return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}">
-    <div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="${k}" aria-label="Read: move to Archive" title="Read: move to Archive">${h.read === 'new' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
+    <div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="${k}" aria-label="Read: move to Archive" title="Read: move to Archive">${h.read === 'new' || h.read === 'edited' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
       <span>${day(h.shown_at || h.updated || h.created)}</span><span>${t(h.reading || '', 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>${h.maintenance ? `<span>${Number(h.maintenance)} maintenance</span>` : ''}</div>
     ${versions(h)}${pins}${title}${resp}${bodyOf(h)}${ident}${folded}
     <div class="src">${h.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="open the original">${addr(h.page)}</button>` : ''}${h.opens_on ? ` <span class="mut">(on ${t(h.opens_on, 80)})</span>` : ''}</div>
@@ -140,13 +140,16 @@ function entry(e) {
 }
 
 // An Archive line: kind, blyg, title or first words, dates, Open original, and a checked box that puts it back in the Feed. NO text of the post.
+// A post held there with a newer wording (archived_changed) says "edited again" and offers Mark read (keep it read, at the newer version).
 function archiveLine(l) {
   const k = escHtml(l.key);
-  return `<div class="aline hub-archive-line" data-key="${k}"><input type="checkbox" class="untick" checked data-key="${k}" aria-label="Unread again: move back to the Feed" title="Unread again: move back to the Feed">
+  const again = l.read === 'archived_changed';
+  return `<div class="aline hub-archive-line${again ? ' hub-archive-changed' : ''}" data-key="${k}"><input type="checkbox" class="untick" checked data-key="${k}" aria-label="Unread again: move back to the Feed" title="Unread again: move back to the Feed">
     <span class="kind">${t(l.kind, 20)}</span><strong>${t(l.blyg_label || l.origin, 160)}</strong>
     <span class="title">${l.title ? t(l.title, 200) : '<span class="mut">(no title)</span>'}</span>
+    ${again ? `<span class="badge warn" title="there is a version ${Number(l.newer_version) || ''} you have not read; untick to read it">edited again</span>` : ''}
     <span class="mut">${day(l.updated || l.created)}${l.archived_at ? `, read ${day(l.archived_at)}` : ''}</span>
-    ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}</div>`;
+    ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}${again ? `<button type="button" class="link" data-act="mark-read" data-key="${k}">Mark read</button>` : ''}</div>`;
 }
 function archivePane(data) {
   const q = data.archive_query || '';
@@ -245,6 +248,7 @@ const SCRIPT = `
         if(r&&r.ok&&r.url){location.href=r.url+(resp?'#respond':'');}else say((r&&r.error)||'failed',true);});}
     if(a==='more'){var box=b.closest('.hub-entry-body');if(box)setMore(box,box.dataset.more==='expanded'?'collapsed':'expanded');return;}
     if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
+    if(a==='mark-read')return post('/following/read',{key:b.dataset.key,move:'tick'}).then(function(r){done(r,'kept as read');});
     if(a==='tick-all'){var keys=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)keys.push(e.dataset.key);});
       if(!keys.length)return;
       if(!confirm('Move the '+keys.length+' post'+(keys.length===1?'':'s')+' shown to the Archive?'))return;

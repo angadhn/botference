@@ -35,7 +35,7 @@ function rig({ settings = {}, clock = { t: Date.parse('2026-11-10T12:00:00Z') } 
 const follow = async (r, origin) => r.f.confirmImport([{ origin, title: 'x' }]);
 const items = r => r.f.view({ filter: 'all' }).entries.flatMap(e => [e.head, ...e.members]);
 // what the old "mark all seen" did for these tests: every post the Feed holds has been opened
-const openAll = r => { for (const i of items(r)) r.f.readMove(i.key, 'open'); };
+const openAll = r => { for (const i of items(r)) r.f.open(i.key); };
 const inBackground = r => r.f.view({ view: 'background' }).background;
 
 test('follow by any URL on a blyg resolves its origin; unfollow forgets it and its posts; list', async () => {
@@ -480,16 +480,19 @@ test('settings: named, validated, defaults kept for what is refused; my_origins 
 });
 
 test('read state: one function moves it, and refuses a move the table does not allow', () => {
-  assert.deepEqual(F.READ_STATES, ['new', 'opened', 'responded', 'archived']);
+  assert.deepEqual(F.READ_STATES, ['new', 'opened', 'responded', 'edited', 'archived', 'archived_changed']);
   const rec = read => ({ read });
   const go = (from, ev) => F.moveRead(rec(from), ev);
   // every legal move, from every state it names
   const legal = [
-    ['new', 'open', 'opened'], ['opened', 'open', 'opened'],
-    ['new', 'respond', 'responded'], ['opened', 'respond', 'responded'], ['responded', 'respond', 'responded'],
+    ['new', 'open', 'opened'], ['edited', 'open', 'edited'],
+    ['new', 'respond', 'responded'], ['opened', 'respond', 'responded'], ['edited', 'respond', 'responded'],
     ['opened', 'resurface', 'new'], ['opened', 'renew', 'new'],
-    ['new', 'tick', 'archived'], ['opened', 'tick', 'archived'], ['responded', 'tick', 'archived'],
-    ['archived', 'untick', 'new'], ['archived', 'reopen', 'new'],
+    ['new', 'tick', 'archived'], ['opened', 'tick', 'archived'], ['responded', 'tick', 'archived'], ['edited', 'tick', 'archived'], ['archived_changed', 'tick', 'archived'],
+    ['archived', 'untick', 'new'], ['archived_changed', 'untick', 'new'],
+    ['archived', 'edit', 'edited'], ['edited', 'edit', 'edited'],
+    ['archived', 'hold', 'archived_changed'], ['archived_changed', 'hold', 'archived_changed'],
+    ['archived_changed', 'release', 'edited'], ['archived_changed', 'revert', 'archived'],
   ];
   for (const [from, ev, to] of legal) assert.equal(go(from, ev), to, `${from} ${ev}`);
   // and every other (state, move) pair is refused, with the table as the only judge
@@ -515,7 +518,7 @@ test('read state through the engine: open, markResponded; withdrawn and unknown 
   await r.f.refresh();
   const key = r.f.keyFor(A, idOf(1));
   assert.equal(r.f.readMove(key, 'open'), 'opened');
-  assert.equal(r.f.readMove(key, 'open'), 'opened');
+  assert.throws(() => r.f.readMove(key, 'open'), /cannot open while opened/, 'the table is the judge: opening again is not a move (open() checks first)');
   assert.throws(() => r.f.readMove(key, 'see'), /no such move/);
   assert.equal(r.f.markResponded(A, idOf(1)), true);
   assert.equal(r.f.itemByKey(key).read, 'responded');

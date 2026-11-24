@@ -679,9 +679,12 @@ choice; never asked until you resume it), *unreachable* (it could not be asked:
 asked again after 10 minutes, then 20, doubling up to 6 hours, and **Retry**
 forces it) or *gone* (it answered three times in a row without a manifest or
 index; not asked again until you resume it). A post is *new*, *opened* (you opened
-it), *responded* (you exported a note for it) or *archived* (you ticked it as read).
-The first three are in the Feed; opening a post never archives it, only your own tick
-does. (Older versions also had *seen*; a post stored that way is loaded as *new*.)
+it), *responded* (you exported a note for it), *edited* (you had ticked it, and a real
+edit brought it back: "edited since you read it"), *archived* (you ticked it as read) or
+*archived_changed* (still in the Archive, but a newer wording exists that you have not
+read: the Archive line says "edited again"). The first four are in the Feed; opening a
+post never archives it, only your own tick does. (Older versions also had *seen*; a post
+stored that way is loaded as *new*.)
 
 **Limits.** At most 500 blygs; 200 unread posts held per blyg and 2000 in all (archived posts do not count); per
 refresh at most 200 requests and 60 seconds, and 50 post documents per blyg.

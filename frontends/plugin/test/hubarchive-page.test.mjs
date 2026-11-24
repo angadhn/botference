@@ -292,3 +292,28 @@ test('Unfollow offers the choice plainly, says what each does, and sends which o
   assert.deepEqual(p.confirms, []);
   x.done();
 });
+
+test('an edited post says "edited since you read it" in the Feed; an "edited again" line in the Archive offers Open, Mark read and untick', async () => {
+  const x = await hub({ n: 3 });
+  const k = x.f.keyFor(A, idOf(2));
+  x.f.readMove(k, 'tick');
+  x.site.put(makeDoc({ id: idOf(2), origin: A, title: 'Post 2', body: 'New words of post 2.', version: 2, created: day(2), updated: day(20) }));
+  await x.f.refresh();
+  let p = x.run();
+  const art = p.doc.querySelector(`article[data-key="${k}"]`);
+  assert.equal(art.querySelector('.hub-edited').textContent, 'edited since you read it');
+  assert.equal(art.querySelector('.hub-edited').getAttribute('title'), 'you had read version 1');
+  x.f.readMove(k, 'tick');
+  x.site.put(makeDoc({ id: idOf(2), origin: A, title: 'Post 2', body: 'Newer words of post 2.', version: 3, created: day(2), updated: day(21) }));
+  await x.f.refresh();
+  p = x.run({ view: 'archive' });
+  const line = p.doc.querySelector(`.aline[data-key="${k}"]`);
+  assert.ok(line.classList.contains('hub-archive-changed'));
+  assert.match(line.textContent, /edited again/);
+  assert.ok(line.querySelector('button[data-act=open]'));
+  assert.ok(line.querySelector('input.untick'));
+  line.querySelector('button[data-act=mark-read]').click();
+  await p.settle();
+  assert.deepEqual(p.calls.map(c => c.body), [{ key: k, move: 'tick' }]);
+  x.done();
+});
