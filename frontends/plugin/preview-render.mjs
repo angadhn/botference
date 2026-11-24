@@ -24,12 +24,14 @@ export const LOAD_MS = 12000;
 export const HARD_MS = 30000;
 export const RENDER_ENDINGS = Object.freeze(['ready', 'missing', 'unavailable']);
 
-/** Chrome on this machine (BOTFERENCE_CHROME, the macOS app, then PATH), or ''. */
+/** A Chromium on this machine (BOTFERENCE_CHROME, the macOS Chrome or Brave app, then PATH), or ''. It is always run headless with a
+ *  throwaway profile: never the owner's own browser profile. */
 export function findChrome(env = process.env) {
   const c = env.BOTFERENCE_CHROME;
   if (c && fs.existsSync(c)) return c;
-  const mac = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-  if (process.platform === 'darwin' && fs.existsSync(mac)) return mac;
+  for (const mac of ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser', '/Applications/Chromium.app/Contents/MacOS/Chromium']) {
+    if (process.platform === 'darwin' && fs.existsSync(mac)) return mac;
+  }
   for (const d of String(env.PATH || '').split(path.delimiter)) {
     for (const n of ['google-chrome', 'chromium', 'chromium-browser', 'chrome']) { const p = path.join(d, n); try { fs.accessSync(p, fs.constants.X_OK); return p; } catch { /* next */ } }
   }
@@ -49,8 +51,10 @@ export function renderPreview({ chrome, url, selector, theme = 'light', loadMs =
       if (ended) return;
       ended = true;
       clearTimeout(hard);
+      // the throwaway profile goes once the browser is gone (it may still be writing for a moment after the kill)
+      const wipe = () => { try { fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* temp */ } };
+      if (proc && proc.exitCode === null && proc.signalCode === null) { proc.once('exit', () => setTimeout(wipe, 100)); setTimeout(wipe, 3000).unref(); } else wipe();
       try { proc && proc.kill('SIGKILL'); } catch { /* gone */ }
-      setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* temp */ } }, 200).unref();
       resolve(r);
     };
     const hard = setTimeout(() => finish({ state: 'unavailable', why: `the render did not finish within ${hardMs / 1000} s` }), hardMs);
