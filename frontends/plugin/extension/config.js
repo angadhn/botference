@@ -212,7 +212,8 @@
     // a failed or interrupted run, whichever step (the step is part of the mode's name): 'problem'
     failed_prepare: 'problem', failed_plan: 'problem', failed_apply: 'problem', failed_publish: 'problem',
     interrupted_drafted: 'problem', interrupted_preparing: 'problem', interrupted_planning: 'problem', interrupted_planned: 'problem',
-    interrupted_applying: 'problem', interrupted_applied: 'problem', interrupted_publishing: 'problem', interrupted_unknown: 'problem' });
+    interrupted_applying: 'problem', interrupted_applied: 'problem', interrupted_publishing: 'problem', interrupted_unknown: 'problem',
+    abandon_failed: 'problem' });
   // `confirm` ('never' | 'always', the companion's setting as carried on the run): with 'never' the run does not stop at
   // `planned`, so that moment is still "running", not a confirmation to press
   const pubViewOf = (mode, confirm) => (mode === 'planned' && confirm === 'never' ? 'running' : (PUB_VIEW_OF[mode] || 'problem'));
@@ -228,6 +229,8 @@
     continue: Object.freeze({ method: 'POST', path: '/blyg-publish/continue', offer: 'needs', body: ['run', 'token', 'stop'] }),
     cancel: Object.freeze({ method: 'POST', path: '/blyg-publish/cancel', offer: 'none', body: ['run', 'token'] }),
     abandon: Object.freeze({ method: 'POST', path: '/blyg-publish/abandon', offer: 'none', body: ['run', 'token'] }),
+    // after the site's own abandon failed: end the run on the companion only (nothing runs on the site)
+    forget: Object.freeze({ method: 'POST', path: '/blyg-publish/forget', offer: 'none', body: ['run', 'token'] }),
   });
   const BLYG_PUBLISH_SCOPES = Object.freeze(['one', 'above']);
 

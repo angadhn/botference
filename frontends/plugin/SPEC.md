@@ -13138,8 +13138,16 @@ failed_prepare → preparing | abandoned      failed_plan → planning | abandon
 failed_apply → applying | abandoned         failed_publish → publishing | abandoned
 interrupted_applying → applying | abandoned;  interrupted_applied | interrupted_publishing → publishing | abandoned
 interrupted_drafted | _preparing | _planning | _planned | interrupted_unknown → abandoned
+failed_apply | failed_publish | interrupted_applying | _applied | _publishing | _unknown → abandon_failed (the site's abandon failed)
+abandon_failed → abandoned (abandon again succeeded, or FORGET) | abandon_failed (abandon again failed)
 published | cancelled | abandoned → drafted (a new run)
 ```
+
+**When the site's own abandon fails** (for example the owner already ended that run by hand), the run waits in `abandon_failed`,
+which survives a restart and offers two owner actions: Abandon again, or **Forget this run here** (`POST /blyg-publish/forget`, a
+drawer button): the run ends on the companion (`abandoned`, `cleanup.forgotten`), NOTHING is run on the site or removed, and the owner
+is told plainly that the site may still hold the run or the staged note (`--abandon <note>`, then `--unstage-note`). So the drawer alone
+can always reach a clean state.
 
 A record written by an older companion (`failed` + `failed_step`, `interrupted` + `interrupted_from`) is migrated on load
 (`migrateRecord`; an interrupted step it cannot name becomes `interrupted_unknown`, which offers only abandon, as after apply). The

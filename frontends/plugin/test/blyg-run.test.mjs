@@ -675,7 +675,7 @@ test('the companion is killed mid-publish with the fake command; after a restart
   assert.equal((await pub2.carryOn({ id: v.id, token: v.token })).status, 409, 'once');
 });
 
-test('restart, then abandon after apply: the site\'s own abandon command runs (no hand-editing), the note stays; a failing abandon command is reported and the run stays interrupted', async t => {
+test('restart, then abandon after apply: the site\'s own abandon command runs (no hand-editing), the note stays; a failing abandon command is reported and the run waits in abandon_failed (abandon again or forget)', async t => {
   const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
   const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
   const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
@@ -698,7 +698,7 @@ test('restart, then abandon after apply: the site\'s own abandon command runs (n
   const bad = await pub.abandon({ id: v.id, token: v.token });
   assert.equal(bad.ok, false);
   assert.match(bad.error, /the abandon command failed .*abandon: something broke/s);
-  assert.ok(pub.current().mode.startsWith('interrupted_'), 'not abandoned while the site\'s own abandon failed');
+  assert.equal(pub.current().mode, 'abandon_failed', 'not abandoned while the site\'s own abandon failed: it waits, offering abandon or forget');
   rig.control({});
   const ok = await pub.abandon({ id: v.id, token: v.token });
   assert.ok(ok.ok, ok.error);
@@ -974,4 +974,49 @@ test('a comment or a quoted passage that shows {{ or {% is refused at the start 
   const rig2 = makeRig({ extra: { escape: 'none' } }); t.after(rig2.done);
   const none = boot(rig2, { page: blygPage([thread('t1', 'A sentence.', 'I would write {{ page.title }} here.', { blyg: stamp() })]) });
   assert.ok(none.start().ok, 'escape none: not refused');
+});
+
+// The site's own abandon can fail for good (for example: the owner already ended that run by hand, and an older site command says
+// "nothing to abandon" with exit 1). The run then waits in abandon_failed, which survives a restart and offers Abandon again or
+// FORGET: a move to abandoned that runs nothing on the site, so the drawer alone always reaches a clean state (the reviewer's zz-stuck).
+test('a failing site abandon: abandon_failed survives a restart, offers abandon and forget; forget runs nothing and frees the companion', async t => {
+  const rig = makeRig({ discard: true }); t.after(rig.done);
+  const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, abandon: cmd('abandon') } };
+  rig.control({ publish: 'fail' });
+  const b = boot(rig, { config: home });
+  assert.ok(b.start().ok);
+  await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token });
+  await until(() => b.mode() === 'failed_publish', 'failed at publish');
+  rig.control({ abandon: 'fail' });
+  v = b.pub.current();
+  assert.equal((await b.pub.forget({ id: v.id, token: v.token })).status, 409, 'forget is offered only after the site\'s abandon failed');
+  const a = await b.pub.abandon({ id: v.id, token: v.token });
+  assert.deepEqual([a.ok, a.status, a.view.mode, a.view.can], [false, 409, 'abandon_failed', ['abandon', 'forget']]);
+  assert.match(a.error, /Forget this run here/);
+  assert.match(a.view.abandon_failure, /abandon: something broke/);
+  // restart: still abandon_failed, still the same two actions; a new start is refused
+  const again = () => R.createPublisher({ file: b.file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
+  let pub = again();
+  v = pub.current();
+  assert.deepEqual([v.mode, v.can], ['abandon_failed', ['abandon', 'forget']]);
+  assert.equal(pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' }).status, 409);
+  // abandon again still fails: still abandon_failed (and the site's abandon ran a second time)
+  const a2 = await pub.abandon({ id: v.id, token: v.token });
+  assert.deepEqual([a2.ok, a2.view.mode], [false, 'abandon_failed']);
+  const before = rig.calls().length;
+  const f = await pub.forget({ id: v.id, token: v.token });
+  assert.ok(f.ok, JSON.stringify(f));
+  assert.deepEqual([f.view.mode, f.view.cleanup.forgotten, f.view.cleanup.removed], ['abandoned', true, false]);
+  assert.match(f.view.cleanup.note, /nothing was run on your site.*--unstage-note/s);
+  assert.equal(rig.calls().length, before, 'forget ran no command');
+  assert.ok(fs.existsSync(noteOf(rig, v)), 'and removed nothing');
+  pub = again();
+  assert.equal(pub.current().mode, 'abandoned', 'forgotten survives a restart');
+  rig.control({});
+  const fresh = pub.start({ page: b.page, threadId: 't1', scope: 'one', shown: 'always' });
+  assert.ok(fresh.ok, 'a new run may start: ' + fresh.error);
+  await until(() => pub.current().mode === 'planned', 'the new run planned');
 });

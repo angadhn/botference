@@ -4261,7 +4261,7 @@ export function handler(req, res) {
       const v = validateHome(store.readConfig().blyg_home);
       return ok(res, { run: runFor(blygPublish.current()), confirm: v.ok ? v.settings.confirm : 'always' });
     }
-    const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon' };
+    const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon', '/blyg-publish/forget': 'forget' };
     if (req.method === 'POST' && url === '/blyg-publish/start') {
       return readBody(req, res, data => {
         const page = pageOf(req, res, data);
@@ -4274,7 +4274,10 @@ export function handler(req, res) {
     if (req.method === 'POST' && acts[url]) {
       return readBody(req, res, async data => {
         const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes' });
-        return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
+        if (r.ok) return ok(res, { run: runFor(r.view) });
+        // a refusal that MOVED the run (the site's abandon failed: the run now offers Forget) carries the run as it now is
+        if (r.view) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, run: runFor(r.view) }));
+        return fail(res, r.status, r.error);
       });
     }
     return fail(res, 404, 'not found');

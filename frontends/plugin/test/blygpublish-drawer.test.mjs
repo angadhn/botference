@@ -46,7 +46,7 @@ const PAGE = () => ({ url: 'https://example.com/article', title: 'An article', p
 function companion(first) {
   const state = { run: first || { mode: 'idle', can: [] }, calls: [] };
   const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', note_rel: '_notes/my-first-thought.md', note_text: '---\ntitle: x\n---\nBody <img src=x onerror=alert(1)> {{ x }}\n',
-    steps: [], can: mode === 'planned' ? ['confirm', 'cancel'] : /^failed_/.test(mode) ? ['retry', 'abandon'] : /^interrupted_(applying|applied|publishing)$/.test(mode) ? ['continue', 'abandon'] : /^interrupted_/.test(mode) ? ['abandon'] : [], ...extra });
+    steps: [], can: mode === 'planned' ? ['confirm', 'cancel'] : /^failed_/.test(mode) ? ['retry', 'abandon'] : /^interrupted_(applying|applied|publishing)$/.test(mode) ? ['continue', 'abandon'] : /^interrupted_/.test(mode) ? ['abandon'] : mode === 'abandon_failed' ? ['abandon', 'forget'] : [], ...extra });
   state.run = first || run('idle');
   state.make = run;
   state.onBlygPublish = async (op, body) => {
@@ -57,7 +57,9 @@ function companion(first) {
     if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', exit: 0, output: 'PLAN' }] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
+    if (op === 'abandon' && state.abandonFails) { state.run = run('abandon_failed', { abandon_failure: 'the abandon command failed (abandon exited with code 1): nothing to abandon', steps: state.run.steps }); return { ok: false, error: 'the abandon command failed', run: state.run }; }
     if (op === 'abandon') { state.run = run('abandoned'); return { ok: true, run: state.run }; }
+    if (op === 'forget') { state.run = run('abandoned', { cleanup: { forgotten: true } }); return { ok: true, run: state.run }; }
     return { ok: false, error: 'no such op' };
   };
   return state;
@@ -92,7 +94,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'continue', 'cancel', 'abandon']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget']);
   eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
 }
 
@@ -422,6 +424,19 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
     click(q('[data-act="pub-abandon"]')); await tick();
     eq('abandon sends the run\'s id and token', [server.calls.at(-1), view()], [{ op: 'abandon', body: { run: 'r1', token: 'tok1' } }, 'closed']);
   }
+}
+// the site's own abandon fails: the run comes back as abandon_failed, and the drawer alone can still end it (Forget this run here)
+{
+  const server = companion();
+  server.abandonFails = true;
+  server.run = server.make('failed_publish', { failed_step: 'publish', failed_reason: 'publish exited with code 1', steps: [{ step: 'publish', exit: 1, output: 'boom' }] });
+  const { q, qa, dlg, view, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  click(q('[data-act="pub-abandon"]')); await tick();
+  eq('a failed site abandon: the problem view offers Abandon again and Forget, with the reason', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', ['pub-abandon', 'pub-forget', 'pub-close']]);
+  ok('the site\'s words are on screen', /nothing to abandon/.test(dlg().textContent) && /Try Abandon again/.test(dlg().textContent));
+  click(q('[data-act="pub-forget"]')); await tick();
+  eq('Forget sends the run\'s id and token and closes', [server.calls.at(-1), view()], [{ op: 'forget', body: { run: 'r1', token: 'tok1' } }, 'closed']);
 }
 // an action the run's mode does not allow is never sent (a drawer that is out of date cannot confirm a failed run)
 {

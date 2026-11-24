@@ -23,6 +23,9 @@
 //   interrupted_<mode>   the companion stopped while the run was in <mode> (drafted, preparing, planning, planned, applying,
 //                        applied, publishing); an interrupted apply or publish may be continued, any may be abandoned
 //   interrupted_unknown  a record from an older companion whose interrupted step is not known: only abandon (as after apply)
+//   abandon_failed       the owner abandoned a run past apply and the SITE's own abandon command failed (for example: its run was
+//                        already ended by hand). The owner may try abandon again, or FORGET the run here: a move to `abandoned`
+//                        that runs nothing on the site and says plainly what the site may still hold.
 //
 // ONE RUN AT A TIME for the whole companion: while any run is not finished a second
 // request is REFUSED (never queued). A run survives a drawer reload (it lives here and
@@ -54,7 +57,7 @@ export const INTERRUPTED_OF = Object.freeze({ drafted: 'interrupted_drafted', pr
   planned: 'interrupted_planned', applying: 'interrupted_applying', applied: 'interrupted_applied', publishing: 'interrupted_publishing' });
 export const INTERRUPTED_MODES = Object.freeze([...Object.values(INTERRUPTED_OF), 'interrupted_unknown']);
 export const RUN_MODES = Object.freeze(['idle', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing',
-  'published', ...FAILED_MODES, 'cancelled', 'abandoned', ...INTERRUPTED_MODES]);
+  'published', ...FAILED_MODES, 'cancelled', 'abandoned', ...INTERRUPTED_MODES, 'abandon_failed']);
 /** Finished: a new run may start. `idle` is "nothing yet". */
 export const RUN_FINISHED = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
 /** Not finished: a second run is refused. */
@@ -75,18 +78,21 @@ export const RUN_MOVES = Object.freeze({
   applied: Object.freeze(['publishing', 'failed_publish', I.applied]),
   publishing: Object.freeze(['published', 'failed_publish', I.publishing]),
   // a failed step is tried again only by the owner's click, and only that step (a restart leaves a failed run as it is)
+  // (… → abandon_failed only from a mode past apply: before apply abandon runs no site command)
   failed_prepare: Object.freeze(['preparing', 'abandoned']),
   failed_plan: Object.freeze(['planning', 'abandoned']),
-  failed_apply: Object.freeze(['applying', 'abandoned']),
-  failed_publish: Object.freeze(['publishing', 'abandoned']),
+  failed_apply: Object.freeze(['applying', 'abandoned', 'abandon_failed']),
+  failed_publish: Object.freeze(['publishing', 'abandoned', 'abandon_failed']),
   interrupted_drafted: Object.freeze(['abandoned']),
   interrupted_preparing: Object.freeze(['abandoned']),
   interrupted_planning: Object.freeze(['abandoned']),
   interrupted_planned: Object.freeze(['abandoned']),
-  interrupted_applying: Object.freeze(['applying', 'abandoned']),
-  interrupted_applied: Object.freeze(['publishing', 'abandoned']),
-  interrupted_publishing: Object.freeze(['publishing', 'abandoned']),
-  interrupted_unknown: Object.freeze(['abandoned']),
+  interrupted_applying: Object.freeze(['applying', 'abandoned', 'abandon_failed']),
+  interrupted_applied: Object.freeze(['publishing', 'abandoned', 'abandon_failed']),
+  interrupted_publishing: Object.freeze(['publishing', 'abandoned', 'abandon_failed']),
+  interrupted_unknown: Object.freeze(['abandoned', 'abandon_failed']),
+  // the site's abandon failed: try it again (abandoned, or abandon_failed again) or FORGET here (abandoned)
+  abandon_failed: Object.freeze(['abandoned', 'abandon_failed']),
   published: Object.freeze(['drafted']),
   cancelled: Object.freeze(['drafted']),
   abandoned: Object.freeze(['drafted']),
@@ -111,6 +117,7 @@ export const stepNamed = mode => (FAILED_MODES.includes(mode) ? mode.slice('fail
 
 /** What the owner may do in a mode (the drawer draws buttons from this; the routes enforce it by the table). */
 export const actionsOf = run => (run.mode === 'planned' ? ['confirm', 'cancel'] : FAILED_MODES.includes(run.mode) ? ['retry', 'abandon']
+  : run.mode === 'abandon_failed' ? ['abandon', 'forget']
   : INTERRUPTED_MODES.includes(run.mode) ? (CONTINUE_FOR[run.mode] ? ['continue', 'abandon'] : ['abandon']) : []);
 
 /** A record written by an older companion (mode 'failed' + failed_step, or 'interrupted' + interrupted_from) in today's one field. */
@@ -158,6 +165,7 @@ export class RunBook {
     this.run = { ...base, ...facts, mode: to, at: this.now() };
     if (!FAILED_MODES.includes(to)) delete this.run.failed_reason;
     if (!INTERRUPTED_MODES.includes(to)) delete this.run.interrupted_why;
+    if (to !== 'abandon_failed') delete this.run.abandon_failure;
     this.persist();
     this.onChange(this.run);
     return this.run;
@@ -196,6 +204,7 @@ export function viewOf(run) {
     failed_step: FAILED_MODES.includes(run.mode) ? stepNamed(run.mode) : '', failed_reason: run.failed_reason || '',
     interrupted_from: INTERRUPTED_MODES.includes(run.mode) ? stepNamed(run.mode) : '', interrupted_why: run.interrupted_why || '',
     published: run.published || null, cleanup: run.cleanup || null, chained_to: run.chained_to || null,
+    abandon_failure: run.mode === 'abandon_failed' ? String(run.abandon_failure || '') : '',
     can: actionsOf(run),
   };
   return v;
@@ -547,7 +556,11 @@ export function createPublisher(deps) {
       const home = settingsNow();
       if (home.ok && home.settings.commands.abandon && fingerprint(home.settings) === book.run.settings_fp) {
         const a = await step('abandon');
-        if (!a.ok) return fail(409, `the abandon command failed (${a.reason}): ${String(a.record && a.record.output || '').slice(-400)}`);
+        if (!a.ok) {
+          const why = `the abandon command failed (${a.reason}): ${String(a.record && a.record.output || '').slice(-400)}`;
+          if (canMove(book.mode, 'abandon_failed')) book.move('abandon_failed', { abandon_failure: why });
+          return { ...fail(409, `${why}. You can try Abandon again, or Forget this run here (nothing is run on your site).`), view: viewOf(book.run) };
+        }
         cleanup = { ...cleanup, abandon: a.record ? a.record.output : '', note: 'the publish command\'s own abandon was run; the note was left where it is' };
       }
       if (publishedNothing(book.run)) {
@@ -558,6 +571,16 @@ export function createPublisher(deps) {
     }
     if (!canMove(book.mode, 'abandoned')) return fail(409, 'the run moved on meanwhile');
     book.move('abandoned', { cleanup });
+    return { ok: true, view: viewOf(book.run) };
+  }
+  /** FORGET the run here (only after the site's own abandon failed): the run ends on this companion and NOTHING is run on the site or
+   *  removed. The owner is told plainly what the site may still hold. */
+  function forget({ id, token }) {
+    const bad = owned(id, token); if (bad) return bad;
+    if (book.mode !== 'abandon_failed') return fail(409, `this run is ${book.mode}; Forget is offered only after your site's own abandon failed`);
+    const note = String(book.run.note_rel || '').replace(/[^\w ./-]/g, '');
+    book.move('abandoned', { cleanup: { removed: false, discard: '', forgotten: true,
+      note: `Forgotten here only: nothing was run on your site and nothing was removed. If your site still has this run or the note staged, end it there by hand (for the example blog: scripts/blyg-publish --abandon ${note || '<note>'}, then scripts/blyg-publish ${note || '<note>'} --unstage-note).` } });
     return { ok: true, view: viewOf(book.run) };
   }
   /** The owner client resumes: the current run (a client that reloaded asks this). */
@@ -574,5 +597,5 @@ export function createPublisher(deps) {
   /** Stop whatever is running (the companion is shutting down). */
   function stopAll() { if (RUNNING_MODES.includes(book.mode) && stopHandle) { try { stopHandle(); } catch { /* gone */ } } }
 
-  return { book, start, confirm, retry, carryOn, cancel, abandon, current, stopAll, STEPS };
+  return { book, start, confirm, retry, carryOn, cancel, abandon, forget, current, stopAll, STEPS };
 }

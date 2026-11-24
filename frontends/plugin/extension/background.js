@@ -1081,7 +1081,8 @@ async function blygPublish(msg, tabId) {
   for (const k of spec.body) body[k] = msg[k] === undefined ? '' : String(msg[k]);
   if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body);
-  if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout };
+  // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
+  if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null };
   if (spec.offer === 'grants') blygOffers.offer(tabId);
   return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '' };
 }

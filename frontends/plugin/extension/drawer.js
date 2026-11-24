@@ -8355,6 +8355,7 @@ ${bubbleShellHtml()}`;
       'pub-continue': (btn, t, e) => pubAct('continue', e, btn.dataset.stop === 'yes'),
       'pub-stop-continue': (btn, t, e) => pubAct('continue', e, true),
       'pub-abandon': () => pubAct('abandon'),
+      'pub-forget': () => pubAct('forget'),
       'pub-review': () => pubReview(),
       'pub-close': () => pubClose(),
       'export-response': () => toggleResponse(),
@@ -10790,7 +10791,7 @@ ${bubbleShellHtml()}`;
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
       if (op === 'confirm' || op === 'retry' || op === 'continue') { const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null); if (over) { D.pub.error = over; paintPub(); return; } }
-      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', continue: stop ? 'stop-and-continue' : 'continue' }[op];
+      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', forget: 'forget', continue: stop ? 'stop-and-continue' : 'continue' }[op];
       if (!may || (run.can || []).indexOf(may) === -1) return;
       // the view changes first for the two that start something, so a second click finds nothing to press
       if (op === 'confirm' && !pubGo('running')) return;
@@ -10801,6 +10802,11 @@ ${bubbleShellHtml()}`;
       }
       let r = null;
       try { r = await cb('onBlygPublish')(op, stop ? { run: run.id, token: run.token, stop: 'yes' } : { run: run.id, token: run.token }); } catch (_) { r = null; }
+      if (r && !r.ok && r.run && r.run.id === run.id) {
+        // refused, but the run moved (the site's abandon failed: the run now offers Forget): show the run as it is, with the reason
+        pubApply(r.run); D.pub.error = r.error || ''; paintPub();
+        return;
+      }
       if (!r || !r.ok || !r.run) {
         const said = (r && r.error) || 'the companion did not answer';
         if (!pubGo('problem', { error: said })) { D.pub.error = said; paintPub(); }
@@ -10866,14 +10872,15 @@ ${bubbleShellHtml()}`;
         case 'problem': {
           if (!run.id) return `<h2>Could not publish</h2><p class="puberr">${esc(P.error || 'something went wrong')}</p><div class="pubbtns">${closeBtn}</div>`;
           const interrupted = /^interrupted_/.test(String(run.mode || ''));
-          const head = interrupted ? 'The companion stopped while this was under way' : 'The ' + esc(run.failed_step || 'last') + ' step did not finish';
-          const why = interrupted ? esc(run.interrupted_why || '') : esc(run.failed_reason || '');
+          const refused = run.mode === 'abandon_failed';
+          const head = refused ? 'Your site\'s own abandon did not finish' : interrupted ? 'The companion stopped while this was under way' : 'The ' + esc(run.failed_step || 'last') + ' step did not finish';
+          const why = refused ? esc(run.abandon_failure || '') : interrupted ? esc(run.interrupted_why || '') : esc(run.failed_reason || '');
           const can = run.can || [];
           return `<h2>${head}</h2><p class="puberr">${why}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
             <p>Here is what happened. Nothing is tried again by itself. The tool's own words below say how to finish it by hand${interrupted ? '' : ', or you can try that step again'}.</p>
             ${pubStepsHtml(run)}
             <div class="pubbtns">${can.indexOf('stop-and-continue') !== -1 ? `<p class="puberr">The earlier step is still running on this machine. Carrying on would start a second copy, so it has to be stopped first.</p><button class="pbtn primary" type="button" data-act="pub-stop-continue">Stop the earlier step and carry on</button>` : ''}${run.tainted ? `<p class="puberr">${esc(run.tainted)}</p>` : ''}${can.indexOf('continue') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-continue">Carry on with ${esc({ applying: 'apply', applied: 'publish', publishing: 'publish' }[run.interrupted_from] || 'the step')}</button>` : ''}${can.indexOf('retry') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-retry">Try ${esc(run.failed_step || 'this step')} again</button>` : ''}
-            ${can.indexOf('abandon') !== -1 ? '<button class="pbtn" type="button" data-act="pub-abandon">Abandon this run</button>' : ''}${closeBtn}</div>`;
+            ${can.indexOf('abandon') !== -1 ? `<button class="pbtn" type="button" data-act="pub-abandon">${refused ? 'Try Abandon again' : 'Abandon this run'}</button>` : ''}${can.indexOf('forget') !== -1 ? '<button class="pbtn" type="button" data-act="pub-forget" title="Ends the run here only. Nothing is run on your site; it may still need --unstage-note.">Forget this run here</button>' : ''}${closeBtn}</div>`;
         }
         default: return '';
       }
