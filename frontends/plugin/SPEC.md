@@ -13770,3 +13770,28 @@ the owner could never publish a new version of that post, or add to it, from her
   one on an edit.
 - Tests: `blyg-run` (one post with an ordinary link beside it; an autolink; two posts; an unchecked link; a page naming the post;
   `my_origins`; code; a quoted post keeps its target; checks off; kept on a new version; never gained on an edit).
+
+### A highlight on a blyg's home feed belongs to the post it sits in (`extension/feedbind.js`, `POST /blyg/bind`, `blyg.verifyShown`)
+- THE CLAIM (content script, `feedbind.selectionPost`): the protocol names no HTML marker for "an item shown on a page" (a post's
+  own page has its JSON alternate, §5.8; a front page only its `rel="blyg"`), so the rule is generic: the nearest enclosing
+  `<article>` (or `[data-blyg-item]`) that links, on the PAGE'S OWN web origin, to a path whose last segment is a 26-character id;
+  the post's own links first (`a.permalink`, `rel~=bookmark`, `.u-url`, `.read-more a`), then others in order, at most 3. Inside a
+  `blockquote.blyg-transclusion[data-blyg-id]` (§10.3's wire token) the QUOTED post is claimed first (at `data-blyg-origin`, or the
+  page's own blyg), then the post around it. On a post's own page nothing is claimed. Verdicts `FEED_VERDICTS` none | one | cross
+  (hubbind's words); cross stays today's quote of the page, and the drawer says "This passage runs across two posts, so it is kept as
+  a quote of this page, not of either post."
+- THE CHECK (companion, owner only, nothing when checks are off): `verifyShown({pageUrl, id, quote, origin?})` reads the blyg's
+  manifest (no origin: found from the page, §12.1, and it must be on the page's own web origin; with origin: `{origin}blyg.json`,
+  identity exactly that origin), then the item document from its `item` template on the blyg's host, `docRefusal`, kind fragment or
+  thread, its page on the blyg's host, and the passage rule (`checkPassage`). All through the guarded fetches and the check's limits.
+  `unverified` (with a reason) otherwise.
+- VERIFIED: the post's own page record is made (its text: the item's sanitised `content_html` when nothing is held there yet) or
+  found (a record of another post at that address refuses), the verified answer is applied and remembered by the checker
+  (`createChecker().remember`), and the extension files the thread there with `POST /thread` (the address the companion answered,
+  never the markup's). The post then quotes by reference and is a response, exactly as on the post's own page, and a later visit to
+  the post's page shows the thread. Candidates are tried in order; none verified → the extension does what it always did.
+- The owner's hosted Hub: when the companion does not hold a followed post (`/following/hold` fails), the same check runs at the
+  binding's own origin and id.
+- Tests: `feedbind.test.mjs` (the reference markup of a Blygger Studio feed, the example site's stream, quotes, cross, other sites'
+  links, a post's own page, the wiring), `feedbind-server.test.mjs` (verified and filed; the wrong post; a copying site; a quoted
+  post at its origin; nonsense and this computer's addresses).

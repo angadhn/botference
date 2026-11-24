@@ -5545,6 +5545,38 @@ export function handler(req, res) {
       ok(res, { status, ...(reason ? { reason } : {}), ...(site ? { site } : {}), ...(item ? { item } : {}) });
     });
   }
+  // A PASSAGE ON A BLYG'S HOME FEED (or a post quoted inside a post there) belongs to the post it sits in, when that can be VERIFIED:
+  // the page's markup names a post (untrusted), the companion reads that post's item document from its blyg through the guarded
+  // fetches and checks the passage is its text (blyg.verifyShown). Then the post's own page record is made or found (its text from
+  // the item document when nothing is held yet), its answer is the verified one, and the extension files the thread there, as on
+  // the post's own page. Anything less is `unverified` and the extension does what it always did. Owner only; checks off → unverified.
+  if (req.method === 'POST' && url === '/blyg/bind') {
+    if (notOwner(req, res)) return;
+    return readBody(req, res, async data => {
+      const no = reason => ok(res, { verdict: 'unverified', reason });
+      if (!blygChecksOn()) return no('checks are off');
+      const v = await blygMod.verifyShown({ pageUrl: String(data.page_url || ''), id: String(data.id || ''), quote: String(data.quote || ''),
+        origin: String(data.origin || ''), hints: data.hints });
+      if (v.verdict !== 'verified') return no(v.reason);
+      const r = v.result;
+      const at = r.item.page;
+      const there = store.readPage(at);
+      if (there && there.blyg && there.blyg.status === 'blyg' && there.blyg.item && (there.blyg.item.origin !== r.item.origin || there.blyg.item.id !== r.item.id)) {
+        return no('a page already recorded at that address is another post');
+      }
+      if (there && !mayRead(there, true)) return no('that page is not this companion\'s to write');
+      const page = store.upsertPage({ url: at, title: there ? '' : (r.title || `A post on ${r.site.title || new URL(at).host}`) });
+      if (!store.hasSnapshot(store.pageKey(page.url))) {
+        const { html } = sanitizeArticle(r.html);
+        if (html.trim()) store.saveSnapshot(page.url, html);
+      }
+      blygMod.applyAnswer(page, r);
+      store.savePage(page);
+      blygChecker.remember(page.url, r);
+      broadcast({ type: 'page', url: page.url });
+      return ok(res, { verdict: 'verified', url: page.url, origin: r.item.origin, id: r.item.id, version: r.item.version });
+    });
+  }
   if (req.method === 'POST' && url === '/thread') {
     return readBody(req, res, async data => {
       const text = String((data.msg && data.msg.text) || '');

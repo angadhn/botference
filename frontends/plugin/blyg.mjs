@@ -500,6 +500,63 @@ export function checkPassage(quote, text) {
   return { match: false, nearest: best.length >= NEAREST_MIN_CHARS ? best : '' };
 }
 
+// ---- a post shown on ANOTHER page (a blyg's home feed), verified ----------------------------------------------------
+// A page that lists posts one after another (a blyg's front page) says in its own markup which post a passage sits in. That claim
+// is UNTRUSTED (any page can write such markup), so it is believed only when the blyg's own item document for the claimed id, read
+// through the guarded fetches from the claimed blyg, holds the selected passage as text (the same check a quote passes, §10.2):
+//   · no `origin`: the blyg the page itself belongs to (its manifest found from the page, §12.1), and the blyg must be on the page's
+//     own web origin (scheme, host, port): a page cannot point the check at another site's posts;
+//   · `origin` (a quoted post inside a post: the transclusion's data-blyg-origin): that blyg's own manifest at `{origin}blyg.json`,
+//     whose identity must be exactly `origin`.
+// The post's page (§5.8, or the t/ f/ convention) must be a web address on the blyg's own host. → { verdict: 'verified', result }
+// with `result` the shape detect() answers for the post's own page ({status:'blyg', site, item, html, text}); or { verdict:
+// 'unverified', reason }. FEED_VERDICTS names the two.
+export const FEED_VERDICTS = Object.freeze(['verified', 'unverified']);
+export async function verifyShown({ pageUrl, id, quote, origin = '', hints = null }, { get = guardedGet } = {}) {
+  const no = reason => ({ verdict: 'unverified', reason });
+  let u;
+  try { u = new URL(String(pageUrl)); } catch { return no('not a web page'); }
+  if (!/^https?:$/.test(u.protocol) || urlRefusal(u.href)) return no('not a page that is checked');
+  if (!ID_RE.test(String(id || ''))) return no('not a post id');
+  if (!passageOf(quote)) return no('no passage');
+  const s = session(u.href, get);
+  let m;
+  if (origin) {
+    let o;
+    try { o = new URL(String(origin)); } catch { return no('not an origin'); }
+    if (!/^https?:$/.test(o.protocol) || !o.href.endsWith('/') || o.href !== String(origin) || urlRefusal(o.href)) return no('not an origin');
+    const r = await s.json(new URL('blyg.json', o.href).href, { maxBytes: LIMITS.manifestBytes });
+    if (r.status !== 'ok' || !isManifest(r.json) || identityOf(r.url) !== o.href) return no('that blyg could not be read');
+    m = { manifest: r.json, origin: o.href };
+  } else {
+    const f = await findManifest(s, u.href, cleanHints(hints));
+    if (f.status !== 'found') return no('this page belongs to no blyg that could be read');
+    if (new URL(f.origin).origin !== u.origin) return no('the blyg is not on this page\'s own site');
+    m = f;
+  }
+  const docUrl = itemUrlOf(m.manifest, m.origin, id);
+  if (!isWebUrl(docUrl) || new URL(docUrl).host !== new URL(m.origin).host) return no('the blyg keeps its posts somewhere else');
+  const r = await s.json(docUrl);
+  if (r.status !== 'ok') return no(`post ${id} could not be read`);
+  const doc = r.json;
+  const why = docRefusal(doc, { id, origin: m.origin });
+  if (why) return no(`post ${id} did not verify: ${why}`);
+  if (doc.kind !== 'fragment' && doc.kind !== 'thread') return no(`post ${id} is not a post that can be quoted`);
+  let page = '';
+  try { page = new URL(typeof doc.page === 'string' && doc.page ? doc.page : `${doc.kind === 'fragment' ? 'f' : 't'}/${id}/`, m.origin).href; } catch { page = ''; }
+  if (!isWebUrl(page) || urlRefusal(page) || new URL(page).host !== new URL(m.origin).host) return no(`post ${id}'s page is not on its blyg's own site`);
+  const text = textContent(String(doc.content_html || ''));
+  if (!checkPassage(quote, text).match) return no(`the passage is not text of post ${id}`);
+  const site = { origin: m.origin, title: clip(m.manifest.title, 200), author: clip(m.manifest.author && m.manifest.author.name, 200) };
+  const pinned = (Array.isArray(doc.changelog) ? doc.changelog : [])
+    .filter(e => e && e.pinned === true && Number.isInteger(e.version) && e.version > 0 && e.version <= doc.version).map(e => e.version);
+  const author = clip(doc.author && typeof doc.author === 'object' ? doc.author.name : '', 200) || site.author;
+  return { verdict: 'verified', result: { status: 'blyg', source: 'detected', site, html: String(doc.content_html || ''), text, fetched: s.fetched.slice(),
+    title: clip(doc.title, 200),
+    item: { origin: m.origin, id, kind: doc.kind, version: doc.version, latest: doc.version, pinned: pinned.includes(doc.version), pinned_versions: pinned,
+      page, pinned_page: '', json: docUrl, source: site.title, author } } };
+}
+
 // ---- once per page ------------------------------------------------------------------
 // The companion asks about a page once and remembers the answer: the drawer
 // opening, the first highlight, the page chat and the export all ask the
@@ -566,6 +623,8 @@ export function createChecker({ get = guardedGet, now = Date.now } = {}) {
       return run;
     },
     forget: url => { answers.delete(keyOf(url)); },
+    // a VERIFIED answer for a post's own page, made elsewhere (verifyShown): held as if the page had been asked
+    remember: (url, result) => { settle(keyOf(url), result); },
   };
 }
 

@@ -685,6 +685,7 @@
   // The owner's hosted Hub pages (config.js hosted_hubs, set only in the options) are honoured the same way; their path is the owner's
   // choice, so the worker is asked on every page (it answers from memory) whenever the page's own path could not tell.
   const HubBind = (typeof BFPHubBind !== 'undefined') ? BFPHubBind : null;
+  const FeedBind = (typeof BFPFeedBind !== 'undefined') ? BFPFeedBind : null;
   let COMPANION_BASES = [];
   let HOSTED_HUBS = [];
   if (HubBind && (/^\/(?:hub|following)\/?$/.test(location.pathname) || location.protocol === 'https:')) {
@@ -719,7 +720,12 @@
   async function saveOnHubPost(sel, { quote, prefix, suffix, text, route, mark }) {
     const h = sel.hub;
     const held = await api('POST', '/following/hold', { origin: h.origin, id: h.id });
-    if (!held.ok) return failure(held);
+    if (!held.ok) {
+      // a post the companion does not hold (the owner's HOSTED Hub follows its own list): the same check as a feed's post, at the
+      // post's own blyg (POST /blyg/bind with its origin), so the thread still goes to the post's own page record
+      const fed = await saveOnFeedPost({ feed: [{ id: h.id, origin: h.origin }] }, { quote, prefix, suffix, text, route, mark });
+      return fed || failure(held);
+    }
     // the address the COMPANION keeps the post's record under (it answers it), never the one the page's markup states
     const url = held.data && held.data.url;
     if (!url) return failure({ ok: false, error: 'the companion did not say where the post is kept' });
@@ -730,6 +736,25 @@
     if (thread) Anchor.rekey('__new__', thread.id);
     pendingSel = null;
     return { ok: true, queued: r.data && r.data.queued };
+  }
+  // A post on a blyg's HOME FEED (feedbind.js): the page's markup names the post a passage sits in, which proves nothing; the
+  // companion reads that post's item document from the blyg and checks the passage is its text (POST /blyg/bind). The first
+  // candidate it VERIFIES gets the thread, on the post's own page record (the address the companion answers, never the markup's).
+  // → the save's answer, or null when nothing verified (the caller then does what it always did, on this page).
+  async function saveOnFeedPost(sel, { quote, prefix, suffix, text, route, mark }) {
+    for (const c of sel.feed || []) {
+      const v = await api('POST', '/blyg/bind', { page_url: URL_NOW, id: c.id, ...(c.origin ? { origin: c.origin } : {}), quote, hints: blygHints() });
+      if (!v || !v.ok || !v.data || v.data.verdict !== 'verified' || !v.data.url) continue;
+      const body = { url: v.data.url, quote, prefix, suffix, msg: { text }, ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
+      const r = await api('POST', '/thread', body);
+      if (!r.ok) return failure(r);
+      const thread = (r.data && r.data.thread) || null;
+      if (thread) Anchor.rekey('__new__', thread.id);
+      pendingSel = null;
+      if (drawer) drawer.note(null, 'Kept with the post it is from: you will find it on that post\'s own page too.');
+      return { ok: true, queued: r.data && r.data.queued };
+    }
+    return null;
   }
   function failure(r) {
     const said = String((r && r.error) || '').trim();
@@ -2875,6 +2900,11 @@
         // planned against a page whose full text is already on disk.
         // A comment on a followed post's text on the Hub: the post's own page record, held by the companion from its item document
         if (pendingSel && pendingSel.hub) return saveOnHubPost(pendingSel, { quote, prefix, suffix, text, route, mark });
+        // a passage on a blyg's home feed: the post it sits in, when the companion can verify it; else as always
+        if (pendingSel && pendingSel.feed) {
+          const fed = await saveOnFeedPost(pendingSel, { quote, prefix, suffix, text, route, mark });
+          if (fed) return fed;
+        }
         const wasNew = !registered;
         const reg = await ensureRegistered();
         if (!reg.ok) return failure(reg);
@@ -3884,6 +3914,11 @@
       if (note) note.textContent = 'A comment belongs to one post: keep the selection inside one.';
       return;
     }
+    // On a blyg's home feed a selection inside one post is CLAIMED for that post (feedbind.js), and verified by the companion when the
+    // comment is saved; one that runs across two posts stays a quote of this page, as always, and the drawer says why
+    const feedSel = FeedBind && hubSel.verdict === 'none' && /^https?:$/.test(location.protocol)
+      ? FeedBind.selectionPost(sel.getRangeAt(0), HREF) : { verdict: 'none', candidates: [] };
+    if (feedSel.verdict === 'cross' && drawer) drawer.note(null, 'This passage runs across two posts, so it is kept as a quote of this page, not of either post.');
     const index = freshIndex();
     const { start, end } = Anchor.offsetsFromRange(index, sel.getRangeAt(0));
     if (end <= start) return;
@@ -3914,7 +3949,8 @@
     })();
 
     Anchor.unpaint('__new__');
-    pendingSel = { ...a, start, end, page, mark, ...where, ...(hubSel.binding ? { hub: hubSel.binding } : {}) };
+    pendingSel = { ...a, start, end, page, mark, ...where, ...(hubSel.binding ? { hub: hubSel.binding } : {}),
+      ...(feedSel.verdict === 'one' && feedSel.candidates.length ? { feed: feedSel.candidates } : {}) };
     Anchor.paintOffsets(index, start, end, '__new__', false, mark);
     sel.removeAllRanges();
     drawer.hideSel();
