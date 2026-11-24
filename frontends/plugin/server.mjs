@@ -3035,7 +3035,13 @@ const following = followingMod.createFollowing({
   getSettings: () => followingMod.followingSettingsOf(store.readConfig()).settings,
   mayFetch: () => blygChecksOn(),
   tokenForbidden: FOLLOWING_TOKEN_FORBIDDEN,
+  onChange: () => countFollows(),
 });
+// How many blygs the Hub follows, for /health (which answers at once): a cache of what the store says, read again whenever the
+// Hub changes. The store is the truth; this is only what /health reports.
+let hubFollows = 0;
+function countFollows() { following.followCount().then(n => { hubFollows = n; }, () => {}); }
+countFollows();
 const blygPersisted = new WeakSet();
 // how long a new highlight or message may wait for the page's FIRST answer
 // before it is written stamped 'checking' (and filled in when the answer lands)
@@ -3833,7 +3839,7 @@ export function handler(req, res) {
 
   if (req.method === 'GET' && url === '/health') {
     const me = hosted.identity(req);
-    const send = hubFollows => ok(res, {
+    return ok(res, {
       capabilities: { draft_blog: 1 },
       ...(AUTHORING_ROOT ? { blog_authoring: {
         enabled: !!authoring.siteForRoot(AUTHORING_ROOT),
@@ -3860,8 +3866,6 @@ export function handler(req, res) {
       // how many blygs the owner's Hub follows: the extension's feed icon asks it to decide whether to offer a choice of reader
       ...(me.owner ? { hub_follows: hubFollows } : {}),
     });
-    // (the follow list is read from the Hub's store: asynchronously, and only for the owner)
-    return me.owner ? following.followCount().then(send, () => send(0)) : send(0);
   }
   // the same standing on its own, for a client that only wants to ask "who am I"
   if (req.method === 'GET' && url === '/whoami') {
