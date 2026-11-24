@@ -12769,6 +12769,7 @@ this is the contract.
     (`/tk instr` alone on its line, up to 3 spaces of indent), `inline`
     (`/tk(instr)`, balanced parens, one line, preceded by line start,
     whitespace or `([{`), `studio` (`[TK] instr [/TK]`, any case, skipping an
+    (SUPERSEDED 2026-11-24: the bracket form is no longer a gap in what is typed; see "Publish as blyg after the first real use")
     empty one or one with `[=]`). Never in code; `\/tk` is not a gap and
     `unescape` writes it as `/tk`. `MAX_GAPS` 8, `INSTRUCTION_MAX` 500.
   - Provenance: `msg.provenance = 'owner-typed'` is set by the server
@@ -12796,7 +12797,7 @@ this is the contract.
     instruction outside and one JSON object (comment with `[GAP]` marking the
     spot, passage, title, url, post) between `DATA-<24 hex>-BEGIN/END` lines
     made per call; `cleanData` strips control, zero-width and bidi
-    characters. `gap_agent: 'codex'` → failed, "codex cannot fill gaps (no
+    characters. (SUPERSEDED 2026-11-24: `/tk-codex` asks Codex through a locked-down `codex exec`; see below.) `gap_agent: 'codex'` → failed, "codex cannot fill gaps (no
     tool-less one-shot form for it)", nothing spawned (`ONESHOT_AGENTS`).
     `PLUGIN_ONESHOT_CMD` replaces the command in tests.
   - `POST /gap {url, thread_id, ts, gap_id, action, text?}`, owner only:
@@ -12867,6 +12868,147 @@ whether its words pass the check.
 - `test/blygdrawer.test.mjs`, `test/export.test.mjs`, `test/draft.test.mjs`.
 - Fixtures: `test/fixtures/blyg/` (`sources.json` says where each came from).
   Other authors' posts are kept only as short excerpts.
+
+## Amendment (2026-11-24): Publish as blyg after the first real use
+
+The owner's first real publish (2026-11-24) worked in the end, but showed five things: a launch environment with no locale made the
+site's Ruby read text as US-ASCII; after a retry the Publish button was refused; after Close the drawer had lost the run; the steps list
+showed an earlier failure with a Ruby stack trace beside the success; and the full path took about 25 minutes. This amendment answers
+each, and adds what the owner asked for.
+
+### The environment (`blyg-home.mjs minimalEnv`)
+
+`LC_CTYPE` joins the copied names. When the companion's own environment names NO locale (none of `LANG`, `LC_ALL`, `LC_CTYPE`), a step
+gets `LANG` and `LC_ALL` = `UTF8_LOCALE`: `en_US.UTF-8` on macOS (present on every macOS), `C.UTF-8` elsewhere (current glibc and musl
+have it; `en_US` may need generating). A locale the owner did set is passed unchanged; the example site's pre-flight reports one that is
+not UTF-8, and its publisher sets Ruby's encodings to UTF-8 itself.
+
+### What the owner sees, and what agents read
+
+- **The owner's view is plain** (`blyg-run viewOf`): no command output, no note path, no script name. `steps` are the CURRENT attempt
+  only (the last record of each step, `{step, ok, ms}`); `tries` counts how often the failed step ran; `failure` is ONE recognised plain
+  line of the site's (`PLAIN_LINES`, cleaned by `plainSentence`: no script name, no path, no flag) or `''`. `reading` is the note as it
+  will read (`blyg-note readingOf`: words, quotes, and each agent's passage with its label, never bracket grammar); `notify` says who the
+  site will tell ("Venkatesh Rao will be told you responded"; an ordinary web page: nobody); `running` is `{step, elapsed_ms, phase?}`
+  (`phase: 'wait'` once the publish printed that it pushed: "Waiting for your site to update"), never a line of output.
+- **THE ONE WORDING TABLE** is `config.js PUB_STEP_WORDS` (with `PUB_STEP_DOING`, `pubStepsOf`, `pubFailureOf`, `pubPaceWords`):
+  | key | the owner reads | from |
+  |---|---|---|
+  | note | Writing your note | drafted, checking (and prepare when the post quotes nothing) |
+  | fetch | Fetching the post you quoted | prepare, only when the post quotes another post |
+  | plan | Checking that only this note changes | plan |
+  | apply | Building and checking your site | apply ("This is the quick check: usually under a minute." with the site's `--quick`; else "This takes about N minutes." from the last FULL apply recorded for this site, and nothing when none is) |
+  | publish | Publishing | publish, until it printed `Pushed main` |
+  | wait | Waiting for your site to update | publish, after that |
+  | live | Live (+ the link) | published |
+  A failure is ONE sentence: the recognised line, else "Something went wrong while <doing words>."; then the buttons that apply: Try
+  again (retry), Carry on (continue), Start over (abandon), Forget this run (forget), Close. "Tried N times." is said quietly.
+- **The log, for agents**: one file per run, `<companion data dir>/blyg-publish-logs/<run id>.jsonl` (the data dir holds
+  `blyg-publish-run.json`; normally `~/.botference/plugin`), folder 0700, file 0600, the newest 50 kept (`blyg-log.mjs LOG_KEEP`). One
+  JSON object per line: `run` (id, kind, version, settings fingerprint, page, scope, note, permalink, confirm, review, changelog), `check`,
+  every `move` (from, to, time), every `step` (step, command, argv, exit, signal, timed out, spawn error, ms, truncated, the whole captured
+  output), and `note`s (a preview render, a refusal, how to end a forgotten run by hand). The drawer shows a closed "Details for
+  troubleshooting" with the run id and, for the owner on this machine only, the log's path (a remote owner: the run id only).
+
+### An offer per owner action (the Publish after a retry)
+
+The worker's one-use offers were opened by a start or a resume and spent by confirm, retry or continue; a retry therefore spent the offer
+its own resume had opened, and the Publish that followed found none ("Review the publish again to continue"). Now `arm` (config.js
+`BLYG_PUBLISH_OPS`, `offer: 'grants'`, with `act` one of `BLYG_ARMED_ACTS` = confirm, retry, continue) opens an offer for exactly that act
+in that tab, and the drawer sends it from the owner's trusted click itself, right before the act: one offer per owner action, still
+one-use, still per tab, still behind the trusted click and the clickjacking checks. `start` and `run` open nothing.
+Tests: `blygpublish-background` (per act, per tab, spent; start → plan fails → retry → planned → confirm → applying, and continue → …),
+`blygpublish-walk` (the same through the real drawer and the real worker).
+
+### The drawer never loses a run
+
+The plane on ANY thread first asks the companion for its run: a live one is shown in its own view ("For “<title>”"), never the scope
+choice. Close keeps the run; `closed` may go straight to any run view (`PUB_MOVES`). Who put the dialog up is one named value
+(`PUB_OPENERS`: start, plane, drawer); a one-click run stays out of the way only when THIS drawer started it. The confirmation has a
+Close too.
+
+### Publishing again: a new VERSION of the same post
+
+A published thread's plane offers "Publish a new version". The companion keeps, per post (by its address), in
+`blyg-publish-posts.json` (0600, never on the page record a guest can read): its id, note file, the note's hash, slug, version and a
+snapshot (hashes of each comment as published, per thread, and of the quote). Then:
+- nothing changed (same snapshot, or the same note text) → "Nothing has changed since you published this.";
+- every comment gone → "Withdrawing a post is done on your site, not from here.";
+- the note changed on the site since → refused, nothing rewritten;
+- otherwise the SAME file is rewritten (same `blyg_id` and `permalink`, `created` and `released` kept), `run.kind = 'edit'`
+  (`RUN_KINDS`), `version` = N+1, and the steps run the EDIT commands (`plan_edit`, `apply_edit`, `publish_edit`, all three or none, each
+  with `{note}` and `{changelog}` as an argument of its own; example site: the same commands plus `--edit --generated-note {changelog}`).
+  Cancel or abandon before apply puts the published text back exactly (after `discard`). After `published` the post's record and the
+  thread's `blyg_published.version` are N+1.
+- The changelog line is written WITHOUT any model (`blyg-note changelogLine`), from the two snapshots (hashes: the old words are never
+  kept, so the line cannot quote them): "Added a comment.", "Edited the second comment.", "Removed a comment.", "Edited two comments and
+  added one.", "Changed the quoted passage.", "Edited the comment." (a post of one comment). A post published before snapshots were kept
+  gets "Edited the post.". The site marks it `"generated": true` (spec §5.2).
+- Who is told: only a post this version newly quotes or answers (the example site's mentions are sent once per relation).
+
+### Agent text on a published post
+
+"If an agent wrote any part of a passage, it gets a box." Every gap in `AGENT_TEXT_MODES` (filled, edited, adopted, pasted) is written as
+the site's generated passage: `[TK] <instruction> [=]<text>[/TK]`, or `[TK]impyrt <model>=<text>[/TK]` for pasted text, with one
+`blyg_generated` entry each (`model`, `at`, and `edited_by_author: true` for `READER_HAND_MODES`: edited or adopted; the site labels the
+box "<Agent>" or "<Agent> + <author>"). The text is escaped as plain text whoever touched it last (adopted included: this replaces the
+earlier rule); inside the scope a backtick and a TK mark are character references. The instruction is one inert line (the example site
+never shows it on the page or the wire). A `[TK]` the owner typed as words is shown as the letters (`&#91;TK]`), never read as grammar.
+**THE AGENT-TEXT RULE** (`reviewFor`, `REVIEW_REASONS`): a post with any such passage ALWAYS stops at `planned` for the owner's look,
+whatever `confirm` says (`run.review = 'agent-text'`).
+
+### `/tk` gaps
+
+- Words (`tkgrammar.js WORDS`): `/tk`, `/tk-claude` (both Claude), `/tk-codex` (Codex), line and inline forms; `/tkimpyrt-claude`,
+  `/tkimpyrt-codex`: text pasted from that maker's tool, no model call. The bracket form is not a gap in what is typed; a message stored
+  while it was one is read that way (`gapsFor`), nothing else.
+- A gap records `kind` (ask | impyrt) and `agent`; the model and effort are the owner's chat settings for that agent (`config.agents.model`,
+  `config.agents.effort`; medium when no effort is set); the model is recorded when one is set. A pasted gap is MADE in mode
+  `pasted-by-reader` (`GAP_BIRTH_MODES`), with the agent, its set model and the time; it can only be removed.
+- **Codex, locked down** (`oneshot.mjs CODEX_LOCKDOWN`): `codex exec --ephemeral --ignore-user-config --ignore-rules
+  --skip-git-repo-check --sandbox read-only --color never -c approval_policy="never" -c web_search="disabled" -c mcp_servers={} -c
+  sandbox_workspace_write.network_access=false --disable <shell_tool, unified_exec, apps, plugins, browser_use, browser_use_external,
+  computer_use, in_app_browser, image_generation, view_image, multi_agent, hooks, memories, tool_suggest, skill_search,
+  skill_mcp_dependency_install, goals> --cd <fresh empty folder> -o <a file in a second fresh folder> [-m <model>] -c
+  model_reasoning_effort="<effort>" -`, the prompt on stdin, only the last message read (as text, 64 KB then 4000 characters), both folders
+  removed, killed after 90 s. What it can still do: a read-only sandbox lets a command READ any file the owner can; the protection is that
+  no tool that runs a command or opens a file is left on, which these flags say but which cannot be proven here without running a model
+  (`unified_exec` still reports itself on in `codex features list` whatever is passed). Hence the agent-text rule above.
+- The drawer draws pasted and adopted passages as agent blocks too ("pasted by you", "made yours"; remove only).
+
+### Review follow-ups
+
+- **The earlier step, looked at afresh** on abandon, forget and start: alive → "The earlier step is still running: stop it first." (the
+  drawer offers "Stop the earlier step and start over" / "…and carry on": `stop: 'yes'` stops that group only); unknown → only Forget,
+  after a second confirmation (`sure: 'yes'`); a start is refused while the last record's step process is alive.
+- **Channel** (`tkgaps.MSG_CHANNELS`: drawer, reading-room, api) is written on owner-typed messages from the request's Origin; with
+  `confirm: 'never'`, "this and the ones above" counts only drawer-typed threads.
+- The project-network view sets `--fresh` through `style.setProperty` after insertion; `/a/` answers carry `x-content-type-options:
+  nosniff`.
+
+### The picture of the draft (`preview_url`)
+
+Optional `preview_url` (a template with `{permalink}`, `{slug}`, `{id}` making an absolute http(s) address; example: the owner's local
+preview site `http://127.0.0.1:4000{permalink}`) and `preview_selector` (default `article`). For a run waiting on the owner, the drawer asks
+`POST /blyg-publish/preview {run, token, theme, fresh?}` (state: off | waiting | ready | unavailable, `PREVIEW_STATES`, moved only by
+`previewMove`) and, when ready, `POST /blyg-publish/preview-image {run, token}` (the PNG bytes: `image/png`, `nosniff`, `no-store`, at most
+4 MiB; the worker hands them to the drawer as a `data:image/png` address). Same request rule as the other publish routes; the address is
+made by the companion from the setting and the run's permalink, never from the client. The companion renders it itself
+(`preview-render.mjs`): a headless Chromium (Chrome, Brave or Chromium; `BOTFERENCE_CHROME`) in a throwaway profile, JavaScript OFF, every
+request to another origin failed before it leaves, 420 CSS px at 2x, the drawer's theme through `prefers-color-scheme`, cropped to the
+selector, at most 2400 px tall, 12 s for the page and 30 s in all; a page not there yet is asked again (4 times, 3 s apart). The drawer
+shows it in a bordered box with its own scroll, "how it will look", "open full size" (the address, local owner only) and "refresh"; while
+it is made, or when it is not available, the note's text is shown and nothing is blocked. The drawer's picture state is
+`PUB_PIC_STATES` (none, waiting, ready, unavailable), moved by `pubPicMove`.
+
+### Tests
+
+`blyg-run.test.mjs` (plain view, the log and its rotation, the agent-text rule, pace, channels, publishing again, the earlier step,
+the picture's states), `blyg-note.test.mjs` (agent scopes, escaping inside them), `blyg-home.test.mjs` (locale, edit commands,
+preview_url), `tkgrammar`, `tkgaps` (Codex lock-down argv, pasted gaps), `tkdrawer` (writing… then the fill in place), `blygpublish-drawer`
+(the wording, reopening at every mode, the on-screen check, the picture box, the edit preview), `blygpublish-background`,
+`blygpublish-walk`, `blyg-publish-server` (channel, picture routes), `preview-render-browser` (a real headless render), `csp-pages`
+(`/a/` nosniff), `tests/project-network-ui.test.mjs` (`--fresh`).
 
 ## Amendment (2026-11-23): a hosted companion signs people in with Cloudflare Access
 
@@ -13049,7 +13191,7 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
 - **On** a thread whose first message the OWNER typed in the drawer (`provenance: 'owner-typed'`, set
   by the companion), addressed to no agent (no `route`, no `@claude`/`@codex`/`@all`), not a struck
   passage. A paper-plane button on the card; a published thread shows "published" (a link when the
-  companion recorded an address) instead, and is never offered again (publishing it as an edit is not
+  companion recorded an address) instead (SUPERSEDED 2026-11-24: its plane now publishes a new VERSION, below), and is never offered again (publishing it as an edit is not
   available: the companion refuses with a message).
 - **Two scopes.** `one`: just this thread. `above`: this thread and the owner's earlier unpublished
   eligible threads on the same page, in page order, as one post (at most 12).
@@ -13102,7 +13244,7 @@ owner session sees a redacted `GET /blyg-home` (valid, confirm; no paths, no com
 ### Text that goes into the note
 
 Liquid and kramdown attribute lists are made inert with character references (`&#123;`), never a backslash. A passage, an
-agent's or owner-edited `/tk` fill, and a label are escaped as plain text; only an ADOPTED gap and the owner's own comment are the
+agent's or owner-edited `/tk` fill, and a label are escaped as plain text (SUPERSEDED 2026-11-24: an adopted gap is escaped too, inside its box); only an ADOPTED gap and the owner's own comment are the
 owner's markdown (a `{{`/`{%` inside the owner's code span is refused with a message). In a passage and an agent's or edited fill,
 square brackets are character references (`&#91;` `&#93;`) and are percent-encoded inside an address, so a site's own bracket syntax
 (the example blog's sidenote converter reads `[^1]` and `[^1]: …` in the raw markdown, backslash or not) never reads hostile text; the

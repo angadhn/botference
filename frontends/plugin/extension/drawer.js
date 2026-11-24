@@ -10977,8 +10977,7 @@ ${bubbleShellHtml()}`;
       const pace = CFG.pubPaceWords(run);
       return '<ol class="pubsteps">' + list.map(x => `<li class="${x.state}"><span class="pubtick" aria-hidden="true">${x.state === 'done' ? '✓' : x.state === 'failed' ? '✕' : x.state === 'now' ? '•' : ''}</span>`
         + `<span class="pubword">${esc(x.words)}</span>${x.state === 'now' ? `<span class="pubnow">now${x.elapsed_ms !== undefined ? ' · ' + pubElapsed(x.elapsed_ms) : ''}</span>` : ''}`
-        + (x.key === 'apply' && (x.state === 'now' || x.state === 'todo') && pace ? `<span class="pubpace">${esc(pace)}</span>` : '')
-        + (x.key === 'live' && x.state === 'done' && run.published && safeHttp(run.published.address) ? ` <a href="${esc(safeHttp(run.published.address))}" target="_blank" rel="noopener noreferrer">${esc(safeHttp(run.published.address))}</a>` : '')
+        + (x.key === 'apply' && x.state === 'now' && pace ? `<span class="pubpace">${esc(pace)}</span>` : '')
         + '</li>').join('') + '</ol>';
     }
     // the note as it will read: words, quoted passages, and each agent's passage in a box with its label (never as HTML)
