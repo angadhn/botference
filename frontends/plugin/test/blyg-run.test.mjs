@@ -1104,3 +1104,16 @@ test('the check does not block: timers run while it does, the run is `checking` 
   assert.match(refused.error, /BLYG_CHECKER is not set/);
   assert.deepEqual(fs.readdirSync(rig2.folder), []);
 });
+
+// Review item 6: such a link or an image is refused at the START, before anything is written or run.
+test('a start whose comment links to a non-web address or holds an image is refused; nothing is written or run', async t => {
+  const rig = makeRig({ prepare: true }); t.after(rig.done);
+  for (const text of ['Look: [x](<javascript:alert(1)>)', 'A picture ![i](https://img.example.test/a.png)']) {
+    const b = boot(rig, { page: blygPage([thread('t1', 'A sentence.', text, { blyg: stamp() })]) });
+    const r = await b.start();
+    assert.equal(r.status, 409, text);
+    assert.match(r.error, /not a web address|images are not supported/);
+  }
+  assert.deepEqual(fs.readdirSync(rig.folder), []);
+  assert.deepEqual(rig.calls(), []);
+});

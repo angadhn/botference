@@ -213,6 +213,39 @@ export function showsLiquid(noteText) {
   const seen = body.replace(/&#0*123;|&#x0*7b;|&lbrace;|&lcub;/gi, '{').replace(/&#0*125;|&#x0*7d;|&rbrace;|&rcub;/gi, '}').replace(/\\([{}%])/g, '$1');
   return /\{[{%]/.test(seen);
 }
+// LINKS AND IMAGES IN THE OWNER'S WORDS, checked before anything is written (review item 6). A short post's links must be web addresses
+// (http or https): anything else (javascript:, data:, mailto:, a relative path, an address the site's build cannot parse) is refused
+// with a sentence naming it, instead of failing the site's build late. Images are not supported in a short post yet (the example
+// site refuses remote media at build: it must be copied into the site first). → [sentence…]; code spans and blocks are left alone.
+export function linkProblems(text) {
+  const t = String(text);
+  const mask = Grammar.codeMask(t);
+  const out = [];
+  const name = d => `“${String(d).replace(/\s+/g, ' ').slice(0, 60)}”`;
+  const webOk = d => {
+    const x = String(d).trim().replace(/^<(.*)>$/s, '$1').trim();
+    if (!/^https?:\/\/[^\s<>"`]+$/i.test(x)) return false;
+    try { const u = new URL(x); return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname; } catch { return false; }
+  };
+  for (let i = 0; i < t.length; i++) {
+    if (mask[i]) continue;
+    if (t[i - 1] === '\\') continue;   // an escaped character is text, never markup
+    if (t[i] === '!' && t[i + 1] === '[' && !mask[i + 1]) {
+      if (!out.some(x => /images are not supported/.test(x))) out.push('images are not supported in a short post yet: take the image out of the comment (a link to it is fine)');
+    }
+    if (t[i] === ']' && t[i + 1] === '(') {
+      let depth = 1; let j = i + 2;
+      while (j < t.length && depth) { if (t[j] === '(') depth++; else if (t[j] === ')') depth--; j++; }
+      const inner = t.slice(i + 2, depth ? t.length : j - 1).trim();
+      const dest = inner.startsWith('<') ? inner.slice(0, inner.indexOf('>') + 1 || inner.length) : inner.split(/\s+/)[0];
+      if (!webOk(dest)) out.push(`a link in the comment points to ${name(dest)}, which is not a web address (http or https): change it or remove it`);
+    }
+  }
+  for (const m of t.matchAll(/^ {0,3}\[[^\]]+\]:[ \t]*(\S+)/gm)) {
+    if (!mask[m.index] && !webOk(m[1])) out.push(`a link in the comment points to ${name(m[1])}, which is not a web address (http or https): change it or remove it`);
+  }
+  return [...new Set(out)];
+}
 const LIQUID_IN_CODE = /\{[{%]/;
 const codeHasLiquid = text => {
   const mask = Grammar.codeMask(text);
@@ -254,6 +287,7 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
   for (const m of out.matchAll(TK_MARK)) {
     if (!mask[m.index]) { blocked.push('a [TK] marker is still in the comment and nobody has filled it in: fill it or remove it (write `[TK]` as code to mean the letters), then publish'); break; }
   }
+  blocked.push(...linkProblems(out));
   out = neutraliseHtml(out);
   if (escape === 'liquid') {
     if (codeHasLiquid(out)) blocked.push('a code span or block in the comment holds “{{” or “{%”, which a Jekyll build would run: change it, or tell the settings the site is not Jekyll');

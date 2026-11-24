@@ -13251,6 +13251,10 @@ dialog button is a `data-act` reached only by a trusted click inside the closed 
 - **Environment (documented, not configured here).** See "Owner setup for Publish as blyg" below.
 - **Short posts are text.** Raw HTML in owner-typed and adopted text is written so it renders literally (`&lt;`), a dangerous link
   destination becomes `#`, a stray `|` is escaped; markdown, `<https://…>` autolinks and code are kept.
+- **Links and images in the owner's words are checked at the start.** A link destination must be a web address (http or https;
+  `blyg-note.mjs linkProblems`); anything else (javascript:, data:, mailto:, a relative path, an address that cannot be parsed) refuses
+  the start with a sentence naming it. Images are not supported in a short post yet (the example site refuses remote media at build),
+  so any image refuses the start. Code spans and escaped text are text. (Before anything is written: the site's build used to fail late.)
 - **Liquid-looking text is refused at the start (escape `liquid`).** The note makes `{{`/`{%` inert, but a reader still sees them, and a
   Jekyll site may keep such text out of what it publishes at all (the example blog's generated-publication test refuses an item whose
   `content_md` holds `{{` or `{%`, so it failed the post at the END of apply). `blyg-note.mjs showsLiquid` reads the note as the reader

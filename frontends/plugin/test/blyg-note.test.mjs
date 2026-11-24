@@ -349,7 +349,7 @@ test('a passage that is only a URL (or holds one) stays text (a code span): no a
 });
 
 test('short posts are text: raw HTML in the owner\'s own and an adopted text is written so it renders literally; markdown, an http(s) autolink and code are kept', () => {
-  const evil = 'a < b and <script>alert(1)</script> <img src=x onerror=alert(1)> <iframe src=//x></iframe> <style>*{x:y}</style> <!-- c --> <details open ontoggle=alert(1)> [x](javascript:alert(1)) <https://ok.example.test/a> **bold** `<code>` [h](https://ok.example.test)';
+  const evil = 'a < b and <script>alert(1)</script> <img src=x onerror=alert(1)> <iframe src=//x></iframe> <style>*{x:y}</style> <!-- c --> <details open ontoggle=alert(1)> <https://ok.example.test/a> **bold** `<code>` [h](https://ok.example.test)';
   const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Own: ' + evil + '\n/tk go\n'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', text: 'Adopted: ' + evil }] }] }]);
   const r = make(page, page.threads);
   assert.ok(r.ok, r.error);
@@ -357,7 +357,7 @@ test('short posts are text: raw HTML in the owner\'s own and an adopted text is 
   const noCode = body.replace(/`[^`]*`/g, '');
   assert.ok(!/<(script|img|iframe|style|details|!--)/i.test(noCode), 'no raw HTML tag outside code: ' + body);
   assert.match(body, /a &lt; b/, '“a < b” reads as typed');
-  assert.ok(!/\]\(javascript/i.test(body), 'no javascript: link');
+  assert.ok(!/\]\(javascript/i.test(body), 'no javascript: link (one in the owner\'s words is refused: see the test below)');
   assert.equal((body.match(/<https:\/\/ok\.example\.test\/a>/g) || []).length, 2, 'the autolink is kept, in each');
   assert.equal((body.match(/\*\*bold\*\*/g) || []).length, 2, 'markdown is kept');
   assert.equal((body.match(/`<code>`/g) || []).length, 2, 'a code span shows < literally: not double-escaped');
@@ -377,4 +377,31 @@ test('a short blyg\'s id: 128 bits encoded exactly as the blog\'s Blygger.new_id
   const r = make(page, page.threads, { id: '' });                // no id handed in: one is made
   assert.match(r.text, /\nblyg_id: "([0-9a-hjkmnp-tv-z]{26})"\npermalink: \/b\/\1\n/);
   assert.equal(make(page, page.threads, { id: '../evil' }).permalink.startsWith('/b/../'), false, 'a bad id is never used');
+});
+
+// Review item 6: a link in the owner's words must be a web address, and a short post has no images (the example site refuses remote
+// media at build). Both are refused when the note is written (the start), with a sentence naming the link, instead of failing the
+// site's build late. Code spans, an escaped passage and an agent's escaped fill are text, never links.
+test('a non-http(s) link or any image in the owner\'s words is refused by name; http(s) links, code and escaped text are fine', () => {
+  const one = text => make(webPage([thread('t1', 'A passage.', text)]), webPage([thread('t1', 'A passage.', text)]).threads);
+  for (const [text, why] of [
+    ['see [x](<javascript:alert(1)>)', /a link in the comment points to “<javascript:alert\(1\)>”, which is not a web address/],
+    ['see [x](javascript:alert(1))', /“javascript:alert\(1\)”, which is not a web address/],
+    ['mail [me](mailto:a@b.example)', /“mailto:a@b\.example”/],
+    ['local [p](/somewhere)', /“\/somewhere”/],
+    ['data [d](data:text/html,x)', /“data:text\/html,x”/],
+    ['ref [r][1]\n\n[1]: javascript:alert(1)', /“javascript:alert\(1\)”/],
+    ['broken [b](http://[bad)', /“http:\/\/\[bad”/],
+    ['pic ![i](javascript:alert(1))', /images are not supported in a short post yet/],
+    ['pic ![i](https://img.example.test/x.png)', /images are not supported in a short post yet/],
+  ]) {
+    const r = one(text);
+    assert.equal(r.ok, false, text);
+    assert.match(r.error, why, text);
+  }
+  for (const text of ['see [x](https://ok.example.test/a?b=1)', 'plain <https://ok.example.test/>', 'code `[x](javascript:alert(1))` and `![i](x)`', 'wiki [[0123456789abcdefghjkmnpqrs | a post]]']) {
+    const r = one(text);
+    assert.ok(r.ok, `${text}: ${r.error}`);
+  }
+  assert.deepEqual(N.linkProblems('escaped \\[a\\]\\(javascript:x\\) and \\!\\[i\\]'), []);
 });
