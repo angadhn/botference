@@ -1243,6 +1243,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         for (let rounds = 0; ; rounds++) {
           await readDocs(spec, docs);
           build(spec, docs);
+          // a re-run after a conflict that finds a document this operation already wrote: its move may be done already
+          S.mine = attempt > 0 && [...docs.values()].some(d => d && d.value && Array.isArray(d.value.ops) && d.value.ops.includes(opId));
           try { result = mutate(); break; }
           catch (e) {
             if (!(e instanceof NeedMore) || rounds >= 8) { state = null; S = null; ledgers.clear(); throw e; }
@@ -1629,7 +1631,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const o = String(origin);
     const r = await tx({ feeds: [o], archives: [o], ledgers: [o], stars: forget }, () => {
       const st = load();
-      if (!st.blygs[o]) return false;
+      if (!st.blygs[o]) return S.mine; // (unfollowed by this operation's own earlier attempt: true)
       for (const i of itemsOf(o)) if (!isWithdrawn(i) && !ARCHIVE_STATES.includes(i.read)) S.bodiesToDelete.push(bodyNameOf(i));
       if (forget) {
         needStars();
@@ -1672,6 +1674,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const r = await tx({}, () => {
       const b = load().blygs[origin];
       if (!b) throw new Error('not followed');
+      if (S.mine && !canMoveBlyg(b, ev) && Object.values(BLYG_MOVES[ev]).includes(b.state)) return b.state; // (its own earlier attempt)
       moveBlyg(b, ev);
       if (ev === 'resume') { b.failures = 0; b.absent_runs = 0; b.retry_after = 0; }
       return b.state;
@@ -2519,6 +2522,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   function readMoveNow(key, ev) {
     const rec = byKey(key);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+    // (this operation's own earlier attempt moved it already, before another write made it run again: done, not refused)
+    if (S.mine && !canMoveRead(rec, ev) && READ_MOVES[ev] && Object.values(READ_MOVES[ev]).includes(rec.read)) return rec.read;
     if (ev === 'tick') { needBodies([bodyNameOf(rec)]); tickRec(rec); trimArchive(rec.origin); } else moveRead(rec, ev);
     return load().items[identOf(rec.origin, rec.id)].read;
   }
@@ -2637,11 +2642,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const k = String(key);
     const entry = Object.values(stars).find(e => e.key === k);
     if (ev === 'unstar') {
+      if (!entry && S.mine) return 'plain'; // (unstarred by this operation's own earlier attempt)
       if (!entry) throw new Error('that post is not starred');
       moveStar(entry, 'unstar');
       delete stars[identOf(entry.origin, entry.id)];
       return entry.star;
     }
+    if (entry && S.mine) return entry.star; // (starred by this operation's own earlier attempt)
     if (entry) { moveStar(entry, 'star'); return entry.star; } // refused: already starred
     const rec = byKey(k);
     if (!rec || isWithdrawn(rec)) throw new Error('no such post');
@@ -2667,6 +2674,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const r = await tx({}, () => {
         const rec = byKey(key);
         if (!rec || isWithdrawn(rec)) throw new Error('no such post');
+        if (!canMoveRead(rec, 'tick') && S.mine && ARCHIVE_STATES.includes(rec.read)) return { read: rec.read, parts: 0 }; // (done by its own earlier attempt)
         if (!canMoveRead(rec, 'tick')) throw new Error(`read state: cannot tick while ${rec.read}`);
         const t = tickBatchNow([{ key, members: Array.isArray(d.members) ? d.members : [] }]);
         return { read: load().items[identOf(rec.origin, rec.id)].read, parts: t.parts };

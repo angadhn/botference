@@ -171,7 +171,7 @@ test('two ticks of different posts of one blyg at once: both stand (the second r
   assert.deepEqual(w.store.peek('ledger', N(A)).ids.map(p => p[0]).sort(), [idOf(1), idOf(2)]);
 });
 
-test('two ticks of the SAME post at once: one archives it, the other is refused plainly; one record, one id', async () => {
+test('two ticks of the SAME post at once: both are told it is archived (the second re-ran on the first\'s); one record, one id', async () => {
   const { w, one, two } = await setup();
   const k = await one.keyFor(A, idOf(2));
   const held = w.hold('one', isPut('feed'));
@@ -179,7 +179,8 @@ test('two ticks of the SAME post at once: one archives it, the other is refused 
   await held;
   await two.readMove(k, 'tick');
   w.release('one');
-  await assert.rejects(t1, /cannot tick while archived/);
+  assert.equal(await t1, 'archived', 'its own write was in, the other tab\'s too: the post is archived, as both asked');
+  assert.deepEqual(w.store.peek('ledger', N(A)).ids.map(p => p[0]).filter(id => id === idOf(2)), [idOf(2)], 'one id');
   await check(w, { read: { [k]: 'archived' } });
 });
 
