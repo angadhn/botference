@@ -83,6 +83,11 @@ test('an ordinary page: the plain web quote whose last paragraph is the bare URL
   // a page with no title: the url alone (the site shows the host name)
   const bare = make({ ...page, title: '  ', export_response: 'response' }, page.threads);
   assert.match(bare.text, /blyg_stub_of:\n {2}url: "https:\/\/news\.example\.test\/a\/story\?id=7"\n---/);
+  // who is told: the page is ASKED (at the site's publish) whether it accepts mentions; nothing is promised
+  assert.equal(r.notify, 'Its page will be asked whether it accepts mentions');
+  assert.equal(resp.notify, 'Its page will be asked whether it accepts mentions');
+  const noQuote = make(webPage([thread('t1', '', 'Just my words.')]), webPage([thread('t1', '', 'Just my words.')]).threads);
+  assert.equal(noQuote.notify, '', 'a post that neither quotes nor answers the page tells nobody');
 });
 
 test('the page title a response records is the page\'s text made plain: one line, no <>{}, at most 200 characters, quoted', () => {

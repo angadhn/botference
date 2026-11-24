@@ -12889,7 +12889,8 @@ not UTF-8, and its publisher sets Ruby's encodings to UTF-8 itself.
   only (the last record of each step, `{step, ok, ms}`); `tries` counts how often the failed step ran; `failure` is ONE recognised plain
   line of the site's (SUPERSEDED 2026-11-24, review round 5: `SITE_REFUSALS`, a fixed sentence per refusal) or `''`. `reading` is the note as it
   will read (`blyg-note readingOf`: words, quotes, and each agent's passage with its label, never bracket grammar); `notify` says who the
-  site will tell ("Venkatesh Rao will be told you responded"; an ordinary web page: nobody); `running` is `{step, elapsed_ms, phase?}`
+  site will tell ("Venkatesh Rao will be told you responded"; an ordinary web page the post quotes or answers: "Its page will be
+  asked whether it accepts mentions", batch 3); `running` is `{step, elapsed_ms, phase?}`
   (`phase: 'wait'` once the publish printed that it pushed: "Waiting for your site to update"), never a line of output.
 - **THE ONE WORDING TABLE** is `config.js PUB_STEP_WORDS` (with `PUB_STEP_DOING`, `pubStepsOf`, `pubFailureOf`, `pubPaceWords`):
   | key | the owner reads | from |
@@ -13704,3 +13705,8 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
   `.hub-entry-body` (its rules never touch them; pinned by the blog's `tests/blyg-hub/page.test.mjs`).
 - Tests: `hubbind.test.mjs` (listed page honoured; unlisted origin, other path, http, port refused; the list's parser),
   `adapters.test.mjs` (storage shape).
+
+### An ordinary web page a post quotes or answers is asked whether it accepts mentions (`blyg-note notifyOf`)
+The example site's `--push` now asks such a page (W3C discovery, its own address guard; never at build, never in the plan) and
+sends a mention when it accepts them. The dialog's line for it is `WEB_PAGE_ASKED_SAY`: "Its page will be asked whether it accepts
+mentions" (nothing is promised: the page decides). A post that neither quotes nor answers the page still tells nobody.

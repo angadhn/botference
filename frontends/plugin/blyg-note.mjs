@@ -596,6 +596,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const generated = [];
   const snapshot = [];
   let titleSource = '';
+  let webQuoted = false;
   for (const t of threads) {
     const el = eligibleThread(t);
     if (!el.ok) return { ok: false, error: el.why };
@@ -613,6 +614,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
       } else {
         const from = item ? item.page : webPage;
         quoteBlockText = quoteBlock(quote, opts) + (from ? `\n>\n> ${from}` : '');
+        if (!item && from) webQuoted = true;
       }
     }
     const words = [];
@@ -649,17 +651,20 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };
   const perm = front.map(l => /^permalink:\s*(\S+)\s*$/.exec(l)).find(Boolean);
   return { ok: true, text, title: oneLine(title).replace(/[<>{}]/g, ''), slug, permalink: perm ? perm[1].replace(/^["']|["']$/g, '') : '', sources: [...new Set(sources)],
-    generated, notify: notifyOf(page, { sources, stubOf }),
+    generated, notify: notifyOf(page, { sources, stubOf, webQuoted }),
     snapshot: { quotes: snapshot.map(x => x.quote), threads: snapshot, sources: [...new Set(sources)].sort(), stub: stubOf ? hashOf(JSON.stringify(stubOf)) : '',
       target: hashOf(stubTargetOf(stubOf)) } };
 }
 
 export const hashOf = t => crypto.createHash('sha256').update(String(t)).digest('hex').slice(0, 24);
 
-/** Who the site will tell about this post, in the owner's words, or '' (an ordinary web page: nobody). */
-export function notifyOf(page, { sources = [], stubOf = null } = {}) {
+/** Who the site will tell about this post, in the owner's words, or ''. An ordinary web page the post quotes or answers is ASKED
+ *  (at the site's publish, by W3C discovery) whether it accepts mentions: nothing can be promised about it. */
+export const WEB_PAGE_ASKED_SAY = 'Its page will be asked whether it accepts mentions';
+export function notifyOf(page, { sources = [], stubOf = null, webQuoted = false } = {}) {
   const item = blygItemOf(page);
-  if (!item || (!sources.length && !(stubOf && stubOf.id))) return '';
+  if (!item) return (stubOf && stubOf.url) || webQuoted ? WEB_PAGE_ASKED_SAY : '';
+  if (!sources.length && !(stubOf && stubOf.id)) return '';
   const who = oneLine((page.blyg && page.blyg.item && page.blyg.item.author) || '').replace(/[<>{}[\]|`*_]/g, '').slice(0, 60) || 'The author of the post you quoted';
   return `${who} will be told you ${stubOf && stubOf.id ? 'responded' : 'quoted them'}`;
 }
