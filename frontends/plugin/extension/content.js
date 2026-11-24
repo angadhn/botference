@@ -723,7 +723,7 @@
     if (!held.ok) {
       // a post the companion does not hold (the owner's HOSTED Hub follows its own list): the same check as a feed's post, at the
       // post's own blyg (POST /blyg/bind with its origin), so the thread still goes to the post's own page record
-      const fed = await saveOnFeedPost({ feed: [{ id: h.id, origin: h.origin }] }, { quote, prefix, suffix, text, route, mark });
+      const fed = await saveOnFeedPost({ hub: h, feed: [{ ids: [h.id], origin: h.origin }] }, { quote, prefix, suffix, text, route, mark });
       return fed || failure(held);
     }
     // the address the COMPANION keeps the post's record under (it answers it), never the one the page's markup states
@@ -743,7 +743,8 @@
   // → the save's answer, or null when nothing verified (the caller then does what it always did, on this page).
   async function saveOnFeedPost(sel, { quote, prefix, suffix, text, route, mark }) {
     for (const c of sel.feed || []) {
-      const v = await api('POST', '/blyg/bind', { page_url: URL_NOW, id: c.id, ...(c.origin ? { origin: c.origin } : {}), quote, hints: blygHints() });
+      const v = await api('POST', '/blyg/bind', { page_url: URL_NOW, ids: c.ids, ...(c.origin ? { origin: c.origin } : {}), quote, hints: blygHints(),
+        source: sel.hub ? 'hub' : 'feed' });
       if (!v || !v.ok || !v.data || v.data.verdict !== 'verified' || !v.data.url) continue;
       const body = { url: v.data.url, quote, prefix, suffix, msg: { text }, ...(mark === 'strike' ? { mark } : {}), ...(route ? { route } : {}) };
       const r = await api('POST', '/thread', body);

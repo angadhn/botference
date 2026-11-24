@@ -18,11 +18,12 @@ const SERVER = path.join(TEST, '..', 'server.mjs');
 const { test, tmp, startServer, cleanup, passed, failures } = createHarness({ server: SERVER, tag: 'feedbind', waitMs: 15000 });
 
 const sha = s => 'sha256:' + crypto.createHash('sha256').update(s, 'utf8').digest('hex');
-const A = '0123456789abcdefghjkmnpqrs', B = 'abcdefghjkmnpqrstvwxyz0123', Q = '7c9wk2mhq0v3xj8tn5rzfd41bg';
+const A = '0123456789abcdefghjkmnpqrs', B = 'abcdefghjkmnpqrstvwxyz0123', Q = '7c9wk2mhq0v3xj8tn5rzfd41bg', D = '1vgtgz0gq5b2c9k7d3m8r4n6xy';
 const ORIGIN = 'https://blyg.web.test/notes/';
 const OTHER = 'https://other.web.test/other/';
 const HOME = ORIGIN;
-const SAYS = { [A]: 'The first post says this exact sentence.', [B]: 'The second post says something else entirely.', [Q]: 'A quoted post from another blyg says this.' };
+const SAYS = { [A]: 'The first post says this exact sentence.', [B]: 'The second post says something else entirely.', [Q]: 'A quoted post from another blyg says this.',
+  [D]: 'Post D repeats it: The first post says this exact sentence.' };
 const item = (id, origin) => {
   const md = `${SAYS[id]} More words.`;
   return { blyg: '0.4', id, kind: 'thread', origin, page: `t/${id}/`, author: { name: id === Q ? 'Other Author' : 'Feed Author' },
@@ -40,6 +41,9 @@ const web = http.createServer((req, res) => {
   if (p === '/notes/blyg.json') return json({ blyg: '0.4', title: 'Feed Notes', author: { name: 'Feed Author' } });
   if (p === `/notes/items/${A}.json`) return json(item(A, ORIGIN));
   if (p === `/notes/items/${B}.json`) return json(item(B, ORIGIN));
+  if (p === `/notes/items/${D}.json`) return json(item(D, ORIGIN));
+  // another tenant on the same host, whose page names the first blyg
+  if (p === '/mallory/' || p === '/mallory') return res.writeHead(200, { 'content-type': 'text/html' }).end(feed);
   if (p === '/other/blyg.json') return json({ blyg: '0.4', title: 'Other Notes' });
   if (p === `/other/items/${Q}.json`) return json(item(Q, OTHER));
   if (p === '/feed') return res.writeHead(200, { 'content-type': 'text/html' }).end(feed);
@@ -78,7 +82,7 @@ await test('UNVERIFIED: another site copying the feed cannot point the check at 
   // (its own /blyg.json and /feed/blyg.json are absent; its rel=blyg leads to the real blyg, on another origin)
   const r = await POST(S, '/blyg/bind', { page_url: 'https://evil.web.test/feed', id: A, quote: SAYS[A], hints: HINTS });
   assert.equal(r.json.verdict, 'unverified');
-  assert.match(r.json.reason, /not on this page's own site|no blyg/);
+  assert.match(r.json.reason, /not inside the blyg|no blyg/);
 });
 
 await test('A QUOTED POST: verified at its own origin (its manifest\'s identity), never at the page\'s', async () => {
@@ -93,6 +97,33 @@ await test('nonsense is unverified, and a page on this computer is never fetched
   assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, id: 'not-an-id', quote: SAYS[A] })).json.verdict, 'unverified');
   assert.equal((await POST(S, '/blyg/bind', { page_url: 'http://127.0.0.1:9/x', id: A, quote: SAYS[A] })).json.verdict, 'unverified');
   assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, id: A, quote: '' })).json.verdict, 'unverified');
+});
+
+await test('A PASSAGE TOO SHORT to say which post it is from is never bound; the owner\'s three-word highlight is', async () => {
+  for (const q of ['exact', 'says this', '  this \n exact  ']) assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, id: A, quote: q, hints: HINTS })).json.verdict, 'unverified', q);
+  assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, id: A, quote: 'says this exact', hints: HINTS })).json.verdict, 'verified');
+});
+
+await test('SEVERAL CANDIDATES (no own link): bound only when EXACTLY ONE holds the passage', async () => {
+  const one = await POST(S, '/blyg/bind', { page_url: HOME, ids: [B, A], quote: SAYS[A], hints: HINTS });
+  assert.deepEqual([one.json.verdict, one.json.id], ['verified', A]);
+  const two = await POST(S, '/blyg/bind', { page_url: HOME, ids: [A, D], quote: 'says this exact sentence', hints: HINTS });
+  assert.equal(two.json.verdict, 'unverified', 'the passage is text of two of them: neither');
+  assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, ids: [A, B, D, Q], quote: SAYS[A], hints: HINTS })).json.verdict, 'unverified', 'at most three');
+});
+
+await test('A QUOTED POST\'S ORIGIN is honoured only on a page that is itself inside a verified blyg; a Hub\'s binding needs no such page', async () => {
+  const evil = await POST(S, '/blyg/bind', { page_url: 'https://evil.web.test/feed', id: Q, origin: OTHER, quote: SAYS[Q], hints: HINTS });
+  assert.equal(evil.json.verdict, 'unverified', 'a page in no blyg cannot point the check at another blyg');
+  const hub = await POST(S, '/blyg/bind', { page_url: 'https://evil.web.test/feed', id: Q, origin: OTHER, quote: SAYS[Q], source: 'hub' });
+  assert.equal(hub.json.verdict, 'verified', 'the extension honoured the Hub page itself');
+  assert.equal((await POST(S, '/blyg/bind', { page_url: HOME, id: Q, origin: OTHER, quote: SAYS[Q], source: 'nonsense' })).json.verdict, 'unverified');
+});
+
+await test('ONE HOST, MANY BLYGS: a blyg at /notes/ does not vouch for a page at /mallory/', async () => {
+  const r = await POST(S, '/blyg/bind', { page_url: 'https://blyg.web.test/mallory/', id: A, quote: SAYS[A], hints: HINTS });
+  assert.equal(r.json.verdict, 'unverified');
+  assert.match(r.json.reason, /not inside the blyg/);
 });
 
 cleanup();

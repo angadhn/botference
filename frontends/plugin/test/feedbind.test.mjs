@@ -29,23 +29,30 @@ const studio = `
 <p class="read-more"><a href="/blyg/t/${B}/">Read more</a></p></article>
 <p id="outside">Between posts.</p>`;
 
-test('a selection inside one post claims that post: its own link first (permalink, read-more), then the others', () => {
+test('a selection inside one post claims that post: its own link alone when it has one (permalink, read-more)', () => {
   const d = doc(studio);
   const pa = d.getElementById('pa').firstChild, pb = d.getElementById('pb').firstChild;
-  assert.deepEqual(F.selectionPost(rangeIn(d, pa, pa), HOME), { verdict: 'one', candidates: [{ id: A, origin: '' }] });
-  assert.deepEqual(F.selectionPost(rangeIn(d, pb, pb), HOME), { verdict: 'one', candidates: [{ id: B, origin: '' }, { id: A, origin: '' }] },
-    'the read-more link first, the link in the text after it (the companion verifies each in turn)');
+  assert.deepEqual(F.selectionPost(rangeIn(d, pa, pa), HOME), { verdict: 'one', candidates: [{ ids: [A], origin: '' }] });
+  assert.deepEqual(F.selectionPost(rangeIn(d, pb, pb), HOME), { verdict: 'one', candidates: [{ ids: [B], origin: '' }] },
+    'the read-more link ALONE: the link to the first post inside the text is never tried for it');
   assert.deepEqual(F.FEED_VERDICTS, ['none', 'one', 'cross']);
+});
+
+test('THE B/C CASE: an article with NO own link claims every id it links to, and the companion must find exactly one', () => {
+  const d = doc(`<article><p id="b">Words of post B, citing <a href="/blyg/t/${Q}/">post C</a>.</p><a href="/blyg/t/${B}/">${B}</a></article>`);
+  const b = d.getElementById('b').firstChild;
+  assert.deepEqual(F.selectionPost(rangeIn(d, b, b), HOME).candidates, [{ ids: [Q, B], origin: '' }]);
+  const src = fs.readFileSync(path.join(HERE, '..', 'server.mjs'), 'utf8');
+  assert.match(src, /if \(good\.length !== 1\) return no\(/, 'exactly one must verify');
 });
 
 test('inside a quoted post: the QUOTED post at its origin first, then the post around it', () => {
   const d = doc(studio);
   const pq = d.getElementById('pq').firstChild, pown = d.getElementById('pown').firstChild;
-  assert.deepEqual(F.selectionPost(rangeIn(d, pq, pq), HOME).candidates, [{ id: Q, origin: 'https://other.example.org/notes/' }, { id: B, origin: '' }, { id: A, origin: '' }]);
-  assert.deepEqual(F.selectionPost(rangeIn(d, pown, pown), HOME).candidates[0], { id: A, origin: '' }, 'an own-origin quote has no origin: the page\'s own blyg');
-  // a quote whose origin is not a web origin is not claimed at all (the post around it still is)
+  assert.deepEqual(F.selectionPost(rangeIn(d, pq, pq), HOME).candidates, [{ ids: [Q], origin: 'https://other.example.org/notes/' }, { ids: [B], origin: '' }]);
+  assert.deepEqual(F.selectionPost(rangeIn(d, pown, pown), HOME).candidates[0], { ids: [A], origin: '' }, 'an own-origin quote has no origin: the page\'s own blyg');
   const bad = doc(studio.replace('https://other.example.org/notes/', 'javascript:alert(1)//'));
-  assert.deepEqual(bad && F.selectionPost(rangeIn(bad, bad.getElementById('pq').firstChild, bad.getElementById('pq').firstChild), HOME).candidates.map(c => c.id), [B, A]);
+  assert.deepEqual(F.selectionPost(rangeIn(bad, bad.getElementById('pq').firstChild, bad.getElementById('pq').firstChild), HOME).candidates, [{ ids: [B], origin: '' }]);
 });
 
 test('across two posts, or from a post into the page: cross; outside any post: none', () => {
@@ -61,7 +68,7 @@ test('the generic rule works on another generator\'s feed (the example site: art
   const d = doc(`<div class="blyg-stream"><article class="blyg-stream__item"><div class="blyg-stream__body"><p id="s">Short words.</p></div>
     <p class="blyg-stream__more"><a href="/b/${A}">view →</a></p></article></div>`, 'https://example.com/blyg/');
   const s = d.getElementById('s').firstChild;
-  assert.deepEqual(F.selectionPost(rangeIn(d, s, s), 'https://example.com/blyg/').candidates, [{ id: A, origin: '' }]);
+  assert.deepEqual(F.selectionPost(rangeIn(d, s, s), 'https://example.com/blyg/').candidates, [{ ids: [A], origin: '' }]);
 });
 
 test('nothing is claimed from another site\'s links, a post\'s own page, or a link that is not an id', () => {

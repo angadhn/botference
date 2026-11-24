@@ -5555,10 +5555,16 @@ export function handler(req, res) {
     return readBody(req, res, async data => {
       const no = reason => ok(res, { verdict: 'unverified', reason });
       if (!blygChecksOn()) return no('checks are off');
-      const v = await blygMod.verifyShown({ pageUrl: String(data.page_url || ''), id: String(data.id || ''), quote: String(data.quote || ''),
-        origin: String(data.origin || ''), hints: data.hints });
-      if (v.verdict !== 'verified') return no(v.reason);
-      const r = v.result;
+      // the post ids the claim names: one (the post's own link), or up to three when the markup could not say which (then EXACTLY
+      // ONE must verify: a passage that is text of two of them belongs to neither, as far as anyone can tell)
+      const ids = (Array.isArray(data.ids) ? data.ids : [data.id]).map(String).filter(Boolean);
+      if (!ids.length || ids.length > 3 || new Set(ids).size !== ids.length) return no('one to three post ids');
+      const source = data.source === undefined ? 'feed' : String(data.source);
+      const tried = await Promise.all(ids.map(id => blygMod.verifyShown({ pageUrl: String(data.page_url || ''), id, quote: String(data.quote || ''),
+        origin: String(data.origin || ''), hints: data.hints, source })));
+      const good = tried.filter(v => v.verdict === 'verified');
+      if (good.length !== 1) return no(good.length ? 'the passage is text of more than one of those posts' : tried[0].reason);
+      const r = good[0].result;
       const at = r.item.page;
       const there = store.readPage(at);
       if (there && there.blyg && there.blyg.status === 'blyg' && there.blyg.item && (there.blyg.item.origin !== r.item.origin || there.blyg.item.id !== r.item.id)) {

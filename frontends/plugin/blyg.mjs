@@ -512,16 +512,40 @@ export function checkPassage(quote, text) {
 // with `result` the shape detect() answers for the post's own page ({status:'blyg', site, item, html, text}); or { verdict:
 // 'unverified', reason }. FEED_VERDICTS names the two.
 export const FEED_VERDICTS = Object.freeze(['verified', 'unverified']);
-export async function verifyShown({ pageUrl, id, quote, origin = '', hints = null }, { get = guardedGet } = {}) {
+// A passage too short to say which post it is from is never bound (a word or two can be in many posts): at least BIND_MIN_PASSAGE
+// characters AND words, whitespace collapsed.
+export const BIND_MIN_PASSAGE = Object.freeze({ chars: 12, words: 2 });
+export const bindablePassage = quote => {
+  const t = String(quote || '').replace(/\s+/g, ' ').trim();
+  return t.length >= BIND_MIN_PASSAGE.chars && t.split(' ').length >= BIND_MIN_PASSAGE.words;
+};
+// Where a claim comes from (BIND_SOURCES): `feed` — a page's own markup (untrusted); `hub` — a followed post's binding on a Hub page
+// the extension itself honours (hubbind.js: the companion's own Hub or a hosted Hub the owner listed)
+export const BIND_SOURCES = Object.freeze(['feed', 'hub']);
+// a page is INSIDE a blyg when it is on that blyg's web origin and under its path (https://host/alice/ does not vouch for
+// https://host/mallory/)
+export const pageUnder = (pageUrl, origin) => {
+  try { const u = new URL(String(pageUrl)); const o = new URL(String(origin)); return u.origin === o.origin && u.pathname.startsWith(o.pathname); } catch { return false; }
+};
+export async function verifyShown({ pageUrl, id, quote, origin = '', hints = null, source = 'feed' }, { get = guardedGet } = {}) {
   const no = reason => ({ verdict: 'unverified', reason });
   let u;
   try { u = new URL(String(pageUrl)); } catch { return no('not a web page'); }
   if (!/^https?:$/.test(u.protocol) || urlRefusal(u.href)) return no('not a page that is checked');
   if (!ID_RE.test(String(id || ''))) return no('not a post id');
-  if (!passageOf(quote)) return no('no passage');
+  if (!bindablePassage(passageOf(quote))) return no('the passage is too short to say which post it is from');
+  if (!BIND_SOURCES.includes(source)) return no('no such source');
   const s = session(u.href, get);
+  // the page's OWN blyg (none: unless the claim is a Hub's, the page vouches for no post at all)
+  let own = null;
+  if (source === 'feed' || !origin) {
+    const f = await findManifest(s, u.href, cleanHints(hints));
+    if (f.status !== 'found') return no('this page belongs to no blyg that could be read');
+    if (!pageUnder(u.href, f.origin)) return no('this page is not inside the blyg it names');
+    own = f;
+  }
   let m;
-  if (origin) {
+  if (origin && !(own && own.origin === String(origin))) {
     let o;
     try { o = new URL(String(origin)); } catch { return no('not an origin'); }
     if (!/^https?:$/.test(o.protocol) || !o.href.endsWith('/') || o.href !== String(origin) || urlRefusal(o.href)) return no('not an origin');
@@ -529,10 +553,7 @@ export async function verifyShown({ pageUrl, id, quote, origin = '', hints = nul
     if (r.status !== 'ok' || !isManifest(r.json) || identityOf(r.url) !== o.href) return no('that blyg could not be read');
     m = { manifest: r.json, origin: o.href };
   } else {
-    const f = await findManifest(s, u.href, cleanHints(hints));
-    if (f.status !== 'found') return no('this page belongs to no blyg that could be read');
-    if (new URL(f.origin).origin !== u.origin) return no('the blyg is not on this page\'s own site');
-    m = f;
+    m = own;
   }
   const docUrl = itemUrlOf(m.manifest, m.origin, id);
   if (!isWebUrl(docUrl) || new URL(docUrl).host !== new URL(m.origin).host) return no('the blyg keeps its posts somewhere else');

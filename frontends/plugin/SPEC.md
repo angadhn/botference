@@ -13804,3 +13804,10 @@ the owner could never publish a new version of that post, or add to it, from her
   second start meanwhile is refused; a refused start returns to `idle`. The link checks run concurrently under ONE bound,
   `LINK_CHECK_MS` (15 s); a link not answered in time counts as one that could not be checked (no target). `/blyg-publish/start`
   and `/blyg/bind` are in the drawer's `SLOW_ROUTES`, so the owner is never told "did not start" while a start goes ahead.
+- **A feed passage binds only when it can say which post** (`blyg.mjs BIND_MIN_PASSAGE`: at least 12 characters AND 2 words,
+  whitespace collapsed). An article with its own link (permalink, read-more, bookmark, u-url) claims that one id; one without
+  claims every id it links to (at most 3) and `/blyg/bind {ids}` binds only when EXACTLY ONE of them holds the passage.
+- **A page vouches only for its own blyg** (`pageUnder`): the manifest found from the page counts only when the page's URL is
+  on that blyg's web origin AND under its path (https://host/alice/ does not vouch for https://host/mallory/). A quoted post's
+  `data-blyg-origin` is honoured only on such a page. `source` (`BIND_SOURCES`: feed | hub) says where a claim came from: `hub`
+  (sent only for a binding hubbind.js honoured on the companion's own or a listed hosted Hub) needs no such page.

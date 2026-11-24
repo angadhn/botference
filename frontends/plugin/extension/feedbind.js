@@ -37,18 +37,24 @@
   const pageIds = pageUrl => { try { return new URL(String(pageUrl)).pathname.split('/').filter(s => ID_RE.test(s)); } catch { return []; } };
   const webOrigin = v => { try { const u = new URL(String(v)); return /^https?:$/.test(u.protocol) && u.href.endsWith('/') && u.href === String(v) ? u.href : ''; } catch { return ''; } };
 
-  // the post an element sits in: { element, ids } or null
+  // the post an element sits in: { element, ids, own } or null. With a link marked as the post's own (OWN_LINKS) only that one id
+  // is claimed (own: true); without one, every id the article links to (at most MAX_CANDIDATES), and the companion binds only if
+  // EXACTLY ONE of them holds the passage (a link to another post inside a post must not take the highlight)
   function postAt(el, pageUrl) {
     for (let a = el && el.closest ? el.closest('article, [data-blyg-item]') : null; a; a = a.parentElement && a.parentElement.closest ? a.parentElement.closest('article, [data-blyg-item]') : null) {
-      const ids = [];
-      const add = link => {
-        if (link.closest('blockquote.blyg-transclusion') && link.closest('blockquote.blyg-transclusion') !== a.closest('blockquote.blyg-transclusion')) return;
-        const id = idOf(link.getAttribute('href'), pageUrl);
-        if (id && ids.indexOf(id) === -1) ids.push(id);
+      const idsOf = sel => {
+        const ids = [];
+        a.querySelectorAll(sel).forEach(link => {
+          if (link.closest('blockquote.blyg-transclusion') && link.closest('blockquote.blyg-transclusion') !== a.closest('blockquote.blyg-transclusion')) return;
+          const id = idOf(link.getAttribute('href'), pageUrl);
+          if (id && ids.indexOf(id) === -1) ids.push(id);
+        });
+        return ids;
       };
-      a.querySelectorAll(OWN_LINKS).forEach(add);
-      a.querySelectorAll('a[href]').forEach(add);
-      if (ids.length) return { element: a, ids: ids.slice(0, MAX_CANDIDATES) };
+      const own = idsOf(OWN_LINKS);
+      if (own.length) return { element: a, ids: [own[0]], own: true };
+      const any = idsOf('a[href]');
+      if (any.length) return { element: a, ids: any.slice(0, MAX_CANDIDATES), own: false };
     }
     return null;
   }
@@ -66,7 +72,7 @@
 
   /**
    * What a selection (a Range) claims on this page: { verdict, candidates } with candidates in the order to try, each
-   * { id, origin } (origin '' = the page's own blyg). none and cross carry no candidates.
+   * { ids, origin } (origin '' = the page's own blyg; several ids: exactly one must verify). none and cross carry no candidates.
    */
   function selectionPost(range, pageUrl) {
     if (!range) return { verdict: 'none', candidates: [] };
@@ -79,9 +85,9 @@
     if (a.ids.some(id => own.indexOf(id) !== -1)) return { verdict: 'none', candidates: [] };
     const out = [];
     const qa = quotedAt(s), qb = quotedAt(e);
-    if (qa && qb && qa.element === qb.element) out.push({ id: qa.id, origin: qa.origin });
-    for (const id of a.ids) if (!out.some(c => c.id === id && !c.origin)) out.push({ id, origin: '' });
-    return { verdict: 'one', candidates: out.slice(0, MAX_CANDIDATES + 1) };
+    if (qa && qb && qa.element === qb.element) out.push({ ids: [qa.id], origin: qa.origin });
+    out.push({ ids: a.ids.slice(), origin: '' });
+    return { verdict: 'one', candidates: out };
   }
 
   const api = { FEED_VERDICTS, MAX_CANDIDATES, idOf, selectionPost };
