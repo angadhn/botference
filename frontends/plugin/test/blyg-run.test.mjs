@@ -590,13 +590,14 @@ test('confirm never: a plan that exits non-zero (the guard refusing, or anything
   assert.equal(b.pages.get(b.page.url).threads[0].blyg_published, undefined);
 });
 
-test('confirm always: the guard is not added and the run waits at planned for the click', async t => {
+test('confirm always: the guard is added there too, and the run waits at planned for the click', async t => {
   const rig = makeRig({ confirm: 'always', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
   const b = boot(rig);
   (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   await sleep(250);
   assert.equal(b.mode(), 'planned', 'it waits');
-  assert.ok(!rig.calls()[0].argv.includes('--only-note'));
+  const plan = rig.calls().find(c => !c.argv.includes('--prepare-note') && !c.argv.includes('--preflight')) || rig.calls()[0];
+  assert.ok(plan.argv.includes('--only-note'), 'a set guard is used in every confirm mode');
   assert.equal(b.pub.current().confirm, 'always');
 });
 

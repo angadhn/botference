@@ -72,7 +72,7 @@ export const CONFIRMS = Object.freeze(['never', 'always']);
 // The default is `always` until a `plan_guard` is set: `never` is accepted only with one (validateHome refuses it otherwise).
 export const DEFAULT_CONFIRM = 'always';
 // `plan_guard`: extra FLAGS (each starts with `-`) added to the plan, apply and publish commands (every time they run,
-// retries and resumes included) when confirm is `never`, so that the site's own command can refuse, with a non-zero exit, a
+// retries and resumes included) whenever it is set, in either confirm mode, so that the site's own command can refuse, with a non-zero exit, a
 // plan that would change or publish more than this one note (an example site's `--only-note`). Never parsed here: the exit
 // code is the verdict. `confirm: 'never'` is refused without one.
 export const PLAN_GUARD = Object.freeze({ maxArgs: 8, maxArgChars: 80 });

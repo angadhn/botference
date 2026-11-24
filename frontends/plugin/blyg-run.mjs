@@ -323,7 +323,7 @@ export function createPublisher(deps) {
     if (!argvRaw) return { ok: true, record: null, skipped: true };
     const abs = path.join(home.settings.top, run.note_rel);
     // the guard rides on plan, apply and publish, every time they run (retries and resumes too), when nobody is looking
-    const guard = ['plan', 'apply', 'publish'].includes(name) && home.settings.confirm === 'never' ? home.settings.plan_guard : [];
+    const guard = ['plan', 'apply', 'publish'].includes(name) ? home.settings.plan_guard : [];
     const argv = [...expandArgv(argvRaw, { rel: run.note_rel, abs }), ...guard];
     const at = nowIso();
     progress = { started: Date.now(), last: '' };
