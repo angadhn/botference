@@ -577,7 +577,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     }
     snapshot.push({ thread: String(t.id || ''), quote: quote.trim() ? hashOf(quote.trim()) : '', msgs: said });
     if (!words.length && !blocked.length) return { ok: false, error: 'that comment has no words to publish' };
-    if (!titleSource && words.length) titleSource = words[0];
+    // the name is the OWNER's first words: an agent's passage (a generated-passage scope) is not part of it
+    if (!titleSource && words.length) titleSource = words[0].replace(/\[TK\](?:impyrt[^=\n]*=| [^\n]*? \[=\])[\s\S]*?\[\/TK\]/g, ' ');
     if (!words.length) continue;
     blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
   }

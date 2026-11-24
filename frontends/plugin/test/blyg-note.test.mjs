@@ -202,6 +202,7 @@ test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the sit
   assert.match(filled.text, /Intro\n\n\[TK\] say hello \[=\]Hello, reader\. &#91;&#91;x&#93;&#93;\[\/TK\]\n\nAfter\n$/, filled.text);
   assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n---/);
   assert.deepEqual(filled.generated.map(g => [g.agent, !!g.edited_by_author]), [['claude', false]]);
+  assert.equal(one('/tk say hello\nMy own words follow it.', [gap('filled-by-agent', 'Agent words first.')]).title, 'My own words follow it', 'the name is the owner\'s first words, never the agent\'s or a mark');
   // edited and adopted: the same form, the text as it now stands, still escaped, and marked as having the owner's hand in it
   for (const mode of ['edited-by-reader', 'adopted-by-reader']) {
     const r = one('Intro /tk(say hello) after', [gap(mode, 'Mine **b** [[x]]')]);

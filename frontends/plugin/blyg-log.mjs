@@ -3,8 +3,8 @@
 // The owner sees plain steps (blyg-run.mjs viewOf, the drawer's one wording table). Everything raw goes HERE: one file per run,
 //   <data dir>/blyg-publish-logs/<run id>.jsonl
 // (the data dir is the companion's store folder, the one that holds blyg-publish-run.json), one JSON object per line:
-//   {"t": ISO time, "ev": "run",   "id", "kind", "settings_fp", "page_url", "scope", "note_rel", "permalink", "version"}  first line
-//   {"t", "ev": "check", "argv", "ok", "message"}                         the pre-flight
+//   {"t": ISO time, "ev": "run",   "id", "kind", "settings_fp", "page_url", "scope", "note_rel", "permalink", "version"}  when drafted
+//   {"t", "ev": "check", "argv", "ok", "message"}                         the pre-flight (before the run line: it runs first)
 //   {"t", "ev": "move",  "from", "to"}                                     every change of the run's mode
 //   {"t", "ev": "step",  "step", "command", "argv", "exit", "signal", "timed_out", "spawn_error", "ms", "truncated", "output"}
 //                                                                          every command run, with its whole captured output
