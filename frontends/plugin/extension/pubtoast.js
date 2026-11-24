@@ -52,13 +52,25 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
       + '<button class="x" type="button" data-act="dismiss" aria-label="Dismiss" title="Dismiss">×</button>';
     shadow.appendChild(box);
     (doc.documentElement || doc.body).appendChild(host);
-    // the toast's modes, in one list and one field: shown -> closing, never back (the `going` class is drawn from it)
-    const TOAST_MODES = ['shown', 'closing'];
-    let mode = TOAST_MODES[0];
+    // THE TOAST'S MODES, in one list and one field, moved only by `move`, which refuses a move TOAST_MOVES does not list:
+    //   waiting  drawn on a tab that is not showing: not yet seen, its time not started
+    //   shown    on screen: seen (onShown), a live one's time running
+    //   closing  going away (the `going` class is drawn from it), never back
+    const TOAST_MODES = ['waiting', 'shown', 'closing'];
+    const TOAST_MOVES = { waiting: ['shown', 'closing'], shown: ['closing'], closing: [] };
+    let mode = 'waiting';
+    const move = to => {
+      if (TOAST_MODES.indexOf(to) === -1 || TOAST_MOVES[mode].indexOf(to) === -1) throw new Error('toast: cannot go from ' + mode + ' to ' + to);
+      mode = to;
+    };
     let timer = 0;
+    const visible = () => !doc.visibilityState || doc.visibilityState === 'visible';
+    // (while waiting: the tab being shown is what moves it on)
+    const onVisible = () => { if (mode === 'waiting' && visible()) toShown(); };
     const close = (done = true) => {
-      if (mode !== 'shown') return;
-      mode = 'closing';
+      if (mode === 'closing') return;
+      move('closing');
+      doc.removeEventListener('visibilitychange', onVisible);
       clearTimeout(timer);
       box.classList.add('going');
       setTimeout(() => host.remove(), 400);
@@ -84,14 +96,15 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
     box.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
     // SEEN only when the owner can see it: drawn on a tab that is not showing (a background tab, a hidden window), it waits there, and
     // is spent and starts its time only once the tab is shown (a live notice is otherwise gone before anyone looked)
-    const visible = () => !doc.visibilityState || doc.visibilityState === 'visible';
-    const onScreen = () => { if (mode !== 'shown') return; if (live) timer = setTimeout(() => close(), liveMs); onShown(notice); };
-    if (visible()) onScreen();
-    else {
-      const later = () => { if (!visible()) return; doc.removeEventListener('visibilitychange', later); onScreen(); };
-      doc.addEventListener('visibilitychange', later);
+    function toShown() {
+      move('shown');
+      doc.removeEventListener('visibilitychange', onVisible);
+      if (live) timer = setTimeout(() => close(), liveMs);
+      onShown(notice);
     }
-    return { host, close, box };
+    if (visible()) toShown();
+    else doc.addEventListener('visibilitychange', onVisible);
+    return { host, close, box, mode: () => mode };
   }
   const api = { show, LIVE_MS };
   root.BFPPubToast = api;

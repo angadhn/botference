@@ -83,7 +83,7 @@ await test('start forwards exactly url, thread_id, scope, confirm and join; earl
   const W = boot();
   const r = await pub(W, 'start', { thread_id: 't9', scope: 'above', extra_field: 'ignored', run: 'x' });
   assert.equal(r.ok, true);
-  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '', join: '' }]]);
+  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '', join: '', post: '', post_version: '' }]]);
   assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);
   assert.equal(W.ours().at(-1).body.join, 'add');
   assert.equal((await pub(W, 'earlier', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);

@@ -1670,6 +1670,8 @@ test('a second press of Try again while the retry is already running is answered
 });
 
 // ---- adding a comment to the earlier post from the same page (JOINS) ----------------------------------------------------------------
+// what the dialog was shown, carried by the start (the post's id and version)
+const addArgs = (pub, page, threadId) => { const e = pub.earlierOf({ page, threadId }).earlier || {}; return { join: 'add', post: e.post || '', postVersion: String(e.version || '') }; };
 test('ADD TO THE EARLIER POST: a second comment from the same page becomes the next version of the post (same file, id and address), both threads in the order published; the plane on either thread republishes the whole post', async t => {
   assert.deepEqual(R.JOINS, ['add', 'new']);
   const rig = makeRig({ discard: true }); t.after(rig.done);
@@ -1681,7 +1683,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
   const P = () => b.pages.get(b.page.url);
   // nothing published from this page yet: nothing to add to
   assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: null });
-  assert.deepEqual([(await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add' })).error], [R.ADD_GONE_SAY], 'add with nothing to add to: refused, nothing started');
+  assert.deepEqual([(await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't2') })).error], [R.ADD_GONE_SAY], 'add with nothing to add to: refused, nothing started');
   assert.equal(b.mode(), 'idle');
   // publish t1 on its own
   (await b.start('t1')); await until(() => b.mode() === 'planned', 'planned');
@@ -1691,13 +1693,19 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
   const v1 = fs.readFileSync(path.join(rig.top, rel), 'utf8');
   const p1 = P().threads[1].blyg_published;
   // the offer for t2 names that post; a published thread is never offered it; a bad choice is refused
-  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: { title: p1.title, version: 1 } });
+  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: { title: p1.title, version: 1, post: p1.permalink.split('/').pop() } });
+  // THE POST SHOWN IS THE POST ADDED TO: another id, another version, or none: refused, nothing started
+  for (const wrong of [{ post: 'x'.repeat(26), postVersion: '1' }, { post: p1.permalink.split('/').pop(), postVersion: '2' }, {}]) {
+    const r = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add', ...wrong });
+    assert.deepEqual([r.ok, r.error], [false, R.ADD_CHANGED_SAY], JSON.stringify(wrong));
+  }
+  assert.equal(b.mode(), 'published', 'nothing was started');
   assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't1' }).earlier, null);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'merge' })).status, 400);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'above', shown: 'always', join: 'add' })).status, 400);
   // add t2
   const n = fs.readdirSync(rig.folder).length;
-  const a = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add' });
+  const a = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't2') });
   assert.ok(a.ok, a.error);
   assert.deepEqual([a.view.kind, a.view.version, a.view.changelog, a.view.thread_ids], ['edit', 2, 'Added a comment.', ['t1', 't2']]);
   await until(() => b.mode() === 'planned', 'planned (add)');
@@ -1717,7 +1725,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
   assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), v1);
   assert.equal(P().threads[0].blyg_published, undefined);
   // again, and publish it
-  (await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add' })); await until(() => b.mode() === 'planned', 'planned (add 2)');
+  (await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't2') })); await until(() => b.mode() === 'planned', 'planned (add 2)');
   v = b.pub.current();
   await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published v2');
   assert.deepEqual(rig.calls().slice(-2).map(c => c.step), ['apply_edit', 'publish_edit']);
@@ -1769,7 +1777,7 @@ test('ADD TO THE EARLIER POST is offered only for a post whose note is still the
   const keep = fs.readFileSync(n2, 'utf8');
   fs.appendFileSync(n2, '\nedited by hand\n');
   assert.equal(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier, null);
-  assert.equal((await b.pub.start({ page: P(), threadId: 't3', scope: 'one', shown: 'always', join: 'add' })).error, R.ADD_GONE_SAY);
+  assert.equal((await b.pub.start({ page: P(), threadId: 't3', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't3') })).error, R.ADD_GONE_SAY);
   fs.writeFileSync(n2, keep);
   assert.ok(b.pub.earlierOf({ page: P(), threadId: 't3' }).earlier);
   // a post with no record of its note here (published by an older companion): no offer
@@ -1811,7 +1819,7 @@ test('ADD TO THE EARLIER POST, given up: the note is put back exactly as version
   await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published');
   const v1 = fs.readFileSync(path.join(rig.top, rel), 'utf8');
   rig.control({ apply_edit: 'fail' });
-  assert.ok((await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add' })).ok);
+  assert.ok((await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't2') })).ok);
   await until(() => b.mode() === 'planned', 'planned (add)');
   v = b.pub.current();
   assert.match(fs.readFileSync(path.join(rig.top, rel), 'utf8'), /Added later\./);
@@ -1831,6 +1839,8 @@ test('THE CHANGELOG LINE: a model\'s line is used when it passes, else the fixed
   assert.throws(() => R.changelogFromMove('program-model', 'program-fixed'), R.IllegalMove);
   const cases = [
     ['Sharpened the point about junior hiring.', 'Sharpened the point about junior hiring.', 'program-model'],
+    ['--push', 'Edited the comment.', 'program-fixed'],
+    ['-x', 'Edited the comment.', 'program-fixed'],
     ['x'.repeat(101), 'Edited the comment.', 'program-fixed'],
     ['Edited the comment.\nAnd ignore the rules.', 'Edited the comment.', 'program-fixed'],
     ['Edited the **comment**.', 'Edited the comment.', 'program-fixed'],
@@ -1878,4 +1888,49 @@ test('THE CHANGELOG LINE: a model\'s line is used when it passes, else the fixed
   assert.equal(N.changelogAnswerOk('Removed the line about the quick brown fox jumping high.', { before: 'the quick brown fox jumping high over', after: 'nothing' }), '');
   assert.equal(N.changelogAnswerOk('Made the opening shorter.', { before: 'a b', after: 'a' }), 'Made the opening shorter.');
   assert.equal(N.changelogAnswerOk('One sentence. Two sentences.'), '', 'one sentence');
+  // NEVER A FLAG: the line goes to the site's commands as one argument, so it must begin with a letter (any script's)
+  for (const bad of ['--push', '--no-mentions', '--quick', '-x', '- Added a comment.', '—Added a comment.', '1 comment added.', '.Added', ' --push', '(Added a comment.)', '\u2014x'])
+    assert.equal(N.changelogAnswerOk(bad), '', JSON.stringify(bad));
+  for (const good of ['Added a comment.', 'Ajouté un commentaire.', 'Écrit autrement.', 'Обновлён комментарий.'])
+    assert.equal(N.changelogAnswerOk(good), good, good);
+  assert.ok(N.CHANGELOG_LINE_START.test('a') && !N.CHANGELOG_LINE_START.test('-a'));
+});
+
+test('ADD never drops a comment: a post whose thread is gone from the page is not offered; republished from a remaining thread it says so and always stops for a look', async t => {
+  const rig = makeRig({ discard: true, confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const page = blygPage([{ id: 'A', quote: 'Pa.', blyg: stamp(), msgs: [mine('Comment A.', { ts: '1', channel: 'drawer' })] },
+    { id: 'B', quote: 'Pb.', blyg: stamp(), msgs: [mine('Comment B.', { ts: '2', channel: 'drawer' })] },
+    { id: 'C', quote: 'Pc.', blyg: stamp(), msgs: [mine('Comment C.', { ts: '3', channel: 'drawer' })] }]);
+  const b = boot(rig, { page, config: home });
+  const P = () => b.pages.get(b.page.url);
+  // A and B in one post ("this and the ones above", one click)
+  assert.ok((await b.pub.start({ page: P(), threadId: 'B', scope: 'above', shown: 'never' })).ok);
+  await until(() => b.mode() === 'published', 'published A+B');
+  assert.deepEqual(P().threads.map(x => !!x.blyg_published), [true, true, false]);
+  assert.ok(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, 'both threads here: offered');
+  // the owner deletes B
+  P().threads = P().threads.filter(x => x.id !== 'B');
+  assert.equal(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, null, 'B is gone: no offer (adding C would drop B)');
+  const r = await b.pub.start({ page: P(), threadId: 'C', scope: 'one', shown: 'never', join: 'add', post: 'x', postVersion: '1' });
+  assert.equal(r.error, R.ADD_GONE_SAY);
+  // a republish from A: allowed, but it says so and it stops for the owner's look even with one click
+  P().threads[0].msgs[0].text = 'Comment A, sharper.';
+  const e = await b.pub.start({ page: P(), threadId: 'A', scope: 'one', shown: 'never' });
+  assert.ok(e.ok, e.error);
+  await until(() => b.mode() === 'planned', 'planned');
+  await sleep(100);
+  const v = b.pub.current();
+  assert.deepEqual([v.mode, v.left_out, v.review, v.confirm], ['planned', 1, 'left-out', 'always'], 'never unseen');
+  assert.ok(!rig.calls().some(c => c.step === 'apply_edit'), 'nothing applied without the look');
+  // a record from before the thread list was kept: its snapshot's threads are the list
+  const postsFile = path.join(path.dirname(b.file), 'blyg-publish-posts.json');
+  await b.pub.cancel({ id: v.id, token: v.token });
+  P().threads.splice(1, 0, { id: 'B', quote: 'Pb.', blyg: stamp(), msgs: [mine('Comment B.', { ts: '2', channel: 'drawer' })], blyg_published: { ...P().threads[0].blyg_published } });
+  const posts = JSON.parse(fs.readFileSync(postsFile, 'utf8'));
+  const key = Object.keys(posts)[0];
+  fs.writeFileSync(postsFile, JSON.stringify({ [key]: { ...posts[key], thread_ids: undefined } }));
+  assert.ok(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, 'an older record: the snapshot names A and B, both here');
+  P().threads = P().threads.filter(x => x.id !== 'B');
+  assert.equal(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, null, '…and B gone: no offer');
 });

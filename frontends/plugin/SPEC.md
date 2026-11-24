@@ -13674,3 +13674,16 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
   the spec asks no model name). The owner sees the line in the dialog before publishing; with one click it goes out unseen.
 - Tests (`blyg-run`, a stand-in asker; no model is called): accepted; too long, two lines, markup, an address, `[TK]`, a failure and no
   answer in time fall back; the prompt holds the two texts and nothing else; the depth rule.
+
+### Review fixes (same day)
+- **The model's line is never a flag.** It is one argument to the site's commands, so `changelogAnswerOk` accepts only a line that
+  BEGINS WITH A LETTER (`CHANGELOG_LINE_START`, any script's); `--push`, `-x`, `- …`, a digit or a dash first fall back to the fixed line.
+- **Adding never drops a comment.** "Add" is offered and accepted only when every thread the post's record names (`thread_ids`, or a
+  record's snapshot threads when older) is still on the page and publishable. A new version that would leave out a comment whose
+  thread is gone from the page (a republish from a remaining thread) says so in the confirmation ("A comment that was in your post is
+  no longer on this page, so it will be left out of this version.", `run.left_out`) and ALWAYS stops for the owner's look
+  (`REVIEW_REASONS` `left-out`), whatever `confirm` says.
+- **The post shown is the post added to.** `/blyg-publish/earlier` names the post (`post`, its id) and `version`; the start with `join:
+  add` carries both (`post`, `post_version`); the companion refuses with `ADD_CHANGED_SAY` and starts nothing when they no longer match.
+- **The toast's waiting is a named mode**: `pubtoast.js` `TOAST_MODES` waiting | shown | closing, one field, moved only by `move`
+  (refuses a move `TOAST_MOVES` does not list); the visibility listener is removed when it shows or closes.

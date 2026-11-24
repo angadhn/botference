@@ -4334,7 +4334,8 @@ export function handler(req, res) {
         const page = pageOf(req, res, data);
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
-        const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || '') });
+        const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
+          post: String(data.post || ''), postVersion: String(data.post_version || '') });
         return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
       });
     }

@@ -256,11 +256,25 @@ await test('a toast drawn on a tab that is not showing waits there: it is spent,
   await tick(100);
   assert.deepEqual(seen, [], 'not spent, not timed out, while nobody can see it');
   assert.ok(t.host.isConnected);
+  assert.equal(t.mode(), 'waiting', 'a named mode, not a listener standing in for one');
+  doc.dispatchEvent(new win.Event('visibilitychange'));
+  assert.equal(t.mode(), 'waiting', 'still hidden: still waiting');
   state = 'visible';
   doc.dispatchEvent(new win.Event('visibilitychange'));
   assert.deepEqual(seen, [['shown', 'r9']]);
   await tick(500);
   assert.deepEqual(seen, [['shown', 'r9'], ['done', 'r9']], 'then it goes by itself as usual');
+  assert.equal(t.mode(), 'closing');
+  // dismissed while still waiting: closing, and the tab being shown later does nothing (the listener is gone)
+  state = 'hidden';
+  const seen2 = [];
+  const t2 = T.show({ kind: 'live', run: 'r10', sentence: 'Your post is live.', link: '' }, { doc, isTrusted, liveMs: 40, onShown: n => seen2.push(['shown', n.run]), onDone: n => seen2.push(['done', n.run]) });
+  t2.close();
+  assert.equal(t2.mode(), 'closing');
+  state = 'visible';
+  doc.dispatchEvent(new win.Event('visibilitychange'));
+  await tick(100);
+  assert.deepEqual(seen2, [['done', 'r10']], 'never shown after it was closed');
   delete doc.visibilityState;
 });
 

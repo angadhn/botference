@@ -10856,7 +10856,7 @@ ${bubbleShellHtml()}`;
         let e = null;
         try { e = await cb('onBlygPublish')('earlier', { thread_id: id }); } catch (_) { e = null; }
         if (D.pub.view !== 'closed') return;
-        if (e && e.ok && e.earlier && typeof e.earlier === 'object') earlier = { title: String(e.earlier.title || ''), version: Number(e.earlier.version) || 1 };
+        if (e && e.ok && e.earlier && typeof e.earlier === 'object') earlier = { title: String(e.earlier.title || ''), version: Number(e.earlier.version) || 1, post: String(e.earlier.post || '') };
       }
       if (earlier) { pubJoin('add'); D.pub.earlier = earlier; }
       if (!pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm, opener: 'plane', edit: pubPublished(t) })) pubJoin('none');
@@ -11010,9 +11010,11 @@ ${bubbleShellHtml()}`;
       D.pub.error = '';
       const thread = D.pub.thread;
       const join = D.pub.join === 'none' ? '' : D.pub.join;
+      // adding: the post the dialog named, so the companion adds to that one or to none
+      const shownPost = join === 'add' && D.pub.earlier ? { post: D.pub.earlier.post, post_version: String(D.pub.earlier.version) } : {};
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}) }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost }); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'The publish did not start.', run: null }); return; }
       pubApply(r.run);
       if (D.pub.shown === 'never') setFootNote('info', PUB_BACKGROUND_SAY);
@@ -11151,6 +11153,8 @@ ${bubbleShellHtml()}`;
       return `<figure class="pubpic" data-state="${esc(p.state)}"><div class="pubpicbox">${inner}</div><figcaption>how it will look ${open}${refresh}</figcaption></figure>`;
     }
     const pubDetailsHtml = run => (run && run.log && run.log.id ? `<details class="pubdetails"><summary>Details for troubleshooting</summary><p>Run <code>${esc(run.log.id)}</code>${run.log.path ? `<br>Log: <code>${esc(run.log.path)}</code>` : ''}</p></details>` : '');
+    // a new version that leaves out comments whose threads are gone from the page: said plainly (the run always stops for this look)
+    const pubLeftOutHtml = run => { const n = Math.max(0, Math.floor(Number(run && run.left_out) || 0)); return n ? `<p class="puberr">${n === 1 ? 'A comment that was in your post is' : n + ' comments that were in your post are'} no longer on this page, so ${n === 1 ? 'it' : 'they'} will be left out of this version.</p>` : ''; };
     const pubFor = run => (run && run.title ? `<p class="pubfor">For “${esc(run.title)}”${run.kind === 'edit' ? ' · version ' + esc(run.version) : ''}</p>` : '');
     function pubBody() {
       const P = D.pub;
@@ -11200,6 +11204,7 @@ ${bubbleShellHtml()}`;
             ${pic}${pic && D.pub.pic.state === 'ready' ? '' : pubReadingHtml(run)}
             ${run.preview_url && !pic ? `<p><a class="pubseeit" href="${esc(safeHttp(run.preview_url))}" target="_blank" rel="noopener noreferrer">See how it will look</a> <span class="pubquiet">it can take a few seconds to appear</span></p>` : ''}
             ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
+            ${pubLeftOutHtml(run)}
             ${run.review === 'agent-text' && run.confirm === 'always' ? '<p class="pubquiet">Shown first because part of it was written by an agent.</p>' : ''}
             ${err}
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;

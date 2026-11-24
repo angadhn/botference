@@ -763,6 +763,8 @@ export function changelogLine(before, after) {
 // fixed line (changelogLine) is.
 export const CHANGELOG_LINE_CHARS = 100;
 export const CHANGELOG_LINE_WORDS = 25;   // the example site's own limit for a generated note (blygger_changelog MAX_WORDS)
+// the one rule that keeps the line from ever being read as a command's flag: it begins with a letter
+export const CHANGELOG_LINE_START = /^\p{L}/u;
 export const postTextOf = noteText => readingOf(noteText).map(p => p.text).join('\n\n');
 export function changelogPrompt(before, after) {
   return [
@@ -780,6 +782,9 @@ export function changelogAnswerOk(answer, { before = '', after = '' } = {}) {
   const raw = String(answer == null ? '' : answer);
   const line = raw.trim();
   if (!line || /[\r\n\u2028\u2029]/.test(line) || line.length > CHANGELOG_LINE_CHARS) return '';
+  // THE LINE BEGINS WITH A LETTER (any script's). It is handed to the site's commands as one argument: a line that began with `-`
+  // (or anything but a letter) could be read as a flag, and a hostile passage can ask the model for exactly that.
+  if (!CHANGELOG_LINE_START.test(line)) return '';
   if (INVISIBLE.test(line)) { INVISIBLE.lastIndex = 0; return ''; }
   INVISIBLE.lastIndex = 0;
   if (/[<>"“”`*_#|{}[\]\\]/.test(line) || /https?:|www\.|\w\.(com|org|net|io)\b/i.test(line) || hasTkMark(line)) return '';

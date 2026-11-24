@@ -29,8 +29,9 @@ import { checkTemplate, DEFAULT_TEMPLATE, ESCAPES, DEFAULT_ESCAPE, validTimezone
 // ---- the limits, stated once ---------------------------------------------------
 export const STEPS = Object.freeze(['plan', 'apply', 'publish']);
 // PUBLISHING AGAIN (a new version of a post already published from here) runs the same three steps in their EDIT form: optional
-// commands of their own, all three or none, each with `{note}` and the changelog line as `{changelog}` (ONE argument, written by the
-// companion from the difference, never by a model). Example site: the same commands plus `--edit --generated-note {changelog}`.
+// commands of their own, all three or none, each with `{note}` and the changelog line as `{changelog}` (ONE argument: the companion's
+// fixed line from the difference, or a small model's line that blyg-note changelogAnswerOk accepted, which always begins with a
+// letter, so it can never be read as a flag). Example site: the same commands plus `--edit --generated-note {changelog}`.
 export const EDIT_STEPS = Object.freeze(['plan_edit', 'apply_edit', 'publish_edit']);
 /** Which command a step runs, by the run's kind (blyg-run RUN_KINDS): a new post, or a new version of one. */
 export const COMMAND_FOR = Object.freeze({ new: Object.freeze({ plan: 'plan', apply: 'apply', publish: 'publish' }),

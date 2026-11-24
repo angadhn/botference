@@ -228,7 +228,7 @@
   // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join'], reply: 'json' }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version'], reply: 'json' }),
     // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
     earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),

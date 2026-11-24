@@ -149,14 +149,17 @@ export function changelogFromMove(from, to) {
   return to;
 }
 export const CHANGELOG_ASK_MS = 15000;
+export const ADD_CHANGED_SAY = 'Your earlier post from this page has changed since this was shown. Nothing was started. Close this and open it again.';
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** Why a run stops at `planned` for the owner's look (`run.review`), one of:
  *    setting      the owner's setting is confirm 'always'
  *    agent-text   the post holds a passage an agent wrote or the owner pasted from an agent's tool: it is ALWAYS shown first,
  *                 whatever the setting (THE AGENT-TEXT RULE)
  *    none         confirm 'never' and nothing calls for a look: the run goes straight through */
-export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'none']);
-export function reviewFor(setting, { agentText = false } = {}) {
+export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'none']);
+export function reviewFor(setting, { agentText = false, leftOut = false } = {}) {
+  // a new version that would leave out a comment the post had (its thread is gone from the page) never goes out unseen
+  if (leftOut) return { confirm: 'always', review: 'left-out' };
   if (agentText) return { confirm: 'always', review: 'agent-text' };
   return setting === 'never' ? { confirm: 'never', review: 'none' } : { confirm: 'always', review: 'setting' };
 }
@@ -460,6 +463,7 @@ export function viewOf(run) {
     cleanup: run.cleanup ? { said: String(run.cleanup.said || ''), outcome: CLEANUP_OUTCOMES.includes(run.cleanup.outcome) ? run.cleanup.outcome : 'left' } : null,
     unsure: publishUnsure(run) ? EDIT_UNSURE_SAY : '',
     chained_to: run.chained_to || null,
+    left_out: Number(run.left_out) || 0,
     abandon_failure: run.mode === 'abandon_failed' ? String(run.abandon_failure_line || '') : '',
     preview_url: run.preview_url || '',
     log: { id: run.id || '' },
@@ -725,7 +729,7 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '' }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     if (join && !JOINS.includes(join)) return fail(400, `join must be one of ${JOINS.join(', ')}`);
     const home = settingsNow();
@@ -763,6 +767,8 @@ export function createPublisher(deps) {
     if (adding) {
       const earlier = earlierPostFor(page, here, S);
       if (!earlier) return fail(409, ADD_GONE_SAY);
+      // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
+      if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
       return startEdit({ page, here: earlier.thread, S, id, adding: here });
     }
     return editing ? startEdit({ page, here, S, shown, id }) : startNew({ page, threads, at, here, scope, S, id });
@@ -778,6 +784,9 @@ export function createPublisher(deps) {
       .filter(({ t }) => isPublishedThread(t) && String(t.blyg_published.permalink || '').replace(/\/+$/, '') === key)
       .sort((a, b) => a.r - b.r).map(({ t }) => t);
   }
+  // THE THREADS A POST WAS PUBLISHED FROM, as its record has them (a record from before the list was kept: its snapshot's threads)
+  const recordedIdsOf = pub => (Array.isArray(pub.thread_ids) && pub.thread_ids.length ? pub.thread_ids.map(String)
+    : (pub.snapshot && Array.isArray(pub.snapshot.threads) ? pub.snapshot.threads.map(t => String(t.thread || '')).filter(Boolean) : []));
   // THE NOTE OF A POST published from here, found and checked: inside the notes folder, a plain file, unchanged since it was
   // published from here (when its hash was kept) and carrying the post's id. → { ok, rel, target, before, fm, bid } or a refusal.
   function publishedNoteOf(pub, S) {
@@ -831,8 +840,12 @@ export function createPublisher(deps) {
     if (!publishedNoteOf(pub, S).ok) return null;
     const mates = matesOf(threads, pub);
     if (mates.length + 1 > LIMITS.comments || !mates.every(t => eligibleThread(t).ok)) return null;
+    // every comment the post holds is still here: adding never drops one silently
+    const ids = recordedIdsOf(rec);
+    if (!ids.length || !ids.every(i => mates.some(t => String(t.id) === i))) return null;
     if (!sameTarget(rec.snapshot, page)) return null;
-    return { thread, permalink: pub.permalink, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1 };
+    const post = String(pub.permalink || '').split('/').filter(Boolean).pop() || '';
+    return { thread, permalink: pub.permalink, post, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1 };
   }
   /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version } | null }. */
   function earlierOf({ page, threadId }) {
@@ -841,7 +854,7 @@ export function createPublisher(deps) {
     const here = (page.threads || []).find(t => t && t.id === threadId);
     if (!here) return fail(404, 'That comment is not on this page any more.');
     const e = earlierPostFor(page, here, home.settings);
-    return { ok: true, earlier: e ? { title: e.title, version: e.version } : null };
+    return { ok: true, earlier: e ? { title: e.title, version: e.version, post: e.post } : null };
   }
 
   // which threads "this and the ones above" takes: the owner's earlier unpublished eligible threads (with confirm 'never', only those
@@ -909,6 +922,9 @@ export function createPublisher(deps) {
     if (!picked.some(t => (t.msgs || []).some(m => isPublishableMsg(m) && String(m.text || '').trim()))) return fail(409, 'Withdrawing a post is done on your site, not from here.');
     for (const t of picked) { const el = eligibleThread(t); if (!el.ok) return fail(409, el.why === 'that comment has no words' ? 'Withdrawing a post is done on your site, not from here.' : el.why); }
     if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} comments can go in one post.`);
+    // a comment the post holds whose thread is no longer on this page is LEFT OUT of this version: said in the dialog, never unseen
+    const leftOut = recordedIdsOf(pub).filter(i => !picked.some(t => String(t.id) === i)).length;
+    if (adding && leftOut) return fail(409, ADD_GONE_SAY);
     // the note: as recorded on the thread, or (a post published before the thread kept it) the one note that declares the post's id
     const note = publishedNoteOf(pub, S);
     if (!note.ok) return note;
@@ -929,12 +945,12 @@ export function createPublisher(deps) {
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit',
-      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null } });
+      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText });
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out) });
     log.write(id, { ev: 'run', id, kind, version, settings_fp: fingerprint(S), page_url: page.url, scope, note_rel: rel, permalink: rendered.permalink,
       confirm: look.confirm, review: look.review, changelog: (extra && extra.changelog) || '' });
     const run = book.move('drafted', {

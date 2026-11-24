@@ -683,7 +683,7 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   eq('D.pub.join is written only by pubJoin (and its starting value)', [...src.matchAll(/D\.pub\.join\s*=(?!=)/g)].length, 1);
   // offered: the default is "add"; one primary button that makes the next version; the start says join: add
   const server = companion();
-  server.earlier = { title: 'Already out', version: 2 };
+  server.earlier = { title: 'Already out', version: 2, post: '0123456789abcdefghjkmnpqrs' };
   const x = await make({ server });
   x.click(x.qa('.thr-pub')[1]); await tick(5);
   eq('the companion is asked about this comment', server.calls.find(c => c.op === 'earlier'), { op: 'earlier', body: { thread_id: 't2' } });
@@ -698,7 +698,7 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   x.click(x.q('[data-join="add"]')); await tick();
   eq('back to add', [x.drawer.pub.join, x.qa('.pubdlg [data-act="pub-scope"]').map(b => b.dataset.scope)], ['add', ['one']]);
   await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
-  eq('the start carries join: add', server.calls.filter(c => c.op === 'start').at(-1), { op: 'start', body: { thread_id: 't2', scope: 'one', confirm: 'always', join: 'add' } });
+  eq('the start carries join: add, and the post and version the dialog named', server.calls.filter(c => c.op === 'start').at(-1), { op: 'start', body: { thread_id: 't2', scope: 'one', confirm: 'always', join: 'add', post: '0123456789abcdefghjkmnpqrs', post_version: '2' } });
   // a new post chosen: join: new
   const s2 = companion(); s2.earlier = { title: 'Already out', version: 1 };
   const y = await make({ server: s2 });
@@ -763,6 +763,19 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   ok('a scroll of the page behind that does not move the buttons: the press counts', s2.calls.some(c => c.op === 'confirm'));
   delete document.elementsFromPoint;
   globalThis.ResizeObserver = realRO;
+}
+
+// ---- a new version that leaves out a comment whose thread is gone: said in the confirmation ----------------------------------------
+{
+  const server = companion();
+  server.run = server.make('planned', { kind: 'edit', version: 3, left_out: 1, review: 'left-out', confirm: 'always', steps: [] });
+  const { q, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  ok('one left out: said plainly', /A comment that was in your post is no longer on this page, so it will be left out of this version\./.test(q('.pubdlg').textContent));
+  server.run = server.make('planned', { kind: 'edit', version: 3, left_out: '<b>2</b>', confirm: 'always', steps: [] });
+  const y = await make({ server });
+  await tick(10); y.click(y.q('[data-act="pub-review"]')); await tick();
+  ok('a count that is not a number says nothing (and draws no markup)', !/left out/.test(y.q('.pubdlg').textContent) && !y.q('.pubdlg b'));
 }
 
 // ---- a published thread's header says one true thing per moment, with the version -------------------------------------------------
