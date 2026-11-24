@@ -13731,3 +13731,23 @@ the owner could never publish a new version of that post, or add to it, from her
 - Tests: `blyg-run` (asked, nothing written or run; keep is never accepted; replace, cancel restores, publish, then ordinary; add to
   such a post asks), `blygpublish-drawer` (the table, one writer, Keep, Replace sends outside: replace, one-click still asks),
   `blygpublish-background` (forwarded; anything but replace refused).
+
+### Publish up to here (`blyg-run EXTENTS`, `config.js PUB_EXTENTS`, `blyg-note includedMsgs`)
+- The thread header's plane is the WHOLE thread, as before. Each of the owner's own publishable messages in an eligible thread now
+  has a small plane of its own (`.msg-pub`, `data-act="pub-open-upto"`): "publish the comment up to and including this message".
+  The drawer holds `D.pub.extent` (`whole` | `upto`, moved only by `pubExtent`) and `D.pub.upto` (that message's `ts`); the start
+  carries `extent: 'upto', upto: <ts>` (the worker forwards only a listed extent and an upto only with `upto`).
+- The companion (`startChecked`): `extent` one of `EXTENTS`, `upto` exactly when the extent is `upto`, and it must be the ts of
+  one of the owner's publishable messages in that thread (`UPTO_GONE_SAY` otherwise). `renderShortNote({points})` takes
+  `{ [thread id]: ts }`; `includedMsgs(t, point)` keeps the owner's messages up to and including the point (a point whose message
+  was deleted since keeps those not later than it). Messages after the point stay private.
+- The post's record (`blyg-publish-posts.json`) keeps `points`; the thread's public `blyg_published.upto` says where its part ends.
+  A new version keeps every recorded point unless the owner moves the chosen thread's: forward from a later message's plane (a new
+  version), to the end from the header (and `run.further`, shown in the dialog as "N further messages of this comment will now be
+  included."). A point NEVER moves back: a message earlier than where the published post reaches in that thread (its point, else
+  the last message it was published with) is refused with `UPTO_BACK_SAY` ("Your post already includes later messages of this
+  thread, so it cannot be published only up to this one. To take words out of your post, delete the message."). The same point
+  again is "Nothing has changed since you published this." Agent passages inside included messages behave as before.
+- Tests: `blyg-run` (refusals, up to 2 of 3, the record, back refused, the header adds 1 as v2, whole then refused back, forward
+  to a new 4th), `blygpublish-drawer` (planes per owner message, the start's body, the header sends none, "further"),
+  `blygpublish-background` (forwarded; odd extents refused).

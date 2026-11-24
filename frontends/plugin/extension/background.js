@@ -1107,6 +1107,8 @@ async function blygPublish(msg, tabId) {
   if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
   if (op === 'start' && body.join && CFG.BLYG_PUBLISH_JOINS.indexOf(body.join) === -1) return { ok: false, error: 'no such choice' };
   if (op === 'start' && body.outside && CFG.BLYG_PUBLISH_OUTSIDE.indexOf(body.outside) === -1) return { ok: false, error: 'no such answer' };
+  if (op === 'start' && body.extent && CFG.PUB_EXTENTS.indexOf(body.extent) === -1) return { ok: false, error: 'no such extent' };
+  if (op === 'start' && body.upto && (body.extent !== 'upto' || body.upto.length > 64)) return { ok: false, error: 'no such message' };
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
   if (!r.ok) {

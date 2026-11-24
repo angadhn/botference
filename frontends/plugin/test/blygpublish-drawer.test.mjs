@@ -846,6 +846,46 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   eq('…and the question is over', x.drawer.pub.outside, 'none');
 }
 
+// ---- publish up to here: each of the owner's messages has its own plane; the header's is the whole thread ----
+{
+  eq('the extents', CFG.PUB_EXTENTS, ['whole', 'upto']);
+  for (const from of CFG.PUB_EXTENTS) for (const to of CFG.PUB_EXTENTS) {
+    const listed = CFG.PUB_EXTENT_MOVES[from].includes(to);
+    let threw = false; try { CFG.pubExtentMove(from, to); } catch (_) { threw = true; }
+    eq(`extent ${from} → ${to} ${listed ? 'allowed' : 'refused'}`, threw, !listed);
+  }
+  const src = (await import('node:fs')).readFileSync(path.join(here, '..', 'extension', 'drawer.js'), 'utf8');
+  eq('D.pub.extent is written only by pubExtent', [...src.matchAll(/D\.pub\.extent\s*=(?!=)/g)].length, 1);
+  const server = companion();
+  const x = await make({ server });
+  x.drawer.setPage({ url: 'https://example.com/article', title: 'An article', page_chat: [], threads: [
+    { id: 'tm', quote: 'passage', msgs: [mine('One.', { ts: '1' }), mine('Two.', { ts: '2' }), { author: 'claude', ts: '2b', text: 'a bot' }, mine('Three.', { ts: '3' })] }] });
+  await tick(10);
+  eq('a plane on each of the owner\'s messages, none on the bot\'s', x.qa('.msg-pub').map(b => b.dataset.ts), ['1', '2', '3']);
+  x.click(x.q('.msg-pub[data-ts="2"]')); await tick(5);
+  eq('its plane opens the choice for up to that message', [x.view(), x.drawer.pub.extent, x.drawer.pub.upto], ['choosing', 'upto', '2']);
+  ok('…and says the later ones stay private', /messages after it stay private/.test(x.dlg().textContent));
+  await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  eq('the start carries extent: upto and the message', server.calls.filter(c => c.op === 'start').at(-1).body, { thread_id: 'tm', scope: 'one', confirm: 'always', extent: 'upto', upto: '2' });
+  // the header plane: the whole thread (nothing about an extent is sent), after closing
+  x.drawer.pub.view === 'closed' || x.click(x.q('[data-act="pub-close"]'));
+  const s2 = companion();
+  const y = await make({ server: s2 });
+  y.drawer.setPage({ url: 'https://example.com/article', title: 'An article', page_chat: [], threads: [
+    { id: 'tm', quote: 'passage', msgs: [mine('One.', { ts: '1' }), mine('Two.', { ts: '2' })] }] });
+  await tick(10);
+  y.click(y.q('.thr-pub[data-target="tm"]')); await tick(5);
+  eq('the header: whole', y.drawer.pub.extent, 'whole');
+  await settle(); y.click(y.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
+  ok('…and no extent is sent', !('extent' in s2.calls.filter(c => c.op === 'start').at(-1).body));
+  // a republish that now includes further messages says how many
+  const s3 = companion();
+  s3.run = s3.make('planned', { kind: 'edit', version: 2, further: 2, confirm: 'always' });
+  const z = await make({ server: s3 });
+  await tick(10); z.click(z.q('[data-act="pub-review"]')); await tick();
+  ok('the dialog says how many further messages will now be included', /2 further messages of this comment will now be included/.test(z.dlg().textContent), z.dlg().textContent.slice(0, 300));
+}
+
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);
 for (const f of failures) console.log('  · ' + f);
 process.exit(fail ? 1 : 0);

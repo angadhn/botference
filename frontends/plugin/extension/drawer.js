@@ -2573,9 +2573,10 @@
       // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }). `join` is where a new comment goes when an earlier
       // post from this page can take it (config.js PUB_JOINS, moved only by pubJoin); `earlier` that post as the companion named it
       // ({ title, version }), a fact shown in the choice. `outside` is the question asked when the post was changed outside the plugin
-      // (config.js PUB_OUTSIDE, moved only by pubOutside); `lost` the companion's count of lines that would go (a fact).
+      // (config.js PUB_OUTSIDE, moved only by pubOutside); `lost` the companion's count of lines that would go (a fact). `extent` is how
+      // much of the thread (config.js PUB_EXTENTS, moved only by pubExtent); `upto` the chosen message's time stamp (a fact of `upto`).
       pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 },
-        join: 'none', earlier: null, outside: 'none', lost: 0 },
+        join: 'none', earlier: null, outside: 'none', lost: 0, extent: 'whole', upto: '' },
       // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
       // tkHintMove (said once per drawer, never again)
       tkBlockHint: 'unseen',
@@ -3499,6 +3500,7 @@ ${bubbleShellHtml()}`;
         ` aria-label="copy this message">${cp ? (cp.ok ? '✓' : '✕') : COPY_GLYPH}</button>` +
         (mine && !own ? `<button class="rebtn" data-act="edit" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="edit this message" aria-label="edit">✎</button>` : '') +
         (canDel && !own ? `<button class="rebtn" data-act="del-msg" data-target="${esc(target)}" data-ts="${esc(r.ts)}" title="delete this message" aria-label="delete">✕</button>` : '') +
+        (mine && !own ? pubUptoBtn(target, r) : '') +
         `</div>`;
     }
 
@@ -8394,6 +8396,7 @@ ${bubbleShellHtml()}`;
       'export-run': (btn) => pickExport(btn.dataset.mode),
       // ---- Publish as blyg (every one of these runs only on a trusted click: the delegated handler above) ----
       'pub-open': (btn, target) => pubOpen(target),
+      'pub-open-upto': (btn, target) => pubOpen(target, btn.dataset.ts),
       'pub-scope': (btn, t, e) => pubStart(btn.dataset.scope, e),
       // a post changed outside the plugin: keep it (nothing is written) or replace it (the start again, with outside: 'replace')
       'pub-outside-keep': () => { if (D.pub.view === 'choosing' && D.pub.outside !== 'none') pubClose(); },
@@ -10715,7 +10718,7 @@ ${bubbleShellHtml()}`;
       CFG.pubMove(D.pub.view, next);
       D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
       if (next !== 'problem') pubAskMove('none');
-      if (next === 'closed') { pubJoin('none'); pubOutside('none'); }
+      if (next === 'closed') { pubJoin('none'); pubOutside('none'); pubExtent('whole'); }
       if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
       if (next !== 'confirming') pubPic('none');
       paintPub();
@@ -10843,11 +10846,28 @@ ${bubbleShellHtml()}`;
       D.pub.outside = to;
       if (to === 'none') D.pub.lost = 0;
     }
-    async function pubOpen(id) {
+    // HOW MUCH OF THE THREAD (D.pub.extent, config.js PUB_EXTENTS): the one function that changes it; staying is no move
+    function pubExtent(to, ts) {
+      if (D.pub.extent !== to) { CFG.pubExtentMove(D.pub.extent, to); D.pub.extent = to; }
+      D.pub.upto = to === 'upto' ? String(ts || '') : '';
+    }
+    // a message of the owner's own in a thread that may be published: its plane publishes the thread up to and including it
+    function pubUptoOk(target, r) {
+      if (!D.owner || !r || r.superseded || !pubOwnWords(r) || !String(r.text || '').trim()) return false;
+      const t = ((D.page && D.page.threads) || []).find(x => x && x.id === target);
+      return !!t && pubThreadOk(t);
+    }
+    function pubUptoBtn(target, r) {
+      if (!pubUptoOk(target, r)) return '';
+      return `<button class="rebtn msg-pub" data-act="pub-open-upto" data-target="${esc(target)}" data-ts="${esc(r.ts)}" type="button" title="Publish the comment up to and including this message (the later ones stay private)"`
+        + ` aria-label="publish up to and including this message">${PLANE_SVG}</button>`;
+    }
+    async function pubOpen(id, upto) {
       if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
       if (!t || !pubThreadOk(t)) return;
       pubJoin('none');
+      pubExtent(upto ? 'upto' : 'whole', upto);
       { const framed = pubFramed(); if (framed) { pubGo('problem', { thread: id, error: framed, run: null, opener: 'plane' }); return; } }
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
@@ -11028,7 +11048,8 @@ ${bubbleShellHtml()}`;
       const replacing = D.pub.outside === 'replacing';
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}) }); } catch (_) { r = null; }
+      const cut = D.pub.extent === 'upto' && D.pub.upto ? { extent: 'upto', upto: D.pub.upto } : {};
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}), ...cut }); } catch (_) { r = null; }
       // the post was changed outside the plugin: back to the choice, which now asks (nothing was written)
       if (r && !r.ok && r.outside && !replacing) {
         pubOutside('asking');
@@ -11196,9 +11217,10 @@ ${bubbleShellHtml()}`;
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-outside-keep">Keep the post as it is</button>`
               + `<button class="pbtn" type="button" data-act="pub-outside-replace">Replace it with this thread's text</button>${closeBtn}</div>`;
           }
+          const uptoSay = P.extent === 'upto' ? '<p class="pubupto">Up to and including the message you chose: the messages after it stay private.</p>' : '';
           if (P.edit && t) {
             const v = (Number(t.blyg_published.version) || 1) + 1;
-            return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}
+            return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}${uptoSay}
               <p>${look ? `This makes version ${v} of your post. Nothing is published yet: first you will see it.` : `This publishes version ${v} of your post now.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
@@ -11209,12 +11231,12 @@ ${bubbleShellHtml()}`;
           if (P.join === 'add' && P.earlier) {
             const v = (Number(P.earlier.version) || 1) + 1;
             const named = P.earlier.title ? `“${esc(P.earlier.title)}”` : 'your earlier post';
-            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}
+            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}${uptoSay}
               <p>${look ? `This comment goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with this comment after the earlier one.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           const n = pubAbove(P.thread, P.shown).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}${uptoSay}
             <p>${look ? 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.' : 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.'}</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Just this comment' : 'Publish just this comment'}</button>
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This and the ' + n + ' above' : 'Publish this and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
@@ -11235,6 +11257,7 @@ ${bubbleShellHtml()}`;
             ${run.preview_url && !pic ? `<p><a class="pubseeit" href="${esc(safeHttp(run.preview_url))}" target="_blank" rel="noopener noreferrer">See how it will look</a> <span class="pubquiet">it can take a few seconds to appear</span></p>` : ''}
             ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
             ${pubLeftOutHtml(run)}
+            ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this comment will now be included.</p>` : ''}
             ${run.review === 'agent-text' && run.confirm === 'always' ? '<p class="pubquiet">Shown first because part of it was written by an agent.</p>' : ''}
             ${err}
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;

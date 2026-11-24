@@ -578,11 +578,21 @@ const linkText = s => oneLine(s).replace(/[\\[\]*_`<>{}|!]/g, ' ').replace(/\s+/
  *   slug         the slug to use (the caller made it unique)
  *   earlier      { title, link } when the post chains to an earlier one (scope 'one' only), else null
  *   keep         for a new VERSION of a published post: { created, released } as the published note has them (the id is `id`)
+ *   points       { [thread id]: message ts }: a thread published "up to here" (includedMsgs); a thread not named is whole
  * → { ok, text, title, slug, permalink, sources, generated, snapshot } | { ok: false, error }
  *   `generated`: the blyg_generated entries (one per agent-written passage); `snapshot`: what a later version is compared with
  *   (snapshotOf), made of hashes only
  */
-export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null }) {
+/** The thread's messages that go into a post: the owner's publishable ones, up to and including the message whose time stamp is
+ *  `point` when one is given ("publish up to here"; a point whose message was since deleted keeps those not later than it), else
+ *  all of them. */
+export function includedMsgs(t, point = '') {
+  const own = (t.msgs || []).filter(isPublishableMsg);
+  if (!point) return own;
+  const at = own.findIndex(m => String(m.ts) === String(point));
+  return at >= 0 ? own.slice(0, at + 1) : own.filter(m => String(m.ts) <= String(point));
+}
+export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null }) {
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   const opts = { escape };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
@@ -619,7 +629,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     }
     const words = [];
     const said = [];
-    for (const m of t.msgs.filter(isPublishableMsg)) {
+    for (const m of includedMsgs(t, points && points[t.id])) {
       const r = ownText(m, opts);
       blocked.push(...r.blocked);
       generated.push(...r.generated);

@@ -46,7 +46,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, includedMsgs, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
 
@@ -165,6 +165,16 @@ const linesLost = (onDisk, next) => {
   const keep = new Set(String(next).split('\n').map(l => l.trim()));
   return String(onDisk).replace(/^---\n[\s\S]*?\n---\n/, '').split('\n').map(l => l.trim()).filter(l => l && !keep.has(l)).length;
 };
+// HOW MUCH OF THE THREAD a post takes, named once (`run.extent`, from the start's `extent`):
+//   whole  the thread's every message of the owner's (the header's plane)
+//   upto   up to and including one message (`upto`: its time stamp; that message's own plane); later ones stay private
+// The post's record keeps the point per thread (`points: { [thread id]: ts }`; a thread not named is whole), so a later version
+// keeps it unless the owner moves it. A point only moves FORWARD: choosing an earlier message than the one a published post
+// already reaches is refused (UPTO_BACK_SAY); words come out of a post by deleting the message. A whole-thread republish of a post
+// whose point is not the end says how many further messages it now includes (`run.further`).
+export const EXTENTS = Object.freeze(['whole', 'upto']);
+export const UPTO_BACK_SAY = 'Your post already includes later messages of this thread, so it cannot be published only up to this one. To take words out of your post, delete the message.';
+export const UPTO_GONE_SAY = 'That message is not one of yours in this comment any more, so nothing was started.';
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** Why a run stops at `planned` for the owner's look (`run.review`), one of:
  *    setting      the owner's setting is confirm 'always'
@@ -479,6 +489,7 @@ export function viewOf(run) {
     unsure: publishUnsure(run) ? EDIT_UNSURE_SAY : '',
     chained_to: run.chained_to || null,
     left_out: Number(run.left_out) || 0,
+    extent: EXTENTS.includes(run.extent) ? run.extent : 'whole', further: Number(run.further) || 0,
     abandon_failure: run.mode === 'abandon_failed' ? String(run.abandon_failure_line || '') : '',
     preview_url: run.preview_url || '',
     log: { id: run.id || '' },
@@ -744,8 +755,10 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '' }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
+    if (!EXTENTS.includes(extent)) return fail(400, `extent must be one of ${EXTENTS.join(', ')}`);
+    if (extent === 'upto' ? !upto : !!upto) return fail(400, 'upto is the message a post goes up to, and only with extent upto');
     if (join && !JOINS.includes(join)) return fail(400, `join must be one of ${JOINS.join(', ')}`);
     // (only `replace` is ever sent: `keep` sends nothing at all)
     if (outside && outside !== 'replace') return fail(400, 'outside must be replace or absent');
@@ -756,6 +769,9 @@ export function createPublisher(deps) {
     const at = threads.findIndex(t => t && t.id === threadId);
     if (at < 0) return fail(404, 'That comment is not on this page any more.');
     const here = threads[at];
+    // the point, when one was chosen: one of the owner's publishable messages in this thread
+    if (extent === 'upto' && !(here.msgs || []).some(m => isPublishableMsg(m) && String(m.ts) === String(upto))) return fail(409, UPTO_GONE_SAY);
+    const cut = { extent, upto: extent === 'upto' ? String(upto) : '' };
     const editing = isPublishedThread(here);
     // adding this comment to the earlier post from this page (the owner's choice): that post's new version, through the edit path
     const adding = !editing && join === 'add';
@@ -786,9 +802,9 @@ export function createPublisher(deps) {
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here });
     }
-    return editing ? startEdit({ page, here, S, shown, id, outside }) : startNew({ page, threads, at, here, scope, S, id });
+    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here }) : startNew({ page, threads, at, here, scope, S, id, cut });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -881,7 +897,8 @@ export function createPublisher(deps) {
     && (S.confirm !== 'never' || drawerTyped(t)));
   const drawerTyped = t => { const first = (t.msgs || []).find(m => m && m.kind !== 'tools'); return !!first && first.channel === 'drawer'; };
 
-  async function startNew({ page, threads, at, here, scope, S, id }) {
+  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' } }) {
+    const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
     const picked = scope === 'one' ? [here] : [...aboveOf(threads, at, S), here];
@@ -896,7 +913,7 @@ export function createPublisher(deps) {
     const now = clock();
     const date = dayOf(now, S.timezone);
     const taken = permalinksIn(S.folder);
-    const first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier });
+    const first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points });
     if (!first.ok) return fail(409, first.error);
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
     const base = slugOf(first.title, { date });
@@ -906,7 +923,7 @@ export function createPublisher(deps) {
     for (let n = 0; n < 60 && !rendered; n++) {
       const trySlug = n ? `${base.slice(0, LIMITS.slugChars - 4)}-${n + 1}` : base;
       const bid = newBlygId();   // the address is made of it; the FILE keeps the first-words slug
-      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier });
+      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier, points });
       if (!r.ok) return fail(409, r.error);
       let fileName;
       try { fileName = filenameFor(S.filename, { slug: trySlug, date }); } catch (e) { return fail(409, e.message); }
@@ -926,13 +943,33 @@ export function createPublisher(deps) {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o644);
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
     } catch (e) { return fail(409, e && e.code === 'EEXIST' ? 'A note of that name appeared meanwhile; try again.' : 'Could not write the note.'); }
-    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, extra: { chained_to: earlier ? { title: earlier.title } : null } });
+    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0 } });
   }
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null, outside = '' }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
+    // THE POINTS: as recorded, with the chosen thread's moved (only forward) or, from the header, taken to the end
+    const points = { ...(pub.points && typeof pub.points === 'object' ? pub.points : {}) };
+    let further = 0;
+    if (chosen && !adding) {
+      const own = (chosen.msgs || []).filter(isPublishableMsg);
+      const pos = ts => own.findIndex(m => String(m.ts) === String(ts));
+      // where the published post reaches in this thread: its point, else the last message it was published with
+      const snapMsgs = ((pub.snapshot && pub.snapshot.threads) || []).find(x => String(x.thread) === String(chosen.id));
+      const lastTs = snapMsgs && snapMsgs.msgs && snapMsgs.msgs.length ? snapMsgs.msgs[snapMsgs.msgs.length - 1].ts : '';
+      const reachedTs = points[chosen.id] || lastTs;
+      const reached = reachedTs ? includedMsgs(chosen, reachedTs).length - 1 : own.length - 1;
+      if (cut.extent === 'upto') {
+        if (pos(cut.upto) < reached) return fail(409, UPTO_BACK_SAY);
+        points[chosen.id] = cut.upto;
+      } else {
+        if (points[chosen.id]) further = Math.max(0, own.length - 1 - reached);
+        delete points[chosen.id];
+      }
+    }
+    if (adding && cut.extent === 'upto') points[adding.id] = cut.upto;
     const threads = page.threads || [];
     // the threads that went into that post (in the order they went in), and the comment being added to it, last
     const mates = matesOf(threads, pub);
@@ -949,7 +986,7 @@ export function createPublisher(deps) {
     const { rel, target, before, fm, bid } = note;
     const now = clock();
     const slug = String(pub.slug || path.basename(rel, '.md').replace(/[^a-z0-9-]/g, '').slice(0, LIMITS.slugChars) || 'note');
-    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') } });
+    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') }, points });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
@@ -971,7 +1008,8 @@ export function createPublisher(deps) {
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit',
-      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut } });
+      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
+        extent: cut.extent, points, further } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {
@@ -1024,7 +1062,7 @@ export function createPublisher(deps) {
     const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1 };
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
-        snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], at: published.at });
+        snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {}, at: published.at });
     } catch { published.record_error = 'The post is live, but the companion could not keep what it needs to publish a new version of it.'; }
     try {
       const page = deps.readPage(run.page_url);
@@ -1032,7 +1070,9 @@ export function createPublisher(deps) {
         for (const t of page.threads || []) {
           if (!run.thread_ids.includes(t.id)) continue;
           const before = t.blyg_published || {};
-          t.blyg_published = { ...published, ...(before.address && !published.address ? { address: before.address } : {}), ...(before.at && run.kind === 'edit' ? { first_at: before.first_at || before.at } : {}) };
+          t.blyg_published = { ...published, ...(before.address && !published.address ? { address: before.address } : {}), ...(before.at && run.kind === 'edit' ? { first_at: before.first_at || before.at } : {}),
+            // the message this thread's part of the post ends at, when it does not go to the end (the drawer marks it; a public fact)
+            ...(run.points && run.points[t.id] ? { upto: String(run.points[t.id]) } : {}) };
         }
         deps.savePage(page);
         deps.broadcast({ type: 'page', url: page.url });

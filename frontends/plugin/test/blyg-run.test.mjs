@@ -135,7 +135,7 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title', 'version'], 'only what a reader of the page may know (and the version)');
   assert.equal(marked.version, 1);
   const kept = JSON.parse(fs.readFileSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json'), 'utf8'))[marked.permalink];
-  assert.deepEqual(Object.keys(kept).sort(), ['at', 'blyg_id', 'note_rel', 'note_sha', 'slug', 'snapshot', 'thread_ids', 'version'], 'what a new version needs is kept on the companion, not on the page');
+  assert.deepEqual(Object.keys(kept).sort(), ['at', 'blyg_id', 'note_rel', 'note_sha', 'points', 'slug', 'snapshot', 'thread_ids', 'version'], 'what a new version needs is kept on the companion, not on the page');
   assert.equal(fs.statSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json')).mode & 0o777, 0o600);
   assert.equal(marked.address, done.published.address);
   assert.ok(b.events.some(e => e.type === 'page'), 'the page is announced');
@@ -1962,4 +1962,57 @@ test('ADD never drops a comment: a post whose thread is gone from the page is no
   assert.ok(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, 'an older record: the snapshot names A and B, both here');
   P().threads = P().threads.filter(x => x.id !== 'B');
   assert.equal(b.pub.earlierOf({ page: P(), threadId: 'C' }).earlier, null, '…and B gone: no offer');
+});
+
+test('PUBLISH UP TO HERE: a post of the thread up to one message (later ones stay private); the point is kept, moves only forward, and the header republish says what it now adds', async t => {
+  assert.deepEqual(R.EXTENTS, ['whole', 'upto']);
+  const rig = makeRig({ discard: true, extra: {} }); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const page = blygPage([{ id: 't1', quote: 'A passage.', blyg: stamp(), msgs: [mine('First words.', { ts: '1' }), mine('Second words.', { ts: '2' }), mine('Third words, private.', { ts: '3' })] }]);
+  const b = boot(rig, { page, config: home });
+  const go = (extra) => b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', ...extra });
+  // odd asks are refused before anything is written
+  assert.equal((await go({ extent: 'some' })).status, 400);
+  assert.equal((await go({ extent: 'upto' })).status, 400, 'upto needs its message');
+  assert.equal((await go({ upto: '2' })).status, 400, 'a message only with extent upto');
+  assert.equal((await go({ extent: 'upto', upto: '9' })).error, R.UPTO_GONE_SAY);
+  // up to message 2
+  const r1 = await go({ extent: 'upto', upto: '2' });
+  assert.ok(r1.ok, r1.error);
+  assert.equal(r1.view.extent, 'upto');
+  await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  const rel = recOf(v).note_rel;
+  const text1 = fs.readFileSync(path.join(rig.top, rel), 'utf8');
+  assert.match(text1, /First words\./); assert.match(text1, /Second words\./);
+  assert.ok(!/Third words/.test(text1), 'the message after the point stays private');
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published v1');
+  const th = () => b.pages.get(b.page.url).threads[0];
+  assert.equal(th().blyg_published.upto, '2', 'the thread says where its part of the post ends');
+  const postsFile = path.join(path.dirname(b.file), 'blyg-publish-posts.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(postsFile, 'utf8'))[th().blyg_published.permalink].points, { t1: '2' }, 'the post\'s record remembers the point');
+  // a point never moves back
+  const back = await go({ extent: 'upto', upto: '1' });
+  assert.deepEqual([back.ok, back.error], [false, R.UPTO_BACK_SAY]);
+  assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), text1, 'nothing written');
+  // the same point again: nothing changed
+  assert.equal((await go({ extent: 'upto', upto: '2' })).error, 'Nothing has changed since you published this.');
+  // the header: the whole thread, version 2, saying how many further messages it now includes
+  const r2 = await go({});
+  assert.ok(r2.ok, r2.error);
+  assert.deepEqual([r2.view.kind, r2.view.version, r2.view.further, r2.view.changelog], ['edit', 2, 1, 'Added a comment.']);
+  await until(() => b.mode() === 'planned', 'planned v2');
+  v = b.pub.current();
+  assert.match(fs.readFileSync(path.join(rig.top, rel), 'utf8'), /Third words, private\./);
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published v2');
+  assert.equal(th().blyg_published.version, 2);
+  assert.equal(th().blyg_published.upto, undefined, 'whole again');
+  assert.deepEqual(JSON.parse(fs.readFileSync(postsFile, 'utf8'))[th().blyg_published.permalink].points, {});
+  // published whole: an earlier message's plane is refused too
+  assert.equal((await go({ extent: 'upto', upto: '2' })).error, R.UPTO_BACK_SAY);
+  // a fourth message, then its own plane: forward, version 3
+  th().msgs.push(mine('Fourth words.', { ts: '4' }));
+  const r3 = await go({ extent: 'upto', upto: '4' });
+  assert.ok(r3.ok, r3.error);
+  assert.equal(r3.view.version, 3);
 });

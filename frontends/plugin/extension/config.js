@@ -229,7 +229,7 @@
   // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside'], reply: 'json' }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto'], reply: 'json' }),
     // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
     earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
@@ -397,6 +397,16 @@
     return to;
   }
   const BLYG_PUBLISH_OUTSIDE = Object.freeze(['replace']);
+  // ── how much of the thread a post takes (blyg-run.mjs EXTENTS) ─────────────────────────────────────────────────────────────
+  // One field (D.pub.extent), moved only by pubExtentMove: `whole` (the header's plane: every message of the owner's) or `upto`
+  // (one of the owner's messages' own plane: the thread up to and including it, D.pub.upto its time stamp; later ones stay private).
+  const PUB_EXTENTS = Object.freeze(['whole', 'upto']);
+  const PUB_EXTENT_MOVES = Object.freeze({ whole: Object.freeze(['upto']), upto: Object.freeze(['whole']) });
+  function pubExtentMove(from, to) {
+    if (PUB_EXTENTS.indexOf(to) === -1) throw new Error('how much of the thread: no such extent ' + to);
+    if (!PUB_EXTENT_MOVES[from] || PUB_EXTENT_MOVES[from].indexOf(to) === -1) throw new Error('how much of the thread: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
 
   // ── whether an exported note is a RESPONSE to its page ─────────────────
   // Blygger's "stub" (spec §10.6). One field on the page record,
@@ -890,7 +900,7 @@
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
-    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE,
+    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE, PUB_EXTENTS, PUB_EXTENT_MOVES, pubExtentMove,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     HOSTED_HUBS_MAX, hostedHubsOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,

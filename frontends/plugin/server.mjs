@@ -4335,7 +4335,8 @@ export function handler(req, res) {
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
         const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
-          post: String(data.post || ''), postVersion: String(data.post_version || ''), outside: String(data.outside || '') });
+          post: String(data.post || ''), postVersion: String(data.post_version || ''), outside: String(data.outside || ''),
+          extent: String(data.extent || 'whole'), upto: String(data.upto || '') });
         // a post changed outside the plugin: the refusal carries the question for the owner (the sentence and a count of lines)
         if (!r.ok && r.outside) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, outside: r.outside }));
         return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
