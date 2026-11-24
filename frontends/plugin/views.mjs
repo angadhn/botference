@@ -209,9 +209,17 @@ const whoBadge = me => `<span class="who">${escHtml(me.handle || 'guest')}${me.o
 // Reload when this page changes underneath the reader — but never mid-sentence:
 // a composer with text in it (or the focus) postpones the reload until it is
 // clear. Falls back to a static page if WebSocket is unavailable.
+// A value written into an inline script: JSON, with the characters that could end
+// the script element or start markup written as escapes. A page's address is
+// whatever a visitor said it was, so it is never trusted to be a URL.
+const LINE_SEPARATORS = new RegExp('[' + String.fromCharCode(0x2028, 0x2029) + ']', 'g');
+export const scriptString = value => JSON.stringify(String(value))
+  .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026')
+  .replace(LINE_SEPARATORS, c => '\\u' + c.charCodeAt(0).toString(16));
+
 const liveScript = url => `<script>
 (function(){
-  var URL_=${JSON.stringify(String(url))}, timer=null;
+  var URL_=${scriptString(url)}, timer=null;
   function busy(){var t=document.getElementsByTagName('textarea');
     for(var i=0;i<t.length;i++){if(t[i].value.trim()||t[i]===document.activeElement)return true}return false}
   function later(){clearTimeout(timer);timer=setTimeout(function(){busy()?later():location.reload()},1500)}
