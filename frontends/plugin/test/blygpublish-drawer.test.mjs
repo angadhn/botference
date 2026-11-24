@@ -49,7 +49,7 @@ const PAGE = () => ({ url: 'https://example.com/article', title: 'An article', p
 function companion(first) {
   const state = { run: first || { mode: 'idle', can: [] }, calls: [] };
   const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', log: { id: '0123456789abcdef', path: '/data/blyg-publish-logs/0123456789abcdef.jsonl' },
-    reading: [{ kind: 'words', text: 'Body <img src=x onerror=alert(1)> {{ x }}' }, { kind: 'quote', text: 'the passage' }, { kind: 'agent', label: 'Claude', text: 'An agent <b>wrote</b> this.' }],
+    reading: [{ kind: 'words', text: 'Body <img src=x onerror=alert(1)> {{ x }}' }, { kind: 'quote', text: 'the passage' }, { kind: 'agent', by: 'ai', name: 'Written by an AI model', text: 'An agent <b>wrote</b> this.' }, { kind: 'agent', by: 'ai-and-author', name: 'Written by an AI model and edited by the author', text: 'Edited by me.' }],
     steps: [], can: mode === 'planned' ? ['confirm', 'cancel'] : /^failed_/.test(mode) ? ['retry', 'abandon'] : /^interrupted_(applying|applied|publishing)$/.test(mode) ? ['continue', 'abandon'] : /^interrupted_/.test(mode) ? ['abandon'] : mode === 'abandon_failed' ? ['abandon', 'forget'] : [], ...extra });
   state.run = first || run('idle');
   state.make = run;
@@ -155,8 +155,11 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('planned', { steps: [{ step: 'plan', ok: true, ms: 5 }], notify: 'Venkatesh Rao will be told you responded' });
   drawer.blygPublishMoved(); await tick(5);
   eq('the run arrived planned: the confirmation', view(), 'confirming');
-  eq('the note reads as text: the words, the quote, and the agent\'s passage in a box with its label (an <img> in it is words)', [qa('.pubdlg .pubwords').length, qa('.pubdlg .pubquote').length, q('.pubagentlabel').textContent, q('.pubagenttext').textContent, qa('.pubdlg img').length, qa('.pubdlg b').length, /<img src=x onerror=alert\(1\)>/.test(q('.pubwords').textContent)],
-    [1, 1, 'Claude', 'An agent <b>wrote</b> this.', 0, 0, true]);
+  eq('the note reads as text: the words, the quote, and the agent\'s passage in a box with its marks (an <img> in it is words)', [qa('.pubdlg .pubwords').length, qa('.pubdlg .pubquote').length, q('.pubagenttext').textContent, qa('.pubdlg img').length, qa('.pubdlg b').length, /<img src=x onerror=alert\(1\)>/.test(q('.pubwords').textContent)],
+    [1, 1, 'An agent <b>wrote</b> this.', 0, 0, true]);
+  eq('the boxes carry marks with an accessible name and a tooltip, never a name of an agent, a model or the owner', qa('.pubagentmarks').map(m => [m.getAttribute('role'), m.getAttribute('aria-label'), m.getAttribute('title'), !!m.querySelector('svg'), !!m.querySelector('.pubagentA')]),
+    [['img', 'Written by an AI model', 'Written by an AI model', true, false], ['img', 'Written by an AI model and edited by the author', 'Written by an AI model and edited by the author', true, true]]);
+  ok('no name on the boxes', !/Claude|Codex|owner|AI model \+/.test(qa('.pubagent').map(a => a.textContent).join(' ')));
   ok('who is told, in plain words', /Venkatesh Rao will be told you responded\./.test(q('.pubnotify').textContent));
   ok('no file name, no plan output', !/_notes|PLAN|Would notify/.test(dlg().textContent));
   eq('Publish and Cancel, and Close (which keeps the run for later), nothing else', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-confirm', 'pub-cancel', 'pub-close']);

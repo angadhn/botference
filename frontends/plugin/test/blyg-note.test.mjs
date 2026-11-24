@@ -109,7 +109,7 @@ rb('yamlString: hostile strings come back exactly (a real parser reads them)', (
 test('hostile QUOTE: nothing in it can leave its blockquote or run (markdown, HTML, wikilinks, Liquid, kramdown, math, TK, front-matter lines)', () => {
   const evil = ['---', 'title: pwned', '---', '{{ site.data.secret }} {% include evil.html %} {%- raw -%}', '<script>alert(1)</script> <img src=x onerror=1>',
     '![[abcdefghjkmnpqrstvwxyz0123]] [[Some note]] ![](http://t.example.test/p.gif) [x](javascript:alert(1))', '# heading', '- item', '1. numbered', '> nested', '=== setext', '$$ \\alpha $$ and $5',
-    'a paragraph {: .danger onclick="x()"} here', '[TK] write me [/TK]', '| a | b |', '`` ` ``', '&amp; &#123;{ x }}', '    indented code', '* * *'].join('\n');
+    'a paragraph {: .danger onclick="x()"} here', '| a | b |', '`` ` ``', '&amp; &#123;{ x }}', '    indented code', '* * *'].join('\n');
   const page = blygPage([thread('t1', evil, 'My words.', { blyg: stamp() })]);
   const r = make(page, page.threads);
   assert.ok(r.ok, r.error);
@@ -131,6 +131,13 @@ test('hostile QUOTE: nothing in it can leave its blockquote or run (markdown, HT
   assert.ok(!/(^|\n)---(\n|$)/.test(body), 'no front-matter-looking line in the body');
   assert.equal(r.text.match(/^---$/gm).length, 2, 'exactly the two fences');
   assert.ok(/\n---\nMy words\.\n\n/.test(r.text));
+  // a passage that holds the site's own bracket marks is REFUSED (the site's build would refuse the post at its end)
+  for (const mark of ['[TK] write me [/TK]', 'a stray [/tk] here', 'see [TK]']) {
+    const p2 = blygPage([thread('t1', `Before. ${mark}`, 'My words.', { blyg: stamp() })]);
+    const r2 = make(p2, p2.threads);
+    assert.deepEqual([r2.ok, r2.error], [false, N.PASSAGE_TK_SAY], mark);
+    assert.ok(!/\[\/?TK\]/i.test(r2.error), 'the passage sentence names no bracket letters');
+  }
 });
 
 test('hostile PAGE fields: title, URL, and a Blygger post\'s id, origin and version cannot reach the front matter or the directive', () => {
@@ -204,14 +211,19 @@ test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the sit
   assert.deepEqual(filled.generated.map(g => [g.agent, !!g.edited_by_author]), [['claude', false]]);
   assert.equal(one('/tk say hello\nMy own words follow it.', [gap('filled-by-agent', 'Agent words first.')]).title, 'My own words follow it', 'the name is the owner\'s first words, never the agent\'s or a mark');
   // edited and adopted: the same form, the text as it now stands, still escaped, and marked as having the owner's hand in it
+  // (an INLINE gap, typed inside a sentence, is a block of its own all the same: the words before, the box, the words after)
   for (const mode of ['edited-by-reader', 'adopted-by-reader']) {
     const r = one('Intro /tk(say hello) after', [gap(mode, 'Mine **b** [[x]]')]);
-    assert.match(r.text, /Intro \[TK\] say hello \[=\]Mine \\\*\\\*b\\\*\\\* &#91;&#91;x&#93;&#93;\[\/TK\] after/, mode);
+    assert.match(r.text, /\nIntro\n\n\[TK\] say hello \[=\]Mine \\\*\\\*b\\\*\\\* &#91;&#91;x&#93;&#93;\[\/TK\]\n\nafter\n$/, mode);
     assert.match(r.text, /edited_by_author: true/, mode);
   }
-  // pasted from an agent's tool: the impyrt form, with the model of that agent
+  // pasted from an agent's tool: the impyrt form, with the model of that agent, a block of its own too
   const pasted = one('See /tkimpyrt-codex(pasted words) here', [{ kind: 'impyrt', agent: 'codex', instruction: 'pasted words', mode: 'pasted-by-reader', text: 'pasted words', model: 'gpt-5.5-codex', at: '2026-11-24T10:00:00Z' }]);
-  assert.match(pasted.text, /See \[TK\]impyrt gpt-5\.5-codex=pasted words\[\/TK\] here/, pasted.text);
+  assert.match(pasted.text, /\nSee\n\n\[TK\]impyrt gpt-5\.5-codex=pasted words\[\/TK\]\n\nhere\n$/, pasted.text);
+  // every box, inline or not, stands between blank lines: never inside a paragraph
+  for (const t of [filled.text, pasted.text]) for (const m of t.matchAll(/\[TK\][\s\S]*?\[\/TK\]/g)) {
+    assert.ok(/(^|\n\n)$/.test(t.slice(0, m.index)) && /^(\n\n|\n$)/.test(t.slice(m.index + m[0].length)), `a box on its own: ${t}`);
+  }
   assert.deepEqual(pasted.generated.map(g => g.agent), ['codex']);
   for (const [name, gaps] of [['pending', [gap('pending')]], ['failed', [gap('failed')]], ['not stored', undefined]]) {
     const r = one('Intro\n/tk say hello', gaps);
@@ -219,19 +231,34 @@ test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the sit
     assert.match(r.error, /a \/tk passage .*is not written yet/, name);
     assert.ok(!/\[TK\]/.test(r.error), 'the owner is never told about bracket markers');
   }
-  // the bracket form is not a gap any more: the owner's own words, shown as the letters, never the site's grammar
-  const studio = one('Intro [TK] a [/TK] x');
-  assert.ok(studio.ok, studio.error);
-  assert.match(studio.text, /Intro &#91;TK\] a &#91;\/TK\] x/);
-  const code = one('Say `[TK]` out loud');
-  assert.ok(code.ok && /`\[TK\]`/.test(code.text), 'inside code a mark is only text');
+  // the bracket form is not a gap any more, and the owner's own words may not show the site's marks: REFUSED with the one sentence
+  // that names the letters (the owner typed them), before anything is written
+  for (const words of ['Intro [TK] a [/TK] x', 'just [/TK]', 'lower [tk] case', 'a reply'].map((w, i) => (i === 3 ? null : w)).filter(Boolean)) {
+    const r = one(words);
+    assert.deepEqual([r.ok, r.error], [false, N.OWNER_TK_SAY], words);
+  }
+  assert.equal(N.OWNER_TK_SAY, 'Your comment contains the letters [TK]; remove them or put them in code formatting');
+  { const p2 = webPage([{ id: 't1', quote: '', msgs: [mine('Fine first words.'), { ...mine('a later reply with [TK] in it'), ts: '2026-11-22T10:05:00Z' }] }]);
+    assert.deepEqual([make(p2, p2.threads).ok, make(p2, p2.threads).error], [false, N.OWNER_TK_SAY], 'a reply of the owner\'s too'); }
+  const code = one('Say `[TK]` out loud, and\n\n```\n[/TK]\n```');
+  assert.ok(code.ok && /`\[TK\]`/.test(code.text), 'inside code a mark is only text, and allowed');
+  // an agent's passage (filled, edited, adopted, pasted) that holds the marks: refused with its own sentence
+  for (const mode of ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader']) {
+    const r = one('Intro\n/tk say hello', [gap(mode, 'Hello [/TK] there')]);
+    assert.deepEqual([r.ok, r.error], [false, N.AGENT_TK_SAY], mode);
+  }
+  { const r = one('See /tkimpyrt-claude(pasted [TK] words) here', [{ kind: 'impyrt', agent: 'claude', instruction: 'pasted [TK] words', mode: 'pasted-by-reader', text: 'pasted [TK] words' }]);
+    assert.deepEqual([r.ok, r.error], [false, N.AGENT_TK_SAY], 'pasted'); }
+  assert.ok(!/\[\/?TK\]/i.test(N.AGENT_TK_SAY + N.PASSAGE_TK_SAY), 'only the owner\'s own sentence names the letters');
 });
 
 test('inside a generated passage nothing can end the scope or pair with code: a TK mark, [=] and a backtick are character references; Liquid and HTML inert', () => {
-  const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('A /tk(go) b'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 'x [/TK] y [=] z ` w {{ site.title }} <b>' }] }] }]);
+  const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('A /tk(go) b'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 'x [=] y [[z]] ` w {{ site.title }} <b>' }] }] }]);
   const t = make(p, p.threads).text;
   const scope = /\[TK\] go \[=\](.*?)\[\/TK\]/.exec(t)[1];
-  assert.ok(!/\[\/?TK\]|\[=\]|`|\{\{|(^|[^\\])<b/.test(scope), scope);
+  assert.ok(!/\[\/?TK\]|\[=\]|\[\[|`|\{\{|(^|[^\\])<b/.test(scope), scope);
+  // (a TK mark in an agent's text never gets this far: the start is refused, AGENT_TK_SAY)
+  assert.ok(!N.escapeScopeLine('x [/TK] y').includes('[/TK]'), 'and the escaping alone would still keep it from ending the scope');
   assert.equal((t.match(/\[\/TK\]/g) || []).length, 1, 'one scope, one end');
 });
 
@@ -445,4 +472,14 @@ test('passage brackets are &#91; / &#93; (none left raw), brackets in an address
   assert.ok(r.ok, r.error);
   const body = r.text.split('\n---\n').slice(1).join('');
   assert.ok(!/\[\^/.test(body), 'no [^ anywhere in the body: ' + body);
+});
+
+// (review round 5: what the mutants left untested)
+test('showsLiquid reads the TEXT of an agent\'s box (only the never-shown instruction is left out); the instruction is made inert', () => {
+  const fm = '---\ntitle: x\n---\n';
+  assert.equal(N.showsLiquid(`${fm}Words.\n\n[TK] an instruction [=]The agent says {{ site.title }}.[/TK]\n`), true, 'Liquid shown inside a box is Liquid a reader sees');
+  assert.equal(N.showsLiquid(`${fm}Words.\n\n[TK] say {{ x }} please [=]Plain text.[/TK]\n`), false, 'the instruction is never shown');
+  assert.equal(N.showsLiquid(`${fm}Words.\n\n[TK]impyrt m=Pasted &#123;% x %&#125;[/TK]\n`), true, 'a character reference is still shown as the brace');
+  const scope = N.agentScope({ instruction: 'a <b> [=] c {{x}}', text: 't', mode: 'filled-by-agent' }, { block: true });
+  assert.equal(scope, '[TK] a &lt;b> &#91;=] c &#123;&#123;x&#125;&#125; [=]t[/TK]', 'the instruction: no HTML, no [=] that would end it early, no Liquid');
 });

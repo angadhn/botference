@@ -298,6 +298,21 @@ export const generatedEntry = g => ({ ...(g.model ? { model: String(g.model) } :
 const HOLD_A = '\ue000';
 const HOLD_B = '\ue001';
 
+// THE SITE'S OWN MARKS. `[TK]` and `[/TK]` are the example site's grammar for an agent's passage, and its build refuses a post whose
+// published text would show either one outside code (`_plugins/blygger.rb`: "the published text would contain [TK] or [/TK] outside
+// code"). A character reference does not help: the published text is read back from the rendered page. So a start whose text would
+// show them is REFUSED before anything is written, with a plain sentence for each kind of text:
+//   the owner's own words (a comment, a reply)   OWNER_TK_SAY: the one place the letters are named, because the owner typed them
+//   an agent's passage (filled, edited, adopted, pasted)   AGENT_TK_SAY (the drawer also marks that passage as needing an edit)
+//   the quoted passage (the page's words)        PASSAGE_TK_SAY
+// Inside the owner's code formatting (a code span or block) they are code, which the site allows. A /tk instruction is never
+// published (the site leaves it out of the page and the wire), so it is not refused.
+export const OWNER_TK_SAY = 'Your comment contains the letters [TK]; remove them or put them in code formatting';
+export const AGENT_TK_SAY = 'an agent\'s passage holds letters your site keeps for marking agents\' passages: edit that passage (or remove it), then publish';
+export const PASSAGE_TK_SAY = 'the passage you quoted holds letters your site keeps for marking agents\' passages, so it cannot be published from here: quote a different part of the page';
+const HAS_TK_MARK = /\[\/?tk\]/i;
+export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
+
 /**
  * One of the owner's messages as plain text for the post.
  * → { text, blocked: [sentence…], generated: [entry…] }. A gap an agent wrote (or the owner pasted from an agent's tool) is
@@ -320,10 +335,14 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
     at = f.end;
     if (g && g.mode === 'removed') return;
     if (g && AGENT_TEXT_MODES.includes(g.mode)) {
-      const block = f.form === 'line' || /(^\s*|\n[ \t]*\n)[ \t]*$/.test(src.slice(0, f.start)) && /^[ \t]*(\n[ \t]*\n|\s*$)/.test(src.slice(f.end));
-      const scope = agentScope(g, { block, escape });
-      out += `${HOLD_A}${scopes.length}${HOLD_B}`;
-      scopes.push(block ? `\n\n${scope}\n\n` : scope);
+      if (hasTkMark(g.text)) { blocked.push(AGENT_TK_SAY); return; }
+      // THE BOX IS ALWAYS A BLOCK OF ITS OWN: a gap typed inside a sentence publishes as the words before it (a paragraph), the box,
+      // and the words after it (a new paragraph). Never inline.
+      const scope = agentScope(g, { block: true, escape });
+      out = out.replace(/[ \t]+$/, '') + `${HOLD_A}${scopes.length}${HOLD_B}`;
+      scopes.push(`\n\n${scope}\n\n`);
+      // the owner's words after it begin a paragraph of their own (no leading space carried over)
+      { const rest = src.slice(at); at += rest.length - rest.replace(/^[ \t]+/, '').length; }
       generated.push(generatedEntry(g));
       return;
     }
@@ -331,8 +350,11 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
   });
   out += Grammar.unescape(src.slice(at));
   out = out.replace(/\n{3,}/g, '\n\n').trim();
-  // the owner's own words: a TK mark outside code is shown as the letters (a character reference), never read as the site's grammar
-  { const mask = Grammar.codeMask(out); out = out.replace(TK_MARK, (m, i) => (mask[i] ? m : '&#91;' + m.slice(1))); }
+  // the owner's own words: a TK mark outside code is refused (OWNER_TK_SAY); it is also written as the letters (a character reference),
+  // never read as the site's grammar, should a caller write the text anyway
+  { const mask = Grammar.codeMask(out);
+    if ([...out.matchAll(TK_MARK)].some(m => !mask[m.index])) blocked.push(OWNER_TK_SAY);
+    out = out.replace(TK_MARK, (m, i) => (mask[i] ? m : '&#91;' + m.slice(1))); }
   blocked.push(...linkProblems(out));
   out = neutraliseHtml(out);
   if (escape === 'liquid') {
@@ -558,6 +580,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const quote = clean(t.quote);
     if (quote.trim()) {
       if (quote.length > LIMITS.quoteChars) return { ok: false, error: `a quoted passage is longer than ${LIMITS.quoteChars} characters` };
+      if (hasTkMark(quote)) blocked.push(PASSAGE_TK_SAY);
       const st = t.blyg;
       if (item && st && st.id === item.id && byReference(st, { current: null })) {
         quoteBlockText = `![[${item.id}${label ? ` | ${label}` : ''}]]\n${quoteBlock(quote, opts)}`;
@@ -623,7 +646,10 @@ const decodeRefs = t => String(t).replace(/&#(\d+);/g, (m, n) => { const c = Num
   .replace(/&#x([0-9a-f]+);/gi, (m, n) => { const c = parseInt(n, 16); return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : ''; })
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&')
   .replace(/\\([\\`*_{}\[\]()#+\-.!|<>~$&=])/g, '$1');
-export const AGENT_LABELS = Object.freeze({ claude: 'Claude', codex: 'Codex' });
+// WHO WROTE A BOX, without names (no agent's, no model's, no owner's): one of AGENT_BOX_KINDS, each with its accessible name. The site
+// draws the same two marks (a robot; a robot and the site's own "A" mark), and the model and the time stay in the post's record.
+export const AGENT_BOX_KINDS = Object.freeze(['ai', 'ai-and-author']);
+export const AGENT_BOX_NAMES = Object.freeze({ ai: 'Written by an AI model', 'ai-and-author': 'Written by an AI model and edited by the author' });
 export function readingOf(noteText, generated = []) {
   const body = String(noteText || '').replace(/^---\n[\s\S]*?\n---\n/, '');
   const parts = [];
@@ -646,10 +672,10 @@ export function readingOf(noteText, generated = []) {
   for (const m of body.matchAll(scopeRe)) {
     const before = body.slice(at, m.index);
     const g = generated[k++] || {};
-    const label = (AGENT_LABELS[g.agent] || 'An agent') + (g.edited_by_author ? ' + you' : '');
-    // an inline passage joins the words around it: shown as its own box all the same (the site shows it boxed in place)
+    const by = g.edited_by_author ? 'ai-and-author' : 'ai';
+    // the box is a block of its own (the note writes every one so): the words before it, the box, the words after it
     words(before);
-    parts.push({ kind: 'agent', label, text: decodeRefs(m[1].trim()) });
+    parts.push({ kind: 'agent', by, name: AGENT_BOX_NAMES[by], text: decodeRefs(m[1].trim()) });
     at = m.index + m[0].length;
   }
   words(body.slice(at));

@@ -103,6 +103,32 @@ eq('mine', asked.pop().action, 'adopt');
   const strings = [...src.matchAll(/(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g)].map(m => m[2]).filter(t => /\[\/?TK\]/i.test(t));
   eq('the drawer never shows or tells the owner about bracket markers', strings, []); }
 
+// an agent's passage holding the site's own bracket marks: shown as needing an edit (the companion refuses to publish it as it is)
+drawer.setPage({ url: URL_, title: 'A', threads: [], page_chat: [{ author: 'reader', ts: '7', text: '/tk say it', provenance: 'owner-typed',
+  gaps: [{ id: 'm0', instruction: 'say it', mode: 'filled-by-agent', text: 'It says ' + '[' + '/TK] here.', agent: 'claude', at: 't' }] }] });
+await tick(20);
+eq('a fill with the site\'s marks: "needs an edit", and one line saying why', [blocks()[0].querySelector('.gapstate').textContent, /cannot be published as it is: edit it/.test(blocks()[0].querySelector('.gapneeds').textContent)], ['needs an edit', true]);
+drawer.setPage({ url: URL_, title: 'A', threads: [], page_chat: [{ author: 'reader', ts: '8', text: '/tk say it', provenance: 'owner-typed',
+  gaps: [{ id: 'm1', instruction: 'say it', mode: 'filled-by-agent', text: 'Plain words.', agent: 'claude', at: 't' }] }] });
+await tick(20);
+eq('…and an ordinary fill does not say so', [blocks()[0].querySelector('.gapstate'), blocks()[0].querySelector('.gapneeds')], [null, null]);
+
+// typing an inline /tk…(…) says ONCE, quietly, that it publishes as a block of its own
+{
+  drawer.setOwner(true);
+  await tick(10);
+  const box = S.querySelector('.composer textarea');
+  ok('(a composer to type in)', !!box);
+  const type = v => { box.value = v; box.dispatchEvent(new w.Event('input', { bubbles: true, composed: true })); };
+  type('A line /tk on its own is not inline');
+  eq('a line-form gap: no hint', [drawer.tkBlockHint, drawer.footNote.text], ['unseen', '']);
+  type('Mid-sentence /tk-codex(a word) here');
+  eq('an inline gap: the hint, once', [drawer.tkBlockHint, drawer.footNote.mode, /will stand as its own block when published/.test(drawer.footNote.text)], ['said', 'info', true]);
+  drawer.footNoteMove('clear');
+  type('Mid-sentence /tk(another) here');
+  eq('…never again', [drawer.tkBlockHint, drawer.footNote.text], ['said', '']);
+}
+
 // a guest's message with the same words: no blocks (it carries no gaps)
 drawer.setPage({ url: URL_, title: 'A', threads: [], page_chat: [{ author: 'ada', ts: '2', text: '/tk explain it' }] });
 await tick(20);

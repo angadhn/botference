@@ -2572,6 +2572,9 @@
       // finding a run when it opened); `ask` is a second confirmation pending (PUB_ASKS); `pic` the picture of the draft
       // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }).
       pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 } },
+      // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
+      // tkHintMove (said once per drawer, never again)
+      tkBlockHint: 'unseen',
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -3506,6 +3509,24 @@ ${bubbleShellHtml()}`;
       + '<rect x="3" y="5" width="10" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/>'
       + '<circle cx="6.3" cy="9" r="1" fill="currentColor"/><circle cx="9.7" cy="9" r="1" fill="currentColor"/>'
       + '<path d="M8 5V2.6M6.6 2.4h2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+    // the same marks the owner's site puts on a published agent's box: a robot (an AI model wrote it), and the robot with the site's
+    // own "A" (the author edited or adopted it). No names: the accessible name says who wrote it in words.
+    const BOX_NAMES = Object.freeze({ ai: 'Written by an AI model', 'ai-and-author': 'Written by an AI model and edited by the author' });
+    const boxMarksHtml = by => {
+      const k = by === 'ai-and-author' ? 'ai-and-author' : 'ai';
+      return `<span class="pubagentmarks" role="img" aria-label="${esc(BOX_NAMES[k])}" title="${esc(BOX_NAMES[k])}">${ROBOT_SVG}${k === 'ai-and-author' ? '<span class="pubagentA" aria-hidden="true">A</span>' : ''}</span>`;
+    };
+    // an agent's passage that holds the site's own bracket marks cannot be published until it is edited (blyg-note AGENT_TK_SAY)
+    const GAP_TK_MARK = /\[\/?tk\]/i;
+    const AGENT_GAP_TEXT_MODES = Object.freeze(['filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader']);
+    const TK_BLOCK_HINTS = Object.freeze(['unseen', 'said']);
+    const TK_BLOCK_HINT_MOVES = Object.freeze({ unseen: Object.freeze(['said']), said: Object.freeze([]) });
+    function tkHintMove(to) {
+      if (TK_BLOCK_HINTS.indexOf(to) === -1 || TK_BLOCK_HINT_MOVES[D.tkBlockHint].indexOf(to) === -1) return false;
+      D.tkBlockHint = to;
+      return true;
+    }
+    const TK_BLOCK_HINT_SAY = 'An inline /tk passage will stand as its own block when published: your words before it, the passage, then your words after it.';
     const GAP_ACTS = Object.freeze({
       pending: [],
       'filled-by-agent': ['refill', 'edit', 'adopt', 'remove'],
@@ -3524,7 +3545,8 @@ ${bubbleShellHtml()}`;
       if (g.mode === 'removed') return '';
       const key = gapKeyOf(target, r, g);
       const who = g.agent ? g.agent.charAt(0).toUpperCase() + g.agent.slice(1) : 'agent';
-      const state = g.mode === 'pending' ? 'writing…' : g.mode === 'failed' ? 'not written'
+      const needsEdit = AGENT_GAP_TEXT_MODES.indexOf(g.mode) !== -1 && GAP_TK_MARK.test(String(g.text || ''));
+      const state = needsEdit ? 'needs an edit' : g.mode === 'pending' ? 'writing…' : g.mode === 'failed' ? 'not written'
         : g.mode === 'edited-by-reader' ? 'edited by you' : g.mode === 'adopted-by-reader' ? 'made yours'
         : g.mode === 'pasted-by-reader' ? 'pasted by you' : '';
       const editing = D.gapEdit === key;
@@ -3541,6 +3563,7 @@ ${bubbleShellHtml()}`;
         + `<div class="gaphead"><span class="gaprobot">${ROBOT_SVG}</span><span class="gapword">agent</span>`
         + `<span class="gapwho">${esc(who)}</span>${state ? `<span class="gapstate">${esc(state)}</span>` : ''}</div>`
         + body
+        + (needsEdit ? '<div class="gapneeds">This passage holds letters your site keeps for marking agents\' passages, so it cannot be published as it is: edit it.</div>' : '')
         + (g.mode === 'pasted-by-reader' ? '' : `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`)
         + (acts ? `<div class="gapacts">${acts}</div>` : '')
         + '</div>';
@@ -8788,6 +8811,9 @@ ${bubbleShellHtml()}`;
           ta.closest('.composer').classList.toggle('has-draft', !!ta.value.trim());
           syncMention(ta);
           syncRoutes(ta);
+          // the owner typed an inline /tk…(…): once, a quiet line says it publishes as a block of its own
+          if (D.owner && D.tkBlockHint === 'unseen' && /\/tk/i.test(ta.value) && TKG.parseGaps(ta.value).some(g => g.form === 'inline')
+            && tkHintMove('said')) setFootNote('info', TK_BLOCK_HINT_SAY);
         }
         // …and the tag menu follows the box it belongs to, the same way
         if (ta && ta.dataset && ta.dataset.act === 'tag-input') { D.pages.pick = 0; paintTagMenu(ta); }
@@ -11002,7 +11028,7 @@ ${bubbleShellHtml()}`;
       const parts = (run && run.reading) || [];
       if (!parts.length) return '';
       return '<div class="pubread">' + parts.map(p => p.kind === 'agent'
-        ? `<div class="pubagent"><span class="pubagentlabel">${esc(p.label || 'An agent')}</span><div class="pubagenttext">${esc(p.text)}</div></div>`
+        ? `<div class="pubagent" data-by="${esc(p.by === 'ai-and-author' ? 'ai-and-author' : 'ai')}">${boxMarksHtml(p.by)}<div class="pubagenttext">${esc(p.text)}</div></div>`
         : p.kind === 'quote' ? `<blockquote class="pubquote">${esc(p.text)}</blockquote>` : `<p class="pubwords">${esc(p.text)}</p>`).join('') + '</div>';
     }
     function pubPicHtml(run) {

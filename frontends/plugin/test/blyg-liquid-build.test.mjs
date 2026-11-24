@@ -60,6 +60,27 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   // review item 5: a hostile passage written in the site's sidenote syntax stays text (no sidenote markup, nothing of it as HTML)
   cases['sidenote-passage'] = { url: 'https://news.example.test/sn', title: 'S', threads: [{ id: 't', quote: 'A claim[^1] here.\n[^1]: <b>FOOTNOTE-MARKER</b> injected', msgs: [mine('plain')] }] };
   cases['sidenote-agent'] = { url: 'https://news.example.test/sg', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('A\n/tk go\nB'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', text: 'x[^2] y\n[^2]: <i>AGENT-NOTE</i>' }] }] }] };
+  // THE SITE'S OWN MARKS: [TK] inside the owner's code formatting is code, which the site publishes; an inline gap is a box of its own
+  cases['tk-code'] = { url: 'https://news.example.test/tkc', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('Type `[TK]` and `[/TK]` to mark a gap.')] }] };
+  cases['box-inline'] = { url: 'https://news.example.test/bi', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('BEFORE-WORDS /tk(say it) AFTER-WORDS.'),
+    gaps: [{ instruction: 'say it', mode: 'filled-by-agent', agent: 'claude', model: 'claude-opus-5', text: 'BOXED-WORDS here.' }] }] }] };
+  cases['box-joint'] = { url: 'https://news.example.test/bj', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [{ ...mine('Mine.\n/tk-codex say it'),
+    gaps: [{ instruction: 'say it', mode: 'edited-by-reader', agent: 'codex', model: 'gpt-5.5-codex', text: 'JOINT-WORDS.' }] }] }] };
+  // …and nothing that would SHOW them outside code ever reaches a build: each kind of text is refused before a note is written
+  const tkRefused = {
+    'owner comment': { msgs: [mine('A comment with [TK] in it.')], quote: 'q', say: N.OWNER_TK_SAY },
+    'owner reply': { msgs: [mine('Fine.'), { ...mine('A reply with [/TK].'), ts: '2' }], quote: 'q', say: N.OWNER_TK_SAY },
+    'agent fill': { msgs: [{ ...mine('A\n/tk go'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 'x [TK] y' }] }], quote: 'q', say: N.AGENT_TK_SAY },
+    'edited fill': { msgs: [{ ...mine('A\n/tk go'), gaps: [{ instruction: 'go', mode: 'edited-by-reader', agent: 'claude', text: 'x [/TK] y' }] }], quote: 'q', say: N.AGENT_TK_SAY },
+    'adopted fill': { msgs: [{ ...mine('A\n/tk go'), gaps: [{ instruction: 'go', mode: 'adopted-by-reader', agent: 'claude', text: '[tk]' }] }], quote: 'q', say: N.AGENT_TK_SAY },
+    'pasted': { msgs: [{ ...mine('A /tkimpyrt-codex(p [TK] q) B'), gaps: [{ kind: 'impyrt', instruction: 'p [TK] q', mode: 'pasted-by-reader', agent: 'codex', text: 'p [TK] q' }] }], quote: 'q', say: N.AGENT_TK_SAY },
+    'passage': { msgs: [mine('Plain.')], quote: 'The page says [TK] here.', say: N.PASSAGE_TK_SAY },
+  };
+  for (const [kind, c] of Object.entries(tkRefused)) {
+    const page = { url: 'https://news.example.test/tk', title: 'S', threads: [{ id: 't', quote: c.quote, msgs: c.msgs }] };
+    const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 'tk' });
+    assert.deepEqual([r.ok, r.error], [false, c.say], `${kind}: refused before anything is written`);
+  }
   cases['liq-attr'] = { url: 'https://news.example.test/attr', title: 'S', threads: [{ id: 't', quote: 'q', msgs: [mine('"><script>alert(1)</script> \' onfocus=\'x say "hello" & <b>bold</b>')] }] };
   const permalinks = {};
   for (const [slug, page] of Object.entries(cases)) {
@@ -97,7 +118,7 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     const html = built(slug);
     assert.ok(!html.includes('PRIVATE-FILE-MARKER'), `${slug}: nothing of another file`);
     // (an agent box's label may name the author, who may share the site's title: the label is the site's own words, not the post's)
-    const body = ((/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1]).replace(/<span class="blyg-gen-box__label">[^<]*<\/span>/g, '');
+    const body = ((/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1]).replace(/<span class="blyg-gen-box__marks"[^>]*>[\s\S]*?<\/svg>(?:<span class="blyg-gen-box__author"[^>]*>A<\/span>)?<\/span>/g, '');
     assert.ok(!body.includes(siteTitle), `${slug}: Liquid did not run (the site title is not in the post body)`);
     // short posts are text: raw HTML is never live, whoever wrote it
     assert.ok(!/<script|href="javascript:|on\w+="/i.test(body), `${slug}: no live script or javascript: link`);
@@ -116,10 +137,22 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     assert.ok(!/<(script|iframe|style|details)\b|<img [^>]*onerror|<!--\s*c\s*-->|href="javascript:/i.test(b), `${k}: no live HTML in the post`);
     assert.match(decode(b), /a < b/, `${k}: a < b reads as typed`);
   }
-  // the owner's rule on the built page: agent text in a box labelled with the agent; "+ the author" when the owner adopted or edited it
-  const label = k => ((/<span class="blyg-gen-box__label">([^<]*)<\/span>/.exec(built(k)) || [])[1] || '');
-  assert.equal(label('html-agent'), 'AI model', 'no model recorded: a neutral label');
-  assert.match(label('html-adopted'), /^Claude \+ \S/, 'adopted: the agent and the author');
+  // the owner's rule on the built page: agent text in a box of its own, marked (never named): a robot; the robot and the site's "A"
+  // when the owner adopted or edited it; each with an accessible name and a tooltip
+  const marks = k => { const m = /<div class="blyg-gen-box blyg-gen-box--([a-z-]+)"><span class="blyg-gen-box__marks" role="img" aria-label="([^"]*)" title="([^"]*)">(<svg[\s\S]*?<\/svg>)(<span class="blyg-gen-box__author" aria-hidden="true">A<\/span>)?<\/span>/.exec(built(k)); return m ? [m[1], m[2], m[3], !!m[5]] : null; };
+  assert.deepEqual(marks('html-agent'), ['ai', 'Written by an AI model', 'Written by an AI model', false]);
+  assert.deepEqual(marks('html-adopted'), ['ai-and-author', 'Written by an AI model and edited by the author', 'Written by an AI model and edited by the author', true]);
+  assert.deepEqual(marks('box-joint'), ['ai-and-author', 'Written by an AI model and edited by the author', 'Written by an AI model and edited by the author', true]);
+  for (const k of ['html-agent', 'html-adopted', 'box-inline', 'box-joint']) {
+    const boxes = [...built(k).matchAll(/<div class="blyg-gen-box[\s\S]*?<\/div>/g)].map(m => m[0]).join('');
+    assert.ok(!/Claude|Codex|claude-opus|gpt-5|AI model \+/.test(boxes.replace(/(aria-label|title)="[^"]*"/g, '')), `${k}: no name on the box`);
+  }
+  // an inline gap: the owner's words before it (a paragraph), the box (a block), the words after it (a new paragraph)
+  { const b = (/<content>([\s\S]*?)<\/content>/.exec(built('box-inline')) || [, built('box-inline')])[1];
+    assert.match(b, /<p>BEFORE-WORDS<\/p>\s*<div class="blyg-gen-box blyg-gen-box--ai">[\s\S]*?<p>BOXED-WORDS here\.<\/p>\s*<\/div>\s*<p>AFTER-WORDS\.<\/p>/, b);
+    assert.ok(!/<span class="blyg-gen-box[ "]/.test(b), "never an inline box"); }
+  // [TK] in the owner's code formatting is published as code (the site's check passed: the build above succeeded)
+  assert.match(built('tk-code'), /<code[^>]*>\[TK\]<\/code> and <code[^>]*>\[\/TK\]<\/code>/);
   const attr = built('liq-attr');
   assert.ok(/<meta property="og:title" content="[^"]*&quot;|<meta property="og:title" content="[^"<>]*"/.test(attr), 'og:title is one closed attribute');
   const urlOnly = built('liq-url-only');

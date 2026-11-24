@@ -1327,7 +1327,8 @@ test('THE AGENT-TEXT RULE: a post with any agent-written or pasted passage is al
   assert.equal(b.mode(), 'planned', 'it waits for the owner');
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
   assert.deepEqual(b.pub.current().reading.map(p => p.kind), ['words', 'agent', 'quote'], 'the box is in the preview');
-  assert.equal(b.pub.current().reading[1].label, 'Claude');
+  assert.deepEqual(b.pub.current().reading[1], { kind: 'agent', by: 'ai', name: 'Written by an AI model', text: 'Said.' }, 'the box says who in words, never a name');
+  assert.deepEqual(b.pub.current().reading.map(p => p.kind), ['words', 'agent', 'quote'], 'the box stands on its own between the words and the quote');
   assert.deepEqual([R.reviewFor('never'), R.reviewFor('always'), R.reviewFor('never', { agentText: true })], [{ confirm: 'never', review: 'none' }, { confirm: 'always', review: 'setting' }, { confirm: 'always', review: 'agent-text' }]);
   assert.deepEqual([b.pub.current().pace, R.paceOf(['--only-note']), b.pub.current().full_minutes], ['quick', 'full', null], 'quick with the site\'s quick flag; no guess at minutes when none is recorded');
 });
