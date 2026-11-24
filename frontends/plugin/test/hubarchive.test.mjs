@@ -1252,3 +1252,26 @@ test('fresh posts are bounded by the per-blyg document cap too: 80 published at 
   assert.equal(s2.new, 30);
   r.done();
 });
+
+test('a host that answers 429 is asked at most BREAKER.threshold times in a run, by the breaker (no flag of its own); nothing is marked', async () => {
+  const r = rig({ settings: { following_unread_target: 500 } });
+  const site = r.web.add(A);
+  publish(site, A, 40);
+  follow(r, A);
+  const real = r.web.get;
+  r.web.get = async (u, o) => (/items\/(?!index)/.test(String(u)) ? (r.web.requests.push(String(u)), { status: 429, url: String(u), text: 'slow down' }) : real(u, o));
+  const s = await r.f.refresh();
+  assert.equal(r.web.itemRequests().length, F.BREAKER.threshold);
+  assert.ok(s.deferred > 0);
+  assert.deepEqual(r.ledger(A).bad, {});
+  assert.deepEqual(r.ledger(A).later, {}, '429 is the host\'s trouble, not a missing document');
+  assert.equal(r.f.breakerSnapshot('alpha.web.test').state, 'open');
+  r.done();
+});
+
+test('every mode in the engine is one named list: the ledger copy too (stored or taken), moved by one function', () => {
+  assert.deepEqual(F.LEDGER_COPIES, ['stored', 'taken']);
+  assert.deepEqual(F.RUN_STATES, ['idle', 'running', 'topping_up']);
+  assert.deepEqual(F.ARCHIVE_STATES, ['archived', 'archived_changed']);
+  assert.ok(F.ARCHIVE_STATES.every(s => F.READ_STATES.includes(s)));
+});

@@ -275,6 +275,12 @@ export const BODY_STATES = Object.freeze(['whole', 'truncated', 'none']);
 //   disagrees   the page's own links name something else: the list is not used, detection runs, the entry says so
 export const IDENTITY_VERDICTS = Object.freeze(['none', 'agrees', 'unconfirmed', 'disagrees']);
 
+// Whether the engine's copy of a ledger may differ from the stored one: `stored` (read, or written since) or `taken` (handed out to
+// be changed: written with the next save, or found unchanged then). ONE field per cached ledger.
+export const LEDGER_COPIES = Object.freeze(['stored', 'taken']);
+const ledgerCopyMachine = machine('ledger copy', LEDGER_COPIES, { take: { stored: 'taken', taken: 'taken' }, write: { taken: 'stored' } });
+const moveLedgerCopy = (e, ev) => { e.copy = ledgerCopyMachine.to(e.copy, ev); return e.copy; };
+
 // ---- limits ----------------------------------------------------------------
 export const LIMITS = Object.freeze({
   manifestBytes: 256 * 1024,
@@ -919,7 +925,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   let state = null; // { blygs, items (by identOf), last_run, inbox } — the ledgers are documents of their own (ledgerOf)
   let stateVersion = null; // the stored version this engine read or last wrote (StoreConflict when it moved)
   let base = new Map(); // the stored document's units as last read or written: what a merge compares against
-  let unreadableState = null; // the stored state could not be read: it is never written over (the store refuses)
   const emptyInbox = () => ({ state: 'off', fetched_at: 0, generated_at: '', count: 0, error: '', never_verified: [], never_verified_count: 0, blocked_count: 0, mentions: [] });
   // A post whose blyg is not followed has no business being held: dropped whenever the state is loaded or saved
   const prune = st => {
@@ -974,7 +979,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // `stopped` (the mode before this list) and anything made up load as unknown
     return { ids, floor, bad, later, seen_until: seenUntil, returns, queue, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
-  const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
+  const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), copy (LEDGER_COPIES: whether it awaits writing) }
   const ledgerEntry = origin => {
     let e = ledgers.get(origin);
     if (!e) {
@@ -982,7 +987,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (got && got.unreadable) warnUnreadable(`the Hub's ledger of ${origin}`, got.unreadable);
       const raw = got && !got.unreadable && got.value && got.value.origin === origin ? got.value : null;
       const led = cleanLedger(raw);
-      e = { led, version: got ? got.version : null, base: JSON.stringify(led), dirty: false };
+      e = { led, version: got ? got.version : null, base: JSON.stringify(led), copy: 'stored' };
       ledgers.set(origin, e);
     }
     return e;
@@ -990,13 +995,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   /** A blyg's ledger, to read. */
   const ledgerOf = origin => { load(); return ledgerEntry(origin).led; };
   /** A blyg's ledger, to change: it is written with the next save (and only the ledgers changed are). */
-  const ledgerFor = origin => { load(); const e = ledgerEntry(origin); e.dirty = true; return e.led; };
+  const ledgerFor = origin => { load(); const e = ledgerEntry(origin); moveLedgerCopy(e, 'take'); return e.led; };
   function writeLedger(origin, e) {
     const name = ledgerName(origin);
     for (let i = 0; ; i++) {
       try {
         e.version = store.put('ledger', name, { origin, ...e.led }, { ifVersion: e.version }).version;
-        e.base = JSON.stringify(e.led); e.dirty = false;
+        e.base = JSON.stringify(e.led); moveLedgerCopy(e, 'write');
         return;
       } catch (err) {
         if (!(err instanceof StoreConflict) || i >= 4) throw err;
@@ -1008,9 +1013,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   function saveLedgers() {
     for (const [origin, e] of ledgers) {
-      if (!e.dirty || !(state.blygs[origin] || state.kept[origin])) continue;
-      if (JSON.stringify(e.led) === e.base) { e.dirty = false; continue; } // taken to change, but nothing changed: not written
-      try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { e.dirty = false; continue; } throw err; }
+      if (e.copy !== 'taken' || !(state.blygs[origin] || state.kept[origin])) continue;
+      if (JSON.stringify(e.led) === e.base) { moveLedgerCopy(e, 'write'); continue; } // taken to change, but nothing changed: not written
+      try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { moveLedgerCopy(e, 'write'); continue; } throw err; }
     }
   }
   const forgetLedger = origin => { ledgers.delete(origin); store.delete('ledger', ledgerName(origin)); };
@@ -1026,7 +1031,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const load = () => {
     if (state) return state;
     const got = store.get('state', 'following');
-    if (got && got.unreadable) { unreadableState = got.unreadable; warnUnreadable(file || 'the Hub state', got.unreadable); }
+    if (got && got.unreadable) warnUnreadable(file || 'the Hub state', got.unreadable); // never written over: the store refuses
     stateVersion = got ? got.version : null;
     const v = got && got.value && typeof got.value === 'object' && !Array.isArray(got.value) ? got.value : {};
     base = unitsOf(v);
@@ -1047,6 +1052,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (!IDENTITY_STATES.includes(i.identity)) i.identity = 'unverified';
       if (!LAST_CHANGES.includes(i.last_change)) i.last_change = 'new-words';
       if (!i.key) i.key = randomKey();
+      // the newer wording is data of archived_changed alone: a hand-edited record that has one without the other is made whole
+      if (i.read !== 'archived_changed') delete i.newer;
+      else if (!i.newer || !Number.isInteger(i.newer.version) || typeof i.newer.hash !== 'string') { delete i.newer; moveRead(i, 'revert'); }
     }
     // A document written before the ledgers were split out kept them inside it: each becomes a ledger document of its own
     // (written with the next save), unless one is already stored.
@@ -1054,7 +1062,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const [o, raw] of Object.entries(old)) {
       if (!state.blygs[o] || store.get('ledger', ledgerName(o))) continue;
       const led = cleanLedger(raw);
-      ledgers.set(o, { led, version: null, base: 'null', dirty: true }); // (nothing stored yet: written with the next save)
+      ledgers.set(o, { led, version: null, base: 'null', copy: 'taken' }); // (nothing stored yet: written with the next save)
     }
     if (!INBOX_STATES.includes(state.inbox.state)) state.inbox.state = 'off';
     for (const m of state.inbox.mentions) { if (!MENTION_READ.includes(m.read)) m.read = 'seen'; if (!m.key) m.key = randomKey(); }
@@ -1079,7 +1087,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const units = unitsOf(st);
       try {
         stateVersion = store.put('state', 'following', textOfUnits(units, st), { ifVersion: stateVersion }).version;
-        base = units; unreadableState = null;
+        base = units;
         break;
       } catch (err) {
         if (!(err instanceof StoreConflict) || i >= 4) throw err;
@@ -1348,8 +1356,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const r = await fetchJson(g, url, LIMITS.itemBytes);
     if (!alive()) { tally.aborted++; return { out: 'aborted' }; }
     // TROUBLE is never marked against the document: out of budget, the breaker open or fetching off ('trouble': asked again next
-    // run), or the host could not answer (a timeout, a refused connection, a 5xx, a 429: 'host_trouble', counted by the breaker,
-    // and this blyg's documents are not asked for again in this run)
+    // run), or the host could not answer (a timeout, a refused connection, a 5xx, a 429: 'host_trouble', counted by the host's
+    // breaker, which opens after BREAKER.threshold of them: nothing more is asked of that host until it cools)
     if (r.status === 'trouble') {
       if (NOT_THE_BLYGS_FAULT.includes(r.kind)) { tally.deferred++; return { out: 'trouble', message: r.message }; }
       tally.errors++; return { out: 'host_trouble', message: r.message };
@@ -1391,7 +1399,6 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     if (out === 'stored' || out === 'kept') { delete p.led.later[e.id]; delete p.led.bad[e.id]; return; }
     if (out === 'unusable') return markBad(p, e);
     if (out === 'missing') later(p.led, e.id);
-    if (out === 'host_trouble') p.halted = true;
     p.left++;
   }
   /**
@@ -1565,7 +1572,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // fetched only while the Feed is short. Before anything was fetched (seen-until 0) everything is backfill.
     led.seen_until = Math.max(led.seen_until || 0, ...itemsOf(b.origin).map(i => stamp(i.created, i.fetched_at)).filter(t => t > 0), 0);
     const isFresh = e => { const c = Date.parse(e.created); return led.seen_until > 0 && Number.isFinite(c) && c > led.seen_until && c <= readAt + LIMITS.skewMs; };
-    const plan = { b, led, backfill: [], left: 0, docs: 0, halted: false };
+    const plan = { b, led, backfill: [], left: 0, docs: 0 };
     const archivedTodo = [], freshTodo = [];
     // BURSTS (§13.7, finding 4a). The threads of this index that are not held (nor read): a fragment created within burstMs of
     // one's created or updated waits for it (`awaits`, Background until the thread is held, at most burstWaitMs), and every
@@ -1602,17 +1609,16 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         continue;
       }
       if (ARCHIVE_STATES.includes(held.read)) { archivedTodo.push([e, held]); continue; }
-      if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
       plan.docs++;
       const out = await ingest(b, e, held, cfg, g, tally, alive);
       if (out === 'aborted') return;
-      if (out === 'host_trouble') plan.halted = true;
     }
     // FRESH posts: published since, fetched now within the caps (target or not), each burst's thread before its fragments, and
     // OLDEST first: what a cap or the budget leaves for the next run is then newer than everything fetched, so it is still fresh
     for (const e of burstOrder(freshTodo.reverse())) {
       if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
-      if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
+      if (plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
       plan.docs++;
       const out = await ingest(b, e, undefined, cfg, g, tally, alive);
       if (out === 'aborted') return;
@@ -1623,11 +1629,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     // blyg per refresh, and none while no edit of this blyg could return now (its quota or cap): they wait, and are not asked for.
     let archivedDocs = 0;
     for (const [e, held] of archivedTodo) {
-      if (archivedDocs >= LIMITS.archivedDocsPerRun || editBlock(b.origin, {}, cfg, g) || plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
+      if (archivedDocs >= LIMITS.archivedDocsPerRun || editBlock(b.origin, {}, cfg, g) || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; continue; }
       archivedDocs++; plan.docs++;
       const out = await ingest(b, e, held, cfg, g, tally, alive);
       if (out === 'aborted') return;
-      if (out === 'host_trouble') plan.halted = true;
     }
     return plan;
   }
@@ -1647,7 +1652,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       moved = false;
       for (const p of turn) {
         if (unread >= cfg.following_unread_target || g.budget.spent()) break rounds;
-        if (p.led.backfill === 'paused_bad_documents' || p.halted || !p.backfill.length || p.docs >= LIMITS.docsPerBlygRun) continue;
+        if (p.led.backfill === 'paused_bad_documents' || !p.backfill.length || p.docs >= LIMITS.docsPerBlygRun) continue;
         if (totalItems() >= cfg.following_max_items_total) break rounds;
         if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg) continue;
         const e = p.backfill.shift();
@@ -1790,13 +1795,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const st = load();
       const turn = Object.values(st.blygs).filter(b => b.state === 'active' && ['unknown', 'more'].includes(ledgerOf(b.origin).backfill) && ledgerOf(b.origin).queue.length)
         .sort((a, c) => (a.last_backfill || 0) - (c.last_backfill || 0))
-        .map(b => ({ b, led: ledgerFor(b.origin), left: 0, halted: false }));
+        .map(b => ({ b, led: ledgerFor(b.origin), left: 0 }));
       let moved = true;
       while (moved && unreadCount() < cfg.following_unread_target && !budget.spent()) {
         moved = false;
         for (const p of turn) {
           if (unreadCount() >= cfg.following_unread_target || budget.spent()) break;
-          if (p.halted || load().blygs[p.b.origin] !== p.b || !p.led.queue.length) continue;
+          if (load().blygs[p.b.origin] !== p.b || !p.led.queue.length) continue;
           if (unreadOf(p.b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) continue;
           const e = p.led.queue.shift();
           moved = true;
@@ -1806,8 +1811,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
             || (p.led.bad[e.id] && p.led.bad[e.id][0] === e.version) || (p.led.later[e.id] && p.led.later[e.id][0] > now())) continue;
           p.b.last_backfill = now();
           const out = await ingest(p.b, e, undefined, cfg, g, tally, () => load().blygs[p.b.origin] === p.b);
-          if (out === 'aborted') { p.halted = true; continue; }
-          outcome(p, e, out);
+          if (out !== 'aborted') outcome(p, e, out);
         }
       }
       save();
