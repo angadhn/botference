@@ -380,6 +380,6 @@ export async function runCheck({ argv, cwd, env, exec = runCommand }) {
   const text = String(r.output || '').split('\n').filter(l => l !== '[stderr]').join('\n').trim();
   if (r.timedOut) return { ok: false, message: `The check did not answer within ${TIME_LIMITS_MS.check / 1000} seconds.` };
   if (r.spawnError) return { ok: false, message: `The check could not be started (${r.spawnError}).` };
-  if (r.exit !== 0) return { ok: false, message: text.split('\n').slice(-8).join('\n') || `The check failed (exit ${r.exit}).` };
+  if (r.exit !== 0) return { ok: false, message: text.split('\n').slice(-60).join('\n') || `The check failed (exit ${r.exit}).` };
   return { ok: true, message: text };
 }

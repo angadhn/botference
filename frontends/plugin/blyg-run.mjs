@@ -153,49 +153,107 @@ export function previewMove(p, to) {
 export const PREVIEW_TRIES = Object.freeze({ times: 4, apartMs: 3000 });
 export const DEFAULT_PREVIEW_SELECTOR = 'article';
 
-// ---- the site's own plain words ------------------------------------------------------------------------------------
+// ---- the site's own refusals, in PREPARED words --------------------------------------------------------------------------
 // A failed step is told to the owner in ONE sentence (the drawer's wording table): "Something went wrong while <step>." unless the
-// site's command printed a line this list recognises as a plain refusal, which is then shown instead, cleaned (no script name, no
-// file path, no command-line flag). Everything it printed is in the run's log for an agent.
-export const PLAIN_LINES = Object.freeze([
-  /is already staged/i,
-  /main is behind|not the same commit as origin\/main|lacks \d+ commit|commits? on main that are not on GitHub/i,
-  /--only-note: this plan is for more than/i,
-  /uncommitted change/i,
-  /another run is under way|a lock file is present|the lock/i,
-  /is recorded at \w+: finish it|stopped at \w+; finish it first|was pushed to GitHub \(it is published\) but/i,
-  /your checkout is on \S+, not wip|switch to wip/i,
-  /release date .* is in the future|no release date/i,
-  /not imported|importing the note's sources failed|^Failed:/i,
-  /already belongs to the published|its address .* belongs to the published|is not the id it was published under/i,
-  /Ruby .* is the one on PATH|bundler is not installed|BLYG_CHECKER|netlify command is not on PATH|node command is not on PATH/i,
-  /locale/i,
-  /nothing was published \(State:/i,
-  /Refused:/,
-  // (the example site's other plain lines, as its own agent listed them)
-  /already on main; use --edit|not on main; publish it as a new post|nothing would change on main|an Obsidian embed|which is not in the repository|has not been generated yet/i,
-  /main moved from [0-9a-f]+ to [0-9a-f]+ after apply|files changed after apply checked them|the live site does not match the plan|merging main into wip conflicts/i,
-  /this --push gives the (generated )?changelog note|has uncommitted changes; commit it yourself|other uncommitted changes|was changed after it was staged|wip has moved on from the staging commit/i,
-  /^Nothing to abandon for|the recorded run \(\S+\) is for/i,
-]);
-/** One line of a site's command made fit for the owner's screen: no script name, no path, no flag. */
-export function plainSentence(line) {
-  let t = String(line || '').replace(/^\s*(?:-\s+|Refused:\s*)?/, '').replace(/^blyg-publish(?: preflight)?:\s*/i, '').trim();
-  t = t.replace(/use --edit to publish an edit/, 'publish it as a new version instead').replace(/publish it as a new post \(without --edit\)/, 'publish it as a new post');
-  t = t.replace(/\(?(?:ruby\s+)?scripts\/\S+(?:\s+(?:"[^"]*"|--?[\w-]+|_notes\/\S+))*\)?/g, '')
-    .replace(/\b_notes\/[^\s,;:)]+\.md\b/g, 'the note')
-    .replace(/(?<![\w:])\/(?:[^\s/"'<>()]+\/)+[^\s/"'<>(),;]*/g, 'a file on your site')
-    .replace(/\s*\((?:--[\w-]+[^)]*)\)/g, '').replace(/\s+--[\w-]+(?:\s+"[^"]*")?/g, '')
-    .replace(/\s{2,}/g, ' ').replace(/\s+([,;.:])/g, '$1').trim();
-  if (!t) return '';
-  t = t[0].toUpperCase() + t.slice(1);
-  return /[.!?]$/.test(t) ? t.slice(0, 300) : (t.slice(0, 299) + '.');
+// site's command printed one of ITS OWN refusals, which is then told in the fixed sentence of SITE_REFUSALS (never the printed line,
+// cleaned: the owner reads wording prepared here). A line counts only when
+//   · it STARTS with one of the publisher's own prefixes: `blyg-publish: ` (its refusals), `Nothing to abandon for ` (its abandon),
+//     or `- ` directly under its own list headings (`Refused:` in a plan, `blyg-publish preflight: this environment cannot publish
+//     yet:` in the pre-flight), with any `_notes/<name>.md: ` that names the note taken off;
+//   · it holds no quoted segment (a `"`, `“` or `”`: a quotation is where page-derived text would be) and is not a line of the
+//     note itself (the build may echo the note's text, which a page shaped);
+//   · and the rest matches one entry, from its first character.
+// The last such line wins (the command's final word). Everything printed is in the run's log for an agent.
+// The refusals listed are the example site's (scripts/blyg-publish and scripts/blyg_publish.rb, read at the blog's publish-next-blog).
+export const SITE_REFUSALS = Object.freeze([
+  ['staged-other', /^\S+ is already staged by this checkout\b/, 'Another note is already staged in your site’s checkout. Finish or undo that publish first.'],
+  ['not-wip', /^your checkout is on \S+(?:, not wip|; (?:staging a note commits on wip|switch to wip first|publishing reads the notes from wip))/, 'Your site’s checkout is not on its wip branch. Switch it to wip, then try again.'],
+  ['note-uncommitted', /^\S+ is already on wip and has uncommitted changes/, 'The note has changes in your site’s checkout that are not committed. Commit them there, then try again.'],
+  ['checkout-dirty', /^(?:your checkout has other uncommitted changes|the working tree has (?:\d+ )?uncommitted change)/, 'Your site’s checkout has changes that are not committed. Commit or stash them, then try again.'],
+  ['import-failed', /^importing the note's sources failed/, 'Your site could not fetch the post you quoted. Try again later.'],
+  ['not-imported', /^quotes or answers \S+, which is not imported/, 'The post you quoted has not been fetched into your site yet. Start over to fetch it.'],
+  ['not-staged', /^\S+ was not staged by --stage-note/, 'Your site has no record of staging this note. Start over.'],
+  ['record-damaged', /^the (?:draft )?record is damaged/, 'Your site’s record of this publish is damaged, so nothing was changed. It needs fixing on your site.'],
+  ['wip-moved', /^wip has moved on from the staging commit/, 'Your site’s wip branch moved on after the note was staged. Start over.'],
+  ['staging-commit', /^the staging commit\b/, 'The commit that staged this note is not as this publish left it, so nothing was changed. Start over.'],
+  ['changed-after-staged', /^\S+ was changed after it was staged/, 'The note was changed after it was staged. Start over.'],
+  ['run-for-note', /^a run for this note is at \w+; abandon it first/, 'Your site has an unfinished publish of this note. Start over to give it up.'],
+  ['lock', /^(?:another run is under way|the lock was taken by a run|the lock's process|a lock file is present|\S+ exists but does not say which run)/, 'Another publish is under way on your site. Wait for it to finish, then try again.'],
+  ['nothing-to-abandon', /^(?:there is no unfinished run to abandon|Nothing to abandon for \S+: no unfinished run is recorded)/, 'Your site has no unfinished publish to give up.'],
+  ['other-note-run', /^the recorded run \(\w+\) is for /, 'Your site’s unfinished publish is for another note, so it was not touched.'],
+  ['unfinished-run', /^(?:a [\w ]+ stopped at \w+; finish it first|the last run stopped at \w+|a run for \S+(?:, \S+)* is recorded at \w+: finish it)/, 'Your site has an unfinished publish. Carry it on or give it up there first.'],
+  ['pushed-unrecorded', /^(?:a [\w ]+ was pushed to GitHub \(it is published\)|this run's push of [0-9a-f]+ reached GitHub)/, 'An earlier publish reached your site but was not recorded. It needs finishing on your site.'],
+  ['plan-refused', /^refused \(see above\)/, 'Your site’s check refused this publish, so nothing was changed.'],
+  ['only-note', /^--only-note: this plan is for more than the note/, 'Publishing this would change more on your site than this note, so it was not done in one click. Publish it from your site.'],
+  ['quick-needs-only-note', /^--quick needs --only-note/, 'Your one-click setting is not one your site accepts: its quick check needs the note-only check.'],
+  ['main-behind', /^(?:GitHub main is at the pushed commit|main is behind origin\/main|local main is not the same commit as origin\/main|there is no origin\/main|could not fetch origin)/, 'Your site’s main branch is not in step with GitHub. Bring it up to date, then try again.'],
+  ['changed-after-apply', /^(?:files changed after apply checked them|the temporary worktree is no longer at the commit apply checked|main moved from [0-9a-f]+ to [0-9a-f]+ after apply)/, 'Your site changed after it was built and checked. Try again to build it again.'],
+  ['live-mismatch', /^the live site does not match the plan/, 'Your site went live but does not look as planned. Look at your site.'],
+  ['worktree-lost', /^could not make the temporary worktree again/, 'Your site cannot carry this publish on. Start over to give it up.'],
+  ['merge-conflict', /^merging main into wip conflicts/, 'Your site’s main and wip branches conflict. Resolve that on your site, then try again.'],
+  ['not-a-note', /^(?:\S+ is not a file in this checkout|\S+ resolves outside _notes\/|not a note on wip)/, 'The note is not where your site expects it.'],
+  ['release-date', /^(?:no release date|release date \S+ is (?:in the future|not a date))/, 'The note’s release date is missing or in the future.'],
+  ['already-published', /^already on main; use --edit/, 'This post is already published. Publish a new version of it instead.'],
+  ['not-published', /^not on main; publish it as a new post/, 'This post is not published yet. Publish it as a new post.'],
+  ['nothing-changes', /^nothing would change on main/, 'Nothing would change on your site.'],
+  ['address-taken', /^its address \S+ belongs to the published /, 'The post’s address already belongs to another published post.'],
+  ['id-clash', /^blyg_id \S+ (?:already belongs to the published|is not the id it was published under|is also written in)/, 'The post’s id clashes with another post on your site.'],
+  ['embed', /^an Obsidian embed /, 'The note holds an Obsidian embed, which your site does not publish.'],
+  ['missing-file', /^refers to \S+, which is not in the repository/, 'The note refers to a file your site does not have.'],
+  ['sitemap', /^could not read \S+\/sitemap\.xml/, 'Your site could not read its own live pages to check them. Try again later.'],
+  ['git-failed', /^git [\w-]+/, 'A git command failed on your site.'],
+  ['not-pushed', /^nothing was published \(State: \w+\)/, 'Nothing was published yet. Try again to carry on.'],
+  ['ruby', /^Ruby \S+ is the one on PATH, but this site needs /, 'The companion starts a Ruby your site does not use. Put the site’s Ruby first on the companion’s PATH.'],
+  ['bundler', /^bundler is not installed/, 'Bundler is not installed for your site’s Ruby.'],
+  ['checker', /^BLYG_CHECKER (?:is not set|names \S+, which is not a folder|\(\S+\) does not load)/, 'The conformance checker (BLYG_CHECKER) is not available to the companion.'],
+  ['node', /^the node command is not on PATH/, 'The node command is not on the companion’s PATH.'],
+  ['netlify', /^(?:there is no \.netlify\/state\.json|the netlify command is not on PATH)/, 'Your site’s Netlify setup (the netlify command or its site id) is missing.'],
+  ['locale', /^the locale is \w+=\S+, which is not UTF-8/, 'The companion runs with a locale that is not UTF-8.'],
+  ['shell-vars', /^[A-Z_][A-Z0-9_]*(?:, [A-Z_][A-Z0-9_]*)* is set in your shell; blyg-publish sets these itself/, 'The companion passes your site a setting that the site sets itself.'],
+].map(([key, re, say]) => Object.freeze({ key, re, say })));
+const SITE_PREFIX = 'blyg-publish: ';
+const LIST_HEADINGS = Object.freeze(['Refused:', 'blyg-publish preflight: this environment cannot publish yet:']);
+const NOTE_NAMED = /^_notes\/[\w.-]+\.md: /;
+const QUOTED = /["“”]/;
+/** The SITE_REFUSALS entry for one line of a step's output, or null. `ctx.listed`: the line sits under one of the publisher's own list
+ *  headings; `ctx.note`: the note's text (a line of it is never the site's word). */
+export function refusalOf(raw, { listed = false, note = '' } = {}) {
+  const line = String(raw || '').replace(/\s+$/, '');
+  let body = '';
+  if (line.startsWith(SITE_PREFIX)) body = line.slice(SITE_PREFIX.length);
+  else if (line.startsWith('Nothing to abandon for ')) body = line;
+  else if (listed && /^\s+- /.test(line)) body = line.replace(/^\s+- /, '');
+  else return null;
+  if (!body || QUOTED.test(body)) return null;
+  const t = body.trim();
+  if (note && t.length >= 8 && String(note).includes(t)) return null;
+  const rest = t.replace(NOTE_NAMED, '');
+  return SITE_REFUSALS.find(r => r.re.test(rest)) || null;
 }
-/** The recognised plain line in a step's output, cleaned, or ''. The LAST recognised line wins (the command's final word). */
-export function plainLineOf(output) {
-  const lines = String(output || '').split('\n').map(l => l.trim()).filter(l => l && l !== '[stderr]' && !/^\s*(from|at) \S+:\d+/.test(l) && !/\.rb:\d+:in /.test(l));
-  for (let i = lines.length - 1; i >= 0; i--) if (PLAIN_LINES.some(re => re.test(lines[i]))) return plainSentence(lines[i]);
-  return '';
+/** The fixed sentence for the site's last recognised refusal in a step's output, or '' (the drawer then says "Something went wrong
+ *  while <step>."). */
+export function plainLineOf(output, { note = '' } = {}) {
+  let listed = false;
+  let said = '';
+  for (const line of String(output || '').split('\n')) {
+    const r = refusalOf(line, { listed, note });
+    if (r) said = r.say;
+    if (LIST_HEADINGS.includes(line.trim())) listed = true;
+    else if (!/^\s+- /.test(line)) listed = false;
+  }
+  return said;
+}
+/** The pre-flight's problems, each in its fixed sentence (unrecognised ones left out), in the order printed. */
+export function checkSentences(message, { note = '' } = {}) {
+  let listed = false;
+  const out = [];
+  for (const line of String(message || '').split('\n')) {
+    const r = refusalOf(line, { listed, note });
+    if (r && !out.includes(r.say)) out.push(r.say);
+    if (LIST_HEADINGS.includes(line.trim())) listed = true;
+    else if (!/^\s+- /.test(line)) listed = false;
+  }
+  return out;
 }
 /** While `publish` runs: the part of it the owner is waiting on, from the lines it has printed (a fact shown, not a mode). */
 export const PUBLISH_PHASES = Object.freeze(['publish', 'wait']);
@@ -489,7 +547,7 @@ export function createPublisher(deps) {
     const reason = unfinished ? `publish exited 0 but did not finish (it ended at “${unfinished}”, not “${home.settings.published_marker}”): nothing was published` : r.timedOut ? `${name} did not finish within ${Math.round(TIME_LIMITS_MS[command] / 1000)} seconds and was stopped`
       : r.spawnError ? `${name} could not be started (${r.spawnError})` : r.signal ? `${name} was stopped by ${r.signal}` : `${name} exited with code ${r.exit}`;
     if (ok && name === 'apply' && paceOf(home.settings.plan_guard) === 'full') recordFull(home.settings.top, r.ms);
-    return { ok, record, reason, plain: ok ? '' : (r.timedOut ? '' : plainLineOf(r.output)) };
+    return { ok, record, reason, plain: ok ? '' : (r.timedOut ? '' : plainLineOf(r.output, { note: run.note_text || '' })) };
   }
   const pushStep = rec => { if (rec) book.run.steps = [...(book.run.steps || []), rec]; };
   const failWith = (mode, s) => book.move(mode, { failed_reason: s.reason, failure_line: s.plain || '', steps: book.run.steps });
@@ -581,10 +639,11 @@ export function createPublisher(deps) {
       log.write(id, { ev: 'check', argv: S.commands.check, ok: !!(c && c.ok), message: (c && c.message) || '' });
       if (!c || !c.ok) {
         // the check's own plain sentences (the example site lists its problems as "  - …" lines under a heading)
-        const lines = String((c && c.message) || '').split('\n').map(l => l.trim()).filter(Boolean);
-        const listed = lines.filter(l => /^-\s/.test(l));
-        const said = (listed.length ? listed : lines.slice(-8)).map(plainSentence).filter(Boolean);
-        return fail(409, `Your site cannot publish right now: ${said.length ? said.join(' ') : 'its check did not answer.'}`);
+        const msg = String((c && c.message) || '');
+        const said = checkSentences(msg);
+        // (the companion's own words about the check itself: it timed out, could not start, or failed without a word)
+        const own = /^The check (?:did not answer|could not be started|failed \(exit)/.test(msg) ? msg : '';
+        return fail(409, `Your site cannot publish right now. ${said.length ? said.join(' ') : own || 'Its check did not pass; the troubleshooting details say why.'}`);
       }
       // the settings may not change while the check ran (they are read again, and must be the ones checked)
       const again = settingsNow();
