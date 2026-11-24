@@ -175,3 +175,9 @@ test('env_pass: BLYG_CHECKER and an owner\'s own name pass; loaders, proxies, CA
     assert.match(v.errors.join(' '), /refused: "RUBYOPT"/);
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
+
+// (review round 5) {changelog} is ONE argument of its own: as part of a longer argument it is the letters, never the line
+test('{changelog} is expanded only as a whole argument', () => {
+  const out = H.expandArgv(['scripts/x', '--generated-note', '{changelog}', '--note={changelog}', 'x{changelog}y', '{note}'], { rel: '_notes/a.md', abs: '/t/_notes/a.md', changelog: 'Edited the comment; rm -rf /' });
+  assert.deepEqual(out, ['scripts/x', '--generated-note', 'Edited the comment; rm -rf /', '--note={changelog}', 'x{changelog}y', '_notes/a.md']);
+});

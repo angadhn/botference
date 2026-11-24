@@ -420,6 +420,27 @@ await test('hosted: a guest\'s SSE and WebSocket never hear of a run; the owner\
   for (const k of Object.keys(L)) L[k].close();
 });
 
+// ---- hosted: the picture's local address is the machine's own ----------------------------------------------------------------
+await test('hosted: a remote owner never receives the local preview_url (the owner on the machine does)', async () => {
+  const prig = newRig();
+  const proot = tmp('hosted-preview');
+  setHome(proot, { ...settingsOf(prig), preview_url: 'http://127.0.0.1:4000{permalink}' });
+  const srv = await startServer({ root: proot, args: ['--hosted', '--no-agents'], env: { PLUGIN_PASSWORD: 'guest-pw', PLUGIN_OWNER_PASSWORD: 'owner-pw', PLUGIN_EXTENSION_IDS: EXT } });
+  try {
+    await request(srv.base, 'POST', '/page', { url: PAGE, title: 'A story' }, { ...OWNER, ...X });
+    const th = await request(srv.base, 'POST', '/thread', { url: PAGE, quote: 'Q one passage.', msg: { text: 'A view to picture.' } }, { ...OWNER, ...X });
+    const st = await request(srv.base, 'POST', '/blyg-publish/start', { url: PAGE, thread_id: th.json.thread.id, scope: 'one', confirm: 'always' }, { ...OWNER, ...X });
+    assert.equal(st.status, 200, st.body);
+    await waitFor(async () => (await runOf(srv.base)).mode === 'planned', 'planned');
+    const here = await runOf(srv.base);
+    assert.match(here.preview_url, /^http:\/\/127\.0\.0\.1:4000\/b\//, 'on the machine: the preview address');
+    const remote = (await request(srv.base, 'GET', '/blyg-publish/run', undefined, { ...OWNER, ...X })).json.run;
+    assert.equal(remote.id, here.id);
+    assert.equal(remote.preview_url, '', 'remote: no local address');
+    assert.ok(!JSON.stringify(remote).includes('127.0.0.1:4000'), 'nowhere in the view');
+  } finally { srv.proc.kill(); prig.done(); }
+});
+
 cleanup();
 for (const r of rigs) r.done();
 console.log(`\n${passed()} passed, ${failures().length} failed`);

@@ -1590,3 +1590,53 @@ test('the picture\'s state changes only by previewMove: no other assignment to i
   assert.deepEqual(assigns, ["preview = { state: 'off', run: '', theme"], assigns.join('\n'));
   assert.ok(/p\.state = to;/.test(src), 'previewMove is the one place that writes it');
 });
+
+// A NEW VERSION AIMED AT ANOTHER POST'S NOTE. The companion's record of what it published (blyg-publish-posts.json) is a file on
+// disk: if it named another post's note, each of the edit's own checks alone stops the rewrite, and that other note is untouched.
+test('an edit aimed at another post\'s note: the id check, the address check and the plain-file check each stop it alone', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const page = blygPage([{ id: 't1', quote: 'A passage.', blyg: stamp(), msgs: [mine('Post A words.', { ts: '1' })] },
+    { id: 't2', quote: 'Another passage.', blyg: stamp(), msgs: [mine('Post B words.', { ts: '2' })] }]);
+  const b = boot(rig, { page, config: home });
+  const sha = t2 => crypto.createHash('sha256').update(t2).digest('hex');
+  for (const id of ['t1', 't2']) {
+    const s = await b.start(id); assert.ok(s.ok, s.error);
+    await until(() => b.mode() === 'planned', `planned ${id}`);
+    const v = b.pub.current(); await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', `published ${id}`);
+  }
+  const postsFile = path.join(rig.out, 'blyg-publish-posts.json');
+  const posts = JSON.parse(fs.readFileSync(postsFile, 'utf8'));
+  const [pa, pb] = ['t1', 't2'].map(id => b.pages.get(b.page.url).threads.find(x => x.id === id).blyg_published.permalink);
+  const A = posts[pa]; const B = posts[pb];
+  const textOf = rel => fs.readFileSync(path.join(rig.top, rel), 'utf8');
+  const aText = textOf(A.note_rel); const bText = textOf(B.note_rel);
+  const tryEdit = async (patch, words) => {
+    fs.writeFileSync(postsFile, JSON.stringify({ ...posts, ...patch }));
+    b.pages.get(b.page.url).threads.find(x => x.id === 't1').msgs[0].text = words;
+    return b.start('t1');
+  };
+  // 1. the ID: A's record names B's note (with B's own hash): B's note does not carry A's id
+  let r = await tryEdit({ [pa]: { ...A, note_rel: B.note_rel, note_sha: sha(bText) } }, 'Post A, edited once.');
+  assert.deepEqual([r.ok, r.error], [false, 'The note of this post does not carry the post\'s id, so it is not rewritten from here.']);
+  assert.equal(textOf(B.note_rel), bText, 'B is untouched');
+  // 2. the ADDRESS: B's thread is edited, but B's record names A's note and id: the address the note makes is A's, not B's
+  b.pages.get(b.page.url).threads.find(x => x.id === 't2').msgs[0].text = 'Post B, edited.';
+  fs.writeFileSync(postsFile, JSON.stringify({ ...posts, [pb]: { ...B, note_rel: A.note_rel, note_sha: sha(aText), blyg_id: A.blyg_id } }));
+  r = await b.start('t2');
+  assert.deepEqual([r.ok, r.error], [false, 'The post\'s address would change, so a new version is not written from here.']);
+  assert.equal(textOf(A.note_rel), aText, 'A is untouched');
+  b.pages.get(b.page.url).threads.find(x => x.id === 't2').msgs[0].text = 'Post B words.';
+  // 3. a LINK: A's record names a link in the notes folder (same id, same hash) whose target is elsewhere: it is not a plain file
+  const outside = path.join(rig.out, 'elsewhere.md');
+  fs.writeFileSync(outside, aText);
+  const link = path.join(rig.folder, 'a-link.md');
+  fs.symlinkSync(outside, link);
+  r = await tryEdit({ [pa]: { ...A, note_rel: path.relative(rig.top, link).split(path.sep).join('/'), note_sha: sha(aText) } }, 'Post A, edited twice.');
+  assert.deepEqual([r.ok, r.error], [false, 'The note of this post is not a plain file, so it is not rewritten from here.']);
+  assert.equal(fs.readFileSync(outside, 'utf8'), aText, 'the link\'s target is untouched');
+  // and with the true record, the edit goes ahead
+  fs.writeFileSync(postsFile, JSON.stringify(posts));
+  r = await b.start('t1');
+  assert.ok(r.ok, r.error);
+});
