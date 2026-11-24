@@ -45,7 +45,8 @@ nav.filters a[aria-current=page]{background:var(--acc);color:var(--bg);border-co
 article.entry{background:var(--card);border:1px solid var(--line);border-radius:.5rem;padding:.7rem .9rem;margin:.6rem 0}
 .meta{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem}.title{font-weight:600;margin:.3rem 0;font-size:1.05rem}
 .title a{color:inherit;text-decoration:none}.title a:hover{text-decoration:underline}
-.tick,.untick{width:1.15rem;height:1.15rem;margin:0 .1rem 0 0;cursor:pointer;accent-color:var(--acc);flex:none}
+.hub-entry-actions{align-items:center}button.tick,button.star,button.untick{white-space:nowrap;min-height:2.25rem}
+[data-tick=sending] button.tick,[data-tick=sending] button.star,[data-tick=sending] button.untick{opacity:.6;cursor:progress}
 .aline{display:flex;flex-wrap:wrap;align-items:center;gap:.2rem .7rem;padding:.4rem .2rem;border-bottom:1px solid var(--line)}
 .aline .title{margin:0;font-size:1em;flex:1 1 14rem}
 .caught-up{padding:.8rem 1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--card)}
@@ -84,7 +85,12 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 }
 `;
 
-const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background', archive: 'Archive' });
+const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background', starred: 'Starred', archive: 'Archive' });
+// The read button and the star of one post, under its text (in its row of actions). Their labels say what a press does.
+const readBtn = (k, parts) => `<button type="button" class="tick" data-act="tick" data-key="${k}" aria-label="Mark as read: move to Archive${parts ? ` (and its ${parts} part${parts === 1 ? '' : 's'})` : ''}">\u2713 Read${parts ? ` (and its ${parts} part${parts === 1 ? '' : 's'})` : ''}</button>`;
+export const starBtn = (k, star) => (star === 'starred'
+  ? `<button type="button" class="star" data-act="unstar" data-key="${k}" aria-pressed="true" aria-label="Starred: remove star">\u2605 Starred</button>`
+  : `<button type="button" class="star" data-act="star" data-key="${k}" aria-pressed="false" aria-label="Star: come back to it later">\u2606 Star</button>`);
 // What each backfill mode (following.mjs BACKFILL_MODES) says in the Following table. A paused mode names its reason.
 const BACKFILL_WORDS = Object.freeze({ unknown: '', more: 'more to fetch', caught_up: 'caught up',
   paused_bad_documents: 'reading back is paused: this blyg served documents that could not be used. New posts are still fetched.' });
@@ -136,24 +142,38 @@ function entry(e) {
   // the keys of the parts folded under this post as shown: a tick of it sends them, and the companion archives those still folded
   const members = e.members.map(m => escHtml(m.key)).join(' ');
   return `<article class="entry hub-entry read-${escHtml(h.read)}" id="e-${k}" data-key="${k}"${members ? ` data-members="${members}"` : ''}>
-    <div class="meta mut hub-entry-meta"><input type="checkbox" class="tick" data-key="${k}" aria-label="Read: move to Archive" title="Read: move to Archive">${h.read === 'new' || h.read === 'edited' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
+    <div class="meta mut hub-entry-meta">${h.read === 'new' || h.read === 'edited' ? '<span class="dot" title="unread"></span>' : ''}${edited}<span class="kind">${t(h.kind, 20)}</span><strong>${t(h.blyg_label || h.origin, 160)}</strong>${h.author ? `<span>${t(h.author, 120)}</span>` : ''}
       <span>${day(h.shown_at || h.updated || h.created)}</span><span>${t(h.reading || '', 20)}</span><span>v${Number(h.version) || 1}${h.versions_note ? ` \u00b7 ${t(h.versions_note, 30)}` : ''}</span>${h.maintenance ? `<span>${Number(h.maintenance)} maintenance</span>` : ''}</div>
     ${versions(h)}${pins}${title}${resp}${bodyOf(h)}${ident}${folded}
     <div class="src">${h.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="open the original">${addr(h.page)}</button>` : ''}${h.opens_on ? ` <span class="mut">(on ${t(h.opens_on, 80)})</span>` : ''}</div>
-    <div class="acts right hub-entry-actions"><button type="button" data-act="respond" data-key="${k}">Respond</button><button type="button" data-act="read" data-key="${k}">Read here</button><button type="button" data-act="open" data-key="${k}">Open original</button>${menu}</div></article>`;
+    <div class="acts right hub-entry-actions"><button type="button" data-act="respond" data-key="${k}">Respond</button><button type="button" data-act="read" data-key="${k}">Read here</button><button type="button" data-act="open" data-key="${k}">Open original</button>${readBtn(k, e.members.length)}${starBtn(k, h.star)}${menu}</div></article>`;
 }
 
-// An Archive line: kind, blyg, title or first words, dates, Open original, and a checked box that puts it back in the Feed. NO text of the post.
+// An Archive line: an Unread button that puts it back in the Feed, kind, blyg, title or first words, dates, Open original. NO text of the post.
 // A post held there with a newer wording (archived_changed) says "edited again" and offers Mark read (keep it read, at the newer version).
 function archiveLine(l) {
   const k = escHtml(l.key);
   const again = l.read === 'archived_changed';
-  return `<div class="aline hub-archive-line${again ? ' hub-archive-changed' : ''}" data-key="${k}"><input type="checkbox" class="untick" checked data-key="${k}" aria-label="Unread again: move back to the Feed" title="Unread again: move back to the Feed">
+  return `<div class="aline hub-archive-line${again ? ' hub-archive-changed' : ''}" data-key="${k}"><button type="button" class="untick" data-act="untick" data-key="${k}" aria-label="Unread: move back to the Feed">Unread</button>
     <span class="kind">${t(l.kind, 20)}</span><strong>${t(l.blyg_label || l.origin, 160)}</strong>
     <span class="title">${l.title ? t(l.title, 200) : '<span class="mut">(no title)</span>'}</span>
     ${again ? `<span class="badge warn" title="there is a version ${Number(l.newer_version) || ''} you have not read; untick to read it">edited again</span>` : ''}
     <span class="mut">${day(l.updated || l.created)}${l.archived_at ? `, read ${day(l.archived_at)}` : ''}</span>
     ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}${again ? `<button type="button" class="link" data-act="mark-read" data-key="${k}">Mark read</button>` : ''}</div>`;
+}
+// A Starred line: like an Archive line (no text of the post), with when it was starred, and where the post is now.
+const WHERE_WORDS = Object.freeze({ feed: 'unread, in your Feed', archive: 'read, in the Archive', withdrawn: 'withdrawn', gone: 'no longer held here', unfollowed: 'its blyg is not followed now' });
+function starredLine(l) {
+  const k = escHtml(l.key);
+  const where = l.where === 'feed' ? `<a href="/hub#e-${k}">${WHERE_WORDS.feed}</a>` : escHtml(WHERE_WORDS[l.where] || '');
+  return `<div class="aline hub-starred-line" data-key="${k}"><span class="kind">${t(l.kind, 20)}</span><strong>${t(l.blyg_label || l.origin, 160)}</strong>
+    <span class="title">${l.title ? t(l.title, 200) : '<span class="mut">(no title)</span>'}</span>
+    <span class="mut">${day(l.updated || l.created)}${l.starred_at ? `, starred ${day(l.starred_at)}` : ''}${where ? `, ${where}` : ''}</span>
+    ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}<button type="button" class="link star" data-act="unstar" data-key="${k}" aria-label="Remove star">Remove star</button></div>`;
+}
+function starredPane(data) {
+  return `<p class="mut">Posts you starred to come back to. A star is yours alone: nothing about it is sent to any blyg. It stays when you mark a post read.</p>
+    <section aria-label="starred" id="hub-starred">${data.starred.length ? data.starred.map(starredLine).join('') : '<p class="mut">Nothing starred yet. Star a post in the Feed to keep it here.</p>'}</section>`;
 }
 function archivePane(data) {
   const q = data.archive_query || '';
@@ -257,9 +277,10 @@ const SCRIPT = `
     if(a==='more'){var box=b.closest('.hub-entry-body');if(box)setMore(box,box.dataset.more==='expanded'?'collapsed':'expanded');return;}
     if(a==='renew')return post('/following/read',{key:b.dataset.key,move:'renew'}).then(function(r){done(r);});
     if(a==='mark-read')return post('/following/read',{key:b.dataset.key,move:'tick'}).then(function(r){done(r,'kept as read');});
+    if(a==='tick'||a==='untick'||a==='star'||a==='unstar')return rowAct(b,a);
     if(a==='tick-all'){var ticks=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)ticks.push({key:e.dataset.key,members:membersOf(e)});});
       if(!ticks.length)return;
-      if(!confirm('Move the '+ticks.length+' post'+(ticks.length===1?'':'s')+' shown to the Archive?'))return;
+      if(!confirm('Mark the '+ticks.length+' post'+(ticks.length===1?'':'s')+' shown as read (move them to the Archive)?'))return;
       // 100 a request (the companion takes no more at once), one request after another
       var total=0,parts=0,i=0;
       var next=function(){if(i>=ticks.length){done({ok:true},'archived '+total+(parts?', and '+parts+' parts':''));return;}
@@ -275,18 +296,18 @@ const SCRIPT = `
       return post('/following/refresh',{}).then(function(r){fetchMove('idle');
       if(r&&r.ok&&r.started===false)say(r.reason,true);else done(r,'refreshed');});}
   });
-  // The tick (Feed) and the untick (Archive): a checkbox each, handled here and nowhere else. A post's own text is inert and
-  // cannot hold one (the sanitiser removes inputs, ids and classes), and a control inside a post's text is ignored anyway.
+  // Read (Feed), Unread (Archive) and the star: a button each in the row of actions, handled here and nowhere else. A post's own
+  // text is inert and cannot hold one (the sanitiser removes buttons, ids and classes), and a control inside a post's text is ignored.
   function membersOf(row){var m=row&&row.dataset&&row.dataset.members;return m?m.split(' ').filter(Boolean):[];}
   function count(name,d){document.querySelectorAll('[data-n="'+name+'"]').forEach(function(n){n.textContent=String(Math.max(0,(Number(n.textContent)||0)+d));});}
-  // A tick box's request, per row: ONE field (data-tick on the row), one of ROW_MODES, moved only by rowMove, which refuses a move
-  // not in the table (a second change while the first is being sent does nothing). The box is disabled BECAUSE the row is sending:
-  // the attribute shows the mode, it is not the mode.
+  // A row's request (Read, Unread, a star): ONE field (data-tick on the row), one of ROW_MODES, moved only by rowMove, which refuses
+  // a move not in the table: a second press while the first is being sent does nothing. No button is disabled: the mode is the
+  // field, and aria-busy only shows it.
   var ROW_MODES=['ready','sending'];
   var ROW_MOVES={ready:['sending'],sending:['ready']};
   function rowMove(row,to){var from=row.dataset.tick||'ready';
-    if(ROW_MODES.indexOf(to)<0||ROW_MOVES[from].indexOf(to)<0)throw new Error('tick: cannot go from '+from+' to '+to);
-    row.dataset.tick=to;var box=row.querySelector('input.tick,input.untick');if(box)box.disabled=to==='sending';}
+    if(ROW_MODES.indexOf(to)<0||ROW_MOVES[from].indexOf(to)<0)throw new Error('row: cannot go from '+from+' to '+to);
+    row.dataset.tick=to;row.setAttribute('aria-busy',to==='sending'?'true':'false');}
   // What the page is asking the companion to fetch: ONE field (data-hub-fetch on <html>), one of FETCH_MODES, moved only by
   // fetchMove. A top-up (after a tick) and Refresh now are never asked twice at once, and never queued: the second is skipped.
   var FETCH_MODES=['idle','refreshing','topping_up'];
@@ -297,18 +318,27 @@ const SCRIPT = `
   function topUp(){if(fetchMode!=='idle')return;fetchMove('topping_up');say('reading further back…');
     post('/following/topup',{}).then(function(r2){fetchMove('idle');
       if(r2&&r2.ok&&r2.started&&Number(r2.new)>0)location.reload();else say('');},function(){fetchMove('idle');say('');});}
-  document.addEventListener('change',function(ev){
-    var c=ev.target;if(!c||!c.matches||!c.matches('input.tick,input.untick')||c.closest('.hub-entry-body'))return;
-    var un=c.classList.contains('untick'),row=c.closest('article,.aline');if(!row)return;
-    if((row.dataset.tick||'ready')!=='ready'){c.checked=un;return;}
-    rowMove(row,'sending');if(un)say('putting it back in the Feed…');
-    post('/following/read',un?{key:c.dataset.key,move:'untick'}:{key:c.dataset.key,move:'tick',members:membersOf(row)}).then(function(r){
-      if(!(r&&r.ok)){rowMove(row,'ready');c.checked=un;say((r&&r.error)||'failed',true);return;}
+  function starLabel(b,on){b.dataset.act=on?'unstar':'star';b.setAttribute('aria-pressed',on?'true':'false');
+    if(b.classList.contains('link')){b.textContent=on?'Remove star':'Star again';b.setAttribute('aria-label',on?'Remove star':'Star again');return;}
+    b.textContent=on?'\u2605 Starred':'\u2606 Star';b.setAttribute('aria-label',on?'Starred: remove star':'Star: come back to it later');}
+  function rowAct(b,a){
+    if(b.closest('.hub-entry-body'))return;
+    var row=b.closest('article,.aline');if(!row||(row.dataset.tick||'ready')!=='ready')return;
+    rowMove(row,'sending');
+    var body=a==='tick'?{key:b.dataset.key,move:'tick',members:membersOf(row)}:{key:b.dataset.key,move:a};
+    if(a==='untick')say('putting it back in the Feed\u2026');
+    return post('/following/read',body).then(function(r){
+      rowMove(row,'ready');
+      if(!(r&&r.ok)){say((r&&r.error)||'failed',true);return;}
+      if(a==='unstar'&&row.classList.contains('hub-starred-line')){row.remove();count('starred',-1);say('star removed');return;}
+      if(a==='star'||a==='unstar'){starLabel(b,a==='star');count('starred',a==='star'?1:-1);say(a==='star'?'starred':'star removed');return;}
       var parts=Number(r.parts)||0;
-      row.remove();count('feed',un?1:-1);count('archive',un?-1:1+parts);say(un?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
+      row.remove();count('feed',a==='untick'?1:-1);count('archive',a==='untick'?-1:1+parts);
+      say(a==='untick'?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
       // the Feed fell below its target and a blyg has more queued: one top-up (never two at once, never queued)
-      if(!un&&r.topup)topUp();
-    });});
+      if(a==='tick'&&r.topup)topUp();
+    });
+  }
   var search=document.getElementById('hub-search');
   if(search)search.addEventListener('input',function(){var q=search.value.trim().toLowerCase();
     document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){e.hidden=!!q&&e.textContent.toLowerCase().indexOf(q)<0;});});
@@ -405,6 +435,7 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
   const nums = Object.entries(FOLLOWING_NUMBERS).map(([k, spec]) => `<label>${escHtml(spec.what)} <input type="number" data-num name="${escHtml(k)}" min="${spec.min}" max="${spec.max}" value="${Number(settings[k])}"> <span class="mut">(${spec.min} to ${spec.max})</span></label>`).join('');
   const pane = data.view === 'mentions' ? mentionsPane(data)
     : data.view === 'archive' ? archivePane(data)
+    : data.view === 'starred' ? starredPane(data)
     : data.view === 'background'
       ? `<p class="mut">What should not interrupt reading: withdrawn posts, posts folded into a burst, versions with no new words, posts of paused blygs, and notices (links and reposts) from your inbox. A post comes back to the Feed when it gets a real new version.</p>
          ${data.background.length ? data.background.map(backgroundEntry).join('') : '<p class="mut">Nothing here.</p>'}`
@@ -422,7 +453,7 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
 <h1>Hub</h1>
 <p class="mut">Blygs you read. Only you see this, and nothing about your reading is sent to any blyg. ${escHtml(lastLine)} ${data.schedule.mode === 'scheduled' ? `Refreshes every ${Number(settings.following_refresh_minutes)} minutes.` : 'Not refreshing on a timer.'}</p>
 ${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p class="warn">These settings were not valid and the defaults are used: ${t(refused.join(', '), 300)}.</p>` : ''}
-<div class="acts"><button type="button" data-act="refresh">Refresh now</button>${data.view === 'feed' && data.entries.length ? '<button type="button" data-act="tick-all">Tick all shown</button>' : ''}<span id="msg" role="status"></span></div>
+<div class="acts"><button type="button" data-act="refresh">Refresh now</button>${data.view === 'feed' && data.entries.length ? '<button type="button" data-act="tick-all">Mark all read</button>' : ''}<span id="msg" role="status"></span></div>
 <nav class="filters hub-tabs" aria-label="views">${tabs}</nav>
 ${pane}
 <h2>Following</h2>

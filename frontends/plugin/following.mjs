@@ -2847,7 +2847,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const needle = cleanText(String(q || ''), 100).toLowerCase();
     const archiveAll = viewOf(tab) === 'archive' ? v.archive.map(line).filter(l => !needle || `${l.title} ${l.blyg_title} ${l.origin}`.toLowerCase().includes(needle)) : [];
     const archiveLimit = Math.max(1, Math.min(Number(limit) || LIMITS.archivePage, LIMITS.archiveShownMax));
-    // the Starred tab: newest starred first; a post still unread and held says so (and links to it in the Feed)
+    // the Starred tab: newest starred first; a post still unread and held says so (and links to it in the Feed). It reads the
+    // archives of the blygs whose starred posts are not in their feeds (to say "read, in the Archive"), and no others.
+    if (viewOf(tab) === 'starred') needArchives([...new Set(Object.values(st.stars).filter(e => st.blygs[e.origin] && !st.items[identOf(e.origin, e.id)]).map(e => e.origin))]);
     const starredAll = Object.values(st.stars).sort((a, b) => (Date.parse(b.starred_at) || 0) - (Date.parse(a.starred_at) || 0) || (a.key < b.key ? -1 : 1)).map(e => {
       const held = st.blygs[e.origin] ? st.items[identOf(e.origin, e.id)] : null;
       const where = !held ? (st.blygs[e.origin] ? 'gone' : 'unfollowed') : ARCHIVE_STATES.includes(held.read) ? 'archive' : isWithdrawn(held) ? 'withdrawn' : 'feed';
