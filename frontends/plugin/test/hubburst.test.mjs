@@ -181,3 +181,25 @@ test('§13.7: a fold covers the versions published in the burst: a part edited a
   assert.ok(r.feed().some(e => e.head.key === k3));
   r.done();
 });
+
+test('a member key named twice is one part, counted once; more than burstMembersMax members are not taken', async () => {
+  const r = rig({ following_unread_target: 500 });
+  build(r.site, { n: 3, old: 0 });
+  await r.f.refresh();
+  const head = r.feed().find(e => e.head.title === 'Thread');
+  const keys = head.members.map(m => m.key);
+  const out = await r.f.readRequest({ key: head.head.key, move: 'tick', members: [...keys, ...keys, keys[0]] });
+  assert.equal(out.parts, 3);
+  assert.equal(r.f.view().tabs.archive, 4);
+  r.done();
+  // a page naming 100,000 keys: the list is cut first, the answer is the same and quick
+  const q = rig({ following_unread_target: 500 });
+  build(q.site, { n: 3, old: 0 });
+  await q.f.refresh();
+  const h2 = q.feed().find(e => e.head.title === 'Thread');
+  const t0 = performance.now();
+  const o2 = await q.f.readRequest({ key: h2.head.key, move: 'tick', members: [...h2.members.map(m => m.key), ...Array.from({ length: 100000 }, (_, i) => String(i))] });
+  assert.equal(o2.parts, 3);
+  assert.ok(performance.now() - t0 < 1000);
+  q.done();
+});

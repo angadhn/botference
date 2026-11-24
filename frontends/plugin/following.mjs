@@ -352,7 +352,7 @@ export const LIMITS = Object.freeze({
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
   saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
-  burstMembersMax: 100,       // parts of one burst a tick of its thread may archive with it
+  burstMembersMax: 100,       // member keys one tick of a thread may name (a fold has at most refsKept members anyway)
   queuePerBlyg: 20,           // the next unfetched index entries a refresh saves per blyg (validated), for the top-up
   topupRequests: 10,          // requests one top-up may make (documents only: a top-up reads no manifest and no index)
   topupSeconds: 15,           // ... and seconds
@@ -2064,7 +2064,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const key = String(x && typeof x === 'object' ? x.key : x);
       const rec = index.get(key);
       if (!rec || isWithdrawn(rec) || !canMoveRead(rec, 'tick')) continue;
-      const members = x && typeof x === 'object' && Array.isArray(x.members) ? x.members.slice(0, LIMITS.burstMembersMax).map(String) : [];
+      // each member once (a key named twice is one part), at most burstMembersMax
+      const members = x && typeof x === 'object' && Array.isArray(x.members) ? [...new Set(x.members.map(String))].slice(0, LIMITS.burstMembersMax) : [];
       const under = folded.get(key) || new Set();
       tickRec(rec); archived++;
       for (const mk of members) {
