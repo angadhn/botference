@@ -118,7 +118,7 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
     const html = built(slug);
     assert.ok(!html.includes('PRIVATE-FILE-MARKER'), `${slug}: nothing of another file`);
     // (an agent box's label may name the author, who may share the site's title: the label is the site's own words, not the post's)
-    const body = ((/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1]).replace(/<span class="blyg-gen-box__marks"[^>]*>[\s\S]*?<\/svg>(?:<span class="blyg-gen-box__author"[^>]*>A<\/span>)?<\/span>/g, '');
+    const body = ((/<content>([\s\S]*?)<\/content>/.exec(html) || [, html])[1]).replace(/<(span|button)\b[^>]*class="blyg-gen-box__marks"[^>]*>[\s\S]*?<\/svg>(?:<span class="blyg-gen-box__author"[^>]*>A<\/span>)?<\/\1>/g, '');
     assert.ok(!body.includes(siteTitle), `${slug}: Liquid did not run (the site title is not in the post body)`);
     // short posts are text: raw HTML is never live, whoever wrote it
     assert.ok(!/<script|href="javascript:|on\w+="/i.test(body), `${slug}: no live script or javascript: link`);
@@ -139,13 +139,14 @@ run('Liquid in a passage, owner text, an agent\'s fill, a label and a URL is sho
   }
   // the owner's rule on the built page: agent text in a box of its own, marked (never named): a robot; the robot and the site's "A"
   // when the owner adopted or edited it; each with an accessible name and a tooltip
-  const marks = k => { const m = /<div class="blyg-gen-box blyg-gen-box--([a-z-]+)"><span class="blyg-gen-box__marks" role="img" aria-label="([^"]*)" title="([^"]*)">(<svg[\s\S]*?<\/svg>)(<span class="blyg-gen-box__author" aria-hidden="true">A<\/span>)?<\/span>/.exec(built(k)); return m ? [m[1], m[2], m[3], !!m[5]] : null; };
+  // (the marks are a span with role img on an older site, a button that opens the "about" box on a newer one)
+  const marks = k => { const m = /<div class="blyg-gen-box blyg-gen-box--([a-z-]+)"><(span|button)\b[^>]*class="blyg-gen-box__marks"[^>]*?aria-label="([^"]*)" title="([^"]*)"[^>]*>(<svg[\s\S]*?<\/svg>)(<span class="blyg-gen-box__author" aria-hidden="true">A<\/span>)?<\/\2>/.exec(built(k)); return m ? [m[1], m[3], m[4], !!m[6]] : null; };
   assert.deepEqual(marks('html-agent'), ['ai', 'Written by an AI model', 'Written by an AI model', false]);
   assert.deepEqual(marks('html-adopted'), ['ai-and-author', 'Written by an AI model and edited by the author', 'Written by an AI model and edited by the author', true]);
   assert.deepEqual(marks('box-joint'), ['ai-and-author', 'Written by an AI model and edited by the author', 'Written by an AI model and edited by the author', true]);
   for (const k of ['html-agent', 'html-adopted', 'box-inline', 'box-joint']) {
     const boxes = [...built(k).matchAll(/<div class="blyg-gen-box[\s\S]*?<\/div>/g)].map(m => m[0]).join('');
-    assert.ok(!/Claude|Codex|claude-opus|gpt-5|AI model \+/.test(boxes.replace(/(aria-label|title)="[^"]*"/g, '')), `${k}: no name on the box`);
+    assert.ok(!/Claude|Codex|claude-opus|gpt-5|AI model \+/.test(boxes.replace(/(aria-label|title|data-blyg-gen-[a-z]+)="[^"]*"/g, '')), `${k}: no name on the box`);
   }
   // an inline gap: the owner's words before it (a paragraph), the box (a block), the words after it (a new paragraph)
   { const b = (/<content>([\s\S]*?)<\/content>/.exec(built('box-inline')) || [, built('box-inline')])[1];
