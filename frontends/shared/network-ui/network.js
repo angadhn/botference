@@ -402,7 +402,7 @@ if (typeof document !== 'undefined') {
     }
     for (const s of shares) s.bow = pairCount.has(s.a + '|' + s.b) ? 18 : 0;
 
-    const nodeMark = n => `<g class="node ${n.kind}${pins.has(n.id) ? ' pinned' : ''}${n.st?.recent ? ' recent' : ''}" data-${n.kind}="${esc(n.key)}"${n.st ? ` style="--fresh:${n.st.fresh.toFixed(2)}"` : ''} tabindex="${n.kind === 'project' ? 0 : -1}" role="button" aria-label="${esc(KIND[n.kind] + ': ' + n.title + (n.kind === 'source' ? ', ' + plural(new Set(n.ref.chats || []).size, 'chat session') : ''))}"><circle class="hit" r="${(n.r + 6).toFixed(1)}"/><circle class="dot" r="${n.r.toFixed(1)}"/><text class="label" text-anchor="middle" y="${n.r.toFixed(1)}" dy="1.3em">${esc(n.short)}</text></g>`;
+    const nodeMark = n => `<g class="node ${n.kind}${pins.has(n.id) ? ' pinned' : ''}${n.st?.recent ? ' recent' : ''}" data-${n.kind}="${esc(n.key)}" tabindex="${n.kind === 'project' ? 0 : -1}" role="button" aria-label="${esc(KIND[n.kind] + ': ' + n.title + (n.kind === 'source' ? ', ' + plural(new Set(n.ref.chats || []).size, 'chat session') : ''))}"><circle class="hit" r="${(n.r + 6).toFixed(1)}"/><circle class="dot" r="${n.r.toFixed(1)}"/><text class="label" text-anchor="middle" y="${n.r.toFixed(1)}" dy="1.3em">${esc(n.short)}</text></g>`;
     const regionMarks = GL.map(gr => `<g class="region" data-group="${esc(gr.id)}"><circle/><text text-anchor="middle">${esc(gr.label)}</text></g>`).join('');
     svg.innerHTML = `<g class="regions" aria-hidden="true">${regionMarks}</g><g class="lines">${members.map(() => '<line class="member"/>').join('')}`
       + shares.map(s => `<path class="hit-line" fill="none" data-share="${esc(s.id)}" aria-hidden="true"/>`).join('')
@@ -415,6 +415,8 @@ if (typeof document !== 'undefined') {
     const lines = svg.querySelector('.lines');
     const memberEls = lines.querySelectorAll('line.member'), shareEls = lines.querySelectorAll('path.share'), edgeEls = lines.querySelectorAll('path.edge'), hitEls = lines.querySelectorAll('path.hit-line');
     const nodeEls = svg.querySelectorAll('.nodes .node');
+    // how fresh a project is, through the CSSOM after insertion: the view's CSP refuses a style= attribute (style-src 'self')
+    nodes.forEach((n, i) => { if (n.st && nodeEls[i] && nodeEls[i].style) nodeEls[i].style.setProperty('--fresh', n.st.fresh.toFixed(2)); });
     const near = nodes.map(() => new Set()), touching = nodes.map(() => []);
     const join = (a, b, ...els) => { const i = byId.get(a), j = byId.get(b); near[i].add(j); near[j].add(i); touching[i].push(...els); touching[j].push(...els); };
     members.forEach((m, k) => join(m.a, m.b, memberEls[k]));
