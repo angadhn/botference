@@ -27,6 +27,10 @@ test('project map exposes evidence, safe links, dismissal and multiple outputs',
   window.eval(js);
   await window.happyDOM.whenAsyncComplete();
   assert.equal(window.document.querySelectorAll('.edge.suggested').length,1);
+  // review item (d): the view's CSP refuses a style= attribute, so how fresh a project is goes in through the CSSOM after insertion
+  const pa=window.document.querySelector('.node[data-project="a"]');
+  assert.match(pa.style.getPropertyValue('--fresh'),/^\d\.\d\d$/);
+  assert.ok(!/style="--fresh/.test(js),'the markup string never carries a style= attribute for it');
   window.document.querySelector('[data-project="a"]').dispatchEvent(new window.MouseEvent('click',{bubbles:true}));
   assert.ok(window.document.querySelector('.node[data-project="a"]').classList.contains('selected'));
   const detail=window.document.getElementById('detail');
