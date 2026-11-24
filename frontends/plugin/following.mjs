@@ -1077,9 +1077,20 @@ export class HubNewer extends Error {
  * reads it keeps every older body), and carrying the rest of the old document (the copy). */
 const MARKER = 'moved';
 const isMarker = v => !!v && typeof v === 'object' && v.layout === MARKER;
-const markerOf = (doc, tag, withCopy = true) => ({ layout: MARKER, note: 'converted to a newer layout of the Hub: this document is no longer read',
-  from: tag, blygs: { [MARKER]: null }, items: withCopy && doc.items && typeof doc.items === 'object' ? doc.items : {},
-  ...(withCopy ? { doc: Object.fromEntries(Object.entries(doc).filter(([k]) => k !== 'items')) } : {}) });
+// The marker's own state: ONE field, `marker`, moved only by moveMarker (a marker that does not say is `emptied`: never read as a copy).
+//   carrying_copy  — it carries the old document (its copy) and names every old post: until the conversion's quiet period is over
+//   emptied        — the copy and the old posts are gone from it (it still stops the older engine)
+//   empty          carrying_copy → emptied   (by the sweep that ends the quiet period)
+export const MARKER_STATES = Object.freeze(['carrying_copy', 'emptied']);
+export const MARKER_MOVES = Object.freeze({ empty: { carrying_copy: 'emptied' } });
+const markerMachine = machine('marker', MARKER_STATES, MARKER_MOVES);
+export function moveMarker(m, ev) { m.marker = markerMachine.to(m.marker, ev); return m.marker; }
+const markerStateOf = m => (MARKER_STATES.includes(m.marker) ? m.marker : 'emptied');
+const markerOf = (doc, tag) => ({ layout: MARKER, marker: 'carrying_copy', note: 'converted to a newer layout of the Hub: this document is no longer read',
+  from: tag, blygs: { [MARKER]: null }, items: doc.items && typeof doc.items === 'object' ? doc.items : {},
+  doc: Object.fromEntries(Object.entries(doc).filter(([k]) => k !== 'items')) });
+/** The marker, emptied: no copy, no old post (moveMarker refuses one that is emptied already). */
+const emptiedMarker = m => { const { doc, items, ...rest } = m; void doc; void items; const out = { ...rest, items: {} }; moveMarker(out, 'empty'); return out; };
 const copyOfMarker = m => ({ ...(m.doc && typeof m.doc === 'object' ? m.doc : {}), items: m.items && typeof m.items === 'object' ? m.items : {} });
 const migrationOf = v => {
   const m = v && v.migration && typeof v.migration === 'object' ? v.migration : null;
@@ -1165,7 +1176,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       if (l && isMarker(l)) {
         // converted to a main document that is not there: a conversion that stopped between its steps 1 and 2 (its copy is in
         // the marker), or a main document deleted by hand after it (then nothing is written: the operator restores it)
-        if (!l.doc) throw new Error('the Hub\'s main document is missing (its older document was converted): restore it from its copy');
+        if (markerStateOf(l) !== 'carrying_copy') throw new Error('the Hub\'s main document is missing (its older document was converted): restore it from its copy');
         await beginConversion({ doc: copyOfMarker(l), tag: String(l.from), ifMain: null });
         continue;
       }
@@ -1617,8 +1628,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     await store.delete('state', 'pre-shard');
     for (const n of await store.list('oldbody')) await store.delete('oldbody', n);
     const leg = await store.get('state', 'legacy');
-    if (leg && isMarker(leg.value) && (leg.value.doc || Object.keys(objectOr(leg.value.items)).length)) {
-      try { await store.put('state', 'legacy', markerOf({}, leg.value.from, false), { ifVersion: leg.version }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; }
+    if (leg && isMarker(leg.value) && markerStateOf(leg.value) === 'carrying_copy') {
+      try { await store.put('state', 'legacy', emptiedMarker(leg.value), { ifVersion: leg.version }); } catch (e) { if (!(e instanceof StoreConflict)) throw e; }
     }
     await tx({}, () => { const m = load().migration; if (m.state === 'keeping_copy') moveMigration(m, 'finish', now()); });
     return true;

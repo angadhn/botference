@@ -170,6 +170,24 @@ test('1: the migration is ONE field moved by one function that refuses an illega
   assert.throws(() => F.moveMigration(m, 'begin'));
 });
 
+test('1: the marker is ONE field moved by one function: it carries its copy until the quiet period ends, then is emptied, and is never read as a copy again', async () => {
+  assert.deepEqual(F.MARKER_STATES, ['carrying_copy', 'emptied']);
+  const m = { marker: 'emptied' };
+  assert.throws(() => F.moveMarker(m, 'empty'), /cannot empty while emptied/);
+  const w = world();
+  await seedOlder(w.store, olderDoc('aaaa'), { where: 'legacy', bodies: 'oldbody' });
+  await w.engine('one').view();
+  assert.equal(w.store.peek('state', 'legacy').marker, 'carrying_copy');
+  w.clock.t += F.LIMITS.migrationQuietMs + 1;
+  await w.engine('s').sweep();
+  const after = w.store.peek('state', 'legacy');
+  assert.deepEqual([after.marker, after.items, 'doc' in after], ['emptied', {}, false]);
+  // an emptied marker with no main document is never converted from: nothing is written, the operator restores
+  await w.store.delete('state', 'following');
+  const before = w.store.log.length;
+  await assert.rejects(w.engine('t').view(), /main document is missing/);
+  assert.deepEqual(w.store.log.slice(before), []);
+});
 test('1: a re-conversion after a rollback never puts back in the Feed a post read in a KEPT ledger (hosted and companion shapes)', async () => {
   for (const where of ['legacy', 'following']) {
     const w = world();
