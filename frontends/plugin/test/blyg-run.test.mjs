@@ -10,7 +10,12 @@ import crypto from 'node:crypto';
 import { execFileSync, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import * as R from '../blyg-run.mjs';
+import * as Rmod from '../blyg-run.mjs';
+// every publisher made here is remembered, so a test can look at the RUN RECORD behind an owner's view (the view itself is plain:
+// no command output, no note path; those are in the record and the run's log)
+const made = [];
+const R = { ...Rmod, createPublisher: d => { const p = Rmod.createPublisher(d); made.push(p); return p; } };
+const recOf = v => { for (let i = made.length - 1; i >= 0; i--) if (made[i].book.run.id === v.id) return made[i].book.run; throw new Error('no record for ' + (v && v.id)); };
 import * as H from '../blyg-home.mjs';
 import { makeRig, until, sleep, thread, blygPage, stamp, mine, ID, FAKE } from './blyg-rig.mjs';
 
@@ -29,7 +34,7 @@ function boot(rig, { page, config, hook, lstartOf } = {}) {
   return { pub, pages, events, file, page: pg, start: (threadId = 't1', scope = 'one', shown) => pub.start({ page: pages.get(pg.url), threadId, scope, shown: shown !== undefined ? shown : ((config === undefined ? rig.home : config) || {}).confirm || 'always' }),
     mode: () => pub.current().mode };
 }
-const noteOf = (rig, v) => path.join(rig.top, v.note_rel);
+const noteOf = (rig, v) => path.join(rig.top, recOf(v).note_rel);
 
 // ---- the mode table -------------------------------------------------------------------
 test('the mode table: every move is either listed or refused, the step is part of the mode, and RunBook.move is the only door', () => {
@@ -99,9 +104,9 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   const v = b.pub.current();
   assert.deepEqual(rig.calls().map(c => c.step), ['plan'], 'only plan has run');
   assert.ok(fs.existsSync(noteOf(rig, v)), 'the note is written');
-  assert.equal(v.note_rel, 'my notes/first-thought-about-liveness.md');
-  assert.match(v.note_text, /^---\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\nblyg_id: "([0-9a-hjkmnp-tv-z]{26})"\npermalink: \/b\/\1\n/);
-  assert.match(v.steps[0].output, /plan: ok for my notes\/first-thought-about-liveness\.md\nWould notify: nobody/);
+  assert.equal(recOf(v).note_rel, 'my notes/first-thought-about-liveness.md');
+  assert.match(recOf(v).note_text, /^---\ncreated: 2026-11-23\nreleased: "2026-11-23"\nblyg: true\nblyg_id: "([0-9a-hjkmnp-tv-z]{26})"\npermalink: \/b\/\1\n/);
+  assert.match(recOf(v).steps[0].output, /plan: ok for my notes\/first-thought-about-liveness\.md\nWould notify: nobody/);
   assert.deepEqual(v.can, ['confirm', 'cancel']);
   const plan = rig.calls()[0];
   assert.equal(plan.argv[2], 'plan');
@@ -120,19 +125,25 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   await until(() => b.mode() === 'published', 'published');
   assert.deepEqual(rig.calls().map(c2 => c2.step), ['plan', 'apply', 'publish']);
   const done = b.pub.current();
-  assert.deepEqual(done.steps.map(s => [s.step, s.exit]), [['plan', 0], ['apply', 0], ['publish', 0]]);
-  const bid = /\nblyg_id: "(\S+)"\n/.exec(v.note_text)[1];
+  assert.deepEqual(done.steps.map(s => [s.step, s.ok]), [['plan', true], ['apply', true], ['publish', true]]);
+  assert.deepEqual(recOf(done).steps.map(s => [s.step, s.exit]), [['plan', 0], ['apply', 0], ['publish', 0]]);
+  assert.ok(!('output' in done.steps[0]) && !('note_rel' in done) && !('note_text' in done), 'the owner\'s view carries no command output and no path');
+  const bid = /\nblyg_id: "(\S+)"\n/.exec(recOf(v).note_text)[1];
   assert.equal(done.published.address, `https://site.example.test/b/${bid}`);
   assert.equal(done.published.permalink, `/b/${bid}`);
   const marked = b.pages.get(b.page.url).threads[0].blyg_published;
-  assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title'], 'only what a reader of the page may know');
+  assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title', 'version'], 'only what a reader of the page may know (and the version)');
+  assert.equal(marked.version, 1);
+  const kept = JSON.parse(fs.readFileSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json'), 'utf8'))[marked.permalink];
+  assert.deepEqual(Object.keys(kept).sort(), ['at', 'blyg_id', 'note_rel', 'note_sha', 'slug', 'snapshot', 'version'], 'what a new version needs is kept on the companion, not on the page');
+  assert.equal(fs.statSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json')).mode & 0o777, 0o600);
   assert.equal(marked.address, done.published.address);
   assert.ok(b.events.some(e => e.type === 'page'), 'the page is announced');
   assert.ok(b.events.filter(e => e.type === 'blyg-publish').length >= 6, 'every move is announced');
   // …and the same comment is not offered again
   const again = (await b.start());
   assert.equal(again.ok, false);
-  assert.match(again.error, /already published.*as an edit is not available/);
+  assert.match(again.error, /new version is not set up on the companion yet/, 'publishing again needs the edit commands (see the edit tests)');
 });
 
 test('scope "this and the ones above" is one post of the owner\'s earlier unpublished comments in order; "just this one" chains to an earlier published post', async t => {
@@ -150,8 +161,8 @@ test('scope "this and the ones above" is one post of the owner\'s earlier unpubl
   await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   assert.deepEqual(v.thread_ids, ['t0', 't1', 't2'], 'the guest\'s and the agent-addressed ones are not the owner\'s to publish');
-  assert.ok(v.note_text.indexOf('Nothing to do with it.') < v.note_text.indexOf('First thought.') && v.note_text.indexOf('First thought.') < v.note_text.indexOf('Second thought.'));
-  assert.ok(!v.note_text.includes('a guest') && !v.note_text.includes('explain this'));
+  assert.ok(recOf(v).note_text.indexOf('Nothing to do with it.') < recOf(v).note_text.indexOf('First thought.') && recOf(v).note_text.indexOf('First thought.') < recOf(v).note_text.indexOf('Second thought.'));
+  assert.ok(!recOf(v).note_text.includes('a guest') && !recOf(v).note_text.includes('explain this'));
   await b.pub.confirm({ id: v.id, token: v.token });
   await until(() => b.mode() === 'published', 'published');
   assert.deepEqual(page.threads.filter(x => x.blyg_published).map(x => x.id), ['t0', 't1', 't2']);
@@ -160,7 +171,7 @@ test('scope "this and the ones above" is one post of the owner\'s earlier unpubl
   const next = (await b.start('t3', 'one'));
   assert.ok(next.ok, next.error);
   await until(() => b.mode() === 'planned', 'planned again');
-  assert.match(b.pub.current().note_text, /\n\nEarlier: \[Nothing to do with it\]\(https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}\)\n$/);
+  assert.match(recOf(b.pub.current()).note_text, /\n\nEarlier: \[Nothing to do with it\]\(https:\/\/site\.example\.test\/b\/[0-9a-hjkmnp-tv-z]{26}\)\n$/);
   assert.equal(b.pub.current().chained_to.title, 'Nothing to do with it');
 });
 
@@ -202,7 +213,7 @@ test('cancel at the confirmation removes the draft only if this run made it and 
   const c2 = await b2.pub.cancel({ id: v.id, token: v.token });
   assert.ok(c2.ok);
   assert.equal(fs.existsSync(noteOf(rig, v)), true, 'the owner\'s edit is not thrown away');
-  assert.match(c2.view.cleanup.note, /changed since this run wrote it.*left where it is/);
+  assert.match(c2.view.cleanup.said, /changed since this run wrote it.*left as it is/);
   assert.equal(c2.view.cleanup.removed, false);
 });
 
@@ -234,8 +245,10 @@ for (const [stepName, after] of [['plan', []], ['apply', ['plan']], ['publish', 
     await until(() => b.mode().startsWith('failed_'), 'failed');
     const v = b.pub.current();
     assert.equal(v.failed_step, stepName);
-    assert.match(v.failed_reason, new RegExp(`${stepName} exited with code 1`));
-    const last = v.steps[v.steps.length - 1];
+    assert.match(recOf(v).failed_reason, new RegExp(`${stepName} exited with code 1`));
+    assert.equal(v.failure, '', 'no recognised plain line: the drawer says "Something went wrong while …"');
+    assert.equal(v.tries, 1);
+    const last = recOf(v).steps[recOf(v).steps.length - 1];
     assert.equal(last.step, stepName);
     assert.match(last.output, /something broke\nrun the same --push again, or --abandon/, 'the command\'s own words, surfaced');
     assert.deepEqual(rig.calls().map(c => c.step), [...after, stepName], 'nothing after the failed step ran');
@@ -273,8 +286,8 @@ test('abandon: before apply the draft goes; after apply nothing is touched and t
   const a2 = await b2.pub.abandon({ id: v.id, token: v.token });
   assert.ok(a2.ok);
   assert.ok(fs.existsSync(noteOf(rig, v)), 'after apply the note is left alone');
-  assert.match(a2.view.cleanup.note, /publish command keeps its own record/);
-  assert.match(a2.view.steps.at(-1).output, /--abandon/);
+  assert.match(a2.view.cleanup.said, /your site keeps its own record/);
+  assert.match(recOf(v).steps.at(-1).output, /--abandon/);
   assert.equal((await b2.pub.abandon({ id: v.id, token: v.token })).status, 409, 'once');
 });
 
@@ -290,7 +303,7 @@ test('a companion restart mid-run leaves a record that offers only "show what ha
     assert.equal(v.mode, 'interrupted_' + mode, mode);
     assert.equal(v.interrupted_from, mode, 'the view names the mode that was interrupted');
     assert.deepEqual(v.can, ['applying', 'applied', 'publishing'].includes(mode) ? ['continue', 'abandon'] : ['abandon'], mode);
-    assert.equal(v.steps[0].output, 'seen', 'what happened is still shown');
+    assert.equal(recOf(v).steps[0].output, 'seen', 'what happened is still shown');
     assert.equal((await pub.confirm({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.retry({ id: 'abc', token: 'tok' })).status, 409);
     assert.equal((await pub.cancel({ id: 'abc', token: 'tok' })).status, 409);
@@ -355,7 +368,7 @@ test('nothing runs unless the setting is complete: every rule has its refusal, a
     const b = boot(rig, { config: cfg === undefined ? null : cfg });
     const r = (await b.start());
     assert.equal(r.ok, false, name); assert.equal(r.status, 409, name);
-    assert.match(r.error, /not set up/, name);
+    assert.match(r.error, /not set up correctly/, name);
   }
   assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing was written');
   assert.deepEqual(rig.calls(), [], 'nothing was run');
@@ -373,7 +386,7 @@ test('a setting changed after the run started stops the next step (validated aga
   cfg = { ...rig.home, commands: { ...rig.home.commands, publish: [process.execPath, FAKE, rig.log, rig.ctl, 'evil', '{note}'] } };
   await pub.confirm({ id: v.id, token: v.token });
   await until(() => pub.current().mode.startsWith('failed_'), 'failed');
-  assert.match(pub.current().failed_reason, /settings changed/);
+  assert.match(recOf(pub.current()).failed_reason, /settings changed/);
   assert.deepEqual(rig.calls().map(c => c.step), ['plan'], 'neither apply nor the changed command ran');
 });
 
@@ -388,7 +401,7 @@ test('the note file: never overwrites, never follows a link out, never leaves th
   const r = (await b.start());
   assert.ok(r.ok, r.error);
   const v = r.view;
-  assert.equal(v.note_rel, '_notes/first-thought-about-liveness-3.md', 'past a file and a symlink; the file name is only the first words, the address is the id');
+  assert.equal(recOf(v).note_rel, '_notes/first-thought-about-liveness-3.md', 'past a file and a symlink; the file name is only the first words, the address is the id');
   assert.equal(fs.readFileSync(path.join(rig.folder, 'first-thought-about-liveness.md'), 'utf8'), 'an existing note');
   assert.equal(fs.readFileSync(elsewhere, 'utf8'), 'untouched', 'nothing was written through the link');
   assert.equal(R.addressFrom('see https://a.test/b/x/ and https://a.test/other', '/b/x'), 'https://a.test/b/x/');
@@ -402,8 +415,8 @@ test('hostile comment text cannot change where the file goes', async t => {
     const b = boot(rig, { page: blygPage([thread('t1', 'q', text, { blyg: stamp() })]) });
     const r = (await b.start());
     assert.ok(r.ok, `${text}: ${r.error}`);
-    assert.match(r.view.note_rel, /^_notes\/[a-z0-9]+(-[a-z0-9]+)*\.md$/, text);
-    assert.equal(path.dirname(path.join(rig.top, r.view.note_rel)), rig.folder);
+    assert.match(recOf(r.view).note_rel, /^_notes\/[a-z0-9]+(-[a-z0-9]+)*\.md$/, text);
+    assert.equal(path.dirname(path.join(rig.top, recOf(r.view).note_rel)), rig.folder);
     await until(() => b.mode() === 'planned', 'planned');
     const v = b.pub.current();
     await b.pub.cancel({ id: v.id, token: v.token });
@@ -422,13 +435,13 @@ test('with a prepare command the run goes drafted > preparing > planning > plann
   assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned']);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan']);
   const v = b.pub.current();
-  assert.deepEqual(v.steps.map(s => [s.step, s.exit]), [['prepare', 0], ['plan', 0]]);
-  assert.equal(rig.calls()[0].argv[3], v.note_rel, 'prepare gets {note} as one argument too');
+  assert.deepEqual(recOf(v).steps.map(s => [s.step, s.exit]), [['prepare', 0], ['plan', 0]]);
+  assert.equal(rig.calls()[0].argv[3], recOf(v).note_rel, 'prepare gets {note} as one argument too');
   // Cancel: discard runs because prepare ran, and it is the owner's one undo for both
   const c = await b.pub.cancel({ id: v.id, token: v.token });
   assert.ok(c.ok);
   assert.deepEqual(rig.calls().map(x => x.step), ['prepare', 'plan', 'discard']);
-  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), false);
+  assert.equal(fs.existsSync(path.join(rig.top, recOf(v).note_rel)), false);
 });
 
 test('without a prepare command the run goes straight from drafted to planning, as before', async t => {
@@ -448,8 +461,8 @@ test('prepare fails: failed(prepare) with its output, plan never runs, nothing r
   (await b.start()); await until(() => b.mode().startsWith('failed_'), 'failed');
   let v = b.pub.current();
   assert.equal(v.failed_step, 'prepare');
-  assert.match(v.failed_reason, /prepare exited with code 1/);
-  assert.match(v.steps[0].output, /something broke/);
+  assert.match(recOf(v).failed_reason, /prepare exited with code 1/);
+  assert.match(recOf(v).steps[0].output, /something broke/);
   await sleep(250);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare'], 'plan did not run and nothing was retried');
   assert.equal((await b.pub.confirm({ id: v.id, token: v.token })).ok, false);
@@ -479,7 +492,7 @@ test('abandon after a failed prepare takes the draft away through discard', asyn
   const a = await b.pub.abandon({ id: v.id, token: v.token });
   assert.ok(a.ok);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'discard']);
-  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), false);
+  assert.equal(fs.existsSync(path.join(rig.top, recOf(v).note_rel)), false);
 });
 
 // A failed run is not "mid-run": nothing of it is running. A restart used to turn it into `interrupted` (interrupted_from 'failed'),
@@ -532,7 +545,7 @@ test('abandon after a failed apply: the site\'s abandon runs, then discard, and 
     assert.equal(a.view.cleanup.removed, true, `the draft is taken away (${withAbandon})`);
     assert.ok(!fs.existsSync(note));
     assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'apply', ...(withAbandon ? ['abandon'] : []), 'discard'], `${withAbandon}`);
-    assert.match(a.view.cleanup.note, withAbandon ? /site's own abandon was run and the draft was taken away/ : /^apply failed, so nothing was published: the draft was taken away$/);
+    assert.match(a.view.cleanup.said, /^Nothing was published\. The draft was taken away\.$/);
   }
 });
 
@@ -698,14 +711,15 @@ test('restart, then abandon after apply: the site\'s own abandon command runs (n
   rig.control({ abandon: 'fail' });
   const bad = await pub.abandon({ id: v.id, token: v.token });
   assert.equal(bad.ok, false);
-  assert.match(bad.error, /the abandon command failed .*abandon: something broke/s);
+  assert.match(bad.error, /^Your site could not give this publish up\. You can try again, or forget it here \(nothing is run on your site\)\.$/);
+  assert.match(recOf(v).abandon_failure, /abandon exited with code 1/, 'the reason is in the record (and the log)');
   assert.equal(pub.current().mode, 'abandon_failed', 'not abandoned while the site\'s own abandon failed: it waits, offering abandon or forget');
   rig.control({});
   const ok = await pub.abandon({ id: v.id, token: v.token });
   assert.ok(ok.ok, ok.error);
   assert.deepEqual(rig.calls().map(c => c.step).slice(-2), ['abandon', 'abandon']);
   assert.equal(pub.current().mode, 'abandoned');
-  assert.ok(fs.existsSync(path.join(rig.top, v.note_rel)), 'after apply the note is left alone');
+  assert.ok(fs.existsSync(path.join(rig.top, recOf(v).note_rel)), 'after apply the note is left alone');
   // a new run may start
   assert.equal(mk().current().mode, 'abandoned');
 });
@@ -727,7 +741,7 @@ test('the notes folder swapped for a link to somewhere else after validation: no
   const b = boot(rig, { hook: { beforeWrite: () => { fs.renameSync(rig.folder, rig.folder + '-moved'); fs.symlinkSync(elsewhere, rig.folder); } } });
   const r = (await b.start());
   assert.equal(r.ok, false);
-  assert.match(r.error, /outside the notes folder/);
+  assert.match(r.error, /outside your notes folder/);
   assert.deepEqual(fs.readdirSync(elsewhere), [], 'nothing landed in the place the link points to');
 });
 
@@ -738,14 +752,14 @@ test('cancel re-checks the note right before removing it: an edit made after the
   const v = b.pub.current();
   const c = await b.pub.cancel({ id: v.id, token: v.token });
   assert.ok(c.ok);
-  assert.equal(fs.existsSync(path.join(rig.top, v.note_rel)), true, 'the note is still there');
-  assert.match(c.view.cleanup.note, /changed, so it was left/);
+  assert.equal(fs.existsSync(path.join(rig.top, recOf(v).note_rel)), true, 'the note is still there');
+  assert.match(c.view.cleanup.said, /changed\. Your note was left as it is/);
   // and a link put in its place is never followed or removed as the note
   const b2 = boot(rig, { hook: { beforeUnlink: abs => { const keep = abs + '.keep'; fs.renameSync(abs, keep); fs.symlinkSync(keep, abs); } } });
   (await b2.start()); await until(() => b2.mode() === 'planned', 'planned 2');
   const v2 = b2.pub.current();
   await b2.pub.cancel({ id: v2.id, token: v2.token });
-  assert.ok(fs.lstatSync(path.join(rig.top, v2.note_rel)).isSymbolicLink(), 'a link is left, not unlinked as if it were the note');
+  assert.ok(fs.lstatSync(path.join(rig.top, recOf(v2).note_rel)).isSymbolicLink(), 'a link is left, not unlinked as if it were the note');
 });
 
 test('published_marker: a publish that exits 0 without the done marker is failed(publish) with its output, nothing is stamped, and Retry is offered; with the marker it publishes', async t => {
@@ -759,8 +773,8 @@ test('published_marker: a publish that exits 0 without the done marker is failed
   await until(() => b.mode().startsWith('failed_'), 'failed at publish');
   const f = b.pub.current();
   assert.equal(f.failed_step, 'publish');
-  assert.match(f.failed_reason, /exited 0 but did not finish \(it ended at “State: applied”, not “State: merged_back”\): nothing was published/);
-  assert.match(f.steps.at(-1).output, /State: applied/);
+  assert.match(recOf(f).failed_reason, /exited 0 but did not finish \(it ended at “State: applied”, not “State: merged_back”\): nothing was published/);
+  assert.match(recOf(f).steps.at(-1).output, /State: applied/);
   assert.equal(b.pages.get(b.page.url).threads[0].blyg_published, undefined, 'the thread is not stamped');
   assert.deepEqual(f.can, ['retry', 'abandon']);
   // no marker line at all, an earlier marker followed by another State line: also not done
@@ -801,7 +815,7 @@ test('the abandon command must carry {note} (so the site\'s command ends only TH
   rig.control({});
   assert.ok((await pub.abandon({ id: v2.id, token: v2.token })).ok);
   assert.equal(rig.calls().at(-1).step, 'abandon');
-  assert.equal(rig.calls().at(-1).argv[3], v.note_rel, 'the abandon command was told which note');
+  assert.equal(rig.calls().at(-1).argv[3], recOf(v).note_rel, 'the abandon command was told which note');
 });
 
 test('abandon after apply runs the site\'s abandon command only with the settings the run started under (a changed setting never reaches a command)', async t => {
@@ -870,7 +884,7 @@ test('a crafted or damaged record is shown as interrupted with only "abandon": n
       for (const act of ['carryOn', 'retry', 'confirm']) assert.equal((await pub[act]({ id: 'abc', token: 'tok' })).status, 409, `${name}: ${act}`);
       const a = await pub.abandon({ id: 'abc', token: 'tok' });
       assert.ok(a.ok, name);
-      assert.match(a.view.cleanup.note, /Nothing was run or removed/);
+      assert.match(a.view.cleanup.said, /Nothing was run or removed/);
     }
   }
   assert.deepEqual(rig.calls(), [], 'no command was ever run with any of those paths');
@@ -894,7 +908,13 @@ test('a step whose process outlived the companion is never run twice: Continue i
   const file = path.join(rig.out, 'run5.json'); fs.writeFileSync(file, JSON.stringify(rec));
   const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: fakePs, readConfig: () => ({ blyg_home: rig.home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
   v = pub.current();
-  assert.deepEqual([v.mode.startsWith('interrupted_'), v.can, v.earlier_step_running], [true, ['stop-and-continue', 'abandon'], true]);
+  assert.deepEqual([v.mode.startsWith('interrupted_'), v.can, v.earlier_step], [true, ['stop-and-continue', 'stop-and-abandon'], 'alive']);
+  // abandon and forget look afresh too: refused while it lives (stop it first), and nothing is run on the site
+  const ab = await pub.abandon({ id: v.id, token: v.token });
+  assert.deepEqual([ab.status, /The earlier step is still running: stop it first/.test(ab.error)], [409, true]);
+  const fg = await pub.forget({ id: v.id, token: v.token, sure: true });
+  assert.deepEqual([fg.status, /stop it first/.test(fg.error)], [409, true]);
+  assert.ok(!rig.calls().some(c => c.step === 'abandon'), 'the site\'s abandon never ran');
   const refused = await pub.carryOn({ id: v.id, token: v.token });
   assert.equal(refused.status, 409);
   assert.match(refused.error, /The earlier step is still running/);
@@ -926,19 +946,22 @@ test('childState: none, gone (no such group, malformed, or the number now belong
   if (ps) assert.equal(R.childAlive({ pgid: process.pid, lstart: 'Mon Jan  1 00:00:00 2001' }), false, 'same number, different start time: another process');
 });
 
-test('F10: while a step runs the view says which step, how long it has gone and the last line it printed (never a silent half hour); nothing of it after', async t => {
+test('F10: while a step runs the view says which step and how long it has gone (never a silent half hour), never what it printed; nothing of it after; a publish says when it is waiting for the site', async t => {
   const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
   const slow = [process.execPath, '-e', 'console.log("first line");console.log("building page 3 of 9\\u001b[31m");setTimeout(()=>{},1200)', 'x', '{note}'];
-  const home = { ...rig.home, commands: { ...rig.home.commands, apply: slow } };
+  const pushing = [process.execPath, '-e', 'console.log("Pushed main abc1234: publishing.");setTimeout(()=>{console.log("State: merged_back")},1200)', 'x', '{note}'];
+  const home = { ...rig.home, commands: { ...rig.home.commands, apply: slow, publish: pushing } };
   const b = boot(rig, { config: home });
   (await b.start()); await until(() => b.mode() === 'planned', 'planned');
   const v = b.pub.current();
   assert.equal(v.running, undefined, 'nothing running while it waits for the owner');
   await b.pub.confirm({ id: v.id, token: v.token });
-  const seen = await until(() => { const c = b.pub.current(); return c.running && c.running.last_line.includes('page 3') ? c : null; }, 'a progress line');
-  assert.deepEqual([seen.running.step, seen.mode, seen.running.last_line], ['apply', 'applying', 'building page 3 of 9'], 'the last line, with control codes removed');
+  const seen = await until(() => { const c = b.pub.current(); return c.running && c.running.step === 'apply' ? c : null; }, 'apply running');
+  assert.deepEqual([seen.running.step, seen.mode, 'last_line' in seen.running], ['apply', 'applying', false], 'which step, never its output');
   await sleep(300);
   assert.ok(b.pub.current().running.elapsed_ms >= 250, 'elapsed time grows');
+  const wait = await until(() => { const c = b.pub.current(); return c.running && c.running.phase === 'wait' ? c : null; }, 'publish: waiting for the site');
+  assert.equal(wait.running.step, 'publish');
   await until(() => b.mode() === 'published', 'published');
   assert.equal(b.pub.current().running, undefined);
   assert.equal(H.TIME_LIMITS_MS.apply, 1_800_000);
@@ -950,7 +973,7 @@ test('the pre-flight check runs before anything is written; its own sentence ref
   const b = boot(rig, { config: { ...rig.home, commands: { ...rig.home.commands, check: bad } } });
   const r = (await b.start());
   assert.equal(r.ok, false); assert.equal(r.status, 409);
-  assert.match(r.error, /^Publish as blyg cannot start: ruby 2\.6\.10 is on PATH, 3\.2 needed\nBLYG_CHECKER is not set$/);
+  assert.match(r.error, /^Your site cannot publish right now: Ruby 2\.6\.10 is on PATH, 3\.2 needed\. BLYG_CHECKER is not set\.$/);
   assert.deepEqual(fs.readdirSync(rig.folder), [], 'nothing written');
   assert.deepEqual(rig.calls(), []); assert.equal(b.mode(), 'idle');
   // a check that hangs is cut at its limit; one that cannot be started is a plain message
@@ -1015,8 +1038,9 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   assert.equal((await b.pub.forget({ id: v.id, token: v.token })).status, 409, 'forget is offered only after the site\'s abandon failed');
   const a = await b.pub.abandon({ id: v.id, token: v.token });
   assert.deepEqual([a.ok, a.status, a.view.mode, a.view.can], [false, 409, 'abandon_failed', ['abandon', 'forget']]);
-  assert.match(a.error, /Forget this run here/);
-  assert.match(a.view.abandon_failure, /abandon: something broke/);
+  assert.match(a.error, /forget it here \(nothing is run on your site\)/);
+  assert.equal(a.view.abandon_failure, '', 'no recognised plain line: the owner reads one sentence; the output is in the log');
+  assert.match(fs.readFileSync(b.pub.log.pathOf(v.id), 'utf8'), /something broke/);
   // restart: still abandon_failed, still the same two actions; a new start is refused
   const again = () => R.createPublisher({ file: b.file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: home }), readPage: u => b.pages.get(u), savePage: p => b.pages.set(p.url, p) });
   let pub = again();
@@ -1030,7 +1054,9 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   const f = await pub.forget({ id: v.id, token: v.token });
   assert.ok(f.ok, JSON.stringify(f));
   assert.deepEqual([f.view.mode, f.view.cleanup.forgotten, f.view.cleanup.removed], ['abandoned', true, false]);
-  assert.match(f.view.cleanup.note, /nothing was run on your site.*--unstage-note/s);
+  assert.match(f.view.cleanup.said, /nothing was run on your site.*troubleshooting details/s);
+  assert.ok(!/--|scripts\//.test(f.view.cleanup.said), 'no command or script names for the owner');
+  assert.match(fs.readFileSync(b.pub.log.pathOf(f.view.id), 'utf8'), /--unstage-note/, 'how to end it by hand is in the log, for an agent');
   assert.equal(rig.calls().length, before, 'forget ran no command');
   assert.ok(fs.existsSync(noteOf(rig, v)), 'and removed nothing');
   pub = again();
@@ -1058,7 +1084,11 @@ test('an unidentifiable earlier step (no start time recorded) is never signalled
   let psCalls = 0;
   const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: pid => { psCalls++; return `T${pid}`; }, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
   for (let i = 0; i < 5; i++) v = pub.current();
-  assert.deepEqual([v.mode, v.can, v.earlier_step_unknown], ['interrupted_publishing', ['abandon'], true]);
+  assert.deepEqual([v.mode, v.can, v.earlier_step], ['interrupted_publishing', ['forget'], 'unknown'], 'only Forget: abandon would run the site\'s command beside it');
+  const ab = await pub.abandon({ id: v.id, token: v.token });
+  assert.deepEqual([ab.status, /cannot be identified safely/.test(ab.error)], [409, true], 'abandon refused');
+  const f1 = await pub.forget({ id: v.id, token: v.token });
+  assert.deepEqual([f1.status, /Press Forget again to confirm/.test(f1.error), pub.current().mode], [409, true, 'interrupted_publishing'], 'forget asks a second time');
   const go = await pub.carryOn({ id: v.id, token: v.token, stop: true });
   assert.equal(go.status, 409);
   assert.match(go.error, /cannot be identified safely/);
@@ -1072,7 +1102,7 @@ test('an unidentifiable earlier step (no start time recorded) is never signalled
   const pub2 = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: () => { psCalls++; return 'T1'; }, readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
   let w;
   for (let i = 0; i < 5; i++) w = pub2.current();
-  assert.equal(w.earlier_step_running, true);
+  assert.equal(w.earlier_step, 'alive');
   assert.equal(psCalls, 1, `ps ran ${psCalls} times for five polls`);
   assert.equal((await pub2.carryOn({ id: w.id, token: w.token })).status, 409, 'still running: refused without stop');
   assert.equal(psCalls, 2, 'the explicit action looked afresh');
@@ -1123,4 +1153,197 @@ test('a start whose comment links to a non-web address or holds an image is refu
   }
   assert.deepEqual(fs.readdirSync(rig.folder), []);
   assert.deepEqual(rig.calls(), []);
+});
+
+// ======================================================================================================================================
+// THIS ROUND (2026-11-24, after the owner's first real use)
+// ======================================================================================================================================
+const EDIT = rig => ({ plan_edit: [process.execPath, FAKE, rig.log, rig.ctl, 'plan_edit', '{note}', '{changelog}'], apply_edit: [process.execPath, FAKE, rig.log, rig.ctl, 'apply_edit', '{note}', '{changelog}'],
+  publish_edit: [process.execPath, FAKE, rig.log, rig.ctl, 'publish_edit', '{note}', '{changelog}'] });
+
+test('the owner\'s view is plain: no output, no path; a failure is one recognised plain line (cleaned), or nothing; earlier attempts are not failures; the log has everything, owner-only', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  rig.control({ plan: 'refuse' });
+  const b = boot(rig);
+  (await b.start()); await until(() => b.mode() === 'failed_plan', 'failed');
+  let v = b.pub.current();
+  assert.equal(v.failure, 'The note is already staged by this checkout; unstage it before staging another note.', 'the site\'s plain line, without its script name, path or flag');
+  assert.ok(!/rb:|scripts|_notes|--/.test(JSON.stringify(v).replace(/"token":"[^"]*"/, '')), 'no stack trace, path or flag anywhere in the view');
+  assert.deepEqual([v.steps, v.tries], [[{ step: 'plan', ok: false, ms: v.steps[0].ms }], 1]);
+  rig.control({ plan: 'fail' });
+  await b.pub.retry({ id: v.id, token: v.token }); await until(() => b.mode() === 'failed_plan' && b.pub.current().tries === 2, 'failed again');
+  v = b.pub.current();
+  assert.equal(v.failure, '', 'nothing recognised: the drawer says "Something went wrong while …"');
+  rig.control({});
+  await b.pub.retry({ id: v.id, token: v.token }); await until(() => b.mode() === 'planned', 'planned');
+  v = b.pub.current();
+  assert.deepEqual(v.steps.map(s => [s.step, s.ok]), [['plan', true]], 'the CURRENT attempt only: the earlier failures are not listed');
+  assert.equal(v.tries, 3, 'how many times, quietly');
+  const file = b.pub.log.pathOf(v.id);
+  assert.equal(path.dirname(file), path.join(path.dirname(b.file), 'blyg-publish-logs'));
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+  const lines = fs.readFileSync(file, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+  assert.deepEqual(lines[0].ev, 'run');
+  assert.equal(lines[0].settings_fp, recOf(v).settings_fp);
+  assert.ok(lines.filter(l => l.ev === 'step' && l.step === 'plan').length === 3 && lines.some(l => l.ev === 'step' && /RuntimeError/.test(l.output) && Array.isArray(l.argv) && Number.isInteger(l.ms)), 'every step: argv, exit, time, whole output');
+  assert.ok(lines.some(l => l.ev === 'move' && l.from === 'planning' && l.to === 'failed_plan'), 'the moves, with times');
+  assert.equal(R.plainLineOf('x\nRefused: release date 2027-01-01 is in the future\nState: planned'), 'Release date 2027-01-01 is in the future.');
+  assert.equal(R.plainSentence('blyg-publish: main moved from abc to def after apply; run again to apply'), 'Main moved from abc to def after apply; run again to apply.');
+});
+
+test('the log keeps the last 50 runs', async () => {
+  const { createRunLog, LOG_KEEP } = await import('../blyg-log.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-blyglog-'));
+  const log = createRunLog(path.join(dir, 'logs'));
+  for (let i = 0; i < LOG_KEEP + 7; i++) { log.write(i.toString(16).padStart(16, '0'), { ev: 'note', text: String(i) }); fs.utimesSync(log.pathOf(i.toString(16).padStart(16, '0')), new Date(1e12 + i * 1000), new Date(1e12 + i * 1000)); }
+  log.write('ffffffffffffffff', { ev: 'note', text: 'last' });
+  const left = fs.readdirSync(path.join(dir, 'logs'));
+  assert.equal(left.length, LOG_KEEP);
+  assert.ok(left.includes('ffffffffffffffff.jsonl') && !left.includes('0000000000000000.jsonl'), 'the oldest go');
+  log.write('../../etc/passwd', { ev: 'note' });
+  assert.equal(fs.readdirSync(path.join(dir, 'logs')).length, LOG_KEEP, 'a run id that is not one is never a file name');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('THE AGENT-TEXT RULE: a post with any agent-written or pasted passage is always shown first, even with confirm never', async t => {
+  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note', '--quick'] } }); t.after(rig.done);
+  const withGap = { id: 't1', quote: 'q', blyg: stamp(), msgs: [mine('Mine. /tk(say it)', { gaps: [{ id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said.', model: 'claude-x', at: '2026-11-24T10:00:00Z' }] })] };
+  const b = boot(rig, { page: blygPage([withGap]) });
+  const r = await b.start('t1', 'one', 'never');
+  assert.ok(r.ok, r.error);
+  assert.deepEqual([r.view.confirm, r.view.review], ['always', 'agent-text']);
+  await until(() => b.mode() === 'planned', 'planned');
+  await sleep(200);
+  assert.equal(b.mode(), 'planned', 'it waits for the owner');
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
+  assert.deepEqual(b.pub.current().reading.map(p => p.kind), ['words', 'agent', 'quote'], 'the box is in the preview');
+  assert.equal(b.pub.current().reading[1].label, 'Claude');
+  assert.deepEqual([R.reviewFor('never'), R.reviewFor('always'), R.reviewFor('never', { agentText: true })], [{ confirm: 'never', review: 'none' }, { confirm: 'always', review: 'setting' }, { confirm: 'always', review: 'agent-text' }]);
+  assert.deepEqual([b.pub.current().pace, R.paceOf(['--only-note']), b.pub.current().full_minutes], ['quick', 'full', null], 'quick with the site\'s quick flag; no guess at minutes when none is recorded');
+});
+
+test('"this and the ones above" with one click counts only threads typed in the drawer', async t => {
+  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note'] } }); t.after(rig.done);
+  const page = blygPage([
+    { id: 'a', quote: 'q', blyg: stamp(), msgs: [mine('Typed through a script.', { channel: 'api' })] },
+    { id: 'b', quote: 'q', blyg: stamp(), msgs: [mine('Typed in the drawer.', { channel: 'drawer' })] },
+    { id: 'c', quote: 'q', blyg: stamp(), msgs: [mine('Typed on the reading room page.', { channel: 'reading-room' })] },
+    { id: 'd', quote: 'q', blyg: stamp(), msgs: [mine('This one.', { channel: 'drawer' })] }]);
+  const b = boot(rig, { page });
+  const r = await b.start('d', 'above', 'never');
+  assert.ok(r.ok, r.error);
+  assert.deepEqual(r.view.thread_ids, ['b', 'd']);
+  b.pub.stopAll();
+});
+
+test('a full build-and-check is timed for "about N minutes" (only without the quick flag), and the next run says so', async t => {
+  const rig = makeRig(); t.after(rig.done);
+  const b = boot(rig);
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  assert.deepEqual([v.pace, v.full_minutes], ['full', null]);
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published');
+  const d = JSON.parse(fs.readFileSync(path.join(path.dirname(b.file), 'blyg-publish-durations.json'), 'utf8'));
+  assert.ok(Number.isFinite(d[rig.top].apply_ms));
+  b.pages.get(b.page.url).threads.push(thread('t9', 'q', 'Another thought.', { blyg: stamp() }));
+  (await b.start('t9')); await until(() => b.mode() === 'planned', 'planned 2');
+  assert.equal(b.pub.current().full_minutes, 1, 'rounded up to a minute: never "0 minutes"');
+});
+
+test('PUBLISHING AGAIN: a new version of the same post — same file, id, address and created; the changelog written from the difference; the edit commands; nothing changed → refused; all comments gone → refused', async t => {
+  const rig = makeRig({ discard: true, extra: {} }); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const page = blygPage([{ id: 't1', quote: 'A passage.', blyg: stamp(), msgs: [mine('First comment.', { ts: '1' }), mine('Second comment.', { ts: '2' })] }]);
+  const b = boot(rig, { page, config: home });
+  (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  const rel = recOf(v).note_rel;
+  const first = fs.readFileSync(path.join(rig.top, rel), 'utf8');
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published');
+  const p1 = b.pages.get(b.page.url).threads[0].blyg_published;
+  assert.equal(p1.version, 1);
+  // nothing changed
+  const same = await b.start();
+  assert.deepEqual([same.ok, same.error], [false, 'Nothing has changed since you published this.']);
+  // the owner edits the second comment
+  b.pages.get(b.page.url).threads[0].msgs[1].text = 'Second comment, sharper.';
+  const e = await b.start();
+  assert.ok(e.ok, e.error);
+  assert.deepEqual([e.view.kind, e.view.version, e.view.changelog], ['edit', 2, 'Edited the second comment.']);
+  await until(() => b.mode() === 'planned', 'planned (edit)');
+  v = b.pub.current();
+  assert.equal(recOf(v).note_rel, rel, 'the SAME note file');
+  const second = fs.readFileSync(path.join(rig.top, rel), 'utf8');
+  const fm = t2 => t2.split('\n---\n')[0];
+  for (const k of ['blyg_id', 'permalink', 'created', 'released']) assert.equal(new RegExp(`^${k}: .*$`, 'm').exec(fm(second))[0], new RegExp(`^${k}: .*$`, 'm').exec(fm(first))[0], `${k} kept`);
+  assert.match(second, /Second comment, sharper\./);
+  const planEdit = rig.calls().at(-1);
+  assert.deepEqual([planEdit.step, planEdit.argv.at(-1)], ['plan_edit', 'Edited the second comment.'], 'the edit command, with the changelog line as ONE argument');
+  // cancel: the published text goes back, exactly
+  await b.pub.cancel({ id: v.id, token: v.token });
+  assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), first, 'cancelling a new version puts the published note back');
+  // again, and publish it
+  const e2 = await b.start(); await until(() => b.mode() === 'planned', 'planned (edit 2)');
+  v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published v2');
+  assert.deepEqual(rig.calls().slice(-2).map(c => c.step), ['apply_edit', 'publish_edit']);
+  const p2 = b.pages.get(b.page.url).threads[0].blyg_published;
+  assert.deepEqual([p2.version, p2.permalink, p2.address], [2, p1.permalink, p1.address]);
+  void e2;
+  // add a comment and edit the first: one line
+  const th = b.pages.get(b.page.url).threads[0];
+  th.msgs[0].text = 'First comment, edited.'; th.msgs.push(mine('A third comment.', { ts: '3' }));
+  const e3 = await b.start();
+  assert.equal(e3.view.changelog, 'Edited the first comment and added one.');
+  await until(() => b.mode() === 'planned', 'planned (edit 3)');
+  v = b.pub.current(); await b.pub.cancel({ id: v.id, token: v.token });
+  // every comment gone
+  th.msgs = [];
+  const gone = await b.start();
+  assert.deepEqual([gone.ok, gone.error], [false, 'Withdrawing a post is done on your site, not from here.']);
+  // the note changed on the site by hand: not rewritten from here
+  th.msgs = [mine('First comment, edited.', { ts: '1' })];
+  fs.appendFileSync(path.join(rig.top, rel), '\nedited by hand\n');
+  const hand = await b.start();
+  assert.match(hand.error, /changed on your site since it was published from here/);
+});
+
+test('the start refuses while the last record\'s step process is still alive', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const sl = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: true, stdio: 'ignore' });
+  t.after(() => { try { process.kill(-sl.pid, 'SIGKILL'); } catch { /* gone */ } });
+  const file = path.join(rig.out, 'run-forgot.json');
+  fs.writeFileSync(file, JSON.stringify({ mode: 'abandoned', id: 'abcdefabcdefabcd', token: 't', child: { pgid: sl.pid, lstart: 'S' } }));
+  const pub = R.createPublisher({ file, now: () => NOW, broadcast: () => {}, lstartOf: () => 'S', readConfig: () => ({ blyg_home: rig.home }), readPage: () => null, savePage: () => {} });
+  const r = await pub.start({ page: blygPage([thread('t1', 'q', 'w', { blyg: stamp() })]), threadId: 't1', scope: 'one', shown: 'always' });
+  assert.deepEqual([r.ok, r.error], [false, 'The earlier step is still running: stop it first.']);
+});
+
+test('the picture of the draft: one named state, rendered only for a run waiting on the owner with a preview address, never from a client address; unavailable never blocks', async t => {
+  const rig = makeRig({ extra: { preview_url: 'http://127.0.0.1:9/preview{permalink}' } }); t.after(rig.done);
+  const asked = [];
+  let answer = { state: 'ready', png: Buffer.from('PNG') };
+  const pages = new Map(); const page = blygPage([thread('t1', 'q', 'A thought.', { blyg: stamp() })]); pages.set(page.url, page);
+  const pub = R.createPublisher({ file: path.join(rig.out, 'run-pic.json'), now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: rig.home }), readPage: u => pages.get(u), savePage: () => {},
+    chrome: '/no/chrome', previewApartMs: 5, render: async o => { asked.push(o); return answer; } });
+  for (const [from, to, okk] of [['off', 'waiting', true], ['off', 'ready', false], ['waiting', 'ready', true], ['ready', 'waiting', true], ['unavailable', 'waiting', true], ['waiting', 'off', true]]) {
+    const p = { state: from };
+    if (okk) assert.equal(R.previewMove(p, to).state, to); else assert.throws(() => R.previewMove(p, to), /cannot go/);
+  }
+  assert.ok((await pub.start({ page, threadId: 't1', scope: 'one', shown: 'always' })).ok);
+  await until(() => pub.current().mode === 'planned', 'planned');
+  const v = pub.current();
+  assert.equal(pub.previewOf({ id: v.id, token: 'x'.repeat(32) }).status, 404);
+  assert.equal(pub.previewOf({ id: v.id, token: v.token, theme: 'dark' }).state, 'waiting');
+  await until(() => pub.previewOf({ id: v.id, token: v.token, theme: 'dark' }).state === 'ready', 'ready');
+  assert.equal(String(pub.previewOf({ id: v.id, token: v.token, theme: 'dark' }).png), 'PNG');
+  assert.deepEqual([asked[0].url, asked[0].theme, asked[0].selector], [`http://127.0.0.1:9/preview${v.permalink}`, 'dark', 'article'], 'the address is the setting and the run\'s own permalink');
+  answer = { state: 'missing', why: 'not there yet' };
+  assert.equal(pub.previewOf({ id: v.id, token: v.token, theme: 'dark', fresh: true }).state, 'waiting');
+  await until(() => pub.previewOf({ id: v.id, token: v.token, theme: 'dark' }).state === 'unavailable', 'unavailable after the tries');
+  assert.equal(asked.length, 1 + R.PREVIEW_TRIES.times, 'asked again a few times while the page is not there yet');
+  assert.ok((await pub.confirm({ id: v.id, token: v.token })).ok, 'an unavailable picture never blocks publishing');
+  assert.equal(pub.previewOf({ id: v.id, token: v.token }).state, 'off', 'and once the run moved on there is nothing to render');
+  await until(() => pub.current().mode === 'published', 'published');
 });

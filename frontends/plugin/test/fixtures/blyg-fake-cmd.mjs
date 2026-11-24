@@ -19,6 +19,8 @@ fs.appendFileSync(log, JSON.stringify({ step, argv: process.argv.slice(2), cwd: 
   noteExists: fs.existsSync(note), how, pid: process.pid }) + '\n');
 const permalink = (() => { try { return /^permalink:\s*(\S+)/m.exec(fs.readFileSync(note, 'utf8'))[1]; } catch { return ''; } })();
 if (how === 'fail') { console.error(`${step}: something broke\nrun the same --push again, or --abandon`); process.exit(1); }
+// a plain refusal of the kind the example site prints, after a stack trace and a path (only the plain line may reach the owner)
+if (how === 'refuse') { console.error(`/Users/someone/site/scripts/blyg_publish.rb:42:in 'go': boom (RuntimeError)\n\tfrom scripts/blyg-publish:9:in '<main>'\nblyg-publish: _notes/other.md is already staged by this checkout; unstage it (--unstage-note) before staging another note`); process.exit(1); }
 if (how === 'sleep') setTimeout(() => {}, 60000);
 else if (how === 'big') { process.stdout.write('x'.repeat(5 * 1024 * 1024)); }
 else if (how === 'prompt') { process.stdin.once('data', () => { console.log('got a line'); process.exit(0); }); process.stdin.once('end', () => { console.log('stdin closed'); process.exit(3); }); }
