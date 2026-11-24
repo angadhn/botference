@@ -1275,3 +1275,36 @@ test('every mode in the engine is one named list: the ledger copy too (stored or
   assert.deepEqual(F.ARCHIVE_STATES, ['archived', 'archived_changed']);
   assert.ok(F.ARCHIVE_STATES.every(s => F.READ_STATES.includes(s)));
 });
+
+test('at most 5 documents of read posts are fetched per blyg per refresh, even when every one is only a maintenance version', async () => {
+  const r = rig({ settings: { following_unread_target: 500 } });
+  const site = r.web.add(A);
+  publish(site, A, 20);
+  follow(r, A);
+  await r.f.refresh();
+  r.f.tickMany(feed(r).map(h => h.key));
+  for (let k = 1; k <= 20; k++) site.put(makeDoc({ id: idOf(k), origin: A, title: `Post ${k}`, body: `Words of post ${k} on alpha.web.test.`, created: day(k), updated: day(100), version: 2 }));
+  r.web.requests.length = 0;
+  const s = await r.f.refresh();
+  assert.equal(r.web.itemRequests().length, F.LIMITS.archivedDocsPerRun);
+  assert.equal(s.maintenance, 5);
+  assert.equal(s.edited, 0);
+  for (let i = 0; i < 3; i++) await r.f.refresh();
+  assert.ok(Object.values(r.json().items).every(i => i.version === 2 && i.read === 'archived'), 'all recorded, five a run, none moved');
+  r.done();
+});
+
+test('a top-up is refused within topupGapMs of the last one, by the engine itself (not only by what the page is told)', async () => {
+  const r = rig({ settings: { following_unread_target: 3 } });
+  publish(r.web.add(A), A, 30);
+  follow(r, A);
+  await r.f.refresh();
+  r.f.tickMany(feed(r).map(h => h.key));
+  assert.equal((await r.f.topUp()).started, true);
+  r.f.tickMany(feed(r).map(h => h.key));
+  const second = await r.f.topUp();
+  assert.deepEqual(second, { started: false, reason: 'topped up a moment ago' });
+  r.clock.t += F.LIMITS.topupGapMs;
+  assert.equal((await r.f.topUp()).started, true);
+  r.done();
+});
