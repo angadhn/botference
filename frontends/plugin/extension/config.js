@@ -536,7 +536,10 @@
     '/continue-in-council', '/pdf-annotations', '/page-image', '/snapshot', '/send-review',
     '/make-artifact', '/run', '/fte-route', '/blog-page', '/blog-image', '/files', '/relay',
     '/fresh', '/delete-page', '/page-chat-new', '/page-chat-open', '/question', '/question-revise',
-    '/model', '/effort', '/key-mode', '/draft-blog', '/draft-blog/thread'];
+    '/model', '/effort', '/key-mode', '/draft-blog', '/draft-blog/thread',
+    // a publish's start runs the site's pre-flight and checks a new post's links (bounded, but past 30 s together); a feed
+    // passage's post is read from its blyg
+    '/blyg-publish/start', '/blyg/bind'];
   const routeOf = p => String(p || '').split('?')[0];
   const requestLimitMs = (method, path) =>
     (SLOW_ROUTES.indexOf(routeOf(path)) !== -1 ? SLOW_REQUEST_MS : REQUEST_MS);

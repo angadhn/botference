@@ -65,6 +65,9 @@ await test('every request has a time limit; the ones doing real work get longer'
   assert.equal(CFG.requestLimitMs('POST', '/reply'), CFG.REQUEST_MS);
   assert.equal(CFG.requestLimitMs('POST', '/transcribe'), CFG.SLOW_REQUEST_MS);
   assert.equal(CFG.requestLimitMs('POST', '/export'), CFG.SLOW_REQUEST_MS);
+  // a publish's start (pre-flight + a new post's link checks) and a feed passage's check are never cut at 30 s while they go ahead
+  assert.equal(CFG.requestLimitMs('POST', '/blyg-publish/start'), CFG.SLOW_REQUEST_MS);
+  assert.equal(CFG.requestLimitMs('POST', '/blyg/bind'), CFG.SLOW_REQUEST_MS);
   assert.ok(CFG.REQUEST_MS > 0 && CFG.SLOW_REQUEST_MS > CFG.REQUEST_MS);
 });
 

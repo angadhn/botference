@@ -432,7 +432,7 @@ test('with a prepare command the run goes drafted > preparing > planning > plann
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
   assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'planned', 'planned');
-  assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned']);
+  assert.deepEqual(modes, ['checking', 'drafted', 'preparing', 'planning', 'planned']);
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan']);
   const v = b.pub.current();
   assert.deepEqual(recOf(v).steps.map(s => [s.step, s.exit]), [['prepare', 0], ['plan', 0]]);
@@ -450,7 +450,7 @@ test('without a prepare command the run goes straight from drafted to planning, 
   const modes = [];
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
   (await b.start()); await until(() => b.mode() === 'planned', 'planned');
-  assert.deepEqual(modes, ['drafted', 'planning', 'planned']);
+  assert.deepEqual(modes, ['checking', 'drafted', 'planning', 'planned']);
   assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
 });
 
@@ -583,7 +583,7 @@ test('confirm never: prepare, plan, apply, publish run without stopping and the 
   b.events.push = e => { if (e.type === 'blyg-publish') modes.push(e.run.mode); return 0; };
   assert.ok((await b.start()).ok);
   await until(() => b.mode() === 'published', 'published');
-  assert.deepEqual(modes, ['drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published']);
+  assert.deepEqual(modes, ['checking', 'drafted', 'preparing', 'planning', 'planned', 'applying', 'applied', 'publishing', 'published']);
   const calls = rig.calls();
   assert.deepEqual(calls.map(c => c.step), ['prepare', 'plan', 'apply', 'publish']);
   assert.deepEqual(calls.map(c => c.argv.includes('--only-note')), [false, true, true, true], 'prepare has none; plan, apply and publish all carry the guard');
@@ -1432,7 +1432,7 @@ test('PUBLISHING AGAIN: a new version of the same post — same file, id, addres
   assert.deepEqual(hand.outside, { say: R.OUTSIDE_SAY, lost: 3 }, 'the sentence and how many lines would not be kept (a count, never the text): the hand-written line and the two comments no longer in the thread');
   assert.equal(fs.readFileSync(path.join(rig.top, rel), 'utf8'), handText, 'KEEP: nothing is written');
   assert.equal(rig.calls().length, calls, 'and nothing is run');
-  assert.equal(b.mode(), 'cancelled', 'no run was started');
+  assert.equal(b.mode(), 'idle', 'no run was started (the start held the run while it looked, then let it go)');
   assert.deepEqual(R.OUTSIDE_ANSWERS, ['keep', 'replace']);
   assert.equal((await b.pub.start({ page: b.pages.get(b.page.url), threadId: 't1', scope: 'one', shown: 'always', outside: 'keep' })).status, 400, 'only replace is ever sent');
   // REPLACE: the same start with outside: 'replace' goes ahead, rebuilding the note from the thread
@@ -1724,7 +1724,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
     const r = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add', ...wrong });
     assert.deepEqual([r.ok, r.error], [false, R.ADD_CHANGED_SAY], JSON.stringify(wrong));
   }
-  assert.equal(b.mode(), 'published', 'nothing was started');
+  assert.equal(b.mode(), 'idle', 'nothing was started (the start held the run while it looked, then let it go)');
   assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't1' }).earlier, null);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'merge' })).status, 400);
   assert.equal((await b.pub.start({ page: P(), threadId: 't2', scope: 'above', shown: 'always', join: 'add' })).status, 400);
@@ -2114,4 +2114,58 @@ test('A LONE LINK, kept: a new version keeps the response target the post was pu
   await c.start(); await until(() => c.mode() === 'planned', 'planned c2');
   v = c.pub.current();
   assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8')), 'never gains a target on an edit');
+});
+
+test('REVIEW FIXES: a lone-link response and a header republish that adds held-back messages always stop for the owner\'s look; the link checks are concurrent, bounded, and the run is held while they run', async t => {
+  assert.ok(R.REVIEW_REASONS.includes('link-stub') && R.REVIEW_REASONS.includes('further'));
+  assert.deepEqual(R.reviewFor('never', { linkStub: true }), { confirm: 'always', review: 'link-stub' });
+  assert.deepEqual(R.reviewFor('never', { further: true }), { confirm: 'always', review: 'further' });
+  const rig = makeRig({ discard: true, confirm: 'never', extra: {} }); t.after(rig.done);
+  const home = { ...rig.home, confirm: 'never', plan_guard: ['--only-note'], commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const FRIEND = 'https://friend.example.test/blyg/';
+  const FID = '7c9wk2mhq0v3xj8tn5rzfd41bg';
+  const FPOST = `${FRIEND}t/${FID}/`;
+  const yes = { status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } };
+  // 2. one click, a lone link: stops at planned (link-stub)
+  const page = { url: 'https://news.example.test/a', title: 'A', threads: [{ id: 't1', quote: 'Q.', msgs: [mine(`See [this](${FPOST}).`, { ts: '1', channel: 'drawer' })] }] };
+  const b = boot(rig, { page, config: home, extra: { detectLink: async () => yes } });
+  const r = await b.start('t1', 'one', 'never'); assert.ok(r.ok, r.error);
+  await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  assert.deepEqual([v.review, v.confirm], ['link-stub', 'always'], 'one click does not send a response to a linked post unseen');
+  await b.pub.cancel({ id: v.id, token: v.token });
+  // 3. the run is HELD from the start's first moment: a second start while the first checks its links is refused
+  let release;
+  const slow = new Promise(res => { release = res; });
+  const c = boot(rig, { page, config: home, extra: { detectLink: () => slow.then(() => yes) } });
+  const first = c.start('t1', 'one', 'never');
+  await sleep(20);
+  assert.equal(c.mode(), 'checking', 'held before any await');
+  const second = await c.start('t1', 'one', 'never');
+  assert.deepEqual([second.ok, second.status], [false, 409]);
+  release();
+  assert.ok((await first).ok);
+  await until(() => c.mode() === 'planned', 'planned c');
+  v = c.pub.current(); await c.pub.cancel({ id: v.id, token: v.token });
+  // …concurrently: three links of 60 ms each are all answered within a bound of 150 ms (one after another would take 180)
+  const three = { url: 'https://news.example.test/b', title: 'B', threads: [{ id: 't1', quote: 'Q.', msgs: [mine(`[a](${FPOST}) [b](https://n.example.test/1) [c](https://n.example.test/2)`, { ts: '1', channel: 'drawer' })] }] };
+  const d = boot(rig, { page: three, config: home, extra: { linkCheckMs: 150, detectLink: url => sleep(60).then(() => (url === FPOST ? yes : { status: 'not-a-blyg' })) } });
+  await d.start('t1', 'one', 'never'); await until(() => d.mode() === 'planned', 'planned d');
+  v = d.pub.current();
+  assert.match(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8'), /blyg_stub_of:/);
+  await d.pub.cancel({ id: v.id, token: v.token });
+  // …and past the bound: unverifiable, no target (and the run went on)
+  const e = boot(rig, { page, config: home, extra: { linkCheckMs: 50, detectLink: () => sleep(400).then(() => yes) } });
+  await e.start('t1', 'one', 'never'); await until(() => ['planned', 'published'].includes(e.mode()), 'e');
+  v = e.pub.current();
+  assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8')), 'a link not checked in time sets no target');
+  await until(() => e.mode() === 'published', 'e published (one click, nothing to look at)');
+  // 4. a post published "up to here", then the header with one click: stops for the look (further)
+  const up = { url: 'https://news.example.test/c', title: 'C', threads: [{ id: 't1', quote: 'Q.', msgs: [mine('One.', { ts: '1', channel: 'drawer' }), mine('Two.', { ts: '2', channel: 'drawer' })] }] };
+  const f = boot(rig, { page: up, config: home, extra: { detectLink: async () => ({ status: 'not-a-blyg' }) } });
+  await f.pub.start({ page: f.pages.get(up.url), threadId: 't1', scope: 'one', shown: 'never', extent: 'upto', upto: '1' });
+  await until(() => f.mode() === 'published', 'f published');
+  await f.start('t1', 'one', 'never'); await until(() => f.mode() === 'planned', 'f planned');
+  v = f.pub.current();
+  assert.deepEqual([v.review, v.confirm, v.further], ['further', 'always', 1]);
 });

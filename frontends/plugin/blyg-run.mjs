@@ -174,6 +174,8 @@ const linesLost = (onDisk, next) => {
 // already reaches is refused (UPTO_BACK_SAY); words come out of a post by deleting the message. A whole-thread republish of a post
 // whose point is not the end says how many further messages it now includes (`run.further`).
 export const EXTENTS = Object.freeze(['whole', 'upto']);
+// how long the checks of a new post's links may take, all together (a lone link to a blyg post); past it no target is set
+export const LINK_CHECK_MS = 15000;
 export const UPTO_BACK_SAY = 'Your post already includes later messages of this thread, so it cannot be published only up to this one. To take words out of your post, delete the message.';
 export const UPTO_GONE_SAY = 'That message is not one of yours in this comment any more, so nothing was started.';
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
@@ -182,10 +184,13 @@ export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be a
  *    agent-text   the post holds a passage an agent wrote or the owner pasted from an agent's tool: it is ALWAYS shown first,
  *                 whatever the setting (THE AGENT-TEXT RULE)
  *    none         confirm 'never' and nothing calls for a look: the run goes straight through */
-export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'none']);
-export function reviewFor(setting, { agentText = false, leftOut = false } = {}) {
+export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'none']);
+export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false } = {}) {
   // a new version that would leave out a comment the post had (its thread is gone from the page) never goes out unseen
   if (leftOut) return { confirm: 'always', review: 'left-out' };
+  // …nor one that now includes messages a post "up to here" held back, nor a post made a response because of a link it holds
+  if (further) return { confirm: 'always', review: 'further' };
+  if (linkStub) return { confirm: 'always', review: 'link-stub' };
   if (agentText) return { confirm: 'always', review: 'agent-text' };
   return setting === 'never' ? { confirm: 'never', review: 'none' } : { confirm: 'always', review: 'setting' };
 }
@@ -751,6 +756,9 @@ export function createPublisher(deps) {
     if (book.run.child && childNow(true) === 'alive') return fail(409, 'The earlier step is still running: stop it first.');
     let r;
     const id = crypto.randomBytes(8).toString('hex');
+    // THE RUN IS HELD from here, before the first await (the pre-flight, the link checks): a second start meanwhile is refused
+    if (!canMove(book.mode, 'checking')) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
+    book.move('checking');
     try { r = await startChecked({ ...args, id }); } catch (e) { r = fail(500, `could not start: ${String((e && e.message) || e).slice(0, 200)}`); }
     if (book.mode === 'checking') book.move('idle');
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
@@ -780,7 +788,6 @@ export function createPublisher(deps) {
     if ((editing || adding) && !EDIT_STEPS.every(k => S.commands[k])) return fail(409, 'Publishing a new version is not set up on the companion yet (its edit commands are missing).');
     // THE PRE-FLIGHT, before anything is written: a broken environment fails here, in about a second, with the check's own sentence
     if (S.commands.check) {
-      book.move('checking');
       const c = await (deps.check || runCheck)({ argv: S.commands.check, cwd: S.top, env: minimalEnv(S.env_pass, env) });
       log.write(id, { ev: 'check', argv: S.commands.check, ok: !!(c && c.ok), message: (c && c.message) || '' });
       if (!c || !c.ok) {
@@ -907,9 +914,14 @@ export function createPublisher(deps) {
     if (urls.length > LINK_STUB_MAX) return null;
     const mine = (() => { try { const c = deps.readConfig(); return Array.isArray(c.my_origins) ? c.my_origins.map(String) : []; } catch { return []; } })();
     const found = new Map();
-    for (const url of urls) {
-      let r = null;
-      try { r = await deps.detectLink(url); } catch { r = null; }
+    // all at once, with ONE bound for the lot (LINK_CHECK_MS): a link not answered by then counts as one that could not be checked
+    let timer = null;
+    const late = new Promise(res => { timer = setTimeout(() => res('late'), deps.linkCheckMs !== undefined ? deps.linkCheckMs : LINK_CHECK_MS); });
+    const answers = await Promise.race([Promise.all(urls.map(u => Promise.resolve().then(() => deps.detectLink(u)).catch(() => null))), late]);
+    clearTimeout(timer);
+    if (answers === 'late') { log.write(runId, { ev: 'note', text: 'the links could not all be checked in time, so the post is not made a response to a linked post' }); return null; }
+    for (const [k, url] of urls.entries()) {
+      const r = answers[k];
       if (!r || r.status === 'check-failed') { log.write(runId, { ev: 'note', text: 'a link could not be checked, so the post is not made a response to a linked post' }); return null; }
       if (r.status !== 'blyg' || !r.item) continue;
       const item = blygItemOf({ blyg: { status: 'blyg', item: r.item } });
@@ -1044,7 +1056,7 @@ export function createPublisher(deps) {
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out) });
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub) });
     log.write(id, { ev: 'run', id, kind, version, settings_fp: fingerprint(S), page_url: page.url, scope, note_rel: rel, permalink: rendered.permalink,
       confirm: look.confirm, review: look.review, changelog: (extra && extra.changelog) || '' });
     const run = book.move('drafted', {

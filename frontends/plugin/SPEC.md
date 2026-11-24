@@ -13795,3 +13795,12 @@ the owner could never publish a new version of that post, or add to it, from her
 - Tests: `feedbind.test.mjs` (the reference markup of a Blygger Studio feed, the example site's stream, quotes, cross, other sites'
   links, a post's own page, the wiring), `feedbind-server.test.mjs` (verified and filed; the wrong post; a copying site; a quoted
   post at its origin; nonsense and this computer's addresses).
+
+### Review fixes (batch 3)
+- **Never unseen**: `reviewFor` adds `further` (a whole-thread republish that now includes messages a post "up to here" held back)
+  and `link-stub` (a new post made a response because of the one blyg post it links to): both always stop at `planned` for the
+  owner's look, whatever `confirm` says, with a quiet line saying why (REVIEW_REASONS).
+- **The start holds the run first**: `start` moves to `checking` before its first await (the pre-flight, the link checks), so a
+  second start meanwhile is refused; a refused start returns to `idle`. The link checks run concurrently under ONE bound,
+  `LINK_CHECK_MS` (15 s); a link not answered in time counts as one that could not be checked (no target). `/blyg-publish/start`
+  and `/blyg/bind` are in the drawer's `SLOW_ROUTES`, so the owner is never told "did not start" while a start goes ahead.

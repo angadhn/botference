@@ -11259,6 +11259,8 @@ ${bubbleShellHtml()}`;
             ${pubLeftOutHtml(run)}
             ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this comment will now be included.</p>` : ''}
             ${run.review === 'agent-text' && run.confirm === 'always' ? '<p class="pubquiet">Shown first because part of it was written by an agent.</p>' : ''}
+            ${run.review === 'link-stub' ? '<p class="pubquiet">Shown first because it will be shown as a response to the post it links to.</p>' : ''}
+            ${run.review === 'further' ? '<p class="pubquiet">Shown first because it now includes messages that were held back.</p>' : ''}
             ${err}
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;
         }
