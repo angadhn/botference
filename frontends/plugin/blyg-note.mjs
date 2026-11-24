@@ -592,7 +592,29 @@ export function includedMsgs(t, point = '') {
   const at = own.findIndex(m => String(m.ts) === String(point));
   return at >= 0 ? own.slice(0, at + 1) : own.filter(m => String(m.ts) <= String(point));
 }
-export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null }) {
+// A LONE LINK TO A BLYG POST (the owner's rule, allowed by §10.6: a stub declares exactly one target). The web addresses the owner's
+// own words LINK to, as the site's publisher would record a reference: a markdown link `[words](https://…)` or an autolink
+// `<https://…>`, outside code, outside an agent's passage (a bare address in the text is not a link there, and an image is refused
+// anyway). → unique addresses, in order. blyg-run.mjs asks which of them are Blygger posts (the companion's checker) and, when the
+// post quotes no blyg post and answers nothing, and exactly ONE is another blyg's post, the post is written as a response to it.
+export const LINK_STUB_MAX = 10;
+export function linkTargetsOf(threads, points = null) {
+  const out = [];
+  for (const t of threads || []) {
+    for (const m of includedMsgs(t, points && points[t.id])) {
+      let src = clean(stripMore(m.text));
+      // an agent's passage (and a /tk instruction) is not the owner's link
+      const found = Grammar.gapsFor(src, Array.isArray(m.gaps) ? m.gaps : []);
+      for (const f of [...found].reverse()) src = src.slice(0, f.start) + ' '.repeat(f.end - f.start) + src.slice(f.end);
+      const mask = Grammar.codeMask(src);
+      const add = (at, url) => { if (mask[at]) return; const u = safeWebUrl(url); if (u && !out.includes(u)) out.push(u); };
+      for (const x of src.matchAll(/(!?)\[[^\]]*\]\(\s*<?(https?:\/\/[^\s)>]+)>?(?:\s+"[^"]*")?\s*\)/g)) if (!x[1]) add(x.index, x[2]);
+      for (const x of src.matchAll(/<(https?:\/\/[^\s<>"'`]+)>/g)) add(x.index, x[1]);
+    }
+  }
+  return out;
+}
+export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null }) {
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   const opts = { escape };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
@@ -649,8 +671,11 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     if (href) body += `\n\nEarlier: [${linkText(earlier.title) || 'an earlier note'}](${href})`;
   }
   const title = titleOf(titleSource);
-  const stubOf = stubOfPage(page);
-  if (stubOf && item) sources.push(item.page);
+  // the page's own target first; else a lone link's post (only when the post quotes no blyg post: the caller checked, and so does this)
+  const linked = !stubOfPage(page) && !sources.length && linkStub && linkStub.id && linkStub.page ? linkStub : null;
+  const stubOf = stubOfPage(page) || (linked ? { origin: linked.origin, id: linked.id, version: linked.version } : null);
+  if (stubOfPage(page) && item) sources.push(item.page);
+  if (linked) sources.push(linked.page);
   const day = dayOf(now, home && home.timezone);
   const dateOk = d => /^\d{4}-\d\d-\d\d$/.test(String(d || ''));
   const front = renderFront((home && home.template) || DEFAULT_TEMPLATE, {
@@ -661,13 +686,18 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };
   const perm = front.map(l => /^permalink:\s*(\S+)\s*$/.exec(l)).find(Boolean);
   return { ok: true, text, title: oneLine(title).replace(/[<>{}]/g, ''), slug, permalink: perm ? perm[1].replace(/^["']|["']$/g, '') : '', sources: [...new Set(sources)],
-    generated, notify: notifyOf(page, { sources, stubOf, webQuoted }),
+    generated, notify: linked ? linkedNotify(linked) : notifyOf(page, { sources, stubOf, webQuoted }),
     snapshot: { quotes: snapshot.map(x => x.quote), threads: snapshot, sources: [...new Set(sources)].sort(), stub: stubOf ? hashOf(JSON.stringify(stubOf)) : '',
       target: hashOf(stubTargetOf(stubOf)) } };
 }
 
 export const hashOf = t => crypto.createHash('sha256').update(String(t)).digest('hex').slice(0, 24);
 
+/** Who is told when the post is a response to the one blyg post it links to (and what readers will see). */
+export const linkedNotify = linked => {
+  const who = oneLine(linked.author || '').replace(/[<>{}[\]|`*_]/g, '').slice(0, 60) || 'The author of the post you linked to';
+  return `${who} will be told you responded, and your post will be shown as a response to that post`;
+};
 /** Who the site will tell about this post, in the owner's words, or ''. An ordinary web page the post quotes or answers is ASKED
  *  (at the site's publish, by W3C discovery) whether it accepts mentions: nothing can be promised about it. */
 export const WEB_PAGE_ASKED_SAY = 'Its page will be asked whether it accepts mentions';

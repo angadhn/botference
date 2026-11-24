@@ -46,8 +46,9 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, includedMsgs, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
+import { samePage } from './blyg.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
 
 // ---- the modes ---------------------------------------------------------------------
@@ -897,6 +898,28 @@ export function createPublisher(deps) {
     && (S.confirm !== 'never' || drawerTyped(t)));
   const drawerTyped = t => { const first = (t.msgs || []).find(m => m && m.kind !== 'tools'); return !!first && first.channel === 'drawer'; };
 
+  // WHICH ONE BLYG POST the links name, verified as any source is (the companion's checker: the guarded fetch, the manifest, the
+  // item document, the post's own page; then the note's strict checks, blygItemOf). → { origin, id, version, page, author } or null.
+  // null unless EXACTLY ONE other blyg's post is linked and every link could be checked (a link that could not be asked might be a
+  // second post); the owner's own blygs (`my_origins`) are not "other". At most LINK_STUB_MAX links are asked about.
+  async function lonePostLink(urls, runId) {
+    if (!urls.length || typeof deps.detectLink !== 'function') return null;
+    if (urls.length > LINK_STUB_MAX) return null;
+    const mine = (() => { try { const c = deps.readConfig(); return Array.isArray(c.my_origins) ? c.my_origins.map(String) : []; } catch { return []; } })();
+    const found = new Map();
+    for (const url of urls) {
+      let r = null;
+      try { r = await deps.detectLink(url); } catch { r = null; }
+      if (!r || r.status === 'check-failed') { log.write(runId, { ev: 'note', text: 'a link could not be checked, so the post is not made a response to a linked post' }); return null; }
+      if (r.status !== 'blyg' || !r.item) continue;
+      const item = blygItemOf({ blyg: { status: 'blyg', item: r.item } });
+      // the link must be the post's own page (a page that merely names a post is not the post)
+      if (!item || !samePage(url, item.page) || mine.includes(item.origin)) continue;
+      found.set(`${item.origin}${item.id}`, { origin: item.origin, id: item.id, version: item.version, page: item.page,
+        author: String(r.item.author || '').slice(0, 200) });
+    }
+    return found.size === 1 ? [...found.values()][0] : null;
+  }
   async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' } }) {
     const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
@@ -913,8 +936,12 @@ export function createPublisher(deps) {
     const now = clock();
     const date = dayOf(now, S.timezone);
     const taken = permalinksIn(S.folder);
-    const first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points });
+    let first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points });
     if (!first.ok) return fail(409, first.error);
+    // A LONE LINK: a new post that quotes no blyg post and answers nothing, whose words link to exactly one other blyg's post, is a
+    // response to that post (only a new post: a published one never gains a target on a later edit)
+    const linkStub = !stubOfPage(page) && !(first.sources || []).length ? await lonePostLink(linkTargetsOf(picked, points), id) : null;
+    if (linkStub) first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points, linkStub });
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
     const base = slugOf(first.title, { date });
     let rendered = null;
@@ -923,7 +950,7 @@ export function createPublisher(deps) {
     for (let n = 0; n < 60 && !rendered; n++) {
       const trySlug = n ? `${base.slice(0, LIMITS.slugChars - 4)}-${n + 1}` : base;
       const bid = newBlygId();   // the address is made of it; the FILE keeps the first-words slug
-      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier, points });
+      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier, points, linkStub });
       if (!r.ok) return fail(409, r.error);
       let fileName;
       try { fileName = filenameFor(S.filename, { slug: trySlug, date }); } catch (e) { return fail(409, e.message); }
@@ -943,7 +970,8 @@ export function createPublisher(deps) {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o644);
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
     } catch (e) { return fail(409, e && e.code === 'EEXIST' ? 'A note of that name appeared meanwhile; try again.' : 'Could not write the note.'); }
-    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0 } });
+    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
+      ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
@@ -986,7 +1014,9 @@ export function createPublisher(deps) {
     const { rel, target, before, fm, bid } = note;
     const now = clock();
     const slug = String(pub.slug || path.basename(rel, '.md').replace(/[^a-z0-9-]/g, '').slice(0, LIMITS.slugChars) || 'note');
-    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') }, points });
+    // a post that answered the one blyg post it linked to keeps that target (never gained or lost on an edit)
+    const linkStub = pub.link_stub && typeof pub.link_stub === 'object' ? pub.link_stub : null;
+    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') }, points, linkStub });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
@@ -1009,7 +1039,7 @@ export function createPublisher(deps) {
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit',
       version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
-        extent: cut.extent, points, further } });
+        extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {
@@ -1062,7 +1092,8 @@ export function createPublisher(deps) {
     const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1 };
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
-        snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {}, at: published.at });
+        snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {},
+        ...(run.link_stub ? { link_stub: run.link_stub } : {}), at: published.at });
     } catch { published.record_error = 'The post is live, but the companion could not keep what it needs to publish a new version of it.'; }
     try {
       const page = deps.readPage(run.page_url);

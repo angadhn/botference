@@ -257,6 +257,8 @@ const blygPublish = createPublisher({
   savePage: page => store.savePage(page),
   broadcast: ev => broadcast(ev),
   // a new version's one changelog line, from the cheap Claude one-shot (no tools; only the two texts of the post in the prompt)
+  // is a link in a new post's words a Blygger post? The page checker (guarded fetches; nothing when checks are off), as for any page
+  detectLink: url => (blygChecksOn() ? blygChecker.check(url, null) : Promise.resolve(null)),
   askChangelog: ({ prompt, model, timeoutMs }) => (NO_AGENTS ? Promise.resolve(null)
     : runOneShot('claude', prompt, { model, timeoutMs, ...oneshotOverride() })),
 });

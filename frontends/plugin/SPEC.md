@@ -13751,3 +13751,22 @@ the owner could never publish a new version of that post, or add to it, from her
 - Tests: `blyg-run` (refusals, up to 2 of 3, the record, back refused, the header adds 1 as v2, whole then refused back, forward
   to a new 4th), `blygpublish-drawer` (planes per owner message, the start's body, the header sends none, "further"),
   `blygpublish-background` (forwarded; odd extents refused).
+
+### A lone link to a blyg post makes the post a response to it (`blyg-note linkTargetsOf`, `blyg-run lonePostLink`)
+- WHERE: the plugin's note writer, not the site's publisher. The site's front matter is the source of truth for `blyg_stub_of`, and
+  the publisher has no memory of an inference: inferring at build would drop the target on the next edit or give an old post a
+  target on an unrelated rebuild, and writing it into a hand-written note at plan time would change the owner's file behind their
+  back. A note written by hand keeps today's rule (write `blyg_stub_of` yourself).
+- WHEN: a NEW post (never an edit) that quotes no blyg post (no `blyg_sources` from a transclusion) and has no response target
+  (`stubOfPage` null). The links are the owner's own words' markdown links and `<https://…>` autolinks, outside code and outside an
+  agent's passage, in the included messages (`linkTargetsOf`; a bare address is not a link). At most `LINK_STUB_MAX` (10).
+- VERIFIED as any source: each link goes through the companion's page checker (`deps.detectLink` = `blygChecker.check`, the
+  guarded fetch path; nothing when checks are off), then `blygItemOf`'s strict checks, and the link must be the post's own page
+  (`samePage`; a page that merely names a post is not it). The owner's own blygs (`my_origins`) are not "another blyg". A link that
+  could not be checked makes the rule step back (it might be a second post). EXACTLY ONE post → `blyg_stub_of {origin, id,
+  version}` and `blyg_sources [its page]`; two or more → all stay references (the site records them as before).
+- The dialog's line: "<Author> will be told you responded, and your post will be shown as a response to that post".
+- The post's record keeps `link_stub`; a new version keeps that target (no new check), and a post published without one never gains
+  one on an edit.
+- Tests: `blyg-run` (one post with an ordinary link beside it; an autolink; two posts; an unchecked link; a page naming the post;
+  `my_origins`; code; a quoted post keeps its target; checks off; kept on a new version; never gained on an edit).

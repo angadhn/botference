@@ -2016,3 +2016,102 @@ test('PUBLISH UP TO HERE: a post of the thread up to one message (later ones sta
   assert.ok(r3.ok, r3.error);
   assert.equal(r3.view.version, 3);
 });
+
+test('A LONE LINK: a new post that quotes no blyg post and answers nothing, linking to exactly one other blyg\'s post, is a response to it; two posts, an unchecked link, the owner\'s own blyg or a quote keep it a plain post', async t => {
+  const rig = makeRig({ discard: true, extra: {} }); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const FRIEND = 'https://friend.example.test/blyg/';
+  const FID = '7c9wk2mhq0v3xj8tn5rzfd41bg';
+  const FPOST = `${FRIEND}t/${FID}/`;
+  const OTHER = '1vgtgz0gq5b2c9k7d3m8r4n6xy';
+  const answers = {
+    [FPOST]: { status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } },
+    [`${FRIEND}t/${OTHER}/`]: { status: 'blyg', item: { origin: FRIEND, id: OTHER, version: 1, page: `${FRIEND}t/${OTHER}/`, author: 'A Friend' } },
+    'https://news.example.test/x': { status: 'not-a-blyg', reason: 'no manifest' },
+    'https://down.example.test/y': { status: 'check-failed', reason: 'timeout' },
+    'https://friend.example.test/copy': { status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } },
+  };
+  const asked = [];
+  const detectLink = async url => { asked.push(url); return answers[url] || { status: 'not-a-blyg' }; };
+  const web = words => ({ url: 'https://news.example.test/a/story', title: 'A story', threads: [{ id: 't1', quote: 'Hiring is slowing.', msgs: [mine(words, { ts: '1' })] }] });
+  const tryWith = async (page, extra = {}, cfg = home) => {
+    const b = boot(rig, { page, config: cfg, extra: { detectLink, ...extra } });
+    const r = await b.start();
+    if (!r.ok) return { r, b };
+    await until(() => b.mode() === 'planned', 'planned');
+    const v = b.pub.current();
+    const text = fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8');
+    await b.pub.cancel({ id: v.id, token: v.token });
+    return { r, b, v, text };
+  };
+  // exactly one linked post (with an ordinary link beside it): a response, verified, with its source
+  let x = await tryWith(web(`Agree with [this post](${FPOST}) and [the news](https://news.example.test/x).`));
+  assert.ok(x.r.ok, x.r.error);
+  assert.match(x.text, new RegExp(`blyg_sources:\\n  - "${FPOST}"\\nblyg_stub_of:\\n  origin: "${FRIEND}"\\n  id: "${FID}"\\n  version: 3\\n`));
+  assert.match(x.text, new RegExp(`\\[this post\\]\\(${FPOST.replace(/[./]/g, '\\$&')}\\)`), 'the link stays in the words');
+  assert.equal(x.v.notify, 'A Friend will be told you responded, and your post will be shown as a response to that post');
+  assert.deepEqual(asked.slice(-2), [FPOST, 'https://news.example.test/x']);
+  // an autolink counts too
+  x = await tryWith(web(`Yes: <${FPOST}>`));
+  assert.match(x.text, /blyg_stub_of:\n  origin/);
+  // two linked posts: both stay references
+  x = await tryWith(web(`[One](${FPOST}) and [two](${FRIEND}t/${OTHER}/).`));
+  assert.ok(!/blyg_stub_of/.test(x.text));
+  // a link that could not be checked: it might be a second post, so nothing is assumed
+  x = await tryWith(web(`[One](${FPOST}) and [down](https://down.example.test/y).`));
+  assert.ok(!/blyg_stub_of/.test(x.text));
+  // a page that merely names the post (not its own page) is not the post
+  x = await tryWith(web('[A copy](https://friend.example.test/copy).'));
+  assert.ok(!/blyg_stub_of/.test(x.text));
+  // the owner's own blyg is not "another blyg"
+  x = await tryWith(web(`[Mine](${FPOST}).`), {}, home);
+  const own = boot(rig, { page: web(`[Mine](${FPOST}).`), config: home, extra: { detectLink, readConfig: () => ({ blyg_home: home, my_origins: [FRIEND] }) } });
+  const ro = await own.start(); await until(() => own.mode() === 'planned', 'planned own');
+  const vo = own.pub.current();
+  assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(vo).note_rel), 'utf8')));
+  await own.pub.cancel({ id: vo.id, token: vo.token }); void ro;
+  // a link inside code, or in an image, is not a link
+  const before = asked.length;
+  x = await tryWith(web(`\`[code](${FPOST})\` only.`));
+  assert.ok(!/blyg_stub_of/.test(x.text));
+  assert.equal(asked.length, before, 'nothing was asked about');
+  // a post that quotes a blyg post keeps that target: the link stays a reference
+  const quoted = blygPage([{ id: 't1', quote: 'A sentence.', blyg: stamp(), msgs: [mine(`Compare [this](${FPOST}).`, { ts: '1' })] }]);
+  x = await tryWith(quoted);
+  assert.match(x.text, new RegExp(`blyg_stub_of:\\n  origin: "https://blyg.example.test/notes/"\\n  id: "${ID}"`));
+  assert.ok(!x.text.includes(`id: "${FID}"`));
+  // checks off (no detectLink answer): a plain post
+  x = await tryWith(web(`[this post](${FPOST})`), { detectLink: async () => null });
+  assert.ok(!/blyg_stub_of/.test(x.text));
+});
+
+test('A LONE LINK, kept: a new version keeps the response target the post was published with, and a post published without one never gains it', async t => {
+  const rig = makeRig({ discard: true, extra: {} }); t.after(rig.done);
+  const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const FRIEND = 'https://friend.example.test/blyg/';
+  const FID = '7c9wk2mhq0v3xj8tn5rzfd41bg';
+  const FPOST = `${FRIEND}t/${FID}/`;
+  let on = true;
+  const detectLink = async url => (on && url === FPOST ? { status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } } : { status: 'not-a-blyg' });
+  const page = { url: 'https://news.example.test/a/story', title: 'A story', threads: [{ id: 't1', quote: 'Q.', msgs: [mine(`See [this](${FPOST}).`, { ts: '1' })] }] };
+  const b = boot(rig, { page, config: home, extra: { detectLink } });
+  await b.start(); await until(() => b.mode() === 'planned', 'planned');
+  let v = b.pub.current();
+  await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', 'published');
+  on = false;   // the link would no longer be checked: the target is the post's record, not a new check
+  b.pages.get(page.url).threads[0].msgs.push(mine('More words.', { ts: '2' }));
+  const e = await b.start(); assert.ok(e.ok, e.error);
+  await until(() => b.mode() === 'planned', 'planned v2');
+  v = b.pub.current();
+  assert.match(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8'), new RegExp(`blyg_stub_of:\\n  origin: "${FRIEND}"\\n  id: "${FID}"`));
+  await b.pub.cancel({ id: v.id, token: v.token });
+  // a post published WITHOUT a target, then a link added: no target appears on its new version
+  const p2 = { url: 'https://news.example.test/b', title: 'B', threads: [{ id: 't1', quote: 'Q.', msgs: [mine('Plain words.', { ts: '1' })] }] };
+  const c = boot(rig, { page: p2, config: home, extra: { detectLink: async () => ({ status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } }) } });
+  await c.start(); await until(() => c.mode() === 'planned', 'planned c');
+  v = c.pub.current(); await c.pub.confirm({ id: v.id, token: v.token }); await until(() => c.mode() === 'published', 'published c');
+  c.pages.get(p2.url).threads[0].msgs.push(mine(`And [this](${FPOST}).`, { ts: '2' }));
+  await c.start(); await until(() => c.mode() === 'planned', 'planned c2');
+  v = c.pub.current();
+  assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8')), 'never gains a target on an edit');
+});
