@@ -48,7 +48,8 @@ const PAGE = () => ({ url: 'https://example.com/article', title: 'An article', p
 // a scripted companion: it holds one run and answers the drawer's named operations
 function companion(first) {
   const state = { run: first || { mode: 'idle', can: [] }, calls: [] };
-  const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', note_rel: '_notes/my-first-thought.md', note_text: '---\ntitle: x\n---\nBody <img src=x onerror=alert(1)> {{ x }}\n',
+  const run = (mode, extra = {}) => ({ id: 'r1', token: 'tok1', mode, title: 'My first thought', log: { id: '0123456789abcdef', path: '/data/blyg-publish-logs/0123456789abcdef.jsonl' },
+    reading: [{ kind: 'words', text: 'Body <img src=x onerror=alert(1)> {{ x }}' }, { kind: 'quote', text: 'the passage' }, { kind: 'agent', label: 'Claude', text: 'An agent <b>wrote</b> this.' }],
     steps: [], can: mode === 'planned' ? ['confirm', 'cancel'] : /^failed_/.test(mode) ? ['retry', 'abandon'] : /^interrupted_(applying|applied|publishing)$/.test(mode) ? ['continue', 'abandon'] : /^interrupted_/.test(mode) ? ['abandon'] : mode === 'abandon_failed' ? ['abandon', 'forget'] : [], ...extra });
   state.run = first || run('idle');
   state.make = run;
@@ -56,11 +57,14 @@ function companion(first) {
     state.calls.push({ op, body });
     if (state.fail && state.fail[op]) return { ok: false, error: state.fail[op] };
     if (op === 'start') { state.run = run('planning', { steps: [], thread_ids: [body.thread_id], ...(state.confirm ? { confirm: state.confirm } : {}) }); return { ok: true, run: state.run }; }
-    if (op === 'run' || op === 'resume') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' }, confirm: state.confirm || 'always' };
-    if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', exit: 0, output: 'PLAN' }] }); return { ok: true, run: state.run }; }
+    if (op === 'run' || op === 'arm') return { ok: true, run: { ...state.run, confirm: state.run.confirm || state.confirm || 'always' }, confirm: state.confirm || 'always' };
+    if (op === 'preview') return { ok: true, state: state.picture || 'off' };
+    if (op === 'preview-image') return { ok: true, image: 'data:image/png;base64,iVBORw0KGgo=' };
+    if (op === 'confirm') { state.run = run('applying', { steps: [{ step: 'plan', ok: true, ms: 1 }] }); return { ok: true, run: state.run }; }
     if (op === 'cancel') { state.run = run('cancelled'); return { ok: true, run: state.run }; }
     if (op === 'retry') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
-    if (op === 'abandon' && state.abandonFails) { state.run = run('abandon_failed', { abandon_failure: 'the abandon command failed (abandon exited with code 1): nothing to abandon', steps: state.run.steps }); return { ok: false, error: 'the abandon command failed', run: state.run }; }
+    if (op === 'continue') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
+    if (op === 'abandon' && state.abandonFails) { state.run = run('abandon_failed', { abandon_failure: 'Nothing to abandon for the note.', steps: state.run.steps }); return { ok: false, error: 'Your site could not give this publish up.', run: state.run }; }
     if (op === 'abandon') { state.run = run('abandoned'); return { ok: true, run: state.run }; }
     if (op === 'forget') { state.run = run('abandoned', { cleanup: { forgotten: true } }); return { ok: true, run: state.run }; }
     return { ok: false, error: 'no such op' };
@@ -97,14 +101,16 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'resume', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
   eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
+  eq('only arm opens one (for the act it names)', [Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'grants').map(([k]) => k), CFG.BLYG_ARMED_ACTS], [['arm'], ['confirm', 'retry', 'continue']]);
 }
 
 // ---- who sees the paper-plane -----------------------------------------------------------------
 {
   const { qa, q } = await make();
-  eq('the paper-plane is on the owner\'s own, unaddressed, unpublished comments only', qa('.thr-pub').map(b => b.dataset.target), ['t1', 't2']);
+  eq('the paper-plane is on the owner\'s own, unaddressed comments (a published one\'s plane publishes a new version)', qa('.thr-pub').map(b => b.dataset.target), ['t1', 't2', 'tp', 'tx']);
+  eq('…and says so', qa('.thr-pub').slice(2).map(b => b.getAttribute('aria-label')), ['publish a new version of this post', 'publish a new version of this post']);
   ok('a published one says so, with a link only for a plain http(s) address', q('.pubdone a') && q('.pubdone a').getAttribute('href') === 'https://site.example.test/b/already-out'
     && qa('.pubdone').length === 2 && qa('.pubdone a').length === 1);
   ok('the link opens safely', q('.pubdone a').getAttribute('rel') === 'noopener noreferrer');
@@ -139,17 +145,24 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('start sends the thread, the scope and the setting the owner was shown, nothing else', server.calls.at(-1), { op: 'start', body: { thread_id: 't2', scope: 'above', confirm: 'always' } });
   eq('planning is shown as working', view(), 'working');
   ok('and says nothing is published', /Nothing is published/.test(dlg().textContent));
-  server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'Would notify: <b>nobody</b>' }] });
+  server.run = server.make('planning', { steps: [{ step: 'prepare', ok: true, ms: 900 }], running: { step: 'plan', elapsed_ms: 4000 } });
+  drawer.blygPublishMoved(); await tick(5);
+  eq('plain steps, one line each, ticks for the done ones, the current one marked now with its time', qa('.pubsteps li').map(li => [li.className, li.querySelector('.pubword').textContent, (li.querySelector('.pubnow') || {}).textContent || '']),
+    [['done', 'Writing your note', ''], ['now', 'Checking that only this note changes', 'now · 4 s'], ['todo', 'Building and checking your site', ''], ['todo', 'Publishing', ''], ['todo', 'Waiting for your site to update', ''], ['todo', 'Live', '']]);
+  { const shown = [...dlg().querySelectorAll('*')].filter(e => !e.closest('details')).map(e => [...e.childNodes].filter(n => n.nodeType === 3).map(n => n.textContent).join('')).join(' ');
+    ok('no file name, script name, command output or bracket mark in the owner\'s view (outside the closed details)', !/_notes|scripts\/|blyg-publish|\.md\b|\[TK\]|exit|stdout/.test(shown), shown); }
+  ok('the troubleshooting details are closed, and hold the run id and the log file', !q('details.pubdetails').open && /0123456789abcdef/.test(q('details.pubdetails').textContent) && /blyg-publish-logs/.test(q('details.pubdetails').textContent));
+  server.run = server.make('planned', { steps: [{ step: 'plan', ok: true, ms: 5 }], notify: 'Venkatesh Rao will be told you responded' });
   drawer.blygPublishMoved(); await tick(5);
   eq('the run arrived planned: the confirmation', view(), 'confirming');
-  eq('the note is shown as text (an <img> in it is words, not a picture)', [qa('.pubdlg pre.pubnote').length, qa('.pubdlg img').length, /<img src=x onerror=alert\(1\)>/.test(q('pre.pubnote').textContent)], [1, 0, true]);
-  eq('the plan is shown as text', [q('pre.pubplan').textContent, qa('.pubdlg b').filter(b => b.textContent === 'nobody').length], ['Would notify: <b>nobody</b>', 0]);
-  ok('it names the file, relative', /_notes\/my-first-thought\.md/.test(q('.pubwhere').textContent));
-  ok('and says what Publish does', /live site and cannot be undone/.test(q('.pubwarn').textContent));
-  eq('Publish and Cancel, nothing else that acts', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-confirm', 'pub-cancel']);
+  eq('the note reads as text: the words, the quote, and the agent\'s passage in a box with its label (an <img> in it is words)', [qa('.pubdlg .pubwords').length, qa('.pubdlg .pubquote').length, q('.pubagentlabel').textContent, q('.pubagenttext').textContent, qa('.pubdlg img').length, qa('.pubdlg b').length, /<img src=x onerror=alert\(1\)>/.test(q('.pubwords').textContent)],
+    [1, 1, 'Claude', 'An agent <b>wrote</b> this.', 0, 0, true]);
+  ok('who is told, in plain words', /Venkatesh Rao will be told you responded\./.test(q('.pubnotify').textContent));
+  ok('no file name, no plan output', !/_notes|PLAN|Would notify/.test(dlg().textContent));
+  eq('Publish and Cancel, and Close (which keeps the run for later), nothing else', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-confirm', 'pub-cancel', 'pub-close']);
   const before = server.calls.length;
   await settle(); click(q('[data-act="pub-confirm"]')); await tick();
-  eq('Publish sends the run\'s id and token', server.calls.at(-1), { op: 'confirm', body: { run: 'r1', token: 'tok1' } });
+  eq('Publish arms THIS act from the click, then sends the run\'s id and token', server.calls.slice(-2), [{ op: 'arm', body: { act: 'confirm' } }, { op: 'confirm', body: { run: 'r1', token: 'tok1' } }]);
   eq('and the view is running at once', view(), 'running');
   click(q('.pubdlg [data-act="pub-close"]')); await tick();
   eq('there is nothing left to press twice: no Publish button while running', [qa('[data-act="pub-confirm"]').length, server.calls.filter(c => c.op === 'confirm').length], [0, 1]);
@@ -160,10 +173,10 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] }); drawer.blygPublishMoved(); await tick(5);
   await settle(); click(q('[data-act="pub-confirm"]')); await tick();
-  server.run = server.make('published', { steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 0, output: 'U' }],
+  server.run = server.make('published', { steps: [{ step: 'plan', ok: true }, { step: 'apply', ok: true }, { step: 'publish', ok: true }],
     published: { at: 'now', title: 'My first thought', permalink: '/b/my-first-thought', address: 'https://site.example.test/b/my-first-thought' } });
   drawer.blygPublishMoved(); await tick(5);
-  eq('published: the done view with the link and every step', [view(), q('.pubdlg a').getAttribute('href'), qa('.pubsteps li').map(li => li.querySelector('b').textContent)], ['done', 'https://site.example.test/b/my-first-thought', ['plan', 'apply', 'publish']]);
+  eq('published: Live, the link, and every step ticked', [view(), q('.pubdlg h2').textContent, q('.pubdlg a').getAttribute('href'), qa('.pubsteps li').map(li => li.className)], ['done', 'Live', 'https://site.example.test/b/my-first-thought', ['done', 'done', 'done', 'done', 'done', 'done']]);
   ok('the link is safe', q('.pubdlg a').getAttribute('rel') === 'noopener noreferrer' && q('.pubdlg a').getAttribute('target') === '_blank');
   server.run = server.make('published', { published: { title: 't', permalink: '/b/t', address: 'javascript:alert(1)' } });
   click(q('[data-act="pub-close"]'));
@@ -196,20 +209,20 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
   await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one', confirm: 'never' } }, true, 'working']);
-  eq('the thread carries ONE line of progress', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking what would change']);
+  eq('the thread carries ONE line of progress, in the owner\'s words', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking that only this note changes']);
   server.run = server.make('planned', { confirm: 'never', thread_ids: ['t1'], steps: [{ step: 'plan', exit: 0, output: 'P' }] });
   drawer.blygPublishMoved(); await tick(5);
   eq('planned is NOT a confirmation when nobody has to confirm: no buttons, still running', [view(), dlg().hidden, qa('[data-act="pub-confirm"]').length], ['running', true, 0]);
-  server.run = server.make('publishing', { confirm: 'never', thread_ids: ['t1'], running: { step: 'publish', elapsed_ms: 192000, last_line: 'waiting for the deploy of 3f2a91c <b>x</b>' } });
+  server.run = server.make('publishing', { confirm: 'never', thread_ids: ['t1'], running: { step: 'publish', phase: 'wait', elapsed_ms: 192000 } });
   drawer.blygPublishMoved(); await tick(5);
-  eq('publishing is on the line, with the step, how long and the last line it printed (as text)', [q('.publine').textContent, qa('.publine b').length], ['Publishing as a blyg… publishing to your site (publish, 3 min 12 s · waiting for the deploy of 3f2a91c <b>x</b>)', 0]);
+  eq('publishing is on the line: the step in the owner\'s words and how long (never what a command printed)', q('.publine').textContent, 'Publishing as a blyg… waiting for your site to update (3 min 12 s)');
   server.run = server.make('published', { confirm: 'never', thread_ids: ['t1'], published: { title: 't', permalink: '/b/t', address: 'https://site.example.test/b/t' } });
   drawer.blygPublishMoved(); await tick(5);
   eq('published: the link on the thread, the view free again', [view(), q('.publine.done a').getAttribute('href'), dlg().hidden], ['closed', 'https://site.example.test/b/t', true]);
-  server.run = server.make('failed_plan', { confirm: 'never', thread_ids: ['t1'], failed_step: 'plan', failed_reason: 'plan exited with code 1', steps: [{ step: 'plan', exit: 1, output: 'Refused: this plan would change more than the note' }] });
-  drawer.pub.view = 'running'; drawer.pub.run = server.run;
+  server.run = server.make('failed_plan', { confirm: 'never', thread_ids: ['t1'], failed_step: 'plan', failure: 'This plan is for more than the note and its own sources.', steps: [{ step: 'plan', ok: false }] });
+  drawer.pub.view = 'running'; drawer.pub.run = server.run; drawer.pub.opener = 'start';
   drawer.blygPublishMoved(); await tick(5);
-  eq('a failure brings the dialog back, with the step, the output and the choices', [view(), dlg().hidden, /Refused: this plan would change more than the note/.test(dlg().textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', false, true, ['pub-retry', 'pub-abandon', 'pub-close']]);
+  eq('a failure brings the dialog back: ONE sentence (the site\'s recognised line) and the choices', [view(), dlg().hidden, q('.pubdlg p.puberr').textContent, qa('.pubdlg .pbtn').map(b => b.textContent)], ['problem', false, 'This plan is for more than the note and its own sources.', ['Try again', 'Start over', 'Close']]);
 }
 
 // ---- clickjacking: a page's overlay over the drawer --------------------------------------------------------------------
@@ -348,7 +361,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     const before = server.calls.length;
     document.elementsFromPoint = () => [{ id: 'cover' }];
     await settle(); q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
-    eq(`${op}: an overlay at the click point stops it (nothing sent)`, [server.calls.slice(before).some(c => c.op === op || c.op === 'resume'), /Close the page's overlay and try again/.test(drawer.shadow.querySelector('.pubdlg').textContent)], [false, true]);
+    eq(`${op}: an overlay at the click point stops it (nothing sent)`, [server.calls.slice(before).some(c => c.op === op || c.op === 'arm'), /Close the page's overlay and try again/.test(drawer.shadow.querySelector('.pubdlg').textContent)], [false, true]);
     document.elementsFromPoint = () => [drawer.host];
     await settle(); q(`[data-act="${act}"]`).dispatchEvent(ev()); await tick();
     eq(`${op}: and goes through when the drawer is on top`, server.calls.slice(before).some(c => c.op === op), true);
@@ -394,11 +407,11 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 // ---- F9: an earlier step still running, and a record that cannot be trusted ----------------------------------------------------------
 {
   const server = companion();
-  server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', interrupted_why: 'x', earlier_step_running: true, steps: [{ step: 'apply', exit: 0, output: 'A' }] });
-  server.run.can = ['stop-and-continue', 'abandon'];
+  server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', interrupted_why: 'x', earlier_step: 'alive', steps: [{ step: 'apply', ok: true }] });
+  server.run.can = ['stop-and-continue', 'stop-and-abandon'];
   const { q, qa, view, click } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
-  eq('the earlier step is still running: no plain Carry on, a choice to stop it first', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act), /still running on this machine/.test(q('.pubdlg').textContent)], ['problem', ['pub-stop-continue', 'pub-abandon', 'pub-close'], true]);
+  eq('the earlier step is still running: no plain Carry on or Start over, a choice to stop it first', [view(), qa('.pubdlg [data-act]').filter(b => b.tagName === 'BUTTON').map(b => b.dataset.act), /still running on the companion's machine: stop it first/.test(q('.pubdlg').textContent)], ['problem', ['pub-stop-continue', 'pub-stop-abandon', 'pub-close'], true]);
   const before = server.calls.length;
   document.elementsFromPoint = () => [{ id: 'x' }];
   await settle(); click(q('[data-act="pub-stop-continue"]')); await tick();
@@ -407,24 +420,60 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   eq('the owner\'s choice sends continue with stop: yes', server.calls.slice(before).filter(c => c.op === 'continue').map(c => c.body), [{ run: 'r1', token: 'tok1', stop: 'yes' }]);
 }
 {
+  // an earlier step that cannot be identified: only Forget, and Forget asks twice
+  const server = companion();
+  server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', earlier_step: 'unknown', steps: [] });
+  server.run.can = ['forget'];
+  const { q, qa, view, click } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  eq('unknown: only Forget', qa('.pubdlg button[data-act]').map(b => b.dataset.act), ['pub-forget', 'pub-close']);
+  click(q('[data-act="pub-forget"]')); await tick();
+  eq('the first press asks again and sends nothing', [server.calls.some(c => c.op === 'forget'), /Press again to confirm/.test(q('.pubdlg').textContent), q('[data-act="pub-forget"]').textContent], [false, true, 'Yes, forget it']);
+  click(q('[data-act="pub-forget"]')); await tick();
+  eq('the second sends forget with sure: yes', [server.calls.at(-1), view()], [{ op: 'forget', body: { run: 'r1', token: 'tok1', sure: 'yes' } }, 'closed']);
+}
+{
   const server = companion();
   server.run = server.make('interrupted_publishing', { interrupted_from: 'publishing', interrupted_why: 'x', tainted: 'This run\'s record names a note outside the notes folder, so nothing will be run or removed with it.', steps: [] });
   server.run.can = ['abandon'];
   const { q, qa, click } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
-  eq('a tainted record: its words, and only abandon', [/names a note outside the notes folder/.test(q('.pubdlg').textContent), qa('.pubdlg [data-act]').map(b => b.dataset.act)], [true, ['pub-abandon', 'pub-close']]);
+  eq('a tainted record: its words, and only Start over', [/names a note outside the notes folder/.test(q('.pubdlg').textContent), qa('.pubdlg button[data-act]').map(b => b.dataset.act)], [true, ['pub-abandon', 'pub-close']]);
 }
 
-// ---- what prepare did is shown with the plan -----------------------------------------------------------------
+// ---- the picture of the draft (the companion renders it; the drawer shows pixels in a box) ---------------------------------------
+{
+  const server = companion(); server.picture = 'waiting';
+  server.run = server.make('planned', { steps: [{ step: 'plan', ok: true }], preview_url: 'http://127.0.0.1:4000/b/0abc' });
+  const { q, qa, view, click, drawer } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick(20);
+  eq('confirming asks for the picture, with the drawer\'s theme; while it is made the box says so and the note\'s text is shown',
+    [view(), server.calls.filter(c => c.op === 'preview').at(-1).body.theme, drawer.pub.pic.state, /it can take a few seconds to appear/.test(q('.pubpic').textContent), qa('.pubread').length], ['confirming', 'light', 'waiting', true, 1]);
+  server.picture = 'ready'; drawer.blygPublishMoved(); await tick(20);
+  eq('ready: the picture in a box with its caption, open full size and refresh; the text is not repeated', [drawer.pub.pic.state, q('.pubpicimg').getAttribute('src').startsWith('data:image/png;base64,'), /how it will look/.test(q('.pubpic figcaption').textContent),
+    q('.pubpicopen').getAttribute('href'), q('.pubpicopen').getAttribute('rel'), qa('.pubread').length], ['ready', true, true, 'http://127.0.0.1:4000/b/0abc', 'noopener noreferrer', 0]);
+  click(q('[data-act="pub-pic-refresh"]')); await tick(20);
+  eq('refresh asks again (fresh)', [server.calls.filter(c => c.op === 'preview').at(-1).body.fresh], ['yes']);
+  // a forged image address is never shown
+  const s2 = companion(); s2.picture = 'ready'; s2.run = s2.make('planned', { steps: [] });
+  s2.onBlygPublish = (orig => async (op, body) => (op === 'preview-image' ? { ok: true, image: 'javascript:alert(1)' } : orig(op, body)))(s2.onBlygPublish);
+  const y = await make({ server: s2 }); await tick(10); y.click(y.q('[data-act="pub-review"]')); await tick(20);
+  eq('an image that is not a PNG data address: "Preview not available", and the text', [y.drawer.pub.pic.state, /Preview not available/.test(y.q('.pubpic').textContent), y.qa('.pubpicimg').length, y.qa('.pubread').length], ['unavailable', true, 0, 1]);
+  // no preview address: no box at all
+  const s3 = companion(); s3.run = s3.make('planned', { steps: [] });
+  const z = await make({ server: s3 }); await tick(10); z.click(z.q('[data-act="pub-review"]')); await tick(20);
+  eq('no preview set: no box, the note\'s text', [z.qa('.pubpic').length, z.qa('.pubread').length], [0, 1]);
+}
+// a new VERSION of a published post: the plane on it, the preview says which version and the changelog line
 {
   const server = companion();
-  server.run = server.make('planned', { steps: [{ step: 'prepare', exit: 0, output: 'Imported: <i>a post</i>' }, { step: 'plan', exit: 0, output: 'PLAN' }] });
-  const { q, qa, view, click } = await make({ server });
-  await tick(10); click(q('[data-act="pub-review"]')); await tick();
-  eq('prepare\'s output is shown, as text, before the note and the plan', [view(), q('pre.pubprep').textContent, qa('.pubdlg i').length, q('pre.pubplan').textContent], ['confirming', 'Imported: <i>a post</i>', 0, 'PLAN']);
-  const none = companion(); none.run = none.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'P' }] });
-  const y = await make({ server: none }); await tick(10); y.click(y.q('[data-act="pub-review"]')); await tick();
-  eq('no prepare, no such block', y.qa('pre.pubprep').length, 0);
+  const { q, qa, view, click, drawer } = await make({ server });
+  click(q('.thr-pub[data-target="tp"]')); await tick();
+  eq('the plane on a published thread offers a new version', [view(), q('.pubdlg h2').textContent, qa('[data-act="pub-scope"]').map(b => b.textContent)], ['choosing', 'Publish a new version', ['Prepare version 2']]);
+  await settle(); click(q('[data-act="pub-scope"]')); await tick();
+  server.run = server.make('planned', { kind: 'edit', version: 2, changelog: 'Edited the second comment.', steps: [{ step: 'plan', ok: true }] });
+  drawer.blygPublishMoved(); await tick(5);
+  eq('the edit preview: which version, and the changelog line', [view(), q('.pubdlg h2').textContent, q('.pubchange').textContent, q('[data-act="pub-confirm"]').textContent], ['confirming', 'This updates your post (version 2)', 'Edited the second comment.', 'Publish version 2']);
 }
 
 // ---- cancel, and Escape --------------------------------------------------------------------------
@@ -445,10 +494,10 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
 
 // ---- a refusal ----------------------------------------------------------------------------------------
 {
-  const server = companion(); server.fail = { start: 'Publish as blyg is not set up: the notes folder is not set <script>x</script>' };
+  const server = companion(); server.fail = { start: 'Nothing has changed since you published this. <script>x</script>' };
   const { q, view, click, qa, dlg } = await make({ server });
   click(qa('.thr-pub')[0]); await tick(); await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
-  eq('a refusal is shown as words in a problem view', [view(), dlg().textContent.includes('the notes folder is not set <script>x</script>'), qa('.pubdlg script').length], ['problem', true, 0]);
+  eq('a refusal is shown as words in a problem view', [view(), dlg().textContent.includes('Nothing has changed since you published this. <script>x</script>'), qa('.pubdlg script').length], ['problem', true, 0]);
   eq('with only Close', qa('.pubdlg [data-act]').map(b => b.dataset.act), ['pub-close']);
 }
 
@@ -458,26 +507,27 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   server.run = server.make('planned', { steps: [{ step: 'plan', exit: 0, output: 'PLAN-TEXT' }] });
   const { q, qa, dlg, view, click, drawer } = await make({ server });
   await tick(10);
-  eq('a reloaded drawer finds a run waiting and offers a review (no note, no Publish)', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act), dlg().textContent.includes('PLAN-TEXT')], ['waiting', ['pub-review', 'pub-close'], false]);
+  eq('a reloaded drawer finds a run waiting and offers to open it (no note, no Publish)', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act), /For “My first thought”/.test(dlg().textContent)], ['waiting', ['pub-review', 'pub-close'], true]);
   eq('it only asked what the run is', server.calls.map(c => c.op), ['run']);
   click(q('[data-act="pub-review"]')); await tick();
-  eq('Review resumes (which is what opens the worker\'s one-use offer) and continues from the run\'s own mode', [server.calls.at(-1).op, view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['resume', 'confirming', ['pub-confirm', 'pub-cancel']]);
+  eq('Open it shows the run\'s own view; it asks nothing to act (an act arms itself, from its own click)', [server.calls.filter(c => c.op !== 'preview').map(c => c.op), view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], [['run'], 'confirming', ['pub-confirm', 'pub-cancel', 'pub-close']]);
   void drawer;
 }
 for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', 'pub-close']], ['interrupted_publishing', ['pub-continue', 'pub-abandon', 'pub-close']]]) {
   const server = companion();
-  server.run = server.make(mode, { failed_step: 'publish', failed_reason: 'publish exited with code 1', interrupted_why: 'the companion stopped while this run was under way',
-    steps: [{ step: 'plan', exit: 0, output: 'P' }, { step: 'apply', exit: 0, output: 'A' }, { step: 'publish', exit: 1, output: 'boom\nrun the same --push again, or --abandon' }] });
+  server.run = server.make(mode, { failed_step: mode === 'failed_publish' ? 'publish' : '', failure: '', interrupted_from: mode === 'failed_publish' ? '' : 'publishing', tries: 3,
+    steps: [{ step: 'plan', ok: true }, { step: 'apply', ok: true }, { step: 'publish', ok: false }] });
   const { q, qa, dlg, view, click } = await make({ server });
   await tick(10);
   click(q('[data-act="pub-review"]')); await tick();
-  eq(`${mode}: a problem view with what happened and only what the mode allows`, [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', buttons]);
-  ok(`${mode}: the command's own words are on screen`, /run the same --push again, or --abandon/.test(dlg().textContent));
+  eq(`${mode}: a problem view with one sentence and only what the mode allows`, [view(), qa('.pubdlg button[data-act]').map(b => b.dataset.act)], ['problem', buttons]);
+  ok(`${mode}: no command words on screen`, !/--push|--abandon|exit/.test(dlg().textContent));
   ok(`${mode}: and nothing is retried by itself`, !server.calls.some(c => ['retry', 'confirm'].includes(c.op)));
   if (mode === 'failed_publish') {
-    ok('the step that failed is named on the button', /Try publish again/.test(q('[data-act="pub-retry"]').textContent));
+    eq('the sentence when the site printed nothing recognised, and a quiet count of tries (earlier attempts are not listed as failures)', [q('.pubdlg p.puberr').textContent, /Tried 3 times\./.test(dlg().textContent), qa('.pubsteps li.failed').length], ['Something went wrong while publishing.', true, 1]);
+    eq('the buttons, in the owner\'s words', qa('.pubdlg .pbtn').map(b => b.textContent), ['Try again', 'Start over', 'Close']);
     await settle(); click(q('[data-act="pub-retry"]')); await tick();
-    eq('a retry is the owner\'s click: it resumes (the offer) and then retries, with the run\'s token', server.calls.slice(-2), [{ op: 'resume', body: undefined }, { op: 'retry', body: { run: 'r1', token: 'tok1' } }]);
+    eq('a retry is the owner\'s click: it arms THIS act and then retries, with the run\'s token', server.calls.slice(-2), [{ op: 'arm', body: { act: 'retry' } }, { op: 'retry', body: { run: 'r1', token: 'tok1' } }]);
     eq('and the view follows the run', view(), 'running');
   } else {
     click(q('[data-act="pub-abandon"]')); await tick();
@@ -492,8 +542,8 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
   const { q, qa, dlg, view, click } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
   click(q('[data-act="pub-abandon"]')); await tick();
-  eq('a failed site abandon: the problem view offers Abandon again and Forget, with the reason', [view(), qa('.pubdlg [data-act]').map(b => b.dataset.act)], ['problem', ['pub-abandon', 'pub-forget', 'pub-close']]);
-  ok('the site\'s words are on screen', /nothing to abandon/.test(dlg().textContent) && /Try Abandon again/.test(dlg().textContent));
+  eq('a failed site abandon: the problem view offers giving up again and Forget, with the reason', [view(), qa('.pubdlg button[data-act]').map(b => b.dataset.act)], ['problem', ['pub-abandon', 'pub-forget', 'pub-close']]);
+  ok('the site\'s plain line is on screen', /Nothing to abandon for the note/.test(dlg().textContent) && /Try giving it up again/.test(dlg().textContent));
   click(q('[data-act="pub-forget"]')); await tick();
   eq('Forget sends the run\'s id and token and closes', [server.calls.at(-1), view()], [{ op: 'forget', body: { run: 'r1', token: 'tok1' } }, 'closed']);
 }
@@ -523,6 +573,53 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
   await tick(5);
   eq('untrusted clicks on the waiting dialog\'s buttons do nothing', [dis.view(), server2.calls.map(c => c.op)], ['waiting', ['run']]);
   void callsBefore;
+}
+
+
+// ---- (c) the drawer never loses a run: Close keeps what is needed; the plane on ANY thread first asks for the run and shows it ----------
+for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'confirming', 'pub-confirm'], ['applying', 'running', ''], ['failed_plan', 'problem', 'pub-retry'],
+  ['interrupted_publishing', 'problem', 'pub-continue'], ['abandon_failed', 'problem', 'pub-forget']]) {
+  const server = companion();
+  server.run = server.make(mode, { thread_ids: ['t1'], failed_step: mode === 'failed_plan' ? 'plan' : '', interrupted_from: mode === 'interrupted_publishing' ? 'publishing' : '', steps: [] });
+  const { q, qa, view, click, drawer } = await make({ server });
+  await tick(10);
+  eq(`${mode}: (set up) found on opening`, view(), 'waiting');
+  click(q('[data-act="pub-close"]')); await tick();
+  for (const tid of ['t1', 't2']) {
+    click(q(`.thr-pub[data-target="${tid}"]`)); await tick();
+    eq(`${mode}: the plane on ${tid} shows the run, never the scope choice`, [view(), qa('[data-act="pub-scope"]').length, /For “My first thought”/.test(q('.pubdlg').textContent)], [view0, 0, true]);
+    click(q('[data-act="pub-close"]')); await tick();
+    eq(`${mode}: Close`, [view(), !!drawer.pub.run], ['closed', true]);
+  }
+  if (act) {
+    click(q('.thr-pub[data-target="t2"]')); await tick();
+    document.elementsFromPoint = () => [drawer.host];
+    await settle(); click(q(`[data-act="${act}"]`)); await tick(10);
+    const op = act.slice(4);
+    ok(`${mode}: reopened from another thread, ${op} works with no reload`, server.calls.some(c => c.op === op), JSON.stringify(server.calls.slice(-3)));
+    delete document.elementsFromPoint;
+  }
+}
+
+// ---- review (b): the on-screen check: a button the page moved off screen does not count ---------------------------------------------
+{
+  const server = companion();
+  server.run = server.make('planned', { steps: [] });
+  const { q, view, click, drawer } = await make({ server });
+  await tick(10); click(q('[data-act="pub-review"]')); await tick();
+  document.elementsFromPoint = () => [drawer.host];
+  await settle();
+  const btn = q('[data-act="pub-confirm"]');
+  btn.getBoundingClientRect = () => ({ left: -4000, top: -4000, right: -3900, bottom: -3970, width: 100, height: 30 });
+  btn.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
+  eq('a button off screen: nothing is armed or sent, and the owner is told', [server.calls.some(c => c.op === 'arm' || c.op === 'confirm'), /Close the page's overlay and try again/.test(q('.pubdlg').textContent)], [false, true]);
+  const box = drawer.shadow.querySelector('.pubdlg');
+  delete btn.getBoundingClientRect;
+  box.getBoundingClientRect = () => ({ left: 9000, top: 9000, right: 9300, bottom: 9400, width: 300, height: 400 });
+  await settle();
+  q('[data-act="pub-confirm"]').dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
+  eq('the whole dialog off screen: nothing is sent', [server.calls.some(c => c.op === 'arm' || c.op === 'confirm'), view()], [false, 'confirming']);
+  delete document.elementsFromPoint;
 }
 
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);

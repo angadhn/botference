@@ -382,7 +382,7 @@ const indexEntryFor = nu => Object.values(indexCache).find(v => v && normUrl(v.u
 // read, and the drawer shows them where they happened.
 const AUTH_FAIL = 'auth required — check the password on the extension’s options page';
 
-async function api(method, path, body) {
+async function api(method, path, body, want) {
   await configReady;
   path = CFG.commandRoute(method, path, body);
   // a remote companion: the browser's cookies ride along (Cloudflare Access), and a redirect is reported, never followed
@@ -417,6 +417,19 @@ async function api(method, path, body) {
     return { ok: false, error: CFG.CONN_WORDS.offline + ' — could not reach it (' + (e && e.message ? e.message : e) + ')' };
   }
   if (timedOut) return late();
+  // a picture (Publish as blyg's preview): only a PNG from the companion, at most PUB_IMAGE_MAX bytes, handed on as a data: address
+  if (want === 'image') {
+    const ct = String((res.headers && res.headers.get('content-type')) || '');
+    if (!res.ok || !/^image\/png\b/i.test(ct) || res.type === 'opaqueredirect') { clearTimeout(limit); return { ok: false, status: res.status, error: 'no picture' }; }
+    const buf = await Promise.race([res.arrayBuffer().catch(() => null), expiry]);
+    clearTimeout(limit);
+    if (timedOut || !buf) return late();
+    if (buf.byteLength > PUB_IMAGE_MAX) return { ok: false, status: res.status, error: 'the picture is too large' };
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return { ok: true, status: res.status, data: { image: 'data:image/png;base64,' + btoa(bin) } };
+  }
   let data = null;
   const text = await Promise.race([res.text().catch(() => ''), expiry]);
   clearTimeout(limit);
@@ -1064,27 +1077,32 @@ function isBlygPath(raw) {
 // ---- Publish as blyg ---------------------------------------------------------
 // The drawer asks for named operations (config.js BLYG_PUBLISH_OPS) and nothing else reaches the companion's publish
 // routes. A page cannot send this message at all (only this extension's own scripts can message the worker); inside the
-// extension the drawer sends it only on a trusted click in its closed shadow root. On top of that, the two operations that
-// act on a run (confirm, retry) are forwarded only while THIS tab holds a one-use offer, opened by a start or a resume
-// from this tab and spent by the act: the shape reader-choice has (readerOffers). The companion checks the owner, the run
-// id and the run's own token again.
+// extension the drawer sends it only on a trusted click in its closed shadow root. On top of that, the operations that act on
+// a run (confirm, retry, continue) are forwarded only while THIS tab holds a one-use offer FOR THAT ACT, which an `arm` from
+// this tab opened and the act spends. The drawer arms from the owner's trusted click itself, right before the act that click
+// asks for: one offer per owner action, so whatever came before (a retry, a continue, a reload, another dialog) the next
+// click works, and no click can act twice. The companion checks the owner, the run id and the run's own token again.
+const PUB_IMAGE_MAX = 4 * 1024 * 1024;
 async function blygPublish(msg, tabId) {
   await configReady;
   const op = String((msg && msg.op) || '');
   const spec = Object.prototype.hasOwnProperty.call(CFG.BLYG_PUBLISH_OPS, op) ? CFG.BLYG_PUBLISH_OPS[op] : null;
   if (!spec) return { ok: false, error: 'no such operation' };
+  const offerKey = act => (tabId === null || tabId === undefined ? null : tabId + ':' + act);
+  if (spec.offer === 'grants' && CFG.BLYG_ARMED_ACTS.indexOf(String(msg.act || '')) === -1) return { ok: false, error: 'no such act' };
   if (spec.offer === 'needs') {
-    if (!blygOffers.valid(tabId)) return { ok: false, code: 'offer-lapsed', error: 'Review the publish again to continue.' };
-    blygOffers.spend(tabId);
+    if (!blygOffers.valid(offerKey(op))) return { ok: false, code: 'offer-lapsed', error: 'That click was not taken. Press the button again.' };
+    blygOffers.spend(offerKey(op));
   }
   const body = {};
   for (const k of spec.body) body[k] = msg[k] === undefined ? '' : String(msg[k]);
   if (op === 'start' && CFG.BLYG_PUBLISH_SCOPES.indexOf(body.scope) === -1) return { ok: false, error: 'no such scope' };
-  const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body);
+  const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
   if (!r.ok) return { ok: false, error: r.error || (r.data && r.data.error) || 'the publish did not go through', status: r.status, timeout: !!r.timeout, run: (r.data && r.data.run) || null };
-  if (spec.offer === 'grants') blygOffers.offer(tabId);
-  return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '' };
+  if (spec.reply === 'image') return { ok: true, image: (r.data && r.data.image) || '' };
+  if (spec.offer === 'grants') blygOffers.offer(offerKey(String(msg.act)));
+  return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '' };
 }
 
 // ---- message router ------------------------------------------------------

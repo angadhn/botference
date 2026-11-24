@@ -2247,7 +2247,11 @@
     {"cmd": "/parallel", "args": "<prompt>", "hint": "Both answer at once, neither seeing the other's reply", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/lasso", "args": "<words|path|link>", "hint": "Find your pages, chats and files — or paste a link", "group": "Talking to the bots", "scope": ["tui", "council", "plugin"]},
     {"cmd": "/draft-blog", "args": "[what to write]", "hint": "Create a blog draft and start its local preview", "group": "Talking to the bots", "scope": ["plugin"]},
-    {"cmd": "/tk", "args": "<instruction>", "hint": "An agent writes this passage when you send; /tk(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tk", "args": "<instruction>", "hint": "Claude writes this passage when you send; /tk(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tk-claude", "args": "<instruction>", "hint": "Claude writes this passage; /tk-claude(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tk-codex", "args": "<instruction>", "hint": "Codex writes this passage; /tk-codex(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tkimpyrt-claude", "args": "<pasted text>", "hint": "Marks text you pasted from Claude; /tkimpyrt-claude(…)", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/tkimpyrt-codex", "args": "<pasted text>", "hint": "Marks text you pasted from Codex; /tkimpyrt-codex(…)", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
   // the plugin's share of a table (live or fallback), in the table's order
@@ -2564,7 +2568,10 @@
       // Publish as blyg: what the dialog is showing. `view` is one of config.js PUB_VIEWS, changed only by pubGo (which asks
       // config.js pubMove); `run` is the companion's run as last heard (blyg-run.mjs; the drawer never works a run out for
       // itself); `thread`/`scope` what the owner chose; `error` a refusal's words; `poll` the refresh timer (not a mode).
-      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '' },
+      // `opener` says who put the dialog up (PUB_OPENERS: a start of this drawer's, the owner's plane on a thread, or the drawer
+      // finding a run when it opened); `ask` is a second confirmation pending (PUB_ASKS); `pic` the picture of the draft
+      // ({ state: config.js PUB_PIC_STATES, moved only by pubPic; image; tries }).
+      pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 } },
       // which pop-over is open (POPOVERS): one value, changed by setPopover
       popover: 'none',
       // which agent block (a /tk gap) is being edited by hand: its key, or
@@ -3503,6 +3510,9 @@ ${bubbleShellHtml()}`;
       pending: [],
       'filled-by-agent': ['refill', 'edit', 'adopt', 'remove'],
       'edited-by-reader': ['refill', 'edit', 'adopt', 'remove'],
+      // text you pasted from an agent's tool (/tkimpyrt-…), and agent text you made yours: still the agent's words in a post
+      'pasted-by-reader': ['remove'],
+      'adopted-by-reader': ['remove'],
       failed: ['refill', 'remove'],
     });
     const GAP_ACT_WORDS = { refill: 'fill again', edit: 'edit', adopt: 'mine', remove: 'remove' };
@@ -3512,11 +3522,11 @@ ${bubbleShellHtml()}`;
     function setGapEdit(key) { D.gapEdit = key || null; render(); return true; }
     function gapBlockHtml(target, r, g) {
       if (g.mode === 'removed') return '';
-      if (g.mode === 'adopted-by-reader') return `<div class="ctext md" data-md="${esc(mdSlot(String(g.text || '')))}"></div>`;
       const key = gapKeyOf(target, r, g);
       const who = g.agent ? g.agent.charAt(0).toUpperCase() + g.agent.slice(1) : 'agent';
       const state = g.mode === 'pending' ? 'writing…' : g.mode === 'failed' ? 'not written'
-        : g.mode === 'edited-by-reader' ? 'edited by you' : '';
+        : g.mode === 'edited-by-reader' ? 'edited by you' : g.mode === 'adopted-by-reader' ? 'made yours'
+        : g.mode === 'pasted-by-reader' ? 'pasted by you' : '';
       const editing = D.gapEdit === key;
       const body = editing
         ? `<textarea class="gapedit" data-gap-key="${esc(key)}" rows="4">${esc(String(g.text || ''))}</textarea>`
@@ -3531,13 +3541,14 @@ ${bubbleShellHtml()}`;
         + `<div class="gaphead"><span class="gaprobot">${ROBOT_SVG}</span><span class="gapword">agent</span>`
         + `<span class="gapwho">${esc(who)}</span>${state ? `<span class="gapstate">${esc(state)}</span>` : ''}</div>`
         + body
-        + `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`
+        + (g.mode === 'pasted-by-reader' ? '' : `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`)
         + (acts ? `<div class="gapacts">${acts}</div>` : '')
         + '</div>';
     }
     function gapBodyHtml(target, r) {
       const text = String(r.text || '');
-      const found = TKG.parseGaps(text);
+      // (a message stored while the bracket alias was a gap is read that way; nothing else ever is)
+      const found = TKG.gapsFor ? TKG.gapsFor(text, r.gaps) : TKG.parseGaps(text);
       let out = '';
       let at = 0;
       found.forEach((f, i) => {
@@ -8352,10 +8363,12 @@ ${bubbleShellHtml()}`;
       'pub-confirm': (btn, t, e) => pubAct('confirm', e),
       'pub-cancel': () => pubAct('cancel'),
       'pub-retry': (btn, t, e) => pubAct('retry', e),
-      'pub-continue': (btn, t, e) => pubAct('continue', e, btn.dataset.stop === 'yes'),
-      'pub-stop-continue': (btn, t, e) => pubAct('continue', e, true),
+      'pub-continue': (btn, t, e) => pubAct('continue', e),
+      'pub-stop-continue': (btn, t, e) => pubAct('continue', e, 'stop'),
       'pub-abandon': () => pubAct('abandon'),
+      'pub-stop-abandon': () => pubAct('abandon', null, 'stop'),
       'pub-forget': () => pubAct('forget'),
+      'pub-pic-refresh': () => { if (D.pub.view === 'confirming') { pubPic('waiting', { tries: 0 }); paintPub(); pubPicAsk(true); } },
       'pub-review': () => pubReview(),
       'pub-close': () => pubClose(),
       'export-response': () => toggleResponse(),
@@ -10596,6 +10609,13 @@ ${bubbleShellHtml()}`;
     // back, and every button is a data-act that only a trusted click reaches (the delegated handler). The view it is in is
     // D.pub.view, one of config.js PUB_VIEWS, changed ONLY by pubGo.
     const PUB_POLL_MS = 2000;
+    // who put the dialog up, one named value: `start` (this drawer's own start: with confirm 'never' the dialog stays out of the way
+    // while it runs), `plane` (the owner pressed a thread's plane: always shown), `drawer` (a run found when the drawer opened)
+    const PUB_OPENERS = Object.freeze(['start', 'plane', 'drawer']);
+    // a second confirmation the owner is being asked for, one named value: none, or `forget` (forgetting a run whose earlier step
+    // cannot be identified)
+    const PUB_ASKS = Object.freeze(['none', 'forget']);
+    const PUB_DONE_MODES = Object.freeze(['idle', 'published', 'cancelled', 'abandoned']);
     const pubOwnWords = m => !!m && m.provenance === 'owner-typed' && !m.origin && !m.route && !m.agent && m.kind !== 'tools'
       && !isBot(m.author) && !/@(claude|codex|all)\b/i.test(String(m.text || ''));
     // the first message is the owner's own, addressed to no agent, and it is not a struck passage (the companion decides again)
@@ -10605,21 +10625,29 @@ ${bubbleShellHtml()}`;
       return !!first && pubOwnWords(first) && !!String(first.text || '').trim();
     }
     const pubPublished = t => !!(t && t.blyg_published && t.blyg_published.at);
-    // the owner's earlier comments on this page that "this and the ones above" would add, in page order
-    function pubAbove(id) {
+    // does a thread hold a passage an agent wrote or the owner pasted from one? (the companion then always shows the post first)
+    const AGENT_GAP_MODES = ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader'];
+    const pubAgentText = t => ((t && t.msgs) || []).some(m => pubOwnWords(m) && (m.gaps || []).some(g => AGENT_GAP_MODES.indexOf(g.mode) !== -1));
+    // the owner's earlier comments on this page that "this and the ones above" would add, in page order (with one click publishing,
+    // only those typed in this drawer: the companion counts the same way)
+    function pubAbove(id, shown) {
       const list = (D.page && D.page.threads) || [];
       const at = list.findIndex(t => t && t.id === id);
-      return at < 0 ? [] : list.slice(0, at).filter(t => pubThreadOk(t) && !pubPublished(t));
+      return at < 0 ? [] : list.slice(0, at).filter(t => pubThreadOk(t) && !pubPublished(t)
+        && (shown !== 'never' || (((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).channel === 'drawer')));
     }
+    const PLANE_SVG = '<svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M14.5 1.5 1.5 7l4.2 1.9L7.6 14.5l2.4-4 4.5-9z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.7 8.9 14.5 1.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
     function pubBtn(t) {
       if (!D.owner) return '';
       if (pubPublished(t)) {
         const a = safeHttp(t.blyg_published.address);
-        return `<span class="pubdone" title="published as a blyg${t.blyg_published.title ? ': ' + esc(t.blyg_published.title) : ''}">${a ? `<a href="${esc(a)}" target="_blank" rel="noopener noreferrer">published</a>` : 'published'}</span>`;
+        const v = Number(t.blyg_published.version) || 1;
+        return `<span class="pubdone" title="published as a blyg${t.blyg_published.title ? ': ' + esc(t.blyg_published.title) : ''}${v > 1 ? ' (version ' + v + ')' : ''}">${a ? `<a href="${esc(a)}" target="_blank" rel="noopener noreferrer">published</a>` : 'published'}</span>`
+          + `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish a new version of this post" aria-label="publish a new version of this post">${PLANE_SVG}</button>`;
       }
       if (!pubThreadOk(t)) return '';
       return `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish as blyg: turn this comment into a short post on your site"`
-        + ` aria-label="publish this comment as a blyg"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true" focusable="false"><path d="M14.5 1.5 1.5 7l4.2 1.9L7.6 14.5l2.4-4 4.5-9z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M5.7 8.9 14.5 1.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg></button>`;
+        + ` aria-label="publish this comment as a blyg">${PLANE_SVG}</button>`;
     }
     // an address is a link only when it is plainly http(s)
     function safeHttp(u) {
@@ -10630,8 +10658,11 @@ ${bubbleShellHtml()}`;
       if (!CFG || !CFG.canPubMove(D.pub.view, next)) return false;
       CFG.pubMove(D.pub.view, next);
       D.pub = Object.assign({}, D.pub, patch || {}, { view: next });
+      if (next !== 'problem') D.pub.ask = 'none';
       if (next === 'working' || next === 'running') pubPollSoon(); else pubPollStop();
+      if (next !== 'confirming') pubPic('none');
       paintPub();
+      if (next === 'confirming') pubPicAsk(false);
       return true;
     }
     function pubPollStop() { if (D.pub.poll) { clearTimeout(D.pub.poll); D.pub.poll = 0; } }
@@ -10647,28 +10678,26 @@ ${bubbleShellHtml()}`;
       D.pub.run = run;
       if (target === D.pub.view) { paintPub(); if (target === 'working' || target === 'running') pubPollSoon(); return; }
       if (!pubGo(target, { run })) { paintPub(); return; }
-      // confirm 'never': a published run needs no dialog; the thread says so (one line, with the link) and the view is free again
-      if (target === 'done' && run.confirm === 'never') pubGo('closed');
+      // a one-click run this drawer started: published needs no dialog; the thread says so (one line, with the link)
+      if (target === 'done' && run.confirm === 'never' && D.pub.opener === 'start') pubGo('closed');
     }
-    // with confirm 'never' the dialog stays out of the way while a run goes through: the thread carries one line of progress
-    const pubQuiet = () => (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
+    // with confirm 'never' the dialog stays out of the way while a run THIS drawer started goes through: the thread carries one line
+    const pubQuiet = () => D.pub.opener === 'start' && (D.pub.view === 'starting' || D.pub.view === 'working' || D.pub.view === 'running')
       && (D.pub.view === 'starting' ? D.pub.shown : (D.pub.run && D.pub.run.confirm)) === 'never';
-    const PUB_WORDS = { drafted: 'writing the note', preparing: 'preparing it for your site', planning: 'checking what would change', planned: 'building and testing',
-      applying: 'building and testing', applied: 'publishing to your site', publishing: 'publishing to your site' };
-    // THE ONE LINE on a thread: what a run that has this thread in it is doing now, then the link to the live post
     const pubElapsed = ms => { const s = Math.max(0, Math.round((ms || 0) / 1000)); return s < 60 ? s + ' s' : Math.floor(s / 60) + ' min ' + (s % 60) + ' s'; };
-    // the current step, how long it has been going, and the last line it printed: a long step is never silent
-    const pubProgress = r => (r && r.running ? ' (' + esc(r.running.step) + ', ' + pubElapsed(r.running.elapsed_ms) + (r.running.last_line ? ' · ' + esc(r.running.last_line) : '') + ')' : '');
+    // THE ONE LINE on a thread: what a one-click run that has this thread in it is doing now (the owner's words), then the link
     function pubLine(t) {
-      if (!D.owner || pubPublished(t)) return '';
+      if (!D.owner) return '';
       const r = D.pub.run;
       if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.shown === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
       if (!r || r.confirm !== 'never' || (r.thread_ids || []).indexOf(t.id) === -1) return '';
       if (r.mode === 'published') {
+        if (pubPublished(t) && D.pub.view === 'closed') return '';
         const a = safeHttp((r.published || {}).address);
-        return `<div class="publine done" role="status">Published${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : (r.published && r.published.permalink ? ' at <code>' + esc(r.published.permalink) + '</code>' : '')}</div>`;
+        return `<div class="publine done" role="status">Live${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : ''}</div>`;
       }
-      if (PUB_WORDS[r.mode]) return `<div class="publine" role="status">Publishing as a blyg… ${esc(PUB_WORDS[r.mode])}${pubProgress(r)}</div>`;
+      const now = CFG.pubStepsOf(r).find(x => x.state === 'now');
+      if (now) return `<div class="publine" role="status">Publishing as a blyg… ${esc(now.words.toLowerCase())}${now.elapsed_ms !== undefined ? ' (' + pubElapsed(now.elapsed_ms) + ')' : ''}</div>`;
       return '';
     }
     async function pubRefresh() {
@@ -10683,6 +10712,7 @@ ${bubbleShellHtml()}`;
     function blygPublishMoved() {
       if (!D.owner || !D.mounted) return D;
       if (D.pub.view === 'working' || D.pub.view === 'running') pubRefresh();
+      else if (D.pub.view === 'confirming' && D.pub.pic.state === 'waiting') pubPicAsk(false);
       return D;
     }
     // opening the drawer: is a run under way that this drawer did not start (a reload, another tab)? Offered, never forced.
@@ -10691,26 +10721,31 @@ ${bubbleShellHtml()}`;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
-      if (['idle', 'published', 'cancelled', 'abandoned'].indexOf(r.run.mode) !== -1) return;
-      pubGo('waiting', { run: r.run });
+      if (PUB_DONE_MODES.indexOf(r.run.mode) !== -1) return;
+      pubGo('waiting', { run: r.run, opener: 'drawer' });
     }
-    // THE SETTING IN FORCE is asked of the companion every time the menu opens; the wording shown follows that answer and the start
-    // sends it back (`confirm`), so a stale drawer can never promise "you will see it first" when one click publishes. The companion
-    // refuses a start whose `confirm` is not the setting in force.
+    // THE PLANE on any thread FIRST asks the companion for its run: a live one is shown as it is (with the post it is for), never the
+    // scope choice, so the drawer never "loses" a run (a Close, a reload, another tab). Otherwise THE SETTING IN FORCE is asked every
+    // time: the wording shown follows that answer and the start sends it back (`confirm`), so a stale drawer can never promise "you
+    // will see it first" when one click publishes. The companion refuses a start whose `confirm` is not the setting in force.
     async function pubOpen(id) {
       if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
-      if (!t || !pubThreadOk(t) || pubPublished(t)) return;
+      if (!t || !pubThreadOk(t)) return;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (D.pub.view !== 'closed') return;
       if (!r || !r.ok || (r.confirm !== 'never' && r.confirm !== 'always')) {
         // cannot say what a click would do: nothing is offered
-        pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: '' });
-        pubGo('problem', { error: (r && r.error) || 'Could not ask the companion what Publish as blyg would do, so nothing is offered. Try again.', run: null });
+        pubGo('problem', { thread: id, error: (r && r.error) || 'Could not ask the companion what Publish as blyg would do, so nothing is offered. Try again.', run: null, opener: 'plane' });
         return;
       }
-      pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm });
+      if (r.run && PUB_DONE_MODES.indexOf(r.run.mode) === -1) {
+        D.pub.opener = 'plane';
+        const target = CFG.pubViewOf(r.run.mode, r.run.confirm);
+        if (pubGo(target, { run: r.run, thread: id, error: '', opener: 'plane' })) return;
+      }
+      pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm, opener: 'plane', edit: pubPublished(t) });
     }
     // CLICKJACKING. A page can cover the drawer with something it controls (a top-layer <dialog> or popover with `pointer-events:none`, an
     // opaque/filtered/clipped host, a frame) so that a TRUSTED click lands on a drawer button it has disguised. Before anything that
@@ -10827,112 +10862,219 @@ ${bubbleShellHtml()}`;
       if (over) { pubGo('problem', { error: over, run: null }); return; }
       D.pub.error = '';
       const thread = D.pub.thread;
-      if (!pubGo('starting', { scope })) return;
+      if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
       try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown }); } catch (_) { r = null; }
-      if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'the publish did not start', run: null }); return; }
+      if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'The publish did not start.', run: null }); return; }
       pubApply(r.run);
     }
-    // the buttons that act on the run (confirm, retry, cancel, abandon), each carrying the run's own id and token
-    async function pubAct(op, e, stop) {
+    // THE BUTTONS THAT ACT ON THE RUN, each carrying the run's own id and token. The three that start something (confirm, retry,
+    // continue) first ARM: from this trusted click, the worker opens a one-use offer for exactly this act, which the act spends. One
+    // offer per owner action, so the next click always works (after a retry, a continue, a reload), and no click acts twice.
+    async function pubAct(op, e, how) {
       const run = D.pub.run;
       if (!D.owner || !run || !run.id) return;
-      if (op === 'confirm' || op === 'retry' || op === 'continue') {
+      const starts = op === 'confirm' || op === 'retry' || op === 'continue';
+      if (starts) {
         const early = pubArmRefusal();
         if (early) { D.pub.error = early; paintPub(); return; }
         const over = pubOverlay(e, e && e.target && e.target.closest ? e.target.closest('[data-act]') : null); if (over) { D.pub.error = over; paintPub(); return; }
       }
-      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: 'abandon', forget: 'forget', continue: stop ? 'stop-and-continue' : 'continue' }[op];
-      if (!may || (run.can || []).indexOf(may) === -1) return;
-      // the view changes first for the two that start something, so a second click finds nothing to press
+      const can = run.can || [];
+      const stop = how === 'stop';
+      const may = { confirm: 'confirm', cancel: 'cancel', retry: 'retry', abandon: stop ? 'stop-and-abandon' : 'abandon', forget: 'forget', continue: stop ? 'stop-and-continue' : 'continue' }[op];
+      if (!may || can.indexOf(may) === -1) return;
+      // forgetting a run whose earlier step cannot be identified asks twice
+      if (op === 'forget' && run.earlier_step === 'unknown' && D.pub.ask !== 'forget') { D.pub.ask = 'forget'; paintPub(); return; }
+      const sure = op === 'forget' && D.pub.ask === 'forget';
+      D.pub.ask = 'none';
+      // the view changes first for the one that publishes, so a second click finds nothing to press
       if (op === 'confirm' && !pubGo('running')) return;
-      if (op === 'retry' || op === 'continue') {
-        // a failed (or interrupted) step is tried again by this click, which also opens the one-use offer the worker wants
-        const res = await cb('onBlygPublish')('resume').catch(() => null);
-        if (!res || !res.ok) { pubGo('problem', { error: (res && res.error) || 'could not reach the companion' }); return; }
+      if (starts) {
+        const armed = await cb('onBlygPublish')('arm', { act: op }).catch(() => null);
+        if (!armed || !armed.ok || !armed.run || armed.run.id !== run.id) {
+          const said = (armed && armed.error) || 'Could not reach the companion.';
+          if (!pubGo('problem', { error: said, run: (armed && armed.run) || run })) { D.pub.error = said; paintPub(); }
+          return;
+        }
       }
+      const body = { run: run.id, token: run.token };
+      if (stop) body.stop = 'yes';
+      if (sure) body.sure = 'yes';
       let r = null;
-      try { r = await cb('onBlygPublish')(op, stop ? { run: run.id, token: run.token, stop: 'yes' } : { run: run.id, token: run.token }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')(op, body); } catch (_) { r = null; }
       if (r && !r.ok && r.run && r.run.id === run.id) {
-        // refused, but the run moved (the site's abandon failed: the run now offers Forget): show the run as it is, with the reason
-        pubApply(r.run); D.pub.error = r.error || ''; paintPub();
+        // refused, but with the run as it now is (the site's abandon failed; the earlier step is still running): show it, with the reason
+        D.pub.run = r.run;
+        const target = CFG.pubViewOf(r.run.mode, r.run.confirm);
+        if (target !== D.pub.view) pubGo(target, { run: r.run });
+        D.pub.error = r.error || ''; paintPub();
         return;
       }
       if (!r || !r.ok || !r.run) {
-        const said = (r && r.error) || 'the companion did not answer';
+        const said = (r && r.error) || 'The companion did not answer.';
         if (!pubGo('problem', { error: said })) { D.pub.error = said; paintPub(); }
         return;
       }
       D.pub.error = '';
       pubApply(r.run);
     }
-    async function pubReview() {
-      if (D.pub.view !== 'waiting' || !D.owner) return;
-      let r = null;
-      try { r = await cb('onBlygPublish')('resume'); } catch (_) { r = null; }
-      if (!r || !r.ok || !r.run) { pubGo('problem', { error: (r && r.error) || 'could not reach the companion', run: D.pub.run }); return; }
-      pubApply(r.run);
+    function pubReview() {
+      if (D.pub.view !== 'waiting' || !D.owner || !D.pub.run) return;
+      const target = CFG.pubViewOf(D.pub.run.mode, D.pub.run.confirm);
+      pubGo(target, { opener: 'plane' });
     }
+    // Close: the dialog goes away; nothing the owner needs to act is thrown away (the run is asked again on the next opening)
     function pubClose() { pubGo('closed', { error: '' }); }
-    const pubStepWords = s => (s.timed_out ? 'timed out' : s.spawn_error ? 'could not start' : s.signal ? 'stopped (' + esc(s.signal) + ')' : s.exit === 0 ? 'done' : 'failed (exit ' + esc(s.exit) + ')');
-    function pubStepsHtml(run) {
-      const steps = (run && run.steps) || [];
-      if (!steps.length) return '';
-      return '<ol class="pubsteps">' + steps.map(s => `<li class="${s.exit === 0 && !s.timed_out && !s.spawn_error && !s.signal ? 'ok' : 'bad'}"><b>${esc(s.step)}</b> ${pubStepWords(s)}`
-        + (s.output ? `<details${s.exit === 0 ? '' : ' open'}><summary>what it printed</summary><pre>${esc(s.output)}</pre></details>` : '') + '</li>').join('') + '</ol>';
+
+    // ---- the picture of the draft (the companion renders it; the drawer shows pixels) ----------------------------------------
+    // ONE field, D.pub.pic.state (config.js PUB_PIC_STATES), changed only by pubPic. While `waiting` the drawer asks again a few
+    // times (PUB_PIC_TRIES); the timer is a fact about when to ask, never a stand-in for the state.
+    function pubPic(to, patch) {
+      const p = D.pub.pic || { state: 'none' };
+      if (p.state === to && to === 'none') return;
+      CFG.pubPicMove(p.state, to);
+      if (p.timer) { clearTimeout(p.timer); }
+      D.pub.pic = Object.assign({ image: '', tries: 0 }, p, patch || {}, { state: to, timer: 0 });
+      if (to === 'none') D.pub.pic.image = '';
     }
+    const pubTheme = () => { const t = D.host && D.host.getAttribute('data-theme'); if (t === 'dark' || t === 'light') return t;
+      try { return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch (_) { return 'light'; } };
+    async function pubPicAsk(fresh) {
+      const run = D.pub.run;
+      if (!run || !run.id || D.pub.view !== 'confirming' || typeof opts.onBlygPublish !== 'function') return;
+      let r = null;
+      try { r = await cb('onBlygPublish')('preview', { run: run.id, token: run.token, theme: pubTheme(), fresh: fresh ? 'yes' : '' }); } catch (_) { r = null; }
+      if (D.pub.view !== 'confirming' || !D.pub.run || D.pub.run.id !== run.id) return;
+      const p = D.pub.pic;
+      // the companion could not be asked: no picture is offered (or, while one was being made, it is not available)
+      const state = r && r.ok ? r.state : (p.state === 'none' ? 'off' : 'unavailable');
+      if (state === 'off') { if (p.state !== 'none') pubPic('none'); paintPub(); return; }
+      if (state === 'ready') {
+        let img = null;
+        try { img = await cb('onBlygPublish')('preview-image', { run: run.id, token: run.token, theme: pubTheme() }); } catch (_) { img = null; }
+        if (D.pub.view !== 'confirming') return;
+        const ok = img && img.ok && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(String(img.image || ''));
+        pubPic(ok ? 'ready' : 'unavailable', { image: ok ? img.image : '' });
+        paintPub();
+        return;
+      }
+      if (state === 'waiting') {
+        const tries = (p.state === 'waiting' ? p.tries : 0) + 1;
+        if (tries > CFG.PUB_PIC_TRIES.times) { pubPic('unavailable'); paintPub(); return; }
+        pubPic('waiting', { tries });
+        if (typeof setTimeout === 'function') D.pub.pic.timer = setTimeout(() => { if (D.pub.pic.state === 'waiting') pubPicAsk(false); }, CFG.PUB_PIC_TRIES.apartMs);
+        paintPub();
+        return;
+      }
+      pubPic('unavailable'); paintPub();
+    }
+
+    // ---- what the dialog says (THE WORDS ARE config.js's ONE TABLE: pubStepsOf, pubFailureOf, pubPaceWords) ------------------------
+    function pubStepsHtml(run) {
+      const list = CFG.pubStepsOf(run);
+      if (!list.length) return '';
+      const pace = CFG.pubPaceWords(run);
+      return '<ol class="pubsteps">' + list.map(x => `<li class="${x.state}"><span class="pubtick" aria-hidden="true">${x.state === 'done' ? '✓' : x.state === 'failed' ? '✕' : x.state === 'now' ? '•' : ''}</span>`
+        + `<span class="pubword">${esc(x.words)}</span>${x.state === 'now' ? `<span class="pubnow">now${x.elapsed_ms !== undefined ? ' · ' + pubElapsed(x.elapsed_ms) : ''}</span>` : ''}`
+        + (x.key === 'apply' && (x.state === 'now' || x.state === 'todo') && pace ? `<span class="pubpace">${esc(pace)}</span>` : '')
+        + (x.key === 'live' && x.state === 'done' && run.published && safeHttp(run.published.address) ? ` <a href="${esc(safeHttp(run.published.address))}" target="_blank" rel="noopener noreferrer">${esc(safeHttp(run.published.address))}</a>` : '')
+        + '</li>').join('') + '</ol>';
+    }
+    // the note as it will read: words, quoted passages, and each agent's passage in a box with its label (never as HTML)
+    function pubReadingHtml(run) {
+      const parts = (run && run.reading) || [];
+      if (!parts.length) return '';
+      return '<div class="pubread">' + parts.map(p => p.kind === 'agent'
+        ? `<div class="pubagent"><span class="pubagentlabel">${esc(p.label || 'An agent')}</span><div class="pubagenttext">${esc(p.text)}</div></div>`
+        : p.kind === 'quote' ? `<blockquote class="pubquote">${esc(p.text)}</blockquote>` : `<p class="pubwords">${esc(p.text)}</p>`).join('') + '</div>';
+    }
+    function pubPicHtml(run) {
+      const p = D.pub.pic || { state: 'none' };
+      if (p.state === 'none') return '';
+      const link = safeHttp(run.preview_url);
+      const open = link ? `<a class="pubpicopen" href="${esc(link)}" target="_blank" rel="noopener noreferrer">open full size</a>` : '';
+      const refresh = '<button class="rebtn pubpicrefresh" type="button" data-act="pub-pic-refresh">refresh</button>';
+      const inner = p.state === 'ready' && p.image ? `<img class="pubpicimg" alt="How your post will look on your site" src="${esc(p.image)}">`
+        : p.state === 'waiting' ? '<p class="pubpicwait">Making the picture… it can take a few seconds to appear.</p>'
+        : '<p class="pubpicwait">Preview not available.</p>';
+      return `<figure class="pubpic" data-state="${esc(p.state)}"><div class="pubpicbox">${inner}</div><figcaption>how it will look ${open}${refresh}</figcaption></figure>`;
+    }
+    const pubDetailsHtml = run => (run && run.log && run.log.id ? `<details class="pubdetails"><summary>Details for troubleshooting</summary><p>Run <code>${esc(run.log.id)}</code>${run.log.path ? `<br>Log: <code>${esc(run.log.path)}</code>` : ''}</p></details>` : '');
+    const pubFor = run => (run && run.title ? `<p class="pubfor">For “${esc(run.title)}”${run.kind === 'edit' ? ' · version ' + esc(run.version) : ''}</p>` : '');
     function pubBody() {
       const P = D.pub;
       const run = P.run || {};
       const closeBtn = '<button class="pbtn" type="button" data-act="pub-close">Close</button>';
+      const err = P.error ? `<p class="puberr">${esc(P.error)}</p>` : '';
       switch (P.view) {
         case 'choosing': {
           const t = ((D.page && D.page.threads) || []).find(x => x && x.id === P.thread);
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
-          const n = pubAbove(P.thread).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
-            <p>${P.shown === 'never' ? 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.' : 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.'}</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${P.shown === 'never' ? 'Publish just this comment' : 'Just this comment'}</button>
-            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${P.shown === 'never' ? 'Publish this and the ' + n + ' above' : 'This and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
+          const look = P.shown !== 'never' || (t && pubAgentText(t));
+          if (P.edit && t) {
+            const v = (Number(t.blyg_published.version) || 1) + 1;
+            return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}
+              <p>${look ? `This makes version ${v} of your post. Nothing is published yet: first you will see it.` : `This publishes version ${v} of your post now.`}</p>
+              <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
+          }
+          const n = pubAbove(P.thread, P.shown).length;
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}
+            <p>${look ? 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.' : 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.'}</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Just this comment' : 'Publish just this comment'}</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This and the ' + n + ' above' : 'Publish this and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
         }
-        case 'starting': case 'working':
-          return `<h2>Preparing your post…</h2><p>Writing the note${run.mode === 'preparing' ? ', preparing it for your publish tool' : ' and asking your publish tool what it would do'}. Nothing is published.${pubProgress(run)}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+        case 'starting':
+          return `<h2>Preparing your post…</h2><ol class="pubsteps"><li class="now"><span class="pubtick">•</span><span class="pubword">${esc(CFG.PUB_STEP_WORDS.note)}</span><span class="pubnow">now</span></li></ol><div class="pubbtns">${closeBtn}</div>`;
+        case 'working':
+          return `<h2>Preparing your post…</h2>${pubFor(run)}${pubStepsHtml(run)}<p class="pubquiet">Nothing is published yet.</p><div class="pubbtns">${closeBtn}</div>${pubDetailsHtml(run)}`;
         case 'waiting':
-          return `<h2>A publish is waiting</h2><p>${run.title ? '“' + esc(run.title) + '” is ' : 'A blyg post is '}${esc(run.mode || 'under way')}. Review it to carry on.</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-review">Review</button>${closeBtn}</div>`;
+          return `<h2>A publish is waiting</h2>${pubFor(run)}<p>It is ${esc(String(run.mode || 'under way').replace(/_/g, ' '))}. Open it to carry on.</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-review">Open it</button>${closeBtn}</div>`;
         case 'confirming': {
-          const plan = ((run.steps || []).filter(s => s.step === 'plan').pop() || {}).output || '';
-          const prep = ((run.steps || []).filter(s => s.step === 'prepare' && s.exit === 0).pop() || {}).output || '';
-          return `<h2>Publish this?</h2>
-            <p class="pubwhere">Written to <code>${esc(run.note_rel || '')}</code></p>
-            ${prep ? `<h3>What was prepared first</h3><pre class="pubprep">${esc(prep)}</pre>` : ''}
-            <h3>The note, as it will be published</h3><pre class="pubnote">${esc(run.note_text || '')}</pre>
-            <h3>What your publish tool says it will do</h3><pre class="pubplan">${esc(plan || '(it printed nothing)')}</pre>
-            <p class="pubwarn">Publish puts this on your live site and cannot be undone from here. The plan lists who will be told and anything irreversible; read it first.</p>
-            ${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">Publish</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button></div>`;
+          const pic = pubPicHtml(run);
+          const edit = run.kind === 'edit';
+          return `<h2>${edit ? 'This updates your post (version ' + esc(run.version) + ')' : 'Publish this?'}</h2>${edit ? '' : pubFor(run)}
+            ${edit && run.changelog ? `<p class="pubchange">${esc(run.changelog)}</p>` : ''}
+            ${pic}${pic && D.pub.pic.state === 'ready' ? '' : pubReadingHtml(run)}
+            ${run.preview_url && !pic ? `<p><a class="pubseeit" href="${esc(safeHttp(run.preview_url))}" target="_blank" rel="noopener noreferrer">See how it will look</a> <span class="pubquiet">it can take a few seconds to appear</span></p>` : ''}
+            ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
+            ${run.review === 'agent-text' && run.confirm === 'always' ? '<p class="pubquiet">Shown first because part of it was written by an agent.</p>' : ''}
+            ${err}
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;
         }
         case 'running':
-          return `<h2>Publishing…</h2><p>${esc({ applying: 'Preparing, building and testing (apply).', applied: 'Applied. Publishing next.', publishing: 'Publishing. This can take several minutes while the site is rebuilt.' }[run.mode] || 'Working.')}${pubProgress(run)}</p>${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
+          return `<h2>Publishing…</h2>${pubFor(run)}${pubStepsHtml(run)}${err}<div class="pubbtns">${closeBtn}</div>${pubDetailsHtml(run)}`;
         case 'done': {
           const pub = run.published || {};
           const a = safeHttp(pub.address);
-          return `<h2>Published</h2><p>${esc(pub.title || run.title || 'Your post')} is live${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : pub.permalink ? ' at <code>' + esc(pub.permalink) + '</code> on your site' : ''}.</p>
+          return `<h2>${run.kind === 'edit' ? 'Version ' + esc(run.version) + ' is live' : 'Live'}</h2><p>${esc(pub.title || run.title || 'Your post')}${a ? ': <a href="' + esc(a) + '" target="_blank" rel="noopener noreferrer">' + esc(a) + '</a>' : ' is on your site.'}</p>
             ${pub.record_error ? `<p class="puberr">${esc(pub.record_error)}</p>` : ''}${pubStepsHtml(run)}<div class="pubbtns">${closeBtn}</div>`;
         }
         case 'problem': {
-          if (!run.id) return `<h2>Could not publish</h2><p class="puberr">${esc(P.error || 'something went wrong')}</p><div class="pubbtns">${closeBtn}</div>`;
+          if (!run.id) return `<h2>Could not publish</h2><p class="puberr">${esc(P.error || 'Something went wrong.')}</p><div class="pubbtns">${closeBtn}</div>`;
+          const can = run.can || [];
           const interrupted = /^interrupted_/.test(String(run.mode || ''));
           const refused = run.mode === 'abandon_failed';
-          const head = refused ? 'Your site\'s own abandon did not finish' : interrupted ? 'The companion stopped while this was under way' : 'The ' + esc(run.failed_step || 'last') + ' step did not finish';
-          const why = refused ? esc(run.abandon_failure || '') : interrupted ? esc(run.interrupted_why || '') : esc(run.failed_reason || '');
-          const can = run.can || [];
-          return `<h2>${head}</h2><p class="puberr">${why}</p>${P.error ? `<p class="puberr">${esc(P.error)}</p>` : ''}
-            <p>Here is what happened. Nothing is tried again by itself. The tool's own words below say how to finish it by hand${interrupted ? '' : ', or you can try that step again'}.</p>
-            ${pubStepsHtml(run)}
-            ${run.earlier_step_unknown ? '<p class="puberr">The earlier step may still be running on this machine, and it cannot be identified safely, so it is not stopped or run again here. Abandon this run, or check on the machine.</p>' : ''}
-            <div class="pubbtns">${can.indexOf('stop-and-continue') !== -1 ? `<p class="puberr">The earlier step is still running on this machine. Carrying on would start a second copy, so it has to be stopped first.</p><button class="pbtn primary" type="button" data-act="pub-stop-continue">Stop the earlier step and carry on</button>` : ''}${run.tainted ? `<p class="puberr">${esc(run.tainted)}</p>` : ''}${can.indexOf('continue') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-continue">Carry on with ${esc({ applying: 'apply', applied: 'publish', publishing: 'publish' }[run.interrupted_from] || 'the step')}</button>` : ''}${can.indexOf('retry') !== -1 ? `<button class="pbtn primary" type="button" data-act="pub-retry">Try ${esc(run.failed_step || 'this step')} again</button>` : ''}
-            ${can.indexOf('abandon') !== -1 ? `<button class="pbtn" type="button" data-act="pub-abandon">${refused ? 'Try Abandon again' : 'Abandon this run'}</button>` : ''}${can.indexOf('forget') !== -1 ? '<button class="pbtn" type="button" data-act="pub-forget" title="Ends the run here only. Nothing is run on your site; it may still need --unstage-note.">Forget this run here</button>' : ''}${closeBtn}</div>`;
+          const sentence = refused ? 'Your site could not give this publish up.' + (run.abandon_failure ? ' ' + run.abandon_failure : '')
+            : interrupted ? 'The companion stopped while this was under way.' : CFG.pubFailureOf(run) || 'Something went wrong.';
+          const tries = run.tries > 1 ? `<p class="pubquiet">Tried ${esc(run.tries)} times.</p>` : '';
+          const btn = (act, label, primary) => `<button class="pbtn${primary ? ' primary' : ''}" type="button" data-act="${act}">${label}</button>`;
+          const buttons = [
+            can.indexOf('retry') !== -1 ? btn('pub-retry', 'Try again', true) : '',
+            can.indexOf('continue') !== -1 ? btn('pub-continue', 'Carry on', true) : '',
+            can.indexOf('stop-and-continue') !== -1 ? btn('pub-stop-continue', 'Stop the earlier step and carry on', true) : '',
+            can.indexOf('abandon') !== -1 ? btn('pub-abandon', refused ? 'Try giving it up again' : 'Start over', false) : '',
+            can.indexOf('stop-and-abandon') !== -1 ? btn('pub-stop-abandon', 'Stop the earlier step and start over', false) : '',
+            can.indexOf('forget') !== -1 ? btn('pub-forget', P.ask === 'forget' ? 'Yes, forget it' : 'Forget this run', false) : '',
+          ].join('');
+          return `<h2>${refused ? 'Not given up yet' : interrupted ? 'Stopped part-way' : 'Not published'}</h2>${pubFor(run)}${pubStepsHtml(run)}
+            <p class="puberr">${esc(sentence)}</p>${tries}${err}
+            ${run.earlier_step === 'alive' ? '<p class="pubquiet">The earlier step is still running on the companion\'s machine: stop it first.</p>' : ''}
+            ${run.earlier_step === 'unknown' ? '<p class="pubquiet">The earlier step may still be running and cannot be identified safely, so it is neither stopped nor run again.</p>' : ''}
+            ${P.ask === 'forget' ? '<p class="puberr">Forgetting runs nothing and stops nothing. Press again to confirm.</p>' : ''}
+            ${run.tainted ? `<p class="puberr">${esc(run.tainted)}</p>` : ''}
+            <div class="pubbtns">${buttons}${closeBtn}</div>${pubDetailsHtml(run)}`;
         }
         default: return '';
       }
@@ -10943,7 +11085,16 @@ ${bubbleShellHtml()}`;
       if (D.pub.view === 'closed' || pubQuiet()) { el.hidden = true; el.innerHTML = ''; if (typeof render === 'function') render(); return; }
       const html = `<div class="pubcard" data-view="${esc(D.pub.view)}" data-mode="${esc((D.pub.run && D.pub.run.mode) || '')}">${pubBody()}</div>`;
       // new buttons (or a dialog that was hidden) start settling; the same markup painted again changes nothing
-      if (html !== el.innerHTML || el.hidden) { el.innerHTML = html; el.hidden = false; pubArm('settling'); }
+      if (html !== el.innerHTML || el.hidden) {
+        const before = el.querySelector ? [...el.querySelectorAll('.pbtn')].map(b => b.outerHTML).join('') : '';
+        const openDetails = el.querySelector && el.querySelector('details.pubdetails[open]');
+        el.innerHTML = html;
+        if (openDetails) { const d = el.querySelector('details.pubdetails'); if (d) d.open = true; }
+        const after = el.querySelector ? [...el.querySelectorAll('.pbtn')].map(b => b.outerHTML).join('') : '';
+        // a step's elapsed time ticking over is not new buttons: only a change of buttons (or a dialog that was hidden) settles them
+        if (el.hidden || before !== after) pubArm('settling');
+        el.hidden = false;
+      }
       pubWatchButtons();
       if (typeof render === 'function') render();
     }

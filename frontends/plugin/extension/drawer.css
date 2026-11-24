@@ -2702,11 +2702,37 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .pubwarn { padding: 8px 10px; border-left: 3px solid var(--ready-line); background: var(--ready); border-radius: 4px }
 .puberr { color: var(--bad) }
 .pubwhere { color: var(--muted); font-size: 12px }
-.pubsteps { margin: 8px 0 0; padding-left: 20px }
-.pubsteps li.bad > b { color: var(--bad) }
-.pubsteps li.ok > b { color: var(--done-line) }
-.pubsteps details { margin: 4px 0 6px }
-.pubsteps summary { cursor: pointer; color: var(--muted); font-size: 12px }
+.pubsteps { list-style: none; margin: 10px 0 4px; padding: 0 }
+.pubsteps li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; padding: 3px 0; color: var(--muted) }
+.pubsteps li.done, .pubsteps li.now { color: var(--fg) }
+.pubsteps li.now .pubword { font-weight: 600 }
+.pubsteps li.failed { color: var(--bad) }
+.pubtick { flex: none; display: inline-block; width: 14px; text-align: center; color: var(--done-line) }
+.pubsteps li.now .pubtick { color: var(--accent) }
+.pubsteps li.failed .pubtick { color: var(--bad) }
+.pubnow { font-size: 11.5px; color: var(--accent) }
+.pubpace { flex-basis: 100%; padding-left: 20px; font-size: 11.5px; color: var(--muted) }
+.pubsteps a { color: var(--done-line); text-decoration: underline; word-break: break-all }
+.pubfor { color: var(--muted); font-size: 12px }
+.pubquiet { color: var(--muted); font-size: 12px }
+.pubchange { padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--rail); border-radius: 4px }
+.pubnotify { font-size: 12.5px }
+.pubread { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--card-line); border-radius: 8px; max-height: 280px; overflow: auto; font-family: var(--serif) }
+.pubread p, .pubread blockquote { margin: 0 0 8px; white-space: pre-wrap; word-break: break-word }
+.pubquote { padding-left: 10px; border-left: 2px solid var(--card-line); color: var(--muted) }
+.pubagent { margin: 0 0 8px; padding: 6px 10px 8px; border: 1px solid var(--card-line); border-radius: 6px; background: var(--rail) }
+.pubagentlabel { display: block; font: 600 11px/1.4 var(--sans); color: var(--muted); margin-bottom: 2px }
+.pubagenttext { white-space: pre-wrap; word-break: break-word }
+.pubpic { margin: 10px 0 }
+.pubpicbox { border: 1px solid var(--card-line); border-radius: 8px; max-height: 320px; overflow: auto; background: var(--rail) }
+.pubpicimg { display: block; width: 100%; height: auto }
+.pubpicwait { margin: 0; padding: 12px; color: var(--muted); font-size: 12px }
+.pubpic figcaption { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted) }
+.pubpic figcaption a { color: var(--muted); text-decoration: underline }
+.pubseeit { color: var(--accent); text-decoration: underline }
+.pubdetails { margin-top: 12px; font-size: 11.5px; color: var(--muted) }
+.pubdetails summary { cursor: pointer }
+.pubdetails code { word-break: break-all }
 .pubbtns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px }
 .pbtn {
   font: inherit; padding: 7px 14px; border-radius: 7px; border: 1px solid var(--card-line); background: var(--card);

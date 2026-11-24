@@ -190,7 +190,8 @@
   //   problem     a refusal, a failed step, or an interrupted run: what happened, and what may be done
   const PUB_VIEWS = Object.freeze(['closed', 'choosing', 'starting', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']);
   const PUB_MOVES = Object.freeze({
-    closed: Object.freeze(['choosing', 'waiting']),
+    // (the plane on any thread FIRST asks the companion for its run: a live one is shown as it is, never the scope choice)
+    closed: Object.freeze(['choosing', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']),
     choosing: Object.freeze(['starting', 'problem', 'closed']),
     starting: Object.freeze(['working', 'problem']),
     waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
@@ -198,7 +199,7 @@
     confirming: Object.freeze(['running', 'problem', 'closed']),
     running: Object.freeze(['done', 'problem', 'closed']),
     done: Object.freeze(['closed']),
-    problem: Object.freeze(['closed', 'working', 'running']),
+    problem: Object.freeze(['closed', 'working', 'running', 'confirming', 'done']),
   });
   const canPubMove = (from, to) => !!PUB_MOVES[from] && PUB_MOVES[from].indexOf(to) !== -1;
   function pubMove(from, to) {
@@ -218,20 +219,106 @@
   // `planned`, so that moment is still "running", not a confirmation to press
   const pubViewOf = (mode, confirm) => (mode === 'planned' && confirm === 'never' ? 'running' : (PUB_VIEW_OF[mode] || 'problem'));
   // The operations the drawer may ask of the companion for a publish, and nothing else: the worker forwards these and only
-  // these (the generic `api` message refuses every /blyg-publish and /blyg-home path). `offer`: 'grants' = a successful answer
-  // opens this tab's one-use offer; 'needs' = the worker forwards it only while the tab holds an offer, and spends it.
+  // these (the generic `api` message refuses every /blyg-publish and /blyg-home path). `offer` (createOffers, one-use, per tab):
+  //   'grants'  a successful answer opens this tab's one-use offer FOR THE NAMED ACT (`act`): `arm`, which the drawer sends from
+  //             the owner's trusted click itself, right before the act that click asks for
+  //   'needs'   forwarded only while the tab holds an offer for exactly this act, which it spends
+  //   'none'    neither
+  // So an offer is per OWNER ACTION, not per dialog opening: every Publish, Try again and Carry on is one trusted click that arms
+  // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
+  // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'grants', body: ['url', 'thread_id', 'scope', 'confirm'] }),
-    run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [] }),
-    resume: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [] }),
-    confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'] }),
-    retry: Object.freeze({ method: 'POST', path: '/blyg-publish/retry', offer: 'needs', body: ['run', 'token'] }),
-    continue: Object.freeze({ method: 'POST', path: '/blyg-publish/continue', offer: 'needs', body: ['run', 'token', 'stop'] }),
-    cancel: Object.freeze({ method: 'POST', path: '/blyg-publish/cancel', offer: 'none', body: ['run', 'token'] }),
-    abandon: Object.freeze({ method: 'POST', path: '/blyg-publish/abandon', offer: 'none', body: ['run', 'token'] }),
-    // after the site's own abandon failed: end the run on the companion only (nothing runs on the site)
-    forget: Object.freeze({ method: 'POST', path: '/blyg-publish/forget', offer: 'none', body: ['run', 'token'] }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm'], reply: 'json' }),
+    run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
+    arm: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'grants', body: [], reply: 'json' }),
+    confirm: Object.freeze({ method: 'POST', path: '/blyg-publish/confirm', offer: 'needs', body: ['run', 'token'], reply: 'json' }),
+    retry: Object.freeze({ method: 'POST', path: '/blyg-publish/retry', offer: 'needs', body: ['run', 'token'], reply: 'json' }),
+    continue: Object.freeze({ method: 'POST', path: '/blyg-publish/continue', offer: 'needs', body: ['run', 'token', 'stop'], reply: 'json' }),
+    cancel: Object.freeze({ method: 'POST', path: '/blyg-publish/cancel', offer: 'none', body: ['run', 'token'], reply: 'json' }),
+    abandon: Object.freeze({ method: 'POST', path: '/blyg-publish/abandon', offer: 'none', body: ['run', 'token', 'stop'], reply: 'json' }),
+    // after the site's own abandon failed, or when the earlier step cannot be identified (then `sure`: the owner's second click)
+    forget: Object.freeze({ method: 'POST', path: '/blyg-publish/forget', offer: 'none', body: ['run', 'token', 'sure', 'stop'], reply: 'json' }),
+    preview: Object.freeze({ method: 'POST', path: '/blyg-publish/preview', offer: 'none', body: ['run', 'token', 'theme', 'fresh'], reply: 'json' }),
+    'preview-image': Object.freeze({ method: 'POST', path: '/blyg-publish/preview-image', offer: 'none', body: ['run', 'token', 'theme'], reply: 'image' }),
   });
+  // the acts an offer is for (an `arm` names one of these)
+  const BLYG_ARMED_ACTS = Object.freeze(['confirm', 'retry', 'continue']);
+
+  // ── what the OWNER reads about a publish: THE ONE WORDING TABLE ───────────────────────────────────────
+  // The run's mode and its steps, in the owner's words, one line each (no command, file or script names; the raw output is in
+  // the run's log on the companion, for agents). Keys:
+  //   note    the note is written (and staged on the site)      fetch  prepare, when the post quotes another blyg's post
+  //   plan    the site checks that only this note changes        apply  the site builds and checks itself
+  //   publish the site publishes                                 wait   the site is live-checked after the push
+  //   live    done
+  const PUB_STEP_WORDS = Object.freeze({
+    note: 'Writing your note', fetch: 'Fetching the post you quoted', plan: 'Checking that only this note changes',
+    apply: 'Building and checking your site', publish: 'Publishing', wait: 'Waiting for your site to update', live: 'Live',
+  });
+  // …and how each is said inside "Something went wrong while …"
+  const PUB_STEP_DOING = Object.freeze({
+    note: 'writing your note', fetch: 'fetching the post you quoted', plan: 'checking that only this note changes',
+    apply: 'building and checking your site', publish: 'publishing', wait: 'waiting for your site to update', live: 'finishing',
+  });
+  const PUB_KEYS = Object.freeze(['note', 'fetch', 'plan', 'apply', 'publish', 'wait', 'live']);
+  // the companion's step → the owner's line (prepare is "fetch" only when the post quotes another post; otherwise part of the note)
+  const pubKeyOfStep = (step, run) => ({ prepare: run && run.quotes ? 'fetch' : 'note', plan: 'plan', apply: 'apply', publish: 'publish' }[step] || '');
+  // the line each running mode is on
+  const PUB_NOW_OF = Object.freeze({ checking: 'note', drafted: 'note', preparing: 'fetch', planning: 'plan', applying: 'apply', applied: 'publish', publishing: 'publish' });
+  /** The owner's list for a run: [{ key, words, state: 'done'|'now'|'todo'|'failed', elapsed_ms? }], in order. */
+  function pubStepsOf(run) {
+    if (!run || !run.mode || run.mode === 'idle') return [];
+    const keys = PUB_KEYS.filter(k => k !== 'fetch' || run.quotes);
+    const okSteps = new Set();
+    for (const s of run.steps || []) if (s.ok) okSteps.add(pubKeyOfStep(s.step, run));
+    let now = PUB_NOW_OF[run.mode] || '';
+    if (now === 'fetch' && !run.quotes) now = 'note';
+    if (now === 'publish' && run.running && run.running.phase === 'wait') now = 'wait';
+    const failed = run.failed_step ? (pubKeyOfStep(run.failed_step, run) || '') : '';
+    const interrupted = run.interrupted_from ? (PUB_NOW_OF[run.interrupted_from] || '') : '';
+    const stop = failed || interrupted || now;
+    const done = run.mode === 'published';
+    const at = done ? keys.length : Math.max(0, keys.indexOf(stop));
+    // planned: everything up to the plan is done, the rest is to come
+    const plannedAt = (run.mode === 'planned' || /^interrupted_planned$/.test(run.mode)) ? keys.indexOf('apply') : -1;
+    return keys.map((k, i) => {
+      let state = 'todo';
+      if (done || (plannedAt >= 0 ? i < plannedAt : i < at) || okSteps.has(k) && i < at) state = 'done';
+      else if ((failed && k === failed) || (interrupted && k === interrupted)) state = 'failed';
+      else if (!failed && !interrupted && plannedAt < 0 && i === at && run.mode !== 'cancelled' && run.mode !== 'abandoned') state = 'now';
+      const out = { key: k, words: PUB_STEP_WORDS[k], state };
+      if (state === 'now' && run.running && Number.isFinite(run.running.elapsed_ms)) out.elapsed_ms = run.running.elapsed_ms;
+      return out;
+    });
+  }
+  /** The ONE sentence a failure is told in: the site's recognised plain line, else "Something went wrong while <step>." */
+  function pubFailureOf(run) {
+    if (!run || !run.failed_step) return '';
+    if (run.failure) return String(run.failure);
+    const k = pubKeyOfStep(run.failed_step, run) || 'note';
+    return 'Something went wrong while ' + PUB_STEP_DOING[k] + '.';
+  }
+  /** How long "Building and checking your site" takes: quick (the guard has the site's quick flag), or about N minutes from the last
+   *  full run recorded for this site, or nothing when none is recorded (never a guess). */
+  function pubPaceWords(run) {
+    if (!run) return '';
+    if (run.pace === 'quick') return 'This is the quick check: usually under a minute.';
+    return Number.isFinite(run.full_minutes) && run.full_minutes > 0 ? 'This takes about ' + run.full_minutes + ' minute' + (run.full_minutes === 1 ? '' : 's') + '.' : '';
+  }
+  // ── the picture of the draft, as the DRAWER holds it: one named state in one field (D.pub.pic.state), moved by pubPicMove ─────
+  //   none         no picture is offered (no preview address, or the run is not waiting on the owner)
+  //   waiting      the companion is making it (the drawer asks again a few times, PUB_PIC_TRIES)
+  //   ready        the picture is shown
+  //   unavailable  "Preview not available": the note's text is shown instead; publishing is never blocked
+  const PUB_PIC_STATES = Object.freeze(['none', 'waiting', 'ready', 'unavailable']);
+  const PUB_PIC_MOVES = Object.freeze({ none: Object.freeze(['waiting', 'ready', 'unavailable']), waiting: Object.freeze(['waiting', 'ready', 'unavailable', 'none']),
+    ready: Object.freeze(['waiting', 'none']), unavailable: Object.freeze(['waiting', 'none']) });
+  const PUB_PIC_TRIES = Object.freeze({ times: 12, apartMs: 2500 });
+  function pubPicMove(from, to) {
+    if (PUB_PIC_STATES.indexOf(to) === -1) throw new Error('preview picture: no such state ' + to);
+    if (!PUB_PIC_MOVES[from] || PUB_PIC_MOVES[from].indexOf(to) === -1) throw new Error('preview picture: cannot go from ' + from + ' to ' + to);
+    return to;
+  }
   const BLYG_PUBLISH_SCOPES = Object.freeze(['one', 'above']);
 
   // ── whether an exported note is a RESPONSE to its page ─────────────────
@@ -689,7 +776,8 @@
     FTE_STATES, FTE_MOVES, fteState, fteBatchMove, canFteMove,
     BLYG_MODES, BLYG_SETTLED, BLYG_MOVES, canBlygMove, blygMove,
     RESPONSE_MODES, responseOf,
-    PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES,
+    PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
+    PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,
     FOLLOWING_NUMBERS, MY_ORIGINS_MAX, followingSettingsOf, originOf,
