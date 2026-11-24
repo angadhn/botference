@@ -1275,10 +1275,20 @@ test('the site\'s refusals: each to a fixed sentence; only lines that start with
     ['locale', pre('the locale is LANG=C, which is not UTF-8: set LANG to a UTF-8 locale (for example en_US.UTF-8) in the environment of the program that runs this, or leave all of LC_ALL, LC_CTYPE and LANG unset')],
     ['shell-vars', plan('BLYG_SITE_ROOT, BLYG_NO_PIN is set in your shell; blyg-publish sets these itself: unset them first')],
   ];
-  for (const [key, out] of cases) assert.equal(R.plainLineOf(`some build output\n${out}\nState: planned`), SAY[key], `${key}: ${out}`);
+  const filled = { 'checkout-dirty': { [cases.find(c => c[0] === 'checkout-dirty')[1]]: 'the site’s settings' } };
+  for (const [key, out] of cases) {
+    const want = key === 'checkout-dirty' ? SAY[key].replace('{what}', (filled[key][out]) || 'some files') : SAY[key];
+    assert.equal(R.plainLineOf(`some build output\n${out}\nState: planned`), want, `${key}: ${out}`);
+  }
+  // the dirty tree says WHICH kind of thing, in plain words (today's case: the link-card cache a preview site wrote)
+  assert.equal(R.plainLineOf('Refused:\n  - the working tree has uncommitted changes; commit or stash them first:\n M _data/link_cards.yml\nState: x'),
+    'Your blog folder has unsaved changes in the link-card cache; save or discard them, then try again.');
+  assert.equal(R.plainLineOf('Refused:\n  - the working tree has uncommitted changes; commit or stash them first:\n M _config.yml\n M _notes/x.md\n M weird/<script>.txt\nState: x'),
+    'Your blog folder has unsaved changes in the site’s settings, your notes and other files; save or discard them, then try again.', 'kinds only, never a file name');
   const used = new Set(cases.map(c => c[0]));
   assert.deepEqual(R.SITE_REFUSALS.map(r => r.key).filter(k => !used.has(k)), [], 'every entry of the table is exercised');
   assert.ok(R.SITE_REFUSALS.every(r => /^[A-Z][^\n]*[.]$/.test(r.say) && !/--|_notes|scripts\/|\.rb\b/.test(r.say)), 'prepared sentences: no flag, path or script');
+  assert.ok(R.DIRTY_KINDS.every(k => !/[/_]/.test(k.say)), 'the kinds are words, not paths');
   // hostile and page-derived lines: never the site's word
   const hostile = [
     'Refused: <img src=x onerror=alert(1)> is not imported',                                // no prefix of the publisher's

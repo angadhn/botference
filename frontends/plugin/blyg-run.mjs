@@ -184,7 +184,7 @@ export const SITE_REFUSALS = Object.freeze([
   ['staged-other', /^\S+ is already staged by this checkout\b/, 'Another note is already staged in your site’s checkout. Finish or undo that publish first.'],
   ['not-wip', /^your checkout is on \S+(?:, not wip|; (?:staging a note commits on wip|switch to wip first|publishing reads the notes from wip))/, 'Your site’s checkout is not on its wip branch. Switch it to wip, then try again.'],
   ['note-uncommitted', /^\S+ is already on wip and has uncommitted changes/, 'The note has changes in your site’s checkout that are not committed. Commit them there, then try again.'],
-  ['checkout-dirty', /^(?:your checkout has other uncommitted changes|the working tree has (?:\d+ )?uncommitted change)/, 'Your site’s checkout has changes that are not committed. Commit or stash them, then try again.'],
+  ['checkout-dirty', /^(?:your checkout has other uncommitted changes|the working tree has (?:\d+ )?uncommitted change)/, 'Your blog folder has unsaved changes in {what}; save or discard them, then try again.'],
   ['import-failed', /^importing the note's sources failed/, 'Your site could not fetch the post you quoted. Try again later.'],
   ['not-imported', /^quotes or answers \S+, which is not imported/, 'The post you quoted has not been fetched into your site yet. Start over to fetch it.'],
   ['not-staged', /^\S+ was not staged by --stage-note/, 'Your site has no record of staging this note. Start over.'],
@@ -226,6 +226,25 @@ export const SITE_REFUSALS = Object.freeze([
   ['locale', /^the locale is \w+=\S+, which is not UTF-8/, 'The companion runs with a locale that is not UTF-8.'],
   ['shell-vars', /^[A-Z_][A-Z0-9_]*(?:, [A-Z_][A-Z0-9_]*)* is set in your shell; blyg-publish sets these itself/, 'The companion passes your site a setting that the site sets itself.'],
 ].map(([key, re, say]) => Object.freeze({ key, re, say })));
+// WHICH KIND OF FILE has unsaved changes, in plain words (the dirty-tree sentence's {what}): a fixed description per kind, from the
+// file names the publisher lists (they are the owner's own folder's, and only the KIND is ever shown).
+export const DIRTY_KINDS = Object.freeze([
+  [/^_data\/link_cards\.yml$/, 'the link-card cache'],
+  [/^_notes\//, 'your notes'],
+  [/^_blyg\//, 'the site’s publication records'],
+  [/^_config\.yml$/, 'the site’s settings'],
+  [/^(?:_layouts|_includes|_sass|assets|styles\.scss|_pages)\b/, 'the site’s design files'],
+  [/^(?:_plugins|scripts|tests|netlify)\//, 'the site’s code'],
+  [/^_data\//, 'the site’s data files'],
+].map(([re, say]) => Object.freeze({ re, say })));
+export function dirtyWhat(files) {
+  const kinds = [];
+  for (const f of files) { const k = DIRTY_KINDS.find(d => d.re.test(f)); const w = k ? k.say : 'other files'; if (!kinds.includes(w)) kinds.push(w); }
+  if (!kinds.length) return 'some files';
+  return kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(', ')} and ${kinds[kinds.length - 1]}`;
+}
+// the files a dirty-tree refusal names: `git status --porcelain` lines under it, or the "(a, b)" list in the staging refusal
+const PORCELAIN = /^ ?[MADRCU?]{1,2} +(\S.*)$/;
 const SITE_PREFIX = 'blyg-publish: ';
 const LIST_HEADINGS = Object.freeze(['Refused:', 'blyg-publish preflight: this environment cannot publish yet:']);
 const NOTE_NAMED = /^_notes\/[\w.-]+\.md: /;
@@ -250,9 +269,17 @@ export function refusalOf(raw, { listed = false, note = '' } = {}) {
 export function plainLineOf(output, { note = '' } = {}) {
   let listed = false;
   let said = '';
-  for (const line of String(output || '').split('\n')) {
+  const lines = String(output || '').split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const r = refusalOf(line, { listed, note });
-    if (r) said = r.say;
+    if (r && r.key === 'checkout-dirty') {
+      const files = [];
+      const inline = /uncommitted changes \(([^)]*)\)/.exec(line);
+      if (inline) files.push(...inline[1].split(', '));
+      for (let j = i + 1; j < lines.length; j++) { const m = PORCELAIN.exec(lines[j]); if (!m) break; files.push(m[1]); }
+      said = r.say.replace('{what}', dirtyWhat(files));
+    } else if (r) said = r.say;
     if (LIST_HEADINGS.includes(line.trim())) listed = true;
     else if (!/^\s+- /.test(line)) listed = false;
   }
@@ -264,7 +291,8 @@ export function checkSentences(message, { note = '' } = {}) {
   const out = [];
   for (const line of String(message || '').split('\n')) {
     const r = refusalOf(line, { listed, note });
-    if (r && !out.includes(r.say)) out.push(r.say);
+    const say = r ? r.say.replace('{what}', 'some files') : '';
+    if (r && !out.includes(say)) out.push(say);
     if (LIST_HEADINGS.includes(line.trim())) listed = true;
     else if (!/^\s+- /.test(line)) listed = false;
   }
