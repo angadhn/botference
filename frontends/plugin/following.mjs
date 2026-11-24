@@ -1049,7 +1049,8 @@ function newBudget(settings, now) {
 //      document's version on the companion). From here every reader finishes the conversion first.
 //   3. each followed blyg's ledger, archive and feed, the inbox, and each unread post's text (copied from 'oldbody'; the
 //      older one is left where it is). A document already there is KEPT as it is (written by an earlier attempt, or since);
-//      so is the epoch it carries.
+//      so is the epoch it carries. A ledger of another epoch is converted with its read ids, and a post read there (its id
+//      in that ledger or its gone filter) is not put in the feed unless its record says a real edit brought it back.
 //   4. the copy goes to 'pre-shard'; the main document moves to `keeping_copy` (copy_until = now + the quiet period).
 //   5. a sweep after copy_until deletes 'pre-shard' and every 'oldbody', empties the marker of the old posts, and moves to
 //      `done`. Nothing of the older layout is deleted before that.
@@ -1558,16 +1559,28 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       const feedItems = followedNow ? mine.filter(i => !ARCHIVE_STATES.includes(i.read)) : [];
       // its ledger: the one stored by the layout before (no epoch), else the one inside the old document; and R3
       const curL = await getCur('ledger', o);
-      const older = curL && curL.value && !curL.value.epoch ? curL.value : null;
-      const raw = older || oldLedgers[o] || null;
-      if (raw || arch.length || (curL && curL.value)) {
+      // its ledger: one there of this epoch stands; else the one of the layout before (no epoch), the one inside the old
+      // document, or one of another epoch (a kept blyg's, say): its read ids are never dropped
+      const raw = (curL && curL.value) || oldLedgers[o] || null;
+      let ledNow = null;
+      if (raw || arch.length) {
         const led = cleanLedger(raw);
         const have = new Set(led.ids.map(p => p[0]));
         for (const i of arch) if (!have.has(i.id)) { led.ids.push([i.id, Math.max(0, stamp(i.created, i.fetched_at || now()))]); have.add(i.id); }
         if (led.ids.length > LIMITS.archiveIdsPerBlyg) trimLedger(led);
-        await put('ledger', o, curL, { origin: o, epoch: b.epoch, ...led });
+        ledNow = cleanLedger(await put('ledger', o, curL, { origin: o, epoch: b.epoch, ...led }));
       }
       if (!followedNow) return;
+      // a post read before (its id in the ledger, or in its gone filter) is not put back in the Feed by the older document's
+      // copy of it (after a rollback the older code fetched it again as new), unless the record says a real edit brought it back
+      if (ledNow) {
+        const readIds = new Set(ledNow.ids.map(p => p[0]));
+        const gone = goneTest(ledNow);
+        for (let j = feedItems.length - 1; j >= 0; j--) {
+          const i = feedItems[j];
+          if (!isWithdrawn(i) && i.read !== 'edited' && (readIds.has(i.id) || gone(i.id))) feedItems.splice(j, 1);
+        }
+      }
       const curA = await getCur('archive', o);
       if (arch.length || (curA && curA.value)) await put('archive', o, curA, { origin: o, epoch: b.epoch, items: Object.fromEntries(arch.map(i => [i.id, i])) });
       const curF = await getCur('feed', o);

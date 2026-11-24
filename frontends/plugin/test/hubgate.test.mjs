@@ -170,6 +170,26 @@ test('1: the migration is ONE field moved by one function that refuses an illega
   assert.throws(() => F.moveMigration(m, 'begin'));
 });
 
+test('1: a re-conversion after a rollback never puts back in the Feed a post read in a KEPT ledger (hosted and companion shapes)', async () => {
+  for (const where of ['legacy', 'following']) {
+    const w = world();
+    const doc = olderDoc('aaaa');
+    await seedOlder(w.store, doc, where === 'legacy' ? { where: 'legacy', bodies: 'oldbody' } : {});
+    const one = w.engine('one');
+    const v = await one.view();
+    const read = v.entries.find(e => e.head.origin === A).head;
+    await one.readRequest({ key: read.key, move: 'tick' });
+    await one.unfollow(A); // keeping what was read
+    // the rollback: the older document as it was (A followed, the post unread in it), this layout's main document gone
+    if (where === 'legacy') { await w.store.put('state', 'legacy', doc); await w.store.delete('state', 'following'); }
+    else { await w.store.put('state', 'following', doc); for (const it of Object.values(doc.items)) await w.store.put('body', it.key, `<p>text of ${it.id}</p>`); }
+    const v2 = await w.engine('two').view();
+    assert.ok(!v2.entries.some(e => e.head.origin === A && e.head.id === read.id), `${where}: the read post is not unread again`);
+    assert.equal(v2.entries.filter(e => e.head.origin === A).length, 2, `${where}: the others are`);
+    assert.equal(readStateOf(w, A, read.id).ledger, true, `${where}: still read`);
+    assert.deepEqual(invariants(w), [], where);
+  }
+});
 // ---- 2: an unfollow's late deletes ---------------------------------------------------------------------------------------------
 test('2: an unfollow stopped before each of its deletes while the owner follows again, refreshes and ticks: nothing of the refollow is deleted', async () => {
   for (const forget of [false, true]) {
