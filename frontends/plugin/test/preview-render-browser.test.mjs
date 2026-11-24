@@ -18,6 +18,7 @@ test('a real headless render: cropped to the post, 2x, scripts off, other hosts 
   let scriptRan = 0;
   const site = await serve((req, res) => {
     if (req.url === '/ran') { scriptRan++; res.writeHead(204).end(); return; }
+    if (req.url === '/b/attr') { res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><html><head><style>article{height:60px;background:#fff}[data-theme=dark] article{background:#000}</style></head><body><article>x</article></body></html>'); return; }
     if (req.url !== '/b/0abc') { res.writeHead(404, { 'content-type': 'text/html' }).end('<!doctype html><p>no such page</p>'); return; }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(`<!doctype html><html><head><meta name="viewport" content="width=device-width">
       <link rel="stylesheet" href="${otherOrigin}/evil.css"><style>body{margin:0;background:#fff}header{height:300px;background:#f00}article{margin:20px;height:150px;background:#0a0}
@@ -36,6 +37,11 @@ test('a real headless render: cropped to the post, 2x, scripts off, other hosts 
     const dark = await renderPreview({ chrome: CHROME, url: `${base}/b/0abc`, selector: 'article', theme: 'dark' });
     assert.equal(dark.state, 'ready');
     assert.notEqual(Buffer.compare(dark.png, r.png), 0, 'the drawer\'s theme reaches the page (prefers-color-scheme)');
+    // a site that picks its theme with a script and an attribute on <html>: the renderer sets the attribute itself (scripts stay off)
+    const attr = await renderPreview({ chrome: CHROME, url: `${base}/b/attr`, selector: 'article', theme: 'dark', themeAttribute: 'data-theme' });
+    const plain = await renderPreview({ chrome: CHROME, url: `${base}/b/attr`, selector: 'article', theme: 'dark' });
+    assert.equal(attr.state, 'ready', attr.why);
+    assert.notEqual(Buffer.compare(attr.png, plain.png), 0, 'data-theme="dark" was set without any page script');
     assert.equal((await renderPreview({ chrome: CHROME, url: `${base}/b/nope`, selector: 'article' })).state, 'missing', 'not there yet: missing (asked again by the caller)');
     assert.equal((await renderPreview({ chrome: CHROME, url: `${base}/b/0abc`, selector: 'main.nothing' })).state, 'missing');
     assert.equal((await renderPreview({ chrome: '', url: `${base}/b/0abc`, selector: 'article' })).state, 'unavailable', 'no browser: unavailable');

@@ -30,6 +30,7 @@ export const EXAMPLE = Object.freeze({
   // the owner's local preview site (it serves the working branch's drafts); the drawer shows a picture of the draft from it
   preview_url: 'http://127.0.0.1:4000{permalink}',
   preview_selector: 'article',
+  preview_theme_attribute: 'data-theme',
   commands: {
     check: ['scripts/blyg-publish', '--preflight'],
     prepare: ['scripts/blyg-publish', '{note}', '--prepare-note'],

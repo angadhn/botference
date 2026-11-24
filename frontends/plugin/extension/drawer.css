@@ -2726,7 +2726,7 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .pubagenttext { white-space: pre-wrap; word-break: break-word }
 .pubpic { margin: 10px 0 }
 .pubpicbox { border: 1px solid var(--card-line); border-radius: 8px; max-height: 320px; overflow: auto; background: var(--rail) }
-.pubpicimg { display: block; width: 100%; height: auto }
+.pubpicimg { display: block; width: 100%; max-width: 420px; height: auto; margin: 0 auto }
 .pubpicwait { margin: 0; padding: 12px; color: var(--muted); font-size: 12px }
 .pubpic figcaption { display: flex; align-items: center; gap: 10px; margin-top: 4px; font-size: 11.5px; color: var(--muted) }
 .pubpic figcaption a { color: var(--muted); text-decoration: underline }

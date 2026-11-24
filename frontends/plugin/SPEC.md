@@ -12989,7 +12989,9 @@ whatever `confirm` says (`run.review = 'agent-text'`).
 ### The picture of the draft (`preview_url`)
 
 Optional `preview_url` (a template with `{permalink}`, `{slug}`, `{id}` making an absolute http(s) address; example: the owner's local
-preview site `http://127.0.0.1:4000{permalink}`) and `preview_selector` (default `article`). For a run waiting on the owner, the drawer asks
+preview site `http://127.0.0.1:4000{permalink}`), `preview_selector` (default `article`) and `preview_theme_attribute` (the attribute on
+`<html>` by which a site picks its theme with a script; the example blog's is `data-theme`: the renderer sets it to the drawer's theme
+through the DOM domain, scripts staying off). For a run waiting on the owner, the drawer asks
 `POST /blyg-publish/preview {run, token, theme, fresh?}` (state: off | waiting | ready | unavailable, `PREVIEW_STATES`, moved only by
 `previewMove`) and, when ready, `POST /blyg-publish/preview-image {run, token}` (the PNG bytes: `image/png`, `nosniff`, `no-store`, at most
 4 MiB; the worker hands them to the drawer as a `data:image/png` address). Same request rule as the other publish routes; the address is

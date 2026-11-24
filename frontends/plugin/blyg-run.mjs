@@ -498,7 +498,7 @@ export function createPublisher(deps) {
     let r = { state: 'unavailable', why: url ? 'not rendered' : 'no preview address' };
     for (let i = 0; url && i < PREVIEW_TRIES.times; i++) {
       if (preview.run !== runId || preview.state !== 'waiting') return;
-      r = await render({ chrome, url, selector: (home.settings.preview_selector || DEFAULT_PREVIEW_SELECTOR), theme });
+      r = await render({ chrome, url, selector: (home.settings.preview_selector || DEFAULT_PREVIEW_SELECTOR), theme, themeAttribute: home.settings.preview_theme_attribute || '' });
       if (r.state !== 'missing') break;
       await new Promise(res => setTimeout(res, deps.previewApartMs !== undefined ? deps.previewApartMs : PREVIEW_TRIES.apartMs));
     }

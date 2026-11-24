@@ -38,7 +38,10 @@ export function findChrome(env = process.env) {
   return '';
 }
 
-export function renderPreview({ chrome, url, selector, theme = 'light', loadMs = LOAD_MS, hardMs = HARD_MS }) {
+// `themeAttribute`: a site that picks its theme with a script (the example blog sets `data-theme` on <html> from the reader's
+// preference) shows only its light theme with scripts off; naming that attribute lets the renderer set it itself, through the DOM
+// domain (no page script runs), to the drawer's theme.
+export function renderPreview({ chrome, url, selector, theme = 'light', themeAttribute = '', loadMs = LOAD_MS, hardMs = HARD_MS }) {
   return new Promise(resolve => {
     let origin = '';
     try { const u = new URL(url); if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme'); origin = u.origin; } catch { resolve({ state: 'unavailable', why: 'the preview address is not an http(s) address' }); return; }
@@ -117,6 +120,10 @@ export function renderPreview({ chrome, url, selector, theme = 'light', loadMs =
       if (mainStatus === 404) return finish({ state: 'missing', why: 'the preview site has no page at that address yet' });
       if (mainStatus && (mainStatus < 200 || mainStatus >= 400)) return finish({ state: 'unavailable', why: `the preview site answered ${mainStatus}` });
       const { root } = await s('DOM.getDocument', { depth: 0 });
+      if (/^[a-z][a-z0-9-]{0,40}$/.test(String(themeAttribute || ''))) {
+        const html = await s('DOM.querySelector', { nodeId: root.nodeId, selector: 'html' });
+        if (html.nodeId) { await s('DOM.setAttributeValue', { nodeId: html.nodeId, name: themeAttribute, value: theme === 'dark' ? 'dark' : 'light' }); await new Promise(r => setTimeout(r, 150)); }
+      }
       const { nodeId } = await s('DOM.querySelector', { nodeId: root.nodeId, selector: String(selector || 'article') });
       if (!nodeId) return finish({ state: 'missing', why: `nothing on the page matches ${String(selector).slice(0, 60)}` });
       const { model } = await s('DOM.getBoxModel', { nodeId });
