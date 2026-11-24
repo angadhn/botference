@@ -188,6 +188,7 @@ test('1: the marker is ONE field moved by one function: it carries its copy unti
   await assert.rejects(w.engine('t').view(), /main document is missing/);
   assert.deepEqual(w.store.log.slice(before), []);
 });
+
 test('1: a text the older code saved after the conversion copied (only in "oldbody") is copied before any older text is deleted; none deleted while one is missing', async () => {
   const w = world();
   await seedOlder(w.store, olderDoc('aaaa'), { where: 'legacy', bodies: 'oldbody' });
@@ -214,6 +215,7 @@ test('1: a text the older code saved after the conversion copied (only in "oldbo
   assert.equal(w.store.peek('state', 'following').migration.state, 'done');
   assert.match((await w.engine('v').view()).entries.find(e => e.head.key === late.key).head.body_head, /text of/);
 });
+
 test('1: a re-conversion after a rollback never puts back in the Feed a post read in a KEPT ledger (hosted and companion shapes)', async () => {
   for (const where of ['legacy', 'following']) {
     const w = world();
@@ -234,6 +236,45 @@ test('1: a re-conversion after a rollback never puts back in the Feed a post rea
     assert.deepEqual(invariants(w), [], where);
   }
 });
+
+test('1: two invocations finish one conversion; the first then follows and pauses: the second\'s late write of the main document undoes neither', async () => {
+  let points = 0;
+  for (let i = 1; ; i++) {
+    const w = world(); publish(w.web.add(A), 3); publish(w.web.add(B), 3); publish(w.web.add(C), 2);
+    await seedOlder(w.store, olderDoc('aaaa'), { where: 'legacy', bodies: 'oldbody' });
+    const one = w.engine('one'), two = w.engine('two');
+    const c = w.arm('two', { holdAt: i });
+    const p = two.view().catch(e => e);
+    const what = await Promise.race([c.reached.then(() => 'held'), p.then(() => 'done')]);
+    if (what === 'done') break;
+    points++;
+    await one.view();
+    await one.confirmImport([{ origin: C }]);
+    await one.setBlygState(A, 'pause');
+    w.release('two'); await p;
+    const main = w.store.peek('state', 'following');
+    assert.ok(main.blygs[C], `two held at ${c.ops[i - 1]}: the follow stands`);
+    assert.equal(main.blygs[A].state, 'paused', `two held at ${c.ops[i - 1]}: the pause stands`);
+  }
+  assert.ok(points > 10);
+});
+
+test('5: the per-day edit-return cap: with 10 returns of the last 24 hours in its ledger, a real edit of a read post stays in the Archive until the day is over', async () => {
+  const w = world(); const site = w.web.add(A); publish(site, 6);
+  const z = w.engine('z'); await z.confirmImport([{ origin: A }]); await z.refresh();
+  await z.readRequest({ key: await z.keyFor(A, idOf(1)), move: 'tick' });
+  const led = w.store.peek('ledger', N(A));
+  await w.store.put('ledger', N(A), { ...led, returns: Array.from({ length: F.LIMITS.editReturnsPerDay }, (_, k) => [w.clock.t - 3600e3, idOf(100 + k)]) });
+  w.clock.t += 60e3;
+  editPost(site, 1);
+  const r = await z.refresh();
+  assert.equal(r.edited, 0, 'no return beyond the day\'s cap');
+  assert.ok(['archived', 'archived_changed'].includes(readStateOf(w, A, idOf(1)).archive), 'it stays in the Archive');
+  w.clock.t += 24 * 3600e3;
+  await z.refresh();
+  assert.equal(readStateOf(w, A, idOf(1)).feed, 'edited', 'released once the day is over');
+});
+
 // ---- 2: an unfollow's late deletes ---------------------------------------------------------------------------------------------
 test('2: an unfollow stopped before each of its deletes while the owner follows again, refreshes and ticks: nothing of the refollow is deleted', async () => {
   for (const forget of [false, true]) {

@@ -5,6 +5,7 @@
 //   P3 no archive record or ledger id lost or duplicated (at rest: a post in its feed or its archive, never both; every archive
 //      record's id in its ledger)
 //   P4 no body deleted while its record is unread
+//   P5 the day's edit-return count is not undercounted (P1, every owner's move told done stands, is the tests' own)
 // No network: invented blygs held in memory (following-fake.mjs).
 import { createRequire } from 'node:module';
 import * as F from '../following.mjs';
@@ -80,6 +81,9 @@ export function invariants(w, o = A, { atRest = true } = {}) {
     if (s.peek('body', r.body || r.key) === null) bad.push(`P4 the body of unread ${id} is gone`);
     if (ids.includes(id) && r.read !== 'edited') bad.push(`P2 read ${id} is unread as ${r.read}`);
   }
+  // P5 the day's edit-return count is not undercounted: every return of the last 24 hours is in the ledger's `returns`
+  const returned = Object.values(feed).filter(r => r.read === 'edited' && r.returned_at && w.clock.t - r.returned_at < 24 * 3600e3).length;
+  if ((led.returns || []).length < returned) bad.push(`P5 ${returned} edit-returns today, ${(led.returns || []).length} counted`);
   return bad;
 }
 /** Where a post is: its read state in its feed, in its archive, and whether its id is in its ledger. */
