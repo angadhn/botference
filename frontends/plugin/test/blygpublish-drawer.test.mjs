@@ -66,7 +66,7 @@ function companion(first) {
     if (op === 'continue') { state.run = run('publishing', { steps: state.run.steps }); return { ok: true, run: state.run }; }
     if (op === 'abandon' && state.abandonFails) { state.run = run('abandon_failed', { abandon_failure: 'Nothing to abandon for the note.', steps: state.run.steps }); return { ok: false, error: 'Your site could not give this publish up.', run: state.run }; }
     if (op === 'abandon') { state.run = run('abandoned'); return { ok: true, run: state.run }; }
-    if (op === 'forget') { state.run = run('abandoned', { cleanup: { forgotten: true } }); return { ok: true, run: state.run }; }
+    if (op === 'forget') { state.run = run('abandoned', { cleanup: { outcome: 'forgotten', said: 'Forgotten here only.' } }); return { ok: true, run: state.run }; }
     return { ok: false, error: 'no such op' };
   };
   return state;

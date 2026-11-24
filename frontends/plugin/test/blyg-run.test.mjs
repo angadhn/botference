@@ -204,7 +204,7 @@ test('cancel at the confirmation removes the draft only if this run made it and 
   assert.equal(b.mode(), 'cancelled');
   assert.equal(fs.existsSync(noteOf(rig, v)), false);
   assert.deepEqual(rig.calls().map(x => x.step), ['plan', 'discard']);
-  assert.equal(c.view.cleanup.removed, true);
+  assert.equal(c.view.cleanup.outcome, 'undone');
   // changed since it was written: kept
   const b2 = boot(rig);
   (await b2.start()); await until(() => b2.mode() === 'planned', 'planned 2');
@@ -214,7 +214,7 @@ test('cancel at the confirmation removes the draft only if this run made it and 
   assert.ok(c2.ok);
   assert.equal(fs.existsSync(noteOf(rig, v)), true, 'the owner\'s edit is not thrown away');
   assert.match(c2.view.cleanup.said, /changed since this run wrote it.*left as it is/);
-  assert.equal(c2.view.cleanup.removed, false);
+  assert.equal(c2.view.cleanup.outcome, 'left');
 });
 
 test('Publish is refused out of order: confirm only from planned, with the right id and token, once', async t => {
@@ -516,7 +516,7 @@ test('a restart leaves a failed run failed: its retry is still offered, and aban
   const a = await again.abandon({ id: v.id, token: v.token });
   assert.ok(a.ok, JSON.stringify(a));
   assert.equal(a.view.mode, 'abandoned');
-  assert.equal(a.view.cleanup.removed, true, 'the draft is removed: the run never reached apply');
+  assert.equal(a.view.cleanup.outcome, 'undone', 'the draft is removed: the run never reached apply');
   assert.ok(!fs.existsSync(note));
   assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'discard'], 'discard ran (it undoes what prepare did); no abandon of an apply');
 });
@@ -542,7 +542,7 @@ test('abandon after a failed apply: the site\'s abandon runs, then discard, and 
     const a = await b.pub.abandon({ id: v.id, token: v.token });
     assert.ok(a.ok, JSON.stringify(a));
     assert.equal(a.view.mode, 'abandoned');
-    assert.equal(a.view.cleanup.removed, true, `the draft is taken away (${withAbandon})`);
+    assert.equal(a.view.cleanup.outcome, 'undone', `the draft is taken away (${withAbandon})`);
     assert.ok(!fs.existsSync(note));
     assert.deepEqual(rig.calls().map(c => c.step), ['prepare', 'plan', 'apply', ...(withAbandon ? ['abandon'] : []), 'discard'], `${withAbandon}`);
     assert.match(a.view.cleanup.said, /^Nothing was published\. The draft was taken away\.$/);
@@ -1053,7 +1053,7 @@ test('a failing site abandon: abandon_failed survives a restart, offers abandon 
   const before = rig.calls().length;
   const f = await pub.forget({ id: v.id, token: v.token });
   assert.ok(f.ok, JSON.stringify(f));
-  assert.deepEqual([f.view.mode, f.view.cleanup.forgotten, f.view.cleanup.removed], ['abandoned', true, false]);
+  assert.deepEqual([f.view.mode, f.view.cleanup.outcome], ['abandoned', 'forgotten']);
   assert.match(f.view.cleanup.said, /nothing was run on your site.*troubleshooting details/s);
   assert.ok(!/--|scripts\//.test(f.view.cleanup.said), 'no command or script names for the owner');
   assert.match(fs.readFileSync(b.pub.log.pathOf(f.view.id), 'utf8'), /--unstage-note/, 'how to end it by hand is in the log, for an agent');
@@ -1455,4 +1455,131 @@ test('the picture of the draft: one named state, rendered only for a run waiting
   assert.ok((await pub.confirm({ id: v.id, token: v.token })).ok, 'an unavailable picture never blocks publishing');
   assert.equal(pub.previewOf({ id: v.id, token: v.token }).state, 'off', 'and once the run moved on there is nothing to render');
   await until(() => pub.current().mode === 'published', 'published');
+});
+
+// A NEW VERSION given up where the site certainly published nothing puts the published text back (when the note is still what the
+// run wrote), so the next "publish again" is not refused; where a push may have happened the note is left, the owner is told in one
+// sentence what to do, and Forget is offered. One run per mode.
+test('an edit given up: the published text goes back in every mode that published nothing; after a publish that may have pushed it is left, with one sentence and Forget', async t => {
+  const editRig = async (tag) => {
+    const rig = makeRig({ discard: true }); t.after(rig.done);
+    const cmd = step => [process.execPath, FAKE, rig.log, rig.ctl, step, '{note}'];
+    const home = { ...rig.home, commands: { ...rig.home.commands, ...EDIT(rig), abandon: cmd('abandon') } };
+    const page = blygPage([{ id: 't1', quote: 'A passage.', blyg: stamp(), msgs: [mine('First comment.', { ts: '1' })] }]);
+    const b = boot(rig, { page, config: home });
+    (await b.start()); await until(() => b.mode() === 'planned', `planned ${tag}`);
+    let v = b.pub.current();
+    await b.pub.confirm({ id: v.id, token: v.token }); await until(() => b.mode() === 'published', `published ${tag}`);
+    const rel = recOf(v).note_rel;
+    const published = fs.readFileSync(path.join(rig.top, rel), 'utf8');
+    b.pages.get(b.page.url).threads[0].msgs[0].text = 'First comment, sharper.';
+    const e = await b.start(); assert.ok(e.ok, e.error);
+    await until(() => b.mode() === 'planned', `planned edit ${tag}`);
+    v = b.pub.current();
+    assert.match(fs.readFileSync(path.join(rig.top, rel), 'utf8'), /sharper/);
+    return { rig, home, b, v, rel, published, noteNow: () => fs.readFileSync(path.join(rig.top, rel), 'utf8') };
+  };
+  // restart a publisher from the record as it is now, with the record's mode set to `mode` (what a companion that stopped there finds)
+  const restartAt = (x, mode) => {
+    const rec = JSON.parse(fs.readFileSync(x.b.file, 'utf8'));
+    const file = path.join(x.rig.out, `run-${mode}.json`);
+    fs.writeFileSync(file, JSON.stringify({ ...rec, mode }));
+    return R.createPublisher({ file, now: () => NOW, broadcast: () => {}, readConfig: () => ({ blyg_home: x.home }), readPage: u => x.b.pages.get(u), savePage: p => x.b.pages.set(p.url, p),
+      posts: path.join(path.dirname(x.b.file), 'blyg-publish-posts.json') });
+  };
+  const againOk = async (x, pub) => {
+    // the next "publish again" is not refused for a note left rewritten
+    x.b.pages.get(x.b.page.url).threads[0].msgs[0].text = 'First comment, sharper still.';
+    const r = await pub.start({ page: x.b.pages.get(x.b.page.url), threadId: 't1', scope: 'one', shown: 'always' });
+    assert.ok(r.ok, r.error);
+  };
+
+  // failed_apply
+  { const x = await editRig('failed_apply');
+    x.rig.control({ apply_edit: 'fail' });
+    await x.b.pub.confirm({ id: x.v.id, token: x.v.token }); await until(() => x.b.mode() === 'failed_apply', 'failed_apply');
+    x.rig.control({});
+    const a = await x.b.pub.abandon({ id: x.v.id, token: x.v.token });
+    assert.ok(a.ok, a.error);
+    assert.deepEqual([a.view.cleanup.outcome, x.noteNow() === x.published], ['undone', true], 'failed apply: the published text is back');
+    await againOk(x, x.b.pub); }
+  // interrupted_applying and interrupted_applied (the companion stopped during apply, or after it and before publish began)
+  for (const mode of ['applying', 'applied']) {
+    const x = await editRig(mode);
+    x.rig.control({ apply_edit: 'sleep' });
+    await x.b.pub.confirm({ id: x.v.id, token: x.v.token });
+    await until(() => x.rig.calls().some(c => c.step === 'apply_edit'), 'apply started');
+    const sleeper = x.rig.calls().at(-1).pid;
+    const pub = restartAt(x, mode);
+    x.b.pub.stopAll(); try { process.kill(sleeper, 'SIGKILL'); } catch { /* gone */ }
+    await until(() => { try { process.kill(sleeper, 0); return false; } catch { return true; } }, 'the step gone');
+    x.rig.control({});
+    const v = pub.current();
+    assert.equal(v.mode, `interrupted_${mode}`);
+    assert.equal(v.unsure, '', 'nothing could have been published: no doubt to tell');
+    const a = await pub.abandon({ id: v.id, token: v.token });
+    assert.ok(a.ok, a.error);
+    assert.deepEqual([a.view.cleanup.outcome, x.noteNow() === x.published], ['undone', true], `interrupted_${mode}: the published text is back`);
+    await againOk(x, pub);
+  }
+  // abandon_failed after a failed apply: abandon again puts it back too
+  { const x = await editRig('abandon_failed');
+    x.rig.control({ apply_edit: 'fail' });
+    await x.b.pub.confirm({ id: x.v.id, token: x.v.token }); await until(() => x.b.mode() === 'failed_apply', 'failed_apply');
+    x.rig.control({ abandon: 'fail' });
+    const bad = await x.b.pub.abandon({ id: x.v.id, token: x.v.token });
+    assert.equal(bad.ok, false); assert.equal(x.b.mode(), 'abandon_failed');
+    assert.match(x.noteNow(), /sharper/, 'not yet');
+    x.rig.control({});
+    const a = await x.b.pub.abandon({ id: x.v.id, token: x.v.token });
+    assert.ok(a.ok, a.error);
+    assert.deepEqual([a.view.cleanup.outcome, x.noteNow() === x.published], ['undone', true], 'abandon again (from a failed apply): put back'); }
+  // failed_publish: the publish may have pushed — the note is left, one sentence, Forget offered (and Start over still)
+  { const x = await editRig('failed_publish');
+    x.rig.control({ publish_edit: 'fail' });
+    await x.b.pub.confirm({ id: x.v.id, token: x.v.token }); await until(() => x.b.mode() === 'failed_publish', 'failed_publish');
+    const v = x.b.pub.current();
+    assert.equal(v.unsure, R.EDIT_UNSURE_SAY);
+    assert.deepEqual(v.can, ['retry', 'abandon', 'forget']);
+    x.rig.control({});
+    const a = await x.b.pub.abandon({ id: v.id, token: v.token });
+    assert.ok(a.ok, a.error);
+    assert.equal(a.view.cleanup.outcome, 'left');
+    assert.match(a.view.cleanup.said, /may already have published the new version/);
+    assert.match(x.noteNow(), /sharper/, 'not put back: the site may show it'); }
+  // interrupted_publishing: Forget ends it here, nothing run, the note left, the same sentence
+  { const x = await editRig('publishing');
+    x.rig.control({ publish_edit: 'sleep' });
+    await x.b.pub.confirm({ id: x.v.id, token: x.v.token });
+    await until(() => x.rig.calls().some(c => c.step === 'publish_edit'), 'publish started');
+    const sleeper = x.rig.calls().at(-1).pid;
+    const pub = restartAt(x, 'publishing');
+    x.b.pub.stopAll(); try { process.kill(sleeper, 'SIGKILL'); } catch { /* gone */ }
+    await until(() => { try { process.kill(sleeper, 0); return false; } catch { return true; } }, 'the step gone');
+    x.rig.control({});
+    const v = pub.current();
+    assert.deepEqual([v.mode, v.unsure, v.can], ['interrupted_publishing', R.EDIT_UNSURE_SAY, ['continue', 'abandon', 'forget']]);
+    const before = x.rig.calls().length;
+    const f = await pub.forget({ id: v.id, token: v.token });
+    assert.ok(f.ok, f.error);
+    assert.equal(f.view.cleanup.outcome, 'forgotten');
+    assert.match(f.view.cleanup.said, /may already have published the new version/);
+    assert.equal(x.rig.calls().length, before, 'nothing was run on the site');
+    assert.match(x.noteNow(), /sharper/); }
+  // a NEW post (not an edit) after a failed publish: no doubt sentence, no Forget (abandon runs the site's own abandon)
+  { const rig = makeRig(); t.after(rig.done);
+    const b = boot(rig);
+    rig.control({ publish: 'fail' });
+    (await b.start()); await until(() => b.mode() === 'planned', 'planned');
+    const v0 = b.pub.current();
+    await b.pub.confirm({ id: v0.id, token: v0.token }); await until(() => b.mode() === 'failed_publish', 'failed_publish (new)');
+    assert.deepEqual([b.pub.current().unsure, b.pub.current().can], ['', ['retry', 'abandon']]); }
+});
+
+test('the cleanup is ONE named outcome; an older record\'s two booleans are read as it', () => {
+  assert.deepEqual(R.CLEANUP_OUTCOMES, ['undone', 'left', 'forgotten']);
+  for (const [old, want] of [[{ removed: true }, 'undone'], [{ removed: false, forgotten: true }, 'forgotten'], [{ removed: false }, 'left']]) {
+    const m = R.migrateRecord({ mode: 'abandoned', cleanup: { said: 'x', ...old } });
+    assert.deepEqual(m.cleanup, { said: 'x', outcome: want });
+  }
 });

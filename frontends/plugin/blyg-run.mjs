@@ -107,9 +107,24 @@ export const RUN_MOVES = Object.freeze({
 /** The modes in which nothing has touched the site's published state yet (abandon takes the draft away). */
 export const PRE_APPLY_MODES = Object.freeze(['drafted', 'preparing', 'planning', 'planned', 'failed_prepare', 'failed_plan',
   I.drafted, I.preparing, I.planning, I.planned]);
-/** The modes in which the site certainly published nothing: before apply, or apply itself failed (it works in a temporary copy, and
- *  only publish pushes). A failed or interrupted PUBLISH may have pushed, so it is not one of these. */
-export const NOTHING_PUBLISHED_MODES = Object.freeze([...PRE_APPLY_MODES, 'failed_apply']);
+/** The modes in which the site certainly published nothing: before apply, apply itself failed or was interrupted (it works in a
+ *  temporary copy, and only publish pushes), or apply was done and the companion stopped before publish began (`applied` moves to
+ *  `publishing` before the publish command is started). A failed or interrupted PUBLISH may have pushed, so it is not one of these;
+ *  nor is interrupted_unknown (its step is not known). */
+export const NOTHING_PUBLISHED_MODES = Object.freeze([...PRE_APPLY_MODES, 'failed_apply', I.applying, I.applied]);
+/** The modes in which the publish may or may not have reached the site (a push may have happened): for a new VERSION the note is
+ *  then left as it is, the owner is told in one sentence what to do (EDIT_UNSURE_SAY), and Forget is offered beside abandon. */
+export const PUBLISH_UNSURE_MODES = Object.freeze(['failed_publish', I.publishing, 'interrupted_unknown']);
+export const EDIT_UNSURE_SAY = 'Your site may already have published the new version, so your note was left as it is: look at the post on your site, and if the new version is not there, publish it from your site.';
+/** What abandoning, cancelling or forgetting a run did to the note, one named outcome (`cleanup.outcome`):
+ *    undone     the draft was taken away (a new post) or the published text was put back (a new version)
+ *    left       nothing was undone: the note is as the run left it (the site may hold it, or the record could not be trusted)
+ *    forgotten  the run was ended here only: nothing was run on the site and nothing was removed */
+export const CLEANUP_OUTCOMES = Object.freeze(['undone', 'left', 'forgotten']);
+const cleanupOf = (outcome, said) => {
+  if (!CLEANUP_OUTCOMES.includes(outcome)) throw new Error(`cleanup: no such outcome ${outcome}`);
+  return { outcome, said: String(said || '') };
+};
 /** The modes in which no prepare or plan has begun (so a `discard` has nothing to undo). */
 export const NOTHING_BEGUN_MODES = Object.freeze(['drafted', I.drafted]);
 export class IllegalMove extends Error {}
@@ -259,7 +274,11 @@ export function checkSentences(message, { note = '' } = {}) {
 export const PUBLISH_PHASES = Object.freeze(['publish', 'wait']);
 export const phaseOfLine = line => (/^Pushed main\b|waiting for the Netlify deploy|^Live and verified/i.test(String(line || '')) ? 'wait' : '');
 export const beforeApply = run => PRE_APPLY_MODES.includes(run.mode);
-export const publishedNothing = run => NOTHING_PUBLISHED_MODES.includes(run.mode);
+// (abandon_failed keeps the mode it was abandoned from, `abandoned_from`, so "abandon again" knows whether anything was published)
+export const publishedNothing = run => NOTHING_PUBLISHED_MODES.includes(run.mode)
+  || (run.mode === 'abandon_failed' && NOTHING_PUBLISHED_MODES.includes(run.abandoned_from));
+export const publishUnsure = run => run.kind === 'edit' && (PUBLISH_UNSURE_MODES.includes(run.mode)
+  || (run.mode === 'abandon_failed' && PUBLISH_UNSURE_MODES.includes(run.abandoned_from)));
 const workBegun = run => !NOTHING_BEGUN_MODES.includes(run.mode);
 /** Is this move allowed? The table alone decides. */
 export const canMove = (from, to) => !!RUN_MOVES[from] && RUN_MOVES[from].includes(to);
@@ -268,13 +287,22 @@ export const stepNamed = mode => (FAILED_MODES.includes(mode) ? mode.slice('fail
   : INTERRUPTED_MODES.includes(mode) ? mode.slice('interrupted_'.length) : '');
 
 /** What the owner may do in a mode (the drawer draws buttons from this; the routes enforce it by the table). */
-export const actionsOf = run => (run.mode === 'planned' ? ['confirm', 'cancel'] : FAILED_MODES.includes(run.mode) ? ['retry', 'abandon']
-  : run.mode === 'abandon_failed' ? ['abandon', 'forget']
-  : INTERRUPTED_MODES.includes(run.mode) ? (CONTINUE_FOR[run.mode] ? ['continue', 'abandon'] : ['abandon']) : []);
+export const actionsOf = run => {
+  const can = run.mode === 'planned' ? ['confirm', 'cancel'] : FAILED_MODES.includes(run.mode) ? ['retry', 'abandon']
+    : run.mode === 'abandon_failed' ? ['abandon', 'forget']
+    : INTERRUPTED_MODES.includes(run.mode) ? (CONTINUE_FOR[run.mode] ? ['continue', 'abandon'] : ['abandon']) : [];
+  // a new version whose publish may have reached the site: Forget too (nothing is run or undone)
+  return publishUnsure(run) && !can.includes('forget') ? [...can, 'forget'] : can;
+};
 
 /** A record written by an older companion (mode 'failed' + failed_step, or 'interrupted' + interrupted_from) in today's one field. */
 export function migrateRecord(rec) {
   if (!rec || typeof rec !== 'object') return rec;
+  // an older companion's cleanup said it with two booleans (removed, forgotten): today it is one named outcome
+  if (rec.cleanup && typeof rec.cleanup === 'object' && !CLEANUP_OUTCOMES.includes(rec.cleanup.outcome)) {
+    const { removed, forgotten, ...c } = rec.cleanup;
+    rec = { ...rec, cleanup: { ...c, outcome: forgotten ? 'forgotten' : removed ? 'undone' : 'left' } };
+  }
   if (rec.mode !== 'failed' && rec.mode !== 'interrupted' && !('failed_step' in rec) && !('interrupted_from' in rec)) return rec;
   const { failed_step: step, interrupted_from: from, ...rest } = rec;
   const now = rec.mode === 'failed' ? (FAILED_OF[step] || 'failed_publish') : rec.mode === 'interrupted' ? (INTERRUPTED_OF[from] || 'interrupted_unknown') : rec.mode;
@@ -382,7 +410,9 @@ export function viewOf(run) {
     tries: failedStep ? (count.get(failedStep) || 0) : Math.max(0, ...[...count.values()]),
     failed_step: failedStep, failure: failedStep ? String(run.failure_line || '') : '',
     interrupted_from: INTERRUPTED_MODES.includes(run.mode) ? stepNamed(run.mode) : '', interrupted_why: run.interrupted_why || '',
-    published: run.published || null, cleanup: run.cleanup ? { said: String(run.cleanup.said || ''), removed: !!run.cleanup.removed, forgotten: !!run.cleanup.forgotten } : null,
+    published: run.published || null,
+    cleanup: run.cleanup ? { said: String(run.cleanup.said || ''), outcome: CLEANUP_OUTCOMES.includes(run.cleanup.outcome) ? run.cleanup.outcome : 'left' } : null,
+    unsure: publishUnsure(run) ? EDIT_UNSURE_SAY : '',
     chained_to: run.chained_to || null,
     abandon_failure: run.mode === 'abandon_failed' ? String(run.abandon_failure_line || '') : '',
     preview_url: run.preview_url || '',
@@ -873,10 +903,10 @@ export function createPublisher(deps) {
   }
 
   /** Take the draft away, but only the file this run made (or, for a new version, put the published text back) and only if it is as
-   *  it was written. → the cleanup record ({ removed, said } for the owner; the details go to the log). */
+   *  it was written. → the cleanup record ({ outcome, said } for the owner; the details go to the log). */
   async function undraft() {
     const run = book.run;
-    const out = { removed: false, said: '' };
+    const out = { outcome: 'left', said: '' };
     const edit = run.kind === 'edit';
     const keepSay = 'Your note was left as it is on your site.';
     { const t = taintOf(run); if (t) { out.said = `${t} ${keepSay}`; return out; } }
@@ -902,7 +932,7 @@ export function createPublisher(deps) {
           out.said = 'Your post is as it was: the new version was not published.';
         } else { fs.unlinkSync(abs); out.said = 'The draft was taken away.'; }
       }
-      out.removed = true;
+      out.outcome = 'undone';
     } catch (e) { out.said = `The note could not be ${edit ? 'put back' : 'removed'}.`; logNote(`undraft: ${e && e.message}`); }
     return out;
   }
@@ -928,22 +958,23 @@ export function createPublisher(deps) {
     if (earlier) return earlier;
     let cleanup;
     const tainted = taintOf(book.run);
-    if (tainted) cleanup = { removed: false, said: `${tainted} Nothing was run or removed.` };
+    if (tainted) cleanup = cleanupOf('left', `${tainted} Nothing was run or removed.`);
     else if (beforeApply(book.run)) cleanup = await undraft();
     else {
-      cleanup = { removed: false, said: 'Your note was left on your site: your site keeps its own record of this publish.' };
+      cleanup = cleanupOf('left', publishUnsure(book.run) ? EDIT_UNSURE_SAY : 'Your note was left on your site: your site keeps its own record of this publish.');
       const home = settingsNow();
       if (home.ok && home.settings.commands.abandon && fingerprint(home.settings) === book.run.settings_fp) {
         const a = await step('abandon');
         if (!a.ok) {
-          if (canMove(book.mode, 'abandon_failed')) book.move('abandon_failed', { abandon_failure: a.reason, abandon_failure_line: a.plain || '' });
+          if (canMove(book.mode, 'abandon_failed')) book.move('abandon_failed', { abandon_failure: a.reason, abandon_failure_line: a.plain || '',
+            abandoned_from: book.mode === 'abandon_failed' ? book.run.abandoned_from : book.mode });
           return { ...fail(409, `Your site could not give this publish up${a.plain ? `: ${a.plain}` : '.'} You can try again, or forget it here (nothing is run on your site).`), view: viewOf(book.run) };
         }
-        cleanup = { removed: false, said: 'Your site gave the publish up; your note was left on your site.' };
+        cleanup = cleanupOf('left', publishUnsure(book.run) ? `Your site gave the publish up. ${EDIT_UNSURE_SAY}` : 'Your site gave the publish up; your note was left on your site.');
       }
       if (publishedNothing(book.run)) {
         const u = await undraft();
-        cleanup = { removed: u.removed, said: u.removed ? `Nothing was published. ${u.said}` : u.said };
+        cleanup = cleanupOf(u.outcome, u.outcome === 'undone' ? `Nothing was published. ${u.said}` : u.said);
       }
     }
     if (!canMove(book.mode, 'abandoned')) return fail(409, 'The run moved on meanwhile.');
@@ -963,12 +994,13 @@ export function createPublisher(deps) {
       delete book.run.child; book.persist();
     }
     const unknown = state === 'unknown';
-    if (book.mode !== 'abandon_failed' && !unknown) return fail(409, 'Forget is offered only when your site could not give the publish up, or its step cannot be identified.');
+    if (book.mode !== 'abandon_failed' && !unknown && !publishUnsure(book.run)) return fail(409, 'Forget is offered only when your site could not give the publish up, when a new version may already be published, or when its step cannot be identified.');
     if (unknown && !sure) return { ...fail(409, 'Forgetting runs nothing and stops nothing: the earlier step may still be running on the companion\'s machine. Press Forget again to confirm.'), view: current() };
     const note = String(book.run.note_rel || '').replace(/[^\w ./-]/g, '');
     logNote(`forgotten here (child ${state}); to end it on the example site by hand: scripts/blyg-publish --abandon ${note || '<note>'}, then scripts/blyg-publish ${note || '<note>'} --unstage-note`);
-    book.move('abandoned', { cleanup: { removed: false, forgotten: true,
-      said: 'Forgotten here only: nothing was run on your site and nothing was removed. Your site may still hold this publish or the note; the troubleshooting details say how to end it there.' } });
+    book.move('abandoned', { cleanup: cleanupOf('forgotten', publishUnsure(book.run)
+      ? `Forgotten here only: nothing was run on your site. ${EDIT_UNSURE_SAY}`
+      : 'Forgotten here only: nothing was run on your site and nothing was removed. Your site may still hold this publish or the note; the troubleshooting details say how to end it there.') });
     return { ok: true, view: viewOf(book.run) };
   }
   /** The owner client resumes: the current run (a client that reloaded asks this). */
