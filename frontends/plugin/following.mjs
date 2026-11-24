@@ -293,6 +293,7 @@ export const LIMITS = Object.freeze({
   saveEveryBlygs: 10,         // a refresh saves the main document after this many blygs, and at its end
   tickBatch: 100,             // posts one "Tick all shown" request may tick (the page sends the rest in further requests)
   goneAfter: 3,               // consecutive "no manifest here" answers before a blyg is gone
+  skewMs: 5 * 60 * 1000,      // a `created` further in the future than this is a lie: it never makes a post fresh
 });
 const KINDS = ['fragment', 'thread', 'withdrawn'];
 export const isWithdrawn = rec => rec.kind === 'withdrawn';
@@ -877,8 +878,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       }
     }
     const floor = Number.isFinite(r.floor) && r.floor > 0 ? r.floor : 0;
+    const seenUntil = Number.isFinite(r.seen_until) && r.seen_until > 0 && r.seen_until <= now() ? r.seen_until : 0;
     // `stopped` (the mode before this list) and anything made up load as unknown
-    return { ids, floor, bad, later, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
+    return { ids, floor, bad, later, seen_until: seenUntil, backfill: BACKFILL_MODES.includes(r.backfill) ? r.backfill : 'unknown' };
   };
   const ledgers = new Map(); // origin → { led, version, base (its JSON as stored), dirty }
   const ledgerEntry = origin => {
@@ -1344,6 +1346,9 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       else if (change === 'minor') tally.minor++;
       else { if (canMoveRead(next, 'resurface')) moveRead(next, 'resurface'); tally.edited++; }
     }
+    // the newest date the Hub has seen from this blyg, clamped to now: what decides "fresh" next time
+    const seen = stamp(st.items[ident].created, now());
+    if (seen > 0) { const led = ledgerFor(b.origin); led.seen_until = Math.max(led.seen_until || 0, seen); }
     // the body is kept with the post: rewritten when the words changed, or when it is not there
     const bk = st.items[ident].key;
     if (change !== 'maintenance' || !hasBody(bk)) writeBody(bk, body.html);
@@ -1394,8 +1399,14 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         if (!prev || x.version > prev.version) byId.set(x.id, { id: x.id, kind: x.kind, version: x.version, created: cleanText(x.created, 40), updated: cleanText(x.updated, 40) });
       }
     }
-    // newest first: a blyg is read backwards in time
-    const entries = [...byId.values()].sort((a, c) => (Date.parse(c.updated) || 0) - (Date.parse(a.updated) || 0) || (a.id < c.id ? -1 : a.id > c.id ? 1 : 0));
+    // Newest first: a blyg is read backwards in time. An entry's time for this order is its claimed `updated` (else `created`),
+    // CLAMPED to now (the index's fetch time): a date in the future sorts as now, and anything that is not a date (a number, a
+    // string, NaN, a negative or a huge one) as 0. The index's dates only order the blyg's OWN backfill; they never decide what is
+    // fresh (below).
+    const readAt = now();
+    const clampT = v => { const t = Date.parse(v); return Number.isFinite(t) && t > 0 ? Math.min(t, readAt) : 0; };
+    for (const e of byId.values()) e.t = Math.max(clampT(e.updated), clampT(e.created));
+    const entries = [...byId.values()].sort((a, c) => c.t - a.t || (a.id < c.id ? -1 : a.id > c.id ? 1 : 0));
     const inIndex = new Set(entries.map(e => e.id));
     const archivedIds = new Set(led.ids.map(p => p[0]));
     // A held unread post the index no longer lists is dropped (the index lists every post ever published, §6.2), unless the index was
@@ -1411,13 +1422,16 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     for (const p of led.ids) if (!p[1] && byId.has(p[0])) { const c = Date.parse(byId.get(p[0]).created); if (Number.isFinite(c) && c > 0 && c <= now()) p[1] = c; }
     const belowFloor = e => { const c = Date.parse(e.created); return led.floor > 0 && Number.isFinite(c) && c <= led.floor; };
     const paused = led.backfill === 'paused_bad_documents';
-    // The newest entry that is already known (held, archived, or an unusable document) bounds what is FRESH (newer than it:
-    // published since, fetched now, within the caps); what lies beyond it is BACKFILL, fetched only while the Feed is short.
-    const known = e => !!st.items[identOf(b.origin, e.id)] || archivedIds.has(e.id) || led.bad[e.id] !== undefined;
-    let edge = -1;
-    entries.forEach((e, i) => { if (known(e)) edge = i; });
+    // FRESH or BACKFILL is decided from dates the Hub stored itself, never from positions or dates the index controls (finding 6 of
+    // the gate review: the edge used to be taken from the index's order, so re-dating one held post made everything "fresh"). The
+    // blyg's SEEN-UNTIL is the newest `created` of any post the Hub has fetched from it, each clamped to when it was fetched (kept in
+    // the ledger, and worked out again from the records held). An entry is FRESH when its claimed `created` is a real date after
+    // that and not in the future (beyond `skewMs`): published since, fetched now within the caps. Everything else is BACKFILL,
+    // fetched only while the Feed is short. Before anything was fetched (seen-until 0) everything is backfill.
+    led.seen_until = Math.max(led.seen_until || 0, ...itemsOf(b.origin).map(i => stamp(i.created, i.fetched_at)).filter(t => t > 0), 0);
+    const isFresh = e => { const c = Date.parse(e.created); return led.seen_until > 0 && Number.isFinite(c) && c > led.seen_until && c <= readAt + LIMITS.skewMs; };
     const plan = { b, led, backfill: [], left: 0, docs: 0, halted: false };
-    for (const [n, e] of entries.entries()) {
+    for (const e of entries) {
       const ident = identOf(b.origin, e.id);
       const held = st.items[ident];
       if (!held) {
@@ -1425,7 +1439,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         // one waits for the index to name a new version (or for its entry to expire); a missing one for its back-off
         if (e.kind === 'withdrawn' || archivedIds.has(e.id) || belowFloor(e) || (led.bad[e.id] && led.bad[e.id][0] === e.version)) continue;
         if (led.later[e.id] && led.later[e.id][0] > now()) { plan.left++; continue; }
-        if (n > edge) { if (paused) plan.left++; else plan.backfill.push(e); continue; }
+        if (!isFresh(e)) { if (paused) plan.left++; else plan.backfill.push(e); continue; }
         if (unreadOf(b.origin) >= cfg.following_max_items_per_blyg || totalItems() >= cfg.following_max_items_total) { tally.capped++; plan.left++; continue; }
         if (plan.halted || plan.docs >= LIMITS.docsPerBlygRun || g.budget.spent()) { tally.deferred++; plan.left++; continue; }
         plan.docs++;

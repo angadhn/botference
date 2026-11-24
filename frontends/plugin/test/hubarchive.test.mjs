@@ -836,7 +836,7 @@ test('a hand-edited ledger is cleaned on load: bad ids, duplicates and a made-up
   f.setBlygState(A, 'pause');
   assert.ok(!('ledgers' in r.json()));
   assert.deepEqual(fs.readdirSync(path.dirname(r.ledgerFile(A))), [path.basename(r.ledgerFile(A))], 'the ledger of a blyg that is not followed is not carried over');
-  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], floor: 0, bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, backfill: 'unknown' });
+  assert.deepEqual(r.ledger(A), { origin: A, ids: [[idOf(1), 0], [idOf(2), 0]], floor: 0, bad: { [idOf(3)]: [2, r.clock.t] }, later: {}, seen_until: 0, backfill: 'unknown' });
   r.done();
 });
 
@@ -918,4 +918,61 @@ test('readRequest: tick, untick and renew only; a tick answers with the unread c
   out = await q.f.readRequest({ key: feed(q)[0].key, move: 'tick' });
   assert.equal(out.topup, false);
   q.done(); r.done();
+});
+
+// ---- fresh or backfill: from dates the Hub stored, never from the index's order (finding 6) --------------------------------
+
+test('re-dating a held post (to 1970, or to no date at all) does not make every unfetched post "fresh": the target holds', async () => {
+  for (const lie of ['1970-01-01T00:00:00Z', '', 'not a date']) {
+    const r = rig({ settings: { following_unread_target: 5 } });
+    const site = r.web.add(A);
+    publish(site, A, 300);
+    follow(r, A);
+    await r.f.refresh();
+    assert.equal(feed(r).length, 5);
+    await r.f.refresh();
+    assert.equal(feed(r).length, 5, 'an honest second run fetches nothing');
+    const held = feed(r)[0];
+    const d = site.docs.get(held.id);
+    site.put({ ...d, updated: lie, created: lie || d.created });
+    for (let i = 0; i < 3; i++) {
+      const s = await r.f.refresh();
+      assert.equal(s.new, 0, `"${lie}" run ${i + 1}: nothing new`);
+      assert.equal(feed(r).length, 5, `"${lie}": the target holds`);
+    }
+    r.done();
+  }
+});
+
+test('lying dates on unfetched posts cannot jump the queue: future, NaN, strings, negative, 1e308 are backfill, ordered as now or as 0', async () => {
+  const r = rig({ settings: { following_unread_target: 3 } });
+  const site = r.web.add(A);
+  publish(site, A, 20);
+  follow(r, A);
+  await r.f.refresh();
+  assert.deepEqual(titles(r), ['Post 20', 'Post 19', 'Post 18']);
+  // the index now lies about five old unfetched posts; the documents themselves keep their own dates
+  const lies = { 1: '2999-01-01T00:00:00Z', 2: 'NaN', 3: 'yesterday', 4: '-000001-01-01T00:00:00Z', 5: 1e308 };
+  const real = r.web.get;
+  r.web.get = async (url, o) => {
+    const got = await real(url, o);
+    if (String(url) !== `${A}items/index.json`) return got;
+    const j = JSON.parse(got.text);
+    for (const it of j.items) { const n = Object.keys(lies).find(k => it.id === idOf(Number(k))); if (n) { it.created = lies[n]; it.updated = lies[n]; } }
+    return { ...got, text: JSON.stringify(j) };
+  };
+  const s = await r.f.refresh();
+  assert.equal(s.new, 0, 'none of them is fresh: the Feed is at its target, so nothing is fetched');
+  assert.equal(feed(r).length, 3);
+  // a real new post (dated now) is still fresh
+  r.clock.t += 60e3;
+  site.put(makeDoc({ id: idOf(99), origin: A, title: 'Really new', created: new Date(r.clock.t).toISOString() }));
+  const s2 = await r.f.refresh();
+  assert.equal(s2.new, 1);
+  assert.ok(titles(r).includes('Really new'));
+  // and when the Feed is short, the future-dated one is read first (as "now"), the undated ones last
+  r.f.tickMany(feed(r).map(h => h.key));
+  await r.f.refresh();
+  assert.ok(titles(r).includes('Post 1'), 'the future-dated entry sorts as now: first in the backfill');
+  r.done();
 });
