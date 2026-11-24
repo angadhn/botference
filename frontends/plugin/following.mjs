@@ -1130,7 +1130,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       try { writeLedger(origin, e); } catch (err) { if (err && err.code === 'EUNREADABLEJSON') { moveLedgerCopy(e, 'write'); continue; } throw err; }
     }
   }
-  const forgetLedger = origin => { ledgers.delete(origin); store.delete('ledger', ledgerName(origin)); };
+  // A ledger to forget is deleted only AFTER the main document that no longer names its blyg is saved (a crash in between leaves
+  // a ledger with no blyg, which the sweep on load removes, never a blyg whose read ids are gone).
+  const ledgersToDelete = new Set();
+  const forgetLedger = origin => { ledgers.delete(origin); ledgersToDelete.add(origin); };
   // The oldest-ticked archive records beyond the cap are dropped. Their ids stay in their ledgers: that is what keeps them read.
   const trimArchive = st => {
     const arch = Object.entries(st.items).filter(([, i]) => ARCHIVE_STATES.includes(i.read));
@@ -1192,9 +1195,13 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     return n;
   }
   /** Write the main document (and the ledgers changed), conditionally on the version read; on a conflict, merge and write again. */
+  // ORDER: the ledgers changed are written FIRST, then the main document, then the ledgers forgotten are deleted. A crash after the
+  // ledgers leaves a main document that is older than them (read ids are never lost; a document written before the split still
+  // carries its `ledgers` and is migrated again), never a main document whose blygs' read ids were not yet written.
   const save = () => {
     const st = load();
     prune(st);
+    saveLedgers();
     for (let i = 0; ; i++) {
       const units = unitsOf(st);
       try {
@@ -1212,7 +1219,8 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
         prune(st);
       }
     }
-    saveLedgers();
+    for (const o of ledgersToDelete) if (!st.blygs[o] && !st.kept[o]) store.delete('ledger', ledgerName(o));
+    ledgersToDelete.clear();
   };
   // The sanitised body of each post is a 'body' of its own in the store (so the main document stays small and each body is
   // written whole), named by the record's random key, and is swept away with its post.

@@ -74,7 +74,7 @@ test('the main document holds no ledger; a tick writes the main document and tha
   assert.ok(!('ledgers' in store.get('state', 'following').value));
   store.log.length = 0;
   f.readMove(f.keyFor(A, idOf(2)), 'tick');
-  assert.deepEqual(store.log, ['state:following', `ledger:${F.ledgerName(A)}`]);
+  assert.deepEqual(store.log, [`ledger:${F.ledgerName(A)}`, 'state:following'], 'the ledger first (a crash between leaves no read id unwritten)');
   store.log.length = 0;
   f.open(f.keyFor(B, idOf(101)));
   assert.deepEqual(store.log, ['state:following'], 'opening writes no ledger at all');
@@ -195,11 +195,47 @@ test('a tick saves first and deletes the body after (a crash in between leaves a
   const k = f.keyFor(A, idOf(1));
   store.log.length = 0;
   f.readMove(k, 'tick');
-  assert.deepEqual(store.log, ['state:following', `ledger:${F.ledgerName(A)}`, `delete body:${k}`]);
+  assert.deepEqual(store.log, [`ledger:${F.ledgerName(A)}`, 'state:following', `delete body:${k}`]);
   // the crash case: a body left behind is swept when the state is next loaded
   store.put('body', 'abcdef0123456789abcdef01', '<p>left behind</p>');
   const again = engine({ store, web });
   again.f.view();
   await new Promise(res => setImmediate(res));
   assert.ok(!store.list('body').includes('abcdef0123456789abcdef01'));
+});
+
+test('migration order: the ledgers are written before the main document, so a crash between the two loses no read id', async () => {
+  const store = F.memoryStore();
+  store.put('state', 'following', { blygs: { [A]: { origin: A, title: 'x', state: 'active' } }, items: {},
+    ledgers: { [A]: { ids: Array.from({ length: 30 }, (_, i) => [idOf(i + 1), Date.parse(day(i + 1))]), backfill: 'caught_up' } } });
+  const put = store.put.bind(store);
+  let die = true;
+  store.put = (kind, name, value, o) => { if (kind === 'ledger' && die) throw new Error('the process died here'); return put(kind, name, value, o); };
+  const one = engine({ store });
+  publish(one.web.add(A), A, 30);
+  assert.throws(() => one.f.stateRequest({ origin: A, move: 'pause' }), /died here/);
+  assert.ok('ledgers' in store.get('state', 'following').value, 'the old document, with its ledgers, is untouched');
+  die = false;
+  const two = engine({ store, web: one.web, settings: { following_unread_target: 10 } });
+  two.f.stateRequest({ origin: A, move: 'pause' });
+  two.f.stateRequest({ origin: A, move: 'resume' });
+  assert.equal(store.get('ledger', F.ledgerName(A)).value.ids.length, 30);
+  assert.ok(!('ledgers' in store.get('state', 'following').value));
+  await two.f.refresh();
+  assert.equal(feed(two.f).length, 0, 'nothing read came back');
+});
+
+test('unfollow-and-forget deletes the ledger only after the main document is saved', async () => {
+  const store = F.memoryStore();
+  const { f, web } = engine({ store });
+  publish(web.add(A), A, 2);
+  f.confirmImport([{ origin: A }]);
+  await f.refresh();
+  f.readMove(f.keyFor(A, idOf(1)), 'tick');
+  const order = [];
+  const put = store.put.bind(store), del = store.delete.bind(store);
+  store.put = (k, n, v, o) => { order.push(`put ${k}`); return put(k, n, v, o); };
+  store.delete = (k, n) => { order.push(`delete ${k}`); return del(k, n); };
+  f.unfollow(A, { forget: true });
+  assert.ok(order.indexOf('put state') < order.indexOf('delete ledger'), order.join(', '));
 });
