@@ -623,9 +623,10 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   const { q, view, click, drawer } = await make({ server });
   await tick(10); click(q('[data-act="pub-review"]')); await tick();
   document.elementsFromPoint = () => [drawer.host];
-  await settle();
+  // (off screen from the start: had it moved there just before the click, the readiness check would refuse it first)
   const btn = q('[data-act="pub-confirm"]');
   btn.getBoundingClientRect = () => ({ left: -4000, top: -4000, right: -3900, bottom: -3970, width: 100, height: 30 });
+  await settle(); await settle();
   btn.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 10, clientY: 10 })); await tick();
   eq('a button off screen: nothing is armed or sent, and the owner is told', [server.calls.some(c => c.op === 'arm' || c.op === 'confirm'), /Close the page's overlay and try again/.test(q('.pubdlg').textContent)], [false, true]);
   const box = drawer.shadow.querySelector('.pubdlg');
@@ -721,6 +722,66 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   const p = await make({ server: s4 });
   p.click(p.q('.thr-pub[data-target="tp"]')); await tick(5);
   eq('a published thread: no choice, not asked', [p.qa('.pubjoin').length, s4.calls.some(c => c.op === 'earlier')], [0, false]);
+}
+
+// ---- readiness: a change of the card is noticed WHEN it happens, so a click a second after it counts; a move just before the click does not
+{
+  const realRO = globalThis.ResizeObserver;
+  const watchers = [];
+  globalThis.ResizeObserver = class { constructor(cb) { this.cb = cb; watchers.push(this); } observe(el) { this.el = el; } disconnect() { this.el = null; } };
+  const grow = (x, h) => {
+    const card = x.q('.pubcard');
+    card.getBoundingClientRect = () => ({ left: 10, top: 40, right: 410, bottom: 40 + h, width: 400, height: h });
+    for (const w of watchers) if (w.el === card) w.cb([]);
+  };
+  const server = companion();
+  server.run = server.make('planned', { steps: [] });
+  const x = await make({ server });
+  document.elementsFromPoint = () => [x.drawer.host];
+  await tick(10); x.click(x.q('[data-act="pub-review"]')); await tick();
+  grow(x, 300);
+  await tick(300); grow(x, 520);                      // the text or the picture arrives: the card grows
+  await tick(1000);
+  x.click(x.q('[data-act="pub-confirm"]')); await tick(10);
+  ok('the card grew 300 ms after opening, the owner pressed a second later: the press counts', server.calls.some(c => c.op === 'confirm'), JSON.stringify(server.calls.slice(-3)));
+  // the protection stays: the buttons move 100 ms before the press
+  const s2 = companion();
+  s2.run = s2.make('planned', { steps: [] });
+  const y = await make({ server: s2 });
+  document.elementsFromPoint = () => [y.drawer.host];
+  await tick(10); y.click(y.q('[data-act="pub-review"]')); await tick();
+  grow(y, 300);
+  await settle();
+  grow(y, 360);
+  await tick(100);
+  y.click(y.q('[data-act="pub-confirm"]')); await tick(10);
+  eq('the buttons moved 100 ms before the press: refused, nothing armed or sent, and the owner is told', [s2.calls.some(c => c.op === 'arm' || c.op === 'confirm'), /only just appeared or moved/.test(y.q('.pubdlg').textContent)], [false, true]);
+  // a scroll that does not move the dialog changes nothing
+  window.dispatchEvent(new w.Event('scroll'));
+  await settle();
+  y.click(y.q('[data-act="pub-confirm"]')); await tick(10);
+  ok('a scroll of the page behind that does not move the buttons: the press counts', s2.calls.some(c => c.op === 'confirm'));
+  delete document.elementsFromPoint;
+  globalThis.ResizeObserver = realRO;
+}
+
+// ---- a published thread's header says one true thing per moment, with the version -------------------------------------------------
+{
+  const pageAt = v => { const p = PAGE(); p.threads.find(t => t.id === 'tp').blyg_published.version = v; return p; };
+  const server = companion();
+  const x = await make({ server });
+  x.drawer.setPage(pageAt(3)); await tick(10);
+  const link = () => x.q('.thr-pub[data-target="tp"]').parentElement.querySelector('.pubdone').textContent;
+  const chip = () => x.qa('.pubchip').map(c => c.textContent);
+  eq('nothing running: "published · v3", no chip', [link(), chip()], ['published · v3', []]);
+  server.run = server.make('publishing', { kind: 'edit', version: 4, thread_ids: ['tp'], confirm: 'always' });
+  x.drawer.blygPublishMoved(); await tick(10);
+  eq('a new version on its way: the link still goes to the live post and says "v3 is live"; the chip says "publishing v4…"', [link(), chip()], ['v3 is live', ['publishing v4…']]);
+  ok('…and the link is still the post', x.q('.pubdone a').getAttribute('href') === 'https://site.example.test/b/already-out');
+  server.run = server.make('published', { kind: 'edit', version: 4, thread_ids: ['tp'], confirm: 'always', published: { title: 't', permalink: '/b/x', address: 'https://site.example.test/b/already-out', version: 4 } });
+  x.drawer.blygPublishMoved(); await tick(10);
+  x.drawer.setPage(pageAt(4)); await tick(10);
+  eq('it ended: "published · v4", no chip', [link(), chip()], ['published · v4', []]);
 }
 
 // ---- review round 5: the second confirmation is one named value moved by one function; a new version that may be live says so ----

@@ -10689,7 +10689,10 @@ ${bubbleShellHtml()}`;
       if (pubPublished(t)) {
         const a = safeHttp(t.blyg_published.address);
         const v = Number(t.blyg_published.version) || 1;
-        return `<span class="pubdone" title="published as a blyg${t.blyg_published.title ? ': ' + esc(t.blyg_published.title) : ''}${v > 1 ? ' (version ' + v + ')' : ''}">${a ? `<a href="${esc(a)}" target="_blank" rel="noopener noreferrer">published</a>` : 'published'}</span>`
+        // ONE TRUE THING PER MOMENT, from the run and the thread's record: the live version is "published · vN"; while a new
+        // version of it is on its way the link still goes to the live post but says "vN is live" (the chip says which is coming)
+        const words = pubOnWay(t) ? `v${v} is live` : `published · v${v}`;
+        return `<span class="pubdone" title="published as a blyg${t.blyg_published.title ? ': ' + esc(t.blyg_published.title) : ''} (version ${v})">${a ? `<a href="${esc(a)}" target="_blank" rel="noopener noreferrer">${esc(words)}</a>` : esc(words)}</span>`
           + `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish a new version of this post" aria-label="publish a new version of this post">${PLANE_SVG}</button>`;
       }
       if (!pubThreadOk(t)) return '';
@@ -10735,6 +10738,8 @@ ${bubbleShellHtml()}`;
     // A run that is under way on the companion (being written, planned, built or published): it goes on in the BACKGROUND, the
     // owner carries on reading; the thread shows a quiet chip and the header a small mark that opens the steps.
     const pubLive = r => !!r && !!r.id && ['working', 'running'].indexOf(CFG.pubViewOf(r.mode, r.confirm)) !== -1;
+    // a run under way that has this thread in it (derived from the run as last heard; nothing stored)
+    const pubOnWay = t => { const r = D.pub.run; return pubLive(r) && (r.thread_ids || []).indexOf(t.id) !== -1; };
     const PUB_BACKGROUND_SAY = 'Publishing in the background. You\'ll be told when it\'s live.';
     // the dialog steps out of the way once the owner has pressed (the run keeps going on the companion; a notice says how it ended)
     function pubToBackground() {
@@ -10776,7 +10781,7 @@ ${bubbleShellHtml()}`;
       if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.shown === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
       if (!r || (r.thread_ids || []).indexOf(t.id) === -1) return '';
       // any run under way while the dialog is closed: a quiet chip (the header's mark opens the steps)
-      if (r.confirm !== 'never') return pubLive(r) && D.pub.view === 'closed' ? '<div class="publine pubchip" role="status">publishing…</div>' : '';
+      if (r.confirm !== 'never') return pubLive(r) && D.pub.view === 'closed' ? `<div class="publine pubchip" role="status">${r.kind === 'edit' ? 'publishing v' + esc(Number(r.version) || 2) + '…' : 'publishing…'}</div>` : '';
       if (r.mode === 'published') {
         if (pubPublished(t) && D.pub.view === 'closed') return '';
         const a = safeHttp((r.published || {}).address);
@@ -10928,15 +10933,39 @@ ${bubbleShellHtml()}`;
       return '';
     }
     // THE DIALOG'S BUTTONS' READINESS, one named mode in one field (D.pub.arm.state), moved only by pubArm:
-    //   settling  the buttons were just drawn, or the page scrolled, resized, or the dialog moved: a click that would start or carry on
-    //             a publish does not count yet
+    //   settling  the buttons were just drawn, or they moved or changed size (the card grew as text or the picture arrived, the window
+    //             resized, a scroll that moved them): a click that would start or carry on a publish does not count yet
+    // A change of the box is noticed WHEN it happens (a ResizeObserver on the card, and the window's scroll and resize, which count only
+    // when the box really changed), so the PUB_ARM_MS runs from the change, not from a click that finds it; the click-time comparison
+    // stays as the last check.
     //   ready     the dialog has been on screen, unobstructed and in the same place for PUB_ARM_MS: such a click counts
     // (A page that slides a button under the pointer at the last moment, or shows it for a blink, gets nothing.)
     const PUB_ARM_MS = 500;
     const PUB_ARM_STATES = Object.freeze(['settling', 'ready']);
     const PUB_ARM_MOVES = Object.freeze({ settling: Object.freeze(['settling', 'ready']), ready: Object.freeze(['settling']) });
     const PUB_ARM_SAY = 'The buttons have only just appeared or moved. Wait a moment, then press again.';
-    const pubDlgBox = () => { const el = D.el && D.el.pubdlg; const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null; return r ? [r.left, r.top, r.width, r.height].join(',') : ''; };
+    // the box that matters is where the card and its buttons are (the dialog itself is a fixed backdrop the size of the window)
+    const rectKey = el => { const r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null; return r ? [r.left, r.top, r.width, r.height].map(n => Math.round(n)).join(',') : ''; };
+    const pubDlgBox = () => {
+      const el = D.el && D.el.pubdlg;
+      if (!el || el.hidden) return '';
+      const card = el.querySelector ? el.querySelector('.pubcard') : null;
+      return [rectKey(el), rectKey(card), ...(el.querySelectorAll ? [...el.querySelectorAll('.pbtn')].map(rectKey) : [])].join('|');
+    };
+    // the box changed since readiness was last judged: settle again (from now)
+    function pubArmMoved() {
+      if (!D.pub || D.pub.view === 'closed' || !D.pub.arm) return;
+      if (D.pub.arm.box !== pubDlgBox()) pubArm('settling');
+    }
+    let pubCardRO = null;
+    function pubWatchCard() {
+      const card = D.el && D.el.pubdlg && D.el.pubdlg.querySelector ? D.el.pubdlg.querySelector('.pubcard') : null;
+      try {
+        if (pubCardRO) pubCardRO.disconnect();
+        pubCardRO = null;
+        if (card && typeof ResizeObserver === 'function') { pubCardRO = new ResizeObserver(() => pubArmMoved()); pubCardRO.observe(card); }
+      } catch (_) { /* no ResizeObserver: the click-time comparison still holds */ }
+    }
     let pubArmTimer = null;
     function pubArm(to) {
       if (PUB_ARM_STATES.indexOf(to) === -1) throw new Error('publish buttons: no such readiness ' + to);
@@ -10967,7 +10996,8 @@ ${bubbleShellHtml()}`;
       return '';
     }
     if (typeof window !== 'undefined' && window.addEventListener) {
-      for (const ev of ['scroll', 'resize']) window.addEventListener(ev, () => { if (D.pub && D.pub.view !== 'closed') pubArm('settling'); }, { passive: true, capture: true });
+      // (a scroll of the page behind, inertial or not, that does not move the buttons changes nothing)
+      for (const ev of ['scroll', 'resize']) window.addEventListener(ev, () => pubArmMoved(), { passive: true, capture: true });
     }
     async function pubStart(scope, e) {
       if (!D.owner || D.pub.view !== 'choosing' || ['one', 'above'].indexOf(scope) === -1) return;
@@ -11222,9 +11252,12 @@ ${bubbleShellHtml()}`;
         el.innerHTML = html;
         if (openDetails) { const d = el.querySelector('details.pubdetails'); if (d) d.open = true; }
         const after = el.querySelector ? [...el.querySelectorAll('.pbtn')].map(b => b.outerHTML).join('') : '';
-        // a step's elapsed time ticking over is not new buttons: only a change of buttons (or a dialog that was hidden) settles them
-        if (el.hidden || before !== after) pubArm('settling');
+        // a step's elapsed time ticking over is not new buttons: only a change of buttons (or a dialog that was hidden) settles them;
+        // the dialog is shown FIRST, so the box recorded is the one on screen; any other change of the box settles through the card's watch
+        const shown = !el.hidden;
         el.hidden = false;
+        pubWatchCard();
+        if (!shown || before !== after) pubArm('settling'); else pubArmMoved();
       }
       pubWatchButtons();
       if (typeof render === 'function') render();

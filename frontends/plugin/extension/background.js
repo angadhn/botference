@@ -1150,12 +1150,20 @@ async function pubWatchStart(run) {
   await pubWatchTo('watch', { run: run.id });
 }
 // how the watched run stands now (an event about it, the keep-alive alarm, a worker start): once it ended, tell the owner, once
-let pubChecking = null;
+// ONE LOOK AT A TIME, IN TURN: an event that arrives while a look is under way gets a look of its own after it (it was once answered
+// with the look already under way, which could have read the run a moment before it ended: the end was then told only by the next
+// poll, or not at all if the worker was stopped first)
+let pubChecking = Promise.resolve();
 async function pubWatchCheck(runId) {
   await pubWatchReady;
   if (pubWatch.state !== 'watching' || (runId && runId !== pubWatch.run)) return;
-  if (pubChecking) return pubChecking;
-  pubChecking = (async () => {
+  const look = pubChecking.then(() => pubLook(runId));
+  pubChecking = look.catch(() => {});
+  return look;
+}
+async function pubLook(runId) {
+  if (pubWatch.state !== 'watching' || (runId && runId !== pubWatch.run)) return;
+  {
     const r = await api('GET', '/blyg-publish/run');
     const run = r && r.ok && r.data ? r.data.run : null;
     if (!run || pubWatch.state !== 'watching') return;
@@ -1164,8 +1172,7 @@ async function pubWatchCheck(runId) {
     const view = CFG.pubViewOf(run.mode, run.confirm);
     if (!notice) { if (view !== 'working' && view !== 'running') await pubWatchTo('quiet'); return; }
     if (await pubWatchTo('end', { notice })) pubTell();
-  })().finally(() => { pubChecking = null; });
-  return pubChecking;
+  }
 }
 // the toast on the tab the owner is looking at (if it has no content script, the badge alone says it, and the next page shows it)
 async function pubTell(tabId) {

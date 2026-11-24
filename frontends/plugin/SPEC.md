@@ -13641,3 +13641,19 @@ Tests: `blyg-run` (add: version 2, same file, order, changelog, cancel, the plan
 - **The drawer's agent block carries the published box's marks** (`boxMarksHtml`: a robot; a robot and the site's "A" once the owner
   edited or accepted it), no word "agent" and no name on it; the agent's name is only in the marks' tooltip and accessible name
   ("Written by an AI model (Codex)"). Tests: `tkdrawer`.
+- **The buttons' readiness follows the buttons** (`D.pub.arm`, still one field moved only by `pubArm`). The box compared is the card
+  and each button (the dialog itself is a fixed backdrop the size of the window, which never moved, while the window's scroll and
+  resize settled the buttons whether or not they moved, and a dialog shown for the first time recorded its hidden box and so took two
+  rounds). A change is noticed when it happens: a ResizeObserver on the card, the window's scroll and resize, each settling only when
+  the box really changed; the dialog is shown before its box is recorded; the click-time comparison stays as the last check. Tests
+  (`blygpublish-drawer`): the card grows 300 ms after opening and a press a second later counts; the buttons move 100 ms before the
+  press and it is refused; a scroll that moves nothing changes nothing.
+- **A published thread's header says one true thing per moment**, derived from the run as last heard and the thread's record: "published
+  · v3" (the link to the post); while a new version with this thread is under way the link says "v3 is live" and the chip "publishing
+  v4…"; then "published · v4".
+- **The notice of a background publish** (owner: none came for an edit published from the dialog with the drawer open). The drawer
+  never spends a notice (only the toast's own `pub-notice-shown` / `pub-notice-done` do). What was found: the worker answered an event
+  that arrived while a look at the run was under way with that look, which could have read the run a moment before it ended; the end
+  was then told only by the next 30 s poll, or not at all if the browser stopped the worker first. Now every event gets a look of its
+  own, in turn (`pubWatchCheck`). And a toast drawn on a tab that is not showing waits: it is spent, and a live one's time starts, only
+  when the tab is shown (`pubtoast.js`). Tests: `blygpublish-notice`.

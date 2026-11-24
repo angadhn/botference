@@ -82,8 +82,15 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
       else if (act === 'open-post') close();   // the link itself opens the post (the browser's own navigation)
     });
     box.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
-    if (live) timer = setTimeout(() => close(), liveMs);
-    onShown(notice);
+    // SEEN only when the owner can see it: drawn on a tab that is not showing (a background tab, a hidden window), it waits there, and
+    // is spent and starts its time only once the tab is shown (a live notice is otherwise gone before anyone looked)
+    const visible = () => !doc.visibilityState || doc.visibilityState === 'visible';
+    const onScreen = () => { if (mode !== 'shown') return; if (live) timer = setTimeout(() => close(), liveMs); onShown(notice); };
+    if (visible()) onScreen();
+    else {
+      const later = () => { if (!visible()) return; doc.removeEventListener('visibilitychange', later); onScreen(); };
+      doc.addEventListener('visibilitychange', later);
+    }
     return { host, close, box };
   }
   const api = { show, LIVE_MS };

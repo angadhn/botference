@@ -55,7 +55,7 @@ function boot(B, companion) {
     console: { log() {}, warn() {}, error() {}, info() {} }, setTimeout, clearTimeout, setInterval, clearInterval, URL, URLSearchParams, Promise, Map, Set, JSON, Math, Date, TextEncoder, TextDecoder, btoa, atob, AbortController,
     WebSocket: FakeWS,
     fetch: async (url, init) => {
-      const r = companion(String(url).replace(/^https?:\/\/[^/]+/, ''), init && init.method, init && init.body ? JSON.parse(init.body) : undefined);
+      const r = await companion(String(url).replace(/^https?:\/\/[^/]+/, ''), init && init.method, init && init.body ? JSON.parse(init.body) : undefined);
       return { ok: r.ok !== false, status: r.ok === false ? 409 : 200, headers: { get: () => 'application/json' }, text: async () => JSON.stringify(r) };
     },
     chrome: deep(chromeObj),
@@ -178,6 +178,27 @@ await test('a start that stops for the owner\'s look in the dialog is not watche
   assert.equal(B.storage['bfp:pub-watch'].state, 'watching');
 });
 
+await test('the end arrives while a look at the run is still under way: it gets a look of its own, and the owner is told (no poll needed)', async () => {
+  const B = browser(); const S = companion();
+  let slow = null;
+  const fn = (p, m, body) => {
+    if (p.startsWith('/blyg-publish/run') && slow) { const run = S.run; return new Promise(res => setTimeout(() => res({ ok: true, run, confirm: 'always' }), slow)); }
+    return S.fn(p, m, body);
+  };
+  const W = boot(B, fn);
+  await tick(10);
+  await press(W, 'confirm', 3); await tick(10);
+  S.run = { ...S.run, mode: 'publishing', kind: 'edit', version: 2 };
+  slow = 80;
+  W.event({ type: 'blyg-publish', run: { id: 'r1', mode: 'publishing' } });   // a look starts, and will read "publishing"
+  await tick(20);
+  S.run = { ...S.run, mode: 'published', published: { address: 'https://site.test/b/abc' } };
+  W.event({ type: 'blyg-publish', run: { id: 'r1', mode: 'published' } });    // the end, while that look is still under way
+  await tick(300);
+  assert.equal(notices(B).length, 1, 'told, without waiting for the poll');
+  assert.equal(notices(B)[0].msg.notice.kind, 'live');
+});
+
 // ---- the toast --------------------------------------------------------------------------------------------------------------
 const { GlobalWindow } = await import(path.join(here, '..', '..', '..', 'tests', 'node_modules', 'happy-dom', 'lib', 'index.js'));
 const T = require(path.join(EXT, 'pubtoast.js'));
@@ -225,6 +246,22 @@ await test('the attention toast stays; its buttons need a trusted click that lan
   const t2 = T.show({ kind: 'attention', run: 'r3', sentence: 'x' }, { doc, isTrusted, onDone: n => seen.push(['done', n.run]) });
   click(inside(t2.host).querySelector('[data-act="dismiss"]'), { x: 0, y: 0 });
   assert.deepEqual(seen.at(-1), ['done', 'r3'], 'the keyboard (no pointer position) reaches the dismiss button');
+});
+
+await test('a toast drawn on a tab that is not showing waits there: it is spent, and its time starts, only when the tab is shown', async () => {
+  let state = 'hidden';
+  Object.defineProperty(doc, 'visibilityState', { configurable: true, get: () => state });
+  const seen = [];
+  const t = T.show({ kind: 'live', run: 'r9', sentence: 'Your post is live.', link: 'https://site.test/b/abc' }, { doc, isTrusted, liveMs: 40, onShown: n => seen.push(['shown', n.run]), onDone: n => seen.push(['done', n.run]) });
+  await tick(100);
+  assert.deepEqual(seen, [], 'not spent, not timed out, while nobody can see it');
+  assert.ok(t.host.isConnected);
+  state = 'visible';
+  doc.dispatchEvent(new win.Event('visibilitychange'));
+  assert.deepEqual(seen, [['shown', 'r9']]);
+  await tick(500);
+  assert.deepEqual(seen, [['shown', 'r9'], ['done', 'r9']], 'then it goes by itself as usual');
+  delete doc.visibilityState;
 });
 
 console.log(`${fails.length ? '✗' : '✓'} blygpublish-notice — ${pass} passed, ${fails.length} failed`);
