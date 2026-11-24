@@ -376,12 +376,15 @@ export const LIMITS = Object.freeze({
   importMax: 100,             // entries of a blogroll resolved in one preview
   importRequests: 300,        // requests one preview may make
   followRequests: 12,         // requests following one URL may make
-  mentionsKept: 500, versionsKept: 100, noteChars: 200,
+  mentionsKept: 500, noteChars: 200,
+  versionsKept: 10,           // versions of a post kept on its record (changelog lines, with their notes): its history shows these
+                              // (the record is rewritten with every move in its blyg's feed: 100 notes made it ~27 KB)
   bodyBytes: 40 * 1024,       // sanitised HTML kept per post, in a file of its own
   feedEntries: 100,           // entries (with their text) one page of the Feed carries
   archivePage: 50,            // lines one page of the Archive shows ("show more" adds this many, up to archiveShownMax)
   archiveShownMax: 1000,
-  archiveRecordsPerBlyg: 1000, // archive records kept per blyg for display (~0.5 KB each, in its archive document); beyond it the
+  archiveRecordsPerBlyg: 500, // archive records kept per blyg for display (~0.45 KB each, in its archive document, which a tick in that
+                              // blyg rewrites: ~225 KB at the bound with ordinary addresses); beyond it the
                               // oldest-ticked are dropped (never a starred one). Their ids stay in the ledger: that keeps them read.
   starsMax: 500,
   repairAgeMs: 10 * 60 * 1000, // a copy of a post in both its feed and its archive (a move between its writes) is repaired only this old              // posts starred at once (the next star is refused, saying so)
@@ -406,7 +409,10 @@ export const LIMITS = Object.freeze({
   keptMax: 50,                // ledgers kept for blygs unfollowed without "forget" (their read ids and gone filter only) ...
   keptMs: 365 * 24 * 3600e3,  // ... for at most this long; beyond either bound the oldest is forgotten
   pageChars: 2048,            // a post's page address (refused beyond it, never cut: a cut address opens something else)
-  textChars: 1200, excerptChars: 240, titleChars: 160, refsKept: 50, refOriginsKept: 20,
+  textChars: 1200, excerptChars: 240, titleChars: 160,
+  refsKept: 50,               // a thread's references to posts of ITS OWN blyg (what a burst folds), each { id, version } (the origin is
+                              // the post's own, not repeated): so a burst of 50 parts still folds under its thread
+  refOriginsKept: 20, refOriginChars: 200, // the other blygs it references (for "Responses to me"); a longer origin is not kept
   burstMs: 10 * 60 * 1000,    // items created this close to their thread's publish are one burst
   burstWaitMs: 24 * 3600e3,   // a fragment of a burst whose thread is not held yet waits in Background this long, then stands alone
   backoffFirstMs: 10 * 60 * 1000, backoffMaxMs: 6 * 60 * 60 * 1000,
@@ -606,8 +612,8 @@ export function recordFromDoc(doc, origin, blyg = {}) {
     stub_of: stubOrigin ? { origin: stubOrigin, id: ID_RE.test(String(stub.id || '')) ? stub.id : '' } : null,
     transclusions: Array.isArray(doc.transclusions) ? doc.transclusions.length : 0,
     links: Array.isArray(doc.links) ? doc.links.length : 0,
-    refs: refsAll.slice(0, LIMITS.refsKept),
-    ref_origins: [...new Set(refsAll.map(r => r.origin))].slice(0, LIMITS.refOriginsKept),
+    refs: refsAll.filter(r => r.origin === origin).slice(0, LIMITS.refsKept).map(({ origin: _o, ...r }) => r),
+    ref_origins: [...new Set(refsAll.map(r => r.origin))].filter(o => o.length <= LIMITS.refOriginChars).slice(0, LIMITS.refOriginsKept),
   };
 }
 
@@ -827,8 +833,9 @@ export function foldBursts(items) {
   for (const t of threads) {
     const near = [Date.parse(t.created), Date.parse(t.updated)].filter(Number.isFinite);
     for (const r of t.refs || []) {
-      if (r.origin !== t.origin) continue;
-      const k = identOf(r.origin, r.id);
+      const ro = r.origin || t.origin; // (a reference to the thread's own blyg keeps no origin; one of an older record does)
+      if (ro !== t.origin) continue;
+      const k = identOf(ro, r.id);
       const m = byIdent.get(k);
       if (!m || k === identOf(t.origin, t.id) || m.kind === 'thread' || claimed.has(k)) continue;
       const c = Date.parse(m.created);
@@ -1021,6 +1028,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   }
   const cleanRecord = (i, origin) => {
     i.origin = origin;
+    if (typeof i.page !== 'string' && i.kind !== 'withdrawn') i.page = defaultPage(origin, i.kind, i.id);
     if (i.read === 'seen' || !READ_STATES.includes(i.read)) i.read = 'new'; // a document from before the Archive: `seen` posts stay in the Feed
     // the `edited_after_read` marker beside `read` (this branch's first version) is the read state `edited` now
     if ('edited_after_read' in i) {
@@ -1113,7 +1121,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
           // repairAgeMs: a younger one may be a tick (or an untick) still between its writes in another invocation, which will
           // finish it; until then it is kept as it is and read as absent.
           const at = Date.parse(i.archived_at) || 0;
-          if (now() - at < LIMITS.repairAgeMs) S.keepArchive.push(i);
+          if (now() - at < LIMITS.repairAgeMs) S.keepArchive.push(cleanRecord(i, o));
           continue;
         }
         const rec = cleanRecord(i, o);
@@ -1144,7 +1152,11 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
       changes: led ? led.changes.filter(x => now() - x[0] < 24 * 3600e3).map(x => x[0]) : (Array.isArray(prev.changes) ? prev.changes.filter(t => Number.isFinite(t) && now() - t < 24 * 3600e3).slice(-50) : []),
     };
   }
-  const byIdOf = list => Object.fromEntries(list.map(i => [i.id, i]));
+  // As stored in a blyg's document, a record leaves out what the document already says: its origin, and its page address when
+  // it is the default one (f/<id>/ or t/<id>/ under the origin). cleanRecord puts both back.
+  const defaultPage = (origin, kind, id) => { try { return new URL(`${kind === 'fragment' ? 'f' : 't'}/${id}/`, origin).href; } catch { return ''; } };
+  const compact = r => { const { origin, ...rest } = r; if (r.kind !== 'withdrawn' && r.page && r.page === defaultPage(origin, r.kind, r.id)) delete rest.page; return rest; };
+  const byIdOf = list => Object.fromEntries(list.map(i => [i.id, compact(i)]));
   function docsNow() {
     const out = new Map();
     out.set('state/following', { layout: LAYOUT, blygs: state.blygs, kept: state.kept, last_run: state.last_run });
@@ -1411,6 +1423,7 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
   const ledgerFor = ledgerOf;
   const needFeeds = origins => { const miss = origins.filter(o => state.blygs[o] && !S.feeds.has(o)); if (miss.length) need({ feeds: miss }); };
   const needArchives = origins => { const miss = origins.filter(o => state.blygs[o] && !S.archives.has(o)); if (miss.length) need({ archives: miss }); };
+  const needLedgers = origins => { const miss = origins.filter(o => (state.blygs[o] || state.kept[o]) && !ledgers.has(o)); if (miss.length) need({ ledgers: miss }); };
   const needAllFeeds = () => { if (Object.keys(state.blygs).some(o => !S.feeds.has(o))) need({ allFeeds: true }); };
   const needStars = () => { if (!state.stars) need({ stars: true }); };
   const needBodies = names => { const miss = [...new Set(names)].filter(n => !S.bodies.has(n)); if (miss.length) need({ bodies: miss }); };
@@ -2523,9 +2536,10 @@ export function createFollowing({ file, store = fileStore(file), get = netGet, n
     const st = load();
     const prefixes = new Set(list.flatMap(x => [x.key, ...x.members]).map(k => k.slice(0, 8)));
     const origins = Object.keys(st.blygs).filter(o => prefixes.has(ledgerName(o).slice(0, 8)));
-    needFeeds(origins); needArchives(origins);
+    needFeeds(origins); needArchives(origins); needLedgers(origins);
     const index = new Map(Object.values(st.items).map(i => [i.key, i]));
     if (list.some(x => !index.has(x.key))) needFeeds(Object.keys(st.blygs)), needArchives(Object.keys(st.blygs));
+    needLedgers([...new Set(list.map(x => index.get(x.key)).filter(Boolean).map(r => r.origin))]);
     needBodies([...index.values()].filter(i => list.some(x => x.key === i.key || x.members.includes(i.key)) && isUnreadHeld(i)).map(bodyNameOf));
     const folded = foldedNow();
     let archived = 0, parts = 0;

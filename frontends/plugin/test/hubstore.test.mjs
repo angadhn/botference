@@ -275,3 +275,25 @@ test('a file of the older layout converts the same way, and its copy is kept unt
   assert.ok(before.includes('"items"'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a record is bounded whatever a document says: 10 versions, its own blyg\'s references without their origin, no long origins', () => {
+  const H = `https://h.web.test/${'p'.repeat(150)}/`;
+  const doc = makeDoc({ id: idOf(1), origin: H, kind: 'thread', title: 'T'.repeat(400), body: 'word '.repeat(5000), author: 'a'.repeat(400),
+    page: `${H}${'x'.repeat(F.LIMITS.pageChars - H.length - 2)}/`,
+    transclusions: [...Array.from({ length: 300 }, (_, i) => ({ origin: H, id: idOf(10 + i), version: 99 })),
+      ...Array.from({ length: 300 }, (_, i) => ({ origin: `https://${'o'.repeat(60)}${i}.web.test/${'q'.repeat(150)}/`, id: idOf(1000 + i), version: 9 }))],
+    changelog: Array.from({ length: 200 }, (_, i) => ({ version: i + 1, at: day(i), note: 'n'.repeat(400), pinned: true })) });
+  doc.version = 200;
+  doc.stub_of = { origin: `https://${'s'.repeat(200)}.web.test/`, id: idOf(5) };
+  const rec = F.recordFromDoc(doc, H, {});
+  assert.equal(rec.versions.length, F.LIMITS.versionsKept);
+  assert.equal(rec.refs.length, F.LIMITS.refsKept);
+  assert.ok(rec.refs.every(r => !('origin' in r)), 'a reference to its own blyg does not repeat the origin');
+  assert.ok(rec.ref_origins.every(o => o.length <= F.LIMITS.refOriginChars));
+  const bytes = JSON.stringify(rec).length;
+  assert.ok(bytes < 14 * 1024, `the worst record: ${bytes} bytes (was about 51 KB with 100 versions and 50 references of any origin)`);
+  // a burst of 50 parts still folds under its thread from these references
+  const parts = Array.from({ length: 50 }, (_, i) => ({ origin: H, id: idOf(10 + i), kind: 'fragment', created: doc.created, updated: doc.created, version: 1 }));
+  const folded = F.foldBursts([{ ...rec, created: doc.created, updated: doc.created }, ...parts]);
+  assert.equal(folded.find(e => e.head.id === idOf(1)).members.length, 50);
+});

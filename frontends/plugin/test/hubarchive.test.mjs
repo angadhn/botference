@@ -101,8 +101,9 @@ test('tick: the post leaves the Feed, its text is deleted, a small record stays;
   assert.equal(await r.f.bodyHtml(key), '', 'and nothing reads it back');
   // the record: exactly these fields, small, no text
   const rec = r.json().items[`${A}\n${idOf(3)}`];
-  assert.deepEqual(Object.keys(rec).sort(), ['archived_at', 'content_hash', 'created', 'fetched_at', 'fp', 'id', 'index_version', 'key', 'kind', 'origin',
-    'page', 'read', 'title', 'updated', 'version']);
+  // (as stored: its blyg's document says its origin, and a default page address is not repeated)
+  assert.deepEqual(Object.keys(rec).sort(), ['archived_at', 'content_hash', 'created', 'fetched_at', 'fp', 'id', 'index_version', 'key', 'kind',
+    'read', 'title', 'updated', 'version']);
   assert.ok(JSON.stringify(rec.fp).length <= 60, 'a fingerprint of the words read, about 30 bytes');
   assert.equal(rec.read, 'archived');
   assert.ok(!('text' in rec), 'no text field at all');
@@ -433,7 +434,7 @@ test('a post known only by id (its record trimmed past 2,000) is never fetched a
   r.done();
 });
 
-test('trimArchive: at most 1,000 records per blyg, the oldest ticked dropped first; their ids stay in the ledgers', async () => {
+test('trimArchive: at most 500 records per blyg, the oldest ticked dropped first; their ids stay in the ledgers', async () => {
   const r = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 2000, following_run_requests: 2000, following_run_seconds: 600 } });
   const site = r.web.add(A);
   const at = n => new Date(Date.parse('2026-06-01T00:00:00Z') + n * 3600e3).toISOString();
@@ -447,7 +448,7 @@ test('trimArchive: at most 1,000 records per blyg, the oldest ticked dropped fir
   }
   assert.equal((await feed(r)).length, 0);
   assert.equal((await archive(r, { limit: 1000 })).archive_total, F.LIMITS.archiveRecordsPerBlyg);
-  assert.equal(F.LIMITS.archiveRecordsPerBlyg, 1000);
+  assert.equal(F.LIMITS.archiveRecordsPerBlyg, 500);
   assert.equal(r.ledgerIds(A).length, 2005, 'every id is remembered');
   assert.equal(await r.f.keyFor(A, idOf(2005)), '', 'the first ticked (the newest post) was dropped from the list');
   r.done();

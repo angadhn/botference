@@ -718,16 +718,16 @@ guest, or a request with no password, is refused on every Hub route, and
 so is a request a browser says came from another site. The page is never framed
 and runs one script and one style under a Content-Security-Policy.
 
-**The Archive and the unread target.** Tick the box at the start of a post's line and the post moves to the Archive: it
+**The Archive and the unread target.** Press **✓ Read** in the row under a post (beside "Open original") and the post moves to the Archive: it
 leaves the Feed, its text is deleted from the companion, and a small record stays (its blyg, kind, title or first words
 up to 120 characters, version read, dates and its whole page address, about half a kilobyte). The Archive tab lists those
-records, newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each with "Open original" and an untick
-box; its search box filters the records by title and blyg. Unticking puts the post back in the Feed as *new*, fetching its
+records, newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each starting with an **Unread** button
+and with "Open original"; its search box filters the records by title and blyg. **Unread** puts the post back in the Feed as *new*, fetching its
 text again (one request), so it needs the blyg to be reachable and not paused; if it cannot be fetched the post stays
-archived. Ticking a thread also archives the parts folded under it that the Feed showed with it ("and its 3 parts"); a post
-the thread only links to stays where it is. "Tick all shown" archives exactly the posts the Feed is showing, with their
-parts, after a confirmation (the page sends them 100 at a time). At most 2000 archive records are kept; past that the oldest
-ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also keeps a small list of
+archived. On a thread with folded parts the button says "✓ Read (and its 3 parts)" and archives the parts the Feed showed
+with it; a post the thread only links to stays where it is. **Mark all read** archives exactly the posts the Feed is showing,
+with their parts, after a confirmation (the page sends them 100 at a time). At most 500 archive records are kept per blyg
+(never a starred one); past that the oldest ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also keeps a small list of
 the posts you read (up to 5,000 by id; past that the oldest 500 go into a compact filter that knows them by id alone, 60 KB
 however many, with about one false match in a hundred at 50,000 ids: a false match hides one post), and the Hub never
 fetches a post on that list, or in that filter, as a new one, whatever date the blyg gives it. A blyg is never stopped for this. A blyg whose posts have all been fetched or ticked is
@@ -741,7 +741,7 @@ changes less than `following_barely_changed_percent` of a post of at least 100/p
 read); a version with identical content is maintenance and changes nothing. Edits are wanted,
 but not often, so a post comes back at most once in 7 days, at most 3 posts of one blyg in one refresh and 10 in a day, and
 not when that blyg already has as many unread posts as its cap; otherwise it stays in the Archive as *archived_changed*,
-whose line says "edited again", with **Mark read** (keep it read, at the newer version), "Open original" and the untick box,
+whose line says "edited again", with **Mark read** (keep it read, at the newer version), "Open original" and **Unread**,
 and it comes back at a later refresh once those limits allow. At most 3 edited posts of one blyg are in the Feed at once (the
 next come back as you tick them), and when more than 5 posts of one blyg you had read change within a day none comes back:
 the Archive says so in one line for that blyg and the posts wait there, "edited again". At most 5 documents of read posts are fetched per blyg per
@@ -771,10 +771,28 @@ clears the list. **Unfollow** asks which you mean: "Stop following" keeps the li
 blygs, a year), so following it again does not bring them back as unread; "Stop following and forget what I have read
 there" deletes it.
 
-**Where it is kept.** The main document is `following.json`; each blyg's read list is a small file of its own in
-`following-ledgers/` and each post's text one in `following-bodies/`, so ticking or opening a post rewrites only the main
-document (and that one blyg's list). All of it goes through one storage interface in `following.mjs`, which writes only if
-what is stored has not changed since it was read, and merges otherwise.
+**The star.** **☆ Star** (after ✓ Read) marks a post to come back to, on any device: pressed, it says **★ Starred**, and
+the **Starred** tab lists the starred posts, newest starred first, each a light line (kind, blyg, first words, dates, when
+starred, and where the post is now: unread in the Feed, read in the Archive) with "Open original" and "Remove star". A star
+is yours alone and nothing about it is sent to any blyg. It is independent of reading: starring never marks a post read,
+and marking it read (or Unread) never removes its star; an edit of a starred post you read follows the edit rule. At most
+500 posts are starred (the next star is refused, saying so). "Stop following" keeps a blyg's starred lines; "Stop following
+and forget what I have read there" removes them too.
+
+**Where it is kept, and several invocations at once.** Everything goes through one asynchronous storage interface
+(`following-store.mjs`) whose writes are conditional (a write names the version it read, and is refused if another
+writer got there first), so the same engine runs in this companion over files and on a serverless host over a blob store,
+where several short invocations may overlap. On disk: `following.json` holds only the follow list (no post);
+`following-run.json` the run lease, the top-up gap and the hosts' breakers; per blyg `following-feed/` (its unread posts and
+a summary of its numbers, which the page reads), `following-archive/` (its archive records) and `following-ledgers/` (the
+posts read, its queue and counters); `following-inbox.json`, `following-stars.json`; and each post's text in
+`following-bodies/`. Every operation reads what it needs, changes copies, and writes the documents it changed in a fixed
+order; if another writer changed one meanwhile it is run again on what is stored now, so your tick, Unread, star, pause or
+unfollow is never lost to a refresh. A refresh fetches first and only then applies what it fetched, per blyg. Only one
+refresh or top-up runs at a time (a lease kept in the store, which lapses if its holder dies). A post's text nothing names
+is deleted only once it is an hour old. A `following.json` of the older layout (every post inside it) is converted on first
+read; it is copied to `following-pre-shard.json` until the conversion is done, and a conversion that is cut short is
+simply done again. A post keeps its last 10 versions in its history.
 
 ## Reading in the Hub
 

@@ -410,6 +410,7 @@ test('a companion that cannot be reached (the request itself fails): the row, th
 
 test('the star: one per post beside Read; a press stars it in place (no reload), says so, and counts; again removes it; a failure changes nothing', async () => {
   const x = await hub({ n: 3 });
+  await new Promise(res => setTimeout(res, 450)); // (an earlier test's page may still have a reload timer pending)
   let answer = { ok: true, star: 'starred' };
   const p = await x.run({}, { reply: () => answer });
   const star = p.doc.querySelector('article.hub-entry button.star');
