@@ -254,7 +254,7 @@ const SCRIPT = `
   document.querySelectorAll('.hub-entry-body template').forEach(function(t){t.parentNode.insertBefore(t.content,t);t.remove();});
   var msg=document.getElementById('msg');
   function say(s,bad){msg.textContent=s;msg.className=bad?'warn':'mut';}
-  // every request answers, never rejects: a companion that is restarting (the fetch itself fails) is {ok:false} too, so each
+  // every request answers, never rejects: a Hub that cannot be reached (the fetch itself fails) is {ok:false} too, so each
   // mode that waits on an answer (a row sending, a top-up or refresh asked) comes back to a resting state
   function post(path,body){return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})})
     .then(function(r){return r.json().catch(function(){return {ok:false,error:'HTTP '+r.status};});},
@@ -281,7 +281,7 @@ const SCRIPT = `
     if(a==='tick-all'){var ticks=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)ticks.push({key:e.dataset.key,members:membersOf(e)});});
       if(!ticks.length)return;
       if(!confirm('Mark the '+ticks.length+' post'+(ticks.length===1?'':'s')+' shown as read (move them to the Archive)?'))return;
-      // 100 a request (the companion takes no more at once), one request after another
+      // 100 a request (the Hub takes no more at once), one request after another
       var total=0,parts=0,i=0;
       var next=function(){if(i>=ticks.length){done({ok:true},'archived '+total+(parts?', and '+parts+' parts':''));return;}
         var batch=ticks.slice(i,i+100);i+=100;
@@ -308,7 +308,7 @@ const SCRIPT = `
   function rowMove(row,to){var from=row.dataset.tick||'ready';
     if(ROW_MODES.indexOf(to)<0||ROW_MOVES[from].indexOf(to)<0)throw new Error('row: cannot go from '+from+' to '+to);
     row.dataset.tick=to;row.setAttribute('aria-busy',to==='sending'?'true':'false');}
-  // What the page is asking the companion to fetch: ONE field (data-hub-fetch on <html>), one of FETCH_MODES, moved only by
+  // What the page is asking the Hub to fetch: ONE field (data-hub-fetch on <html>), one of FETCH_MODES, moved only by
   // fetchMove. A top-up (after a tick) and Refresh now are never asked twice at once, and never queued: the second is skipped.
   var FETCH_MODES=['idle','refreshing','topping_up'];
   var FETCH_MOVES={idle:['refreshing','topping_up'],refreshing:['idle'],topping_up:['idle']};
