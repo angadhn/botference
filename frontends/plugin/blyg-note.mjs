@@ -304,13 +304,19 @@ export function escapePassage(line, { escape = 'liquid' } = {}) {
   // metadata) and a hostile page chooses the URL. So each address is written as a code span (the markup of the passage is
   // ignored by the text rule of Blygger quotes; the reader sees the same characters), with the characters Liquid and markdown
   // read inside it written as percent-encodings, and everything between the addresses is escaped as before.
+  // Square brackets are written as character references (&#91; &#93;) in the prose and percent-encoded in an address: the example
+  // site's sidenote converter reads `[^1]` and `[^1]: …` in the raw markdown, backslash or not, and would turn a hostile passage into
+  // its own markup (review item 5). A reference renders as the same character, so the quote's text still matches its source. The
+  // spaces around an address are kept (the text must read as the passage did).
   const parts = clean(line).split(/(https?:\/\/[^\s]+)/i);
   return parts.map((seg, i) => {
     if (i % 2) {
-      const url = seg.replace(/[`{}<>"\\]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
+      const url = seg.replace(/[`{}<>"\\[\]]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0'));
       return `\`${url}\``;
     }
-    return escapeProse(seg, { escape });
+    const lead = i > 0 && /^\s/.test(seg) ? ' ' : '';
+    const tail = i < parts.length - 1 && /\s$/.test(seg) ? ' ' : '';
+    return lead + escapeProse(seg, { escape }) + tail;
   }).join('').replace(/\s+/g, ' ').trim();
 }
 function escapeProse(line, { escape }) {
@@ -320,7 +326,8 @@ function escapeProse(line, { escape }) {
     if (i % 2) return seg;
     let t = seg.replace(/[$\]|]/g, '\\$&');
     if (escape === 'liquid') t = liquidEntities(t);
-    return t;
+    // a bracket (escaped above with a backslash) is a character reference: no raw `[` or `]` is left for a site's own markup to read
+    return t.replace(/\\\[/g, '&#91;').replace(/\\\]/g, '&#93;');
   }).join('');
 }
 /** The passage as `> ` lines (a paragraph per line of the selection, an empty `>` between). */

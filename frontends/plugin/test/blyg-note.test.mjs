@@ -198,7 +198,8 @@ test('/tk: a filled gap is the owner\'s text, escaped as a passage (an adopted o
   const one = (text, gaps) => { const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine(text), gaps }] }]); return make(p, p.threads); };
   const filled = one('Intro\n/tk say hello\nAfter', [gap('filled-by-agent', 'Hello, reader. [[x]]')]);
   assert.ok(filled.ok);
-  assert.match(filled.text, /Intro\nHello, reader\. \\\[\\\[x\\\]\\\]\nAfter\n$/, 'an agent\'s fill is escaped as a passage is');
+  // (brackets as character references since review item 5: no raw [ or ] for a site's own markup to read)
+  assert.match(filled.text, /Intro\nHello, reader\. &#91;&#91;x&#93;&#93;\nAfter\n$/, 'an agent\'s fill is escaped as a passage is');
   assert.ok(!/\/tk|TK/.test(filled.text));
   assert.match(one('Intro /tk(say hello) after', [gap('adopted-by-reader', 'Mine [[x]]')]).text, /Intro Mine \[\[x\]\] after/);
   for (const [name, gaps] of [['pending', [gap('pending')]], ['failed', [gap('failed')]], ['not stored', undefined]]) {
@@ -404,4 +405,20 @@ test('a non-http(s) link or any image in the owner\'s words is refused by name; 
     assert.ok(r.ok, `${text}: ${r.error}`);
   }
   assert.deepEqual(N.linkProblems('escaped \\[a\\]\\(javascript:x\\) and \\!\\[i\\]'), []);
+});
+
+// Review item 5: a passage's square brackets are character references (and percent-encoded inside an address), so the example site's
+// sidenote converter (`[^1]` and `[^1]: …` in the raw markdown, backslash or not) can never read a hostile passage as its markup;
+// the spaces around an address in a passage are kept.
+test('passage brackets are &#91; / &#93; (none left raw), brackets in an address are %5B / %5D, and the spaces around an address stay', () => {
+  for (const t of ['x[^1] and more', '[^1]: <b>hi</b> note', 'a ] b [ c', 'nested [[^2]] and \\[^3]']) {
+    const e = N.escapePassage(t);
+    assert.ok(!/[[\]]/.test(e.replace(/`[^`]*`/g, '')), `${t} → ${e}`);
+  }
+  assert.equal(N.escapePassage('see https://x.example/[^1]/y now'), 'see `https://x.example/%5B^1%5D/y` now');
+  const page = webPage([thread('t1', 'A claim[^1] here.\n[^1]: <img src=x onerror=alert(1)> a footnote', 'My words.')]);
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  const body = r.text.split('\n---\n').slice(1).join('');
+  assert.ok(!/\[\^/.test(body), 'no [^ anywhere in the body: ' + body);
 });
