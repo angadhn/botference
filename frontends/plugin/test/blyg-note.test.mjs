@@ -544,3 +544,14 @@ test('showsLiquid reads the TEXT of an agent\'s box (only the never-shown instru
   assert.equal(N.agentScope({ instruction: 'about [/TK] and [tk] marks', text: 't', mode: 'filled-by-agent' }, { block: true }),
     '[TK] about &#91;/TK] and &#91;tk] marks [=]t[/TK]', 'the instruction: none of the site\'s own marks, which would end or nest the scope');
 });
+
+// A second belt for the example site's own (it neutralises every scope's text, whatever wrote it): the writer already leaves no
+// kramdown attribute list, extension, header id, link, footnote or abbreviation definition, and no script link, in an agent's text.
+test('an agent\'s text in a scope can set no attribute and redefine none of the author\'s references (kramdown)', () => {
+  const hostile = ['Harmless.\n{: onmouseover="alert(1)"}', 'see *here*{: onclick="alert(2)"} ok', '{:evil: onclick="x"}', '{::nomarkdown}<b>x</b>{:/}',
+    '## Head {#hijack}', '[^1]: AGENT-FOOTNOTE', '[ref]: https://evil.example/', '*[WORD]: AGENT-ABBR', 'a [s](javascript:alert(4)) b', '> [ref]: https://e.example/'];
+  for (const h of hostile) for (const block of [true, false]) {
+    const t = N.scopeText(h, { block });
+    assert.ok(!/\{:|\{#|\[|^\s*#|<b/m.test(t.replace(/&#91;|&#123;/g, '')), `${JSON.stringify(h)} → ${JSON.stringify(t)}`);
+  }
+});

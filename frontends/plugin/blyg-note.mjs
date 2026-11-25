@@ -272,7 +272,9 @@ export function escapeScopeLine(line, { escape = 'liquid' } = {}) {
   return escapePassage(line, { escape })
     .replace(/`(\[\/?tk\])`/gi, (m, t) => '&#91;' + t.slice(1))
     .replace(/\\`/g, '&#96;')
-    .replace(/\\</g, '&lt;').replace(/\\&/g, '&amp;').replace(/^(\s*)\\>/, '$1&gt;');
+    .replace(/\\</g, '&lt;').replace(/\\&/g, '&amp;').replace(/^(\s*)\\>/, '$1&gt;')
+    // (a header id, `{#id}`, and a kramdown attribute list or extension, `{:`: never read as markup, whatever escaping came before)
+    .replace(/\{(?=[#:])/g, '&#123;');
 }
 export function scopeText(text, { block = false, escape = 'liquid' } = {}) {
   const t = clean(text).trim();
