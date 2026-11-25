@@ -10,11 +10,19 @@
 //   sleep   waits a minute (a test kills it, or the time limit does)
 //   big     prints more than the output buffer allows
 //   prompt  waits for a line on stdin (there is none: stdin is closed, so it ends at once)
+// "only": "<text>" makes the control apply only to a note whose path holds that text (any other note: ok).
+//   hold    waits until <control> no longer says "hold" for this step, then does what it says then (a test holds a run in a step)
 import fs from 'node:fs';
 const [log, control, step, note] = process.argv.slice(2);
 let ctl = {};
 try { ctl = JSON.parse(fs.readFileSync(control, 'utf8')); } catch { /* none */ }
-const how = ctl[step] || 'ok';
+let how = ctl.only && !String(note).includes(ctl.only) ? 'ok' : (ctl[step] || 'ok');
+if (how === 'hold') {
+  const read = () => { try { return JSON.parse(fs.readFileSync(control, 'utf8'))[step] || 'ok'; } catch { return 'hold'; } };
+  const t0 = Date.now();
+  while (read() === 'hold' && Date.now() - t0 < 30000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  how = read();
+}
 fs.appendFileSync(log, JSON.stringify({ step, argv: process.argv.slice(2), cwd: process.cwd(), env: Object.keys(process.env).sort(),
   noteExists: fs.existsSync(note), how, pid: process.pid }) + '\n');
 const permalink = (() => { try { return /^permalink:\s*(\S+)/m.exec(fs.readFileSync(note, 'utf8'))[1]; } catch { return ''; } })();

@@ -67,6 +67,7 @@ import * as scratch from './scratch.mjs';
 import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
 import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
+import { createQueue } from './blyg-queue.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
 import { blygRequestRefusal } from './blyg-request.mjs';
@@ -250,8 +251,11 @@ function broadcast(ev, hush = ownerOnlyEvent(ev)) {
 }
 // The one Publish-as-blyg run this companion can have (blyg-run.mjs). Its record is a file next to the pages, so a
 // restart finds it and marks it interrupted; its events go to owner clients only (OWNER_ONLY_EVENTS).
+let blygQueue = null;
 const blygPublish = createPublisher({
   file: path.join(store.DIR, 'blyg-publish-run.json'),
+  // every move of the run is heard by the publish queue (it starts the next entry when a run ends)
+  onMove: (run, from) => { if (blygQueue) blygQueue.onMove(run, from); },
   readConfig: () => store.readConfig(),
   readPage: url => store.readPage(url),
   savePage: page => store.savePage(page),
@@ -261,6 +265,15 @@ const blygPublish = createPublisher({
   detectLink: url => (blygChecksOn() ? blygChecker.check(url, null) : Promise.resolve(null)),
   askChangelog: ({ prompt, model, timeoutMs }) => (NO_AGENTS ? Promise.resolve(null)
     : runOneShot('claude', prompt, { model, timeoutMs, ...oneshotOverride() })),
+});
+// THE PUBLISH QUEUE (blyg-queue.mjs): every press is accepted at once and handed to the one runner above in order. A file beside
+// the run record; read after the run record, so an interrupted run is known when the queue resumes.
+blygQueue = createQueue({
+  file: path.join(store.DIR, 'blyg-publish-queue.json'),
+  publisher: blygPublish,
+  readPage: url => store.readPage(url),
+  confirmNow: () => { const v = validateHome(store.readConfig().blyg_home); return v.ok ? v.settings.confirm : ''; },
+  broadcast: ev => broadcast(ev),
 });
 // --- the review's decision log, kept in step ------------------------------
 //
@@ -4263,6 +4276,8 @@ export function handler(req, res) {
   //   POST /blyg-publish/retry   {run, token}   the failed step again (the owner's click)
   //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
   //   POST /blyg-publish/abandon {run, token}   a failed or interrupted run is given up
+  //   POST /blyg-publish/queue-cancel {entry}   a queued post not yet running is taken out of the queue (nothing was written)
+  //   (every answer that carries the run carries the publish queue too: `queue`, blyg-queue view)
   if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
     // THE COMMAND SET IS NOT WRITABLE OVER HTTP, by anyone (the owner, the companion's own page, the extension): it decides what runs
     // on this machine. It is read from the config file; the owner changes it with `botference blyg-home set` on the machine.
@@ -4294,6 +4309,12 @@ export function handler(req, res) {
       c.preview_url = '';
       return c;
     };
+    // the queue as the owner's client sees it (a remote owner: any sentence with a path in it scrubbed, as for the run)
+    const queueFor = () => {
+      const q = blygQueue.view();
+      if (here) return q;
+      return { ...q, entries: q.entries.map(e => (e.failure && e.failure.say ? { ...e, failure: { ...e.failure, say: scrub(e.failure.say) } } : e)) };
+    };
     const homeView = () => {
       const raw = store.readConfig().blyg_home;
       const v = validateHome(raw);
@@ -4315,7 +4336,7 @@ export function handler(req, res) {
     }
     if (req.method === 'GET' && url === '/blyg-publish/run') {
       const v = validateHome(store.readConfig().blyg_home);
-      return ok(res, { run: runFor(blygPublish.current()), confirm: v.ok ? v.settings.confirm : 'always' });
+      return ok(res, { run: runFor(blygPublish.current()), confirm: v.ok ? v.settings.confirm : 'always', queue: queueFor() });
     }
     const acts = { '/blyg-publish/confirm': 'confirm', '/blyg-publish/retry': 'retry', '/blyg-publish/continue': 'carryOn', '/blyg-publish/cancel': 'cancel', '/blyg-publish/abandon': 'abandon', '/blyg-publish/forget': 'forget' };
     // THE PICTURE OF THE DRAFT (preview_url): the run id and token, never an address from the client. `/preview` says its state (and
@@ -4336,12 +4357,15 @@ export function handler(req, res) {
         const page = pageOf(req, res, data);
         if (!page) return;
         if (store.isLibrary(page.url)) return fail(res, 400, 'the library has no comments to publish');
-        const r = await blygPublish.start({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
+        // THE PRESS GOES THROUGH THE QUEUE: run at once when the runner is free and nothing waits (as before), else accepted at once
+        // and queued (`queued`: its entry; `replaced`: it took the place of this thread's earlier waiting press)
+        const r = await blygQueue.press({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
           post: String(data.post || ''), postVersion: String(data.post_version || ''), outside: String(data.outside || ''),
-          extent: String(data.extent || 'whole'), upto: String(data.upto || '') });
+          extent: String(data.extent || 'whole'), upto: String(data.upto || ''), look: data.look === 'yes' });
         // a post changed outside the plugin: the refusal carries the question for the owner (the sentence and a count of lines)
         if (!r.ok && r.outside) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, outside: r.outside }));
-        return r.ok ? ok(res, { run: runFor(r.view) }) : fail(res, r.status, r.error);
+        if (r.ok && r.queued) return ok(res, { queued: r.queued, replaced: !!r.replaced, queue: queueFor() });
+        return r.ok ? ok(res, { run: runFor(r.view), queue: queueFor() }) : fail(res, r.status, r.error);
       });
     }
     if (req.method === 'POST' && url === '/blyg-publish/earlier') {
@@ -4352,10 +4376,16 @@ export function handler(req, res) {
         return r.ok ? ok(res, { earlier: r.earlier }) : fail(res, r.status, r.error);
       });
     }
+    if (req.method === 'POST' && url === '/blyg-publish/queue-cancel') {
+      return readBody(req, res, data => {
+        const r = blygQueue.cancel({ entry: String(data.entry || '').slice(0, 64) });
+        return r.ok ? ok(res, { queue: queueFor() }) : fail(res, r.status, r.error);
+      });
+    }
     if (req.method === 'POST' && acts[url]) {
       return readBody(req, res, async data => {
         const r = await blygPublish[acts[url]]({ id: String(data.run || ''), token: String(data.token || ''), stop: data.stop === 'yes', sure: data.sure === 'yes' });
-        if (r.ok) return ok(res, { run: runFor(r.view) });
+        if (r.ok) return ok(res, { run: runFor(r.view), queue: queueFor() });
         // a refusal that MOVED the run (the site's abandon failed: the run now offers Forget) carries the run as it now is
         if (r.view) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, run: runFor(r.view) }));
         return fail(res, r.status, r.error);
