@@ -120,10 +120,11 @@ await drawer.pubShowRun(); await tick(30);
 eq('then a failure: Try again', [view(), !!q('[data-act="pub-retry"]')], ['problem', true]);
 await press('pub-retry');
 eq('the act after a Carry on works too', [C.mode, view()], ['applying', 'closed']);
-// (c) the plane on ANOTHER thread brings the run back (never the scope choice, never a refused start)
+// (c) the plane on the run's thread brings back a run that waits for the owner (never the scope choice, never a refused start);
+// another thread's plane is a press of its own (the publish queue)
 await moved('planned');
-q('.thr-pub[data-target="t2"]').click(); await tick(30);
-eq('(c) after Close, the plane on another thread shows the live run', [view(), !!q('[data-act="pub-scope"]'), !!q('[data-act="pub-confirm"]')], ['confirming', false, true]);
+q('.thr-pub[data-target="t1"]').click(); await tick(30);
+eq('(c) after Close, the plane on its thread shows the run waiting for the look', [view(), !!q('[data-act="pub-scope"]'), !!q('[data-act="pub-confirm"]')], ['confirming', false, true]);
 await press('pub-confirm');
 eq('(c) …and its Publish works, with no reload', [C.mode, view()], ['applying', 'closed']);
 eq('the companion was never asked to start a second run', C.seen.filter(p => p === '/blyg-publish/start').length, 1);

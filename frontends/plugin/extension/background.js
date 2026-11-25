@@ -609,7 +609,7 @@ function forceReconnect() {
 // scheme no tab can ever be showing, so the match loop would find nobody.)
 function routeEvent(ev) {
   // a publish run moved (owner-only events): the background watch looks at how it stands
-  if (ev && ev.type === 'blyg-publish') pubWatchCheck(ev.run && ev.run.id);
+  if (ev && ev.type === 'blyg-publish') pubWatchCheck(true);
   if (ev.url && !isLibraryUrl(ev.url)) {
     const nu = normUrl(ev.url);
     for (const [tabId, tabUrl] of tabUrls) {
@@ -1109,6 +1109,8 @@ async function blygPublish(msg, tabId) {
   if (op === 'start' && body.outside && CFG.BLYG_PUBLISH_OUTSIDE.indexOf(body.outside) === -1) return { ok: false, error: 'no such answer' };
   if (op === 'start' && body.extent && CFG.PUB_EXTENTS.indexOf(body.extent) === -1) return { ok: false, error: 'no such extent' };
   if (op === 'start' && body.upto && (body.extent !== 'upto' || body.upto.length > 64)) return { ok: false, error: 'no such message' };
+  if (op === 'start' && body.look && body.look !== 'yes') return { ok: false, error: 'no such answer' };
+  if (op === 'queue-cancel' && !/^[0-9a-f]{8,32}$/.test(body.entry)) return { ok: false, error: 'no such post' };
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
   if (!r.ok) {
@@ -1119,28 +1121,28 @@ async function blygPublish(msg, tabId) {
   }
   if (spec.reply === 'image') return { ok: true, image: (r.data && r.data.image) || '' };
   if (spec.offer === 'grants') blygOffers.offer(offerKey(String(msg.act)));
-  // the owner set a run going (or a drawer found one going): watch it in the background
-  // (a start that will stop for the owner's look in the dialog is not watched: the owner is looking at it; a one-click start, a
-  // Publish, a Try again or a Carry on are; and a run found going past the owner's look)
-  { const run = r.data && r.data.run;
-    const watch = run && (['confirm', 'retry', 'continue'].indexOf(op) !== -1 || (op === 'start' && run.confirm === 'never')
-      || (op === 'run' && CFG.pubViewOf(run.mode, run.confirm) === 'running'));
-    if (watch) pubWatchStart(run).catch(() => {}); }
+  // the owner pressed (a post queued or set going, a Publish, a Try again, a Carry on), or a drawer found posts under way: the
+  // worker watches the queue in the background and tells each outcome
+  { const q = (r.data && r.data.queue) || null;
+    const watch = q && (['start', 'confirm', 'retry', 'continue'].indexOf(op) !== -1 || (op === 'run' && CFG.pubUnderWay(q) > 0));
+    if (watch) pubWatchStart(q, (r.data && r.data.run) || null).catch(() => {}); }
   return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '',
-    earlier: (r.data && r.data.earlier) || null };
+    earlier: (r.data && r.data.earlier) || null, queue: (r.data && r.data.queue) || null, queued: (r.data && r.data.queued) || null, replaced: !!(r.data && r.data.replaced) };
 }
 
-// ---- Publish as blyg in the BACKGROUND: the watch and the notice ------------------------------------------------------------
-// After the owner presses Publish (or starts a one-click run) the drawer steps out of the way; this worker watches that run
-// (config.js PUB_WATCH_STATES, moved only by pubWatchMove) and tells the owner how it ended: a badge on the toolbar icon on every
-// tab, and a toast drawn by the content script of the tab they are looking at (pubtoast.js), or of the next page that opens. The
-// watch is kept in storage.local with the run's id, so a worker that was suspended and restarted carries on, and tells once.
+// ---- Publish as blyg in the BACKGROUND: the watch over the queue, and the notices --------------------------------------------------
+// After the owner presses, the drawer steps out of the way; this worker watches the PUBLISH QUEUE (config.js PUB_WATCH_STATES, moved
+// only by pubWatchMove) and tells each outcome: the toolbar badge on every tab (how many posts are under way, then a tick or "!"),
+// and a toast drawn by the content script of the tab the owner is looking at (pubtoast.js), or of the next page that opens. Live
+// posts finishing within a minute fold into one toast ("3 posts are live"); a problem always has a toast of its own. The watch is kept
+// in storage.local, so a worker that was suspended and restarted carries on, and tells each outcome once.
 const PUB_WATCH_KEY = 'bfp:pub-watch';
 // (var: the badge code above may run before this line; an undefined watch reads as idle)
-var pubWatch = { state: 'idle', run: '', notice: null };
+var pubWatch = { state: 'idle', count: 0, notices: [], told: [], fold: null };
 const pubWatchReady = (async () => {
   try { const got = await chrome.storage.local.get(PUB_WATCH_KEY); const w = got && got[PUB_WATCH_KEY];
-    if (w && CFG.PUB_WATCH_STATES.indexOf(w.state) !== -1) pubWatch = { state: w.state, run: String(w.run || ''), notice: w.notice || null }; } catch { /* none */ }
+    if (w && CFG.PUB_WATCH_STATES.indexOf(w.state) !== -1) pubWatch = { state: w.state, count: Number(w.count) | 0, notices: Array.isArray(w.notices) ? w.notices : [],
+      told: Array.isArray(w.told) ? w.told : [], fold: w.fold || null }; } catch { /* none */ }
   refreshAllBadges();
 })();
 async function pubWatchTo(move, patch) {
@@ -1150,44 +1152,63 @@ async function pubWatchTo(move, patch) {
   refreshAllBadges();
   return true;
 }
-// a run the owner set going: watch it (only a run that is under way; a finished one is nothing to wait for)
-async function pubWatchStart(run) {
+// the owner pressed: watch the queue. What had already ended before the press is not news (told already, from the answer itself)
+async function pubWatchStart(queue, run) {
   await pubWatchReady;
-  if (!run || !run.id || CFG.pubNoticeOf(run)) return;
-  if (pubWatch.state === 'watching' && pubWatch.run === run.id) return;
-  await pubWatchTo('watch', { run: run.id });
+  const old = pubWatch.state === 'idle' ? CFG.pubTellables(queue, run).map(n => n.key) : [];
+  const told = pubWatch.told.concat(old.filter(k => pubWatch.told.indexOf(k) === -1));
+  const count = CFG.pubUnderWay(queue);
+  if (!count && pubWatch.state === 'idle') { pubWatch.told = told; return; }
+  await pubWatchTo('watch', { count, told });
+  pubWatchCheck(true);
 }
-// how the watched run stands now (an event about it, the keep-alive alarm, a worker start): once it ended, tell the owner, once
-// ONE LOOK AT A TIME, IN TURN: an event that arrives while a look is under way gets a look of its own after it (it was once answered
-// with the look already under way, which could have read the run a moment before it ended: the end was then told only by the next
-// poll, or not at all if the worker was stopped first)
+// how the queue stands now (an event, the keep-alive alarm while watching, a worker start): tell what is new, once.
+// ONE LOOK AT A TIME, IN TURN: an event that arrives while a look is under way gets a look of its own after it
 let pubChecking = Promise.resolve();
-async function pubWatchCheck(runId) {
-  await pubWatchReady;
-  if (pubWatch.state !== 'watching' || (runId && runId !== pubWatch.run)) return;
-  const look = pubChecking.then(() => pubLook(runId));
+function pubWatchCheck(fromEvent) {
+  const look = pubChecking.then(() => pubLook(!!fromEvent));
   pubChecking = look.catch(() => {});
   return look;
 }
-async function pubLook(runId) {
-  if (pubWatch.state !== 'watching' || (runId && runId !== pubWatch.run)) return;
-  {
-    const r = await api('GET', '/blyg-publish/run');
-    const run = r && r.ok && r.data ? r.data.run : null;
-    if (!run || pubWatch.state !== 'watching') return;
-    if (run.id !== pubWatch.run) { await pubWatchTo('quiet'); return; }   // another run replaced it (that one is watched when started)
-    const notice = CFG.pubNoticeOf(run);
-    const view = CFG.pubViewOf(run.mode, run.confirm);
-    if (!notice) { if (view !== 'working' && view !== 'running') await pubWatchTo('quiet'); return; }
-    if (await pubWatchTo('end', { notice })) pubTell();
+async function pubLook(fromEvent) {
+  await pubWatchReady;
+  if (pubWatch.state !== 'watching' && !fromEvent) return;
+  const r = await api('GET', '/blyg-publish/run');
+  if (!r || !r.ok || !r.data) return;
+  const queue = r.data.queue || null;
+  const run = r.data.run || null;
+  const count = CFG.pubUnderWay(queue);
+  const fresh = CFG.pubTellables(queue, run).filter(n => pubWatch.told.indexOf(n.key) === -1);
+  if (pubWatch.state === 'idle') {
+    // posts under way that this worker was not told of (another drawer, a restart): watch from now; what ended before is old news
+    if (count) await pubWatchTo('watch', { count, told: pubWatch.told.concat(fresh.map(n => n.key)) });
+    return;
   }
+  let notices = pubWatch.notices;
+  let fold = pubWatch.fold;
+  const told = pubWatch.told.slice();
+  for (const n of fresh) { told.push(n.key); ({ notices, fold } = CFG.pubWatchAdd({ notices, fold }, n, Date.now())); }
+  const patch = { count, notices, told, fold };
+  if (count) await pubWatchTo(pubWatch.state === 'watching' ? 'tell' : 'watch', patch);
+  else if (pubWatch.state === 'watching') await pubWatchTo(notices.length ? 'end' : 'quiet', patch);
+  else if (fresh.length) await pubWatchTo('tell', patch);
+  if (fresh.length) pubTell();
 }
-// the toast on the tab the owner is looking at (if it has no content script, the badge alone says it, and the next page shows it)
+// a toast seen (a live one is spent when shown) or dismissed or acted on (one needing attention)
+async function pubSpend(key, onlyLive) {
+  await pubWatchReady;
+  const n = pubWatch.notices.find(x => x.key === key);
+  if (!n || (onlyLive && n.kind !== 'live')) return;
+  const notices = pubWatch.notices.filter(x => x !== n);
+  if (pubWatch.state === 'notice' && !notices.length) await pubWatchTo('seen');
+  else await pubWatchTo('spend', { notices });
+}
+// the toasts on the tab the owner is looking at (if it has no content script, the badge alone says it, and the next page shows them)
 async function pubTell(tabId) {
-  if (pubWatch.state !== 'notice' || !pubWatch.notice) return;
+  if (!pubWatch.notices.length) return;
   let target = tabId;
   if (target == null) { try { const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true }); target = tab ? tab.id : null; } catch { target = null; } }
-  if (target != null) send(target, { t: 'pub-notice', notice: pubWatch.notice });
+  if (target != null) for (const notice of pubWatch.notices) send(target, { t: 'pub-notice', notice });
 }
 
 // ---- message router ------------------------------------------------------
@@ -1212,7 +1233,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await configReady;
         // a notice the owner has not seen yet: this page shows it
         await pubWatchReady;
-        if (tabId != null && pubWatch.state === 'notice') setTimeout(() => pubTell(tabId), 400);
+        if (tabId != null && pubWatch.notices.length) setTimeout(() => pubTell(tabId), 400);
         return { ok: true, known: !!entry, threads: entry ? (entry.threads || 0) : 0,
                  socket: wsState, index: indexCache, base: CONF.base };
       }
@@ -1241,16 +1262,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       case 'blyg-publish': return blygPublish(msg, tabId);
       // the toast was shown (a live notice is then spent), or the owner dismissed it or opened the steps from it
-      case 'pub-notice-shown': {
-        await pubWatchReady;
-        if (pubWatch.state === 'notice' && pubWatch.notice && pubWatch.notice.run === msg.run && pubWatch.notice.kind === 'live') await pubWatchTo('seen');
-        return { ok: true };
-      }
-      case 'pub-notice-done': {
-        await pubWatchReady;
-        if (pubWatch.state === 'notice' && pubWatch.notice && pubWatch.notice.run === msg.run) await pubWatchTo('seen');
-        return { ok: true };
-      }
+      case 'pub-notice-shown': { await pubSpend(String(msg.run || ''), true); return { ok: true }; }
+      case 'pub-notice-done': { await pubSpend(String(msg.run || ''), false); return { ok: true }; }
       case 'identity': return identity();
       case 'gdocs-export': return gdocsExport(msg.url, msg.want);
       case 'pdf-bypass': return pdfBypass(msg.url);
@@ -1391,10 +1404,10 @@ chrome.alarms.onAlarm.addListener(a => {
   sweepBypass();
   if (wsState === 'connected') refreshIndex(true);
   // a bounded poll while a publish is watched (the event stream is the fast path; this catches a missed event or a restart)
-  pubWatchCheck();
+  pubWatchCheck(false);
 });
 // a worker that has just started looks at a run it was watching before it was suspended
-pubWatchReady.then(() => pubWatchCheck()).catch(() => {});
+pubWatchReady.then(() => pubWatchCheck(false)).catch(() => {});
 
 chrome.runtime.onInstalled.addListener(() => { ensureSocket(); refreshIndex(true); reopenViewerTabs(); });
 

@@ -2763,3 +2763,15 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 @keyframes pubprog { 0%, 100% { opacity: .35 } 50% { opacity: 1 } }
 @media (prefers-reduced-motion: reduce) { .pubprogdot { animation: none } }
 .publine.pubchip { display: inline-block; border-left: none; border-radius: 999px; padding: 1px 9px; background: var(--rail); font-size: 11px }
+/* the publish queue: a thread's place in it (set aside or failed: the accent), the "look at it" button, and the small Publishing list */
+.publine.pubchip.pubwarn { background: transparent; border: 1px solid var(--accent); color: var(--fg) }
+.publookbtn { margin-left: 6px; font-size: 11px; padding: 0 6px }
+.publook { margin: 6px 0; padding: 6px 8px; border-left: 3px solid var(--accent); background: var(--rail) }
+.pubqueue { margin: 6px 0 10px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 12px }
+.pubqhead { font-weight: 600; color: var(--muted); margin-bottom: 4px }
+.pubqrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; padding: 3px 0; border-top: 1px solid var(--line) }
+.pubqrow:first-of-type { border-top: none }
+.pubqlabel { flex: 1 1 12em; min-width: 0; overflow-wrap: anywhere }
+.pubqpage, .pubqstate { color: var(--muted) }
+.pubqrow[data-state="failed"] .pubqstate, .pubqrow[data-state="needs_look"] .pubqstate { color: var(--fg) }
+.pubqcancel { font-size: 11px; padding: 0 6px }

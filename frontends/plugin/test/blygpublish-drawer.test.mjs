@@ -102,7 +102,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'earlier', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'queue-cancel', 'earlier', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
   eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
   eq('only arm opens one (for the act it names)', [Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'grants').map(([k]) => k), CFG.BLYG_ARMED_ACTS], [['arm'], ['confirm', 'retry', 'continue']]);
 }
@@ -589,7 +589,7 @@ for (const [mode, buttons] of [['failed_publish', ['pub-retry', 'pub-abandon', '
 }
 
 
-// ---- (c) the drawer never loses a run: Close keeps what is needed; the plane on ANY thread first asks for the run and shows it ----------
+// ---- (c) the drawer never loses a run: Close keeps what is needed; the plane on the run's thread asks for the run and shows it ----------
 for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'confirming', 'pub-confirm'], ['applying', 'running', ''], ['failed_plan', 'problem', 'pub-retry'],
   ['interrupted_publishing', 'problem', 'pub-continue'], ['abandon_failed', 'problem', 'pub-forget']]) {
   const server = companion();
@@ -600,18 +600,22 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   // a run going on in the background is not put in front of the owner on opening: the chip and the header mark say it
   eq(`${mode}: (set up) found on opening`, [view(), q('.hdr .pubprog').hidden], live ? ['closed', false] : ['waiting', true]);
   if (!live) { click(q('[data-act="pub-close"]')); await tick(); }
+  // THE PUBLISH QUEUE (2026-11-25): the plane on the run's own thread shows a run that waits for the owner (its look, a failure);
+  // any other press, and this thread's own while its run goes on in the background, is a new press (queued behind it)
   for (const tid of ['t1', 't2']) {
     click(q(`.thr-pub[data-target="${tid}"]`)); await tick();
-    eq(`${mode}: the plane on ${tid} shows the run, never the scope choice`, [view(), qa('[data-act="pub-scope"]').length, /For “My first thought”/.test(q('.pubdlg').textContent)], [view0, 0, true]);
+    const shows = tid === 't1' && !live;
+    eq(`${mode}: the plane on ${tid} ${shows ? 'shows the run waiting for the owner' : 'offers a press (queued behind the run)'}`,
+      [view(), qa('[data-act="pub-scope"]').length > 0, /For “My first thought”/.test(q('.pubdlg').textContent)], shows ? [view0, false, true] : ['choosing', true, false]);
     click(q('[data-act="pub-close"]')); await tick();
     eq(`${mode}: Close`, [view(), !!drawer.pub.run], ['closed', true]);
   }
   if (act) {
-    click(q('.thr-pub[data-target="t2"]')); await tick();
+    click(q('.thr-pub[data-target="t1"]')); await tick();
     document.elementsFromPoint = () => [drawer.host];
     await settle(); click(q(`[data-act="${act}"]`)); await tick(10);
     const op = act.slice(4);
-    ok(`${mode}: reopened from another thread, ${op} works with no reload`, server.calls.some(c => c.op === op), JSON.stringify(server.calls.slice(-3)));
+    ok(`${mode}: reopened from its thread, ${op} works with no reload`, server.calls.some(c => c.op === op), JSON.stringify(server.calls.slice(-3)));
     delete document.elementsFromPoint;
   }
 }
@@ -884,6 +888,64 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   const z = await make({ server: s3 });
   await tick(10); z.click(z.q('[data-act="pub-review"]')); await tick();
   ok('the dialog says how many further messages will now be included', /2 further messages of this comment will now be included/.test(z.dlg().textContent), z.dlg().textContent.slice(0, 300));
+}
+
+// ---- THE PUBLISH QUEUE in the drawer: a press accepted at once, the thread's place, the Publishing list and its Cancel, a post set aside ----
+{
+  const server = companion();
+  server.confirm = 'never';
+  const URL0 = 'https://example.com/article';
+  const entry = (id, thread, state, extra = {}) => ({ id, state, page_url: URL0, page_title: 'An article', thread_id: thread, label: 'My ' + thread + ' thought', ahead: 0, at: new Date().toISOString(), ...extra });
+  server.queue = { state: 'running', entries: [] };
+  const base = server.onBlygPublish;
+  server.onBlygPublish = async (op, body) => {
+    if (op === 'start') {
+      server.calls.push({ op, body });
+      const e = entry('e' + body.thread_id, body.thread_id, 'queued', { ahead: 2 });
+      server.queue = { state: 'running', entries: [...server.queue.entries.filter(x => x.thread_id !== body.thread_id), e] };
+      return { ok: true, queued: e, replaced: false, queue: server.queue };
+    }
+    if (op === 'queue-cancel') {
+      server.calls.push({ op, body });
+      server.queue = { ...server.queue, entries: server.queue.entries.map(x => (x.id === body.entry ? { ...x, state: 'cancelled' } : x)) };
+      return { ok: true, queue: server.queue };
+    }
+    const r = await base(op, body);
+    return op === 'run' ? { ...r, queue: server.queue } : r;
+  };
+  const { q, qa, view, click, drawer } = await make({ server });
+  await tick(10);
+  click(q('.thr-pub[data-target="t2"]')); await tick();
+  await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
+  eq('queue: a press is accepted at once and the dialog steps away', [view(), server.calls.at(-1).op], ['closed', 'start']);
+  ok('queue: the footbar says its place', /Queued\. 2 posts are ahead of it\./.test(drawer.shadow.textContent), drawer.shadow.textContent.slice(0, 300));
+  const chip = () => (qa('.publine.pubchip').map(x => x.textContent));
+  ok('queue: the thread says "queued · 2 ahead"', chip().some(t => /queued · 2 ahead/.test(t)), JSON.stringify(chip()));
+  ok('queue: the Publishing list shows it with a Cancel', !!q('.pubqueue [data-act="pub-queue-cancel"][data-entry="et2"]'));
+  // an untrusted click on Cancel does nothing
+  const dis = await make({ trusted: false, server });
+  await tick(10); drawer.pub.queue = server.queue;
+  const before = server.calls.length;
+  for (const b of dis.qa('[data-act="pub-queue-cancel"]')) b.click();
+  await tick(5);
+  eq('queue: an untrusted Cancel sends nothing', server.calls.length, before);
+  click(q('[data-act="pub-queue-cancel"][data-entry="et2"]')); await tick(10);
+  eq('queue: Cancel names the entry', server.calls.at(-1), { op: 'queue-cancel', body: { entry: 'et2' } });
+  ok('queue: a cancelled post leaves the list', !q('.pubqueue [data-entry="et2"]'));
+  // a post set aside for the owner's look: the chip says so, the plane's dialog says why, and the start says look: yes
+  server.queue = { state: 'running', entries: [entry('e9', 't1', 'needs_look', { why: 'left-out' })] };
+  drawer.blygPublishMoved(); await tick(20);
+  ok('queue: "needs your look" on the thread, with a way to look', chip().some(t => /needs your look/.test(t)) && !!q('.publookbtn[data-target="t1"]'), JSON.stringify(chip()));
+  click(q('.publookbtn[data-target="t1"]')); await tick(10);
+  ok('queue: the dialog says why it was set aside', view() === 'choosing' && q('.pubdlg .publook') && /left out/.test(q('.pubdlg .publook').textContent));
+  ok('queue: and offers to prepare it for the look', /Just this comment/.test(q('.pubdlg').textContent));
+  await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
+  eq('queue: the start says the owner is looking', server.calls.filter(c => c.op === 'start').at(-1).body.look, 'yes');
+  // failed, and paused
+  server.queue = { state: 'paused', entries: [entry('e7', 't2', 'failed', { failure: { step: 'publish', mode: 'failed_publish' }, paused_by: true }), entry('e8', 't1', 'queued', { ahead: 1 })] };
+  drawer.blygPublishMoved(); await tick(20);
+  ok('queue: a failure on its thread, in one sentence', chip().some(t => /failed: Something went wrong while publishing\./.test(t)), JSON.stringify(chip()));
+  ok('queue: the others wait while it is paused', chip().some(t => /queued · waits until the post that went wrong is dealt with/.test(t)) && /Publishing · paused/.test(q('.pubqueue').textContent));
 }
 
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);

@@ -2576,7 +2576,7 @@
       // (config.js PUB_OUTSIDE, moved only by pubOutside); `lost` the companion's count of lines that would go (a fact). `extent` is how
       // much of the thread (config.js PUB_EXTENTS, moved only by pubExtent); `upto` the chosen message's time stamp (a fact of `upto`).
       pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 },
-        join: 'none', earlier: null, outside: 'none', lost: 0, extent: 'whole', upto: '' },
+        join: 'none', earlier: null, outside: 'none', lost: 0, extent: 'whole', upto: '', queue: null },
       // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
       // tkHintMove (said once per drawer, never again)
       tkBlockHint: 'unseen',
@@ -5836,7 +5836,7 @@ ${bubbleShellHtml()}`;
       // answers the empty state below: "No comments yet" directly under "this
       // PDF carries 7 comments" is two sentences contradicting each other.
       const pdfOffer = pdfImportHtml();
-      let html = bar + offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + qnoteHtml()
+      let html = bar + pubQueueHtml() + offlineHtml() + nohlHtml() + standdownHtml() + trackHtml() + qnoteHtml()
         + pdfOffer + pdfSavedHtml() + projectTaskCardHtml() + taskCardHtml();
       html += D.pending ? pendingHtml() : '';
       // a pill with nothing under it says so in one plain line — "No comments
@@ -8414,6 +8414,7 @@ ${bubbleShellHtml()}`;
       'pub-review': () => pubReview(),
       'pub-progress': () => pubProgress(),
       'pub-close': () => pubClose(),
+      'pub-queue-cancel': btn => pubQueueCancel(btn.dataset.entry),
       'export-response': () => toggleResponse(),
       'gap': (btn) => gapAction(btn),
       'gap-save': (btn) => gapSave(btn),
@@ -10659,7 +10660,8 @@ ${bubbleShellHtml()}`;
     const OUTSIDE_SAY = 'Your post was changed outside the plugin since it was last published from here. Publishing from here rebuilds the whole post from this page\'s comments, so the changes made outside the plugin would be lost.';
     // who put the dialog up, one named value: `start` (this drawer's own start: with confirm 'never' the dialog stays out of the way
     // while it runs), `plane` (the owner pressed a thread's plane: always shown), `drawer` (a run found when the drawer opened)
-    const PUB_OPENERS = Object.freeze(['start', 'plane', 'drawer']);
+    // …and `look` (the owner opened a post the publish queue set aside for their look: the start says so, and the run stops for it)
+    const PUB_OPENERS = Object.freeze(['start', 'plane', 'drawer', 'look']);
     // a second confirmation the owner is being asked for, one named value: none, or `forget` (forgetting a run whose earlier step
     // cannot be identified)
     const PUB_ASKS = Object.freeze(['none', 'forget']);
@@ -10775,19 +10777,87 @@ ${bubbleShellHtml()}`;
     }
     // the drawer is told a run moved while its dialog is closed: the run is read again for the chip and the mark (no view changes)
     async function pubRefreshQuiet() {
-      if (!D.owner || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
+      if (!D.owner || typeof opts.onBlygPublish !== 'function') return;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
-      if (D.pub.view !== 'closed' || !r || !r.ok) return;
+      if (!r || !r.ok) return;
+      pubHeard(r);
+      if (D.pub.view !== 'closed') return;
       D.pub.run = r.run && r.run.id ? r.run : null;
       render();
     }
+    // the queue as the companion last said it (every answer that carries the run carries it)
+    function pubHeard(r) { if (r && r.queue && Array.isArray(r.queue.entries)) D.pub.queue = r.queue; }
     const pubElapsed = ms => { const s = Math.max(0, Math.round((ms || 0) / 1000)); return s < 60 ? s + ' s' : Math.floor(s / 60) + ' min ' + (s % 60) + ' s'; };
     // THE ONE LINE on a thread: what a one-click run that has this thread in it is doing now (the owner's words), then the link
+    // THE PUBLISH QUEUE as last heard (the companion's blyg-queue view: data, not a mode of the drawer's): this thread's latest post in it
+    function pubEntryOf(threadId) {
+      const q = D.pub.queue;
+      const url = D.page && D.page.url;
+      const mine = ((q && q.entries) || []).filter(e => e && e.page_url === url && e.thread_id === threadId);
+      return mine.length ? mine[mine.length - 1] : null;
+    }
+    // what the footbar says when a press is queued
+    function pubQueuedSay(e, replaced) {
+      const where = D.pub.queue && D.pub.queue.state === 'paused' ? 'It waits until the post that went wrong is dealt with.'
+        : e.ahead > 0 ? (e.ahead === 1 ? 'One post is ahead of it.' : e.ahead + ' posts are ahead of it.') : 'It goes out next.';
+      return (replaced ? 'Replaced your earlier press of this comment: the latest text will go out. ' : 'Queued. ') + where + ' You\'ll be told when it\'s live.';
+    }
+    // why a look was or was not asked (the run records every reason; blyg-run REVIEW_FACTS), in one quiet line each
+    const PUB_REASON_SAY = Object.freeze({
+      'agent-text': 'Part of it was written by an AI model: it is published in its marked box.',
+      'link-stub': 'It will be shown as a response to the post it links to.',
+      further: 'It now includes messages that were held back.',
+      'left-out': 'A comment that was in your post is no longer on this page, so it will be left out.',
+      outside: 'It replaces changes made to your post outside the plugin.',
+    });
+    function pubReasonsHtml(run) {
+      const why = Array.isArray(run.reasons) ? run.reasons : [];
+      return why.filter(k => PUB_REASON_SAY[k] && !(k === 'left-out' && run.left_out)).map(k => `<p class="pubquiet">${esc(PUB_REASON_SAY[k])}</p>`).join('')
+        + (run.review === 'asked' ? '<p class="pubquiet">Shown first because you asked to look at it.</p>' : '');
+    }
+    // THE "PUBLISHING" LIST: the queue, newest last (posts under way or set aside, and those that ended in the last half hour); a post
+    // not yet running has a Cancel (nothing of it was written)
+    const PUB_LIST_RECENT_MS = 30 * 60 * 1000;
+    function pubQueueHtml() {
+      if (!D.owner || !D.pub.queue) return '';
+      const now = Date.now();
+      const rows = (D.pub.queue.entries || []).filter(e => CFG.PUB_UNDER_WAY.indexOf(e.state) !== -1 || e.state === 'needs_look'
+        || ((e.state === 'published' || e.state === 'failed') && now - Date.parse(e.at || 0) < PUB_LIST_RECENT_MS));
+      if (!rows.length) return '';
+      const here = D.page && D.page.url;
+      return `<div class="pubqueue" role="region" aria-label="Publishing"><div class="pubqhead">Publishing${D.pub.queue.state === 'paused' ? ' · paused' : ''}</div>`
+        + rows.map(e => `<div class="pubqrow" data-state="${esc(e.state)}"><span class="pubqlabel">${esc(e.label || 'a comment')}${e.page_url !== here && e.page_title ? ` <span class="pubqpage">· ${esc(e.page_title)}</span>` : ''}</span>`
+          + `<span class="pubqstate">${esc(CFG.pubEntryLine(e, D.pub.queue))}</span>`
+          + (CFG.PUB_CANCELLABLE.indexOf(e.state) !== -1 ? `<button class="rebtn pubqcancel" data-act="pub-queue-cancel" data-entry="${esc(e.id)}" type="button" aria-label="cancel this post">Cancel</button>` : '')
+          + '</div>').join('') + '</div>';
+    }
+    // Cancel on a post in the queue: the owner's trusted click (the delegated handler), in a page open in its own tab
+    async function pubQueueCancel(entry) {
+      if (!D.owner || !entry) return;
+      const framed = pubFramed(); if (framed) { setFootNote('error', framed); return; }
+      let r = null;
+      try { r = await cb('onBlygPublish')('queue-cancel', { entry }); } catch (_) { r = null; }
+      if (!r || !r.ok) { setFootNote('error', (r && r.error) || 'The companion did not answer.'); return; }
+      pubHeard(r);
+      setFootNote('info', 'Cancelled: that post will not be published.');
+      render();
+    }
+    // the chip for a post waiting in the queue, set aside, or failed (a running one is told by the run's own line, below)
+    function pubQueueLine(t) {
+      const e = pubEntryOf(t.id);
+      if (!e || ['queued', 'looking', 'filling', 'needs_look', 'failed'].indexOf(e.state) === -1) return '';
+      // a failure told on a thread that has gone out since (a later post) is old news
+      if (e.state === 'failed' && pubPublished(t) && String(t.blyg_published.at) > String(e.at)) return '';
+      const cls = e.state === 'failed' || e.state === 'needs_look' ? ' pubwarn' : '';
+      const look = e.state === 'needs_look' ? ` <button class="rebtn publookbtn" data-act="pub-open" data-target="${esc(t.id)}" type="button">look at it</button>` : '';
+      return `<div class="publine pubchip${cls}" role="status">${esc(CFG.pubEntryLine(e, D.pub.queue))}${look}</div>`;
+    }
     function pubLine(t) {
       if (!D.owner) return '';
       const r = D.pub.run;
       if (D.pub.view === 'starting' && D.pub.thread === t.id && D.pub.shown === 'never') return '<div class="publine" role="status">Publishing as a blyg… starting</div>';
+      { const q = pubQueueLine(t); if (q) return q; }
       if (!r || (r.thread_ids || []).indexOf(t.id) === -1) return '';
       // any run under way while the dialog is closed: a quiet chip (the header's mark opens the steps)
       if (r.confirm !== 'never') return pubLive(r) && D.pub.view === 'closed' ? `<div class="publine pubchip" role="status">${r.kind === 'edit' ? 'publishing v' + esc(Number(r.version) || 2) + '…' : 'publishing…'}</div>` : '';
@@ -10806,6 +10876,7 @@ ${bubbleShellHtml()}`;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
       if (D.pub.view !== 'working' && D.pub.view !== 'running') return;
+      pubHeard(r);
       if (r && r.ok && r.run) pubApply(r.run); else pubPollSoon();
     }
     // a move of the run was announced (owner clients only): look again
@@ -10813,7 +10884,8 @@ ${bubbleShellHtml()}`;
       if (!D.owner || !D.mounted) return D;
       if (D.pub.view === 'working' || D.pub.view === 'running') pubRefresh();
       else if (D.pub.view === 'confirming' && D.pub.pic.state === 'waiting') pubPicAsk(false);
-      else if (D.pub.view === 'closed') pubRefreshQuiet();
+      // (the queue's chips and list follow every move, whatever the dialog shows)
+      if (D.pub.view !== 'working' && D.pub.view !== 'running') pubRefreshQuiet();
       return D;
     }
     // opening the drawer: is a run under way that this drawer did not start (a reload, another tab)? Offered, never forced.
@@ -10821,6 +10893,8 @@ ${bubbleShellHtml()}`;
       if (!D.owner || !D.mounted || D.pub.view !== 'closed' || typeof opts.onBlygPublish !== 'function') return;
       let r = null;
       try { r = await cb('onBlygPublish')('run'); } catch (_) { r = null; }
+      pubHeard(r);
+      if (r && r.ok && r.queue && r.queue.entries && r.queue.entries.length) render();
       if (!r || !r.ok || !r.run || D.pub.view !== 'closed') return;
       if (PUB_DONE_MODES.indexOf(r.run.mode) !== -1) return;
       // a run going on in the BACKGROUND is not put in front of the owner: the thread's chip and the header's mark say it (and the
@@ -10877,11 +10951,17 @@ ${bubbleShellHtml()}`;
         pubGo('problem', { thread: id, error: (r && r.error) || 'Could not ask the companion what Publish as blyg would do, so nothing is offered. Try again.', run: null, opener: 'plane' });
         return;
       }
-      if (r.run && PUB_DONE_MODES.indexOf(r.run.mode) === -1) {
+      pubHeard(r);
+      // a run OF THIS THREAD that waits for the owner (its look, a failure) is shown as it is, so the drawer never loses it; any other
+      // run under way, or this thread's own going in the background, does not stop a press: the press is queued behind it
+      if (r.run && PUB_DONE_MODES.indexOf(r.run.mode) === -1 && (r.run.thread_ids || []).indexOf(id) !== -1 && !pubLive(r.run)) {
         D.pub.opener = 'plane';
         const target = CFG.pubViewOf(r.run.mode, r.run.confirm);
         if (pubGo(target, { run: r.run, thread: id, error: '', opener: 'plane' })) return;
       }
+      // this thread's post was set aside for the owner's look: the dialog says why, and the run will stop for the look
+      const parked = pubEntryOf(id);
+      const opener = parked && parked.state === 'needs_look' ? 'look' : 'plane';
       // an unpublished comment on a page where another of the owner's comments is already a post: may it be added to that post?
       // (the companion says, and names the post; with no answer the choice is simply not offered)
       let earlier = null;
@@ -10892,7 +10972,8 @@ ${bubbleShellHtml()}`;
         if (e && e.ok && e.earlier && typeof e.earlier === 'object') earlier = { title: String(e.earlier.title || ''), version: Number(e.earlier.version) || 1, post: String(e.earlier.post || '') };
       }
       if (earlier) { pubJoin('add'); D.pub.earlier = earlier; }
-      if (!pubGo('choosing', { thread: id, scope: '', error: '', run: null, shown: r.confirm, opener: 'plane', edit: pubPublished(t) })) pubJoin('none');
+      // (a run going on in the background stays known: its chip and the header's mark keep saying it)
+      if (!pubGo('choosing', { thread: id, scope: '', error: '', run: r.run && r.run.id ? r.run : null, shown: r.confirm, opener, edit: pubPublished(t) })) pubJoin('none');
     }
     // CLICKJACKING. A page can cover the drawer with something it controls (a top-layer <dialog> or popover with `pointer-events:none`, an
     // opaque/filtered/clipped host, a frame) so that a TRUSTED click lands on a drawer button it has disguised. Before anything that
@@ -11046,10 +11127,21 @@ ${bubbleShellHtml()}`;
       // adding: the post the dialog named, so the companion adds to that one or to none
       const shownPost = join === 'add' && D.pub.earlier ? { post: D.pub.earlier.post, post_version: String(D.pub.earlier.version) } : {};
       const replacing = D.pub.outside === 'replacing';
+      const looking = D.pub.opener === 'look';
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
       const cut = D.pub.extent === 'upto' && D.pub.upto ? { extent: 'upto', upto: D.pub.upto } : {};
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}), ...cut }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}), ...cut, ...(looking ? { look: 'yes' } : {}) }); } catch (_) { r = null; }
+      pubHeard(r);
+      // ACCEPTED INTO THE QUEUE: the dialog steps out of the way at once; the thread's chip says its place
+      if (r && r.ok && r.queued) {
+        pubOutside('none');
+        pubGo('closed', { error: '' });
+        const e = r.queued;
+        setFootNote('info', pubQueuedSay(r.queued, r.replaced));
+        render();
+        return;
+      }
       // the post was changed outside the plugin: back to the choice, which now asks (nothing was written)
       if (r && !r.ok && r.outside && !replacing) {
         pubOutside('asking');
@@ -11207,7 +11299,13 @@ ${bubbleShellHtml()}`;
         case 'choosing': {
           const t = ((D.page && D.page.threads) || []).find(x => x && x.id === P.thread);
           const first = t ? String(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '';
-          const look = P.shown !== 'never' || (t && pubAgentText(t));
+          // a look comes first with confirm 'always', or when the owner opened a post the queue set aside for their look (an agent's
+          // passage no longer forces one with one click: blyg-run LOOK_FORCED)
+          const look = P.shown !== 'never' || P.opener === 'look';
+          const parked = P.opener === 'look' ? pubEntryOf(P.thread) : null;
+          const lookSay = parked ? `<p class="publook">This post was set aside for your look. ${esc(CFG.PUB_LOOK_WHY[parked.why] || '')}</p>` : '';
+          const ahead = CFG.pubUnderWay(D.pub.queue);
+          const queueSay = ahead && !parked ? `<p class="pubquiet">${ahead === 1 ? 'One post is' : esc(String(ahead)) + ' posts are'} on the way out already: this one goes after ${ahead === 1 ? 'it' : 'them'}. You can carry on reading.</p>` : '';
           // the post was changed outside the plugin since it was last published from here: asked, always (whatever the setting)
           if (P.outside === 'asking' || P.outside === 'replacing') {
             const lost = Number(P.lost) || 0;
@@ -11220,7 +11318,7 @@ ${bubbleShellHtml()}`;
           const uptoSay = P.extent === 'upto' ? '<p class="pubupto">Up to and including the message you chose: the messages after it stay private.</p>' : '';
           if (P.edit && t) {
             const v = (Number(t.blyg_published.version) || 1) + 1;
-            return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}${uptoSay}
+            return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${uptoSay}
               <p>${look ? `This makes version ${v} of your post. Nothing is published yet: first you will see it.` : `This publishes version ${v} of your post now.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
@@ -11231,12 +11329,12 @@ ${bubbleShellHtml()}`;
           if (P.join === 'add' && P.earlier) {
             const v = (Number(P.earlier.version) || 1) + 1;
             const named = P.earlier.title ? `“${esc(P.earlier.title)}”` : 'your earlier post';
-            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}${uptoSay}
+            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
               <p>${look ? `This comment goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with this comment after the earlier one.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           const n = pubAbove(P.thread, P.shown).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${joinHtml}${uptoSay}
+          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
             <p>${look ? 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.' : 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.'}</p>
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Just this comment' : 'Publish just this comment'}</button>
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This and the ' + n + ' above' : 'Publish this and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
@@ -11258,9 +11356,7 @@ ${bubbleShellHtml()}`;
             ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
             ${pubLeftOutHtml(run)}
             ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this comment will now be included.</p>` : ''}
-            ${run.review === 'agent-text' && run.confirm === 'always' ? '<p class="pubquiet">Shown first because part of it was written by an agent.</p>' : ''}
-            ${run.review === 'link-stub' ? '<p class="pubquiet">Shown first because it will be shown as a response to the post it links to.</p>' : ''}
-            ${run.review === 'further' ? '<p class="pubquiet">Shown first because it now includes messages that were held back.</p>' : ''}
+            ${pubReasonsHtml(run)}
             ${err}
             <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;
         }

@@ -83,7 +83,7 @@ await test('start forwards exactly url, thread_id, scope, confirm and join; earl
   const W = boot();
   const r = await pub(W, 'start', { thread_id: 't9', scope: 'above', extra_field: 'ignored', run: 'x' });
   assert.equal(r.ok, true);
-  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '', join: '', post: '', post_version: '', outside: '', extent: '', upto: '' }]]);
+  assert.deepEqual(W.ours().map(f => [f.method, f.url.replace(/^https?:\/\/[^/]+/, ''), f.body]), [['POST', '/blyg-publish/start', { url: 'https://example.com/a', thread_id: 't9', scope: 'above', confirm: '', join: '', post: '', post_version: '', outside: '', extent: '', upto: '', look: '' }]]);
   assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);
   assert.equal(W.ours().at(-1).body.join, 'add');
   assert.equal((await pub(W, 'earlier', { thread_id: 't9', scope: 'one', join: 'add' })).ok, true);
@@ -95,6 +95,14 @@ await test('start forwards exactly url, thread_id, scope, confirm and join; earl
   assert.deepEqual([W.ours().at(-1).body.extent, W.ours().at(-1).body.upto], ['upto', '2026-11-22T10:00:00Z'], 'publish up to here is forwarded');
   assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', extent: 'half' })).ok, false, 'an odd extent goes nowhere');
   assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', upto: '2' })).ok, false, 'a message only with upto');
+  // the owner opening a post the queue set aside for their look: `look: 'yes'`, nothing else
+  assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', look: 'yes' })).ok, true);
+  assert.equal(W.ours().at(-1).body.look, 'yes');
+  assert.equal((await pub(W, 'start', { thread_id: 't9', scope: 'one', look: 'no' })).ok, false, 'an odd look goes nowhere');
+  // a queued post's Cancel names the entry, and only an entry id
+  assert.equal((await pub(W, 'queue-cancel', { entry: 'abcdef012345' })).ok, true);
+  assert.deepEqual([W.ours().at(-1).url.replace(/^https?:\/\/[^/]+/, ''), W.ours().at(-1).body], ['/blyg-publish/queue-cancel', { entry: 'abcdef012345' }]);
+  assert.equal((await pub(W, 'queue-cancel', { entry: '../run' })).ok, false, 'an odd entry goes nowhere');
   const sent = W.ours().length;
   for (const bad of [{ op: 'start', scope: 'everything' }, { op: 'start', scope: 'one', join: 'merge' }, { op: 'nope' }, { op: '__proto__' }, { op: 'constructor' }, { op: undefined }]) {
     assert.equal((await pub(W, bad.op, { scope: bad.scope, thread_id: 't', ...(bad.join ? { join: bad.join } : {}) })).ok, false, JSON.stringify(bad));

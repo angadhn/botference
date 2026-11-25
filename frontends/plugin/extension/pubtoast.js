@@ -6,7 +6,9 @@
 // never page text). Its buttons act only on a TRUSTED click (a page's dispatchEvent is not one; and it cannot reach the root to
 // dispatch anything) whose point is on this box (a page that covers it with something of its own gets nothing: the click is
 // refused, and the owner can use the keyboard: every control is a real button or link, Escape dismisses). A live notice goes
-// after about ten seconds; one that needs attention stays until dismissed.
+// after about ten seconds; one that needs attention stays until dismissed. Several can be up at once (the publish queue): a live one
+// replaces the live one before it (the worker folds them: "3 posts are live"), the same notice again replaces itself, and the others
+// stack upwards from the corner.
 (function (root) {
   'use strict';
   const LIVE_MS = 10000;
@@ -32,10 +34,23 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
    * Show one notice. → { host, close }. `notice`: { kind: 'live' | 'attention', run, sentence, link }. `onOpen(notice)`: the owner
    * asked for the steps; `onDone(notice)`: dismissed or acted on; `onShown(notice)`: it is on screen. `isTrusted(e)` for tests.
    */
+  const boxes = typeof WeakMap === 'function' ? new WeakMap() : null;   // each toast's box, for stacking (the roots are closed)
+  function restack(doc) {
+    let bottom = 16;
+    for (const h of doc.querySelectorAll('bfp-pub-notice')) {
+      const b = boxes && boxes.get(h);
+      if (!b) continue;
+      b.style.bottom = bottom + 'px';
+      bottom += (b.offsetHeight || 64) + 8;
+    }
+  }
   function show(notice, { doc = document, isTrusted = e => !!(e && e.isTrusted === true), onOpen = () => {}, onDone = () => {}, onShown = () => {}, liveMs = LIVE_MS } = {}) {
-    const old = doc.querySelector('bfp-pub-notice');
-    if (old) old.remove();
+    for (const old of doc.querySelectorAll('bfp-pub-notice')) {
+      if (old.getAttribute('data-key') === String(notice.run || '') || (notice.kind === 'live' && old.getAttribute('data-kind') === 'live')) old.remove();
+    }
     const host = doc.createElement('bfp-pub-notice');
+    host.setAttribute('data-key', String(notice.run || ''));
+    host.setAttribute('data-kind', notice.kind === 'live' ? 'live' : 'attention');
     const shadow = host.attachShadow({ mode: 'closed' });
     const live = notice.kind === 'live';
     const link = live ? safeLink(notice.link) : '';
@@ -52,6 +67,8 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
       + '<button class="x" type="button" data-act="dismiss" aria-label="Dismiss" title="Dismiss">×</button>';
     shadow.appendChild(box);
     (doc.documentElement || doc.body).appendChild(host);
+    if (boxes) boxes.set(host, box);
+    restack(doc);
     // THE TOAST'S MODES, in one list and one field, moved only by `move`, which refuses a move TOAST_MOVES does not list:
     //   waiting  drawn on a tab that is not showing: not yet seen, its time not started
     //   shown    on screen: seen (onShown), a live one's time running
@@ -73,7 +90,7 @@ a.primary,button.primary{background:#d97757;border-color:#d97757;color:#fff}
       doc.removeEventListener('visibilitychange', onVisible);
       clearTimeout(timer);
       box.classList.add('going');
-      setTimeout(() => host.remove(), 400);
+      setTimeout(() => { host.remove(); restack(doc); }, 400);
       if (done) onDone(notice);
     };
     // a click counts only when it is the owner's AND lands on this box (not on something the page laid over it); the keyboard

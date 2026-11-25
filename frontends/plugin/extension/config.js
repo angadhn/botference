@@ -193,8 +193,9 @@
     // (the plane on any thread FIRST asks the companion for its run: a live one is shown as it is, never the scope choice)
     closed: Object.freeze(['choosing', 'waiting', 'working', 'confirming', 'running', 'done', 'problem']),
     choosing: Object.freeze(['starting', 'problem', 'closed']),
-    // (…or back to choosing, when the companion answers with a question: a post changed outside the plugin)
-    starting: Object.freeze(['working', 'problem', 'choosing']),
+    // (…or back to choosing, when the companion answers with a question: a post changed outside the plugin; or closed, when the press
+    // was accepted into the publish queue)
+    starting: Object.freeze(['working', 'problem', 'choosing', 'closed']),
     waiting: Object.freeze(['closed', 'working', 'confirming', 'running', 'done', 'problem']),
     working: Object.freeze(['confirming', 'running', 'problem', 'closed']),
     confirming: Object.freeze(['running', 'problem', 'closed']),
@@ -229,7 +230,10 @@
   // and acts, whatever happened before it (a retry, a continue, a reload, another tab).
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto'], reply: 'json' }),
+    // (`look`: 'yes' when the owner opens a post the queue set aside for their look; the companion queues or runs every press)
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto', 'look'], reply: 'json' }),
+    // a post waiting in the publish queue is taken out (nothing of it was written)
+    'queue-cancel': Object.freeze({ method: 'POST', path: '/blyg-publish/queue-cancel', offer: 'none', body: ['entry'], reply: 'json' }),
     // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
     earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
@@ -301,31 +305,94 @@
     const k = pubKeyOfStep(run.failed_step, run) || 'note';
     return 'Something went wrong while ' + PUB_STEP_DOING[k] + '.';
   }
-  // ---- the worker's watch over a run publishing in the background (background.js) --------------------------------------------
-  // ONE named state (persisted with the watched run id, so a suspended and restarted worker carries on), moved only by pubWatchMove:
-  //   idle      nothing is being watched, nothing to tell
-  //   watching  a run the owner set going is under way: the toolbar badge shows a dot; the end is learned from the owner-only event
-  //             stream, or by a bounded poll (the worker's keep-alive alarm) while watching
-  //   notice    the run ended and the owner has not seen how yet: a tick (live) or "!" (needs attention) on the badge, and a toast
-  //             on the tab the owner is looking at (or the next page that opens). A live notice is spent when it is shown; one that
-  //             needs attention when the owner dismisses it or opens the steps from it.
+  // ---- the worker's watch over the PUBLISH QUEUE (background.js) -----------------------------------------------------------------
+  // ONE named state (persisted, so a suspended and restarted worker carries on), moved only by pubWatchMove's table:
+  //   idle      nothing is under way, nothing to tell
+  //   watching  posts are under way (queued, waiting for a fill, or running): the toolbar badge shows how many; each one that goes
+  //             live or needs the owner is told as it happens (learned from the owner-only event stream, or the keep-alive alarm's
+  //             bounded poll while watching)
+  //   notice    nothing is under way any more and something told is not seen yet: a tick (all live) or "!" on the badge
+  // What is told (data, not a mode): `notices`, the toasts not yet seen (a live one is spent when shown; one needing attention when
+  // dismissed or acted on); `told`, the keys already told (each outcome is told once); `fold`, the live posts told within the last
+  // minute, folded into one toast ("3 posts are live").
   const PUB_WATCH_STATES = Object.freeze(['idle', 'watching', 'notice']);
   const PUB_WATCH_MOVES = Object.freeze({
-    watch: Object.freeze(['idle', 'watching', 'notice']),   // a run was set going (a new run replaces an unseen notice)
-    end: Object.freeze(['watching']),                      // the watched run ended: tell the owner (once: only from watching)
-    quiet: Object.freeze(['watching']),                    // it ended with nothing to tell (cancelled, abandoned)
-    seen: Object.freeze(['notice']),                       // the owner saw it
+    watch: Object.freeze({ idle: 'watching', watching: 'watching', notice: 'watching' }),   // something is under way
+    tell: Object.freeze({ watching: 'watching', notice: 'notice' }),                       // an outcome to tell (the count may change)
+    end: Object.freeze({ watching: 'notice' }),                                            // nothing under way; something unseen
+    quiet: Object.freeze({ watching: 'idle' }),                                            // nothing under way; nothing unseen
+    spend: Object.freeze({ watching: 'watching', notice: 'notice' }),                      // one toast seen, others still unseen or under way
+    seen: Object.freeze({ notice: 'idle' }),                                               // the last unseen toast seen
   });
-  const PUB_WATCH_TO = Object.freeze({ watch: 'watching', end: 'notice', quiet: 'idle', seen: 'idle' });
+  const PUB_FOLD_MS = 60000;
   function pubWatchMove(w, move, patch) {
     const from = (w && w.state) || 'idle';
     if (!PUB_WATCH_MOVES[move]) throw new Error('publish watch: no such move ' + move);
-    if (PUB_WATCH_MOVES[move].indexOf(from) === -1) throw new Error('publish watch: cannot ' + move + ' from ' + from);
-    const to = PUB_WATCH_TO[move];
-    const next = { state: to, run: to === 'idle' ? '' : String((patch && patch.run) || (w && w.run) || ''), notice: to === 'notice' ? (patch && patch.notice) || null : null };
-    return next;
+    const to = PUB_WATCH_MOVES[move][from];
+    if (!to) throw new Error('publish watch: cannot ' + move + ' from ' + from);
+    const p = patch || {};
+    const pick = (k, d) => (p[k] !== undefined ? p[k] : (w && w[k] !== undefined ? w[k] : d));
+    return { state: to, count: to === 'idle' ? 0 : Math.max(0, Number(pick('count', 0)) | 0), notices: to === 'idle' ? [] : pick('notices', []).slice(0, 10),
+      told: pick('told', []).slice(-200), fold: to === 'idle' ? null : pick('fold', null) };
   }
-  const pubWatchCan = (w, move) => !!PUB_WATCH_MOVES[move] && PUB_WATCH_MOVES[move].indexOf((w && w.state) || 'idle') !== -1;
+  const pubWatchCan = (w, move) => !!PUB_WATCH_MOVES[move] && !!PUB_WATCH_MOVES[move][(w && w.state) || 'idle'];
+  /** Add one outcome to what is to be told: a live post folds into the live toast of the last minute ("3 posts are live", the link
+   *  to the newest post); one needing attention is a toast of its own. → { notices, fold }. */
+  function pubWatchAdd(w, n, now) {
+    const notices = ((w && w.notices) || []).filter(x => !(n.kind === 'attention' && x.key === n.key));
+    let fold = (w && w.fold) || null;
+    if (n.kind === 'live') {
+      fold = fold && now - fold.since < PUB_FOLD_MS ? { since: fold.since, count: fold.count + 1, key: fold.key } : { since: now, count: 1, key: 'live:' + now };
+      const live = { key: fold.key, run: fold.key, kind: 'live', sentence: fold.count === 1 ? 'Your post is live.' : fold.count + ' posts are live.', link: n.link || '' };
+      const at = notices.findIndex(x => x.key === fold.key);
+      if (at >= 0) notices[at] = live; else notices.push(live);
+    } else notices.push({ key: n.key, run: n.key, kind: 'attention', sentence: n.sentence, link: '' });
+    return { notices: notices.slice(-10), fold };
+  }
+  // ---- the publish QUEUE, in the owner's words (blyg-queue.mjs on the companion) ---------------------------------------------------
+  const PUB_ENTRY_STATES = Object.freeze(['queued', 'looking', 'filling', 'needs_look', 'running', 'published', 'failed', 'cancelled']);
+  const PUB_UNDER_WAY = Object.freeze(['queued', 'looking', 'filling', 'running']);
+  const PUB_CANCELLABLE = Object.freeze(['queued', 'looking', 'filling', 'needs_look']);
+  // why a post was set aside for the owner's look (blyg-queue NEEDS_LOOK_WHY)
+  const PUB_LOOK_WHY = Object.freeze({
+    'left-out': 'A comment that was in your post is no longer on this page, so it would be left out.',
+    outside: 'Your post was changed outside the plugin since it was last published from here, and those changes would be lost.',
+    'earlier-failed': 'An earlier post from this page did not go out, so this one waits for you.',
+  });
+  const pubUnderWay = q => ((q && q.entries) || []).filter(e => PUB_UNDER_WAY.indexOf(e.state) !== -1).length;
+  /** The ONE sentence for a queued post that failed: the companion's plain sentence, else the run's (pubFailureOf). */
+  function pubEntrySay(e) {
+    const f = (e && e.failure) || {};
+    if (f.say) return String(f.say);
+    if (/^interrupted_/.test(String(f.mode || ''))) return 'The companion stopped while your post was being published.';
+    if (f.mode === 'abandon_failed') return 'Your site could not give this publish up.';
+    return pubFailureOf({ failed_step: f.step || 'publish', failure: f.line || '', quotes: !!f.quotes });
+  }
+  /** The thread's quiet line for its post in the queue. */
+  function pubEntryLine(e, q) {
+    if (!e) return '';
+    if (e.state === 'queued' || e.state === 'looking') {
+      if (q && q.state === 'paused') return 'queued · waits until the post that went wrong is dealt with';
+      return (e.state === 'looking' ? 'queued for your look · ' : 'queued · ') + (e.ahead > 0 ? e.ahead + ' ahead' : 'next');
+    }
+    return { filling: 'queued · waiting for the agent’s passage', needs_look: 'needs your look', running: 'publishing…', published: 'published',
+      failed: 'failed: ' + pubEntrySay(e), cancelled: 'cancelled' }[e.state] || '';
+  }
+  /** What is told about a post in the queue, once (its `key`): { key, kind: 'live' | 'attention', sentence, link } or null. `run`: the
+   *  run as last heard (a post the QUEUE started that now waits at the look is told; one the owner started in the dialog is not). */
+  function pubEntryNotice(e, run) {
+    if (!e || !e.id) return null;
+    if (e.state === 'published') {
+      let link = '';
+      try { const u = new URL(String((e.result && e.result.address) || '')); if ((u.protocol === 'https:' || u.protocol === 'http:') && !u.username && !u.password) link = u.href; } catch (_) { link = ''; }
+      return { key: e.id + ':published', kind: 'live', sentence: 'Your post is live.', link };
+    }
+    if (e.state === 'failed') return { key: e.id + ':failed', kind: 'attention', sentence: pubEntrySay(e) + (e.paused_by ? ' Your other posts wait until you deal with it.' : ''), link: '' };
+    if (e.state === 'needs_look') return { key: e.id + ':look:' + e.at, kind: 'attention', sentence: 'One post needs your look before it is published. ' + (PUB_LOOK_WHY[e.why] || ''), link: '' };
+    if (e.state === 'running' && e.started_by === 'queue' && run && run.id === e.run && pubViewOf(run.mode, run.confirm) === 'confirming') return { key: e.id + ':ready:' + e.run, kind: 'attention', sentence: 'Your post is ready for your look before it is published.', link: '' };
+    return null;
+  }
+  const pubTellables = (q, run) => ((q && q.entries) || []).map(e => pubEntryNotice(e, run)).filter(Boolean);
   /** How a run that was going in the background ended, for the owner: { kind: 'live' | 'attention', sentence, link? } or null (still
    *  going, or ended with nothing to tell). The link is the address the COMPANION recorded for the post (http(s) only). */
   const PUB_NOTICE_KINDS = Object.freeze(['live', 'attention']);
@@ -343,7 +410,8 @@
     return null;
   }
   /** The toolbar badge's mark for the watch, or '' (the page's own count shows then). */
-  const pubBadgeMark = w => (!w || w.state === 'idle' ? '' : w.state === 'watching' ? '•' : (w.notice && w.notice.kind === 'live' ? '✓' : '!'));
+  const pubBadgeMark = w => (!w || w.state === 'idle' ? '' : w.state === 'watching' ? (w.count > 0 ? String(w.count) : '•')
+    : ((w.notices || []).every(n => n.kind === 'live') ? '✓' : '!'));
   /** How long "Building and checking your site" takes: quick (the guard has the site's quick flag), or about N minutes from the last
    *  full run recorded for this site, or nothing when none is recorded (never a guess). */
   function pubPaceWords(run) {
@@ -902,7 +970,8 @@
     RESPONSE_MODES, responseOf,
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
-    PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
+    PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, pubWatchAdd, PUB_FOLD_MS, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark,
+    PUB_ENTRY_STATES, PUB_UNDER_WAY, PUB_CANCELLABLE, PUB_LOOK_WHY, pubUnderWay, pubEntrySay, pubEntryLine, pubEntryNotice, pubTellables, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
     PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE, PUB_EXTENTS, PUB_EXTENT_MOVES, pubExtentMove,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     HOSTED_HUBS_MAX, hostedHubsOf,
