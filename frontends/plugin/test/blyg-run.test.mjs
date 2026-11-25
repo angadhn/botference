@@ -1325,21 +1325,27 @@ test('the log keeps the last 50 runs', async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('THE AGENT-TEXT RULE: a post with any agent-written or pasted passage is always shown first, even with confirm never', async t => {
+test('THE LOOK POLICY (2026-11-25): with confirm never an agent-written passage publishes straight in its box (the reason is recorded); only LOOK_FORCED stops it', async t => {
   const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note', '--quick'] } }); t.after(rig.done);
   const withGap = { id: 't1', quote: 'q', blyg: stamp(), msgs: [mine('Mine. /tk(say it)', { gaps: [{ id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said.', model: 'claude-x', at: '2026-11-24T10:00:00Z' }] })] };
   const b = boot(rig, { page: blygPage([withGap]) });
   const r = await b.start('t1', 'one', 'never');
   assert.ok(r.ok, r.error);
-  assert.deepEqual([r.view.confirm, r.view.review], ['always', 'agent-text']);
-  await until(() => b.mode() === 'planned', 'planned');
-  await sleep(200);
-  assert.equal(b.mode(), 'planned', 'it waits for the owner');
-  assert.deepEqual(rig.calls().map(c => c.step), ['plan']);
+  assert.deepEqual([r.view.confirm, r.view.review, r.view.reasons], ['never', 'none', ['agent-text']], 'no look forced; why is recorded');
+  await until(() => b.mode() === 'published', 'published');
+  assert.deepEqual(rig.calls().map(c => c.step), ['plan', 'apply', 'publish']);
   assert.deepEqual(b.pub.current().reading.map(p => p.kind), ['words', 'agent', 'quote'], 'the box is in the preview');
   assert.deepEqual(b.pub.current().reading[1], { kind: 'agent', by: 'ai', name: 'Written by an AI model', text: 'Said.' }, 'the box says who in words, never a name');
   assert.deepEqual(b.pub.current().reading.map(p => p.kind), ['words', 'agent', 'quote'], 'the box stands on its own between the words and the quote');
-  assert.deepEqual([R.reviewFor('never'), R.reviewFor('always'), R.reviewFor('never', { agentText: true })], [{ confirm: 'never', review: 'none' }, { confirm: 'always', review: 'setting' }, { confirm: 'always', review: 'agent-text' }]);
+  assert.deepEqual([R.reviewFor('never'), R.reviewFor('always'), R.reviewFor('never', { agentText: true }), R.reviewFor('always', { agentText: true })],
+    [{ confirm: 'never', review: 'none', reasons: [] }, { confirm: 'always', review: 'setting', reasons: [] }, { confirm: 'never', review: 'none', reasons: ['agent-text'] },
+      { confirm: 'always', review: 'setting', reasons: ['agent-text'] }]);
+  // THE ONE POLICY: only what would lose something already published without the owner asking forces a look under one click
+  assert.deepEqual(R.LOOK_FORCED, ['left-out', 'outside']);
+  for (const f of ['agentText', 'linkStub', 'further']) assert.equal(R.reviewFor('never', { [f]: true }).review, 'none', f);
+  assert.deepEqual(R.reviewFor('never', { leftOut: true, agentText: true }), { confirm: 'always', review: 'left-out', reasons: ['agent-text', 'left-out'] });
+  assert.deepEqual(R.reviewFor('never', { outside: true }), { confirm: 'always', review: 'outside', reasons: ['outside'] });
+  assert.deepEqual(R.reviewFor('never', { asked: true }), { confirm: 'always', review: 'asked', reasons: [] }, 'the owner asked to look at a set-aside post');
   assert.deepEqual([b.pub.current().pace, R.paceOf(['--only-note']), b.pub.current().full_minutes], ['quick', 'full', null], 'quick with the site\'s quick flag; no guess at minutes when none is recorded');
 });
 
@@ -2116,28 +2122,30 @@ test('A LONE LINK, kept: a new version keeps the response target the post was pu
   assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8')), 'never gains a target on an edit');
 });
 
-test('REVIEW FIXES: a lone-link response and a header republish that adds held-back messages always stop for the owner\'s look; the link checks are concurrent, bounded, and the run is held while they run', async t => {
-  assert.ok(R.REVIEW_REASONS.includes('link-stub') && R.REVIEW_REASONS.includes('further'));
-  assert.deepEqual(R.reviewFor('never', { linkStub: true }), { confirm: 'always', review: 'link-stub' });
-  assert.deepEqual(R.reviewFor('never', { further: true }), { confirm: 'always', review: 'further' });
+test('A lone-link response and a header republish that adds held-back messages publish straight with one click (the reason recorded, 2026-11-25); the link checks are concurrent, bounded, and the run is held while they run', async t => {
+  assert.ok(R.REVIEW_FACTS.includes('link-stub') && R.REVIEW_FACTS.includes('further'));
+  assert.deepEqual(R.reviewFor('never', { linkStub: true }), { confirm: 'never', review: 'none', reasons: ['link-stub'] });
+  assert.deepEqual(R.reviewFor('never', { further: true }), { confirm: 'never', review: 'none', reasons: ['further'] });
   const rig = makeRig({ discard: true, confirm: 'never', extra: {} }); t.after(rig.done);
   const home = { ...rig.home, confirm: 'never', plan_guard: ['--only-note'], commands: { ...rig.home.commands, ...EDIT(rig) } };
   const FRIEND = 'https://friend.example.test/blyg/';
   const FID = '7c9wk2mhq0v3xj8tn5rzfd41bg';
   const FPOST = `${FRIEND}t/${FID}/`;
   const yes = { status: 'blyg', item: { origin: FRIEND, id: FID, version: 3, page: FPOST, author: 'A Friend' } };
-  // 2. one click, a lone link: stops at planned (link-stub)
+  // 2. one click, a lone link: publishes straight, the reason recorded
   const page = { url: 'https://news.example.test/a', title: 'A', threads: [{ id: 't1', quote: 'Q.', msgs: [mine(`See [this](${FPOST}).`, { ts: '1', channel: 'drawer' })] }] };
+  const pristine = JSON.stringify(page);
   const b = boot(rig, { page, config: home, extra: { detectLink: async () => yes } });
   const r = await b.start('t1', 'one', 'never'); assert.ok(r.ok, r.error);
-  await until(() => b.mode() === 'planned', 'planned');
+  await until(() => b.mode() === 'published', 'published');
   let v = b.pub.current();
-  assert.deepEqual([v.review, v.confirm], ['link-stub', 'always'], 'one click does not send a response to a linked post unseen');
-  await b.pub.cancel({ id: v.id, token: v.token });
+  assert.deepEqual([v.review, v.confirm, v.reasons], ['none', 'never', ['link-stub']], 'one click sends a response to the one linked post');
+  // (each case below starts from a page with nothing published)
+  const fresh = () => JSON.parse(pristine);
   // 3. the run is HELD from the start's first moment: a second start while the first checks its links is refused
   let release;
   const slow = new Promise(res => { release = res; });
-  const c = boot(rig, { page, config: home, extra: { detectLink: () => slow.then(() => yes) } });
+  const c = boot(rig, { page: fresh(), config: home, extra: { detectLink: () => slow.then(() => yes) } });
   const first = c.start('t1', 'one', 'never');
   await sleep(20);
   assert.equal(c.mode(), 'checking', 'held before any await');
@@ -2145,27 +2153,25 @@ test('REVIEW FIXES: a lone-link response and a header republish that adds held-b
   assert.deepEqual([second.ok, second.status], [false, 409]);
   release();
   assert.ok((await first).ok);
-  await until(() => c.mode() === 'planned', 'planned c');
-  v = c.pub.current(); await c.pub.cancel({ id: v.id, token: v.token });
+  await until(() => c.mode() === 'published', 'published c');
   // …concurrently: three links of 60 ms each are all answered within a bound of 150 ms (one after another would take 180)
   const three = { url: 'https://news.example.test/b', title: 'B', threads: [{ id: 't1', quote: 'Q.', msgs: [mine(`[a](${FPOST}) [b](https://n.example.test/1) [c](https://n.example.test/2)`, { ts: '1', channel: 'drawer' })] }] };
   const d = boot(rig, { page: three, config: home, extra: { linkCheckMs: 150, detectLink: url => sleep(60).then(() => (url === FPOST ? yes : { status: 'not-a-blyg' })) } });
-  await d.start('t1', 'one', 'never'); await until(() => d.mode() === 'planned', 'planned d');
+  await d.start('t1', 'one', 'never'); await until(() => d.mode() === 'published', 'published d');
   v = d.pub.current();
   assert.match(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8'), /blyg_stub_of:/);
-  await d.pub.cancel({ id: v.id, token: v.token });
   // …and past the bound: unverifiable, no target (and the run went on)
-  const e = boot(rig, { page, config: home, extra: { linkCheckMs: 50, detectLink: () => sleep(400).then(() => yes) } });
+  const e = boot(rig, { page: fresh(), config: home, extra: { linkCheckMs: 50, detectLink: () => sleep(400).then(() => yes) } });
   await e.start('t1', 'one', 'never'); await until(() => ['planned', 'published'].includes(e.mode()), 'e');
   v = e.pub.current();
   assert.ok(!/blyg_stub_of/.test(fs.readFileSync(path.join(rig.top, recOf(v).note_rel), 'utf8')), 'a link not checked in time sets no target');
   await until(() => e.mode() === 'published', 'e published (one click, nothing to look at)');
-  // 4. a post published "up to here", then the header with one click: stops for the look (further)
+  // 4. a post published "up to here", then the header with one click: the whole thread goes out (further, recorded)
   const up = { url: 'https://news.example.test/c', title: 'C', threads: [{ id: 't1', quote: 'Q.', msgs: [mine('One.', { ts: '1', channel: 'drawer' }), mine('Two.', { ts: '2', channel: 'drawer' })] }] };
   const f = boot(rig, { page: up, config: home, extra: { detectLink: async () => ({ status: 'not-a-blyg' }) } });
   await f.pub.start({ page: f.pages.get(up.url), threadId: 't1', scope: 'one', shown: 'never', extent: 'upto', upto: '1' });
   await until(() => f.mode() === 'published', 'f published');
-  await f.start('t1', 'one', 'never'); await until(() => f.mode() === 'planned', 'f planned');
+  await f.start('t1', 'one', 'never'); await until(() => f.mode() === 'published' && f.pub.current().version === 2, 'f v2 published');
   v = f.pub.current();
-  assert.deepEqual([v.review, v.confirm, v.further], ['further', 'always', 1]);
+  assert.deepEqual([v.review, v.confirm, v.further, v.reasons], ['none', 'never', 1, ['further']]);
 });

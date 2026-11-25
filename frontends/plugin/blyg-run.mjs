@@ -29,8 +29,9 @@
 //                        already ended by hand). The owner may try abandon again, or FORGET the run here: a move to `abandoned`
 //                        that runs nothing on the site and says plainly what the site may still hold.
 //
-// ONE RUN AT A TIME for the whole companion: while any run is not finished a second
-// request is REFUSED (never queued). A run survives a drawer reload (it lives here and
+// ONE RUN AT A TIME for the whole companion: while any run is not finished a second start
+// is refused here; the owner's presses meanwhile wait in the publish QUEUE (blyg-queue.mjs), which
+// feeds this runner one entry at a time. A run survives a drawer reload (it lives here and
 // in a file, not in the page) and a companion restart turns every unfinished run into
 // `interrupted`, except a `failed` one (nothing of it was running; it keeps its retry and abandon).
 //
@@ -180,20 +181,32 @@ export const LINK_CHECK_MS = 15000;
 export const UPTO_BACK_SAY = 'Your post already includes later messages of this thread, so it cannot be published only up to this one. To take words out of your post, delete the message.';
 export const UPTO_GONE_SAY = 'That message is not one of yours in this comment any more, so nothing was started.';
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
-/** Why a run stops at `planned` for the owner's look (`run.review`), one of:
+/** WHY A RUN STOPS AT `planned` FOR THE OWNER'S LOOK, or why it does not. The facts a post can carry (each recorded on the run as
+ *  `reasons`, so the dialog and the log say why a look was or was not asked):
+ *    agent-text   a passage an agent wrote, or the owner pasted from an agent's tool (published in its marked box)
+ *    link-stub    a new post made a response to the one blyg post it links to
+ *    further      a whole-thread republish now includes messages a post "up to here" held back
+ *    left-out     a new version would leave out a comment the post had (its thread is gone from the page)
+ *    outside      a new version would replace a note changed outside the plugin (asked before anything is written: OUTSIDE_SAY)
+ *  THE POLICY (the owner, 2026-11-25): with confirm 'never' a look is forced ONLY when something already published would be lost
+ *  without the owner having asked for it: LOOK_FORCED (left-out, outside). The other facts publish straight. With confirm
+ *  'always' every post is looked at, as before. `run.review` is the one reason the run stopped, one of REVIEW_REASONS:
  *    setting      the owner's setting is confirm 'always'
- *    agent-text   the post holds a passage an agent wrote or the owner pasted from an agent's tool: it is ALWAYS shown first,
- *                 whatever the setting (THE AGENT-TEXT RULE)
- *    none         confirm 'never' and nothing calls for a look: the run goes straight through */
-export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'none']);
-export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false } = {}) {
-  // a new version that would leave out a comment the post had (its thread is gone from the page) never goes out unseen
-  if (leftOut) return { confirm: 'always', review: 'left-out' };
-  // …nor one that now includes messages a post "up to here" held back, nor a post made a response because of a link it holds
-  if (further) return { confirm: 'always', review: 'further' };
-  if (linkStub) return { confirm: 'always', review: 'link-stub' };
-  if (agentText) return { confirm: 'always', review: 'agent-text' };
-  return setting === 'never' ? { confirm: 'never', review: 'none' } : { confirm: 'always', review: 'setting' };
+ *    left-out     (forced, above)
+ *    asked        the owner asked to look at a post the queue had set aside (blyg-queue)
+ *    none         confirm 'never' and nothing forces a look: the run goes straight through
+ *  (agent-text, further and link-stub stay in the list: a record written before 2026-11-25 may name them.) */
+export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside']);
+export const LOOK_FORCED = Object.freeze(['left-out', 'outside']);
+export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'outside', 'asked', 'none']);
+export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, asked = false } = {}) {
+  const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside };
+  const reasons = REVIEW_FACTS.filter(k => has[k]);
+  const forced = LOOK_FORCED.find(k => has[k]);
+  if (forced) return { confirm: 'always', review: forced, reasons };
+  if (setting !== 'never') return { confirm: 'always', review: 'setting', reasons };
+  if (asked) return { confirm: 'always', review: 'asked', reasons };
+  return { confirm: 'never', review: 'none', reasons };
 }
 /** How long the build-and-check step is: `quick` when the guard carries the site's quick flag, else `full`. */
 export const PACES = Object.freeze(['quick', 'full']);
@@ -484,6 +497,7 @@ export function viewOf(run) {
   const v = {
     id: run.id, token: run.token, mode: run.mode, kind: RUN_KINDS.includes(run.kind) ? run.kind : 'new', version: run.version || 1,
     confirm: run.confirm || 'always', review: REVIEW_REASONS.includes(run.review) ? run.review : (run.confirm === 'never' ? 'none' : 'setting'),
+    reasons: Array.isArray(run.reasons) ? run.reasons.filter(k => REVIEW_FACTS.includes(k)) : [],
     at: run.at, scope: run.scope, title: run.title, permalink: run.permalink, thread_ids: run.thread_ids, page_url: run.page_url,
     reading: run.reading || [], changelog: run.changelog || '', notify: run.notify || '', quotes: !!run.quotes, pace: PACES.includes(run.pace) ? run.pace : 'full',
     full_minutes: Number.isFinite(run.full_minutes) ? run.full_minutes : null,
@@ -566,6 +580,8 @@ export function createPublisher(deps) {
     file: deps.file, now: deps.now ? () => deps.now().toISOString() : nowIso,
     onChange: (run, from) => {
       log.write(run.id, { ev: 'move', from, to: run.mode });
+      // the publish queue (blyg-queue.mjs) hears every move: it starts the next entry when a run ends
+      if (typeof deps.onMove === 'function') { try { deps.onMove(run, from); } catch { /* the queue says so itself */ } }
       // (a run held while a start looks has no id yet: '')
       try { deps.broadcast({ type: 'blyg-publish', run: { id: run.id || '', mode: run.mode } }); } catch { /* nobody listening */ }
     },
@@ -746,18 +762,22 @@ export function createPublisher(deps) {
     pushStep(s.record);
     if (!s.ok) return failWith('failed_plan', s);
     book.move('planned', { steps: book.run.steps });
-    // no look asked for (reviewFor: confirm 'never' and no agent text): choosing Publish as blyg was the publish: carry straight on
+    // no look asked for (reviewFor: confirm 'never' and nothing LOOK_FORCED names): choosing Publish as blyg was the publish: carry straight on
     if (book.run.confirm === 'never') return runFrom('apply');
     return book.run;
   }
 
   /** Start a run (async: the pre-flight runs without holding the companion). A refusal after `checking` began goes back to idle. */
+  // `id`: the run's id, when the queue chose it (so its entry names the run before the first move is announced). `unattended`: a
+  // queued press the owner has moved on from (blyg-queue): whatever would stop the run for the owner's look stops it BEFORE anything
+  // is written, answered `park` (a REVIEW_REASONS name, or `outside`), so the queue can set it aside and go on. `look`: the owner asked
+  // to look at a post the queue set aside: the run stops at `planned` for them (review `asked` when nothing else calls for it).
   async function start(args) {
     if (RUN_LIVE.includes(book.mode)) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
     // the last run's step process, looked at afresh: a run forgotten while its step was still going must not get a second one beside it
     if (book.run.child && childNow(true) === 'alive') return fail(409, 'The earlier step is still running: stop it first.');
     let r;
-    const id = crypto.randomBytes(8).toString('hex');
+    const id = typeof args.id === 'string' && /^[0-9a-f]{16}$/.test(args.id) ? args.id : crypto.randomBytes(8).toString('hex');
     // THE RUN IS HELD from here, before the first await (the pre-flight, the link checks): a second start meanwhile is refused
     if (!canMove(book.mode, 'checking')) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
     const before = book.run;
@@ -771,7 +791,7 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '' }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', unattended = false, look = false }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     if (!EXTENTS.includes(extent)) return fail(400, `extent must be one of ${EXTENTS.join(', ')}`);
     if (extent === 'upto' ? !upto : !!upto) return fail(400, 'upto is the message a post goes up to, and only with extent upto');
@@ -811,15 +831,15 @@ export function createPublisher(deps) {
     }
     // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
     // first when one click publishes, or the reverse)
-    if (shown !== S.confirm) return fail(409, `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${S.confirm}” is in force (${S.confirm === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`);
+    if (shown !== S.confirm) return fail(409, settingChangedSay(shown, S.confirm));
     if (adding) {
       const earlier = earlierPostFor(page, here, S);
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, unattended, look });
     }
-    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here }) : startNew({ page, threads, at, here, scope, S, id, cut });
+    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, unattended, look }) : startNew({ page, threads, at, here, scope, S, id, cut, unattended, look });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -939,7 +959,7 @@ export function createPublisher(deps) {
     }
     return found.size === 1 ? [...found.values()][0] : null;
   }
-  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' } }) {
+  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' }, unattended = false, look = false }) {
     const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
@@ -962,6 +982,10 @@ export function createPublisher(deps) {
     const linkStub = !stubOfPage(page) && !(first.sources || []).length ? await lonePostLink(linkTargetsOf(picked, points), id) : null;
     if (linkStub) first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points, linkStub });
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
+    // EVERY REASON TO LOOK IS KNOWN HERE, before the note is written: a queued press whose look is forced writes nothing and is set
+    // aside (a new post has none of LOOK_FORCED; the check stays so the one policy is read in one place)
+    { const ahead = reviewFor(S.confirm, { agentText: (first.generated || []).length > 0, linkStub: !!linkStub, asked: look });
+      if (unattended && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     const base = slugOf(first.title, { date });
     let rendered = null;
     let name = '';
@@ -989,13 +1013,13 @@ export function createPublisher(deps) {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o644);
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
     } catch (e) { return fail(409, e && e.code === 'EEXIST' ? 'A note of that name appeared meanwhile; try again.' : 'Could not write the note.'); }
-    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
+    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, look, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
       ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, unattended = false, look = false }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     // THE POINTS: as recorded, with the chosen thread's moved (only forward) or, from the header, taken to the end
     const points = { ...(pub.points && typeof pub.points === 'object' ? pub.points : {}) };
@@ -1041,6 +1065,8 @@ export function createPublisher(deps) {
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
     if (rendered.text === before) return fail(409, 'Nothing has changed since you published this.');
     // CHANGED OUTSIDE THE PLUGIN: asked first, always; nothing is written until the owner answers `replace`
+    // (the policy says so: `outside` is one of LOOK_FORCED; a queued press is set aside with nothing written)
+    if (note.outside && outside !== 'replace' && unattended && reviewFor(S.confirm, { outside: true }).review === 'outside') return parked('outside');
     if (note.outside && outside !== 'replace') {
       log.write(id, { ev: 'note', text: 'the note was changed outside the plugin since it was last published from here: the owner is asked' });
       return { ...fail(409, OUTSIDE_SAY), outside: { say: OUTSIDE_SAY, lost: linesLost(before, rendered.text) } };
@@ -1049,6 +1075,8 @@ export function createPublisher(deps) {
     // (replacing an outside edit is a change even when the comments are as they were published)
     if (!changelog && note.outside) changelog = 'Edited the post.';
     if (!changelog) return fail(409, 'Nothing has changed since you published this.');
+    { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: look });
+      if (unattended && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     try {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0));
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
@@ -1056,20 +1084,20 @@ export function createPublisher(deps) {
     // who is told: only a post this version newly quotes or answers (the site sends a mention for a NEW relation only)
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
-    return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit',
+    return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', look,
       version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
         extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
-  function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra }) {
+  function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, look: asked = false }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub) });
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub), asked });
     log.write(id, { ev: 'run', id, kind, version, settings_fp: fingerprint(S), page_url: page.url, scope, note_rel: rel, permalink: rendered.permalink,
-      confirm: look.confirm, review: look.review, changelog: (extra && extra.changelog) || '' });
+      confirm: look.confirm, review: look.review, reasons: look.reasons, changelog: (extra && extra.changelog) || '' });
     const run = book.move('drafted', {
       id, token: crypto.randomBytes(16).toString('hex'), kind, version,
       page_url: page.url, thread_ids: picked.map(t => t.id), scope, title: rendered.title, slug, permalink: rendered.permalink,
-      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), settings_fp: fingerprint(S), confirm: look.confirm, review: look.review, steps: [],
+      note_rel: rel, note_text: rendered.text, note_sha: sha(rendered.text), settings_fp: fingerprint(S), confirm: look.confirm, review: look.review, reasons: look.reasons, steps: [],
       reading: readingOf(rendered.text, rendered.generated), notify: rendered.notify || '', quotes: (rendered.sources || []).length > 0,
       snapshot: rendered.snapshot, pace: paceOf(S.plan_guard), full_minutes: fullMinutesFor(S.top),
       preview_url: previewUrlFor(S.preview_url, { permalink: rendered.permalink, slug, id: (rendered.permalink || '').split('/').filter(Boolean).pop() || '' }),
@@ -1308,4 +1336,7 @@ export function createPublisher(deps) {
 
   return { book, log, start, earlierOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
 }
+// A QUEUED PRESS WHOSE LOOK IS FORCED (LOOK_FORCED) is answered with the reason and nothing written (blyg-queue sets it aside).
+const parked = reason => ({ ok: false, status: 409, park: reason, error: 'This post needs your look before it is published.' });
+export const settingChangedSay = (shown, inForce) => `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${inForce}” is in force (${inForce === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`;
 const LIQUID_SAY = 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.';
