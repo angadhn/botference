@@ -155,6 +155,7 @@ From a target project root:
 ```bash
 botference init                            # Create project-local botference/ state (and register it with Discuss)
 botference site                            # Just the Discuss half, for a repo already initialised
+botference fill-gap < request.json        # One agent passage for a gap in your own draft (JSON in, JSON out; for a blog's scripts)
 botference profile                         # Profiles: whose Claude/Codex accounts and history the bots use
 botference profile add ada                 # A new profile with its own logins and history; signs it in
 botference profile use ada                 # Switch the whole machine (restarts Discuss + council)

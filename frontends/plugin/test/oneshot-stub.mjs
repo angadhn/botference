@@ -10,5 +10,8 @@ process.stdin.on('end', () => {
   if (process.env.ONESHOT_LOG) {
     fs.appendFileSync(process.env.ONESHOT_LOG, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), input, env: process.env }) + '\n');
   }
+  // codex writes its last message to the file after -o
+  const o = process.argv.indexOf('-o');
+  if (o !== -1 && process.argv[o + 1]) fs.writeFileSync(process.argv[o + 1], 'ONESHOT filled text.\n');
   process.stdout.write('ONESHOT filled text.\n');
 });

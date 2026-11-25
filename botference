@@ -84,6 +84,13 @@ if [ "${1:-}" = "blyg-home" ]; then
   exec node "${BOTFERENCE_HOME}/frontends/plugin/blyg-home-cli.mjs" "$@"
 fi
 
+# --- fill-gap: one agent passage for a gap in the owner's own draft (a blog's scripts/blyg-fill asks it). JSON in on stdin,
+# JSON out; the companion's contained one-shot, models from its settings in this folder (frontends/plugin/fill-gap-cli.mjs). ---
+if [ "${1:-}" = "fill-gap" ]; then
+  shift
+  exec node "${BOTFERENCE_HOME}/frontends/plugin/fill-gap-cli.mjs" "$@"
+fi
+
 # --- site / sites: put a project in Discuss's scope, list or revoke ---
 # One marker in the project (.botference/site.json), one line in a per-user
 # registry (~/.botference/sites.json); the companion reads both. All of it is

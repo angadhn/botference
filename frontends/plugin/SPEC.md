@@ -13531,6 +13531,19 @@ before; the form; streams; the owner's form, Bearer, SSE and WebSocket; startup 
 - Claude is not jailed (it is tool-less; whether its keychain sign-in works in a jail could be shown only by a model call).
 - A model or effort is ONE argument (`--model=<v>`, `--effort=<v>`) and never begins with `-` (store `MODEL_RE`, `EFFORT_RE`).
 
+### A gap in the owner's own draft (`botference fill-gap`, `fill-gap-cli.mjs`)
+
+For a blog's own tooling (a site that keeps agent passages beside an Obsidian draft runs it from its build scripts): JSON on
+stdin `{agent: claude|codex, instruction, context, words?, inline?, task?: gap|note}`, JSON on stdout `{text, model?, at}` (exit 0)
+or `{error}` (1: not written; 2: the request refused, nothing started). `context` is the whole draft with this gap marked
+`[GAP]`; it goes into `tkgaps.draftPrompt` as one JSON object between fresh `DATA-<24 hex>-BEGIN/END` lines, said to be data,
+after `cleanData`. `task: 'note'` asks for at most 80 words on the draft's structure or logic (the instruction is fixed by the
+command; the answer is cut at 80 words). The run is `runOneShot` exactly (no tools, minimal environment, Codex jailed,
+`GAP_LIMITS.perGapMs`, output cut at `GAP_LIMITS.outputChars`), with `agents.model[agent]` and `agents.effort[agent]` from the
+companion's `config.json` of the folder it is run in, READ ONLY (a missing file is not created; a model that fails `MODEL_RE` or
+begins with `-` is not passed). It reads nothing else, never the blog. The text is untrusted plain text: the caller escapes it.
+`PLUGIN_ONESHOT_CMD` replaces the CLI in tests (`test/fill-gap-cli.test.mjs`).
+
 ### Guests never receive a gap (`tkgaps.forGuest`)
 Always, not only until the owner acts: an answer, `/page`, and SSE/WebSocket events to anyone but the owner carry no `gaps`, and
 each gap's span in the message text is shown as "[an agent's passage]" (the instruction and pasted words included).

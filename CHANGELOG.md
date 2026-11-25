@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-25
+
+- **`botference fill-gap`: one agent passage for a gap in your own draft.** For a blog's own scripts (a site that keeps agent passages beside an Obsidian draft): JSON in on stdin (`agent`, `instruction`, `context` = the whole draft with the gap marked `[GAP]`, optional `words`, `inline`, and `task: "note"` for at most 80 words on the draft's structure or logic), JSON out (`text`, `model`, `at`, or `error`). It is the same contained one-shot as `/tk` (no tools, minimal environment, Codex jailed, 90 seconds), with the models set in the companion's settings of the folder it is run in, which it only reads. The draft goes in as quoted data and the answer is plain text for the caller to escape. It reads nothing else.
+
 ## 2026-11-23
 
 - **Hub: tick a post as read and it moves to an Archive; the Feed only shows what you have not read, and tops itself up.** *Behaviour change.* Each post has a checkbox ("Read: move to Archive"); ticking it removes the post's text and keeps a small record in the new **Archive** tab (untick brings it back, fetched again). "Mark seen" is gone (a stored *seen* post loads as *new*) and "Mark all seen" is now "Tick all shown", after a confirmation. A refresh reads further back in each blyg's index, round-robin and newest first, while fewer than `following_unread_target` (default 50, 1 to 500) posts are unread; the holding caps count unread posts only; each blyg remembers the ids you ticked, so a post never comes back as unread; when every blyg is read to its end the Feed says so. See "The Archive and the unread target" in `docs/blygger.md`.
