@@ -2775,3 +2775,5 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .pubqpage, .pubqstate { color: var(--muted) }
 .pubqrow[data-state="failed"] .pubqstate, .pubqrow[data-state="needs_look"] .pubqstate { color: var(--fg) }
 .pubqcancel { font-size: 11px; padding: 0 6px }
+.pubqpaused { margin: 4px 0 6px; color: var(--fg) }
+.pubqresume { font-size: 11px; padding: 0 6px; margin-left: 4px }

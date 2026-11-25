@@ -8415,6 +8415,7 @@ ${bubbleShellHtml()}`;
       'pub-progress': () => pubProgress(),
       'pub-close': () => pubClose(),
       'pub-queue-cancel': btn => pubQueueCancel(btn.dataset.entry),
+      'pub-queue-resume': () => pubQueueResume(),
       'export-response': () => toggleResponse(),
       'gap': (btn) => gapAction(btn),
       'gap-save': (btn) => gapSave(btn),
@@ -10799,7 +10800,8 @@ ${bubbleShellHtml()}`;
     }
     // what the footbar says when a press is queued
     function pubQueuedSay(e, replaced) {
-      const where = D.pub.queue && D.pub.queue.state === 'paused' ? 'It waits until the post that went wrong is dealt with.'
+      const where = D.pub.queue && D.pub.queue.state === 'paused_for_run' ? 'It waits until the post that went wrong is dealt with.'
+        : CFG.pubPaused(D.pub.queue) ? 'Your queue is paused: see “Publishing” above your comments.'
         : e.ahead > 0 ? (e.ahead === 1 ? 'One post is ahead of it.' : e.ahead + ' posts are ahead of it.') : 'It goes out next.';
       return (replaced ? 'Replaced your earlier press of this comment: the latest text will go out. ' : 'Queued. ') + where + ' You\'ll be told when it\'s live.';
     }
@@ -10814,7 +10816,7 @@ ${bubbleShellHtml()}`;
     function pubReasonsHtml(run) {
       const why = Array.isArray(run.reasons) ? run.reasons : [];
       return why.filter(k => PUB_REASON_SAY[k] && !(k === 'left-out' && run.left_out)).map(k => `<p class="pubquiet">${esc(PUB_REASON_SAY[k])}</p>`).join('')
-        + (run.review === 'asked' ? '<p class="pubquiet">Shown first because you asked to look at it.</p>' : '');
+        + (run.review === 'asked' ? '<p class="pubquiet">Shown first, as you asked.</p>' : '');
     }
     // THE "PUBLISHING" LIST: the queue, newest last (posts under way or set aside, and those that ended in the last half hour); a post
     // not yet running has a Cancel (nothing of it was written)
@@ -10822,11 +10824,17 @@ ${bubbleShellHtml()}`;
     function pubQueueHtml() {
       if (!D.owner || !D.pub.queue) return '';
       const now = Date.now();
-      const rows = (D.pub.queue.entries || []).filter(e => CFG.PUB_UNDER_WAY.indexOf(e.state) !== -1 || e.state === 'needs_look'
+      const Q = D.pub.queue;
+      const rows = (Q.entries || []).filter(e => CFG.PUB_UNDER_WAY.indexOf(e.state) !== -1 || e.state === 'needs_look'
         || ((e.state === 'published' || e.state === 'failed') && now - Date.parse(e.at || 0) < PUB_LIST_RECENT_MS));
-      if (!rows.length) return '';
+      const resumable = CFG.PUB_OWNER_RESUMES.indexOf(Q.state) !== -1;
+      if (!rows.length && !resumable && !Q.unreadable) return '';
       const here = D.page && D.page.url;
-      return `<div class="pubqueue" role="region" aria-label="Publishing"><div class="pubqhead">Publishing${D.pub.queue.state === 'paused' ? ' · paused' : ''}</div>`
+      // a pause the owner lifts: what is wrong, and the one button; a queue file that could not be read: said, with where it was kept
+      const pausedHtml = resumable ? `<p class="pubqpaused">${esc((Q.paused && Q.paused.say) || 'Your publish queue stopped.')} Your queued posts are kept.`
+        + ` <button class="rebtn pubqresume" data-act="pub-queue-resume" type="button">Try the queue again</button></p>` : '';
+      const unreadableHtml = Q.unreadable ? `<p class="pubqpaused">${esc(Q.unreadable.say)}</p>` : '';
+      return `<div class="pubqueue" role="region" aria-label="Publishing"><div class="pubqhead">Publishing${CFG.pubPaused(Q) ? ' · paused' : ''}</div>${pausedHtml}${unreadableHtml}`
         + rows.map(e => `<div class="pubqrow" data-state="${esc(e.state)}"><span class="pubqlabel">${esc(e.label || 'a comment')}${e.page_url !== here && e.page_title ? ` <span class="pubqpage">· ${esc(e.page_title)}</span>` : ''}</span>`
           + `<span class="pubqstate">${esc(CFG.pubEntryLine(e, D.pub.queue))}</span>`
           + (CFG.PUB_CANCELLABLE.indexOf(e.state) !== -1 ? `<button class="rebtn pubqcancel" data-act="pub-queue-cancel" data-entry="${esc(e.id)}" type="button" aria-label="cancel this post">Cancel</button>` : '')
@@ -10843,10 +10851,21 @@ ${bubbleShellHtml()}`;
       setFootNote('info', 'Cancelled: that post will not be published.');
       render();
     }
+    // "Try the queue again": the owner's trusted click (the delegated handler), in a page open in its own tab
+    async function pubQueueResume() {
+      if (!D.owner) return;
+      const framed = pubFramed(); if (framed) { setFootNote('error', framed); return; }
+      let r = null;
+      try { r = await cb('onBlygPublish')('queue-resume', {}); } catch (_) { r = null; }
+      if (!r || !r.ok) { setFootNote('error', (r && r.error) || 'The companion did not answer.'); return; }
+      pubHeard(r);
+      setFootNote('info', 'Your queue is going again.');
+      render();
+    }
     // the chip for a post waiting in the queue, set aside, or failed (a running one is told by the run's own line, below)
     function pubQueueLine(t) {
       const e = pubEntryOf(t.id);
-      if (!e || ['queued', 'looking', 'filling', 'needs_look', 'failed'].indexOf(e.state) === -1) return '';
+      if (!e || ['queued', 'filling', 'needs_look', 'giving_up', 'failed'].indexOf(e.state) === -1) return '';
       // a failure told on a thread that has gone out since (a later post) is old news
       if (e.state === 'failed' && pubPublished(t) && String(t.blyg_published.at) > String(e.at)) return '';
       const cls = e.state === 'failed' || e.state === 'needs_look' ? ' pubwarn' : '';

@@ -13966,3 +13966,48 @@ queue in the answers, queue-cancel refused to a guest, an anonymous caller, the 
 owner only; a restart gives an interrupted run up), `blygpublish-drawer` (the queued press, the chip, the list, Cancel, untrusted Cancel,
 needs your look, paused), `blygpublish-notice` (the watch table, the count, folding, a problem's own toast), `blygpublish-background`
 (look and queue-cancel forwarded, odd ones refused), `blygpublish-walk`.
+
+### Review fixes (same day): the queue's text, its file, its pauses and the look promised
+These replace what the sections above say where they differ.
+- **No entry publishes an older text of a thread.** An entry keeps ONLY the thread(s) it was pressed for (the thread, and for "this and
+  the ones above" the owner's unpublished threads above it). Every other published thread on the page is given to the run with what its
+  post was LAST PUBLISHED with: the post's record now keeps each thread's included messages (`texts`, written from `run.texts` at
+  `published`; `blyg-run publishedMsgsOf`); a record from before keeps message hashes only, and the thread's messages are used only when
+  they still match them. When that text cannot be known (no record; a published message changed and not pressed again) the entry is set
+  aside (`needs_look`, `unknown-text`). Never the drawer's unpressed text, never an older press. A replaced press moves to the BACK of
+  the queue (it is a press made now). Pinned by the reviewer's scenario (x1, then x2, then x1 again) and its mirror.
+- **Where the owner is, one value.** The runner takes `presence`, one of `PRESENCES` (`here` | `away` | `asked_to_look`), never two
+  flags; anything else is refused. The queue keeps, per entry, `presence` (`away` | `promised_look` | `asked_to_look`): the look promised
+  at the press. An entry pressed under "see it first" is ALWAYS looked at, whatever the setting says when its turn comes (the stricter
+  of the two applies). The `looking` state is gone: an entry the owner asked to look at is `queued` and goes first.
+- **Refusals about the site pause, they do not fail.** A start refusal is `about` `entry` or `site` (`REFUSAL_ABOUT`): a failed
+  pre-flight, a broken setting, settings changed during the check, an earlier step still running, the companion's own error. A `site`
+  refusal puts the entry back in its place and pauses the queue (`paused_for_site`) with that sentence; the owner's "Try the queue again"
+  (`POST /blyg-publish/queue-resume`, op `queue-resume`, a drawer button) or their next press resumes it. Only refusals about the post
+  fail it.
+- **The queue's states**: `running` | `paused_for_run` | `paused_for_site` | `paused_for_error` (`QUEUE_STATES`, `moveQueue`), with
+  `paused: { say, run, entry, at }`. `OWNER_RESUMES`: the site and error pauses.
+- **Nothing is swallowed.** Each entry read from the file is checked (`entryProblem`: its state, presence, args, snapshot, run id): one
+  that fails is shown `failed` with `ENTRY_UNREADABLE_SAY` and the queue goes on. An entry that throws when its turn comes is `failed`
+  with `ENTRY_BROKE_SAY`. Anything else unexpected in the pump, the fill check or following a run pauses the queue
+  (`paused_for_error`, `QUEUE_BROKE_SAY`) and is told; never an idle runner with posts queued and nothing said.
+- **An unreadable queue file is kept** (the rule of `fsjson.mjs`): it is moved aside as `blyg-publish-queue.unreadable-<time>.json`
+  (when it cannot be moved, nothing is ever written over it), the loud warning is printed, the queue starts empty, and the owner is told
+  in the drawer's Publishing list and by a notice where the file was kept (`queue.unreadable`; the path only to the owner on this
+  machine).
+- **Giving a run up is one recorded step**: entry state `giving_up` is recorded before the abandon starts; the run's `abandoned` moves it
+  to `failed`; a failed or refused abandon fails it and pauses the queue on that run; a restart finds `giving_up` and finishes it.
+- **A run the owner is watching is theirs**: a run THEY started from the dialog that stops for their look (`started_by: owner`, the
+  run's `confirm` `always`) is not given up by itself on failure: Try again / Start over as before, and the queue waits on it
+  (`paused_for_run`). One-click and queued runs are given up as above.
+- **The look's wait for an agent's passage** applies to every entry, a look promised or asked for included.
+- **The notice of a press that ended before its answer came back** is never taken for old news: the worker leaves the entry and the run
+  the act was about out of what it treats as already told, and looks once.
+- **What the queue view sends a remote owner**: every sentence (an entry's `failure.say` and `failure.line`, the pause's `say`, the
+  unreadable notice) scrubbed of paths as the run view is; the start's own error text on an exception is a fixed sentence (the detail
+  goes to the run's log).
+Tests: `blyg-queue` (the scenario and its mirror; a malformed entry; a pause for an error and Try the queue again; an unreadable file kept;
+a promised look kept after the setting changed; a site refusal pausing and resumed by the owner and by a press; giving up finished after a
+restart; a watched run not given up; a look waiting for its passage; one presence), `blyg-publish-server` (queue-resume refused to guests,
+the own page and a form; the watched run waits; an interrupted owner's run after a restart), `blygpublish-drawer` (paused for the site,
+Try the queue again), `blygpublish-notice` (the race; the queue's own notices), `blyg-run` (the texts kept).

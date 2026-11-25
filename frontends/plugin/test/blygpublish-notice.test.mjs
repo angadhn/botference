@@ -122,7 +122,7 @@ await test('the watch: one named state, one move function, illegal moves refused
   assert.equal(CFG.pubEntryNotice({ id: 'e', state: 'queued' }), null);
   assert.equal(CFG.pubEntryNotice({ id: 'e', state: 'running', started_by: 'queue', run: 'r' }, { id: 'r', mode: 'planned', confirm: 'always' }).sentence, 'Your post is ready for your look before it is published.');
   assert.equal(CFG.pubEntryNotice({ id: 'e', state: 'running', started_by: 'owner', run: 'r' }, { id: 'r', mode: 'planned', confirm: 'always' }), null, 'the owner is looking at it in the dialog');
-  assert.deepEqual([CFG.pubEntryLine({ state: 'queued', ahead: 2 }), CFG.pubEntryLine({ state: 'queued', ahead: 0 }), CFG.pubEntryLine({ state: 'queued', ahead: 1 }, { state: 'paused' })],
+  assert.deepEqual([CFG.pubEntryLine({ state: 'queued', ahead: 2 }), CFG.pubEntryLine({ state: 'queued', ahead: 0 }), CFG.pubEntryLine({ state: 'queued', ahead: 1 }, { state: 'paused_for_run' })],
     ['queued · 2 ahead', 'queued · next', 'queued · waits until the post that went wrong is dealt with']);
   assert.equal(CFG.pubNoticeOf({ id: 'r', mode: 'published', published: { address: 'javascript:alert(1)' } }).link, '', 'the link is http(s) only');
   assert.equal(CFG.pubNoticeOf({ id: 'r', mode: 'applying' }), null, 'still going: nothing to tell');
@@ -240,6 +240,28 @@ await test('the end arrives while a look at the run is still under way: it gets 
   await tick(300);
   assert.equal(notices(B).length, 1, 'told, without waiting for the poll');
   assert.equal(notices(B)[0].msg.notice.kind, 'live');
+});
+
+await test('THE RACE: a run that fails and is given up before the start\'s answer comes back is still told (the act is never taken for old news)', async () => {
+  const B = browser(); const S = companion();
+  S.run = { id: 'r9', token: 'tok', mode: 'abandoned', thread_ids: ['t1'] };
+  const failedEntry = { id: 'e9', state: 'failed', run: 'r9', started_by: 'owner', at: '2026-11-25T10:00:00Z', ahead: 0, result: null, failure: { step: 'plan', line: '', mode: 'failed_plan' } };
+  S.queue = () => ({ state: 'running', entries: [failedEntry] });
+  S.fn = ((orig) => (p, m, b) => (p.startsWith('/blyg-publish/start') ? { ok: true, run: { id: 'r9', mode: 'abandoned', token: 'tok' }, queue: S.queue() } : orig(p, m, b)))(S.fn);
+  const W = boot(B, S.fn);
+  await tick(10);
+  await W.send({ t: 'blyg-publish', op: 'start', thread_id: 't1', scope: 'one', url: 'https://e.test/a' }, 3); await tick(40);
+  const said = notices(B).map(t => t.msg.notice);
+  assert.deepEqual(said.map(n => [n.kind, n.sentence]), [['attention', 'Something went wrong while checking that only this note changes.']]);
+  assert.equal(lastBadge(B), '!');
+});
+
+await test('the queue\'s own notices: a pause for the site says what is wrong and what to press; an unreadable queue file says where it was kept', () => {
+  const site = CFG.pubQueueNotices({ state: 'paused_for_site', paused: { say: 'Your site cannot publish right now. The node command is not on the companion’s PATH.', at: 't' }, entries: [] });
+  assert.equal(site[0].sentence, 'Your site cannot publish right now. The node command is not on the companion’s PATH. Your queued posts are waiting: press “Try the queue again” in the drawer when it is fixed.');
+  assert.equal(CFG.pubQueueNotices({ state: 'paused_for_run', paused: { say: '', at: 't' }, entries: [] }).length, 0, 'a run\'s pause is told by its entry');
+  const un = CFG.pubQueueNotices({ state: 'running', unreadable: { say: 'Your queued posts could not be read when the companion started, so they were not published. The file was kept as it was: /x/q.json', at: 't' }, entries: [] });
+  assert.match(un[0].sentence, /kept as it was: \/x\/q\.json$/);
 });
 
 // ---- the toast --------------------------------------------------------------------------------------------------------------

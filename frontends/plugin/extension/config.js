@@ -234,6 +234,8 @@
     start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto', 'look'], reply: 'json' }),
     // a post waiting in the publish queue is taken out (nothing of it was written)
     'queue-cancel': Object.freeze({ method: 'POST', path: '/blyg-publish/queue-cancel', offer: 'none', body: ['entry'], reply: 'json' }),
+    // "Try the queue again": the owner lifts a pause for the site or for an error
+    'queue-resume': Object.freeze({ method: 'POST', path: '/blyg-publish/queue-resume', offer: 'none', body: [], reply: 'json' }),
     // may this comment be added to the earlier post from its page? (read only: the answer is `earlier`, {title, version} or null)
     earlier: Object.freeze({ method: 'POST', path: '/blyg-publish/earlier', offer: 'none', body: ['url', 'thread_id'], reply: 'json' }),
     run: Object.freeze({ method: 'GET', path: '/blyg-publish/run', offer: 'none', body: [], reply: 'json' }),
@@ -350,14 +352,19 @@
     return { notices: notices.slice(-10), fold };
   }
   // ---- the publish QUEUE, in the owner's words (blyg-queue.mjs on the companion) ---------------------------------------------------
-  const PUB_ENTRY_STATES = Object.freeze(['queued', 'looking', 'filling', 'needs_look', 'running', 'published', 'failed', 'cancelled']);
-  const PUB_UNDER_WAY = Object.freeze(['queued', 'looking', 'filling', 'running']);
-  const PUB_CANCELLABLE = Object.freeze(['queued', 'looking', 'filling', 'needs_look']);
+  const PUB_ENTRY_STATES = Object.freeze(['queued', 'filling', 'needs_look', 'running', 'giving_up', 'published', 'failed', 'cancelled']);
+  const PUB_UNDER_WAY = Object.freeze(['queued', 'filling', 'running', 'giving_up']);
+  const PUB_CANCELLABLE = Object.freeze(['queued', 'filling', 'needs_look']);
+  // the queue's own states (blyg-queue QUEUE_STATES), and the pauses the owner lifts with "Try the queue again"
+  const PUB_QUEUE_STATES = Object.freeze(['running', 'paused_for_run', 'paused_for_site', 'paused_for_error']);
+  const PUB_OWNER_RESUMES = Object.freeze(['paused_for_site', 'paused_for_error']);
+  const pubPaused = q => !!q && PUB_QUEUE_STATES.indexOf(q.state) > 0;
   // why a post was set aside for the owner's look (blyg-queue NEEDS_LOOK_WHY)
   const PUB_LOOK_WHY = Object.freeze({
     'left-out': 'A comment that was in your post is no longer on this page, so it would be left out.',
     outside: 'Your post was changed outside the plugin since it was last published from here, and those changes would be lost.',
     'earlier-failed': 'An earlier post from this page did not go out, so this one waits for you.',
+    'unknown-text': 'Another comment of this post was changed since it was published and not pressed again, so what it should say is not known.',
   });
   const pubUnderWay = q => ((q && q.entries) || []).filter(e => PUB_UNDER_WAY.indexOf(e.state) !== -1).length;
   /** The ONE sentence for a queued post that failed: the companion's plain sentence, else the run's (pubFailureOf). */
@@ -371,11 +378,12 @@
   /** The thread's quiet line for its post in the queue. */
   function pubEntryLine(e, q) {
     if (!e) return '';
-    if (e.state === 'queued' || e.state === 'looking') {
-      if (q && q.state === 'paused') return 'queued · waits until the post that went wrong is dealt with';
-      return (e.state === 'looking' ? 'queued for your look · ' : 'queued · ') + (e.ahead > 0 ? e.ahead + ' ahead' : 'next');
+    if (e.state === 'queued') {
+      if (q && q.state === 'paused_for_run') return 'queued · waits until the post that went wrong is dealt with';
+      if (pubPaused(q)) return 'queued · the queue is paused';
+      return (e.presence === 'away' || !e.presence ? 'queued · ' : 'queued for your look · ') + (e.ahead > 0 ? e.ahead + ' ahead' : 'next');
     }
-    return { filling: 'queued · waiting for the agent’s passage', needs_look: 'needs your look', running: 'publishing…', published: 'published',
+    return { filling: 'queued · waiting for the agent’s passage', needs_look: 'needs your look', running: 'publishing…', giving_up: 'did not go out: being taken back', published: 'published',
       failed: 'failed: ' + pubEntrySay(e), cancelled: 'cancelled' }[e.state] || '';
   }
   /** What is told about a post in the queue, once (its `key`): { key, kind: 'live' | 'attention', sentence, link } or null. `run`: the
@@ -392,7 +400,18 @@
     if (e.state === 'running' && e.started_by === 'queue' && run && run.id === e.run && pubViewOf(run.mode, run.confirm) === 'confirming') return { key: e.id + ':ready:' + e.run, kind: 'attention', sentence: 'Your post is ready for your look before it is published.', link: '' };
     return null;
   }
-  const pubTellables = (q, run) => ((q && q.entries) || []).map(e => pubEntryNotice(e, run)).filter(Boolean);
+  /** What is told about the QUEUE itself, once: a pause the owner lifts (its sentence, and what to press), and a queue file that could
+   *  not be read when the companion started. */
+  function pubQueueNotices(q) {
+    const out = [];
+    if (q && PUB_OWNER_RESUMES.indexOf(q.state) !== -1 && q.paused) out.push({ key: 'paused:' + q.state + ':' + q.paused.at, kind: 'attention',
+      sentence: (q.paused.say ? q.paused.say + ' ' : '') + 'Your queued posts are waiting: press “Try the queue again” in the drawer when it is fixed.', link: '' });
+    if (q && q.unreadable) out.push({ key: 'unreadable:' + q.unreadable.at, kind: 'attention', sentence: String(q.unreadable.say || ''), link: '' });
+    return out;
+  }
+  // (`keep`: an entry or run the owner just acted on, never taken for old news)
+  const pubTellables = (q, run, keep) => ((q && q.entries) || []).filter(e => !keep || (e.id !== keep.entry && !(keep.run && e.run === keep.run)))
+    .map(e => pubEntryNotice(e, run)).filter(Boolean).concat(pubQueueNotices(q));
   /** How a run that was going in the background ended, for the owner: { kind: 'live' | 'attention', sentence, link? } or null (still
    *  going, or ended with nothing to tell). The link is the address the COMPANION recorded for the post (http(s) only). */
   const PUB_NOTICE_KINDS = Object.freeze(['live', 'attention']);
@@ -971,7 +990,7 @@
     PUB_VIEWS, PUB_MOVES, canPubMove, pubMove, pubViewOf, BLYG_PUBLISH_OPS, BLYG_PUBLISH_SCOPES, BLYG_ARMED_ACTS,
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, pubWatchAdd, PUB_FOLD_MS, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark,
-    PUB_ENTRY_STATES, PUB_UNDER_WAY, PUB_CANCELLABLE, PUB_LOOK_WHY, pubUnderWay, pubEntrySay, pubEntryLine, pubEntryNotice, pubTellables, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
+    PUB_ENTRY_STATES, PUB_UNDER_WAY, PUB_CANCELLABLE, PUB_QUEUE_STATES, PUB_OWNER_RESUMES, pubPaused, pubQueueNotices, PUB_LOOK_WHY, pubUnderWay, pubEntrySay, pubEntryLine, pubEntryNotice, pubTellables, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
     PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE, PUB_EXTENTS, PUB_EXTENT_MOVES, pubExtentMove,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     HOSTED_HUBS_MAX, hostedHubsOf,

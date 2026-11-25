@@ -102,7 +102,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
     ['closed', 'working', 'working', 'working', 'confirming', 'running', 'running', 'running', 'done', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'problem', 'closed', 'closed']);
   eq('planned is a confirmation only when the owner asked to confirm', [CFG.pubViewOf('planned', 'always'), CFG.pubViewOf('planned', 'never'), CFG.pubViewOf('planned')], ['confirming', 'running', 'confirming']);
   eq('an unknown mode is shown as a problem, never as success', CFG.pubViewOf('nonsense'), 'problem');
-  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'queue-cancel', 'earlier', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
+  eq('the named operations', Object.keys(CFG.BLYG_PUBLISH_OPS), ['start', 'queue-cancel', 'queue-resume', 'earlier', 'run', 'arm', 'confirm', 'retry', 'continue', 'cancel', 'abandon', 'forget', 'preview', 'preview-image']);
   eq('only confirm, retry and continue need an offer', Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'needs').map(([k]) => k), ['confirm', 'retry', 'continue']);
   eq('only arm opens one (for the act it names)', [Object.entries(CFG.BLYG_PUBLISH_OPS).filter(([, v]) => v.offer === 'grants').map(([k]) => k), CFG.BLYG_ARMED_ACTS], [['arm'], ['confirm', 'retry', 'continue']]);
 }
@@ -905,6 +905,7 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
       server.queue = { state: 'running', entries: [...server.queue.entries.filter(x => x.thread_id !== body.thread_id), e] };
       return { ok: true, queued: e, replaced: false, queue: server.queue };
     }
+    if (op === 'queue-resume') { server.calls.push({ op, body }); server.queue = { state: 'running', paused: null, entries: server.queue.entries }; return { ok: true, queue: server.queue }; }
     if (op === 'queue-cancel') {
       server.calls.push({ op, body });
       server.queue = { ...server.queue, entries: server.queue.entries.map(x => (x.id === body.entry ? { ...x, state: 'cancelled' } : x)) };
@@ -942,10 +943,18 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
   eq('queue: the start says the owner is looking', server.calls.filter(c => c.op === 'start').at(-1).body.look, 'yes');
   // failed, and paused
-  server.queue = { state: 'paused', entries: [entry('e7', 't2', 'failed', { failure: { step: 'publish', mode: 'failed_publish' }, paused_by: true }), entry('e8', 't1', 'queued', { ahead: 1 })] };
+  server.queue = { state: 'paused_for_run', paused: { say: '', at: 't' }, entries: [entry('e7', 't2', 'failed', { failure: { step: 'publish', mode: 'failed_publish' }, paused_by: true }), entry('e8', 't1', 'queued', { ahead: 1 })] };
   drawer.blygPublishMoved(); await tick(20);
   ok('queue: a failure on its thread, in one sentence', chip().some(t => /failed: Something went wrong while publishing\./.test(t)), JSON.stringify(chip()));
   ok('queue: the others wait while it is paused', chip().some(t => /queued · waits until the post that went wrong is dealt with/.test(t)) && /Publishing · paused/.test(q('.pubqueue').textContent));
+  // paused for the site: what is wrong, and the one button that tries the queue again
+  server.queue = { state: 'paused_for_site', paused: { say: 'Your site cannot publish right now.', at: 't2' }, entries: [entry('e8', 't1', 'queued', { ahead: 1 })] };
+  drawer.blygPublishMoved(); await tick(20);
+  ok('queue: paused for the site says why and offers Try the queue again', /Your site cannot publish right now\. Your queued posts are kept\./.test(q('.pubqueue').textContent) && !!q('[data-act="pub-queue-resume"]'));
+  ok('queue: its chip says the queue is paused', chip().some(t => /queued · the queue is paused/.test(t)), JSON.stringify(chip()));
+  click(q('[data-act="pub-queue-resume"]')); await tick(10);
+  eq('queue: Try the queue again is sent', server.calls.at(-1).op, 'queue-resume');
+  ok('queue: and the list says it is going', !q('[data-act="pub-queue-resume"]'), JSON.stringify([drawer.pub.queue && drawer.pub.queue.state, server.calls.slice(-2)]));
 }
 
 console.log(`${fail ? '✗' : '✓'} blygpublish-drawer — ${pass} passed, ${fail} failed`);

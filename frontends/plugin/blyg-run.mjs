@@ -47,7 +47,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { samePage } from './blyg.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
@@ -613,7 +613,9 @@ export function createPublisher(deps) {
   let preview = { state: 'off', run: '', theme: 'light', png: null };
 
   const settingsNow = () => validateHome(deps.readConfig().blyg_home, { env });
-  const fail = (status, error) => ({ ok: false, status, error });
+  const fail = (status, error) => ({ ok: false, status, error, about: 'entry' });
+  // a refusal about the site or this machine, not about the post asked for (the publish queue pauses on it and keeps the post)
+  const siteFail = (status, error) => ({ ok: false, status, error, about: 'site' });
   const logNote = text => log.write(book.run.id, { ev: 'note', text: String(text).slice(0, 4000) });
 
   // how long the last FULL build-and-check took on this site (for "This takes about N minutes"); never a guess when none is recorded
@@ -768,21 +770,20 @@ export function createPublisher(deps) {
   }
 
   /** Start a run (async: the pre-flight runs without holding the companion). A refusal after `checking` began goes back to idle. */
-  // `id`: the run's id, when the queue chose it (so its entry names the run before the first move is announced). `unattended`: a
-  // queued press the owner has moved on from (blyg-queue): whatever would stop the run for the owner's look stops it BEFORE anything
-  // is written, answered `park` (a REVIEW_REASONS name, or `outside`), so the queue can set it aside and go on. `look`: the owner asked
-  // to look at a post the queue set aside: the run stops at `planned` for them (review `asked` when nothing else calls for it).
+  // `id`: the run's id, when the queue chose it (so its entry names the run before the first move is announced). `presence`: where the
+  // owner is for this run, one of PRESENCES (below).
   async function start(args) {
     if (RUN_LIVE.includes(book.mode)) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
     // the last run's step process, looked at afresh: a run forgotten while its step was still going must not get a second one beside it
-    if (book.run.child && childNow(true) === 'alive') return fail(409, 'The earlier step is still running: stop it first.');
+    if (book.run.child && childNow(true) === 'alive') return siteFail(409, 'The earlier step is still running: stop it first.');
     let r;
     const id = typeof args.id === 'string' && /^[0-9a-f]{16}$/.test(args.id) ? args.id : crypto.randomBytes(8).toString('hex');
     // THE RUN IS HELD from here, before the first await (the pre-flight, the link checks): a second start meanwhile is refused
     if (!canMove(book.mode, 'checking')) return fail(409, `A publish is already under way (${book.mode.replace(/_/g, ' ')}). Finish it or give it up first.`);
     const before = book.run;
     book.move('checking');
-    try { r = await startChecked({ ...args, id }); } catch (e) { r = fail(500, `could not start: ${String((e && e.message) || e).slice(0, 200)}`); }
+    if (args.presence !== undefined && !PRESENCES.includes(args.presence)) r = fail(400, 'no such presence');
+    else { try { r = await startChecked({ ...args, id }); } catch (e) { log.write(id, { ev: 'note', text: `could not start: ${String((e && e.message) || e).slice(0, 400)}` }); r = { ...fail(500, START_BROKE_SAY), about: 'site' }; } }
     // a start that stopped before writing anything: the run is as it was before it (a finished run's record kept for the owner)
     if (book.mode === 'checking') {
       if (before && before.mode !== 'idle' && canMove('checking', before.mode)) book.move(before.mode, before);
@@ -791,7 +792,7 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', unattended = false, look = false }) {
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', presence = 'here' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     if (!EXTENTS.includes(extent)) return fail(400, `extent must be one of ${EXTENTS.join(', ')}`);
     if (extent === 'upto' ? !upto : !!upto) return fail(400, 'upto is the message a post goes up to, and only with extent upto');
@@ -799,7 +800,7 @@ export function createPublisher(deps) {
     // (only `replace` is ever sent: `keep` sends nothing at all)
     if (outside && outside !== 'replace') return fail(400, 'outside must be replace or absent');
     const home = settingsNow();
-    if (!home.ok) { log.write(id, { ev: 'note', text: `settings: ${home.errors.join(' | ')}` }); return fail(409, 'Publish as blyg is not set up correctly on the companion: its “Where my blyg lives” setting does not pass its check. Open that setting on the companion to see why.'); }
+    if (!home.ok) { log.write(id, { ev: 'note', text: `settings: ${home.errors.join(' | ')}` }); return siteFail(409, 'Publish as blyg is not set up correctly on the companion: its “Where my blyg lives” setting does not pass its check. Open that setting on the companion to see why.'); }
     const S = home.settings;
     const threads = page.threads || [];
     const at = threads.findIndex(t => t && t.id === threadId);
@@ -823,11 +824,11 @@ export function createPublisher(deps) {
         const said = checkSentences(msg);
         // (the companion's own words about the check itself: it timed out, could not start, or failed without a word)
         const own = /^The check (?:did not answer|could not be started|failed \(exit)/.test(msg) ? msg : '';
-        return fail(409, `Your site cannot publish right now. ${said.length ? said.join(' ') : own || 'Its check did not pass; the troubleshooting details say why.'}`);
+        return siteFail(409, `Your site cannot publish right now. ${said.length ? said.join(' ') : own || 'Its check did not pass; the troubleshooting details say why.'}`);
       }
       // the settings may not change while the check ran (they are read again, and must be the ones checked)
       const again = settingsNow();
-      if (!again.ok || fingerprint(again.settings) !== fingerprint(S)) return fail(409, 'The “Where my blyg lives” settings changed while the check ran. Nothing was started.');
+      if (!again.ok || fingerprint(again.settings) !== fingerprint(S)) return siteFail(409, 'The “Where my blyg lives” settings changed while the check ran. Nothing was started.');
     }
     // the owner was shown one setting's wording; if the one in force is another, nothing starts (a stale drawer must not promise a look
     // first when one click publishes, or the reverse)
@@ -837,9 +838,9 @@ export function createPublisher(deps) {
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, unattended, look });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, presence });
     }
-    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, unattended, look }) : startNew({ page, threads, at, here, scope, S, id, cut, unattended, look });
+    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, presence }) : startNew({ page, threads, at, here, scope, S, id, cut, presence });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -916,6 +917,27 @@ export function createPublisher(deps) {
     const post = String(pub.permalink || '').split('/').filter(Boolean).pop() || '';
     return { thread, permalink: pub.permalink, post, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1 };
   }
+  /** WHAT A PUBLISHED THREAD SAID in its post as last published from here (the post's record): its included messages, or null when
+   *  that cannot be known (no record; a record from before the texts were kept whose message hashes the thread's messages no longer
+   *  match: the thread was changed and not pressed again). */
+  function publishedMsgsOf(t) {
+    if (!isPublishedThread(t)) return null;
+    const rec = postOf(t.blyg_published.permalink);
+    if (!rec) return null;
+    if (rec.texts && Array.isArray(rec.texts[t.id])) return JSON.parse(JSON.stringify(rec.texts[t.id]));
+    const snap = rec.snapshot && Array.isArray(rec.snapshot.threads) ? rec.snapshot.threads.find(x => String(x.thread) === String(t.id)) : null;
+    if (!snap || !Array.isArray(snap.msgs)) return null;
+    const home = settingsNow();
+    const escape = home.ok ? home.settings.escape : 'liquid';
+    const own = (t.msgs || []).filter(isPublishableMsg);
+    const out = [];
+    for (const m of snap.msgs) {
+      const live = own.find(x => String(x.ts) === String(m.ts));
+      if (!live || hashOf(ownText(live, { escape }).text) !== m.sha) return null;
+      out.push(live);
+    }
+    return out;
+  }
   /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version } | null }. */
   function earlierOf({ page, threadId }) {
     const home = settingsNow();
@@ -959,7 +981,7 @@ export function createPublisher(deps) {
     }
     return found.size === 1 ? [...found.values()][0] : null;
   }
-  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' }, unattended = false, look = false }) {
+  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' }, presence = 'here' }) {
     const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
@@ -984,8 +1006,8 @@ export function createPublisher(deps) {
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
     // EVERY REASON TO LOOK IS KNOWN HERE, before the note is written: a queued press whose look is forced writes nothing and is set
     // aside (a new post has none of LOOK_FORCED; the check stays so the one policy is read in one place)
-    { const ahead = reviewFor(S.confirm, { agentText: (first.generated || []).length > 0, linkStub: !!linkStub, asked: look });
-      if (unattended && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
+    { const ahead = reviewFor(S.confirm, { agentText: (first.generated || []).length > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
+      if (presence === 'away' && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     const base = slugOf(first.title, { date });
     let rendered = null;
     let name = '';
@@ -1013,13 +1035,13 @@ export function createPublisher(deps) {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o644);
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
     } catch (e) { return fail(409, e && e.code === 'EEXIST' ? 'A note of that name appeared meanwhile; try again.' : 'Could not write the note.'); }
-    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, look, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
+    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, presence, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
       ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, unattended = false, look = false }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, presence = 'here' }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     // THE POINTS: as recorded, with the chosen thread's moved (only forward) or, from the header, taken to the end
     const points = { ...(pub.points && typeof pub.points === 'object' ? pub.points : {}) };
@@ -1066,7 +1088,7 @@ export function createPublisher(deps) {
     if (rendered.text === before) return fail(409, 'Nothing has changed since you published this.');
     // CHANGED OUTSIDE THE PLUGIN: asked first, always; nothing is written until the owner answers `replace`
     // (the policy says so: `outside` is one of LOOK_FORCED; a queued press is set aside with nothing written)
-    if (note.outside && outside !== 'replace' && unattended && reviewFor(S.confirm, { outside: true }).review === 'outside') return parked('outside');
+    if (note.outside && outside !== 'replace' && presence === 'away' && reviewFor(S.confirm, { outside: true }).review === 'outside') return parked('outside');
     if (note.outside && outside !== 'replace') {
       log.write(id, { ev: 'note', text: 'the note was changed outside the plugin since it was last published from here: the owner is asked' });
       return { ...fail(409, OUTSIDE_SAY), outside: { say: OUTSIDE_SAY, lost: linesLost(before, rendered.text) } };
@@ -1075,8 +1097,8 @@ export function createPublisher(deps) {
     // (replacing an outside edit is a change even when the comments are as they were published)
     if (!changelog && note.outside) changelog = 'Edited the post.';
     if (!changelog) return fail(409, 'Nothing has changed since you published this.');
-    { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: look });
-      if (unattended && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
+    { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
+      if (presence === 'away' && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     try {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0));
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
@@ -1084,14 +1106,17 @@ export function createPublisher(deps) {
     // who is told: only a post this version newly quotes or answers (the site sends a mention for a NEW relation only)
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
-    return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', look,
+    return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', presence,
       version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
         extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
-  function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, look: asked = false }) {
+  function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub), asked });
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub), asked: presence === 'asked_to_look' });
+    // WHAT EACH THREAD SAID in this version (the owner's included messages), kept in the post's record once published: a later queued
+    // press of another thread of the post takes this thread's text from there, never from an older press or unpressed drawer text
+    const texts = Object.fromEntries(picked.map(t => [String(t.id), includedMsgs(t, (extra && extra.points && extra.points[t.id]) || '').map(m => JSON.parse(JSON.stringify(m)))]));
     log.write(id, { ev: 'run', id, kind, version, settings_fp: fingerprint(S), page_url: page.url, scope, note_rel: rel, permalink: rendered.permalink,
       confirm: look.confirm, review: look.review, reasons: look.reasons, changelog: (extra && extra.changelog) || '' });
     const run = book.move('drafted', {
@@ -1101,7 +1126,7 @@ export function createPublisher(deps) {
       reading: readingOf(rendered.text, rendered.generated), notify: rendered.notify || '', quotes: (rendered.sources || []).length > 0,
       snapshot: rendered.snapshot, pace: paceOf(S.plan_guard), full_minutes: fullMinutesFor(S.top),
       preview_url: previewUrlFor(S.preview_url, { permalink: rendered.permalink, slug, id: (rendered.permalink || '').split('/').filter(Boolean).pop() || '' }),
-      day: date, ...extra,
+      day: date, presence, texts, ...extra,
     });
     // Step A's second half runs in the background; its end is announced by the mode
     runPlan().catch(e => { try { book.move(book.mode === 'preparing' ? 'failed_prepare' : 'failed_plan', { failed_reason: String((e && e.message) || e).slice(0, 200), failure_line: '' }); } catch { /* already moved */ } });
@@ -1140,7 +1165,7 @@ export function createPublisher(deps) {
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
         snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {},
-        ...(run.link_stub ? { link_stub: run.link_stub } : {}), at: published.at });
+        ...(run.link_stub ? { link_stub: run.link_stub } : {}), ...(run.texts ? { texts: run.texts } : {}), at: published.at });
     } catch { published.record_error = 'The post is live, but the companion could not keep what it needs to publish a new version of it.'; }
     try {
       const page = deps.readPage(run.page_url);
@@ -1334,9 +1359,20 @@ export function createPublisher(deps) {
   /** Stop whatever is running (the companion is shutting down). */
   function stopAll() { if (RUNNING_MODES.includes(book.mode) && stopHandle) { try { stopHandle(); } catch { /* gone */ } } }
 
-  return { book, log, start, earlierOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
+  return { book, log, start, earlierOf, publishedMsgsOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
 }
 // A QUEUED PRESS WHOSE LOOK IS FORCED (LOOK_FORCED) is answered with the reason and nothing written (blyg-queue sets it aside).
-const parked = reason => ({ ok: false, status: 409, park: reason, error: 'This post needs your look before it is published.' });
+const parked = reason => ({ ok: false, status: 409, park: reason, about: 'entry', error: 'This post needs your look before it is published.' });
+/** WHERE THE OWNER IS for a run, one value (`presence`, recorded on the run):
+ *    here           at the dialog (a press run at once): a forced look stops at `planned`, the outside question is asked, as ever
+ *    away           pressed and moved on (the publish queue started it): a forced look (LOOK_FORCED) is answered `park` BEFORE anything
+ *                   is written, so the queue sets the post aside and goes on
+ *    asked_to_look  the owner asked to see it first (a post the queue set aside, or one pressed while "see it first" was the setting):
+ *                   it stops at `planned` (review `asked` when nothing else calls for a look) */
+export const PRESENCES = Object.freeze(['here', 'away', 'asked_to_look']);
+/** Who a start's refusal is about (`about`): the post itself, or the site or this machine (a failed pre-flight, a broken setting, a
+ *  step still running): the queue fails the post for the first, and pauses, keeping the post, for the second. */
+export const REFUSAL_ABOUT = Object.freeze(['entry', 'site']);
+const START_BROKE_SAY = 'Something went wrong on the companion while starting this post; the troubleshooting details say what.';
 export const settingChangedSay = (shown, inForce) => `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${inForce}” is in force (${inForce === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`;
 const LIQUID_SAY = 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.';

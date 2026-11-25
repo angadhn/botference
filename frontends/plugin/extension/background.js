@@ -1111,6 +1111,7 @@ async function blygPublish(msg, tabId) {
   if (op === 'start' && body.upto && (body.extent !== 'upto' || body.upto.length > 64)) return { ok: false, error: 'no such message' };
   if (op === 'start' && body.look && body.look !== 'yes') return { ok: false, error: 'no such answer' };
   if (op === 'queue-cancel' && !/^[0-9a-f]{8,32}$/.test(body.entry)) return { ok: false, error: 'no such post' };
+  // ('queue-resume' carries nothing: the owner's "Try the queue again")
   const r = await api(spec.method, spec.path, spec.method === 'GET' ? undefined : body, spec.reply);
   // (a refusal that moved the run, e.g. the site's abandon failed and Forget is now offered, carries the run as it is now)
   if (!r.ok) {
@@ -1125,7 +1126,9 @@ async function blygPublish(msg, tabId) {
   // worker watches the queue in the background and tells each outcome
   { const q = (r.data && r.data.queue) || null;
     const watch = q && (['start', 'confirm', 'retry', 'continue'].indexOf(op) !== -1 || (op === 'run' && CFG.pubUnderWay(q) > 0));
-    if (watch) pubWatchStart(q, (r.data && r.data.run) || null).catch(() => {}); }
+    // (the entry or run this act was about is never taken for old news: it may have ended before this answer came back)
+    const keep = { entry: (r.data && r.data.queued && r.data.queued.id) || '', run: (r.data && r.data.run && r.data.run.id) || (op !== 'start' ? String(body.run || '') : '') };
+    if (watch) pubWatchStart(q, (r.data && r.data.run) || null, keep).catch(() => {}); }
   return { ok: true, run: (r.data && r.data.run) || null, confirm: (r.data && r.data.confirm) || '', state: (r.data && r.data.state) || '',
     earlier: (r.data && r.data.earlier) || null, queue: (r.data && r.data.queue) || null, queued: (r.data && r.data.queued) || null, replaced: !!(r.data && r.data.replaced) };
 }
@@ -1153,12 +1156,13 @@ async function pubWatchTo(move, patch) {
   return true;
 }
 // the owner pressed: watch the queue. What had already ended before the press is not news (told already, from the answer itself)
-async function pubWatchStart(queue, run) {
+async function pubWatchStart(queue, run, keep) {
   await pubWatchReady;
-  const old = pubWatch.state === 'idle' ? CFG.pubTellables(queue, run).map(n => n.key) : [];
+  const old = pubWatch.state === 'idle' ? CFG.pubTellables(queue, run, keep).map(n => n.key) : [];
   const told = pubWatch.told.concat(old.filter(k => pubWatch.told.indexOf(k) === -1));
   const count = CFG.pubUnderWay(queue);
-  if (!count && pubWatch.state === 'idle') { pubWatch.told = told; return; }
+  // (nothing under way, but what this act was about may already have ended: look once, which tells it)
+  if (!count && pubWatch.state === 'idle') { pubWatch.told = told; pubLook(true, true).catch(() => {}); return; }
   await pubWatchTo('watch', { count, told });
   pubWatchCheck(true);
 }
@@ -1170,7 +1174,7 @@ function pubWatchCheck(fromEvent) {
   pubChecking = look.catch(() => {});
   return look;
 }
-async function pubLook(fromEvent) {
+async function pubLook(fromEvent, tellNow) {
   await pubWatchReady;
   if (pubWatch.state !== 'watching' && !fromEvent) return;
   const r = await api('GET', '/blyg-publish/run');
@@ -1179,10 +1183,15 @@ async function pubLook(fromEvent) {
   const run = r.data.run || null;
   const count = CFG.pubUnderWay(queue);
   const fresh = CFG.pubTellables(queue, run).filter(n => pubWatch.told.indexOf(n.key) === -1);
-  if (pubWatch.state === 'idle') {
+  if (pubWatch.state === 'idle' && !tellNow) {
     // posts under way that this worker was not told of (another drawer, a restart): watch from now; what ended before is old news
     if (count) await pubWatchTo('watch', { count, told: pubWatch.told.concat(fresh.map(n => n.key)) });
     return;
+  }
+  if (pubWatch.state === 'idle') {
+    // the owner's own act ended before its answer came back: tell it (watch, then end at once)
+    if (!fresh.length) return;
+    await pubWatchTo('watch', { count, told: pubWatch.told });
   }
   let notices = pubWatch.notices;
   let fold = pubWatch.fold;

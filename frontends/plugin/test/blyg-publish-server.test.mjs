@@ -93,7 +93,7 @@ await test('request hygiene: only JSON, only this site; a form, text/plain, a fo
   assert.equal((await send({ 'content-type': 'application/json', origin: 'https://evil.example' })).status, 403);
   assert.equal((await send({ 'content-type': 'application/json', origin: 'null' })).status, 403);
   assert.equal((await send({ 'content-type': 'application/json', host: 'rebound.attacker.example' })).status, 421);
-  for (const p of ['/blyg-publish/confirm', '/blyg-publish/cancel', '/blyg-publish/retry', '/blyg-publish/abandon', '/blyg-publish/forget', '/blyg-publish/queue-cancel']) {
+  for (const p of ['/blyg-publish/confirm', '/blyg-publish/cancel', '/blyg-publish/retry', '/blyg-publish/abandon', '/blyg-publish/forget', '/blyg-publish/queue-cancel', '/blyg-publish/queue-resume']) {
     assert.equal((await request(B, 'POST', p, undefined, { 'content-type': 'application/x-www-form-urlencoded', ...X }, 'run=x&token=y')).status, 415, p);
   }
   assert.equal((await request(B, 'GET', '/blyg-publish/run', undefined, { origin: 'https://evil.example' })).status, 403);
@@ -131,6 +131,8 @@ await test('the flow: start writes the note and runs plan; the owner hears each 
   assert.equal(cancelled.status, 200, cancelled.body);
   assert.equal(cancelled.json.queue.entries.find(e => e.id === second.json.queued.id).state, 'cancelled');
   assert.equal((await POST(B, '/blyg-publish/queue-cancel', { entry: 'nope' }, X)).status, 404);
+  assert.equal((await POST(B, '/blyg-publish/queue-resume', {}, X)).status, 409, 'Try the queue again: not paused, nothing to lift');
+  assert.equal((await request(B, 'POST', '/blyg-publish/queue-resume', {}, { 'content-type': 'application/json', origin: B, 'sec-fetch-site': 'same-origin' })).status, 403, 'the companion\'s own page cannot');
   const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token }, X);
   assert.equal(c.status, 200, c.body);
   const done = await waitFor(async () => { const r = await runOf(B); return r.mode === 'published' ? r : null; }, 'published');
@@ -200,13 +202,18 @@ await test('the setting changed while a run waits at the confirmation: its next 
   setHome(root, { ...settingsOf(rig), filename: 'other-${slug}.md' });
   const c = await POST(B, '/blyg-publish/confirm', { run: planned.id, token: planned.token }, X);
   assert.equal(c.status, 200);
-  // the run fails at apply (nothing was published), so the queue gives it up by itself and says so on its entry
-  const entry = await waitFor(async () => { const q = (await GET(B, '/blyg-publish/run', X)).json.queue; const e = q.entries.find(x => x.run === planned.id); return e && e.state === 'failed' ? e : null; }, 'failed at apply');
-  assert.deepEqual([entry.failure.step, entry.failure.line, entry.failure.mode], ['apply', '', 'failed_apply'], 'the owner reads one sentence; why is in the log');
-  assert.match(fs.readFileSync(planned.log.path, 'utf8'), /settings changed after this run started/);
+  // the run fails at apply; the owner was looking at it (see it first, the dialog), so it is NOT given up by itself: Try again stays
+  // theirs, the queue waits on it, and its entry says what happened
+  const failed = await waitFor(async () => { const r = await runOf(B); return r.mode === 'failed_apply' ? r : null; }, 'failed at apply');
+  assert.deepEqual([failed.failed_step, failed.failure], ['apply', ''], 'the owner reads one sentence; why is in the log');
+  assert.match(fs.readFileSync(failed.log.path, 'utf8'), /settings changed after this run started/);
   assert.equal(rig.calls().length, calls, 'apply never ran');
-  await waitFor(async () => (await runOf(B)).mode === 'abandoned', 'given up');
+  const q = (await GET(B, '/blyg-publish/run', X)).json.queue;
+  assert.deepEqual([q.state, q.entries.find(x => x.run === planned.id).state], ['paused_for_run', 'failed']);
   setHome(root, settingsOf(rig));
+  const a = await POST(B, '/blyg-publish/abandon', { run: planned.id, token: planned.token }, X);
+  assert.equal(a.status, 200, a.body);
+  assert.equal((await GET(B, '/blyg-publish/run', X)).json.queue.state, 'running', 'resolved: the queue goes on');
 });
 
 await test('confirm never (with a guard): one start is the publish, end to end, with no confirm call; GET /blyg-publish/run says which setting is in force', async () => {
@@ -278,13 +285,22 @@ await test('the companion is killed mid-run: after a restart the record is inter
   await new Promise(r => srv.proc.on('exit', r));
   try { process.kill(sleeper, 'SIGKILL'); } catch { /* already gone */ }
   srv = await startServer({ root: root2, args: ['--no-agents'], env: { PLUGIN_EXTENSION_IDS: EXT } });
-  // the run was interrupted before apply (nothing was published): the queue on disk gives it up through the abandon path, marks its
-  // post failed, and carries on; nothing of it is run again
-  const v = await waitFor(async () => { const r = await runOf(srv.base); return r.mode === 'abandoned' ? r : null; }, 'given up after the restart');
-  assert.equal(v.id, id);
-  const e = (await GET(srv.base, '/blyg-publish/run', X)).json.queue.entries.find(x => x.run === id);
-  assert.deepEqual([e.state, e.failure.mode], ['failed', 'interrupted_planning']);
+  // a run the owner started in the dialog with "see it first" is theirs: after the restart it offers abandon, as before the queue, and
+  // the queue waits on it (paused, saying why); a press meanwhile is accepted into the queue
+  const v = await runOf(srv.base);
+  assert.equal(v.mode, 'interrupted_planning');
+  assert.equal(v.interrupted_from, 'planning');
+  assert.deepEqual(v.can, ['abandon']);
+  const q = (await GET(srv.base, '/blyg-publish/run', X)).json.queue;
+  assert.deepEqual([q.state, q.entries.find(x => x.run === id).state], ['paused_for_run', 'failed']);
   for (const p of ['confirm', 'retry', 'cancel']) assert.equal((await POST(srv.base, `/blyg-publish/${p}`, { run: id, token }, X)).status, 409, p);
+  const meanwhile = await POST(srv.base, '/blyg-publish/start', { url: PAGE, thread_id: tid, scope: 'one', confirm: SHOWN() }, X);
+  assert.equal(meanwhile.status, 200, meanwhile.body);
+  assert.equal(meanwhile.json.queued.state, 'queued');
+  assert.equal((await POST(srv.base, '/blyg-publish/queue-cancel', { entry: meanwhile.json.queued.id }, X)).status, 200);
+  const a = await POST(srv.base, '/blyg-publish/abandon', { run: id, token }, X);
+  assert.equal(a.status, 200, a.body);
+  assert.equal((await runOf(srv.base)).mode, 'abandoned');
   assert.deepEqual(rig2.calls().map(c => c.step), ['plan'], 'nothing else ever ran');
 });
 
@@ -296,7 +312,7 @@ const GUEST = { host: 'discuss.botference.com', authorization: 'Bearer guest-pw'
 const OWNER = { host: 'discuss.botference.com', authorization: 'Bearer owner-pw' };
 const ROUTES = [['GET', '/blyg-home'], ['GET', '/blyg-home/page'], ['GET', '/blyg-publish/run'], ['POST', '/blyg-publish/start'], ['POST', '/blyg-publish/earlier'],
   ['POST', '/blyg-publish/confirm'], ['POST', '/blyg-publish/retry'], ['POST', '/blyg-publish/continue'], ['POST', '/blyg-publish/cancel'], ['POST', '/blyg-publish/abandon'], ['POST', '/blyg-publish/forget'],
-  ['POST', '/blyg-publish/queue-cancel']];
+  ['POST', '/blyg-publish/queue-cancel'], ['POST', '/blyg-publish/queue-resume']];
 
 await test('hosted: every route is refused to an anonymous caller (401), a wrong password (401) and a guest (403), body or none', async () => {
   const body = { url: PAGE, thread_id: 't', scope: 'one', run: 'x', token: 'y', settings: settingsOf(hrig) };

@@ -135,7 +135,10 @@ test('Step A writes the note and runs plan only; Step C runs apply then publish;
   assert.deepEqual(Object.keys(marked).sort(), ['address', 'at', 'permalink', 'title', 'version'], 'only what a reader of the page may know (and the version)');
   assert.equal(marked.version, 1);
   const kept = JSON.parse(fs.readFileSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json'), 'utf8'))[marked.permalink];
-  assert.deepEqual(Object.keys(kept).sort(), ['at', 'blyg_id', 'note_rel', 'note_sha', 'points', 'slug', 'snapshot', 'thread_ids', 'version'], 'what a new version needs is kept on the companion, not on the page');
+  assert.deepEqual(Object.keys(kept).sort(), ['at', 'blyg_id', 'note_rel', 'note_sha', 'points', 'slug', 'snapshot', 'texts', 'thread_ids', 'version'], 'what a new version needs is kept on the companion, not on the page');
+  // …including what each thread said in it (a later queued press of another thread of the post takes this thread's text from here)
+  assert.deepEqual(Object.keys(kept.texts), ['t1']);
+  assert.equal(kept.texts.t1[0].text, 'First thought about liveness.');
   assert.equal(fs.statSync(path.join(path.dirname(b.file), 'blyg-publish-posts.json')).mode & 0o777, 0o600);
   assert.equal(marked.address, done.published.address);
   assert.ok(b.events.some(e => e.type === 'page'), 'the page is announced');

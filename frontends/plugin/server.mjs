@@ -4277,6 +4277,7 @@ export function handler(req, res) {
   //   POST /blyg-publish/cancel  {run, token}   at the confirmation: the draft goes
   //   POST /blyg-publish/abandon {run, token}   a failed or interrupted run is given up
   //   POST /blyg-publish/queue-cancel {entry}   a queued post not yet running is taken out of the queue (nothing was written)
+  //   POST /blyg-publish/queue-resume {}        "Try the queue again": lift a pause for the site or for an error
   //   (every answer that carries the run carries the publish queue too: `queue`, blyg-queue view)
   if (url.startsWith('/blyg-home') || url.startsWith('/blyg-publish/')) {
     // THE COMMAND SET IS NOT WRITABLE OVER HTTP, by anyone (the owner, the companion's own page, the extension): it decides what runs
@@ -4310,10 +4311,15 @@ export function handler(req, res) {
       return c;
     };
     // the queue as the owner's client sees it (a remote owner: any sentence with a path in it scrubbed, as for the run)
+    // the queue as the owner's client sees it: every sentence in it is a prepared one (a step's failure is the site's FIXED sentence or
+    // none; a start's refusal is the runner's own sentence); for a remote owner each is scrubbed of paths, as the run view is, and the
+    // place an unreadable queue file was kept is named only to the owner on this machine
     const queueFor = () => {
       const q = blygQueue.view();
       if (here) return q;
-      return { ...q, entries: q.entries.map(e => (e.failure && e.failure.say ? { ...e, failure: { ...e.failure, say: scrub(e.failure.say) } } : e)) };
+      const f = x => (x ? { ...x, ...(x.say !== undefined ? { say: scrub(x.say) } : {}), ...(x.line !== undefined ? { line: scrub(x.line) } : {}) } : x);
+      return { ...q, paused: f(q.paused), entries: q.entries.map(e => ({ ...e, failure: f(e.failure) })),
+        ...(q.unreadable ? { unreadable: { say: scrub(q.unreadable.say), file: '', at: q.unreadable.at } } : {}) };
     };
     const homeView = () => {
       const raw = store.readConfig().blyg_home;
@@ -4374,6 +4380,13 @@ export function handler(req, res) {
         if (!page) return;
         const r = blygPublish.earlierOf({ page, threadId: String(data.thread_id || '') });
         return r.ok ? ok(res, { earlier: r.earlier }) : fail(res, r.status, r.error);
+      });
+    }
+    // "Try the queue again": the owner lifts a pause for the site or for an error (a run's pause is lifted by resolving that run)
+    if (req.method === 'POST' && url === '/blyg-publish/queue-resume') {
+      return readBody(req, res, () => {
+        const r = blygQueue.resume();
+        return r.ok ? ok(res, { queue: queueFor() }) : fail(res, r.status, r.error);
       });
     }
     if (req.method === 'POST' && url === '/blyg-publish/queue-cancel') {

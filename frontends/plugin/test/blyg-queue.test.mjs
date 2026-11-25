@@ -15,15 +15,15 @@ const EDIT = rig => Object.fromEntries(['plan_edit', 'apply_edit', 'publish_edit
 const pageOf = (n, threads) => ({ url: `https://news.example.test/p${n}`, title: `Page ${n}`, threads });
 const drawn = (id, text, extra = {}) => ({ id, quote: `A passage ${id}.`, msgs: [mine(text, { ts: `${id}-1`, channel: 'drawer' })], ...extra });
 
-function boot(rig, { pages = [], confirm = 'never', dir = rig.out, home: given, queueExtra = {} } = {}) {
+function boot(rig, { pages = [], confirm = 'never', dir = rig.out, home: given, queueExtra = {}, pubExtra = {}, confirmNow } = {}) {
   const home = given || { ...rig.home, confirm, ...(confirm === 'never' ? { plan_guard: ['--only-note'] } : {}), commands: { ...rig.home.commands, ...EDIT(rig) } };
   const store = new Map(pages.map(p => [p.url, p]));
   const events = [];
   const hear = { on: true };
   let q = null;
   const pub = R.createPublisher({ file: path.join(dir, 'run.json'), broadcast: ev => events.push(ev), readConfig: () => ({ blyg_home: home }),
-    readPage: url => store.get(url), savePage: p => store.set(p.url, p), onMove: (run, from) => { if (hear.on && q) q.onMove(run, from); } });
-  q = Q.createQueue({ file: path.join(dir, 'queue.json'), publisher: pub, readPage: url => store.get(url), confirmNow: () => home.confirm,
+    readPage: url => store.get(url), savePage: p => store.set(p.url, p), onMove: (run, from) => { if (hear.on && q) q.onMove(run, from); }, ...pubExtra });
+  q = Q.createQueue({ file: path.join(dir, 'queue.json'), publisher: pub, readPage: url => store.get(url), confirmNow: confirmNow || (() => home.confirm), log: () => {},
     broadcast: ev => events.push(ev), fillCheckMs: 20, ...queueExtra });
   const press = (url, threadId, extra = {}) => q.press({ page: store.get(url), threadId, scope: 'one', shown: home.confirm, ...extra });
   const entries = () => q.view().entries;
@@ -46,7 +46,9 @@ test('the tables: every entry and queue move is listed or refused, and the one f
     assert.throws(() => b.q.moveEntry(e, 'queued'), R.IllegalMove);
     assert.throws(() => b.q.moveEntry(e, 'nonsense'), /no such state/);
     assert.throws(() => b.q.moveQueue('running'), R.IllegalMove, 'running → running is no move');
-    assert.deepEqual(Q.QUEUE_STATES, ['running', 'paused']);
+    assert.deepEqual(Q.QUEUE_STATES, ['running', 'paused_for_run', 'paused_for_site', 'paused_for_error']);
+    assert.deepEqual(Q.PRESENCES, ['away', 'promised_look', 'asked_to_look']);
+    assert.deepEqual(R.PRESENCES, ['here', 'away', 'asked_to_look'], 'the runner takes one presence, never two flags');
     b.q.stop();
   } finally { rig.done(); }
 });
@@ -202,7 +204,7 @@ test('A FAILURE AFTER PUSH PAUSES the queue; the owner\'s Try again resolves it,
   const first = await b.press(pages[0].url, 't1');
   const second = await b.press(pages[1].url, 't2');
   assert.ok(second.queued);
-  await until(() => b.q.view().state === 'paused', 'paused');
+  await until(() => b.q.view().state === 'paused_for_run', 'paused');
   const fe = b.entries().find(e => e.run === first.view.id);
   assert.deepEqual([fe.state, fe.paused_by, fe.failure.mode], ['failed', true, 'failed_publish']);
   await sleep(150);
@@ -248,12 +250,12 @@ test('A RESTART while paused stays paused until the owner resolves that run', as
   rig.control({ publish: 'fail' });
   await a.press(pages[0].url, 't1');
   const second = await a.press(pages[1].url, 't2');
-  await until(() => a.q.view().state === 'paused', 'paused');
+  await until(() => a.q.view().state === 'paused_for_run', 'paused');
   a.hear.on = false; a.q.stop();
   rig.control({});
   const b = boot(rig, { pages: [...a.store.values()] }); t.after(() => b.q.stop());
   await sleep(150);
-  assert.deepEqual([b.q.view().state, b.stateOf(second.queued.id)], ['paused', 'queued']);
+  assert.deepEqual([b.q.view().state, b.stateOf(second.queued.id)], ['paused_for_run', 'queued']);
   await b.pub.abandon({ id: b.pub.book.run.id, token: b.pub.book.run.token });
   await until(() => b.stateOf(second.queued.id) === 'published', 'resumed after Start over', 15000);
 });
@@ -328,4 +330,234 @@ test('CONFIRM ALWAYS: the first press is today\'s dialog; a press meanwhile wait
   await until(() => b.stateOf(second.queued.id) === 'cancelled', 'cancelled at the look');
   await until(() => b.pub.book.mode === 'planned' && b.pub.book.run.thread_ids[0] === 't3', 'the third at its look');
   await b.pub.cancel({ id: b.pub.book.run.id, token: b.pub.book.run.token });
+});
+
+// ---- review fixes (2026-11-25) --------------------------------------------------------------------------------------------------------
+// a post made of two threads, published from here (x1, x2), on a page; its record keeps what each said
+async function twoThreadPost(rig, b) {
+  const pg = b.store.get('https://news.example.test/p1');
+  await b.press(pg.url, 'x2', { scope: 'above' });
+  await until(() => b.pub.book.mode === 'published', 'the post');
+  return pg;
+}
+const noteOfPost = (rig) => { const n = fs.readdirSync(rig.folder).find(f => /part-one/.test(f)); return fs.readFileSync(path.join(rig.folder, n), 'utf8'); };
+const text = (b, url, id, words) => { const t = b.store.get(url).threads.find(x => x.id === id); t.msgs[0].text = words; };
+
+test('THE WRONG TEXT NEVER GOES LIVE: press x1, edit and press x2, edit and press x1 again: the last press of each thread is what the post ends with', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const other = pageOf(9, [drawn('z', 'Something else keeps the runner busy.')]);
+  const b = boot(rig, { pages: [pageOf(1, [drawn('x1', 'Part one of a post.'), drawn('x2', 'Part two of a post.')]), other] }); t.after(() => b.q.stop());
+  const pg = await twoThreadPost(rig, b);
+  rig.control({ apply: 'hold' });
+  await b.press(other.url, 'z');
+  text(b, pg.url, 'x1', 'Part one, first edit.'); const e1 = await b.press(pg.url, 'x1');
+  text(b, pg.url, 'x2', 'Part two, edited.'); const e2 = await b.press(pg.url, 'x2');
+  text(b, pg.url, 'x1', 'Part one, LAST edit.'); const again = await b.press(pg.url, 'x1');
+  assert.ok(again.replaced && again.queued.id === e1.queued.id);
+  assert.deepEqual(b.q.view().entries.filter(e => e.state === 'queued').sort((m, n) => m.ahead - n.ahead).map(e => e.thread_id), ['x2', 'x1'], 'the replaced press moved to the back');
+  // an edit the owner did not press must never go out either
+  text(b, pg.url, 'x2', 'Part two, NOT PRESSED.');
+  rig.control({});
+  await until(() => b.stateOf(e1.queued.id) === 'published' && b.stateOf(e2.queued.id) === 'published', 'both out', 20000);
+  const note = noteOfPost(rig);
+  assert.match(note, /Part one, LAST edit\./, 'the last press of x1');
+  assert.match(note, /Part two, edited\./, 'the last press of x2');
+  assert.ok(!/first edit|NOT PRESSED|Part one of a post/.test(note), note);
+});
+
+test('…and its mirror: x2 pressed last wins, an earlier press of x1 keeps its text, nothing older returns', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const other = pageOf(9, [drawn('z', 'Something else keeps the runner busy.')]);
+  const b = boot(rig, { pages: [pageOf(1, [drawn('x1', 'Part one of a post.'), drawn('x2', 'Part two of a post.')]), other] }); t.after(() => b.q.stop());
+  const pg = await twoThreadPost(rig, b);
+  rig.control({ apply: 'hold' });
+  await b.press(other.url, 'z');
+  text(b, pg.url, 'x2', 'Part two, first edit.'); const e2 = await b.press(pg.url, 'x2');
+  text(b, pg.url, 'x1', 'Part one, edited.'); const e1 = await b.press(pg.url, 'x1');
+  text(b, pg.url, 'x2', 'Part two, LAST edit.'); await b.press(pg.url, 'x2');
+  text(b, pg.url, 'x1', 'Part one, NOT PRESSED.');
+  rig.control({});
+  await until(() => b.stateOf(e1.queued.id) === 'published' && b.stateOf(e2.queued.id) === 'published', 'both out', 20000);
+  const note = noteOfPost(rig);
+  assert.match(note, /Part one, edited\./);
+  assert.match(note, /Part two, LAST edit\./);
+  assert.ok(!/first edit|NOT PRESSED|Part two of a post/.test(note), note);
+});
+
+test('A MALFORMED ENTRY on disk is marked failed with a plain sentence and the queue goes on; an unexpected error pauses the queue and says so', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const pages = [1, 2].map(n => pageOf(n, [drawn(`t${n}`, `Post ${n} words.`)]));
+  const a = boot(rig, { pages });
+  rig.control({ apply: 'hold' });
+  await a.press(pages[0].url, 't1');
+  const ok2 = await a.press(pages[1].url, 't2');
+  a.hear.on = false; a.q.stop(); a.pub.stopAll();
+  await until(() => !['applying', 'checking', 'planning', 'preparing'].includes(a.pub.book.mode), 'stopped');
+  rig.control({});
+  const file = path.join(rig.out, 'queue.json');
+  const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  disk.entries.push({ id: 'abcdef012345', seq: 99, state: 'queued', page_url: pages[0].url, thread_id: 't1', presence: 'away', args: { scope: 'everything' }, snapshot: 'no' });
+  fs.writeFileSync(file, JSON.stringify(disk));
+  const b = boot(rig, { pages: [...a.store.values()] }); t.after(() => b.q.stop());
+  const bad = b.q.view().entries.find(e => e.id === 'abcdef012345');
+  assert.deepEqual([bad.state, bad.failure.say], ['failed', Q.ENTRY_UNREADABLE_SAY]);
+  await until(() => b.stateOf(ok2.queued.id) === 'published', 'the good one went on', 15000);
+  // something unexpected (here: the page store breaks while a post waits for its fill): paused for an error, said, resumed by the owner
+  const p3 = pageOf(3, [{ id: 'p', quote: 'q', msgs: [mine('Waiting. /tk(say it)', { ts: 'p1', channel: 'drawer', gaps: [{ id: 'g', instruction: 'say it', mode: 'pending' }] })] }]);
+  b.store.set(p3.url, p3);
+  rig.control({ apply: 'hold' });
+  const busy = pageOf(4, [drawn('y', 'Busy.')]); b.store.set(busy.url, busy);
+  await b.press(busy.url, 'y');
+  const w = await b.press(p3.url, 'p');
+  rig.control({});
+  await until(() => b.stateOf(w.queued.id) === 'filling', 'filling');
+  const real = b.store.get.bind(b.store);
+  b.store.get = url => { if (url === p3.url) throw new Error('the store broke'); return real(url); };
+  await until(() => b.q.view().state === 'paused_for_error', 'paused for the error');
+  assert.equal(b.q.view().paused.say, Q.QUEUE_BROKE_SAY);
+  b.store.get = real;
+  assert.ok(b.q.resume().ok, 'Try the queue again');
+  assert.equal(b.q.view().state, 'running');
+});
+
+test('AN UNREADABLE QUEUE FILE is kept (moved aside, never written over), the queue starts empty, and the owner is told where it is', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const file = path.join(rig.out, 'queue.json');
+  fs.writeFileSync(file, '{"state": "running", "entries": [ {"id": "trunc');
+  const b = boot(rig, { pages: [pageOf(1, [drawn('t1', 'Post words.')])] }); t.after(() => b.q.stop());
+  const v = b.q.view();
+  assert.deepEqual([v.entries.length, v.state], [0, 'running']);
+  assert.ok(v.unreadable && v.unreadable.file && v.unreadable.file !== file, 'moved aside');
+  assert.match(v.unreadable.say, /could not be read/);
+  assert.equal(fs.readFileSync(v.unreadable.file, 'utf8'), '{"state": "running", "entries": [ {"id": "trunc', 'kept exactly');
+  assert.match(path.basename(v.unreadable.file), /^blyg-publish-queue\.unreadable-\d{4}-\d\d-\d\dT/, 'a dated name');
+  await b.press(pageOf(1, []).url, 't1');
+  assert.equal(fs.readFileSync(v.unreadable.file, 'utf8'), '{"state": "running", "entries": [ {"id": "trunc', 'still kept after the queue wrote');
+});
+
+test('A LOOK PROMISED AT THE PRESS is kept: pressed under "see it first", the setting switched to one click later, it still stops for the look', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const gap = mode => ({ id: 'g', instruction: 'say it', mode, ...(mode === 'pending' ? {} : { agent: 'claude', text: 'Said.' }) });
+  const pages = [pageOf(1, [drawn('t1', 'Post 1 words.')]), pageOf(2, [{ id: 't2', quote: 'q', msgs: [mine('Post 2 words. /tk(say it)', { ts: 'p1', channel: 'drawer', gaps: [gap('pending')] })] }])];
+  const home = { ...rig.home, confirm: 'always', commands: { ...rig.home.commands, ...EDIT(rig) } };
+  const b = boot(rig, { pages, home }); t.after(() => b.q.stop());
+  const first = await b.press(pages[0].url, 't1');
+  await until(() => b.pub.book.mode === 'planned', 'the dialog');
+  const second = await b.press(pages[1].url, 't2');
+  assert.equal(second.queued.presence, 'promised_look');
+  await b.pub.confirm({ id: first.view.id, token: b.pub.book.run.token });
+  await until(() => b.stateOf(second.queued.id) === 'filling', 'its turn came (it waits for its passage)');
+  // the owner switches to one click on the machine meanwhile; then the passage lands and its turn comes
+  Object.assign(home, { confirm: 'never', plan_guard: ['--only-note'] });
+  b.store.get(pages[1].url).threads[0].msgs[0].gaps = [gap('filled-by-agent')];
+  await until(() => b.pub.book.mode === 'planned' && b.pub.book.run.id !== first.view.id, 'the second at its look');
+  assert.equal(b.pub.current().review, 'asked', 'looked at, as promised');
+  await sleep(150);
+  assert.ok(!rig.calls().some(c => c.step === 'apply' && /post-2/.test(c.argv[3])), 'nothing of it went out unseen');
+  await b.pub.cancel({ id: b.pub.book.run.id, token: b.pub.book.run.token });
+});
+
+test('A REFUSAL ABOUT THE SITE (a failed pre-flight) pauses the queue and keeps every post queued; Try the queue again, or the next press, resumes it', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const pages = [1, 2, 3].map(n => pageOf(n, [drawn(`t${n}`, `Post ${n} words.`)]));
+  const home = { ...rig.home, confirm: 'never', plan_guard: ['--only-note'], commands: { ...rig.home.commands, ...EDIT(rig), check: [process.execPath, FAKE, rig.log, rig.ctl, 'check'] } };
+  let siteOk = true;
+  const check = async () => (siteOk ? { ok: true } : { ok: false, message: 'blyg-publish preflight: this environment cannot publish yet:\n  - the node command is not on PATH (the conformance checker runs on it)' });
+  const b = boot(rig, { pages, home, pubExtra: { check } }); t.after(() => b.q.stop());
+  rig.control({ apply: 'hold' });
+  await b.press(pages[0].url, 't1');
+  const two = await b.press(pages[1].url, 't2');
+  const three = await b.press(pages[2].url, 't3');
+  siteOk = false;
+  rig.control({});
+  await until(() => b.q.view().state === 'paused_for_site', 'paused for the site');
+  assert.deepEqual([b.stateOf(two.queued.id), b.stateOf(three.queued.id)], ['queued', 'queued'], 'no post was failed');
+  assert.match(b.q.view().paused.say, /^Your site cannot publish right now\. The node command is not on the companion’s PATH\./);
+  siteOk = true;
+  assert.ok(b.q.resume().ok);
+  await until(() => b.stateOf(three.queued.id) === 'published', 'all out after Try the queue again', 15000);
+  // …and a press resumes it too
+  siteOk = false;
+  const p4 = pageOf(4, [drawn('t4', 'Post 4 words.')]); b.store.set(p4.url, p4);
+  const p5 = pageOf(5, [drawn('t5', 'Post 5 words.')]); b.store.set(p5.url, p5);
+  const four = await b.press(p4.url, 't4');
+  assert.equal(four.ok, false, 'run at once (nothing waited): refused in the dialog, as before');
+  rig.control({ apply: 'hold' }); siteOk = true;
+  await b.press(p4.url, 't4');
+  siteOk = false;
+  const five = await b.press(p5.url, 't5');
+  rig.control({});
+  await until(() => b.q.view().state === 'paused_for_site', 'paused again');
+  siteOk = true;
+  const p6 = pageOf(6, [drawn('t6', 'Post 6 words.')]); b.store.set(p6.url, p6);
+  await b.press(p6.url, 't6');
+  await until(() => b.stateOf(five.queued.id) === 'published', 'the press resumed it', 15000);
+});
+
+test('GIVING UP is one recorded step: a companion stopped in the middle finishes it after the restart, and the queue goes on', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const pages = [1, 2].map(n => pageOf(n, [drawn(`t${n}`, `Post ${n} words.`)]));
+  const a = boot(rig, { pages });
+  rig.control({ plan: 'fail', only: 'post-1' });
+  a.hear.on = false;   // the queue hears nothing more: as if the companion stopped right after it recorded `giving_up`
+  const first = await a.press(pages[0].url, 't1');
+  const second = await a.press(pages[1].url, 't2');
+  await until(() => a.pub.book.mode === 'failed_plan', 'the plan failed');
+  a.q.stop();
+  const file = path.join(rig.out, 'queue.json');
+  const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const e = disk.entries.find(x => x.run_id === first.view.id);
+  Object.assign(e, { state: 'giving_up', failure: { step: 'plan', line: '', mode: 'failed_plan' } });
+  fs.writeFileSync(file, JSON.stringify(disk));
+  rig.control({});
+  const b = boot(rig, { pages: [...a.store.values()] }); t.after(() => b.q.stop());
+  await until(() => b.stateOf(second.queued.id) === 'published', 'the queue went on', 15000);
+  assert.equal(b.stateOf(e.id), 'failed');
+  assert.equal(b.pub.book.run.id === first.view.id, false);
+  assert.ok(!fs.readdirSync(rig.folder).some(n => /post-1/.test(n)), 'the draft was taken away');
+});
+
+test('A RUN THE OWNER IS WATCHING (confirm always, the dialog) is not given up by itself: Try again is still theirs, and the queue waits, saying why', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const pages = [1, 2].map(n => pageOf(n, [drawn(`t${n}`, `Post ${n} words.`)]));
+  const b = boot(rig, { pages, confirm: 'always' }); t.after(() => b.q.stop());
+  const first = await b.press(pages[0].url, 't1');
+  await until(() => b.pub.book.mode === 'planned', 'the dialog');
+  const second = await b.press(pages[1].url, 't2');
+  rig.control({ apply: 'fail' });
+  await b.pub.confirm({ id: first.view.id, token: b.pub.book.run.token });
+  await until(() => b.q.view().state === 'paused_for_run', 'paused on the run');
+  await sleep(100);
+  assert.equal(b.pub.book.mode, 'failed_apply', 'not given up');
+  assert.ok(b.pub.current().can.includes('retry'));
+  rig.control({});
+  await b.pub.retry({ id: first.view.id, token: b.pub.book.run.token });
+  await until(() => b.pub.book.run.id !== first.view.id && b.pub.book.mode === 'planned', 'resumed: the second at its look');
+  assert.equal(b.entries().find(e => e.run === first.view.id).state, 'published');
+  assert.equal(b.stateOf(second.queued.id), 'running');
+  await b.pub.cancel({ id: b.pub.book.run.id, token: b.pub.book.run.token });
+});
+
+test('A POST THE OWNER ASKED TO LOOK AT waits for its agent\'s passage like any other (never failed as "not written yet")', async t => {
+  const rig = makeRig({ confirm: 'always' }); t.after(rig.done);
+  const busy = pageOf(1, [drawn('b', 'Busy first.')]);
+  const pending = pageOf(2, [{ id: 'p', quote: 'q', msgs: [mine('Mine. /tk(say it)', { ts: 'p1', channel: 'drawer', gaps: [{ id: 'g', instruction: 'say it', mode: 'pending' }] })] }]);
+  const b = boot(rig, { pages: [busy, pending], confirm: 'always' }); t.after(() => b.q.stop());
+  await b.press(busy.url, 'b');
+  await until(() => b.pub.book.mode === 'planned', 'the dialog');
+  const e = await b.press(pending.url, 'p');
+  await b.pub.cancel({ id: b.pub.book.run.id, token: b.pub.book.run.token });
+  await until(() => b.stateOf(e.queued.id) === 'filling', 'waiting for the fill');
+  b.store.get(pending.url).threads[0].msgs[0].gaps = [{ id: 'g', instruction: 'say it', mode: 'filled-by-agent', agent: 'claude', text: 'Said.' }];
+  await until(() => b.stateOf(e.queued.id) === 'running' && b.pub.book.mode === 'planned', 'then at its look');
+  await b.pub.cancel({ id: b.pub.book.run.id, token: b.pub.book.run.token });
+});
+
+test('THE RUNNER TAKES ONE PRESENCE: an unknown one is refused, nothing written', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const p = pageOf(1, [drawn('t1', 'Post words.')]);
+  const b = boot(rig, { pages: [p] }); t.after(() => b.q.stop());
+  const r = await b.pub.start({ page: p, threadId: 't1', scope: 'one', shown: 'never', presence: 'both' });
+  assert.deepEqual([r.ok, r.status], [false, 400]);
+  assert.deepEqual(fs.readdirSync(rig.folder), []);
 });
