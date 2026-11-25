@@ -14011,3 +14011,26 @@ a promised look kept after the setting changed; a site refusal pausing and resum
 restart; a watched run not given up; a look waiting for its passage; one presence), `blyg-publish-server` (queue-resume refused to guests,
 the own page and a form; the watched run waits; an interrupted owner's run after a restart), `blygpublish-drawer` (paused for the site,
 Try the queue again), `blygpublish-notice` (the race; the queue's own notices), `blyg-run` (the texts kept).
+
+### Confirmation review fixes (same day): old records and a way out of every park
+- **Only the post's own comments are rebuilt.** When an entry's turn comes, the threads rebuilt from a record are ONLY the other
+  threads of the post this entry publishes (the pressed thread's post, or the post it is added to: `postOfEntry`, `inPost`). Every
+  other thread, an unrelated older post on the same page included, is passed through as it is (the runner reads no other thread's
+  words). An old post edited in the drawer never stops a new post on its page.
+- **A record is not trusted to rebuild a post** (`publishedMsgsOf` answers unknown, so the entry is set aside, `unknown-text`) when it is
+  older than the version its thread says went out (its write failed at the end), or when it is marked `untrusted`: on a Forget, or a
+  give-up, of a run that may have published (`distrust`). The next version written from here writes a fresh record.
+- **"Look at it" always has a way out, queue busy or not.** The owner's look press runs at once whenever the runner is free (other
+  entries waiting or not); while it is busy the entry is queued first (`asked_to_look`) and is NEVER set aside again: when its turn
+  comes it runs and stops at the look, where the owner's choice is what proceeds. A comment of the post whose published text is unknown
+  is taken as it is in the drawer now (`drawer-text`, said in the dialog and seen in the preview); a note changed outside the plugin is
+  replaced (`outside-replaced`, said; Cancel there puts it back exactly). Both are `REVIEW_FACTS` that never force a look themselves.
+  `PUB_LOOK_WHY` says the choice in the dialog before the owner goes on.
+- **An exception while starting one post is about that post**: it fails with a fixed sentence (the detail in the run's log) and the
+  queue goes on; only the site and machine refusals pause it.
+- **Where an unreadable queue file was kept** is one value, `UNREADABLE_KEPT` (`moved_aside` | `left_in_place`); for `left_in_place` the
+  notice says the queue is kept in memory only until the companion restarts.
+Tests (`blyg-queue`): an old post edited in the drawer and a new post on its page (P1); a hashes-only record rebuilt (P2); `unknown-text`
+parked, looked at while busy, the drawer's text published after the look, the others after it (P3); `outside` parked, looked at while
+busy, Cancel at the look keeps the note exactly, and a look when the runner is free asks the outside question; a thread deleted before its
+turn and add-to-earlier with a re-press (P4); an exception in one start; a file left in place; a stale record and a Forget.

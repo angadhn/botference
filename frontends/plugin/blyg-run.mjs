@@ -196,11 +196,13 @@ export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be a
  *    asked        the owner asked to look at a post the queue had set aside (blyg-queue)
  *    none         confirm 'never' and nothing forces a look: the run goes straight through
  *  (agent-text, further and link-stub stay in the list: a record written before 2026-11-25 may name them.) */
-export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside']);
+//    outside-replaced  the owner answered Replace (or asked to look at a post set aside for it): recorded, never forcing a look
+//    drawer-text       another comment of the post is taken as it is in the drawer now (its published text could not be known): recorded
+export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside', 'outside-replaced', 'drawer-text']);
 export const LOOK_FORCED = Object.freeze(['left-out', 'outside']);
 export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'outside', 'asked', 'none']);
-export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, asked = false } = {}) {
-  const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside };
+export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, outsideReplaced = false, drawerText = false, asked = false } = {}) {
+  const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside, 'outside-replaced': outsideReplaced, 'drawer-text': drawerText };
   const reasons = REVIEW_FACTS.filter(k => has[k]);
   const forced = LOOK_FORCED.find(k => has[k]);
   if (forced) return { confirm: 'always', review: forced, reasons };
@@ -783,7 +785,7 @@ export function createPublisher(deps) {
     const before = book.run;
     book.move('checking');
     if (args.presence !== undefined && !PRESENCES.includes(args.presence)) r = fail(400, 'no such presence');
-    else { try { r = await startChecked({ ...args, id }); } catch (e) { log.write(id, { ev: 'note', text: `could not start: ${String((e && e.message) || e).slice(0, 400)}` }); r = { ...fail(500, START_BROKE_SAY), about: 'site' }; } }
+    else { try { r = await startChecked({ ...args, id }); } catch (e) { log.write(id, { ev: 'note', text: `could not start: ${String((e && e.message) || e).slice(0, 400)}` }); r = fail(500, START_BROKE_SAY); } }
     // a start that stopped before writing anything: the run is as it was before it (a finished run's record kept for the owner)
     if (book.mode === 'checking') {
       if (before && before.mode !== 'idle' && canMove('checking', before.mode)) book.move(before.mode, before);
@@ -792,7 +794,8 @@ export function createPublisher(deps) {
     if (!r.ok) log.write(id, { ev: 'note', text: `start refused (${r.status}): ${r.error}` });
     return r;
   }
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', presence = 'here' }) {
+  // (`drawerText`: the caller gives another comment of the post as it is in the drawer, its published text unknown: recorded as a reason)
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', presence = 'here', drawerText = false }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
     if (!EXTENTS.includes(extent)) return fail(400, `extent must be one of ${EXTENTS.join(', ')}`);
     if (extent === 'upto' ? !upto : !!upto) return fail(400, 'upto is the message a post goes up to, and only with extent upto');
@@ -838,9 +841,9 @@ export function createPublisher(deps) {
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, presence });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, presence, drawerText });
     }
-    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, presence }) : startNew({ page, threads, at, here, scope, S, id, cut, presence });
+    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, presence, drawerText }) : startNew({ page, threads, at, here, scope, S, id, cut, presence });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -924,6 +927,9 @@ export function createPublisher(deps) {
     if (!isPublishedThread(t)) return null;
     const rec = postOf(t.blyg_published.permalink);
     if (!rec) return null;
+    // a record NOT TRUSTED for this (marked so when a version may have gone out without it: a Forget, a give-up after a publish that may
+    // have pushed), or one older than the version the thread says went out (the record could not be written at the end): unknown
+    if (rec.untrusted || (Number(t.blyg_published.version) || 1) > (Number(rec.version) || 1)) return null;
     if (rec.texts && Array.isArray(rec.texts[t.id])) return JSON.parse(JSON.stringify(rec.texts[t.id]));
     const snap = rec.snapshot && Array.isArray(rec.snapshot.threads) ? rec.snapshot.threads.find(x => String(x.thread) === String(t.id)) : null;
     if (!snap || !Array.isArray(snap.msgs)) return null;
@@ -937,6 +943,10 @@ export function createPublisher(deps) {
       out.push(live);
     }
     return out;
+  }
+  // a version of this post may have gone out without its record being written: the record is no longer used to rebuild its comments
+  function distrust(run) {
+    try { const rec = run && run.permalink ? postOf(run.permalink) : null; if (rec) { recordPost(run.permalink, { ...rec, untrusted: true }); logNote('the post\'s record is no longer trusted to rebuild its comments (a version may have gone out without it)'); } } catch { /* the version check still catches a stale record */ }
   }
   /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version } | null }. */
   function earlierOf({ page, threadId }) {
@@ -1041,7 +1051,7 @@ export function createPublisher(deps) {
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, presence = 'here' }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, presence = 'here', drawerText = false }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     // THE POINTS: as recorded, with the chosen thread's moved (only forward) or, from the header, taken to the end
     const points = { ...(pub.points && typeof pub.points === 'object' ? pub.points : {}) };
@@ -1108,12 +1118,13 @@ export function createPublisher(deps) {
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', presence,
       version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
-        extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
+        outside_replaced: !!note.outside, drawer_text: !!drawerText, extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub), asked: presence === 'asked_to_look' });
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub),
+      outsideReplaced: !!(extra && extra.outside_replaced), drawerText: !!(extra && extra.drawer_text), asked: presence === 'asked_to_look' });
     // WHAT EACH THREAD SAID in this version (the owner's included messages), kept in the post's record once published: a later queued
     // press of another thread of the post takes this thread's text from there, never from an older press or unpressed drawer text
     const texts = Object.fromEntries(picked.map(t => [String(t.id), includedMsgs(t, (extra && extra.points && extra.points[t.id]) || '').map(m => JSON.parse(JSON.stringify(m)))]));
@@ -1315,6 +1326,7 @@ export function createPublisher(deps) {
       }
     }
     if (!canMove(book.mode, 'abandoned')) return fail(409, 'The run moved on meanwhile.');
+    if (!beforeApply(book.run) && !publishedNothing(book.run)) distrust(book.run);
     book.move('abandoned', { cleanup });
     return { ok: true, view: viewOf(book.run) };
   }
@@ -1333,6 +1345,7 @@ export function createPublisher(deps) {
     const unknown = state === 'unknown';
     if (book.mode !== 'abandon_failed' && !unknown && !publishUnsure(book.run)) return fail(409, 'Forget is offered only when your site could not give the publish up, when a new version may already be published, or when its step cannot be identified.');
     if (unknown && !sure) return { ...fail(409, 'Forgetting runs nothing and stops nothing: the earlier step may still be running on the companion\'s machine. Press Forget again to confirm.'), view: current() };
+    if (!publishedNothing(book.run)) distrust(book.run);
     const note = String(book.run.note_rel || '').replace(/[^\w ./-]/g, '');
     logNote(`forgotten here (child ${state}); to end it on the example site by hand: scripts/blyg-publish --abandon ${note || '<note>'}, then scripts/blyg-publish ${note || '<note>'} --unstage-note`);
     book.move('abandoned', { cleanup: cleanupOf('forgotten', publishUnsure(book.run)
@@ -1373,6 +1386,7 @@ export const PRESENCES = Object.freeze(['here', 'away', 'asked_to_look']);
 /** Who a start's refusal is about (`about`): the post itself, or the site or this machine (a failed pre-flight, a broken setting, a
  *  step still running): the queue fails the post for the first, and pauses, keeping the post, for the second. */
 export const REFUSAL_ABOUT = Object.freeze(['entry', 'site']);
-const START_BROKE_SAY = 'Something went wrong on the companion while starting this post; the troubleshooting details say what.';
+// (an exception while starting ONE post is about that post: it fails, the detail is in the run's log, and a queue goes on)
+const START_BROKE_SAY = 'Something went wrong on the companion while starting this post, so it was not published; the troubleshooting details say what.';
 export const settingChangedSay = (shown, inForce) => `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${inForce}” is in force (${inForce === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`;
 const LIQUID_SAY = 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.';

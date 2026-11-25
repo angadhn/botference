@@ -10812,6 +10812,8 @@ ${bubbleShellHtml()}`;
       further: 'It now includes messages that were held back.',
       'left-out': 'A comment that was in your post is no longer on this page, so it will be left out.',
       outside: 'It replaces changes made to your post outside the plugin.',
+      'outside-replaced': 'It replaces changes made to your post outside the plugin. Cancel keeps your post as it is.',
+      'drawer-text': 'Another comment of this post was changed since it was published and not pressed again: it goes out as it is in your drawer now.',
     });
     function pubReasonsHtml(run) {
       const why = Array.isArray(run.reasons) ? run.reasons : [];

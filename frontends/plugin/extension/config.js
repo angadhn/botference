@@ -362,9 +362,9 @@
   // why a post was set aside for the owner's look (blyg-queue NEEDS_LOOK_WHY)
   const PUB_LOOK_WHY = Object.freeze({
     'left-out': 'A comment that was in your post is no longer on this page, so it would be left out.',
-    outside: 'Your post was changed outside the plugin since it was last published from here, and those changes would be lost.',
+    outside: 'Your post was changed outside the plugin since it was last published from here, and those changes would be lost. If you go on, you see the post before it is published, and Cancel keeps it as it is.',
     'earlier-failed': 'An earlier post from this page did not go out, so this one waits for you.',
-    'unknown-text': 'Another comment of this post was changed since it was published and not pressed again, so what it should say is not known.',
+    'unknown-text': 'Another comment of this post was changed since it was published and not pressed again, so what it should say is not known. If you go on, it is taken as it is in your drawer now, and you see the post before it is published.',
   });
   const pubUnderWay = q => ((q && q.entries) || []).filter(e => PUB_UNDER_WAY.indexOf(e.state) !== -1).length;
   /** The ONE sentence for a queued post that failed: the companion's plain sentence, else the run's (pubFailureOf). */

@@ -88,6 +88,11 @@ export const ENTRY_UNREADABLE_SAY = 'This queued post could not be read back aft
 export const ENTRY_BROKE_SAY = 'Something went wrong on the companion with this queued post, so it was not published. Press it again.';
 export const QUEUE_BROKE_SAY = 'Something went wrong in your publish queue, so it stopped. Your queued posts are kept: press “Try the queue again”.';
 export const UNREADABLE_SAY = 'Your queued posts could not be read when the companion started, so they were not published. The file was kept as it was';
+/** Where an unreadable queue file was kept, one value (`unreadable.kept`):
+ *    moved_aside    renamed to a dated name beside it; the queue writes a fresh file
+ *    left_in_place  it could not be moved: it is never written over, so the queue lives in memory only until the companion restarts */
+export const UNREADABLE_KEPT = Object.freeze(['moved_aside', 'left_in_place']);
+const LEFT_IN_PLACE_SAY = 'It could not be moved aside, so it was left where it is and the queue is kept in memory only until the companion restarts';
 
 const clone = v => JSON.parse(JSON.stringify(v));
 const words = (s, n = 10) => String(s || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, n).join(' ').slice(0, 90);
@@ -125,11 +130,11 @@ export function createQueue(deps) {
     const shaped = v && typeof v === 'object' && QUEUE_STATES.includes(v.state) && Array.isArray(v.entries) && Number.isInteger(v.seq);
     if (got.state === 'unreadable' || (got.state === 'ok' && !shaped)) {
       const aside = path.join(path.dirname(deps.file), `blyg-publish-queue.unreadable-${clock().toISOString().replace(/[:.]/g, '-')}.json`);
-      let kept = aside;
-      try { fs.renameSync(deps.file, aside); } catch { kept = deps.file; }
+      let kept = 'moved_aside';
+      try { fs.renameSync(deps.file, aside); } catch { kept = 'left_in_place'; }
       if (got.state === 'unreadable') warnUnreadable(deps.file, got.error);
-      // (`kept`: where the file is now; when it could not be moved, nothing is ever written over it: the queue then lives in memory)
-      unreadable = { say: `${UNREADABLE_SAY}: ${kept}`, file: kept, at: clock().toISOString() };
+      const file = kept === 'moved_aside' ? aside : deps.file;
+      unreadable = { kept, file, at: clock().toISOString(), say: `${UNREADABLE_SAY}: ${file}.${kept === 'left_in_place' ? ` ${LEFT_IN_PLACE_SAY}.` : ''}` };
       say(unreadable.say);
     } else if (shaped) {
       rec = { state: v.state, paused: v.paused && typeof v.paused === 'object' ? v.paused : null, seq: v.seq, entries: [] };
@@ -149,7 +154,7 @@ export function createQueue(deps) {
     // finished entries are kept for the owner's list (the newest FINISHED_KEPT), open ones always
     const done = rec.entries.filter(e => !OPEN_STATES.includes(e.state));
     if (done.length > FINISHED_KEPT) { const drop = new Set(done.slice(0, done.length - FINISHED_KEPT)); rec.entries = rec.entries.filter(e => !drop.has(e)); }
-    if (deps.file && !(unreadable && unreadable.file === deps.file)) writeJson(deps.file, rec, { mode: 0o600 });
+    if (deps.file && !(unreadable && unreadable.kept === 'left_in_place')) writeJson(deps.file, rec, { mode: 0o600 });
   };
   const announce = () => { try { deps.broadcast({ type: 'blyg-publish', queue: { state: rec.state, open: rec.entries.filter(e => OPEN_STATES.includes(e.state)).length } }); } catch { /* nobody listening */ } };
 
@@ -194,11 +199,23 @@ export function createQueue(deps) {
   }
   const labelOf = t => words(((t.msgs || []).find(m => m && m.kind !== 'tools') || {}).text);
   // The page the run is given: as it is now, with the pressed threads as pressed (an agent's passage still pending there takes its state
-  // from the page, matched by message and instruction), every other PUBLISHED thread with what its post was last published with, and
-  // nothing else. → { page } | { park } (a published thread whose published text cannot be known) | null (the page is gone)
+  // from the page, matched by message and instruction), and the OTHER THREADS OF THE POST THIS ENTRY PUBLISHES (the pressed thread's
+  // post, or the post it is added to) with what that post was last published with. Every other thread is passed through as it is on
+  // the page (the runner reads no other thread's words: a new post takes only its own, a new version only its post's).
+  // → { page } | { park } (a thread of this post whose published text cannot be known) | null (the page is gone)
+  const postKey = p => String(p || '').replace(/\/+$/, '');
+  function postOfEntry(e, live) {
+    const here = (live.threads || []).find(t => t && t.id === e.thread_id);
+    if (here && isPublishedThread(here)) return { permalink: postKey(here.blyg_published.permalink) };
+    if (e.args.join === 'add' && e.args.post) return { id: String(e.args.post) };
+    return null;
+  }
+  const inPost = (t, post) => !!post && isPublishedThread(t) && (post.permalink ? postKey(t.blyg_published.permalink) === post.permalink
+    : postKey(t.blyg_published.permalink).split('/').pop() === post.id);
   function pageFor(e) {
     const live = deps.readPage(e.page_url);
     if (!live) return null;
+    const post = postOfEntry(e, live);
     const pressed = new Map(e.snapshot.map(t => [t.id, t]));
     const threads = [];
     for (const t of live.threads || []) {
@@ -212,11 +229,11 @@ export function createQueue(deps) {
           m.gaps = m.gaps.map(g => (g && g.mode === 'pending' ? (lm.gaps.find(x => x && x.instruction === g.instruction && x.mode !== 'pending') || g) : g));
         }
         threads.push({ ...t, msgs: s.msgs });
-      } else if (isPublishedThread(t)) {
+      } else if (inPost(t, post)) {
         const msgs = pub.publishedMsgsOf(t);
-        if (!msgs) return { park: 'unknown-text' };
+        if (!msgs) return { park: 'unknown-text', live };
         threads.push({ ...t, msgs });
-      }
+      } else threads.push(t);
     }
     return { page: { ...live, threads } };
   }
@@ -230,13 +247,13 @@ export function createQueue(deps) {
   // ---- the runner, fed one entry at a time ----------------------------------------------------------------------------------------
   // (the runner's presence for an entry: the owner moved on, or a look was promised or asked for)
   const presenceFor = e => (e.presence === 'away' ? 'away' : 'asked_to_look');
-  async function startEntry(e, p) {
+  async function startEntry(e, p, { drawerText = false } = {}) {
     const id = crypto.randomBytes(8).toString('hex');
     moveEntry(e, 'running', { run_id: id, started_by: 'queue' });
     const a = e.args;
     // (`shown` is the setting in force: the look promised at the press is carried by `presence`, the stricter of the two applying)
     const r = await pub.start({ page: p, threadId: e.thread_id, scope: a.scope, shown: deps.confirmNow(), join: a.join, post: a.post, postVersion: a.post_version,
-      outside: a.outside, extent: a.extent, upto: a.upto, id, presence: presenceFor(e) });
+      outside: e.presence === 'asked_to_look' ? 'replace' : a.outside, extent: a.extent, upto: a.upto, id, presence: presenceFor(e), drawerText });
     if (r.ok) { if (e.state === 'running' && pub.book.run.id === id) reconcile(e); return r; }
     if (e.state !== 'running') return r;
     // a refusal about the SITE or this machine (a failed pre-flight, a broken setting): the post goes back to its place and the queue
@@ -249,12 +266,17 @@ export function createQueue(deps) {
     return r;
   }
   // a post whose turn has come: given to the runner, or waiting for its agent's passage, or set aside, or failed (every way said)
+  // A POST THE OWNER ASKED TO LOOK AT is never set aside again: it runs (first in the queue) and stops at the look, where the owner's
+  // choice is what proceeds: a comment of the post whose published text is unknown is taken as it is in the drawer now (shown, said),
+  // and a note changed outside the plugin is replaced (said; Cancel there puts it back exactly)
   async function turn(e) {
     const got = pageFor(e);
     if (!got) { moveEntry(e, 'failed', { failure: { say: GONE_SAY } }); return; }
-    if (got.park) { moveEntry(e, 'needs_look', { why: got.park }); return; }
-    if (gapsOf(e, got.page).some(g => g.mode === 'pending')) { moveEntry(e, 'filling', { fill_since: clock().toISOString() }); return; }
-    await startEntry(e, got.page);
+    const asked = e.presence === 'asked_to_look';
+    if (got.park && !asked) { moveEntry(e, 'needs_look', { why: got.park }); return; }
+    const page = got.park ? got.live : got.page;
+    if (gapsOf(e, page).some(g => g.mode === 'pending')) { moveEntry(e, 'filling', { fill_since: clock().toISOString() }); return; }
+    await startEntry(e, page, { drawerText: !!got.park });
   }
   let pumping = Promise.resolve();
   /** Hand the runner the next entry while it is free and the queue runs. One pump at a time, in turn; an error is never swallowed. */
@@ -389,7 +411,8 @@ export function createQueue(deps) {
     // (…unless an earlier post from this page is set aside, waiting for a fill or being given up: this one waits behind it)
     const behind = rec.entries.some(x => x.page_url === page.url && x.thread_id !== threadId && ['needs_look', 'filling', 'giving_up'].includes(x.state));
     // THE RUNNER IS FREE AND NOTHING WAITS: run it at once, as before the queue (the dialog shows what it does, the look included)
-    if (!runnerBusy() && rec.state === 'running' && !waiting && !behind) {
+    // (a look the owner asked for runs at once whenever the runner is free: they are at the dialog now)
+    if (!runnerBusy() && rec.state === 'running' && (look || (!waiting && !behind))) {
       const r = await pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto, presence: look ? 'asked_to_look' : 'here' });
       if (!r.ok) return r;
       // (a post of this thread set aside for a look is the one now run; anything else of this thread still waiting is replaced by it)
