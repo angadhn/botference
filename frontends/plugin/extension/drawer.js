@@ -11305,7 +11305,10 @@ ${bubbleShellHtml()}`;
           const parked = P.opener === 'look' ? pubEntryOf(P.thread) : null;
           const lookSay = parked ? `<p class="publook">This post was set aside for your look. ${esc(CFG.PUB_LOOK_WHY[parked.why] || '')}</p>` : '';
           const ahead = CFG.pubUnderWay(D.pub.queue);
-          const queueSay = ahead && !parked ? `<p class="pubquiet">${ahead === 1 ? 'One post is' : esc(String(ahead)) + ' posts are'} on the way out already: this one goes after ${ahead === 1 ? 'it' : 'them'}. You can carry on reading.</p>` : '';
+          // with "you will see it first", a post pressed while another is going out waits, and is shown to the owner when its turn comes:
+          // the queue cannot carry on by itself past it. Said plainly, with the way to switch to one click (the CLI, on the machine)
+          const queueSay = ahead && !parked ? `<p class="pubquiet">${ahead === 1 ? 'One post is' : esc(String(ahead)) + ' posts are'} on the way out already: this one goes after ${ahead === 1 ? 'it' : 'them'}. ${P.shown === 'never' ? 'You can carry on reading.'
+            : 'Because you see each post before it is published, it will wait for your look when its turn comes, and the posts after it wait too. To let posts go out by themselves, switch to one click on the companion’s machine: set "confirm": "never" (with a "plan_guard") using botference blyg-home set.'}</p>` : '';
           // the post was changed outside the plugin since it was last published from here: asked, always (whatever the setting)
           if (P.outside === 'asking' || P.outside === 'replacing') {
             const lost = Number(P.lost) || 0;

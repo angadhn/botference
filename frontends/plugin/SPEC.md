@@ -12923,7 +12923,7 @@ Tests: `blygpublish-background` (per act, per tab, spent; start → plan fails �
 
 ### The drawer never loses a run
 
-The plane on ANY thread first asks the companion for its run: a live one is shown in its own view ("For “<title>”"), never the scope
+The plane on ANY thread (SUPERSEDED 2026-11-25: on the run's OWN thread, and only a run waiting for the owner; any other press is queued) first asks the companion for its run: a live one is shown in its own view ("For “<title>”"), never the scope
 choice. Close keeps the run; `closed` may go straight to any run view (`PUB_MOVES`). Who put the dialog up is one named value
 (`PUB_OPENERS`: start, plane, drawer); a one-click run stays out of the way only when THIS drawer started it. The confirmation has a
 Close too.
@@ -12956,7 +12956,8 @@ box "<Agent>" or "<Agent> + <author>"). The text is escaped as plain text whoeve
 earlier rule); inside the scope a backtick and a TK mark are character references. The instruction is one inert line (the example site
 never shows it on the page or the wire). A `[TK]` the owner typed as words is shown as the letters (`&#91;TK]`), never read as grammar.
 **THE AGENT-TEXT RULE** (`reviewFor`, `REVIEW_REASONS`): a post with any such passage ALWAYS stops at `planned` for the owner's look,
-whatever `confirm` says (`run.review = 'agent-text'`).
+whatever `confirm` says (`run.review = 'agent-text'`). (SUPERSEDED 2026-11-25: with one click it publishes straight in its box; see "The look
+policy" under the publish queue.)
 
 ### `/tk` gaps
 
@@ -13353,7 +13354,7 @@ A record written by an older companion (`failed` + `failed_step`, `interrupted` 
 owner's view still carries `failed_step`/`interrupted_from`, DERIVED from the mode for the words on screen. Which step is running is
 `STEP_OF[mode]`; the running command's start time and last line are facts shown only while the mode is a running one.
 
-One run at a time for the whole companion (a second start is refused, not queued). Step A (start): the note
+One run at a time for the whole companion (a second start is refused, not queued; SUPERSEDED 2026-11-25: a press while a run is under way is accepted into the publish queue, below). Step A (start): the note
 is written inside the notes folder (real path inside it; never over an existing file; never through a link;
 `O_EXCL|O_NOFOLLOW`), then `prepare` (if set) and `plan` run; nothing else of the companion's is touched. A
 note's `blyg_sources` is what a site's importer fetches, so it is written only for a public https/http address on the
@@ -13810,7 +13811,7 @@ the owner could never publish a new version of that post, or add to it, from her
   post at its origin; nonsense and this computer's addresses).
 
 ### Review fixes (batch 3)
-- **Never unseen**: `reviewFor` adds `further` (a whole-thread republish that now includes messages a post "up to here" held back)
+- **Never unseen** (SUPERSEDED 2026-11-25 for one click: both publish straight, the reason recorded; see "The look policy"): `reviewFor` adds `further` (a whole-thread republish that now includes messages a post "up to here" held back)
   and `link-stub` (a new post made a response because of the one blyg post it links to): both always stop at `planned` for the
   owner's look, whatever `confirm` says, with a quiet line saying why (REVIEW_REASONS).
 - **The start holds the run first**: `start` moves to `checking` before its first await (the pre-flight, the link checks), so a
@@ -13826,3 +13827,142 @@ the owner could never publish a new version of that post, or add to it, from her
   on that blyg's web origin AND under its path (https://host/alice/ does not vouch for https://host/mallory/). A quoted post's
   `data-blyg-origin` is honoured only on such a page. `source` (`BIND_SOURCES`: feed | hub) says where a claim came from: `hub`
   (sent only for a binding hubbind.js honoured on the companion's own or a listed hosted Hub) needs no such page.
+
+## Amendment (2026-11-25): the publish queue
+
+The owner reads quickly and posts many short blygs a day: highlight, comment, press the plane, move on, and again a minute later on
+another page. A run takes one to two minutes (plan, build and check, push, wait for the live site), and a second press used to be
+refused ("a publish run is already under way"). Now every press is accepted at once and published in order, in the background, with a
+notice as each goes live.
+
+### The queue (`blyg-queue.mjs`, `<companion data dir>/blyg-publish-queue.json`, 0600)
+- **One runner.** The run machinery (`blyg-run.mjs`) stays the single runner. The queue hands it one entry at a time and starts the
+  next when a run ends (it hears every move: `createPublisher({ onMove })`). No second runner and no timer standing in for a state.
+- **An entry** is one press: the page, the thread, scope, join (and the post it adds to), extent and upto, outside, the kind (new or
+  edit) and the post, the owner's press time, a short label (the comment's first words), and the messages of the page's publishable
+  threads at the press (the snapshot). Owner only, like every route here.
+- **Entry states**, one field (`entry.state`), moved only by `moveEntry`, which refuses a move `ENTRY_MOVES` does not list:
+  `queued` (waiting for the runner), `looking` (waiting, ahead of the queued ones: the owner asked to look at a post set aside for them;
+  its run stops at `planned`), `filling` (its turn came while an agent's passage in it was still being written), `needs_look` (set
+  aside, nothing written), `running`, `published`, `failed`, `cancelled`. `failed → published` when the owner's Try again on a run that
+  paused the queue went live after all; `running → queued` only after a restart when nothing was written.
+- **The queue's state**, one field (`state`), moved only by `moveQueue`: `running` | `paused` (with `paused_by`: the run and entry).
+- **The order**: `looking` entries first, then `queued`, each by press. An entry never overtakes an EARLIER entry from the same page
+  that is `needs_look` or `filling` (two entries for one post run in order, and each sees the record left by the one before: version,
+  note hash, the thread's `blyg_published`).
+- **The limit**: `QUEUE_MAX` (20) open entries (queued, looking, filling, needs_look, running); the 21st press is refused with
+  `FULL_SAY` ("20 posts are already waiting to go out. Wait for one to go out, or cancel one, then press again."). No minimum gap between
+  posts. The newest 20 finished entries are kept for the owner's list.
+
+### A press (`POST /blyg-publish/start`, now through `blygQueue.press`)
+- **Runner free, nothing waiting**: run at once, as before the queue (the answer is the run; the dialog shows it, the look included).
+  The entry is born `running` (`started_by: 'owner'`).
+- **Otherwise**: accepted at once (`{ queued: entry, replaced, queue }`); the drawer closes the dialog and the footbar says "Queued. 2
+  posts are ahead of it. You'll be told when it's live."; the thread's chip says "queued · 2 ahead".
+- **The same thread again** while its entry still waits (queued, looking, filling, needs_look): that entry takes the latest press (args
+  and snapshot; latest wins; `replaced: true`, said in the footbar). Pressed while its own entry is running: a new entry behind it,
+  which goes out as the next version.
+- A stale drawer is refused as before (`settingChangedSay`). Not set up: the runner's own refusal, nothing queued.
+- `GET /blyg-publish/run` and every answer that carries the run carry `queue` (the entries as the owner sees them: id, state, page,
+  label, ahead, run id, started_by, why, result, failure, paused_by). A remote owner's failure sentences are scrubbed of paths.
+- `POST /blyg-publish/queue-cancel {entry}`: an entry not yet running is cancelled; nothing of it was written. A running one: 409 (its
+  own steps can stop it). Inside the `/blyg-publish/` block: owner only, the pinned extension only, JSON only.
+- Events: `{type:'blyg-publish', queue:{state, open}}`, owner only (`OWNER_ONLY_EVENTS`).
+
+### What goes out: the text at the press
+The snapshot is what goes out ("what you pressed is what goes out", even if the owner keeps typing; a later press replaces it). When
+its turn comes the entry is given the page AS IT IS THEN (what was published since, so each entry sees the one before) with the pressed
+threads' messages as pressed. A thread deleted since is gone from it. An agent's passage still `pending` in the snapshot takes its state
+from the page when it lands (matched by message and instruction). A post set aside for a look is looked at as the thread is when the
+owner opens it (the dialog shows it).
+
+### The look policy (the owner, 2026-11-25) — `blyg-run reviewFor`, `LOOK_FORCED`
+- One list, `LOOK_FORCED = ['left-out', 'outside']`, read in ONE place (`reviewFor`): with `confirm: never` a look is forced only when
+  something already published would be lost without the owner having asked for it: a comment that was in the post and is no longer on
+  the page (`left-out`), or a note changed outside the plugin that the run would replace (`outside`).
+- Every other reason publishes straight with one click: an agent's passage (it is shown in the drawer before the press, and published
+  in its marked box), a lone-link response, a header plane taking an "up to here" post to the end. Each reason found is still recorded
+  on the run (`run.reasons`, from `REVIEW_FACTS`), in the log's `run` line and in the dialog's quiet lines, so it can be said why a
+  look was or was not asked.
+- With `confirm: always` every post is looked at, as before (`review: 'setting'`). `asked` is the owner's own request to look at a
+  post the queue set aside.
+
+### A post set aside for a look (`needs_look`)
+- Every forced reason is known BEFORE anything is written: `startNew`/`startEdit` compute `reviewFor` before the note is written (the
+  rendering, the link check, the left-out count, the outside hash are all in by then). A queued press (`unattended`) whose look is
+  forced answers `park` and writes nothing; the entry moves to `needs_look` (`why`: `left-out`, `outside`, or `earlier-failed`) and the
+  queue carries on with the next entry. The worker tells "One post needs your look before it is published." with the reason.
+- The owner opens it from the thread ("needs your look", a "look at it" button, or the plane): the dialog says why (`PUB_OPENERS` gains
+  `look`), and the start carries `look: 'yes'`: run at once when the runner is free (the outside question is asked in the dialog as
+  ever), else the entry moves to `looking` and runs ahead of the queue; its run stops at `planned` (review `asked` when nothing else
+  calls for one).
+
+### An agent's passage still being written
+When an entry's turn comes and an included message holds a `pending` gap, the entry moves to `filling` and the queue goes on. It is
+looked at every 2 s (`FILL_CHECK_MS`; the interval exists only while an entry is `filling`): filled → `queued` again (it is then next);
+`failed` → `failed` with `FILL_FAILED_SAY` (never published with a hole); still pending after `FILL_WAIT_MS` (5 minutes) → `failed` with
+`FILL_LATE_SAY`.
+
+### When a run fails
+- In a mode where the site certainly published nothing (`NOTHING_PUBLISHED_MODES`: before apply, `failed_apply`, `interrupted_applying`,
+  `interrupted_applied`): the entry is `failed` (its step, the site's line, the mode: the owner reads ONE sentence, `pubEntrySay`), the run
+  is given up through the owner's own Start over (`abandon`), and the queue carries on. If that abandon is refused or fails, the queue
+  pauses.
+- Where the site may have published (`failed_publish`, `interrupted_publishing`, `interrupted_unknown`, `abandon_failed`): the entry is
+  `failed`, the queue PAUSES on that run, and the notice says "… Your other posts wait until you deal with it." It resumes when that run
+  ends (published, or given up: Try again, Forget, Start over as today); a run that went live after a Try again marks its entry
+  `published`.
+- A failure (either kind) sets later `queued` entries from the same page aside (`needs_look`, `earlier-failed`): never overtaking.
+- A refusal before anything is written (a start's own sentence) marks the entry `failed` with that sentence; the queue goes on.
+- This applies to every run in the queue, the one started at once included: with one click the owner has moved on.
+
+### `confirm: always`
+Nothing is published unseen, so the queue cannot flow by itself. The first press when idle is today's dialog. A press while another
+run is under way is queued; when its turn comes its run stops at `planned` and the worker tells "Your post is ready for your look before
+it is published." (only for a run the QUEUE started; one the owner started in the dialog is in front of them). The queue waits for the
+owner at that entry. The dialog says so plainly when posts are under way, with the way to switch: set `"confirm": "never"` (with a
+`"plan_guard"`) using `botference blyg-home set` on the companion's machine. Nothing in the browser changes the setting.
+
+### A restart
+The run record is read first (an unfinished run becomes `interrupted_<mode>`, as before). Then each `running` entry is brought in line
+with its run (`reconcile`: published, cancelled, given up, failed and given up or paused); an entry whose run never got past the
+pre-flight (nothing written) is `queued` again. A queue `paused` on a run that is no longer live resumes. Then the queue carries on.
+
+### What the owner sees (drawer, `config.js` wording)
+- On each thread (`pubEntryLine`): "queued · 2 ahead" / "queued · next" / "queued · waits until the post that went wrong is dealt with"
+  (paused) / "queued · waiting for the agent’s passage" / "publishing…" (the run's own line, as before) / "published · vN" (the thread's
+  record) / "needs your look" with "look at it" / "failed: <one sentence>".
+- A small "Publishing" list at the top of the comments (the queue, newest last: entries under way or set aside, and those that ended
+  in the last half hour), each with the comment's first words, its page when another, and its state; "Cancel" on entries not yet
+  running (`data-act="pub-queue-cancel"`: the trusted click of the delegated handler, refused in a frame, op `queue-cancel` in
+  `BLYG_PUBLISH_OPS` with an entry id only).
+- The plane on a thread shows a run only when it is that thread's and waits for the owner (its look, a failure); any other press is a
+  press (queued behind whatever runs).
+
+### The worker's watch (`config.js PUB_WATCH_STATES`, extended, not paralleled)
+- Still `idle | watching | notice`, one field, moved only by `pubWatchMove` from the table `PUB_WATCH_MOVES[move][from]`: watch, tell,
+  end, quiet, spend, seen. `watching` = posts are under way (queued, looking, filling, running): the badge shows HOW MANY; `notice` =
+  nothing under way and something told is unseen: ✓ (all live) or !.
+- What is told, once per key (`told`): `pubEntryNotice` (published → live; failed → its sentence; needs_look → "One post needs your
+  look…"; a queue-started run waiting at the look → "ready for your look"). Live posts within `PUB_FOLD_MS` (a minute) of the first fold
+  into ONE toast whose words count up ("3 posts are live.") with the newest post's link (the settings name no stream page); problems
+  always have their own toast. Toasts stack from the corner; a live toast replaces the live one before it (`pubtoast.js`).
+- The look is the owner-only event stream (`{type:'blyg-publish'}` of a run or the queue), or the alarm's bounded poll while watching;
+  what had already ended before the owner's press is not news.
+
+### Measured pace (an end-to-end run, 2026-11-25)
+The real publisher (`scripts/blyg-publish`) in a throwaway clone of the example blog with a local bare remote, `--only-note --quick`,
+`--no-mentions`, no network, and the live-site wait stubbed (the built site of the pushed commit served as the live site): three
+posts pressed in under a second were all published in order, 33-34 s each (prepare 0.3 s, plan 0.8 s, build-and-check 30-31 s, push
+and verify 1.4 s). The real Netlify deploy wait comes on top of each publish. A second run, plain / agent passage / passage still being
+written (filled 85 s later) / plain: the first two went out, the third waited for its fill while the fourth went out, then the third.
+
+### Tests
+`blyg-queue.test.mjs` (the tables; three presses in a row; the same thread twice, then while running; a forced look set aside and the
+next published, then looked at; an agent passage straight, a pending one waiting and filled, a failed fill, a fill too late; a failure
+before apply given up; a failure after push paused and resolved; a restart; a restart while paused; two entries for one post and an
+earlier failure; the 21st; cancel; confirm always), `blyg-run` (the look policy), `blyg-publish-server` (a second press queued, the
+queue in the answers, queue-cancel refused to a guest, an anonymous caller, the companion's own page and a form; the queue's events
+owner only; a restart gives an interrupted run up), `blygpublish-drawer` (the queued press, the chip, the list, Cancel, untrusted Cancel,
+needs your look, paused), `blygpublish-notice` (the watch table, the count, folding, a problem's own toast), `blygpublish-background`
+(look and queue-cancel forwarded, odd ones refused), `blygpublish-walk`.
