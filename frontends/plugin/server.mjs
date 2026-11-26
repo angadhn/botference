@@ -3327,11 +3327,24 @@ const hubLink = createHubLink({
   repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),
   fileReply: ({ bound, quote, comment }) => hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer }),
-  press: ({ url, thread_id }) => {
+  // (`join: 'add'`, the post and its version: the plugin's own add-to-earlier path, exactly as the drawer's "Add to your earlier post")
+  press: ({ url, thread_id, join = '', post = '', postVersion = '' }) => {
     const page = store.readPage(url);
     if (!page) return Promise.resolve({ ok: false, status: 404, error: 'gone' });
     const v = validateHome(store.readConfig().blyg_home);
-    return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link' });
+    return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link', join, post: String(post), postVersion: String(postVersion) });
+  },
+  // what a reply can be added to: for a blyg post's page record (it must be that post's), and for one filed thread
+  earlier: ({ page, origin, id }) => {
+    const p = store.readPage(page);
+    const item = p && p.blyg && p.blyg.status === 'blyg' ? p.blyg.item : null;
+    if (!item || item.origin !== origin || item.id !== id) return [];
+    const e = blygPublish.earlierPublicOf({ page: p });
+    return e ? [e] : [];
+  },
+  earlierFor: ({ url, thread_id }) => {
+    const p = store.readPage(url);
+    return p ? blygPublish.earlierPublicOf({ page: p, threadId: thread_id }) : null;
   },
   cancel: entry => blygQueue.cancel({ entry }),
   // a saved draft's passage asked again (as the drawer's refill), and a saved draft thrown away (as the drawer's delete of a thread)

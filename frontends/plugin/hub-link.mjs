@@ -75,6 +75,16 @@ export const HUB_LINK_LIMITS = Object.freeze({
   audioReading: 2,
   audioReadMs: 20000,
 });
+/** HOW A PUBLISH GOES, one value on `publish` (`as`; absent: as-asked):
+ *    as-asked  as the reply asked: added to its earlier post when it was sent with `add_to`, else a new post
+ *    new       a new post, whatever `add_to` said (the owner's answer when the earlier post can no longer take it) */
+export const HUB_LINK_PUBLISH_AS = Object.freeze(['as-asked', 'new']);
+/** WHETHER A REPLY SENT WITH `add_to` CAN GO INTO THAT POST NOW, one value derived at each view from the plugin's own answer
+ *  (blyg-run earlierOf: the newest post published from that page, its note unchanged, every comment still there, the same target):
+ *    ready       that post is the one a comment on this page would be added to now
+ *    cannot-add  it is not (gone, changed outside, another post since, or the add commands are not set up) */
+export const HUB_LINK_ADD_STATES = Object.freeze(['ready', 'cannot-add']);
+const POST_ID_RE = /^[0-9A-Za-z_-]{1,64}$/;
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
 /** Every route, one table: the handler is looked up here and nowhere else (an unknown name is 404). */
@@ -86,6 +96,7 @@ export const HUB_LINK_ROUTES = Object.freeze({
   cancel: Object.freeze({ path: '/hub-link/cancel', does: 'takes a reply out of the queue while it has not started, or throws a saved draft away' }),
   redo: Object.freeze({ path: '/hub-link/redo', does: 'asks the agent again for one passage of a saved draft' }),
   // speech (hub-speech.mjs): the body of `transcribe` is the recording itself, not JSON, and its type and length are signed too
+  earlier: Object.freeze({ path: '/hub-link/earlier', does: 'the owner\'s published reply to a blyg post that a new reply can be added to' }),
   transcribe: Object.freeze({ path: '/hub-link/transcribe', does: 'starts turning a recording into text: a job', body: 'audio' }),
   transcript: Object.freeze({ path: '/hub-link/transcript', does: 'a speech job: pending, done with its text, or failed' }),
 });
@@ -425,6 +436,7 @@ export const HUB_LINK_SAY = Object.freeze({
   'cancelled': 'This reply was cancelled.',
   'changed-on-computer': 'This draft was changed on your computer; discard it there.',
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
+  'cannot-add': 'Your earlier reply can no longer be added to from here (it changed, or another reply went out since). Publish this one as a new post instead.',
   'audio-too-large': `The recording is too long to send: at most ${SPEECH_LIMITS.audioBytes} bytes (about 3 minutes).`,
   'not-audio': 'That is not a recording your computer can read (WebM, Ogg or MP4 audio).',
   'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
@@ -503,23 +515,38 @@ export function createHubLink(deps) {
       v.version = Number(r.version || p.version) || 1;
     }
     if (state === 'failed' && e && e.failure && e.failure.say) v.say = scrubPaths(e.failure.say).slice(0, 400);
+    // (a reply sent to be added to an earlier post: which post, and whether it can go there now; nothing else of that post)
+    if (rec.add_to && thread && (rec.step === 'saved' || rec.step === 'pressed')) {
+      const e = rec.step === 'saved' ? deps.earlierFor({ url: rec.page_url, thread_id: rec.thread_id }) : null;
+      const ready = rec.step === 'pressed' || (e && e.post === rec.add_to);
+      v.adds_to = { id: rec.add_to, title: e && ready ? String(e.title || '').slice(0, 120) : String(rec.add_title || ''), address: e && ready ? String(e.address || '') : String(rec.add_address || ''),
+        state: ready ? 'ready' : 'cannot-add' };
+    }
     if (state === 'saved' && rec.press_refused) v.press = { refused: rec.press_refused, say: HUB_LINK_SAY[rec.press_refused] || '' };
     return v;
   }
   const logState = (rid, what, extra = '') => say(`${ridTag(rid)} ${what}${extra ? ` ${extra}` : ''}`);
 
   /** A press for a saved record: the publish setting, the day's limit, then the queue. Writes the record's step on success. */
-  async function pressRecord(rec, key) {
+  async function pressRecord(rec, key, as = 'as-asked') {
     const refuse = code => { store.note(rec.rid, { press_refused: code }); logState(rec.rid, 'press-refused', code); return code; };
     if (key.publish !== 'one-click') return refuse('drafts-only');
     // an entry for this thread already open (the owner pressed it in the drawer): never pressed over (it would replace the owner's choices)
     if (openEntryFor(rec, deps.queue().entries)) { logState(rec.rid, 'press-skipped', 'open-entry'); return 'open-entry'; }
     if (store.pressesSince(86400 * 1000) + holding.presses >= HUB_LINK_LIMITS.publishesPerDay) return refuse('publishes-per-day');
+    // ADDED TO THE EARLIER POST through the plugin's own path (join 'add'): only while that post is the one the plugin would add to now,
+    // and pressed with its id and version, so the run refuses if it changed meanwhile (blyg-run ADD_CHANGED_SAY)
+    let add = null;
+    if (rec.add_to && as !== 'new') {
+      const e = deps.earlierFor({ url: rec.page_url, thread_id: rec.thread_id });
+      if (!e || e.post !== rec.add_to) return refuse('cannot-add');
+      add = { join: 'add', post: e.post, postVersion: Number(e.version) || 1, title: String(e.title || '').slice(0, 120), address: String(e.address || '') };
+    }
     holding.presses++;
     let r;
-    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id }); } finally { holding.presses--; }
+    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id, ...(add ? { join: add.join, post: add.post, postVersion: add.postVersion } : {}) }); } finally { holding.presses--; }
     if (!r || !r.ok || !r.queued) return refuse(r && /not set up/i.test(String(r.error || '')) ? 'not-set-up' : 'queue-refused');
-    store.move(rec.rid, 'pressed', { entry_id: String(r.queued.id), pressed_at: clock().toISOString(), press_refused: '' });
+    store.move(rec.rid, 'pressed', { entry_id: String(r.queued.id), pressed_at: clock().toISOString(), press_refused: '', ...(add ? { add_title: add.title, add_address: add.address } : { add_to: '' }) });
     logState(rec.rid, 'pressed');
     return '';
   }
@@ -541,7 +568,7 @@ export function createHubLink(deps) {
       return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
     }
     store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
-      msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment),
+      msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment), add_to: typeof data.add_to === 'string' ? data.add_to : '',
       post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } });
     slot.give();   // (the record counts itself from here)
     logState(rid, 'saved');
@@ -558,6 +585,15 @@ export function createHubLink(deps) {
       const r = deps.speech.submit({ audio, container });
       if (!r.ok) return { status: r.status, body: { ok: false, error: r.error, ...(r.limit ? { limit: r.limit } : {}) } };
       return { status: 200, body: { ok: true, job: r.job, state: 'pending' } };
+    },
+    // WHAT A NEW REPLY TO THIS BLYG POST CAN BE ADDED TO: the plugin's own answer (0 or 1 post: the newest published from the post's
+    // page, while it can take a comment). Public facts only: its id, address, title, first date, version.
+    async earlier(data) {
+      const p = data.post && typeof data.post === 'object' ? data.post : null;
+      if (!p || typeof p.page !== 'string' || typeof p.origin !== 'string' || typeof p.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id} required' } };
+      const list = deps.earlier({ page: p.page.slice(0, 2048), origin: p.origin.slice(0, 2048), id: p.id.slice(0, 64) }) || [];
+      return { status: 200, body: { ok: true, earlier: list.map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
+        title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 })) } };
     },
     async transcript(data) {
       // (speech off: its routes do not exist; said only after the signature, like every route's answer)
@@ -580,6 +616,7 @@ export function createHubLink(deps) {
       if (!quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
+      if (data.add_to !== undefined && !(typeof data.add_to === 'string' && POST_ID_RE.test(data.add_to))) return { status: 400, body: { ok: false, error: 'add_to must be a post id from earlier' } };
       if (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
       if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
         logState(rid, 'limited', 'replies-per-hour');
@@ -611,12 +648,14 @@ export function createHubLink(deps) {
     async publish(data, key) {
       const rid = data.rid;
       if (!ridOk(rid)) return { status: 400, body: { ok: false, error: 'rid required' } };
+      const as = data.as === undefined ? 'as-asked' : data.as;
+      if (!HUB_LINK_PUBLISH_AS.includes(as)) return { status: 400, body: { ok: false, error: `as must be one of ${HUB_LINK_PUBLISH_AS.join(', ')}` } };
       const rec = store.get(rid);
       if (!rec) return { status: 404, body: { ok: false, error: 'unknown rid', rid, state: 'unknown' } };
       if (rec.step === 'pressed') return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
       const now = viewOf(rid);
       if (now.state !== 'saved') return { status: 409, body: { ok: false, error: 'not a saved reply', ...now } };
-      await pressRecord(rec, key);
+      await pressRecord(rec, key, as);
       return { status: 200, body: { ok: true, ...viewOf(rid) } };
     },
 
@@ -761,7 +800,7 @@ export function createHubLink(deps) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return answer(res, 400, { ok: false, error: 'not a JSON object' });
     // (status too: with the records unreadable nothing true can be said about any rid, and `unknown` would be read as "not published";
     // speech touches no record)
-    if (name !== 'ping' && name !== 'transcript' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
+    if (name !== 'ping' && name !== 'transcript' && name !== 'earlier' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
     const rid = ridOk(data.rid) ? data.rid : '';
     try {
       // one request per rid at a time: a copy arriving while the first works waits for it, then answers from the record

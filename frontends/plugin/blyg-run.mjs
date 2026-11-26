@@ -891,8 +891,9 @@ export function createPublisher(deps) {
    *  recent (by when it was first published), and only when its note is still the one written from here (the post's record holds
    *  its hash and the file still has it), all its threads are still here and publishable, one more fits, and the page still answers
    *  the same target. → { thread, permalink, title, version } or null. */
+  // (`here` null: a comment not written yet — the hub link asks before the owner replies; otherwise the comment must be publishable)
   function earlierPostFor(page, here, S) {
-    if (!page || !here || isPublishedThread(here) || !eligibleThread(here).ok) return null;
+    if (!page || (here && (isPublishedThread(here) || !eligibleThread(here).ok))) return null;
     if (!EDIT_STEPS.every(k => S.commands[k])) return null;
     const threads = page.threads || [];
     const posts = new Map();
@@ -918,7 +919,8 @@ export function createPublisher(deps) {
     if (!ids.length || !ids.every(i => mates.some(t => String(t.id) === i))) return null;
     if (!sameTarget(rec.snapshot, page)) return null;
     const post = String(pub.permalink || '').split('/').filter(Boolean).pop() || '';
-    return { thread, permalink: pub.permalink, post, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1 };
+    return { thread, permalink: pub.permalink, post, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1,
+      address: String(thread.blyg_published.address || ''), date: String(thread.blyg_published.first_at || thread.blyg_published.at || '') };
   }
   /** WHAT A PUBLISHED THREAD SAID in its post as last published from here (the post's record): its included messages, or null when
    *  that cannot be known (no record; a record from before the texts were kept whose message hashes the thread's messages no longer
@@ -956,6 +958,17 @@ export function createPublisher(deps) {
     if (!here) return fail(404, 'That thread is not on this page any more.');
     const e = earlierPostFor(page, here, home.settings);
     return { ok: true, earlier: e ? { title: e.title, version: e.version, post: e.post } : null };
+  }
+  /** THE SAME QUESTION FOR THE HUB LINK (earlierPostFor, the one answer): for a comment of the page (`threadId`), or for one not written
+   *  yet (no `threadId`: asked before the owner replies). → the post's public facts { post, title, version, address, permalink, date },
+   *  or null. */
+  function earlierPublicOf({ page, threadId = '' }) {
+    const home = settingsNow();
+    if (!home.ok || !page) return null;
+    const here = threadId ? (page.threads || []).find(t => t && t.id === threadId) : null;
+    if (threadId && !here) return null;
+    const e = earlierPostFor(page, here, home.settings);
+    return e ? { post: e.post, title: e.title, version: e.version, address: e.address, permalink: e.permalink, date: e.date } : null;
   }
 
   // which threads "this and the ones above" takes: the owner's earlier unpublished eligible threads (with confirm 'never', only those
@@ -1373,7 +1386,7 @@ export function createPublisher(deps) {
   /** Stop whatever is running (the companion is shutting down). */
   function stopAll() { if (RUNNING_MODES.includes(book.mode) && stopHandle) { try { stopHandle(); } catch { /* gone */ } } }
 
-  return { book, log, start, earlierOf, publishedMsgsOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
+  return { book, log, start, earlierOf, earlierPublicOf, publishedMsgsOf, confirm, retry, carryOn, cancel, abandon, forget, current, previewOf, stopAll, STEPS };
 }
 // A QUEUED PRESS WHOSE LOOK IS FORCED (LOOK_FORCED) is answered with the reason and nothing written (blyg-queue sets it aside).
 const parked = reason => ({ ok: false, status: 409, park: reason, about: 'entry', error: 'This post needs your look before it is published.' });

@@ -14,7 +14,7 @@ import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createHarness, request, GET, POST } from './harness.mjs';
-import { makeRig } from './blyg-rig.mjs';
+import { makeRig, FAKE } from './blyg-rig.mjs';
 import { main as cli } from '../hub-link-cli.mjs';
 import * as L from '../hub-link.mjs';
 
@@ -59,7 +59,9 @@ const setHome = (root, rig, confirm) => {
   const file = path.join(root, '.botference', 'plugin', 'config.json');
   let cfg = {}; try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first */ }
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ ...cfg, author: 'owner', blyg_home: { ...rig.home, confirm, ...(confirm === 'never' ? { plan_guard: ['--only-note'] } : {}) } }));
+  // (with the commands for a new version, so a reply can be added to an earlier post)
+  const edit = Object.fromEntries(['plan_edit', 'apply_edit', 'publish_edit'].map(k => [k, [process.execPath, FAKE, rig.log, rig.ctl, k, '{note}', '{changelog}']]));
+  fs.writeFileSync(file, JSON.stringify({ ...cfg, author: 'owner', blyg_home: { ...rig.home, commands: { ...rig.home.commands, ...edit }, confirm, ...(confirm === 'never' ? { plan_guard: ['--only-note'] } : {}) } }));
 };
 const boot = (root, extra) => startServer({ root, args: ['--hosted'], env: envFor(root, extra) });
 const stop = srv => new Promise(r => { srv.proc.once('exit', r); srv.proc.kill(); });
@@ -93,7 +95,7 @@ const POST_A = `${ORIGIN}t/${A}/`;
 const rig = makeRig({ confirm: 'never' }); rigs.push(rig);
 const root = tmp('main');
 setHome(root, rig, 'never');
-let srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '1000' });
+let srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
 let S = srv.base;
 
 await test('UNPAIRED: every /hub-link/* path is 404, signed or not, any method', async () => {
@@ -278,7 +280,7 @@ await test('A RESTART between reply and publish: the record is read back; the pu
   const r = await reply(S, 'rid-restart-013', { comment: 'Saved before the restart.' });
   assert.equal(r.json.state, 'saved');
   await stop(srv);
-  srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '1000' });
+  srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
   S = srv.base;
   assert.equal((await status(S, 'rid-restart-013')).state, 'saved');
   assert.equal((await reply(S, 'rid-restart-013')).json.repeated, true, 'the same rid after a restart is not a new reply');
@@ -327,7 +329,7 @@ await test('A PASSAGE LEFT WRITING BY A RESTART is failed "interrupted" at the n
     Object.assign(t.msgs[0].gaps[0], { mode: 'pending' }); delete t.msgs[0].gaps[0].text;
     fs.writeFileSync(path.join(dir, f), JSON.stringify(p));
   }
-  srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '1000' });
+  srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
   S = srv.base;
   const v = await statusText('rid-dintr-0001');
   assert.deepEqual([v.fill, v.fill_why], ['failed', 'interrupted']);
@@ -441,6 +443,43 @@ await test('AN UNREADABLE RECORDS FILE is kept as it is: every route but ping is
     }
     assert.equal(fs.readFileSync(recordsFile(root2), 'utf8'), '{ "records": [ broken');
   } finally { await stop(s2); }
+});
+
+await test('ADD TO MY EARLIER REPLY: earlier names it; the addition goes into it once (one new version) however often it is sent', async () => {
+  const rig = makeRig({ confirm: 'never' }); rigs.push(rig);
+  const root3 = tmp('add');
+  setHome(root3, rig, 'never');
+  cli(['off'], { dir: SECRETS, say }); pair('one-click');
+  const srv3 = await boot(root3, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
+  const S = srv3.base;
+  const status = async (base, rid) => (await send(base, 'status', { rids: [rid] })).json.replies[0];
+  try {
+  const first = await reply(S, 'rid-addfirst-01', { comment: 'The reply that gets an addition.', intent: 'publish' });
+  assert.equal(first.status, 200, JSON.stringify(first.json));
+  await waitFor(async () => (await status(S, 'rid-addfirst-01')).state === 'published', 'the earlier reply live');
+  const t1 = (await threadsOf(S, POST_A)).find(t => t.msgs[0].text === 'The reply that gets an addition.');
+  const postId = t1.blyg_published.permalink.split('/').filter(Boolean).pop();
+  const e = await send(S, 'earlier', { post: postOf(A) });
+  assert.equal(e.status, 200, JSON.stringify(e.json));
+  assert.deepEqual(e.json.earlier.map(x => [x.id, x.version]), [[postId, 1]]);
+  assert.match(e.json.earlier[0].address, /^https:\/\/site\.example\.test\/b\//);
+  assert.deepEqual((await send(S, 'earlier', { post: { ...postOf(A), id: B } })).json.earlier, [], 'not for another post');
+  const edits = () => rig.calls().filter(c => c.step === 'publish_edit').length;
+  const before = edits();
+  for (let i = 0; i < 3; i++) assert.equal((await reply(S, 'rid-addmore-01', { comment: 'An addition from the phone.', intent: 'publish', add_to: postId })).status, 200);
+  for (let i = 0; i < 2; i++) await send(S, 'publish', { rid: 'rid-addmore-01' });
+  const done = await waitFor(async () => { const v = await status(S, 'rid-addmore-01'); return v.state === 'published' || v.state === 'failed' ? v : null; }, 'the addition live', 60000);
+  assert.equal(done.state, 'published', JSON.stringify(done));
+  assert.equal(edits(), before + 1, 'one new version');
+  const ts = await threadsOf(S, POST_A);
+  const added = ts.find(t => t.msgs[0].text === 'An addition from the phone.');
+  assert.equal(added.blyg_published.permalink, t1.blyg_published.permalink, 'in the same post');
+  assert.equal(added.blyg_published.version, 2);
+  assert.equal(ts.filter(t => t.msgs[0].text === 'An addition from the phone.').length, 1, 'one thread');
+  const note = fs.readdirSync(rig.folder).map(n => fs.readFileSync(path.join(rig.folder, n), 'utf8')).find(x => x.includes(postId));
+  assert.equal((note.match(/An addition from the phone\./g) || []).length, 1, 'one section added');
+  assert.ok(note.includes('The reply that gets an addition.'));
+  } finally { await stop(srv3); }
 });
 
 cleanup();
