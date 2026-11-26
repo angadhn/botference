@@ -902,3 +902,13 @@ test('prompts in the drawer: a new version with no readable choice starts locked
   x.pubPrompts('locked');
   assert.deepEqual(x.writes, [['blygPrompts', 'locked']]);
 });
+
+test('the owner\'s hand in the note: edited_by_author for text, prompt_reworded for prompt (both for both); none writes neither', () => {
+  const g = (hand, mode = 'filled-by-agent') => ({ instruction: 'x', mode, agent: 'claude', text: 't', model: 'm', at: '2026-11-24T10:00:00Z', ...(hand ? { hand } : {}) });
+  assert.deepEqual(['none', 'prompt', 'text', 'both'].map(h => { const e = N.generatedEntry(g(h)); return [!!e.edited_by_author, !!e.prompt_reworded]; }),
+    [[false, false], [false, true], [true, false], [true, true]]);
+  assert.equal(N.generatedEntry(g(undefined, 'edited-by-reader')).edited_by_author, true, 'a gap from before the field reads as it did');
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk x\nAfter'), gaps: [g('both')] }] }]);
+  const r = make(page, page.threads);
+  assert.match(r.text, /\n {4}edited_by_author: true\n {4}prompt_reworded: true\n/);
+});

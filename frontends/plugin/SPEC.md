@@ -12977,6 +12977,13 @@ get; Ruby missing or failing says `RUBY_NEEDED_SAY`. Only an unreadable front ma
 with a plain sentence (`FORMS_UNKNOWN_SAY`); nothing is guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
 zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
 a post with a deliberate link the writer cannot normalise has no bare address made clickable.
+**THE OWNER'S HAND** (2026-11-26): `OWNER_HANDS` (none | prompt | text | both) in tkgaps.mjs, one field `gap.hand`, moved only by
+`handMove` (a part is added, never removed). `text`: gapMove to edited-by-reader or adopted-by-reader. `prompt`: buildGaps sees a new
+ask at the same place among the message's asked gaps, of the same agent, where the gap before the edit had been answered and its words did
+not survive (the owner reworded the /tk instruction; the agent writes again). Asking again with the same words, a first prompt, another
+agent at that place, or a passage never answered: no rewording. The note writer writes `edited_by_author: true` for text/both (as before;
+older gaps read from READER_HAND_MODES) and `prompt_reworded: true` for prompt/both; the site shows the robot and its "A" for any hand,
+with a title for each; neither reaches the Blygger copy. No history of wordings is kept here.
 **PROMPTS, THE RULE** (re-check): prompts go out `shown` only when the owner saw a ticked box in THIS publish box for THIS post. The box
 is drawn when the post that will result holds an agent passage (this thread, the threads above a "this and the ones above" press, or the
 post it changes: the earlier post it is added to, or this thread's own post for a new version, as the companion reads its NOTE through

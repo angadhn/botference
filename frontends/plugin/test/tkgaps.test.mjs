@@ -413,3 +413,4 @@ function studioScopes(text) {
 for (const f of failures) console.log('  FAIL ' + f);
 console.log(`tkgaps: ${pass} passed, ${fail} failed`);
 process.exit(fail);
+

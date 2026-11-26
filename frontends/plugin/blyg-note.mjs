@@ -29,7 +29,7 @@ import { isWebUrl } from './blyg.mjs';
 import { isBotAuthor, hasMention } from './chat.mjs';
 import { stripMore } from './more.mjs';
 import { withRuns } from './export.mjs';
-import { ownerTyped, AGENT_TEXT_MODES, READER_HAND_MODES, generatedLines, studioInstruction } from './tkgaps.mjs';
+import { ownerTyped, AGENT_TEXT_MODES, READER_HAND_MODES, generatedLines, studioInstruction, handOf } from './tkgaps.mjs';
 import { urlRefusal } from './netguard.mjs';
 import { escapePassageLine, byReference, labelOf, readVersion, responseOf, canRespond, TK_MARK } from './note-quotes.mjs';
 
@@ -511,7 +511,9 @@ export function agentScope(g, { block = false, escape = 'liquid', format = NEW_P
 }
 /** The blyg_generated entry for one agent-text gap. */
 export const generatedEntry = (g, format = NEW_PASSAGE_FORMAT) => ({ ...(g.model ? { model: String(g.model) } : {}), ...(g.at ? { at: String(g.at) } : {}),
-  ...(READER_HAND_MODES.includes(g.mode) ? { edited_by_author: true } : {}), ...(formatMove(format, format) === 'markdown' ? { format: 'markdown' } : {}),
+  // the owner's hand (tkgaps.mjs OWNER_HANDS): text → edited_by_author (as before), prompt → prompt_reworded, both → the two
+  ...(['text', 'both'].includes(handOf(g)) ? { edited_by_author: true } : {}),
+  ...(['prompt', 'both'].includes(handOf(g)) ? { prompt_reworded: true } : {}), ...(formatMove(format, format) === 'markdown' ? { format: 'markdown' } : {}),
   // (for the owner's view only: generatedLines writes model, at, edited_by_author and format, nothing else)
   agent: g.agent === 'codex' ? 'codex' : 'claude' });
 // a placeholder for a scope while the owner's own words around it are made safe (private-use characters, never in a placeholder twice)

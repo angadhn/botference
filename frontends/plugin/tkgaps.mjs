@@ -91,6 +91,23 @@ const GAP_MOVES = Object.freeze({
   failed: Object.freeze(['pending', 'removed']),
   removed: Object.freeze([]),
 });
+// THE OWNER'S HAND on a passage, one of OWNER_HANDS, in one field (`gap.hand`), changed only by handMove, which adds a part and never
+// removes one (a fresh passage starts at none):
+//   none    the agent's answer to the owner's first prompt, as it came
+//   prompt  the owner reworded the prompt (the gap's instruction) after the agent first answered it, and the agent wrote again
+//           (buildGaps: same place among the asked gaps, same agent; asking again with the same words is no rewording)
+//   text    the owner edited or adopted the agent's text (gapMove to edited-by-reader / adopted-by-reader)
+//   both    the two
+// The note writer derives the site's two page-only members from it: edited_by_author (text, both) and prompt_reworded (prompt, both).
+// A gap written before the field existed reads as it did: READER_HAND_MODES are `text`, anything else `none`.
+export const OWNER_HANDS = Object.freeze(['none', 'prompt', 'text', 'both']);
+const HAND_PARTS = Object.freeze(['prompt', 'text']);
+export function handMove(from, part) {
+  if (!OWNER_HANDS.includes(from)) throw new Error(`hand: no such hand ${from}`);
+  if (!HAND_PARTS.includes(part)) throw new Error(`hand: a hand moves only by adding a part (${HAND_PARTS.join(' or ')}), not ${part}`);
+  return from === 'none' ? part : from === part ? from : 'both';
+}
+export const handOf = gap => (gap && OWNER_HANDS.includes(gap.hand) ? gap.hand : gap && READER_HAND_MODES.includes(gap.mode) ? 'text' : 'none');
 export const canGapMove = (gap, to) => !!gap && !!GAP_MOVES[gap.mode] && GAP_MOVES[gap.mode].includes(to);
 /** The one way a gap's mode changes; throws on a move GAP_MOVES does not allow. */
 export function gapMove(gap, to, { text = '', reason = '', agent = '', model = '', at = '' } = {}) {
@@ -107,6 +124,7 @@ export function gapMove(gap, to, { text = '', reason = '', agent = '', model = '
   }
   if (to === 'edited-by-reader') gap.text = String(text);
   if (to === 'adopted-by-reader' && text) gap.text = String(text);
+  if (to === 'edited-by-reader' || to === 'adopted-by-reader') gap.hand = handMove(handOf(gap), 'text');
   if (to === 'failed') gap.reason = String(reason || 'not written');
   return gap;
 }
@@ -155,11 +173,16 @@ export function buildGaps(text, prior = [], { modelOf = () => '', now = () => ne
   const found = Grammar.parseGaps(text);
   const keyOf = g => Grammar.gapKey({ kind: g.kind || 'ask', agent: g.agent || 'claude', instruction: g.instruction });
   const unused = Array.isArray(prior) ? prior.filter(g => g && g.mode !== 'removed').slice() : [];
+  // (REWORDING: the asked gaps of the message before the edit, by place, for a new ask at the same place: see OWNER_HANDS)
+  const priorAsks = unused.filter(g => (g.kind || 'ask') === 'ask');
+  const answered = g => !!g && ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader'].includes(g.mode);
   const gaps = [];
   const fresh = [];
   const born = new Set();
+  let askAt = -1;
   found.forEach((f, i) => {
     const key = keyOf(f);
+    if (f.kind !== 'impyrt') askAt++;
     const k = unused.findIndex(g => keyOf(g) === key);
     if (k !== -1) { gaps.push({ ...unused[k], kind: f.kind, agent: f.agent, id: gid(i, key) }); unused.splice(k, 1); return; }
     if (f.kind === 'impyrt') {
@@ -175,6 +198,9 @@ export function buildGaps(text, prior = [], { modelOf = () => '', now = () => ne
       return;
     }
     const g = { id: gid(i, key), kind: 'ask', agent: f.agent, instruction: f.instruction, mode: 'pending' };
+    // the same place, the same agent, a passage already answered whose words did not survive the edit: the owner reworded it
+    const was = priorAsks[askAt];
+    if (was && unused.includes(was) && was.agent === f.agent && answered(was)) g.hand = handMove(handOf(was), 'prompt');
     if (f.instruction.length > GAP_LIMITS.instructionChars) {
       g.mode = 'failed'; g.reason = `the instruction is longer than ${GAP_LIMITS.instructionChars} characters`;
     } else fresh.push(g.id);
@@ -454,6 +480,7 @@ export function generatedLines(entries) {
     // `format: markdown`: the passage is stored as the agent's markdown (blyg-note.mjs storedAgentMarkdown), which the site renders
     // from an allow-list; an entry without it is the older escaped-text form, which the site keeps rendering as it always did
     const members = [...(model ? [`model: ${JSON.stringify(model)}`] : []), ...(at ? [`at: ${at}`] : []), ...(e.edited_by_author ? ['edited_by_author: true'] : []),
+      ...(e.prompt_reworded ? ['prompt_reworded: true'] : []),
       ...(e.format === 'markdown' ? ['format: markdown'] : [])];
     if (!members.length) return '  - {}';
     return members.map((m, i) => (i ? '    ' : '  - ') + m).join('\n');
