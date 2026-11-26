@@ -14110,13 +14110,14 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   is still being filed (verifying the passage) is waited for, at most 5 s (`statusWaitMs`); still filing then: `503 { ok:false,
   error:'a reply is still being filed; ask again' }` for the whole request. So `unknown` never means "on its way".
   `status { rids: [1..5], text: true }` adds `blocks` to the view of each reply this link filed (saved or pressed, its thread still
-  there): THE MESSAGE THE LINK FILED only (`filedMsgOf`: the record keeps its `msg_ts`; the message with that ts whose channel is
-  still `hub-link`), in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id, instruction,
+  there): THE MESSAGE THE LINK FILED only (`filedMsgOf`: the record keeps its `msg_ts`, and the record is what says the link filed
+  it), AS IT NOW STANDS, in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id, instruction,
   state, text, model, at, reason? }` for each agent passage (`state` is the gap's tkgaps mode; `reason` for a failed one, paths
   scrubbed; a removed passage is left out with its `/tk` mark). Never another message of the thread (the owner's later notes, an
-  agent's answers), page, setting or path. If the filed message is gone (deleted on the computer) or is no longer the link's (the
-  owner edited it on the computer, which makes its channel `drawer`), there are no blocks and the reply reads as ended by the
-  computer (`cancelled`, as for a deleted thread). SIZE: one reply's blocks are at most 48 KiB (`blocksJsonBytes`) measured after JSON
+  agent's answers), page, setting or path. An OWNER'S EDIT of that message on the computer keeps it this reply: the blocks show the
+  edited text, `text_rev` changes, `text_state` says `edited-on-computer`, a Publish from the Hub publishes the edited text, redo
+  follows the rule below and a discard is refused (changed on the computer). Only a DELETED filed message (or thread) ends the reply:
+  no blocks, state `cancelled`. SIZE: one reply's blocks are at most 48 KiB (`blocksJsonBytes`) measured after JSON
   encoding, own words and agent text together (the owner may have made the message far longer on the computer); a block that does not
   fit has its text cut to fit, the rest are left out, and the view says `text_cut: true`. A status with text is then at most about
   256 KiB (`textResponseBytes`; 5 replies). The Hub must show all of it as text only (textContent), never as markup.
@@ -14153,6 +14154,8 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   owner typed (same one-shot, same limits); no press is needed, and a Publish takes the written passages as they are and asks for
   nothing again (a passage still `pending` at the press is waited for by the queue, as ever). So the Hub can say "saved, passages still
   being written", "saved, ready" and "saved, a passage failed (why)".
+- `text_state` (with `fill`, for a record that keeps `text_hash`): `HUB_LINK_TEXT_STATES = ['as-filed', 'edited-on-computer']`,
+  derived by ONE function, `textStateOf`, from the record's `text_hash` against the message's current text; never stored.
 - `text_rev` (with `fill`): 12 hex, a hash of what Publish would send for the filed message (its text and each passage's id, mode and
   text); it changes when a passage is written, written again or edited on the computer, so the Hub can tell its copy is stale.
   `extra_messages`: how many OTHER messages of the thread Publish would also include (the owner's own later comments there, which the
@@ -14222,9 +14225,9 @@ Whoever holds the key can, until it is replaced:
 - make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
   public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
 - fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour;
-- read back the text of each reply it filed itself, the filed message only and only while it is still the link's (not after the owner
-  edited it on the computer): the owner's words in it and the agent passages written into it, at most 48 KiB a reply; and the count of
-  the thread's other publishable messages, not their text;
+- read back the text of each reply it filed itself: that one message as it now stands, including the owner's later edits to it on the
+  computer, with the agent passages written into it, at most 48 KiB a reply; and the count of the thread's other publishable
+  messages, not their text;
 - ask an agent again for a passage of such a saved draft (not one the owner edited by hand), within the hourly passage limit;
 - throw away such a saved draft while it is untouched since filing (nothing else in its thread, its text as filed).
 It cannot read any other message, thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or
@@ -14262,3 +14265,6 @@ with the fixed sentence), R3 (five 12 MB texts: each reply's blocks within 48 Ki
 R4 (a pending passage with no live fill is failed `interrupted`; a live one stays), R5 (`text_rev` changes with a passage;
 `extra_messages` counts the owner's note, not an agent's answer), R6 (redo of a hand-edited passage refused). `hub-link-server` adds a
 restart with a passage left pending on disk: failed `interrupted` at the next status, then written again by redo.
+Owner edits (same day): `hub-link-drafts` R7 (an edit on the computer keeps the reply: edited text read back, new `text_rev`,
+`text_state` edited-on-computer, discard refused, Publish pressed); `hub-link-server` adds an edit through the drawer's `/edit`, read
+back edited and published once with the edited text.
