@@ -55,8 +55,9 @@ export const ownerTyped = m => !!m && m.provenance === OWNER_TYPED && !m.origin;
 //   drawer        the extension's drawer (a request carrying the extension's own Origin)
 //   reading-room  the companion's own pages (a request from the companion's own origin)
 //   api           anything else (a script on the machine, a tool): no Origin the server recognises
+//   hub-link      the owner's hosted Hub, through the signed hub link (hub-link.mjs): typed by the owner in the Hub on a phone
 // One-click publishing (confirm 'never') counts only drawer-typed threads in "this and the ones above".
-export const MSG_CHANNELS = Object.freeze(['drawer', 'reading-room', 'api']);
+export const MSG_CHANNELS = Object.freeze(['drawer', 'reading-room', 'api', 'hub-link']);
 
 // ---- a gap's modes, named once ---------------------------------------------
 // Stored on the message (`msg.gaps`, in the order the gaps appear), each

@@ -5091,6 +5091,12 @@ ${bubbleShellHtml()}`;
       </div>`;
     }
 
+    // A REPLY WRITTEN IN THE OWNER'S HOSTED HUB (the hub link, hub-link.mjs): the companion marks the thread `via: 'hub-link'`.
+    // One quiet line, a label and nothing more.
+    function fromHubHtml(t) {
+      return t && t.via === 'hub-link' ? '<div class="fromdisc fromhub"><span>from your Hub</span></div>' : '';
+    }
+
     // A CHANGE AND THE CONVERSATION IT CAME OUT OF. The companion's turn-end
     // diff (collateral.mjs) writes a thread at every passage a turn changed that
     // no comment stood on — and since 2026-11-06 it records WHICH conversation
@@ -5208,7 +5214,7 @@ ${bubbleShellHtml()}`;
         </div>
         ${pubLine(t)}
         ${whereHtml(t)}${blygPassageHtml(t)}
-        ${fromDiscussionHtml(t)}
+        ${fromDiscussionHtml(t)}${fromHubHtml(t)}
         ${broodHtml(t)}
         ${originHtml(t)}
         ${changesHtml(t)}

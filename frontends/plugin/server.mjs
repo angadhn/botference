@@ -68,6 +68,8 @@ import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
 import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
 import { createQueue } from './blyg-queue.mjs';
+import { createHubLink, HUB_LINK_REPLIES_FILE } from './hub-link.mjs';
+import { secretsDir } from '../shared/secrets.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
 import { blygRequestRefusal } from './blyg-request.mjs';
@@ -3241,6 +3243,85 @@ function gapCounts(page) {
   return filled || unfilled ? { gaps: { filled, unfilled } } : {};
 }
 
+// ---- a verified binding (POST /blyg/bind, and the hub link) --------------------------------------------------------------------
+// The claim (a page, one to three post ids, an origin, the passage) is checked by blyg.verifyShown; EXACTLY ONE post must hold the
+// passage. Then the post's own page record is made or found at the ITEM's page address (never the claim's), with the verified answer.
+// → { verdict: 'verified', url, origin, id, version, text } | { verdict: 'unverified', code, reason } (`code`: hub-link HUB_LINK_SAY).
+async function bindVerified(data) {
+  const no = (reason, code = 'not-verified') => ({ verdict: 'unverified', code, reason });
+  if (!blygChecksOn()) return no('checks are off', 'checks-off');
+  // the post ids the claim names: one (the post's own link), or up to three when the markup could not say which (then EXACTLY
+  // ONE must verify: a passage that is text of two of them belongs to neither, as far as anyone can tell)
+  const ids = (Array.isArray(data.ids) ? data.ids : [data.id]).map(String).filter(Boolean);
+  if (!ids.length || ids.length > 3 || new Set(ids).size !== ids.length) return no('one to three post ids');
+  const source = data.source === undefined ? 'feed' : String(data.source);
+  const tried = await Promise.all(ids.map(id => blygMod.verifyShown({ pageUrl: String(data.page_url || ''), id, quote: String(data.quote || ''),
+    origin: String(data.origin || ''), hints: data.hints, source })));
+  const good = tried.filter(v => v.verdict === 'verified');
+  if (good.length !== 1) return no(good.length ? 'the passage is text of more than one of those posts' : tried[0].reason);
+  const r = good[0].result;
+  const at = r.item.page;
+  const there = store.readPage(at);
+  if (there && there.blyg && there.blyg.status === 'blyg' && there.blyg.item && (there.blyg.item.origin !== r.item.origin || there.blyg.item.id !== r.item.id)) {
+    return no('a page already recorded at that address is another post', 'other-post');
+  }
+  if (there && !mayRead(there, true)) return no('that page is not this companion\'s to write', 'not-writable');
+  const page = store.upsertPage({ url: at, title: there ? '' : (r.title || `A post on ${r.site.title || new URL(at).host}`) });
+  if (!store.hasSnapshot(store.pageKey(page.url))) {
+    const { html } = sanitizeArticle(r.html);
+    if (html.trim()) store.saveSnapshot(page.url, html);
+  }
+  blygMod.applyAnswer(page, r);
+  store.savePage(page);
+  blygChecker.remember(page.url, r);
+  broadcast({ type: 'page', url: page.url });
+  return { verdict: 'verified', url: page.url, origin: r.item.origin, id: r.item.id, version: r.item.version, text: r.text, answer: r };
+}
+
+// ---- the hub link (hub-link.mjs; SPEC "The hub link") ---------------------------------------------------------------------------
+// The owner's hosted Hub, server to server, signed with the key made by `botference hub-link pair`. Its OWN principal: it is never
+// the owner, never passes the sign-in gate, and reaches only what these few lines give it: a verified binding, one thread written as
+// the owner typed it on channel 'hub-link' (so its /tk gaps are asked), a press by 'hub-link', a cancel, and the queue's view.
+// The quote kept is the passage as the VERIFIED text has it, with the text around it as the anchor (never the Hub's).
+function hubLinkFileReply({ url, quote, comment, answer }) {
+  const page = store.readPage(url);
+  if (!page || !mayRead(page, true)) return { code: 'not-writable' };
+  const text = String(answer.text || '');
+  const passage = blygMod.passageOf(quote);
+  const at = text.indexOf(passage);
+  if (!passage || at < 0) return { code: 'not-verified' };
+  const thread = store.addThread(page, { quote: passage, prefix: text.slice(Math.max(0, at - 32), at), suffix: text.slice(at + passage.length, at + passage.length + 32),
+    text: comment, author: store.readConfig().author || 'owner' });
+  thread.via = 'hub-link';
+  blygMark(thread, answer, passage);
+  const msg = thread.msgs[0];
+  msg.provenance = OWNER_TYPED; msg.channel = 'hub-link';
+  const fresh = attachGaps(null, msg);
+  store.savePage(page);
+  broadcast({ type: 'page', url: page.url });
+  startGaps(page, thread.id, msg, fresh);
+  noteDecisions(page);
+  return { url: page.url, thread_id: thread.id };
+}
+const hubLink = createHubLink({
+  keyDir: secretsDir(),
+  repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
+  bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),
+  fileReply: ({ bound, quote, comment }) => hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer }),
+  press: ({ url, thread_id }) => {
+    const page = store.readPage(url);
+    if (!page) return Promise.resolve({ ok: false, status: 404, error: 'gone' });
+    const v = validateHome(store.readConfig().blyg_home);
+    return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link' });
+  },
+  cancel: entry => blygQueue.cancel({ entry }),
+  queue: () => { const run = blygPublish.current(); return { entries: blygQueue.view().entries, run: run ? { id: run.id, mode: run.mode, confirm: run.confirm } : null }; },
+  readPage: url => store.readPage(url),
+  log: line => console.log(`hub-link: ${line}`),
+  // (tests only: PLUGIN_HUB_LINK_PER_MINUTE raises the request limit so a test can poll)
+  perMinute: Number(process.env.PLUGIN_HUB_LINK_PER_MINUTE) || undefined,
+});
+
 function blygMark(rec, answer, quote = null) {
   if (answer === undefined || !rec) return;
   blygMod.restamp(rec, blygMod.stampFor(answer, { quote }));
@@ -3700,6 +3781,9 @@ export function handler(req, res) {
     return fail(res, 403, 'refused: requests from other websites cannot use the companion');
   }
   { const why = sourceRefused(req); if (why) { req.resume(); return fail(res, 403, why); } }
+  // THE HUB LINK (hub-link.mjs): its own principal, signed, BEFORE the sign-in gate and never through it (no owner session opens it,
+  // and its signature opens nothing else). 404 for every path when unpaired.
+  if (url.startsWith('/hub-link/')) return hubLink.handle(req, res, url);
   if (!hosted.isOwner(req)) guestReplies.add(res);
   // CORS, hosted only: the remote extension is cross-origin against a public
   // hostname. An origin that passed is echoed; a foreign one gets nothing; no
@@ -5596,34 +5680,9 @@ export function handler(req, res) {
   if (req.method === 'POST' && url === '/blyg/bind') {
     if (notOwner(req, res)) return;
     return readBody(req, res, async data => {
-      const no = reason => ok(res, { verdict: 'unverified', reason });
-      if (!blygChecksOn()) return no('checks are off');
-      // the post ids the claim names: one (the post's own link), or up to three when the markup could not say which (then EXACTLY
-      // ONE must verify: a passage that is text of two of them belongs to neither, as far as anyone can tell)
-      const ids = (Array.isArray(data.ids) ? data.ids : [data.id]).map(String).filter(Boolean);
-      if (!ids.length || ids.length > 3 || new Set(ids).size !== ids.length) return no('one to three post ids');
-      const source = data.source === undefined ? 'feed' : String(data.source);
-      const tried = await Promise.all(ids.map(id => blygMod.verifyShown({ pageUrl: String(data.page_url || ''), id, quote: String(data.quote || ''),
-        origin: String(data.origin || ''), hints: data.hints, source })));
-      const good = tried.filter(v => v.verdict === 'verified');
-      if (good.length !== 1) return no(good.length ? 'the passage is text of more than one of those posts' : tried[0].reason);
-      const r = good[0].result;
-      const at = r.item.page;
-      const there = store.readPage(at);
-      if (there && there.blyg && there.blyg.status === 'blyg' && there.blyg.item && (there.blyg.item.origin !== r.item.origin || there.blyg.item.id !== r.item.id)) {
-        return no('a page already recorded at that address is another post');
-      }
-      if (there && !mayRead(there, true)) return no('that page is not this companion\'s to write');
-      const page = store.upsertPage({ url: at, title: there ? '' : (r.title || `A post on ${r.site.title || new URL(at).host}`) });
-      if (!store.hasSnapshot(store.pageKey(page.url))) {
-        const { html } = sanitizeArticle(r.html);
-        if (html.trim()) store.saveSnapshot(page.url, html);
-      }
-      blygMod.applyAnswer(page, r);
-      store.savePage(page);
-      blygChecker.remember(page.url, r);
-      broadcast({ type: 'page', url: page.url });
-      return ok(res, { verdict: 'verified', url: page.url, origin: r.item.origin, id: r.item.id, version: r.item.version });
+      const b = await bindVerified(data);
+      if (b.verdict !== 'verified') return ok(res, { verdict: 'unverified', reason: b.reason });
+      return ok(res, { verdict: 'verified', url: b.url, origin: b.origin, id: b.id, version: b.version });
     });
   }
   if (req.method === 'POST' && url === '/thread') {
