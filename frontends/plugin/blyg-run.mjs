@@ -1089,9 +1089,10 @@ export function createPublisher(deps) {
     const { rel, target, before, fm, bid } = note;
     const now = clock();
     const slug = String(pub.slug || path.basename(rel, '.md').replace(/[^a-z0-9-]/g, '').slice(0, LIMITS.slugChars) || 'note');
-    // a post that answered the one blyg post it linked to keeps that target (never gained or lost on an edit)
+    // a post that answered the one blyg post it linked to keeps that target (never gained or lost on an edit); each agent passage keeps
+    // its form (`before`: the note on disk, blyg-note.mjs passageFormsOf)
     const linkStub = pub.link_stub && typeof pub.link_stub === 'object' ? pub.link_stub : null;
-    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released') }, points, linkStub });
+    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before }, points, linkStub });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);

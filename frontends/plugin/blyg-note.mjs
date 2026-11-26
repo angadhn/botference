@@ -257,7 +257,28 @@ export function linkProblems(text) {
 // or glued to a word. Trailing punctuation (and an unbalanced closing bracket) is not part of the address. http and https only.
 // → { text, urls }: urls, each once, in order.
 const BARE_URL = /https?:\/\/[^\s<>"'`|{}\\[\]]+/gi;
-export function linkBareUrls(text) {
+// THE SITE'S OWN SPELLING of an address (AutoLinks.normalize in the example site's _plugins/blygger_links.rb, which matches
+// blyg_silent_links and links in it): scheme ignored, host in lower case without a leading www., the default port dropped, query and
+// fragment dropped, unreserved percent-escapes decoded (others upper-cased), no trailing slash. The site parses with Ruby's strict URI
+// (RFC 3986), so anything that one would refuse is null here too; a test compares the two when BLYG_BOTFERENCE_TREE is set.
+const RUBY_STRIP = /^[\t\n\v\f\r \0]+|[\t\n\v\f\r \0]+$/g;
+export function normalizeLinkAddress(url) {
+  const u = String(url == null ? '' : url).replace(RUBY_STRIP, '');
+  if (!/^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*$/.test(u) || /%(?![0-9A-Fa-f]{2})/.test(u)) return null;
+  const m = /^([Hh][Tt][Tt][Pp][Ss]?):\/\/(?:([^/?#@[\]]*)@)?(\[[^\]/?#]*\]|[^/?#:@[\]]*)(?::(\d*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/.exec(u);
+  if (!m || !m[3]) return null;
+  if (/[[\]#]/.test((m[6] || '') + (m[7] || '').slice(1)) || /[[\]]/.test(m[5] || '')) return null;   // (RFC 3986: neither in a path, query or fragment)
+  let host = m[3].toLowerCase();
+  if (host.startsWith('www.')) host = host.slice(4);   // (`www.` alone leaves nothing, as the site's does)
+  const dflt = m[1].toLowerCase() === 'https' ? 443 : 80;
+  const port = m[4] ? Number(m[4]) : dflt;
+  const path = (m[5] || '').replace(/%([0-9A-Fa-f]{2})/g, (x, h) => { const c = String.fromCharCode(parseInt(h, 16)); return /[A-Za-z0-9\-._~]/.test(c) ? c : x.toUpperCase(); });
+  return `${host}${port === dflt ? '' : `:${port}`}${path.replace(/\/+$/, '')}`;
+}
+// `deliberate`: the normalised addresses the owner linked ON PURPOSE in the post (explicitLinks): a bare address that is one of them
+// is left exactly as typed (made a link, the site would make it a reference too; silenced, it would silence the deliberate link). When
+// in doubt the text is left as typed: link syntax with spaces, an indented line, an address holding a character reference.
+export function linkBareUrls(text, { deliberate = [] } = {}) {
   const t = String(text);
   const mask = Grammar.codeMask(t);
   const urls = [];
@@ -277,11 +298,16 @@ export function linkBareUrls(text) {
     if (/^\s{0,3}\[[^\]]+\]:\s*$/.test(before)) continue;                                      // a reference definition
     if (/^\s{0,3}>\s*$/.test(before) && /^[.,;:!?)]*\s*$/.test(after)) continue;                 // alone on a quote line: a quote card
     if ((before.match(/\[\[/g) || []).length > (before.match(/\]\]/g) || []).length) continue;   // inside a wikilink
+    if (/\]\(\s*$/.test(t.slice(Math.max(0, i - 200), i))) continue;                              // a link's destination, spaced
+    if (/^(?: {4}|\t)/.test(t.slice(lineStart, lineEnd))) continue;                             // an indented line (code, or a list's)
+    if (/&(?:#\d+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);/.test(m[0])) continue;              // a character reference in it
     let url = m[0].replace(/[.,;:!?*_~]+$/, '');
     while (url.endsWith(')') && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1).replace(/[.,;:!?*_~]+$/, '');
     let ok = false;
     try { const u = new URL(url); ok = (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname && !u.username && !u.password; } catch { ok = false; }
     if (!ok || url.length > 600) continue;
+    const key = normalizeLinkAddress(url);
+    if (!key || deliberate.includes(key)) continue;
     out += t.slice(at, i) + '<' + url + '>';
     at = i + url.length;
     if (!urls.includes(url)) urls.push(url);
@@ -349,56 +375,101 @@ const scopeInstruction = (instruction, { escape = 'liquid' } = {}) => {
 // An unclosed fence is closed; a block that holds a fence or an indented line starts and ends with a newline, so neither `[=]` nor
 // `[/TK]` shares a line with code.
 export const AGENT_TEXT_FORMATS = Object.freeze(['legacy', 'markdown']);
-export const AGENT_TEXT_FORMAT = 'markdown';
-const PRIVATE_USE = /[\ue000-\ue005]/g;
+// The stored form's own character rules, named here and in the site's AgentMarkdown alike (no Unicode-aware class or case folding
+// anywhere in it, so the two agree on every string): what it drops, and its whitespace (space and tab; newline).
+const STORED_DROP = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ue000-\ue005]/g;
 const fenceOf = l => /^ {0,3}(`{3,}|~{3,})/.exec(l);
+const fenceCloses = (l, fence) => new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}[ \\t]*$`).test(l);
 function fencedLines(lines) {
   let fence = null;
   return lines.map(l => {
-    if (fence) { if (new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`).test(l)) fence = null; return true; }
+    if (fence) { if (fenceCloses(l, fence)) fence = null; return true; }
     const m = fenceOf(l);
     if (m) { fence = m[1]; return true; }
     return false;
   });
 }
 const outsideSpans = (line, fix) => {
-  const parts = line.split(/((`+).*?\2)/);
+  const parts = line.split(/((`+)[^\n]*?\2)/);
   let out = '';
   for (let i = 0; i < parts.length; i += 3) out += fix(parts[i] || '') + (parts[i + 1] || '');
   return out;
 };
 // (a link whose address names any scheme but http or https, or hides one behind a character reference: its `](` is written `&#93;(`,
 // so it is the characters; the site shows such a link as text anyway)
-const BAD_DEST = /\]\((?=\s*<?\s*(?!https?:\/\/)[^\s)\/?#]*?(?::|&#|&colon))/gi;
+const BAD_DEST = /\]\((?=[ \t]*<?[ \t]*(?![Hh][Tt][Tt][Pp][Ss]?:\/\/)[^ \t)\/?#]*?(?::|&#|&[Cc][Oo][Ll][Oo][Nn]))/g;
 export function storedAgentMarkdown(raw, { inline = false } = {}) {
-  let t = clean(raw).replace(PRIVATE_USE, '').replace(/\t/g, '    ');
-  t = t.split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-  if (inline) t = t.replace(/\s*\n\s*/g, ' ');
+  let t = String(raw == null ? '' : raw).replace(/\r\n?/g, '\n').replace(STORED_DROP, '').replace(/\t/g, '    ');
+  t = t.split('\n').map(l => l.replace(/[ \t]+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').replace(/^[ \t\n]+|[ \t\n]+$/g, '');
+  if (inline) t = t.replace(/[ \t]*\n[ \t]*/g, ' ');
   let lines = t.split('\n');
   const code = fencedLines(lines);
   lines = lines.map((l, i) => (code[i] ? l : outsideSpans(l, s => s
-    .replace(/\[(?=\/?TK\]|=\])/gi, '&#91;').replace(/!?\[(?=\[|\^)/g, m => m.replace('[', '&#91;'))
-    .replace(/<(?!https?:\/\/[^\s<>]+>)/g, '&lt;').replace(/\{/g, '&#123;').replace(/\}/g, '&#125;').replace(/`/g, '&#96;')
+    .replace(/\[(?=\/?[Tt][Kk]\]|=\])/g, '&#91;').replace(/!?\[(?=\[|\^)/g, m => m.replace('[', '&#91;'))
+    .replace(/<(?!https?:\/\/[^ \t\n<>]+>)/g, '&lt;').replace(/\{/g, '&#123;').replace(/\}/g, '&#125;').replace(/`/g, '&#96;')
     .replace(BAD_DEST, '&#93;('))));
   let open = null;
   lines.forEach((l, i) => {
     const m = code[i] && fenceOf(l);
     if (!m) return;
-    open = open === null ? m[1] : (new RegExp(`^ {0,3}${open[0] === '`' ? '`' : '~'}{${open.length},}\\s*$`).test(l) ? null : open);
+    open = open === null ? m[1] : (fenceCloses(l, open) ? null : open);
   });
   if (open && !inline) lines.push(open);
   let out = lines.join('\n');
   if (!inline && (code.some(Boolean) || lines.some(l => /^(?: {4}|\t)/.test(l)))) out = `\n${out}\n`;
   return out;
 }
-export function agentScope(g, { block = false, escape = 'liquid' } = {}) {
-  const text = storedAgentMarkdown(g.text, { inline: !block });
+// A PASSAGE'S FORM, named once (the site's Generation::FORMATS): `legacy` (no `format`: the escaped text, every passage published
+// before 2026-11-26) or `markdown`. A passage keeps its form across an edit of its post (passageFormsOf reads it from the note on
+// disk); a new passage is `markdown`; the one move, legacy → markdown, is only made through formatMove, and only when asked for, and
+// it writes the text again in the new form (agentScope) together with the new label (generatedEntry): never one without the other.
+export const FORMAT_MOVES = Object.freeze({ legacy: Object.freeze(['markdown']), markdown: Object.freeze([]) });
+export const NEW_PASSAGE_FORMAT = 'markdown';
+export function formatMove(from, to) {
+  if (!AGENT_TEXT_FORMATS.includes(from) || !AGENT_TEXT_FORMATS.includes(to)) throw new Error(`unknown passage format ${JSON.stringify(AGENT_TEXT_FORMATS.includes(from) ? to : from)}`);
+  if (from === to) return to;
+  if (!FORMAT_MOVES[from].includes(to)) throw new Error(`a passage cannot move from ${from} to ${to}`);
+  return to;
+}
+// The written passages of a note (its text, as on disk), in order: { key, format }. `key`: the instruction as written in the scope
+// (`impyrt <model>` for a pasted one). The n-th written scope is the n-th blyg_generated entry.
+const SCOPE_HEAD = /\[TK\](?:impyrt([^=\n]*)=| ([^\n]*?) \[=\])/g;
+export function passageFormsOf(noteText) {
+  const t = String(noteText || '');
+  const fm = /^---\n([\s\S]*?)\n---\n/.exec(t);
+  const body = fm ? t.slice(fm[0].length) : t;
+  const formats = [];
+  if (fm) {
+    let inList = false;
+    for (const line of fm[1].split('\n')) {
+      if (/^blyg_generated:\s*$/.test(line)) { inList = true; continue; }
+      if (!inList) continue;
+      if (/^\S/.test(line)) break;
+      if (/^\s*- /.test(line)) formats.push('legacy');
+      if (/^\s*(?:- )?format:\s*["']?markdown["']?\s*$/.test(line) && formats.length) formats[formats.length - 1] = 'markdown';
+    }
+  }
+  return [...body.matchAll(SCOPE_HEAD)].map((m, i) => ({ key: m[1] !== undefined ? `impyrt${m[1]}`.trim() : m[2], format: formats[i] || 'legacy' }));
+}
+// The form a passage is written in: its form in the note on disk (matched by its instruction, first unused), moved only when the
+// edit asks (`moveFormat`), else NEW_PASSAGE_FORMAT for a passage the note did not have.
+function formOf(forms, key) {
+  if (!forms) return NEW_PASSAGE_FORMAT;
+  const hit = forms.kept.find((x, i) => x.key === key && !forms.used.has(i));
+  if (!hit) return NEW_PASSAGE_FORMAT;
+  forms.used.add(forms.kept.indexOf(hit));
+  return forms.moveFormat ? formatMove(hit.format, forms.moveFormat) : formatMove(hit.format, hit.format);
+}
+const scopeKey = (g, escape) => (g.mode === 'pasted-by-reader' ? `impyrt ${importedModelToken(g.model)}`.trim() : scopeInstruction(g.instruction, { escape }));
+export function agentScope(g, { block = false, escape = 'liquid', format = NEW_PASSAGE_FORMAT } = {}) {
+  formatMove(format, format);
+  const text = format === 'markdown' ? storedAgentMarkdown(g.text, { inline: !block }) : scopeText(g.text, { block, escape });
   if (g.mode === 'pasted-by-reader') { const m = importedModelToken(g.model); return `[TK]impyrt${m ? ' ' + m : ''}=${text}[/TK]`; }
   return `[TK] ${scopeInstruction(g.instruction, { escape })} [=]${text}[/TK]`;
 }
 /** The blyg_generated entry for one agent-text gap. */
-export const generatedEntry = g => ({ ...(g.model ? { model: String(g.model) } : {}), ...(g.at ? { at: String(g.at) } : {}),
-  ...(READER_HAND_MODES.includes(g.mode) ? { edited_by_author: true } : {}), format: AGENT_TEXT_FORMAT,
+export const generatedEntry = (g, format = NEW_PASSAGE_FORMAT) => ({ ...(g.model ? { model: String(g.model) } : {}), ...(g.at ? { at: String(g.at) } : {}),
+  ...(READER_HAND_MODES.includes(g.mode) ? { edited_by_author: true } : {}), ...(formatMove(format, format) === 'markdown' ? { format: 'markdown' } : {}),
   // (for the owner's view only: generatedLines writes model, at, edited_by_author and format, nothing else)
   agent: g.agent === 'codex' ? 'codex' : 'claude' });
 // a placeholder for a scope while the owner's own words around it are made safe (private-use characters, never in a placeholder twice)
@@ -426,7 +497,7 @@ export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
  * written as the site's generated passage (above); a gap that is pending, failed or unknown BLOCKS. A bracket mark the owner typed
  * as words (`[TK]`) is no longer a gap: it is written so the site shows the letters and never reads it as its own grammar.
  */
-export function ownText(msg, { escape = 'liquid' } = {}) {
+export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [] } = {}) {
   const blocked = [];
   const generated = [];
   const src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
@@ -445,12 +516,13 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
       if (hasTkMark(g.text)) { blocked.push(AGENT_TK_SAY); return; }
       // THE BOX IS ALWAYS A BLOCK OF ITS OWN: a gap typed inside a sentence publishes as the words before it (a paragraph), the box,
       // and the words after it (a new paragraph). Never inline.
-      const scope = agentScope(g, { block: true, escape });
+      const format = formOf(forms, scopeKey(g, escape));
+      const scope = agentScope(g, { block: true, escape, format });
       out = out.replace(/[ \t]+$/, '') + `${HOLD_A}${scopes.length}${HOLD_B}`;
       scopes.push(`\n\n${scope}\n\n`);
       // the owner's words after it begin a paragraph of their own (no leading space carried over)
       { const rest = src.slice(at); at += rest.length - rest.replace(/^[ \t]+/, '').length; }
-      generated.push(generatedEntry(g));
+      generated.push(generatedEntry(g, format));
       return;
     }
     blocked.push(`a /tk passage (“${oneLine(f.instruction).slice(0, 40)}”) is not written yet: fill it, write it yourself or remove it, then publish`);
@@ -464,9 +536,10 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
     out = out.replace(TK_MARK, (m, i) => (mask[i] ? m : '&#91;' + m.slice(1))); }
   // bare web addresses in the owner's words become clickable (never a reference: see linkBareUrls)
   const explicit = explicitLinks(out);
-  const linked = linkBareUrls(out);
+  const purpose = [...new Set([...deliberate, ...explicit.map(normalizeLinkAddress).filter(Boolean)])];
+  const linked = linkBareUrls(out, { deliberate: purpose });
   out = linked.text;
-  const bareLinks = linked.urls.filter(u => !explicit.includes(u));
+  const bareLinks = linked.urls.filter(u => !purpose.includes(normalizeLinkAddress(u)));
   blocked.push(...linkProblems(out));
   out = neutraliseHtml(out);
   if (escape === 'liquid') {
@@ -731,7 +804,12 @@ export function linkTargetsOf(threads, points = null) {
 }
 export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null }) {
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
-  const opts = { escape };
+  // every address the owner linked on purpose anywhere in the post, as the site spells it (a bare one that matches is left as typed)
+  const deliberate = [...new Set((Array.isArray(threads) ? threads : []).flatMap(t => includedMsgs(t, points && points[t.id]))
+    .flatMap(m => explicitLinks(clean(withRuns(stripMore(m.text), m.runs, null)))).map(normalizeLinkAddress).filter(Boolean))];
+  // each passage's form: as in the note on disk when this is a new version of a published post (keep.before), else markdown
+  const forms = keep && keep.before ? { kept: passageFormsOf(keep.before), used: new Set(), moveFormat: keep.moveFormat || null } : null;
+  const opts = { escape, forms, deliberate };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
   if (threads.length > LIMITS.comments) return { ok: false, error: `at most ${LIMITS.comments} comments can go in one post` };
   const item = blygItemOf(page);
@@ -800,7 +878,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const front = renderFront((home && home.template) || DEFAULT_TEMPLATE, {
     title: oneLine(title).replace(/[<>{}]/g, ''), created: keep && dateOk(keep.created) ? keep.created : day, released: keep && dateOk(keep.released) ? keep.released : day,
     slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated,
-      silentLinks: [...new Set(bareLinks)].filter(u => !explicit.includes(u)) }),
+      silentLinks: [...new Set(bareLinks)].filter(u => !deliberate.includes(normalizeLinkAddress(u))) }),
   });
   const text = `---\n${front.join('\n')}\n---\n${body}\n`;
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };

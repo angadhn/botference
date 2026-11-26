@@ -12961,9 +12961,17 @@ only from the site or named in the instruction). In the note only what would act
 `[[`, `![[`, `[^`, `<` that is not an autolink, braces, a lone backtick, `](` before a non-http(s) address; an unclosed fence is closed.
 The site's `AgentMarkdown.stored` is the same function; its test compares the two. Entries without `format` are the escaped form above,
 which the site keeps rendering as it did.)
+**FORMS KEPT** (review, 2026-11-26): a passage's form is one of `AGENT_TEXT_FORMATS` (legacy, markdown), changed only by `formatMove`
+(legacy → markdown). A new version of a published post writes each passage in the form the note on disk has it in (`passageFormsOf`,
+matched by instruction), so a legacy passage is written again exactly as before and its item does not change; only an edit that asks
+(`keep.moveFormat`) moves it, writing the text and the label together. A new passage is markdown. The stored form's characters are
+named in `STORED_DROP` and plain space/tab/newline (no Unicode-aware class), so it agrees with the site's on every string (fuzzed).
 **BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a
 wikilink, a reference definition or alone on a quote line; trailing punctuation left out; http and https only) and listed in the note's
-`blyg_silent_links`, so the site never makes them references; the lone-link response still reads only what the owner linked on purpose.
+`blyg_silent_links`, so the site never makes them references; the lone-link response still reads only what the owner linked on purpose. Compared in the
+site's own spelling (`normalizeLinkAddress`, the port of its AutoLinks.normalize): a bare address that is the same target as a link
+the owner made on purpose anywhere in the post is left exactly as typed and never silenced (silencing it would silence the deliberate
+link). Also left as typed: link syntax with spaces, an indented line, an address holding a character reference.
 **THE AGENT-TEXT RULE** (`reviewFor`, `REVIEW_REASONS`): a post with any such passage ALWAYS stops at `planned` for the owner's look,
 whatever `confirm` says (`run.review = 'agent-text'`). (SUPERSEDED 2026-11-25: with one click it publishes straight in its box; see "The look
 policy" under the publish queue.)

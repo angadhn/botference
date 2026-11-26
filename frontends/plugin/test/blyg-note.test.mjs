@@ -605,3 +605,59 @@ test('a bare web address in the owner\'s words becomes an autolink, listed as si
   assert.deepEqual(N.linkTargetsOf(p.threads), ['https://linked.example/'], 'the lone-link response reads only what the owner linked on purpose');
   assert.equal(r.title, N.titleOf('Mine at https://other.example.test/blyg/ and (https://code.example.test/project). Also [linked](https://linked.example/) and https://linked.example/ again.'), 'the name is the same words as before');
 });
+
+// REVIEW 2026-11-26, item 4: the site matches blyg_silent_links in its normalised form (AutoLinks.normalize), so a bare address that is
+// the same target as a link the owner made on purpose is left exactly as typed and never silenced: the deliberate link keeps its reference.
+test('a bare address that is the same target as a deliberate link is left as typed and never silent (in the site\'s normalised form)', () => {
+  assert.equal(N.normalizeLinkAddress('https://www.Bob.example:443/p/1/?ref=x#f'), 'bob.example/p/1');
+  assert.equal(N.normalizeLinkAddress('http://bob.example:8080/a%7eb%2F/'), 'bob.example:8080/a~b%2F');
+  assert.equal(N.normalizeLinkAddress('javascript:alert(1)'), null);
+  for (const [words, link] of [['See https://bob.example/p/1?ref=x and [Bobs post](https://bob.example/p/1).', 'https://bob.example/p/1'],
+    ['See http://www.bob.example/p/1/ and <https://bob.example/p/1>.', 'https://bob.example/p/1']]) {
+    const p = webPage([{ id: 't1', quote: '', msgs: [mine(words)] }]);
+    const r = make(p, p.threads);
+    assert.ok(r.ok, r.error);
+    const body = r.text.split('\n---\n').slice(1).join('');
+    assert.ok(!/blyg_silent_links/.test(r.text), words);
+    assert.ok(!/<https?:\/\/(www\.)?bob\.example\/p\/1(\?ref=x|\/)>/.test(body), 'the bare address is left as typed: ' + body);
+    assert.ok(body.includes(link), words);
+  }
+  // in another comment of the same post, too
+  const p2 = webPage([{ id: 't1', quote: '', msgs: [mine('See https://bob.example/p/1?ref=x here.'), { ...mine('And [Bobs post](https://bob.example/p/1).'), ts: '2026-11-22T10:05:00Z' }] }]);
+  const r2 = make(p2, p2.threads);
+  assert.ok(r2.ok && !/blyg_silent_links/.test(r2.text) && /See https:\/\/bob\.example\/p\/1\?ref=x here\./.test(r2.text), r2.text);
+});
+
+// item 5: when in doubt the text is left as typed
+test('a bare address in link syntax with spaces, in an indented code block, or holding a character reference is left as typed', () => {
+  for (const t of ['[x]( https://a.example/ )', '[x](\n https://a.example/ )', 'Para.\n\n    https://code.example/x', '\thttps://tab.example/x',
+    'see https://a.example/?q=&lt;b&gt; here', 'see https://a.example/&amp;x', 'see https://a.example/&#x41;']) {
+    assert.deepEqual(N.linkBareUrls(t), { text: t, urls: [] }, t);
+  }
+});
+
+// item 8: a passage keeps its form across an edit. A published post's legacy passage is written again in the legacy form (the same
+// text, no `format`), so its item document does not change; a new passage is markdown; a move is only through formatMove.
+test('a passage keeps its form across an edit: legacy stays legacy unless the move is asked for', () => {
+  assert.deepEqual(N.AGENT_TEXT_FORMATS, ['legacy', 'markdown']);
+  assert.equal(N.formatMove('legacy', 'markdown'), 'markdown');
+  assert.equal(N.formatMove('markdown', 'markdown'), 'markdown');
+  assert.throws(() => N.formatMove('markdown', 'legacy'), /cannot move/);
+  assert.throws(() => N.formatMove('legacy', 'html'), /unknown/);
+  const g = { instruction: 'say hello', mode: 'filled-by-agent', agent: 'claude', model: 'claude-opus-5', at: '2026-11-24T10:00:00Z', text: '- **one**\n- two' };
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk say hello\nAfter'), gaps: [g] }] }]);
+  // as it was published before the markdown form existed (the escaped text, no format)
+  const legacyScope = N.agentScope(g, { block: true, format: 'legacy' });
+  assert.match(legacyScope, /\\- \\\*\\\*one\\\*\\\*/);
+  const before = `---\ntitle: "x"\nblyg_generated:\n  - model: "claude-opus-5"\n    at: 2026-11-24T10:00:00Z\n---\nIntro\n\n${legacyScope}\n\nAfter\n`;
+  const edited = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before } });
+  assert.ok(edited.ok, edited.error);
+  assert.ok(edited.text.includes(`\n${legacyScope}\n`), 'the legacy passage is written exactly as before: ' + edited.text);
+  assert.ok(!/format:/.test(edited.text), 'and stays legacy');
+  const moved = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, moveFormat: 'markdown' } });
+  assert.ok(moved.text.includes('[=]- **one**\n- two[/TK]') && /format: markdown/.test(moved.text), 'moved on purpose: converted and labelled together');
+  const fresh = make(page, page.threads);
+  assert.ok(/format: markdown/.test(fresh.text) && fresh.text.includes('[=]- **one**\n- two[/TK]'), 'a new passage is markdown');
+  assert.deepEqual(N.passageFormsOf(edited.text).map(x => x.format), ['legacy']);
+  assert.deepEqual(N.passageFormsOf(fresh.text).map(x => x.format), ['markdown']);
+});
