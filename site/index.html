@@ -40,6 +40,7 @@
     "Council on the web and phone with a per-agent context panel (botference plan --web)",
     "Google-Docs-style document review with bots in the threads (botference review)",
     "Discuss, the AI web annotator: highlight and comment on any page, summon the bots inline (botference discuss)",
+    "Publish a thread to your own site as a Blygger post, with agent passages in a marked box and a publish queue",
     "Headless screenshots so agents can see their own UIs and charts (botference see)"
   ],
   "url": "https://botference.com/",
@@ -366,6 +367,11 @@
     footer .spacer { display: none; }
   }
 
+  @media (max-width: 520px) {
+    header .wrap { gap: 14px; font-size: 12px; letter-spacing: 0; }
+    header nav { gap: 12px; }
+  }
+
   @media (max-width: 400px) {
     .eyebrow { font-size: 10px; letter-spacing: 3px; }
   }
@@ -386,6 +392,8 @@
   <div class="wrap">
     <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
     <nav>
+      <a href="blygger.html">Blygger</a>
+      <a href="laws.html">Laws</a>
       <a href="https://github.com/angadhn/botference">GitHub</a>
       <a href="https://github.com/sponsors/angadhn">Sponsor</a>
     </nav>
@@ -574,6 +582,16 @@
         or just ask Claude&nbsp;Code to set it up for you.
         <code>./botference discuss --install-autostart</code> makes it permanent;
         the council is optional
+      </p>
+    </section>
+
+    <section class="surface">
+      <h2><b>Blygger</b> — publish a thread to your own site as a blyg post. <code>/tk-claude</code> <code>/tk-codex</code></h2>
+      <p class="beneath">
+        On a <a href="https://blygger.org">Blygger</a> post, a highlight is a quote by reference, and your thread is a response by default.
+        Press the paper plane, and your site's own commands publish the post. Presses wait in a queue and go out one at a time.
+        An agent's passage stays in a marked box. Built during the Blygger hackathon, 20–27 November 2026.
+        <a href="blygger.html">What it does</a> · <a href="laws.html">what it promises (proposed laws)</a>
       </p>
     </section>
 
