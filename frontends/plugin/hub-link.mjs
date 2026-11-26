@@ -35,6 +35,7 @@ import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
 import { isPublishableMsg } from './blyg-note.mjs';
+import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
 // the /tk grammar, shared with the drawer (where each gap sits in the reply's text)
 const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 
@@ -81,6 +82,9 @@ export const HUB_LINK_ROUTES = Object.freeze({
   publish: Object.freeze({ path: '/hub-link/publish', does: 'presses a saved reply into the publish queue' }),
   cancel: Object.freeze({ path: '/hub-link/cancel', does: 'takes a reply out of the queue while it has not started, or throws a saved draft away' }),
   redo: Object.freeze({ path: '/hub-link/redo', does: 'asks the agent again for one passage of a saved draft' }),
+  // speech (hub-speech.mjs): the body of `transcribe` is the recording itself, not JSON, and its type and length are signed too
+  transcribe: Object.freeze({ path: '/hub-link/transcribe', does: 'starts turning a recording into text: a job', body: 'audio' }),
+  transcript: Object.freeze({ path: '/hub-link/transcript', does: 'a speech job: pending, done with its text, or failed' }),
 });
 const ROUTE_BY_PATH = new Map(Object.entries(HUB_LINK_ROUTES).map(([name, r]) => [r.path, name]));
 
@@ -233,14 +237,16 @@ export const SIG_HEADERS = Object.freeze({ key: 'x-hub-link-key', ts: 'x-hub-lin
 const NONCE_RE = /^[0-9a-f]{32}$/;
 const SIG_RE = /^[0-9a-f]{64}$/;
 export const bodyHashOf = body => crypto.createHash('sha256').update(Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8')).digest('hex');
-export const stringToSign = (urlPath, ts, nonce, bodyHash) => `${HUB_LINK_VERSION}\nPOST\n${urlPath}\n${ts}\n${nonce}\n${bodyHash}`;
+// (`extra`: the lines a route signs besides the body's hash: `transcribe` signs its content type, exactly as sent, and the body's length)
+export const stringToSign = (urlPath, ts, nonce, bodyHash, extra = []) => `${HUB_LINK_VERSION}\nPOST\n${urlPath}\n${ts}\n${nonce}\n${bodyHash}`
+  + (extra.length ? `\n${extra.join('\n')}` : '');
 /** The signature the Hub sends (here for the tests and for anyone writing the other side). */
-export function signRequest(secret, urlPath, ts, nonce, body) {
-  return crypto.createHmac('sha256', Buffer.from(String(secret), 'base64url')).update(stringToSign(urlPath, String(ts), nonce, bodyHashOf(body))).digest('hex');
+export function signRequest(secret, urlPath, ts, nonce, body, extra = []) {
+  return crypto.createHmac('sha256', Buffer.from(String(secret), 'base64url')).update(stringToSign(urlPath, String(ts), nonce, bodyHashOf(body), extra)).digest('hex');
 }
 /** Every header of a signed request (tests; the Hub's link-client.mjs does the same). */
-export function signedHeaders({ key_id, secret }, urlPath, body, { ts = Math.floor(Date.now() / 1000), nonce = crypto.randomBytes(16).toString('hex') } = {}) {
-  return { [SIG_HEADERS.key]: key_id, [SIG_HEADERS.ts]: String(ts), [SIG_HEADERS.nonce]: nonce, [SIG_HEADERS.sig]: signRequest(secret, urlPath, ts, nonce, body) };
+export function signedHeaders({ key_id, secret }, urlPath, body, { ts = Math.floor(Date.now() / 1000), nonce = crypto.randomBytes(16).toString('hex'), extra = [] } = {}) {
+  return { [SIG_HEADERS.key]: key_id, [SIG_HEADERS.ts]: String(ts), [SIG_HEADERS.nonce]: nonce, [SIG_HEADERS.sig]: signRequest(secret, urlPath, ts, nonce, body, extra) };
 }
 const hexEqual = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
 /** The nonces seen in the last ttlMs. A full cache refuses (a flood is not let through by forgetting). */
@@ -261,7 +267,7 @@ export function createNonceCache({ ttlMs = HUB_LINK_LIMITS.nonceMs, max = HUB_LI
 }
 /** → { ok: true } | { ok: false, why } — `why` is a reason code for the log, never for the answer. The nonce is taken last, only
  *  for a request whose signature is good (so a forger cannot burn the Hub's nonces). */
-export function verifySigned({ headers, urlPath, body, key, nowSec, nonces }) {
+export function verifySigned({ headers, urlPath, body, key, nowSec, nonces, extra = [] }) {
   const h = headers || {};
   const kid = String(h[SIG_HEADERS.key] || ''), tsRaw = String(h[SIG_HEADERS.ts] || ''), nonce = String(h[SIG_HEADERS.nonce] || ''), sig = String(h[SIG_HEADERS.sig] || '');
   if (!kid || !tsRaw || !nonce || !sig) return { ok: false, why: 'missing-header' };
@@ -271,7 +277,7 @@ export function verifySigned({ headers, urlPath, body, key, nowSec, nonces }) {
   if (Math.abs(Number(tsRaw) - nowSec) > HUB_LINK_LIMITS.skewSec) return { ok: false, why: 'stale-ts' };
   if (!NONCE_RE.test(nonce)) return { ok: false, why: 'bad-nonce' };
   if (!SIG_RE.test(sig)) return { ok: false, why: 'bad-sig' };
-  const want = signRequest(key.secret, urlPath, tsRaw, nonce, body);
+  const want = signRequest(key.secret, urlPath, tsRaw, nonce, body, extra);
   if (!hexEqual(want, sig)) return { ok: false, why: 'bad-sig' };
   const n = nonces.take(nonce);
   if (n !== 'fresh') return { ok: false, why: n === 'full' ? 'nonce-cache-full' : 'replayed-nonce' };
@@ -403,6 +409,8 @@ export const HUB_LINK_SAY = Object.freeze({
   'cancelled': 'This reply was cancelled.',
   'changed-on-computer': 'This draft was changed on your computer; discard it there.',
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
+  'audio-too-large': `The recording is too long to send: at most ${SPEECH_LIMITS.audioBytes} bytes (about 3 minutes).`,
+  'not-audio': 'That is not a recording your computer can read (WebM, Ogg or MP4 audio).',
   'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
 });
 
@@ -429,6 +437,8 @@ export function createHubLink(deps) {
   // SLOTS HELD by requests still working (verifying a passage, or waiting for the queue): counted with the records, so requests at once
   // cannot all pass a limit that only the finished ones would have reached. Taken before the await, given back when it ends.
   const holding = { replies: 0, presses: 0 };
+  // speech is offered when the tools are on this machine (hub-speech SPEECH_GATES); the routes are 404 otherwise
+  const speechGate = () => (deps.speech ? deps.speech.gate() : 'off');
   const statusWait = Number.isInteger(deps.statusWaitMs) && deps.statusWaitMs > 0 ? deps.statusWaitMs : HUB_LINK_LIMITS.statusWaitMs;
   // a passage left `pending` with no fill running (the companion restarted mid-fill) is failed "interrupted", through the gap's own move
   // function, on the computer's side (deps.settleStale), before a reply's state or text is read
@@ -522,7 +532,21 @@ export function createHubLink(deps) {
 
   // (each answers { status, body }; a rid in flight is waited for, so two copies of one request do the work once)
   const routes = {
-    async ping(_data, key) { return { status: 200, body: { ok: true, version: HUB_LINK_VERSION, publish: key.publish, key_id: key.key_id } }; },
+    async ping(_data, key) { return { status: 200, body: { ok: true, version: HUB_LINK_VERSION, publish: key.publish, key_id: key.key_id, speech: speechGate() } }; },
+
+    // ---- speech: a job, answered at once; the recording is in the job only (hub-speech.mjs) ----
+    async transcribe(audio, _key, container) {
+      const r = deps.speech.submit({ audio, container });
+      if (!r.ok) return { status: r.status, body: { ok: false, error: r.error, ...(r.limit ? { limit: r.limit } : {}) } };
+      return { status: 200, body: { ok: true, job: r.job, state: 'pending' } };
+    },
+    async transcript(data) {
+      const id = typeof data.job === 'string' && /^[0-9a-f]{24}$/.test(data.job) ? data.job : '';
+      if (!id) return { status: 400, body: { ok: false, error: 'job required' } };
+      const v = deps.speech.view(id);
+      if (!v) return { status: 404, body: { ok: false, error: 'unknown job' } };
+      return { status: 200, body: { ok: true, ...v } };
+    },
 
     async reply(data, key) {
       const rid = data.rid;
@@ -638,6 +662,31 @@ export function createHubLink(deps) {
     });
   }
 
+  /** A recording: its type on the allow-list, its size under the cap, its type and length signed with its bytes, its first bytes the
+   *  container its type names. The bytes go to the job and nowhere else. */
+  async function handleAudio(req, res, url, name, key, refuse) {
+    const type = String(req.headers['content-type'] || '');
+    const container = audioTypeOf(type);
+    if (!container) return refuse(415, 'audio-type');
+    const declared = Number(req.headers['content-length']);
+    const tooLarge = (close = true) => { say('refused audio-too-large'); res.writeHead(413, { ...JSON_HEAD, ...(close ? { connection: 'close' } : {}) }).end(JSON.stringify({ ok: false, error: 'too-large', say: HUB_LINK_SAY['audio-too-large'] })); };
+    // (declared too large but not absurdly: the body is drained and thrown away, so the Hub reads the 413 rather than a reset)
+    if (Number.isFinite(declared) && declared > SPEECH_LIMITS.audioBytes) {
+      if (declared > 2 * SPEECH_LIMITS.audioBytes) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
+      req.resume(); return tooLarge(false);
+    }
+    const got = await readRaw(req, SPEECH_LIMITS.audioBytes);
+    if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
+    const v = verifySigned({ headers: req.headers, urlPath: url, body: got.body, key, nowSec: Math.floor(ms() / 1000), nonces, extra: [type, String(got.body.length)] });
+    if (!v.ok) { say(`refused ${v.why}`); return answer(res, 401, { ok: false, error: 'refused' }); }
+    if (!perMinute.take()) { say('limited requests-per-minute'); return answer(res, 429, { ok: false, error: 'limit', limit: 'requests-per-minute' }); }
+    if (sniffAudio(got.body) !== container) { say('refused audio-bytes'); return answer(res, 415, { ok: false, error: 'not-audio', say: HUB_LINK_SAY['not-audio'] }); }
+    try {
+      const r = await routes[name](got.body, key, container);
+      return answer(res, r.status, r.body);
+    } catch { if (!res.headersSent) return answer(res, 500, { ok: false, error: 'internal error' }); }
+  }
+
   /** The one entry point: server.mjs calls it for every URL under /hub-link/, before its own sign-in gate. */
   async function handle(req, res, url) {
     const { gate, key } = readLinkKey(deps.keyDir);
@@ -650,6 +699,9 @@ export function createHubLink(deps) {
     // a browser page always sends an Origin on a POST; the Hub's server never does
     if (req.headers.origin !== undefined) return refuse(403, 'origin-header');
     if (String(req.url || '').includes('?')) return refuse(400, 'query');
+    // speech off (a tool missing): its routes do not exist
+    if ((HUB_LINK_ROUTES[name].body === 'audio' || name === 'transcript') && speechGate() !== 'on') { req.resume(); return answer(res, 404, { ok: false, error: 'not found' }); }
+    if (HUB_LINK_ROUTES[name].body === 'audio') return handleAudio(req, res, url, name, key, refuse);
     if (!isJson(req.headers['content-type'])) return refuse(415, 'content-type');
     const declared = Number(req.headers['content-length']);
     // THE one length limit: the encoded body. Said in a fixed sentence the Hub can show as it is.
@@ -663,8 +715,9 @@ export function createHubLink(deps) {
     let data;
     try { data = JSON.parse(got.body.toString('utf8')); } catch { return answer(res, 400, { ok: false, error: 'not JSON' }); }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return answer(res, 400, { ok: false, error: 'not a JSON object' });
-    // (status too: with the records unreadable nothing true can be said about any rid, and `unknown` would be read as "not published")
-    if (name !== 'ping' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
+    // (status too: with the records unreadable nothing true can be said about any rid, and `unknown` would be read as "not published";
+    // speech touches no record)
+    if (name !== 'ping' && name !== 'transcript' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
     const rid = ridOk(data.rid) ? data.rid : '';
     try {
       // one request per rid at a time: a copy arriving while the first works waits for it, then answers from the record

@@ -81,6 +81,8 @@ function send(base, route, body, { key = keyNow(), headers = {}, method = 'POST'
   });
 }
 const postOf = (id, page = `${ORIGIN}${PAGES[id]}`) => ({ page, origin: ORIGIN, id, version: 1 });
+// (the JSON routes; speech has its own walk in hub-link-speech.test.mjs, and is on only where its tools are)
+const JSON_ROUTES = Object.keys(L.HUB_LINK_ROUTES).filter(r => !['transcribe', 'transcript'].includes(r));
 const reply = (base, rid, extra = {}) => send(base, 'reply', { rid, post: postOf(A), quote: SAYS[A], comment: 'My reply from the phone.', intent: 'draft', ...extra });
 const status = async (base, rid) => (await send(base, 'status', { rids: [rid] })).json.replies[0];
 // (GET /page answers the record itself, as the owner on this machine; an address with no record has no `url`)
@@ -108,13 +110,14 @@ pair('drafts-only');
 await test('ping: the link version and the publish setting, nothing else', async () => {
   const r = await send(S, 'ping', {});
   assert.equal(r.status, 200, r.body);
-  assert.deepEqual(r.json, { ok: true, version: 'v1', publish: 'drafts-only', key_id: keyNow().key_id });
+  assert.ok(['on', 'off'].includes(r.json.speech), 'whether speech is on (its tools are on this machine or not)');
+  assert.deepEqual(r.json, { ok: true, version: 'v1', publish: 'drafts-only', key_id: keyNow().key_id, speech: r.json.speech });
 });
 
 await test('EVERY ROUTE refuses: a wrong key, a stale timestamp, a replayed nonce, a body not the one signed, an Origin, a GET, a big body, no JSON type', async () => {
   const wrong = { ...keyNow(), secret: crypto.randomBytes(32).toString('base64url') };
   const body = { rid: 'zzzzzzzz', rids: ['zzzzzzzz'] };
-  for (const r of Object.keys(L.HUB_LINK_ROUTES)) {
+  for (const r of JSON_ROUTES) {
     const expect = (got, code, what) => { assert.equal(got.status, code, `${r}: ${what} (${got.body})`); if (code === 401) assert.deepEqual(got.json, { ok: false, error: 'refused' }); };
     expect(await send(S, r, body, { key: wrong }), 401, 'wrong key');
     expect(await send(S, r, body, { key: { ...keyNow(), key_id: 'ffffffff' } }), 401, 'unknown key id');
@@ -144,7 +147,7 @@ await test('THE LINK IS NOT THE OWNER: its signed headers open no owner route (h
 });
 
 await test('AN OWNER SESSION IS NOT THE LINK: the owner\'s password, over the tunnel or on this machine, opens no /hub-link/* route', async () => {
-  for (const r of Object.keys(L.HUB_LINK_ROUTES)) {
+  for (const r of JSON_ROUTES) {
     assert.equal((await send(S, r, { rid: 'zzzzzzzz' }, { key: null, headers: { authorization: 'Bearer owner-pw' } })).status, 401, `${r} tunnel`);
     const local = await request(S, 'POST', `/hub-link/${r}`, { rid: 'zzzzzzzz' });
     assert.equal(local.status, 401, `${r} loopback owner`);
@@ -384,7 +387,7 @@ await test('CONFIRM ALWAYS is honoured: a Hub press waits for the owner\'s look 
 
 await test('OFF: the key is deleted and every route is 404 at once', async () => {
   assert.equal(cli(['off'], { dir: SECRETS, say }), 0);
-  for (const r of Object.keys(L.HUB_LINK_ROUTES)) assert.equal((await send(S, r, { rid: 'rid-look-00014', rids: ['rid-look-00014'] }, { key: oldKey })).status, 404, r);
+  for (const r of JSON_ROUTES) assert.equal((await send(S, r, { rid: 'rid-look-00014', rids: ['rid-look-00014'] }, { key: oldKey })).status, 404, r);
 });
 await stop(srv);
 

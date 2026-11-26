@@ -1,0 +1,27 @@
+(version 1)
+; hub-speech.sb — the macOS sandbox (seatbelt) ffmpeg and whisper-cli run in for the hub link's speech jobs (hub-speech.mjs).
+; Started as: sandbox-exec -f hub-speech.sb -D HOME=… -D MODEL=… -D WORK=… -D BIN=… <BIN> …
+; Every path parameter is a real path (no symlinks): seatbelt matches the resolved path.
+;   HOME   the owner's home folder (only its own entry may be looked at)
+;   MODEL  the whisper model file: the one file outside WORK that may be read
+;   WORK   the job's fresh private folder: the audio in, the WAV out; the only place anything may be written
+;   BIN    the one program this run is (ffmpeg or whisper-cli): the only program it may start
+; The threat is the audio: ffmpeg and whisper parse bytes from the network. A parser bug turned into code would still find no network,
+; no file of the owner's to read (but the model), nowhere to write but WORK, and no other program to start.
+(allow default)
+
+; No network at all: not the internet, not the loopback (the companion), not a local socket.
+(deny network*)
+
+; Reads: nothing under the owners' folders, other volumes or the temporary folders, but the model and WORK.
+(deny file-read* (subpath "/Users") (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))
+(allow file-read-metadata (literal "/Users") (literal (param "HOME")))
+(allow file-read* (literal (param "MODEL")) (subpath (param "WORK")))
+
+; Writes: WORK only.
+(deny file-write*)
+(allow file-write* (subpath (param "WORK")) (literal "/dev/null") (literal "/dev/dtracehelper"))
+
+; No program but itself.
+(deny process-exec)
+(allow process-exec (literal (param "BIN")))
