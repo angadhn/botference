@@ -14464,15 +14464,22 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   one stat each. A request's reading stops after 2 s (`LIST_DEADLINE_MS`; files not reached are left out of that answer). So a key
   holder can make the computer stat each listed file (at most 2000) at most 30 times a minute, and read a file again only after the
   owner changed it.
-- THE SOURCE ADDRESS is canonical (`canonicalSource`, rule `tracking-v2`), edited as raw text (nothing kept is re-encoded): the
-  fragment, `utm_*` on every host, SECRETS on every host (`SECRET_PARAMS`: token, access_token, key, sig, signature, auth and their
-  like; named in `botference clippings check`, never sent), and Substack's own parameters only on Substack pages (`PLATFORM_PARAMS`: a
-  host under substack.com or a `/p/<slug>` post path: `s`, `r`, `triedRedirect`, `publication_id`, `post_id`, `isFreemail`, `sd`,
-  `showWelcomeOnShare`). Nothing else is removed, so two different pages never become one record.
+- THE SOURCE ADDRESS is canonical (`canonicalSource`, rule `tracking-v3`), edited as raw text (nothing kept is re-encoded): the
+  fragment; `utm_*` and the click ids (`CLICK_IDS`: fbclid, gclid, mc_cid, mc_eid, igshid) on every host; SECRETS on every host
+  (`SECRET_PARAMS`: token, access_token, key, sig, signature, auth, code and their like; never sent); and Substack's own parameters
+  (`SUBSTACK_PARAMS`: s, r, triedRedirect, publication_id, post_id, isFreemail, sd, showWelcomeOnShare) only on hosts under
+  substack.com and the hosts the owner names in the setting's `substack_hosts` (none by default; never by the path's shape). A
+  parameter's name is compared decoded, without control characters or white space and without a leading `amp;`. Nothing else is
+  removed, so two different pages never become one record.
+- A DROPPED SECRET MAY CHANGE THE PAGE an address names (a shared sheet's `?key=`): such a clipping is marked "address changed: check
+  it" by `botference clippings check | list` (the names taken out and the address as it now is; never the value), and a reply to it
+  is filed but NOT PUBLISHED (`press.refused: 'address-unconfirmed'`, `clippingPublishable`) until the owner adds that address to the
+  setting's `confirmed_sources`.
 - `clippings {}` → the collections, each clipping's `{ id, title, author, source, published, words }`, oldest first. `clipping { id,
   page? }` → those facts and one page of the body: `markdown` (pages of at most 40000 characters, split at blank lines) and `text`, its
   plain form. Neither touches the records (an unreadable records file does not stop them).
-- THE PLAIN TEXT (`clippingText`, version 2: version 1 with every inside bounded, as the Hub writes it: `CLIP_BOUNDS` = a bracket's or
+- THE PLAIN TEXT (`clippingText`, version 2; an HTML-only line is told by its first and last character after trim, whatever is between,
+  U+2028/U+2029 included, the same on both sides: version 1 with every inside bounded, as the Hub writes it: `CLIP_BOUNDS` = a bracket's or
   a tag's insides at most 500 characters, an address at most 2000, a footnote label 1 to 100, nothing across a line end; past a bound
   the mark stays in the text; WIRE-clip.md has the patterns and their linear reading). Every rule is one linear pass (a
   table of where the next `]`, `)`, `>` is); the output is that of the regular expressions they were first written as (a test checks
@@ -14493,7 +14500,10 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   folder, too large, a name with `..`, a hard link), the list's order and facts with no names, pages, the passage check, the CLI; the
   linear rule against the bounded patterns on 20000 random strings and at, below and past every bound; fourteen hostile 1 MiB paragraphs each under 1.5 s; a page
   beginning `---`; tracking-v2 (a search's `s` and a forum's `post_id` kept, the query not re-encoded, a user and password refused,
-  secrets dropped and named); the cache (nothing read again; a changed file has a new rev); a title from the address);
+  secrets dropped and named); the cache (nothing read again; a changed file has a new rev); a title from the address; a line with
+  U+2028/U+2029; Substack's names only on its hosts and the owner's; `amp;token`, control characters in a name and click ids; a changed
+  address marked in the owner's check until confirmed); `hub-link-clip` also: a reply to a clipping whose address lost a secret is
+  filed but refused publishing (`address-unconfirmed`) until the address is in `confirmed_sources`, then published;
   `hub-link-clip` (through the real companion: only allow-listed files listed, no names or paths, a symlink out left out; a clipping
   paged with its plain text; anything off the list 404; a quote not in the clipping refused; post and clipping together refused; a
   reply published with `blyg_stub_of {url, title}` and the web quote; `earlier` names it and an addition goes out as version 2; a
