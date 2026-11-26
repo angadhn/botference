@@ -14086,7 +14086,10 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
 ### The routes (`HUB_LINK_ROUTES`) — request and answer JSON
 - `ping {}` → `{ ok, version: 'v1', publish, key_id }` (the Hub's "Check the link").
 - `reply { rid, post: { page, origin, id, version }, quote, comment, intent: 'publish'|'draft' }` → `{ ok, rid, state, … }` (the reply's
-  view, below). `rid`: 8 to 64 of `[A-Za-z0-9_-]`; `quote` ≤ 2000 and `comment` ≤ 8000 characters, both non-empty.
+  view, below). `rid`: 8 to 64 of `[A-Za-z0-9_-]`; `quote` and `comment` non-empty. There is no separate character limit: the ONE
+  length limit is the encoded body (16 KiB), so a reply in any script is judged the same way.
+  - A rid the Hub cancelled before this reply arrived (`withdrawn`, below) answers `409 { ok: false, error: 'cancelled', rid, state:
+    'cancelled', say, repeated: true }` and nothing is verified, filed or pressed.
   - A rid already kept answers its view with `repeated: true` and does nothing else (two copies arriving together: the second waits for
     the first and answers from its record).
   - The companion trusts nothing the Hub says about the post. It verifies the claim exactly as `POST /blyg/bind` does, through the same
@@ -14108,11 +14111,13 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   'unknown' }`; a reply no longer saved (its thread deleted, or published from the drawer) `409` with its view.
 - `cancel { rid }` → the view. Only while its queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is
   cancelled through `blygQueue.cancel`. Already cancelled: `repeated: true`. A draft never pressed, or an entry already running or
-  finished: `409` with its view.
+  finished: `409` with its view. A rid this companion has NEVER SEEN (the Hub cancels a reply it is not sure arrived): `200 { ok, rid,
+  state: 'cancelled' }`, and the rid is remembered as `withdrawn`, so its reply, if it comes later, is refused as cancelled.
 - The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, ahead? (queued), address?, version? (published), say? (failed:
   the queue's one sentence, paths scrubbed), press?: { refused, say } (saved after a press was refused: drafts-only, publishes-per-day,
   not-set-up, queue-refused) }`. Nothing else of the page.
-- Other answers: `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
+- Other answers: `413 { ok:false, error:'too-large', say:'This reply is too long to send to your computer: at most 16 KB of text.' }`
+  for a body over 16384 bytes (the sentence is fixed); `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
   `requests-per-minute`, `replies-per-hour`; `503` when the records file is unreadable (write routes only); `500 internal error`.
 
 ### Publishing from the Hub (`blyg-queue PRESSED_BY`)
@@ -14138,13 +14143,16 @@ only.
 
 ### The records (`<companion data dir>/hub-link-replies.json`, 0600)
 `{ version: 1, records: [{ rid, step, at, intent, page_url, thread_id, entry_id, pressed_at, press_refused, post: { origin, id, version
-} }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed']`, one field (`step`), moved only by
-`moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. An unreadable file (or one not
+} }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed', 'withdrawn']`, one field (`step`),
+moved only by `moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. `withdrawn` is
+born so (a cancel of a rid never seen: `{ rid, step, at }` only), is final, never counts against a limit, and at most 500 are kept (the
+oldest withdrawn one is forgotten first; filed records are never dropped for one). An unreadable file (or one not
 this shape) is never written over: the write routes answer 503 rather than risk acting twice; status answers `unknown`.
 
 ### Limits (`HUB_LINK_LIMITS`)
 30 signed requests a minute (memory), 20 replies an hour and 10 presses a day (counted from the records, so a restart does not reset
-them; a refused reply is not counted). GAP_LIMITS and QUEUE_MAX apply as ever. Past the replies limit: 429, nothing written. Past the
+them; a refused reply is not counted). Requests at once cannot all pass: a reply holds a slot from before it verifies the passage until
+it is recorded or refused (given back then), and a press holds one while the queue answers; held slots count with the records. GAP_LIMITS and QUEUE_MAX apply as ever. Past the replies limit: 429, nothing written. Past the
 publishes limit: the reply is filed and `saved` with `press.refused: 'publishes-per-day'`.
 
 ### Logs
@@ -14152,16 +14160,26 @@ publishes limit: the reply is filed and `saved` with `press.refused: 'publishes-
 a quote, the secret, a signature or a body.
 
 ### What a leaked key can do
-File threads on page records of real blyg posts whose text holds the passage; spend the owner's subscription through `/tk` within the
-limits; make the companion read item documents of blygs it names (the guarded fetch; about 30 a minute); publish up to 10 replies a day,
-and only with `one-click`. It cannot read pages, threads or settings, change anything else, or reach `/blyg-publish/*`. Revoke with
-`botference hub-link rotate` or `off`.
+Whoever holds the key can, until it is replaced:
+- with `one-click`, publish up to 10 posts a day on the owner's site, under the owner's name, each a reply to any blyg post at all,
+  including a post on a blyg the key holder runs themselves (the passage only has to be that post's own text);
+- with either setting, file up to 20 replies an hour as threads in the owner's drawer, each with `/tk` lines that spend the owner's
+  agent subscription (within GAP_LIMITS);
+- make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
+  public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
+- fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour.
+It cannot read pages, threads or settings, change any setting, or reach `/blyg-publish/*` or any other owner route.
+How to end it: on the computer, `botference hub-link rotate` (a new key; the old one is refused from the next request), or
+`botference hub-link off` and then pair again with `botference hub-link pair`; put the new key in the Hub's environment.
 
 ### Tests
 `hub-link` (signing: the exact string, good, wrong key, wrong secret, stale both ways, replayed nonce, a forger cannot burn a nonce, body
 mismatch, missing headers; the nonce cache and the request window on a fake clock; https origins; the key file 0600 and `broken`; every
 ENTRY_STATE through linkStateOf, a run at its look, replaced_by, saved/cancelled/published without an entry; moveRecord; the record
-store 0600, atomic, read back, counted by time, an unreadable file kept). `hub-link-queue` (a Hub press is queued with the runner free
+store 0600, atomic, read back, counted by time, an unreadable file kept; through the routes in-process: 30 replies at once file 20 and
+press 10, a refused reply gives its slot back, a 12000-character reply is filed and one of 18 KB of three-byte characters is 413 with
+the fixed sentence, a cancel before the reply is remembered (the reply refused as cancelled, nothing verified, across a reload), and
+withdrawn rids are bounded). `hub-link-queue` (a Hub press is queued with the runner free
 and goes live, presence away, logged; promised_look under confirm always; look, unknown presser and not set up refused; a pause not
 lifted). `hub-link-cli` (pair, the printed lines, status without the secret, https only, rotate refuses the old key, off, an unreadable
 file never written over, the launcher). `hub-link-server` (through the real companion, hosted, with the pretend web, the stand-in
