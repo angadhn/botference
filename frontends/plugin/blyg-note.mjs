@@ -858,6 +858,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   // markdown. When they cannot be told, the new version is refused: a passage's form is never guessed.
   let forms = null;
   if (keep && keep.before) {
+    if (keep.refusal) return { ok: false, error: String(keep.refusal) };   // (Ruby could not read the published note: blyg-run says why)
     let kept;
     try {
       if (keep.unreadable) throw new Error(String(keep.unreadable));

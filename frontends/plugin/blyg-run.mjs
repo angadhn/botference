@@ -546,17 +546,33 @@ function frontOf(text) {
   return head.split(/\n---\s*\n/)[0];
 }
 // A published note's `blyg_generated`, read by a REAL YAML parser: Ruby's Psych, the one the site reads it with (every YAML shape of
-// the list, comments and flow maps included). → { generated } (an absent key: no entries, every passage legacy, as the site reads it),
-// or { unreadable } with a plain reason: the new version is then refused (blyg-note.mjs FORMS_UNKNOWN_SAY), never guessed.
-const GENERATED_RB = 'd = YAML.safe_load($stdin.read, permitted_classes: [Date, Time]); ' +
-  'puts JSON.generate(d.is_a?(Hash) ? { "present" => d.key?("blyg_generated"), "list" => d["blyg_generated"] } : { "present" => false })';
-export function generatedOf(noteText) {
+// the list, comments and flow maps included). It runs in the SITE's folder (`cwd`: S.top), so a version manager's shim picks the
+// site's own Ruby (its .ruby-version); the script also runs on the oldest Ruby a Mac carries (2.6, Psych 3.1: `safe_load` with
+// `permitted_classes:`, no newer keyword). → { generated } (an absent key: no entries, every passage legacy, as the site reads it);
+// { unreadable } when the YAML itself cannot be read (the new version is then refused with FORMS_UNKNOWN_SAY); { refusal:
+// RUBY_NEEDED_SAY } when Ruby is missing or fails for any other reason. Nothing is ever guessed.
+export const RUBY_NEEDED_SAY = 'Ruby is needed to read this post\'s agent passages, and it could not be run here (is ruby on the PATH of the companion?), so a new version is not written from here. Nothing was written.';
+const GENERATED_RB = [
+  'begin',
+  '  d = YAML.safe_load($stdin.read, permitted_classes: [Date, Time])',
+  'rescue Psych::Exception',
+  '  puts JSON.generate("yaml_error" => true)',
+  '  exit 0',
+  'end',
+  'puts JSON.generate(d.is_a?(Hash) ? { "present" => d.key?("blyg_generated"), "list" => d["blyg_generated"] } : { "present" => false })',
+].join('\n');
+export function generatedOf(noteText, { ruby = 'ruby', cwd = undefined, env = undefined } = {}) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(String(noteText || ''));
   if (!m) return { unreadable: 'the note has no front matter' };
+  let out;
   try {
-    const r = JSON.parse(execFileSync('ruby', ['-ryaml', '-rjson', '-rdate', '-e', GENERATED_RB], { input: m[1], encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'ignore'] }));
-    return { generated: r.present ? r.list : [] };
-  } catch { return { unreadable: 'its front matter could not be read as YAML here (is ruby on the PATH?)' }; }
+    out = execFileSync(ruby, ['-ryaml', '-rjson', '-rdate', '-e', GENERATED_RB],
+      { input: m[1], encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'ignore'], ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) });
+  } catch { return { refusal: RUBY_NEEDED_SAY }; }
+  let r;
+  try { r = JSON.parse(out); } catch { return { refusal: RUBY_NEEDED_SAY }; }
+  if (r && r.yaml_error) return { unreadable: 'its front matter could not be read as YAML' };
+  return { generated: r && r.present ? r.list : [] };
 }
 const fmValue = (fm, key) => { const m = new RegExp(`^${key}:\\s*["']?([^\\s"']+)["']?\\s*$`, 'm').exec(fm); return m ? m[1] : ''; };
 function headOf(file) {
@@ -1133,7 +1149,7 @@ export function createPublisher(deps) {
     // its form (`before`: the note on disk; its blyg_generated read by a real YAML parser, generatedOf)
     const linkStub = pub.link_stub && typeof pub.link_stub === 'object' ? pub.link_stub : null;
     const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid,
-      keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before, ...(deps.generatedOf || generatedOf)(before) }, points, linkStub });
+      keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before, ...(deps.generatedOf || generatedOf)(before, { cwd: S.top }) }, points, linkStub });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);

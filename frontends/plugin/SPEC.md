@@ -12971,7 +12971,9 @@ named in `STORED_DROP` and plain space/tab/newline (no Unicode-aware class), so 
 entry; a missing entry is legacy, as the site reads it). When the post's passages change in number or order (the owner adds a comment with
 a passage to an earlier post, from the drawer or the Hub) and it holds a legacy passage, every legacy passage moves to markdown through
 `formatMove` with that edit, written again from the text the agent wrote (or the owner's own edit of it) and labelled together; the
-publish box says `FORMS_MOVED_SAY` (run.forms_moved). Only an unreadable front matter or an unknown form name refuses the new version,
+publish box says `FORMS_MOVED_SAY` (run.forms_moved). The front matter is read by `generatedOf` in the SITE's folder (so the site's Ruby
+is used where a version manager is in play), with a script that also runs on the system Ruby 2.6 / Psych 3.1 a launch agent may
+get; Ruby missing or failing says `RUBY_NEEDED_SAY`. Only an unreadable front matter or an unknown form name refuses the new version,
 with a plain sentence (`FORMS_UNKNOWN_SAY`); nothing is guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
 zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
 a post with a deliberate link the writer cannot normalise has no bare address made clickable.

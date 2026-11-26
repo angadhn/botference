@@ -776,3 +776,30 @@ test('the publish box is told when an edit moves older passages (the run view ca
   const fs = await import('node:fs');
   assert.ok(fs.readFileSync(new URL('../extension/drawer.js', import.meta.url), 'utf8').includes("run.forms_moved === true ? `<p class=\"pubquiet\">${esc('Older agent passages in this post will now show their formatting.')}"));
 });
+
+// RE-CHECK 3: the companion runs as a launch agent; `ruby` on its PATH may be the system's (Ruby 2.6, Psych 3.1). The reader works
+// there too; it runs in the site's own folder (so the site's .ruby-version applies when there is one); a Ruby that is missing or fails
+// for any reason but unreadable YAML is said plainly, and the new version is not written.
+test('generatedOf works under the system Ruby 2.6 too, in the site\'s folder; no Ruby is said plainly', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { generatedOf, RUBY_NEEDED_SAY } = await import('../blyg-run.mjs');
+  const note = '---\nreleased: "2026-11-26"\nblyg_generated:\n  - model: "claude-x"\n    at: 2026-11-26T08:27:04Z\n    format: markdown\n  - model: m\n---\nbody';
+  const rubies = ['ruby', ...(fs.existsSync('/usr/bin/ruby') ? ['/usr/bin/ruby'] : [])];
+  for (const ruby of rubies) {
+    const r = generatedOf(note, { ruby });
+    assert.deepEqual(N.formsFromGenerated(r.generated), ['markdown', 'legacy'], ruby);
+    assert.ok(generatedOf('---\nblyg_generated: [\n---\nx', { ruby }).unreadable, `${ruby}: bad YAML is unreadable, not "Ruby is needed"`);
+    assert.ok(generatedOf('---\nblyg_generated: *a\n---\nx', { ruby }).unreadable, `${ruby}: an alias is refused as YAML`);
+  }
+  assert.deepEqual(generatedOf(note, { ruby: '/nonexistent/ruby' }), { refusal: RUBY_NEEDED_SAY });
+  assert.match(RUBY_NEEDED_SAY, /^Ruby is needed to read this post's agent passages/);
+  // the cwd is the site's folder: a .ruby-version there is honoured by a version manager's shim
+  const dir = fs.mkdtempSync(pathMod.join(os.tmpdir(), 'blyg-site-'));
+  assert.deepEqual(N.formsFromGenerated(generatedOf(note, { cwd: dir }).generated), ['markdown', 'legacy']);
+  // the refusal reaches the owner as that sentence
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk go\nAfter'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 't' }] }] }]);
+  const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before: note, refusal: RUBY_NEEDED_SAY } });
+  assert.deepEqual([r.ok, r.error], [false, RUBY_NEEDED_SAY]);
+});
