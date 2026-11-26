@@ -14454,16 +14454,28 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   | list`, run in the companion's project folder, read it and the listed files and write nothing): `{ "folder": "<absolute path>",
   "collections": [ { "name": "…", "files": ["<file name>", …] } ] }`, at most 20 collections of 100 files. Invalid or absent: the list
   is empty and every clipping 404.
-- A FILE is read only when it is named in the setting, is a plain name (no separator, no `..`, not hidden), its real path is a plain
-  file directly inside the folder's real path (a symlink out is refused), at most 1 MiB, and has a `source:` that is an http(s)
-  address. Its id is the first 16 hex of sha256 of its name; the name and the path are never sent.
-- THE SOURCE ADDRESS is canonical (`canonicalSource`, rule `tracking-v1`): the fragment and the tracking parameters `utm_*`, `fbclid`,
-  `gclid`, `mc_cid`, `mc_eid`, `ref`, `ref_src`, `s`, `r`, `triedRedirect`, `publication_id`, `post_id`, `isFreemail`, `sd`,
-  `showWelcomeOnShare` removed.
+- A FILE is read only when it is named in the setting and is a plain name (no separator, no `..`, not hidden); it is opened with
+  O_NOFOLLOW in the folder's real path and the OPEN FILE is checked (a regular file with one link, so neither a symlink nor a hard link
+  to a file elsewhere is followed; at most 1 MiB), and at most 1 MiB is read from that descriptor. It must have a `source:` that is an
+  http(s) address without a user or password. Its id is the first 16 hex of sha256 of its name; the name and the path are never sent
+  (a file with no `title:` is titled from its source address's last path segment or host, never from its name). Each clipping has a
+  `rev`, the first 12 hex of sha256 of its content.
+- CACHED per file while its stat (device, inode, size, change times) is the same: a request about unchanged files reads nothing but
+  one stat each. A request's reading stops after 2 s (`LIST_DEADLINE_MS`; files not reached are left out of that answer). So a key
+  holder can make the computer stat each listed file (at most 2000) at most 30 times a minute, and read a file again only after the
+  owner changed it.
+- THE SOURCE ADDRESS is canonical (`canonicalSource`, rule `tracking-v2`), edited as raw text (nothing kept is re-encoded): the
+  fragment, `utm_*` on every host, SECRETS on every host (`SECRET_PARAMS`: token, access_token, key, sig, signature, auth and their
+  like; named in `botference clippings check`, never sent), and Substack's own parameters only on Substack pages (`PLATFORM_PARAMS`: a
+  host under substack.com or a `/p/<slug>` post path: `s`, `r`, `triedRedirect`, `publication_id`, `post_id`, `isFreemail`, `sd`,
+  `showWelcomeOnShare`). Nothing else is removed, so two different pages never become one record.
 - `clippings {}` → the collections, each clipping's `{ id, title, author, source, published, words }`, oldest first. `clipping { id,
   page? }` → those facts and one page of the body: `markdown` (pages of at most 40000 characters, split at blank lines) and `text`, its
   plain form. Neither touches the records (an unreadable records file does not stop them).
-- THE PLAIN TEXT (`clippingText`, version 1; WIRE-clip.md has the rules): HTML-only lines, image-only lines and thematic breaks
+- THE PLAIN TEXT (`clippingText`, version 1; WIRE-clip.md has the rules, and their linear reading). Every rule is one linear pass (a
+  table of where the next `]`, `)`, `>` is); the output is that of the regular expressions they were first written as (a test checks
+  20000 random strings against them), without their quadratic time on unclosed `[`, `![`, `[^` or `<a ` (a 1 MiB hostile paragraph
+  takes milliseconds). A page's text is the rule without its front-matter step (`bodyText`). The rule: HTML-only lines, image-only lines and thematic breaks
   removed; inline images, footnote references and inline tags removed; links as their text; footnote definitions as their text; line
   marks (headings, quotes, lists) removed; escapes and entities resolved; then `*`, `~`, `` ` `` and word-edge `_` removed; each
   paragraph one line. A quote is put through the same mark and space rules (`marksOff`) and must be found in that text, and pass the
@@ -14476,7 +14488,10 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   thread anchors on the clipping's text (prefix and suffix from it). `earlier { clipping }`, `add_to`, drafts read-back, redo, discard,
   `/quote`, the owner's hand and speech work as for any reply; the record keeps `clipping` in place of `post`.
 - Tests: `clippings` (the plain-text rule, the canonical address, the setting and its errors, the file rules (symlink out, a
-  folder, too large, a name with `..`), the list's order and facts with no names, pages, the passage check, the CLI);
+  folder, too large, a name with `..`, a hard link), the list's order and facts with no names, pages, the passage check, the CLI; the
+  linear rule against the regular expressions on 20000 random strings; fourteen hostile 1 MiB paragraphs each under 1.5 s; a page
+  beginning `---`; tracking-v2 (a search's `s` and a forum's `post_id` kept, the query not re-encoded, a user and password refused,
+  secrets dropped and named); the cache (nothing read again; a changed file has a new rev); a title from the address);
   `hub-link-clip` (through the real companion: only allow-listed files listed, no names or paths, a symlink out left out; a clipping
   paged with its plain text; anything off the list 404; a quote not in the clipping refused; post and clipping together refused; a
   reply published with `blyg_stub_of {url, title}` and the web quote; `earlier` names it and an addition goes out as version 2; a
