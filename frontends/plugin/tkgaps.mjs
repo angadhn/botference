@@ -96,16 +96,26 @@ const GAP_MOVES = Object.freeze({
 //   none    the agent's answer to the owner's first prompt, as it came
 //   prompt  the owner reworded the prompt (the gap's instruction) after the agent first answered it, and the agent wrote again
 //           (buildGaps: same place among the asked gaps, same agent; asking again with the same words is no rewording)
-//   text    the owner edited or adopted the agent's text (gapMove to edited-by-reader / adopted-by-reader)
+//   text    the owner edited or adopted the agent's text (gapMove to edited-by-reader / adopted-by-reader); a fresh answer from the
+//           agent (gapMove to filled-by-agent: Write again) takes it away again, keeping `prompt` (HAND_MOVES `fresh`)
 //   both    the two
 // The note writer derives the site's two page-only members from it: edited_by_author (text, both) and prompt_reworded (prompt, both).
 // A gap written before the field existed reads as it did: READER_HAND_MODES are `text`, anything else `none`.
 export const OWNER_HANDS = Object.freeze(['none', 'prompt', 'text', 'both']);
-const HAND_PARTS = Object.freeze(['prompt', 'text']);
-export function handMove(from, part) {
+// THE MOVES, named (anything else is refused):
+//   prompt  the owner reworded the prompt: adds the prompt part
+//   text    the owner edited or adopted the agent's text: adds the text part
+//   fresh   the agent answered afresh (a first answer, Write again, the answer to a reworded prompt): the text part goes (the owner did
+//           not touch this answer), the prompt part stays (the answer still comes from the reworded prompt)
+const HAND_MOVES = Object.freeze({
+  prompt: Object.freeze({ none: 'prompt', prompt: 'prompt', text: 'both', both: 'both' }),
+  text: Object.freeze({ none: 'text', prompt: 'both', text: 'text', both: 'both' }),
+  fresh: Object.freeze({ none: 'none', prompt: 'prompt', text: 'none', both: 'prompt' }),
+});
+export function handMove(from, move) {
   if (!OWNER_HANDS.includes(from)) throw new Error(`hand: no such hand ${from}`);
-  if (!HAND_PARTS.includes(part)) throw new Error(`hand: a hand moves only by adding a part (${HAND_PARTS.join(' or ')}), not ${part}`);
-  return from === 'none' ? part : from === part ? from : 'both';
+  if (!Object.prototype.hasOwnProperty.call(HAND_MOVES, move)) throw new Error(`hand: no such move ${move} (one of ${Object.keys(HAND_MOVES).join(', ')})`);
+  return HAND_MOVES[move][from];
 }
 export const handOf = gap => (gap && OWNER_HANDS.includes(gap.hand) ? gap.hand : gap && READER_HAND_MODES.includes(gap.mode) ? 'text' : 'none');
 export const canGapMove = (gap, to) => !!gap && !!GAP_MOVES[gap.mode] && GAP_MOVES[gap.mode].includes(to);
@@ -117,6 +127,7 @@ export function gapMove(gap, to, { text = '', reason = '', agent = '', model = '
   delete gap.reason;
   if (to === 'pending') { delete gap.text; delete gap.model; delete gap.at; }
   if (to === 'filled-by-agent') {
+    gap.hand = handMove(handOf(gap), 'fresh');
     gap.text = String(text);
     if (agent) gap.agent = agent;
     if (model) gap.model = String(model); else delete gap.model;
@@ -173,18 +184,27 @@ export function buildGaps(text, prior = [], { modelOf = () => '', now = () => ne
   const found = Grammar.parseGaps(text);
   const keyOf = g => Grammar.gapKey({ kind: g.kind || 'ask', agent: g.agent || 'claude', instruction: g.instruction });
   const unused = Array.isArray(prior) ? prior.filter(g => g && g.mode !== 'removed').slice() : [];
-  // (REWORDING: the asked gaps of the message before the edit, by place, for a new ask at the same place: see OWNER_HANDS)
-  const priorAsks = unused.filter(g => (g.kind || 'ask') === 'ask');
+  // EVERY EXACT MATCH FIRST (a gap whose word, agent and instruction did not change keeps what it had), then the rest
+  const kept = found.map(f => { const k = unused.findIndex(g => keyOf(g) === keyOf(f)); return k === -1 ? null : unused.splice(k, 1)[0]; });
+  // REWORDING (OWNER_HANDS `prompt`), decided once every exact match is made, and only when it cannot be ambiguous: for an agent, the
+  // message has as many asked gaps as before, exactly one new ask, and exactly one answered gap of before left unclaimed, whose words
+  // (spaces aside) differ from the new one's. Anything else (a prompt added, removed, moved with another changed) is a new passage.
   const answered = g => !!g && ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader'].includes(g.mode);
+  const asks = (list, agent) => list.filter(g => g && (g.kind || 'ask') === 'ask' && g.agent === agent).length;
+  const words = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const priorLive = Array.isArray(prior) ? prior.filter(g => g && g.mode !== 'removed') : [];
+  function rewordedFrom(f) {
+    const leftOver = unused.filter(g => (g.kind || 'ask') === 'ask' && g.agent === f.agent && answered(g));
+    const newAsks = found.filter((x, j) => !kept[j] && x.kind !== 'impyrt' && x.agent === f.agent).length;
+    if (leftOver.length !== 1 || newAsks !== 1 || asks(found, f.agent) !== asks(priorLive, f.agent)) return null;
+    return words(leftOver[0].instruction) === words(f.instruction) ? null : leftOver[0];
+  }
   const gaps = [];
   const fresh = [];
   const born = new Set();
-  let askAt = -1;
   found.forEach((f, i) => {
     const key = keyOf(f);
-    if (f.kind !== 'impyrt') askAt++;
-    const k = unused.findIndex(g => keyOf(g) === key);
-    if (k !== -1) { gaps.push({ ...unused[k], kind: f.kind, agent: f.agent, id: gid(i, key) }); unused.splice(k, 1); return; }
+    if (kept[i]) { gaps.push({ ...kept[i], kind: f.kind, agent: f.agent, id: gid(i, key) }); return; }
     if (f.kind === 'impyrt') {
       const g = { id: gid(i, key), kind: 'impyrt', agent: f.agent, instruction: f.instruction, mode: 'pasted-by-reader' };
       if (f.instruction.length > Grammar.PASTED_MAX) { g.mode = 'failed'; g.reason = `the pasted text is longer than ${Grammar.PASTED_MAX} characters`; }
@@ -198,9 +218,8 @@ export function buildGaps(text, prior = [], { modelOf = () => '', now = () => ne
       return;
     }
     const g = { id: gid(i, key), kind: 'ask', agent: f.agent, instruction: f.instruction, mode: 'pending' };
-    // the same place, the same agent, a passage already answered whose words did not survive the edit: the owner reworded it
-    const was = priorAsks[askAt];
-    if (was && unused.includes(was) && was.agent === f.agent && answered(was)) g.hand = handMove(handOf(was), 'prompt');
+    const was = rewordedFrom(f);
+    if (was) g.hand = handMove(handOf(was), 'prompt');
     if (f.instruction.length > GAP_LIMITS.instructionChars) {
       g.mode = 'failed'; g.reason = `the instruction is longer than ${GAP_LIMITS.instructionChars} characters`;
     } else fresh.push(g.id);

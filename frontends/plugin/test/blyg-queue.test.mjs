@@ -799,3 +799,18 @@ test('PROMPTS kept: adding to an earlier post or a new version without a choice 
   assert.match(noteWith(rig, /alpha/), /^blyg_prompts: shown$/m, 'no choice sent: the earlier post keeps shown');
   assert.match(noteWith(rig, /alpha/), /Charlie, no agent\./);
 });
+
+test('THE OWNER\'S HAND is carried between versions: adding a comment to a post keeps its reworded passage marked', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const gap = { id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it plainly', mode: 'filled-by-agent', text: 'Said.', hand: 'prompt' };
+  const pg = pageOf(1, [{ id: 'a', quote: 'q', msgs: [mine('Alpha. /tk(say it plainly)', { ts: 'a1', channel: 'drawer', gaps: [gap] })] }, drawn('c', 'Charlie words.')]);
+  const b = boot(rig, { pages: [pg] }); t.after(() => b.q.stop());
+  await b.press(pg.url, 'a');
+  await until(() => b.pub.book.mode === 'published', 'a published');
+  assert.match(noteWith(rig, /alpha/), /^ {2}[- ] {1,3}prompt_reworded: true$/m);
+  const e = b.pub.earlierOf({ page: b.store.get(pg.url), threadId: 'c' }).earlier;
+  const add = await b.press(pg.url, 'c', { join: 'add', post: e.post, postVersion: String(e.version) });
+  await until(() => b.stateOf(add.queued ? add.queued.id : b.entries().at(-1).id) === 'published', 'added', 20000);
+  assert.match(noteWith(rig, /alpha/), /Charlie words\./);
+  assert.match(noteWith(rig, /alpha/), /^ {2}[- ] {1,3}prompt_reworded: true$/m, 'still marked in the next version');
+});
