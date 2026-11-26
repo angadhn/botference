@@ -182,7 +182,7 @@ test('every route is in one table, under /hub-link/', () => {
 
 // ---- the routes in this process, with stand-ins for the companion (no server, no web) ----
 import http from 'node:http';
-async function linkWith({ bind, press, publish = 'one-click' } = {}) {
+async function linkWith({ bind, press, publish = 'one-click', readPage = () => null, queue = () => ({ entries: [], run: null }) } = {}) {
   const dir = tmp();
   const key = L.newKey({ hub_origin: 'https://blog.example.com', publish });
   L.writeLinkKey(dir, key);
@@ -191,7 +191,7 @@ async function linkWith({ bind, press, publish = 'one-click' } = {}) {
     bind: async a => { seen.binds++; return bind ? bind(a) : { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; },
     fileReply: () => ({ url: 'https://blyg.example.com/t/x/', thread_id: `t${++seen.threads}` }),
     press: async () => { if (press) await press(); return { ok: true, queued: { id: `e${++seen.presses}` } }; },
-    cancel: () => ({ ok: true }), queue: () => ({ entries: [], run: null }), readPage: () => null });
+    cancel: () => ({ ok: true }), queue, readPage });
   const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const send = async (route, obj, raw) => {
@@ -271,4 +271,39 @@ test('withdrawn rids are bounded: past the cap the oldest is forgotten; filed re
   assert.equal(s.get('rid-filed-001').step, 'saved');
   assert.throws(() => L.moveRecord({ step: 'withdrawn' }, 'pressed'), L.IllegalRecordMove, 'withdrawn is final');
   assert.equal(L.linkStateOf({ rid: 'rid-w-00001', step: 'withdrawn' }, null, { entries: [] }), 'cancelled');
+});
+
+test('A RECORD WRITE THAT FAILS after the queue accepted the press: the answer and a later status say the real state, never unknown', async () => {
+  let dir = '';
+  const page = { url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [] }] };
+  const k = await linkWith({ readPage: () => page, queue: () => ({ entries: [{ id: 'e1', state: 'queued', ahead: 0 }], run: null }),
+    // the queue accepts, and then the folder the records are written in cannot be written
+    press: async () => { fs.chmodSync(dir, 0o500); } });
+  dir = k.dir;
+  try {
+    const r = await k.send('reply', replyOf('rid-diskfull-01'));
+    assert.equal(r.status, 500);
+    assert.equal(r.json.state, 'queued', 'the 500 carries the truth');
+    const s = await k.send('status', { rids: ['rid-diskfull-01'] });
+    assert.ok(s.status === 503 || s.json.replies[0].state === 'queued', JSON.stringify(s.json));
+    assert.notEqual(s.status === 200 && s.json.replies[0].state, 'unknown');
+    assert.equal(k.seen.presses, 1);
+    const again = await k.send('publish', { rid: 'rid-diskfull-01' });
+    assert.equal(k.seen.presses, 1, `never pressed twice (${again.status})`);
+  } finally { fs.chmodSync(dir, 0o700); await k.close(); }
+});
+
+test('A SAVED DRAFT AGED OUT after 30 days: status answers unknown; the store touched nothing but its own file', async () => {
+  const dir = tmp();
+  const file = path.join(dir, L.HUB_LINK_REPLIES_FILE);
+  let t = new Date('2026-11-01T10:00:00Z');
+  const s = L.createReplyStore({ file, now: () => t });
+  s.add({ rid: 'rid-old-draft1', at: t.toISOString(), intent: 'draft', page_url: 'https://blyg.example.com/t/x/', thread_id: 't1', entry_id: '', pressed_at: '' });
+  fs.writeFileSync(path.join(dir, 'page.json'), '{"threads":[{"id":"t1"}]}');
+  t = new Date('2026-12-02T10:00:01Z');
+  s.withdraw('rid-other-0001');   // any later write forgets the old record
+  assert.equal(s.get('rid-old-draft1'), null);
+  assert.equal(L.linkStateOf(s.get('rid-old-draft1'), { threads: [{ id: 't1' }] }, { entries: [] }), 'unknown');
+  assert.deepEqual(fs.readdirSync(dir).sort(), [L.HUB_LINK_REPLIES_FILE, 'page.json'].sort());
+  assert.equal(fs.readFileSync(path.join(dir, 'page.json'), 'utf8'), '{"threads":[{"id":"t1"}]}', 'the draft thread is the page store\'s, untouched');
 });

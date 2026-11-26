@@ -486,7 +486,8 @@ export function createHubLink(deps) {
     let data;
     try { data = JSON.parse(got.body.toString('utf8')); } catch { return answer(res, 400, { ok: false, error: 'not JSON' }); }
     if (!data || typeof data !== 'object' || Array.isArray(data)) return answer(res, 400, { ok: false, error: 'not a JSON object' });
-    if (name !== 'ping' && name !== 'status' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
+    // (status too: with the records unreadable nothing true can be said about any rid, and `unknown` would be read as "not published")
+    if (name !== 'ping' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
     const rid = ridOk(data.rid) ? data.rid : '';
     try {
       // one request per rid at a time: a copy arriving while the first works waits for it, then answers from the record
@@ -497,7 +498,10 @@ export function createHubLink(deps) {
       return answer(res, r.status, r.body);
     } catch (e) {
       say(`${ridTag(rid)} error ${String((e && e.code) || 'internal').slice(0, 30)}`);
-      if (!res.headersSent) return answer(res, 500, { ok: false, error: 'internal error' });
+      // a rid already recorded (in memory, even when writing it to disk failed) answers its real state with the 500, never nothing
+      let v = null;
+      try { v = rid && store.get(rid) ? viewOf(rid) : null; } catch { v = null; }
+      if (!res.headersSent) return answer(res, 500, { ok: false, error: 'internal error', ...(v || {}) });
     }
   }
 

@@ -335,14 +335,19 @@ await test('LIMITS: 20 replies an hour, 10 Hub publishes a day (counted from the
   } finally { await stop(s2); }
 });
 
-await test('AN UNREADABLE RECORDS FILE is kept as it is: writes are refused (503) rather than risk acting twice', async () => {
+await test('AN UNREADABLE RECORDS FILE is kept as it is: every route but ping is refused (503) rather than risk acting twice or saying a rid is unknown', async () => {
   fs.writeFileSync(recordsFile(root2), '{ "records": [ broken');
   const s2 = await boot(root2);
   try {
     const r = await reply(s2.base, 'rid-broken-0001');
     assert.equal(r.status, 503, r.body);
     assert.equal((await send(s2.base, 'ping', {})).status, 200, 'ping still answers');
-    assert.equal((await status(s2.base, 'rid-broken-0001')).state, 'unknown');
+    // (no route answers as if a rid were unknown: the records cannot be read, so nothing is said about any rid)
+    for (const [route, body] of [['status', { rids: ['rid-broken-0001'] }], ['cancel', { rid: 'rid-broken-0001' }], ['publish', { rid: 'rid-broken-0001' }]]) {
+      const x = await send(s2.base, route, body);
+      assert.equal(x.status, 503, `${route}: ${x.body}`);
+      assert.deepEqual(x.json, { ok: false, error: 'the hub link records on the computer are unreadable' }, route);
+    }
     assert.equal(fs.readFileSync(recordsFile(root2), 'utf8'), '{ "records": [ broken');
   } finally { await stop(s2); }
 });
