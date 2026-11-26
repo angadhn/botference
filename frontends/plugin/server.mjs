@@ -3246,7 +3246,8 @@ function gapCounts(page) {
 // ---- a verified binding (POST /blyg/bind, and the hub link) --------------------------------------------------------------------
 // The claim (a page, one to three post ids, an origin, the passage) is checked by blyg.verifyShown; EXACTLY ONE post must hold the
 // passage. Then the post's own page record is made or found at the ITEM's page address (never the claim's), with the verified answer.
-// → { verdict: 'verified', url, origin, id, version, text } | { verdict: 'unverified', code, reason } (`code`: hub-link HUB_LINK_SAY).
+// → { verdict: 'verified', url, origin, id, version, text, answer } | { verdict: 'unverified', code, reason } (`code`: hub-link HUB_LINK_SAY;
+// `answer` is the verified checker answer, kept on the server: /blyg/bind answers only url, origin, id and version).
 async function bindVerified(data) {
   const no = (reason, code = 'not-verified') => ({ verdict: 'unverified', code, reason });
   if (!blygChecksOn()) return no('checks are off', 'checks-off');
