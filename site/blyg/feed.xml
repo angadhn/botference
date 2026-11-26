@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:blyg="https://blygger.org/ns/0.1" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>The botference blyg</title>
+    <link>https://botference.com/blyg/</link>
+    <description>Release notes and short posts about botference, published as a blyg.</description>
+    <lastBuildDate>Thu, 26 Nov 2026 01:22:56 GMT</lastBuildDate>
+    <blyg:level>2</blyg:level>
+    <blyg:manifest>https://botference.com/blyg/blyg.json</blyg:manifest>
+    <item>
+      <guid isPermaLink="false">blyg:7dant7zt7g4j75k82jsxepgrhy:v1</guid>
+      <link>https://botference.com/blyg/t/7dant7zt7g4j75k82jsxepgrhy/</link>
+      <title>Proposed laws for publishing a blyg When botference publishes a blyg post for…</title>
+      <description><![CDATA[<h1>Proposed laws for publishing a blyg</h1>
+<p>When botference publishes a blyg post for its owner, it makes promises. The <a href="https://botference.com/laws.html">laws page</a> writes each promise as one sentence. For each law, it says where the promise comes from and how it is checked today.</p>
+<p>These laws are proposals. The owner has not adopted any of them. Only the owner can adopt, edit or reject a law; an AI may only propose one.</p>
+<p>Each law starts with &quot;For every&quot;. For example, one law says that a run of the draft-filling script leaves the draft file exactly as the owner left it. Fifteen laws were proposed on 26 November 2026.</p>
+<p>Some laws are not checked by a test yet, and the page says so for each one. An adopted law will get an independent check, written from the law and not from the code. A copy of the laws for review is in the repository, at <a href="https://github.com/angadhn/botference/blob/main/docs/laws.md">docs/laws.md</a>.</p>]]></description>
+      <pubDate>Thu, 26 Nov 2026 01:22:56 GMT</pubDate>
+      <dc:creator>botference</dc:creator>
+      <blyg:id>7dant7zt7g4j75k82jsxepgrhy</blyg:id>
+      <blyg:kind>thread</blyg:kind>
+      <blyg:version>1</blyg:version>
+      <blyg:created>2026-11-26T01:22:56Z</blyg:created>
+      <blyg:item>https://botference.com/blyg/items/7dant7zt7g4j75k82jsxepgrhy.json</blyg:item>
+    </item>
+    <item>
+      <guid isPermaLink="false">blyg:55vwkj4n4kqrye8zsx8ee4ze60:v1</guid>
+      <link>https://botference.com/blyg/t/55vwkj4n4kqrye8zsx8ee4ze60/</link>
+      <title>Release note: Discuss reads and publishes blyg posts During the Blygger…</title>
+      <description><![CDATA[<h1>Release note: Discuss reads and publishes blyg posts</h1>
+<p>During the Blygger hackathon, 20–27 November 2026, botference's browser extension, Discuss, learned to read blyg posts and to publish them. <a href="https://blygger.org/">Blygger</a> is an open protocol for small blogs that quote each other by reference. A post on such a blog is a blyg post. This note lists what changed. The <a href="https://botference.com/blygger.html">Blygger page</a> describes it in more detail.</p>
+<h2>Reading a blyg post</h2>
+<ul>
+<li><strong>Quote by reference.</strong> On a blyg post, the extension reads the post's own documents. Each highlight then records the post's id and version. The extension tells you when a highlight is not word for word in the post.</li>
+<li><strong>Responses.</strong> On a blyg post, a thread that you publish is a response to that post by default. You can untick this.</li>
+<li><strong>Mentions.</strong> A mention is the notice that tells another blog about your response. Discuss does not send it. Your site's own publisher sends it after the post is live. The Hub, a private feed of the blygs you follow, lists the mentions that your own site receives.</li>
+</ul>
+<h2>Writing with an agent</h2>
+<ul>
+<li><strong>Agent passages in a marked box.</strong> Type <code>/tk-claude</code> or <code>/tk-codex</code> and an instruction in your own comment. The agent writes that passage, and the extension shows it in a box marked as an AI's text. The box stays when you publish. The instruction is not published.</li>
+<li><strong>Drafts with <code>fill-gap</code>.</strong> The command <code>botference fill-gap</code> fills one gap in a draft that you write in Obsidian. A site's own scripts call it and keep the answer in a separate file. The draft itself is not changed.</li>
+</ul>
+<h2>Publishing</h2>
+<ul>
+<li><strong>The publish queue.</strong> Every press of the publish button is accepted at once. Posts go out one at a time, in the order you pressed them, up to 20 waiting.</li>
+<li><strong>One-click publishing.</strong> With <code>confirm: never</code>, the press is the publish. A post stops for your look only when publishing would lose something already published.</li>
+<li><strong>Copy for Blygger Studio.</strong> If you write in <a href="https://github.com/blygger/blygger-studio">Blygger Studio</a>, copy the thread as Studio's own markdown and paste it there.</li>
+</ul>
+<p>All of this is experimental. The only example set-up is one Jekyll site. Publishing runs your site's own commands, which check, build and push the post. The set-up is in <a href="https://github.com/angadhn/botference/blob/main/docs/blygger.md">docs/blygger.md</a>.</p>]]></description>
+      <pubDate>Thu, 26 Nov 2026 01:22:55 GMT</pubDate>
+      <dc:creator>botference</dc:creator>
+      <blyg:id>55vwkj4n4kqrye8zsx8ee4ze60</blyg:id>
+      <blyg:kind>thread</blyg:kind>
+      <blyg:version>1</blyg:version>
+      <blyg:created>2026-11-26T01:22:55Z</blyg:created>
+      <blyg:item>https://botference.com/blyg/items/55vwkj4n4kqrye8zsx8ee4ze60.json</blyg:item>
+    </item>
+    <item>
+      <guid isPermaLink="false">blyg:2h9xxjswp8cjd700cb3javfpsm:v1</guid>
+      <link>https://botference.com/blyg/t/2h9xxjswp8cjd700cb3javfpsm/</link>
+      <title>botference is five tools Botference runs Claude Code and Codex side by side. It…</title>
+      <description><![CDATA[<h1>botference is five tools</h1>
+<p>Botference runs Claude Code and Codex side by side. It uses the command-line tools that you already have, on your own computer. It started as a planning council. It now holds five tools, and you can use each one alone.</p>
+<ul>
+<li><strong>Council.</strong> You, Claude and Codex plan in one chat, in your terminal. A bot can hand the floor to the other bot, so the two argue a point before they come back to you. Planning is the most mature part of botference.</li>
+<li><strong>Discuss.</strong> A browser extension and a small local server, the companion. Highlight a passage on any web page, write a comment, and mention <code>@claude</code>, <code>@codex</code> or <code>@all</code>. The bots answer in the same thread, at the side of the page.</li>
+<li><strong>Document review.</strong> Margin comments on a LaTeX or Markdown source, rendered as a web page. Tag a bot in a comment, and it answers or suggests a change.</li>
+<li><strong>Blygger publishing.</strong> Publish a Discuss thread to your own site as a blyg post. This part is experimental.</li>
+<li><strong>Agent tools.</strong> <code>botference see</code> takes a phone and a desktop screenshot of a page for a coding agent. <code>botference service</code> keeps a server running after the agent's shell ends.</li>
+</ul>
+<p>One person builds botference for their own work, so some parts assume that person's set-up. The <a href="https://botference.com/">home page</a> says who each tool is for and how ready it is. The source is on <a href="https://github.com/angadhn/botference">GitHub</a>, under the MIT license.</p>
+<p>This blyg holds release notes and short posts about botference. It is itself made by a small script in the repository, from Markdown files.</p>]]></description>
+      <pubDate>Thu, 26 Nov 2026 01:22:54 GMT</pubDate>
+      <dc:creator>botference</dc:creator>
+      <blyg:id>2h9xxjswp8cjd700cb3javfpsm</blyg:id>
+      <blyg:kind>thread</blyg:kind>
+      <blyg:version>1</blyg:version>
+      <blyg:created>2026-11-26T01:22:54Z</blyg:created>
+      <blyg:item>https://botference.com/blyg/items/2h9xxjswp8cjd700cb3javfpsm.json</blyg:item>
+    </item>
+  </channel>
+</rss>

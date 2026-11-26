@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release note: Discuss reads and publishes blyg posts — the botference blyg</title>
+<meta name="description" content="Release note: Discuss reads and publishes blyg posts During the Blygger hackathon, 20–27 November 2026, botference's browser extension, Discuss, learned to…">
+<meta name="theme-color" content="#0b0e12">
+<link rel="canonical" href="https://botference.com/blyg/t/55vwkj4n4kqrye8zsx8ee4ze60/">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
+<link rel="stylesheet" href="/site.css">
+<link rel="blyg" href="https://botference.com/blyg/blyg.json">
+<link rel="alternate" type="application/rss+xml" title="The botference blyg" href="https://botference.com/blyg/feed.xml">
+<link rel="alternate" type="application/json" href="https://botference.com/blyg/items/55vwkj4n4kqrye8zsx8ee4ze60.json">
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
+    <nav>
+      <a href="/blygger.html">Blygger</a>
+      <a href="/laws.html">Laws</a>
+      <a href="/blyg/" aria-current="page">Blyg</a>
+      <a href="https://github.com/angadhn/botference">GitHub</a>
+      <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+    </nav>
+  </div>
+</header>
+
+<main class="doc blyg-item">
+  <p class="eyebrow"><a href="../../">the botference blyg</a></p>
+  <article class="blyg-post">
+<h1>Release note: Discuss reads and publishes blyg posts</h1>
+<p>During the Blygger hackathon, 20–27 November 2026, botference's browser extension, Discuss, learned to read blyg posts and to publish them. <a href="https://blygger.org/">Blygger</a> is an open protocol for small blogs that quote each other by reference. A post on such a blog is a blyg post. This note lists what changed. The <a href="https://botference.com/blygger.html">Blygger page</a> describes it in more detail.</p>
+<h2>Reading a blyg post</h2>
+<ul>
+<li><strong>Quote by reference.</strong> On a blyg post, the extension reads the post's own documents. Each highlight then records the post's id and version. The extension tells you when a highlight is not word for word in the post.</li>
+<li><strong>Responses.</strong> On a blyg post, a thread that you publish is a response to that post by default. You can untick this.</li>
+<li><strong>Mentions.</strong> A mention is the notice that tells another blog about your response. Discuss does not send it. Your site's own publisher sends it after the post is live. The Hub, a private feed of the blygs you follow, lists the mentions that your own site receives.</li>
+</ul>
+<h2>Writing with an agent</h2>
+<ul>
+<li><strong>Agent passages in a marked box.</strong> Type <code>/tk-claude</code> or <code>/tk-codex</code> and an instruction in your own comment. The agent writes that passage, and the extension shows it in a box marked as an AI's text. The box stays when you publish. The instruction is not published.</li>
+<li><strong>Drafts with <code>fill-gap</code>.</strong> The command <code>botference fill-gap</code> fills one gap in a draft that you write in Obsidian. A site's own scripts call it and keep the answer in a separate file. The draft itself is not changed.</li>
+</ul>
+<h2>Publishing</h2>
+<ul>
+<li><strong>The publish queue.</strong> Every press of the publish button is accepted at once. Posts go out one at a time, in the order you pressed them, up to 20 waiting.</li>
+<li><strong>One-click publishing.</strong> With <code>confirm: never</code>, the press is the publish. A post stops for your look only when publishing would lose something already published.</li>
+<li><strong>Copy for Blygger Studio.</strong> If you write in <a href="https://github.com/blygger/blygger-studio">Blygger Studio</a>, copy the thread as Studio's own markdown and paste it there.</li>
+</ul>
+<p>All of this is experimental. The only example set-up is one Jekyll site. Publishing runs your site's own commands, which check, build and push the post. The set-up is in <a href="https://github.com/angadhn/botference/blob/main/docs/blygger.md">docs/blygger.md</a>.</p>
+  </article>
+  <p class="blyg-meta">Version 1 · 26 November 2026</p>
+  <h2>Versions</h2>
+  <ol class="blyg-changelog">
+      <li><b>v1</b> · 26 November 2026 · first version</li>
+  </ol>
+  <p class="note">This post is a blyg item: other blygs can quote it and answer it by reference.
+    Its <a href="../../items/55vwkj4n4kqrye8zsx8ee4ze60.json">item document</a> is the machine-readable version.
+    Older texts are not kept online; the list above gives only each version's date and note.</p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 botference · MIT</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/angadhn/botference">GitHub</a>
+    <a href="https://github.com/angadhn/botference/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+  </div>
+</footer>
+
+</body>
+</html>

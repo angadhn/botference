@@ -1,0 +1,21 @@
+{
+  "blyg": "0.4",
+  "level": 2,
+  "generator": "botference-blyg/1.0.0",
+  "generator_url": "https://github.com/angadhn/botference/blob/main/scripts/blyg.mjs",
+  "site": "https://botference.com/blyg/",
+  "title": "The botference blyg",
+  "description": "Release notes and short posts about botference, published as a blyg.",
+  "author": {
+    "name": "botference",
+    "links": [
+      {
+        "label": "GitHub",
+        "url": "https://github.com/angadhn/botference"
+      }
+    ]
+  },
+  "feed": "feed.xml",
+  "items": "items/index.json",
+  "updated": "2026-11-26T01:22:56Z"
+}
