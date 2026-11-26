@@ -4536,7 +4536,7 @@ export function handler(req, res) {
         const page = pageOf(req, res, data);
         if (!page) return;
         const r = blygPublish.earlierOf({ page, threadId: String(data.thread_id || '') });
-        return r.ok ? ok(res, { earlier: r.earlier }) : fail(res, r.status, r.error);
+        return r.ok ? ok(res, { earlier: r.earlier, own: r.own }) : fail(res, r.status, r.error);
       });
     }
     // "Try the queue again": the owner lifts a pause for the site or for an error (a run's pause is lifted by resolving that run)

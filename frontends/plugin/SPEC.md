@@ -12977,11 +12977,19 @@ get; Ruby missing or failing says `RUBY_NEEDED_SAY`. Only an unreadable front ma
 with a plain sentence (`FORMS_UNKNOWN_SAY`); nothing is guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
 zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
 a post with a deliberate link the writer cannot normalise has no bare address made clickable.
+**PROMPTS, THE RULE** (re-check): prompts go out `shown` only when the owner saw a ticked box in THIS publish box for THIS post. The box
+is drawn when the post that will result holds an agent passage (this thread, the threads above a "this and the ones above" press, or the
+post it changes: the earlier post it is added to, or this thread's own post for a new version, as the companion reads its NOTE through
+`earlierOf`: `earlier.prompts`/`agent_text`, `own`), and starts from that post's own choice (absent in its front matter: locked; never
+from the page record); the remembered choice is the start only for a brand-new post. With no box drawn the press sends no choice ('')
+and the run keeps the post's own value (`startEdit`'s `had`); a brand-new post with no choice is locked. One-click publishing with no box
+(the queue, the Hub) applies the remembered choice to nothing that already exists: it sends ''. Under the checkbox: "Prompts become public
+on your site." Locking a post again removes the prompts from the site, but cannot recall copies already fetched by readers or crawlers.
 **PROMPTS** (2026-11-26): a post's prompts (its /tk instructions) are `locked` (default: nowhere in the public site) or `shown` (the
 site's page of the post shows each passage's prompt in its card; never the item, a feed or the stream), `PROMPT_MODES` in blyg-note.mjs,
 one field (`blyg_prompts`, written only for a post with an agent passage), changed through `promptsMove`. The publish box offers "Show my
 prompts with this post" when the post has an agent passage, remembered (`blygPrompts`) and sent with every press as `prompts`; a new
-version starts from the post's own choice (`blyg_published.prompts`). The press carries it through the queue (`args.prompts`) to the
+version starts from the post's own choice (read from its note; see THE RULE). The press carries it through the queue (`args.prompts`) to the
 run; the Hub's reply passes the same field through hub-link (`rec.prompts`, not built yet). A new version that changes ONLY the choice
 (`promptsOnlyChange`) is published as an edit that makes no new version of the item (the site's rule), changelog "Prompts shown." /
 "Prompts locked.".

@@ -1716,7 +1716,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
   const b = boot(rig, { page, config: home });
   const P = () => b.pages.get(b.page.url);
   // nothing published from this page yet: nothing to add to
-  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: null });
+  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: null, own: null });
   assert.deepEqual([(await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', ...addArgs(b.pub, P(), 't2') })).error], [R.ADD_GONE_SAY], 'add with nothing to add to: refused, nothing started');
   assert.equal(b.mode(), 'idle');
   // publish t1 on its own
@@ -1727,7 +1727,7 @@ test('ADD TO THE EARLIER POST: a second comment from the same page becomes the n
   const v1 = fs.readFileSync(path.join(rig.top, rel), 'utf8');
   const p1 = P().threads[1].blyg_published;
   // the offer for t2 names that post; a published thread is never offered it; a bad choice is refused
-  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: { title: p1.title, version: 1, post: p1.permalink.split('/').pop() } });
+  assert.deepEqual(b.pub.earlierOf({ page: P(), threadId: 't2' }), { ok: true, earlier: { title: p1.title, version: 1, post: p1.permalink.split('/').pop(), prompts: 'locked', agent_text: false }, own: null });
   // THE POST SHOWN IS THE POST ADDED TO: another id, another version, or none: refused, nothing started
   for (const wrong of [{ post: 'x'.repeat(26), postVersion: '1' }, { post: p1.permalink.split('/').pop(), postVersion: '2' }, {}]) {
     const r = await b.pub.start({ page: P(), threadId: 't2', scope: 'one', shown: 'always', join: 'add', ...wrong });

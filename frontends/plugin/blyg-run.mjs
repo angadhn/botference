@@ -47,7 +47,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, PROMPT_MODES, DEFAULT_PROMPTS, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, PROMPT_MODES, DEFAULT_PROMPTS, promptsFactsOf, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { samePage } from './blyg.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
@@ -969,7 +969,8 @@ export function createPublisher(deps) {
     if (!sameTarget(rec.snapshot, page)) return null;
     const post = String(pub.permalink || '').split('/').filter(Boolean).pop() || '';
     return { thread, permalink: pub.permalink, post, title: String(thread.blyg_published.title || ''), version: Number(rec.version) || 1,
-      address: String(thread.blyg_published.address || ''), date: String(thread.blyg_published.first_at || thread.blyg_published.at || '') };
+      address: String(thread.blyg_published.address || ''), date: String(thread.blyg_published.first_at || thread.blyg_published.at || ''),
+      facts: promptsFactsOf(note.before) };
   }
   /** WHAT A PUBLISHED THREAD SAID in its post as last published from here (the post's record): its included messages, or null when
    *  that cannot be known (no record; a record from before the texts were kept whose message hashes the thread's messages no longer
@@ -999,14 +1000,24 @@ export function createPublisher(deps) {
   function distrust(run) {
     try { const rec = run && run.permalink ? postOf(run.permalink) : null; if (rec) { recordPost(run.permalink, { ...rec, untrusted: true }); logNote('the post\'s record is no longer trusted to rebuild its comments (a version may have gone out without it)'); } } catch { /* the version check still catches a stale record */ }
   }
-  /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version } | null }. */
+  /** For the dialog: may this comment be added to an earlier post from its page? → { ok, earlier: { title, version, post, prompts,
+   *  agent_text } | null, own: { prompts, agent_text } | null }. `prompts` and `agent_text` are the post's own, read from its NOTE
+   *  (promptsFactsOf): the publish box draws its prompts choice for the post that will result and starts from that post's own choice.
+   *  `own`: for a thread already published, its own post's (a new version). */
   function earlierOf({ page, threadId }) {
     const home = settingsNow();
-    if (!home.ok || !page) return { ok: true, earlier: null };
+    if (!home.ok || !page) return { ok: true, earlier: null, own: null };
     const here = (page.threads || []).find(t => t && t.id === threadId);
     if (!here) return fail(404, 'That thread is not on this page any more.');
     const e = earlierPostFor(page, here, home.settings);
-    return { ok: true, earlier: e ? { title: e.title, version: e.version, post: e.post } : null };
+    return { ok: true, earlier: e ? { title: e.title, version: e.version, post: e.post, ...e.facts } : null, own: ownFactsOf(here, home.settings) };
+  }
+  // a published thread's own post, as its note says (null: not published, or its note cannot be found)
+  function ownFactsOf(here, S) {
+    if (!isPublishedThread(here)) return null;
+    const rec = postOf(here.blyg_published.permalink);
+    const note = publishedNoteOf({ ...here.blyg_published, ...(rec || {}) }, S);
+    return note.ok ? promptsFactsOf(note.before) : null;
   }
   /** THE SAME QUESTION FOR THE HUB LINK (earlierPostFor, the one answer): for a comment of the page (`threadId`), or for one not written
    *  yet (no `threadId`: asked before the owner replies). → the post's public facts { post, title, version, address, permalink, date },
@@ -1195,14 +1206,12 @@ export function createPublisher(deps) {
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', presence,
       version: (Number(pub.version) || 1) + (promptsOnly ? 0 : 1), extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
-        prompts: choice, prompts_only: promptsOnly,
+        prompts: choice,
         forms_moved: !!rendered.formsMoved, outside_replaced: !!note.outside, drawer_text: !!drawerText, extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {
     const agentText = (rendered.generated || []).length > 0;
-    // (the prompts choice belongs to a post with an agent passage: it is what its page shows, so the page's record may say it)
-    if (extra && !agentText) delete extra.prompts;
     const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub),
       outsideReplaced: !!(extra && extra.outside_replaced), drawerText: !!(extra && extra.drawer_text), asked: presence === 'asked_to_look' });
     // WHAT EACH THREAD SAID in this version (the owner's included messages), kept in the post's record once published: a later queued
@@ -1252,8 +1261,7 @@ export function createPublisher(deps) {
     const run = book.run;
     const address = addressFrom(output, run.permalink);
     const bid = (run.permalink || '').split('/').filter(Boolean).pop() || '';
-    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1,
-      ...(PROMPT_MODES.includes(run.prompts) ? { prompts: run.prompts } : {}) };
+    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1 };
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
         snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {},

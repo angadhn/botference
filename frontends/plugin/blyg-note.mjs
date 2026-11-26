@@ -738,6 +738,15 @@ export function promptsMove(from, to) {
   if (from !== to && !PROMPT_MOVES[from].includes(to)) throw new Error(`prompts cannot move from ${from} to ${to}`);
   return to;
 }
+// A published note's own prompts facts, for the publish box (the resulting post's choice, and whether it holds an agent passage):
+// `blyg_prompts` as its front matter says (absent or anything else: locked, as the site reads it), and any written [TK] scope.
+export function promptsFactsOf(noteText) {
+  const t = String(noteText || '');
+  const fm = /^---\n([\s\S]*?)\n---\n/.exec(t);
+  const m = fm && /^blyg_prompts:[ \t]*["']?([a-z]+)["']?[ \t]*$/m.exec(fm[1]);
+  const body = fm ? t.slice(fm[0].length) : t;
+  return { prompts: m && PROMPT_MODES.includes(m[1]) ? m[1] : DEFAULT_PROMPTS, agent_text: /\[TK\](?:impyrt[^=\n]*=| [^\n]*? \[=\])/.test(body) };
+}
 export function blygKeyLines({ sources = [], stubOf = null, generated = [], silentLinks = [], prompts = DEFAULT_PROMPTS } = {}) {
   const out = [];
   const list = [...new Set(sources.filter(Boolean))];

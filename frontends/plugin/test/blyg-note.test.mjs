@@ -832,7 +832,7 @@ test('prompts: the drawer has the one checkbox, remembered, sent with every pres
   assert.ok(drawer.includes('Show my prompts with this post'));
   assert.ok(/data-act="pub-prompts"/.test(drawer));
   assert.ok(/writeKey\('blygPrompts'/.test(drawer) && /readKey\('blygPrompts'/.test(drawer), 'remembered');
-  assert.ok(/prompts: D\.pub\.prompts/.test(drawer), 'sent with the press');
+  assert.ok(/prompts: promptsNow/.test(drawer), 'sent with the press');
   const config = fs.readFileSync(new URL('../extension/config.js', import.meta.url), 'utf8');
   assert.ok(/body: \[[^\]]*'prompts'/.test(config), 'a field of the start request');
 });
@@ -845,4 +845,20 @@ test('prompts: a new version that changes only the prompts choice is told apart 
   assert.equal(promptsOnlyChange(a, a.replace('locked', 'shown').replace('Body', 'Body, edited')), false);
   assert.equal(promptsOnlyChange('---\ntitle: "x"\n---\nBody\n', a.replace('locked', 'shown')), true, 'an older note without the field');
   assert.equal(promptsOnlyChange('---\ntitle: "x"\n---\nBody\n', a), false, 'the default written out is no change');
+});
+
+test('prompts: a note\'s own facts for the drawer (its choice, absent = locked; whether it holds an agent passage)', () => {
+  assert.deepEqual(N.promptsFactsOf('---\ntitle: x\nblyg_prompts: shown\n---\nWords.\n\n[TK] go [=]text[/TK]\n'), { prompts: 'shown', agent_text: true });
+  assert.deepEqual(N.promptsFactsOf('---\ntitle: x\n---\nWords.\n\n[TK]impyrt=pasted[/TK]\n'), { prompts: 'locked', agent_text: true });
+  assert.deepEqual(N.promptsFactsOf('---\ntitle: x\nblyg_prompts: odd\n---\nWords only.\n'), { prompts: 'locked', agent_text: false });
+});
+
+test('prompts in the drawer: the box is drawn for the RESULTING post, starts from that post\'s own choice, and sends nothing when not drawn', () => {
+  const drawer = fs.readFileSync(new URL('../extension/drawer.js', import.meta.url), 'utf8');
+  assert.ok(!/blyg_published\.prompts|blyg_published && t\.blyg_published\.prompts/.test(drawer), 'never from the page record');
+  assert.ok(/const promptsNow = pubPromptsOffered\(\) \? D\.pub\.prompts : ''/.test(drawer) && /prompts: promptsNow/.test(drawer), 'no box: no choice sent');
+  assert.ok(drawer.includes('Prompts become public on your site.'));
+  assert.ok(/function pubPromptsOffered/.test(drawer) && /pubAbove\(/.test(drawer.slice(drawer.indexOf('function pubPromptsOffered'), drawer.indexOf('function pubPromptsOffered') + 1500)), 'the threads above count');
+  const run = fs.readFileSync(new URL('../blyg-run.mjs', import.meta.url), 'utf8');
+  assert.ok(!/prompts_only/.test(run), 'no unread flag');
 });

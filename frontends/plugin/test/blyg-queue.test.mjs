@@ -778,3 +778,24 @@ test('PROMPTS: a press carries the post\'s prompts choice to the note, also from
   assert.ok(notes.some(n => /^blyg_prompts: shown$/m.test(n) && /Mine\./.test(n)), 'pressed shown: written shown');
   assert.ok(notes.some(n => /^blyg_prompts: locked$/m.test(n) && /Also mine\./.test(n)), 'pressed without: locked');
 });
+
+// RE-CHECK of prompts: shown goes out only when the owner saw a ticked box for THIS post. A press that adds to an earlier post, or
+// makes a new version, without a choice keeps the post's own value; the companion tells the drawer the resulting post's own choice
+// and whether it holds an agent passage (from the note itself), so the box can be drawn and start from it.
+test('PROMPTS kept: adding to an earlier post or a new version without a choice keeps the post\'s own; the drawer is told the post\'s facts', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const gap = { id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said by the agent.' };
+  const pg = pageOf(1, [{ id: 'a', quote: 'q', msgs: [mine('Alpha. /tk(say it)', { ts: 'a1', channel: 'drawer', gaps: [gap] })] }, drawn('c', 'Charlie, no agent.')]);
+  const b = boot(rig, { pages: [pg] }); t.after(() => b.q.stop());
+  await b.press(pg.url, 'a', { prompts: 'shown' });
+  await until(() => b.pub.book.mode === 'published', 'a published');
+  assert.match(noteWith(rig, /alpha/), /^blyg_prompts: shown$/m);
+  const e = b.pub.earlierOf({ page: b.store.get(pg.url), threadId: 'c' });
+  assert.deepEqual([e.earlier.prompts, e.earlier.agent_text], ['shown', true], 'the earlier post as its note says');
+  const own = b.pub.earlierOf({ page: b.store.get(pg.url), threadId: 'a' });
+  assert.deepEqual(own.own, { prompts: 'shown', agent_text: true }, 'a published thread: its own post\'s facts');
+  const add = await b.press(pg.url, 'c', { join: 'add', post: e.earlier.post, postVersion: String(e.earlier.version) });
+  await until(() => b.stateOf(add.queued ? add.queued.id : b.entries().at(-1).id) === 'published', 'added', 20000);
+  assert.match(noteWith(rig, /alpha/), /^blyg_prompts: shown$/m, 'no choice sent: the earlier post keeps shown');
+  assert.match(noteWith(rig, /alpha/), /Charlie, no agent\./);
+});
