@@ -53,11 +53,14 @@ async function linkWith({ speech, find = () => TOOLS, audioReadMs } = {}) {
   const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const port = srv.address().port;
-  const send = async (route, body, { type = 'application/json', signType, signBody, headers = {} } = {}) => {
+  const send = async (route, body, { type = 'application/json', signType, signBody, headers = {}, bodyHash } = {}) => {
     const buf = Buffer.isBuffer(body) ? body : Buffer.from(JSON.stringify(body));
     const p = `/hub-link/${route}`;
     const extra = type.startsWith('audio/') || signType ? [signType || type, String((signBody || buf).length)] : [];
     const sig = L.signedHeaders(key, p, signBody || buf, { extra });
+    // (audio: the body's sha256 in a header too, so the signature is checked before the body is read)
+    if (extra.length) sig['x-hub-link-body-sha256'] = bodyHash !== undefined ? bodyHash : L.bodyHashOf(signBody || buf);
+    if (sig['x-hub-link-body-sha256'] === '') delete sig['x-hub-link-body-sha256'];
     // (http.request, not fetch: a 413 answered before the whole body was read is still read here)
     return new Promise((resolve, reject) => {
       let answered = null;
@@ -78,7 +81,16 @@ async function linkWith({ speech, find = () => TOOLS, audioReadMs } = {}) {
     rq.write(WEBM.subarray(0, 100));
     return { answered, release: () => { try { rq.end(Buffer.alloc(bytes - 100)); } catch { } } };
   };
-  return { send, slow, logs, dir, close: () => new Promise(r => srv.close(r)) };
+  // the same slow request, but signed by a key holder (over the body it will send, and its hash in the header)
+  const slowSigned = (k, bytes = 1000) => {
+    const body = Buffer.concat([WEBM.subarray(0, 100), Buffer.alloc(bytes - 100)]);
+    const sig = L.signedHeaders(k, '/hub-link/transcribe', body, { extra: ['audio/webm', String(bytes)] });
+    const rq = http.request({ host: '127.0.0.1', port, path: '/hub-link/transcribe', method: 'POST', headers: { 'content-type': 'audio/webm', 'content-length': bytes, ...sig, 'x-hub-link-body-sha256': L.bodyHashOf(body) } });
+    const answered = new Promise(resolve => { rq.on('response', res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); rq.on('error', () => resolve({ status: 'reset' })); });
+    rq.write(body.subarray(0, 100));
+    return { answered, release: () => { try { rq.end(body.subarray(100)); } catch { } } };
+  };
+  return { send, slow, slowSigned, logs, dir, close: () => new Promise(r => srv.close(r)) };
 }
 
 test('the audio is checked by its type AND its first bytes; the allow-list is three containers', () => {
@@ -237,7 +249,7 @@ test('REAL: ffmpeg and whisper-cli run contained; the folder is gone after; an o
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 const mac = process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
-const fakeTools = () => ({ whisper: '/usr/bin/true', ffmpeg: '/usr/bin/true', model: '/usr/bin/true', sandboxExec: '/usr/bin/sandbox-exec', brew: '/opt/homebrew' });
+const fakeTools = () => ({ whisper: '/usr/bin/true', ffmpeg: '/usr/bin/true', model: '/usr/bin/true', sandboxExec: '/usr/bin/sandbox-exec', kegs: { ffmpeg: [], whisper: [] }, links: { ffmpeg: [], whisper: [] } });
 
 test('PROFILES: deny by default; each tool reads only system files, its Homebrew keg, its job folder (and the model); writes only the job folder', () => {
   for (const tool of ['ffmpeg', 'whisper']) {
@@ -341,16 +353,72 @@ test('BEFORE ANY BYTE IS READ: an unsigned caller is 401 whether speech is on or
   } finally { await k.close(); }
 });
 
-test('UNVERIFIED BODIES: at most 2 read at once (429 beyond), each with a read deadline (408)', async () => {
+
+// ---- review 3: the tool's place, and slots only for a key holder ----
+test('A TOOL OUTSIDE A HOMEBREW CELLAR turns speech off, with a sentence; no fallback to its folder', () => {
+  for (const env of [{ BOTFERENCE_FFMPEG_BIN: '/bin/cat' }, { BOTFERENCE_WHISPER_BIN: '/bin/cat' }]) {
+    const f = S.speechTools({ env: { ...process.env, ...env } });
+    assert.equal(f.tools, null, JSON.stringify(env));
+    assert.match(f.missing, /not a Homebrew install/);
+  }
+  assert.deepEqual(S.homebrewPlace('/opt/homebrew/Cellar/ffmpeg/9.0.2_1/bin/ffmpeg'), { prefix: '/opt/homebrew', formula: 'ffmpeg', keg: '/opt/homebrew/Cellar/ffmpeg/9.0.2_1' });
+  for (const bad of ['/Users/someone/bin/ffmpeg', '/bin/cat', '/opt/homebrew/bin/ffmpeg', '/tmp/Cellar/ffmpeg/1/bin/ffmpeg', '/opt/homebrew/Cellar/ffmpeg/bin', '/opt/homebrew/Cellar/f"x/1/bin/ffmpeg'])
+    assert.equal(S.homebrewPlace(bad), null, bad);
+});
+
+const realFound = (() => { try { return S.speechTools(); } catch { return { tools: null }; } })();
+test('THE READ ALLOWANCE is the tool\'s own formula and the formulas it links against, nothing more; under every accepted profile ~, /etc/hosts and a scratch file stay refused',
+  { skip: !(mac && realFound.tools) && 'the tools are not on this machine' }, async () => {
+    const t = realFound.tools;
+    for (const tool of ['ffmpeg', 'whisper']) {
+      assert.ok(t.kegs[tool].length >= 1 && t.kegs[tool].every(k => /^\/(opt\/homebrew|usr\/local)\/Cellar\/[^/]+\/[^/]+$/.test(k)), `${tool}: ${t.kegs[tool]}`);
+      for (const gpu of tool === 'whisper' ? [true, false] : [false]) {
+        const p = S.speechProfile(tool, { gpu, kegs: t.kegs[tool], links: t.links[tool] });
+        assert.ok(!/"\/opt\/homebrew\/Cellar"\)|"\/opt\/homebrew\/opt"\)|"\/usr\/local\/Cellar"\)/.test(p), 'never the whole Cellar or opt');
+      }
+    }
+    const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-keg-')));
+    const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-keg2-')));
+    fs.writeFileSync(path.join(scratch, 'x.txt'), 'x');
+    try {
+      for (const [tool, gpu] of [['ffmpeg', false], ['whisper', true], ['whisper', false]]) {
+        const tools = { ...t, gpu };
+        const run = (bin, args) => S.runJailed({ tools, tool, bin, args, work, timeoutMs: 10000 });
+        assert.notEqual((await run('/bin/cat', [path.join(scratch, 'x.txt')])).code, 0, `${tool}/${gpu}: scratch`);
+        assert.notEqual((await run('/bin/ls', [os.homedir()])).code, 0, `${tool}/${gpu}: ~`);
+        assert.notEqual((await run('/bin/cat', ['/etc/hosts'])).code, 0, `${tool}/${gpu}: /etc/hosts`);
+        assert.notEqual((await run('/bin/ls', ['/opt/homebrew/Cellar'])).code, 0, `${tool}/${gpu}: the whole Cellar`);
+      }
+      // and the tools themselves still work under it: a real clip (the tiny test model)
+      const find = () => S.speechTools({ env: { ...process.env, BOTFERENCE_WHISPER_MODEL: TINY } });
+      const sp = S.createSpeech({ find });
+      const clip = path.join(scratch, 'c.webm');
+      execFileSync('/opt/homebrew/bin/ffmpeg', ['-nostdin', '-loglevel', 'error', '-y', '-i', JFK, '-c:a', 'libopus', '-b:a', '32k', clip]);
+      const r = sp.submit({ audio: fs.readFileSync(clip), container: 'webm' });
+      await sp.idle();
+      const v = sp.view(r.job);
+      assert.ok(v.state === 'done' || v.why === 'no-speech', JSON.stringify(v));
+    } finally { fs.rmSync(work, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true }); }
+  });
+
+test('A READ SLOT ONLY FOR A KEY HOLDER: the signature (over the body hash the request names) is checked before any byte is read', async () => {
   const k = await linkWith({ audioReadMs: 400 });
   try {
-    const a = k.slow(), b = k.slow();
+    const key = L.readLinkKey(k.dir).key;
+    // a caller with the key id but not the secret: refused at once, before its body, and takes no slot
+    const forged = [k.slow(), k.slow(), k.slow()];
+    for (const f of forged) { assert.equal((await f.answered).status, 401); f.release(); }
+    // with the secret: two slow bodies hold the two slots; a third key holder waits (429)
+    const good = () => k.slowSigned(key);
+    const a = good(), b = good();
     await new Promise(r => setTimeout(r, 100));
-    const c = k.slow();
-    assert.equal((await c.answered).status, 429, 'a third unverified body is not read');
+    const c = good();
+    assert.equal((await c.answered).status, 429);
     const [ra, rb] = await Promise.all([a.answered, b.answered]);
-    assert.deepEqual([ra.status, rb.status], [408, 408], 'never finished: dropped at the deadline');
-    // the slots are free again: a signed one is read and accepted
+    assert.deepEqual([ra.status, rb.status], [408, 408]);
+    // the body must be the one whose hash was signed
+    assert.equal((await k.send('transcribe', WEBM, { type: 'audio/webm', bodyHash: crypto.createHash('sha256').update(OGG).digest('hex') })).status, 401);
+    assert.equal((await k.send('transcribe', WEBM, { type: 'audio/webm', bodyHash: '' })).status, 401, 'no body hash header');
     assert.equal((await k.send('transcribe', WEBM, { type: 'audio/webm' })).status, 200);
   } finally { await k.close(); }
 });

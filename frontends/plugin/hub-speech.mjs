@@ -26,7 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { modelPath, cleanTranscript } from '../shared/transcribe.mjs';
 
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
@@ -34,8 +34,11 @@ const SH = '/bin/sh';
 
 // ---- THE SANDBOX PROFILES (macOS seatbelt), one per tool, made here so each is read in one place -------------------------------
 // DENY BY DEFAULT. Each tool may only: start itself (BIN; no other program, no fork); signal itself; read the system's own files (the
-// root entry, /System (the dyld shared cache is there), /usr/lib, /dev/null and the random devices), its own Homebrew keg (`<prefix>/Cellar`, and the
-// `<prefix>/opt` links to it: program files only, no settings or data), its job folder (WORK) and, for whisper, the model; write only
+// root entry, /System (the dyld shared cache is there), /usr/lib, /dev/null and the random devices), its own Homebrew formula folder
+// (`<prefix>/Cellar/<formula>/<version>`) and the formula folders of exactly the libraries it loads (resolved once with `otool -L`,
+// transitively, plus the plugins those formulas keep in lib/ and libexec/, which ggml opens at run time; linkedKegs), with the
+// `<prefix>/opt/<formula>` links it loads them through, never the whole Cellar or opt; its job folder (WORK) and, for whisper, the
+// model; write only
 // its job folder; read the kernel's sysctl values (CPU count and the like: proven needed). No network of any kind, no service (mach-lookup), no device (IOKit), no preferences (cfprefsd is a service), no
 // clipboard (a service), no other process, no file of the owner's.
 // THE ONE EXCEPTION, whisper on Apple silicon (Metal): the GPU's own device class and Metal's shader-compiler service, each proven
@@ -46,10 +49,13 @@ const SH = '/bin/sh';
 // What a parser exploit could still reach: the system files above (readable by any program), its own folder, and, in whisper on the
 // GPU, the GPU driver and the shader compiler service (both reachable by any app that uses Metal). It cannot read the owner's files,
 // reach the network, the clipboard, preferences or another process, write anywhere but its folder, or start a program.
-export function speechProfile(tool, { gpu = false } = {}) {
+export function speechProfile(tool, { gpu = false, kegs = [], links = [] } = {}) {
+  // (kegs and links come from homebrewPlace/linkedKegs: real paths of the one character set SAFE_PATH allows, so nothing can break out
+  // of the quoted string)
+  const q = p => { if (!SAFE_PATH.test(p)) throw new Error('hub-speech: a path not fit for a profile'); return `"${p}"`; };
   const lines = [
     '(version 1)',
-    `; hub-speech profile for ${tool === 'whisper' ? 'whisper-cli' : 'ffmpeg'} (hub-speech.mjs speechProfile); parameters: BIN, WORK, CELLAR, OPT${tool === 'whisper' ? ', MODEL' : ''}`,
+    `; hub-speech profile for ${tool === 'whisper' ? 'whisper-cli' : 'ffmpeg'} (hub-speech.mjs speechProfile); parameters: BIN, WORK${tool === 'whisper' ? ', MODEL' : ''}`,
     '(deny default)',
     '(allow process-exec (literal (param "BIN")))',
     '(allow signal (target self))',
@@ -57,7 +63,10 @@ export function speechProfile(tool, { gpu = false } = {}) {
     '(allow sysctl-read)',
     '(allow file-read* (literal "/") (subpath "/System") (subpath "/usr/lib")',
     '  (literal "/dev/null") (literal "/dev/urandom") (literal "/dev/random"))',
-    '(allow file-read* (literal (param "BIN")) (subpath (param "CELLAR")) (subpath (param "OPT")))',
+    '(allow file-read* (literal (param "BIN")))',
+    // its own formula folder and those of every library it links against (and the `opt` links it loads them through): no other
+    ...(kegs.length ? [`(allow file-read* ${kegs.map(k => `(subpath ${q(k)})`).join(' ')})`] : []),
+    ...(links.length ? [`(allow file-read* ${links.map(l => `(literal ${q(l)})`).join(' ')})`] : []),
     '(allow file-read* (subpath (param "WORK")))',
     '(allow file-write* (subpath (param "WORK")) (literal "/dev/null"))',
   ];
@@ -69,8 +78,65 @@ export function speechProfile(tool, { gpu = false } = {}) {
   }
   return `${lines.join('\n')}\n`;
 }
-/** The Homebrew prefix a tool's real path is under (`/opt/homebrew`, `/usr/local`), or its own folder's parent when it is not one. */
-const kegOf = real => { const i = real.indexOf('/Cellar/'); return i > 0 ? { cellar: `${real.slice(0, i)}/Cellar`, opt: `${real.slice(0, i)}/opt` } : { cellar: path.dirname(path.dirname(real)), opt: path.dirname(path.dirname(real)) }; };
+// ---- WHERE A TOOL IS, and what it may read ---------------------------------------------------------------------------------------
+// A tool is used only when its real path is inside `<prefix>/Cellar/<formula>/<version>/` of a known Homebrew prefix (/opt/homebrew,
+// /usr/local, with a Cellar folder). Anything else (a tool in the owner's home, /bin, a copy) turns speech OFF: no fallback, because
+// its profile could not say what it may read without opening a folder that is not its own.
+export const HOMEBREW_PREFIXES = Object.freeze(['/opt/homebrew', '/usr/local']);
+const SAFE_PATH = /^\/[A-Za-z0-9._@+\/-]+$/;
+const SEG = '[A-Za-z0-9._@+-]+';
+export function homebrewPlace(real) {
+  const m = new RegExp(`^(/opt/homebrew|/usr/local)/Cellar/(${SEG})/(${SEG})/`).exec(String(real || ''));
+  if (!m || !SAFE_PATH.test(real) || m[2] === '..' || m[3] === '..') return null;
+  try { if (!fs.statSync(`${m[1]}/Cellar`).isDirectory()) return null; } catch { return null; }
+  return { prefix: m[1], formula: m[2], keg: `${m[1]}/Cellar/${m[2]}/${m[3]}` };
+}
+export const OTOOL = '/usr/bin/otool';
+const SYSTEM_ROOTS = ['/System/', '/usr/lib/'];
+const linkCache = new Map();
+/**
+ * WHAT A TOOL LOADS, resolved once (`otool -L`, transitively, and the plugins each formula keeps in its `libexec`, which ggml opens at
+ * run time): → { kegs (the formula folders, real paths), links (`<prefix>/opt/<formula>` links it loads through), problem }.
+ * A library outside the system roots and outside the tool's own Homebrew prefix is a problem: speech is then off.
+ */
+export function linkedKegs(real, { otool = OTOOL, run = (bin, args) => execFileSync(bin, args, { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }) } = {}) {
+  const key = real;
+  if (linkCache.has(key)) return linkCache.get(key);
+  const home = homebrewPlace(real);
+  if (!home) return { kegs: [], links: [], problem: 'not a Homebrew install' };
+  const kegs = new Set([home.keg]), links = new Set(), seen = new Set(), todo = [real];
+  const scanned = new Set();
+  const plugins = keg => { if (scanned.has(keg)) return; scanned.add(keg);
+    for (const sub of ['libexec', 'lib']) { let names = []; try { names = fs.readdirSync(`${keg}/${sub}`); } catch { names = []; }
+      for (const n of names) if (/\.(so|dylib)$/.test(n)) { const r = realOr(`${keg}/${sub}/${n}`); if (r) todo.push(r); } } };
+  plugins(home.keg);
+  let problem = '';
+  for (let guard = 0; todo.length && guard < 2000; guard++) {
+    const file = todo.pop();
+    if (seen.has(file)) continue;
+    seen.add(file);
+    let out = '';
+    try { out = run(otool, ['-L', file]); } catch { problem = 'otool could not read a library it loads'; break; }
+    for (const line of out.split('\n').slice(1)) {
+      const dep = line.trim().split(' (')[0];
+      if (!dep || SYSTEM_ROOTS.some(r => dep.startsWith(r))) continue;
+      if (dep.startsWith('@')) continue;   // (@rpath and the like: inside a formula already kept, whose lib folders are scanned)
+      if (!dep.startsWith(`${home.prefix}/`)) { problem = 'it loads a library outside Homebrew and the system'; break; }
+      const r = realOr(dep);
+      const place = r && homebrewPlace(r);
+      if (!place || place.prefix !== home.prefix) { problem = 'it loads a library outside its Homebrew'; break; }
+      kegs.add(place.keg);
+      const opt = new RegExp(`^${home.prefix}/opt/(${SEG})/`).exec(dep);
+      if (opt) links.add(`${home.prefix}/opt/${opt[1]}`);
+      plugins(place.keg);
+      todo.push(r);
+    }
+    if (problem) break;
+  }
+  const answer = { kegs: [...kegs].sort(), links: [...links].sort(), problem };
+  if (!problem) linkCache.set(key, answer);
+  return answer;
+}
 
 export const SPEECH_LIMITS = Object.freeze({
   // three minutes of speech as browsers record it (Opus about 32–128 kbit/s, AAC about 64–160 kbit/s): 4.5 MiB, well under the 6 MB a
@@ -143,8 +209,17 @@ export function speechTools({ env = process.env, platform = process.platform, ar
   if (!ffmpeg) return { tools: null, missing: 'ffmpeg (brew install ffmpeg)' };
   const model = realOr(modelPath());
   if (!model) return { tools: null, missing: 'a whisper model (~/.botference/models/ggml-large-v3-turbo.bin)' };
+  // each tool inside a Homebrew Cellar, and what it loads resolved (no fallback: anything else is off, said why)
+  if (!fs.existsSync(OTOOL)) return { tools: null, missing: 'otool, to see what the tools load (xcode-select --install)' };
+  const kegs = {}, links = {};
+  for (const [name, real] of [['ffmpeg', ffmpeg], ['whisper', whisper]]) {
+    if (!homebrewPlace(real)) return { tools: null, missing: `${name === 'whisper' ? 'whisper-cli' : 'ffmpeg'} at ${real} is not a Homebrew install (inside /opt/homebrew/Cellar or /usr/local/Cellar), so it is not run` };
+    const l = linkedKegs(real);
+    if (l.problem) return { tools: null, missing: `${name === 'whisper' ? 'whisper-cli' : 'ffmpeg'}: ${l.problem}, so it is not run` };
+    kegs[name] = l.kegs; links[name] = l.links;
+  }
   // the GPU (Metal) on Apple silicon; elsewhere whisper runs on the CPU (`-ng`) and its profile has no device and no service
-  return { tools: { whisper, ffmpeg, model, sandboxExec: SANDBOX_EXEC, gpu: arch === 'arm64' }, missing: '' };
+  return { tools: { whisper, ffmpeg, model, sandboxExec: SANDBOX_EXEC, gpu: arch === 'arm64', kegs, links }, missing: '' };
 }
 export const speechGate = found => (found && found.tools ? 'on' : 'off');
 
@@ -173,11 +248,10 @@ export function runJailed({ tools, tool: named, bin: given, args, work, timeoutM
   const bin = given || tools[tool];
   return new Promise(resolve => {
     const lim = { ...TOOL_LIMITS[tool], ...limits };
-    const keg = tools.brew ? { cellar: `${tools.brew}/Cellar`, opt: `${tools.brew}/opt` } : kegOf(bin);
-    const profile = profileText || speechProfile(tool, { gpu: tool === 'whisper' && !!tools.gpu });
+    const profile = profileText || speechProfile(tool, { gpu: tool === 'whisper' && !!tools.gpu, kegs: (tools.kegs && tools.kegs[tool]) || [], links: (tools.links && tools.links[tool]) || [] });
     const argv = ['-c', 'ulimit -t "$1" && ulimit -f "$2" && ulimit -n "$3" && shift 3 && exec "$@"', 'hub-speech',
       String(lim.cpuSec), String(lim.fileBlocks), String(lim.files),
-      tools.sandboxExec, '-p', profile, '-D', `BIN=${bin}`, '-D', `WORK=${work}`, '-D', `CELLAR=${keg.cellar}`, '-D', `OPT=${keg.opt}`,
+      tools.sandboxExec, '-p', profile, '-D', `BIN=${bin}`, '-D', `WORK=${work}`,
       '-D', `MODEL=${tools.model}`, bin, ...args];
     let child;
     try {

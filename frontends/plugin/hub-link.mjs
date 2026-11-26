@@ -237,6 +237,9 @@ export function deleteLinkKey(dir) { try { fs.unlinkSync(keyFileOf(dir)); return
 
 // ---- signing ---------------------------------------------------------------------------------------------------------------------
 export const SIG_HEADERS = Object.freeze({ key: 'x-hub-link-key', ts: 'x-hub-link-ts', nonce: 'x-hub-link-nonce', sig: 'x-hub-link-sig' });
+/** (audio only) the body's sha256, lowercase hex, as signed: the signature is checked with it BEFORE the body is read, then the body
+ *  read is checked against it */
+export const BODY_HASH_HEADER = 'x-hub-link-body-sha256';
 const NONCE_RE = /^[0-9a-f]{32}$/;
 const SIG_RE = /^[0-9a-f]{64}$/;
 export const bodyHashOf = body => crypto.createHash('sha256').update(Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8')).digest('hex');
@@ -276,7 +279,8 @@ export function preCheck({ headers, key, nowSec }) {
   const h = headers || {};
   const kid = String(h[SIG_HEADERS.key] || ''), tsRaw = String(h[SIG_HEADERS.ts] || ''), nonce = String(h[SIG_HEADERS.nonce] || ''), sig = String(h[SIG_HEADERS.sig] || '');
   if (!kid || !tsRaw || !nonce || !sig) return { ok: false, why: 'missing-header' };
-  if (kid !== key.key_id) return { ok: false, why: 'wrong-key' };
+  // (compared in constant time: hashed first, so the lengths are equal)
+  if (!crypto.timingSafeEqual(crypto.createHash('sha256').update(kid).digest(), crypto.createHash('sha256').update(String(key.key_id)).digest())) return { ok: false, why: 'wrong-key' };
   if (!/^\d{1,12}$/.test(tsRaw)) return { ok: false, why: 'bad-ts' };
   if (Math.abs(Number(tsRaw) - nowSec) > HUB_LINK_LIMITS.skewSec) return { ok: false, why: 'stale-ts' };
   if (!NONCE_RE.test(nonce)) return { ok: false, why: 'bad-nonce' };
@@ -693,20 +697,32 @@ export function createHubLink(deps) {
     if (!container) return refuse(415, 'audio-type');
     const declared = Number(req.headers['content-length']);
     const tooLarge = (close = true) => { say('refused audio-too-large'); res.writeHead(413, { ...JSON_HEAD, ...(close ? { connection: 'close' } : {}) }).end(JSON.stringify({ ok: false, error: 'too-large', say: HUB_LINK_SAY['audio-too-large'] })); };
-    // (declared too large but not absurdly: the body is drained and thrown away, so the Hub reads the 413 rather than a reset)
+    // THE SIGNATURE BEFORE THE BODY: over the body hash and the length the request names (only a key holder reaches a read slot);
+    // the body read must then be exactly that length with exactly that hash
+    const named = String(req.headers[BODY_HASH_HEADER] || '');
+    if (!/^[0-9a-f]{64}$/.test(named) || !Number.isFinite(declared) || declared < 1 || String(declared) !== String(req.headers['content-length']).trim()) {
+      req.resume(); say('refused body-hash-header'); res.writeHead(401, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return;
+    }
+    {
+      const want = crypto.createHmac('sha256', Buffer.from(String(key.secret), 'base64url'))
+        .update(stringToSign(url, String(req.headers[SIG_HEADERS.ts]), String(req.headers[SIG_HEADERS.nonce]), named, [type, String(declared)])).digest('hex');
+      const sigOk = hexEqual(want, String(req.headers[SIG_HEADERS.sig]));
+      const n = sigOk ? nonces.take(String(req.headers[SIG_HEADERS.nonce])) : '';
+      if (!sigOk || n !== 'fresh') { req.resume(); say(`refused ${sigOk ? 'replayed-nonce' : 'bad-sig'}`); res.writeHead(401, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return; }
+    }
+    // (a key holder's body declared too large but not absurdly: the body is drained and thrown away, so the Hub reads the 413 rather than a reset)
     if (Number.isFinite(declared) && declared > SPEECH_LIMITS.audioBytes) {
       if (declared > 2 * SPEECH_LIMITS.audioBytes) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
       req.resume(); return tooLarge(false);
     }
-    // AT MOST 2 BODIES NOT YET VERIFIED are read at once, each within its deadline
+    // AT MOST 2 BODIES are read at once (each from a key holder), each within its deadline
     if (reading.n >= HUB_LINK_LIMITS.audioReading) { say('limited audio-reading'); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: 'audio-reading' })); try { req.destroy(); } catch { /* gone */ } return; }
     reading.n++;
     let got;
     try { got = await readRaw(req, SPEECH_LIMITS.audioBytes, audioReadMs); } finally { reading.n--; }
     if (got.late) { say('refused audio-late'); res.writeHead(408, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-slow' })); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
-    const v = verifySigned({ headers: req.headers, urlPath: url, body: got.body, key, nowSec: Math.floor(ms() / 1000), nonces, extra: [type, String(got.body.length)] });
-    if (!v.ok) { say(`refused ${v.why}`); return answer(res, 401, { ok: false, error: 'refused' }); }
+    if (got.body.length !== declared || bodyHashOf(got.body) !== named) { say('refused body-not-as-signed'); return answer(res, 401, { ok: false, error: 'refused' }); }
     // (speech off: said only to a caller that signed)
     if (speechGate() !== 'on') return answer(res, 404, { ok: false, error: 'not found' });
     if (!perMinute.take()) { say('limited requests-per-minute'); return answer(res, 429, { ok: false, error: 'limit', limit: 'requests-per-minute' }); }
