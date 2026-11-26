@@ -33,8 +33,9 @@ await new Promise(r => web.listen(0, '127.0.0.1', r));
 const root = tmp('root');
 fs.writeFileSync(path.join(root, 'fake-web-port'), String(web.address().port));
 const oLog = path.join(root, 'oneshot.jsonl');
-// call 0: the first passage (at once); call 1: the second (held 4 s); call 2: the first asked again (held 7 s)
-fs.writeFileSync(`${oLog}.delays`, JSON.stringify([0, 4000, 7000]));
+// call 0: the first passage (at once); call 1: the second (held 8 s); call 2: the first asked again (held 14 s). Wide on purpose: the
+// redo must be asked while the second is still being written, on a machine that may be busy.
+fs.writeFileSync(`${oLog}.delays`, JSON.stringify([0, 8000, 14000]));
 const PUBLIC = 'companion.example.com';
 const srv = await startServer({ root, args: ['--hosted'], env: { PLUGIN_BLYG_CHECKS: 'on', FAKE_WEB_PORT_FILE: path.join(root, 'fake-web-port'),
   NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --import ${JSON.stringify(path.join(TEST, 'fake-web.mjs'))}`.trim(),
@@ -60,18 +61,19 @@ await test('A REDO WHILE ANOTHER PASSAGE IS BEING WRITTEN: the first fill ending
   const r = await send('reply', { rid: 'rid-twofills-01', post: { page: `${ORIGIN}t/${A}/`, origin: ORIGIN, id: A, version: 1 }, quote: SAYS,
     comment: 'Mine.\n/tk first one\n/tk second one', intent: 'draft' });
   assert.equal(r.status, 200, JSON.stringify(r.json));
-  // the first written, the second still being written (held 4 s)
+  // the first written, the second still being written (held 8 s)
   const v1 = await waitFor(async () => { const v = await view('rid-twofills-01'); const p = passages(v); return p.length === 2 && p[0][1] === 'filled-by-agent' ? v : null; }, 'the first passage');
   const g1 = passages(v1)[0][0];
   assert.equal(passages(v1)[1][1], 'pending');
-  // asked again (held 7 s), while the second is still being written
+  // asked again (held 14 s), while the second is still being written
   assert.equal((await send('redo', { rid: 'rid-twofills-01', gap: g1 })).status, 200);
+  assert.equal(passages(await view('rid-twofills-01'))[1][1], 'pending', 'the premise: the redo was asked while the second passage is still being written');
   // the first fill ends (the second passage written); the redo is still writing
-  await waitFor(async () => passages(await view('rid-twofills-01'))[1][1] === 'filled-by-agent', 'the second passage', 15000);
+  await waitFor(async () => passages(await view('rid-twofills-01'))[1][1] === 'filled-by-agent', 'the second passage', 25000);
   const mid = await view('rid-twofills-01');
   assert.deepEqual(passages(mid)[0].slice(0, 2), [g1, 'pending'], `still being written, not interrupted: ${JSON.stringify(passages(mid))}`);
   assert.equal(mid.fill, 'writing');
-  const done = await waitFor(async () => { const v = await view('rid-twofills-01'); return passages(v)[0][1] === 'filled-by-agent' ? v : null; }, 'the redo\'s answer', 15000);
+  const done = await waitFor(async () => { const v = await view('rid-twofills-01'); return passages(v)[0][1] === 'filled-by-agent' ? v : null; }, 'the redo\'s answer', 25000);
   assert.equal(passages(done)[0][2], 'FILL 2', 'the redo\'s answer, not thrown away');
   assert.equal(done.fill, 'ready');
 });
