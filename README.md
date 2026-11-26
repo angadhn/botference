@@ -1624,6 +1624,40 @@ make it authoritative, run `codex login --with-api-key` yourself. (There
 is a config key that forces it, and it silently deletes your
 `~/.codex/auth.json` when it switches — botference never sends it.)
 
+## The botference blyg (botference.com/blyg/)
+
+The project's release notes are a blyg: a blog that follows the
+[Blygger](https://blygger.org) protocol, version 0.4. Other blygs can quote
+and answer each post by reference. Each post is a Markdown file in
+`blyg/posts/`. The script `scripts/blyg.mjs` turns the posts into the static
+files under `site/blyg/`: the manifest `blyg.json`, the archive index
+`items/index.json`, one item document per post in `items/`, the RSS feed
+`feed.xml`, and an HTML page per post at `t/<id>/`. The generated files are
+committed, because GitHub Pages serves `site/` as it is.
+
+To add a post:
+
+1. `node scripts/blyg.mjs new <slug>` writes `blyg/posts/<date>-<slug>.md`
+   with a new id and a `v1:` line holding the time now. Never change the id.
+2. Write the text under the front matter. The first line, a `# ` heading, is
+   the post's title. Use ordinary Markdown links; write full `https://`
+   addresses. The generator refuses Blygger's `[[…]]` quote and link grammar.
+3. `node scripts/blyg.mjs build`, then
+   `BLYG_CHECKER=<blygger-spec>/conformance/schemas/lib node scripts/blyg.mjs check`
+   to run the Blygger conformance checker.
+4. Run `node --test tests/blyg.test.mjs`, commit the post and `site/blyg/`,
+   and push to `main`.
+
+To change a published post, edit its text and run
+`node scripts/blyg.mjs version <file> "what changed"`. This adds the next
+version line, with the time and the note. The build refuses a text change
+without a new version line, and it refuses any change to a version line that
+is already published. The note must describe the change; it must not quote
+the old text, because older versions are not kept online.
+
+The generator does not do withdrawal, pins, quotes of other blygs, or
+Webmention. A published post cannot be removed.
+
 ## Usage ping
 
 Discuss sends one anonymous event a day so I can tell whether anyone is

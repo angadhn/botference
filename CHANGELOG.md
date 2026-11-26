@@ -2,6 +2,7 @@
 
 ## 2026-11-26
 
+- **botference.com has a blyg: release notes at `/blyg/`, in the Blygger protocol.** Posts are Markdown files in `blyg/posts/`; `node scripts/blyg.mjs build` writes the static Blygger 0.4 files and a page per post into `site/blyg/` (committed, since GitHub Pages serves them as they are). A changed text needs a new version line (`node scripts/blyg.mjs version <post> "note"`); the build refuses to change a published version in place. The site header links "Blyg", and every page names the blyg for Blygger readers. See "The botference blyg" in the README.
 - **Botference describes itself as five products.** The README's opening, the website's home page and the man page's NAME and DESCRIPTION now list the council, Discuss, document review, Blygger publishing and the agent tools, with who each is for and how ready it is, instead of calling botference a planning tool.
 
 ## 2026-11-25
