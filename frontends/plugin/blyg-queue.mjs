@@ -41,7 +41,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { RUN_LIVE, RUN_FINISHED, FAILED_MODES, INTERRUPTED_MODES, publishedNothing, stepNamed, IllegalMove, EXTENTS, JOINS, settingChangedSay } from './blyg-run.mjs';
-import { eligibleThread, isPublishedThread, includedMsgs, SCOPES, PROMPT_MODES, withoutQuoteMarks } from './blyg-note.mjs';
+import { eligibleThread, isStandAlonePage, isPublishedThread, includedMsgs, SCOPES, PROMPT_MODES, withoutQuoteMarks } from './blyg-note.mjs';
 
 export const ENTRY_STATES = Object.freeze(['queued', 'filling', 'needs_look', 'running', 'giving_up', 'published', 'failed', 'cancelled']);
 export const ENTRY_MOVES = Object.freeze({
@@ -205,7 +205,7 @@ export function createQueue(deps) {
   function snapshotOf(page, here, scope) {
     const threads = page.threads || [];
     const at = threads.indexOf(here);
-    const above = scope === 'above' ? threads.slice(0, Math.max(0, at)).filter(t => t && eligibleThread(t).ok && !isPublishedThread(t)) : [];
+    const above = scope === 'above' && !isStandAlonePage(page) ? threads.slice(0, Math.max(0, at)).filter(t => t && eligibleThread(t).ok && !isPublishedThread(t)) : [];
     return [...above, here].map(t => ({ id: t.id, msgs: clone(t.msgs || []) }));
   }
   // the thread's first words, as the post is named by them: a /quote marker line is not a word (nor a message that is only one)

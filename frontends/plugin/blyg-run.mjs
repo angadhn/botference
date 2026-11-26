@@ -47,7 +47,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, PROMPT_MODES, DEFAULT_PROMPTS, promptsFactsOf, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, PROMPT_MODES, DEFAULT_PROMPTS, promptsFactsOf, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, isStandAlonePage, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { samePage } from './blyg.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
@@ -939,7 +939,7 @@ export function createPublisher(deps) {
   // offered such a post (`outside: 'offer'`: the owner is there and the run asks the outside question before anything is written);
   // the HUB LINK is not (`outside: 'refuse'`: nobody could answer that question from the phone))
   function earlierPostFor(page, here, S, why = {}, { outside = 'offer' } = {}) {
-    if (!page || (here && (isPublishedThread(here) || !eligibleThread(here).ok))) return null;
+    if (!page || isStandAlonePage(page) || (here && (isPublishedThread(here) || !eligibleThread(here).ok))) return null;
     if (!EDIT_STEPS.every(k => S.commands[k])) return null;
     const threads = page.threads || [];
     const posts = new Map();
@@ -1072,11 +1072,12 @@ export function createPublisher(deps) {
     const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
-    const picked = scope === 'one' ? [here] : [...aboveOf(threads, at, S), here];
+    const alone = isStandAlonePage(page);
+    const picked = scope === 'one' || alone ? [here] : [...aboveOf(threads, at, S), here];
     if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} threads can go in one post.`);
     // the chain: only for one comment, and only when an earlier post from this page is on the record
     let earlier = null;
-    if (scope === 'one') {
+    if (scope === 'one' && !alone) {
       const prev = threads.filter(t => isPublishedThread(t) && t !== here).map(t => t.blyg_published)
         .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0];
       if (prev && prev.title && (prev.address || prev.permalink)) earlier = { title: prev.title, link: prev.address || prev.permalink };

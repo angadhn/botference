@@ -846,6 +846,10 @@ export function stubOfPage(page) {
 }
 /** WHICH page a post responds to, whatever version was read and whatever the page is called now: '' for none. Two posts answer the
  *  same target when these are equal (a post adding another comment from the same page must keep its ONE target). */
+/** THE STAND-ALONE PAGE: the one private page record whose threads are the Hub's stand-alone posts (hub-link.mjs 'compose'). One named
+ *  fact of the record (`stand_alone`, set where the hub link makes it), read only here. Each thread on it is a post of its own: it never
+ *  chains to an earlier one, is never added to one, and "this and the ones above" is never more than the one. */
+export const isStandAlonePage = page => !!page && page.stand_alone === true;
 export const stubTargetOf = stubOf => (!stubOf ? '' : stubOf.id ? `post ${stubOf.origin}${stubOf.id}` : stubOf.url ? `page ${stubOf.url}` : '');
 
 // ---- the note ---------------------------------------------------------------------

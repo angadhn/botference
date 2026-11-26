@@ -109,12 +109,30 @@ await test('PUBLISH ONCE: a stand-alone post pressed, published, sent again twic
   assert.equal(notes().filter(x => x.includes('written-here')).length, 0, 'no note anywhere names the synthetic page');
 });
 
-await test('A SECOND STAND-ALONE POST publishes on its own: a new note, never an addition to the first', async () => {
-  const r = await send('reply', { rid: 'rid-comp-pub-0002', compose: true, comment: 'Another one, separate.', intent: 'publish' });
-  assert.equal(r.status, 200, JSON.stringify(r.json));
-  const v = await waitFor(async () => { const x = await status('rid-comp-pub-0002'); return ['published', 'failed', 'saved'].includes(x.state) ? x : null; }, 'published', 60000);
-  assert.deepEqual([v.state, v.version], ['published', 1]);
-  assert.equal(notes().filter(x => /A stand-alone short post|Another one, separate\./.test(x)).length, 2);
+const PLAIN = words => new RegExp(`^---\\ncreated: \\d{4}-\\d\\d-\\d\\d\\nreleased: "\\d{4}-\\d\\d-\\d\\d"\\nblyg: true\\nblyg_id: "[0-9a-z]{26}"\\npermalink: \\/b\\/[0-9a-z]{26}\\n---\\n${words}\\n$`);
+await test('THE SECOND AND THIRD STAND-ALONE POSTS are plain too: a note of their own, never a link to the previous one, never an addition', async () => {
+  for (const [n, words] of [['0002', 'Another one, separate.'], ['0003', 'And a third, also separate.']]) {
+    const r = await send('reply', { rid: `rid-comp-pub-${n}`, compose: true, comment: words, intent: 'publish' });
+    assert.equal(r.status, 200, JSON.stringify(r.json));
+    const v = await waitFor(async () => { const x = await status(`rid-comp-pub-${n}`); return ['published', 'failed', 'saved'].includes(x.state) ? x : null; }, 'published', 60000);
+    assert.deepEqual([v.state, v.version], ['published', 1]);
+    const note = notes().find(x => x.includes(words));
+    assert.match(note, PLAIN(words.replace(/\./g, '\\.')), note);
+    assert.ok(!/Earlier:/.test(note));
+  }
+  assert.equal(notes().filter(x => /A stand-alone short post|Another one, separate\.|And a third/.test(x)).length, 3);
+});
+
+await test('THE STAND-ALONE PAGE OFFERS NOTHING TO ADD TO: earlier-for-a-thread says none, and a pressed addition is refused', async () => {
+  const d = await send('reply', { rid: 'rid-comp-add-0001', compose: true, comment: 'A draft after three posts.', intent: 'draft' });
+  assert.equal(d.status, 200);
+  const page = (await GET(S, '/page?url=' + encodeURIComponent(SYNTH))).json;
+  assert.equal(page.stand_alone, true);
+  const e = await send('earlier', { post: { page: SYNTH, origin: HUB + '/', id: 'x' } });
+  assert.deepEqual(e.json.earlier, []);
+  const v = await status('rid-comp-add-0001');
+  assert.equal(v.adds_to, undefined);
+  assert.equal((await send('cancel', { rid: 'rid-comp-add-0001' })).json.state, 'cancelled');
 });
 
 cleanup();

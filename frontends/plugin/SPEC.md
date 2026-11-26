@@ -14526,6 +14526,11 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
 - EVERYTHING ELSE is the same code as for a reply: exactly once by rid, the press and its day limit (a stand-alone publish counts as one of
   the day's 10; a filing as one of the hour's 20), drafts read-back (`blocks`), redo, discard, `/tk` lines, speech, the `prompts` choice.
   Posts published this way share one page, so one that needs the owner's look holds the later ones behind it, as any page's does.
+- THE PAGE NAMES ITSELF (`stand_alone: true` on the record, set where it is made, read through `isStandAlonePage` only): a short post
+  from any other page ends with `Earlier: [title](address)` linking the previous post from that page, and may be added to it; on this
+  page neither ever happens, since the posts are unrelated. `startNew` leaves the chain out, `earlierPostFor` answers none (so the drawer
+  offers no "Add to your earlier post" and the hub link's `earlier` is empty), and "this and the ones above" is the one post. Each
+  stand-alone note is exactly the shape above: the second and the third are checked in `hub-link-compose-server`.
 - Tests: `hub-link-compose` (the list; exactly one target, no quote, no add_to; filed on the synthetic page and never verified as a post;
   the record's `target`; exactly once by rid; the day's and the hour's limits; discard and a cancel before it arrives),
   `hub-link-compose-server` (through the real companion: the page record made once, titled, not a response; refusals file nothing; discard;

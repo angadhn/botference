@@ -3359,6 +3359,7 @@ const hubLink = createHubLink({
     if (there && !mayRead(there, true)) return { verdict: 'unverified', code: 'not-writable' };
     const page = there || store.upsertPage({ url, title: HUB_COMPOSE_TITLE });
     page.export_response = 'not-a-response';
+    page.stand_alone = true;
     store.savePage(page);
     broadcast({ type: 'page', url: page.url });
     return { verdict: 'verified', url: page.url, compose: true };
