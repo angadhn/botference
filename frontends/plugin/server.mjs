@@ -3196,13 +3196,18 @@ const findMsg = (page, target, ts) => {
   return msgs ? msgs.find(m => m && m.ts === ts && ownerTyped(m)) : null;
 };
 // THE FILLS UNDER WAY, by page, message and gap (from startGaps until that gap's answer is written): a gap `pending` that is not here
-// is not being written by anyone (the companion restarted mid-fill), and the hub link fails it "interrupted" (settleStale)
-const liveFills = new Set();
+// is not being written by anyone (the companion restarted mid-fill), and the hub link fails it "interrupted" (settleStale).
+// EACH FILL HOLDS ITS OWN TOKEN under a key, and takes out only its own: a redo of a passage started while an earlier fill of the same
+// message is still writing another passage puts its own token there, and the earlier fill's end leaves it standing.
+const liveFills = new Map(); // key → Set of fill tokens
 const fillKey = (url, target, ts, id) => JSON.stringify([store.normUrl(url), target || '', String(ts), id]);
-async function fillGapsOf(url, target, ts, ids) {
-  try { await fillEach(url, target, ts, ids); } finally { for (const id of ids) liveFills.delete(fillKey(url, target, ts, id)); }
+const fillHold = (key, token) => { const set = liveFills.get(key) || new Set(); set.add(token); liveFills.set(key, set); };
+const fillDrop = (key, token) => { const set = liveFills.get(key); if (!set) return; set.delete(token); if (!set.size) liveFills.delete(key); };
+const fillLive = key => !!(liveFills.get(key) && liveFills.get(key).size);
+async function fillGapsOf(url, target, ts, ids, token) {
+  try { await fillEach(url, target, ts, ids, token); } finally { for (const id of ids) fillDrop(fillKey(url, target, ts, id), token); }
 }
-async function fillEach(url, target, ts, ids) {
+async function fillEach(url, target, ts, ids, token) {
   for (const id of ids) {
     const page = store.readPage(url);
     const msg = page && findMsg(page, target, ts);
@@ -3226,7 +3231,7 @@ async function fillEach(url, target, ts, ids) {
     const latest = store.readPage(url);
     const m2 = latest && findMsg(latest, target, ts);
     const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
-    liveFills.delete(fillKey(url, target, ts, id));
+    fillDrop(fillKey(url, target, ts, id), token);
     if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
     if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at });
     else gapMove(g2, 'failed', { reason: r.reason });
@@ -3237,8 +3242,9 @@ async function fillEach(url, target, ts, ids) {
 // after a write: ask for what is pending (not awaited)
 function startGaps(page, target, msg, ids) {
   if (!ids || !ids.length || !msg) return;
-  for (const id of ids) liveFills.add(fillKey(page.url, target, msg.ts, id));
-  fillGapsOf(page.url, target, msg.ts, ids).catch(e => console.warn(`[gaps] ${e.message}`));
+  const token = Symbol('fill');
+  for (const id of ids) fillHold(fillKey(page.url, target, msg.ts, id), token);
+  fillGapsOf(page.url, target, msg.ts, ids, token).catch(e => console.warn(`[gaps] ${e.message}`));
 }
 // the export's footbar line: how many gaps are written, and how many not
 function gapCounts(page) {
@@ -3359,7 +3365,7 @@ const hubLink = createHubLink({
     const msg = thread && thread.via === 'hub-link' ? (thread.msgs || []).find(m => m && m.ts === ts) : null;
     let moved = false;
     for (const g of (msg && msg.gaps) || []) {
-      if (g && g.mode === 'pending' && !liveFills.has(fillKey(page.url, thread_id, ts, g.id)) && canGapMove(g, 'failed')) { gapMove(g, 'failed', { reason: 'interrupted' }); moved = true; }
+      if (g && g.mode === 'pending' && !fillLive(fillKey(page.url, thread_id, ts, g.id)) && canGapMove(g, 'failed')) { gapMove(g, 'failed', { reason: 'interrupted' }); moved = true; }
     }
     if (moved) { store.savePage(page); broadcast({ type: 'page', url: page.url }); }
   },
