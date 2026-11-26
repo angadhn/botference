@@ -20,35 +20,36 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-'));
 const WEBM = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), crypto.randomBytes(2000)]);
 const OGG = Buffer.concat([Buffer.from('OggS'), crypto.randomBytes(2000)]);
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypM4A '), crypto.randomBytes(2000)]);
-const TOOLS = { tools: { whisper: '/x/whisper-cli', ffmpeg: '/x/ffmpeg', model: '/x/model.bin', home: '/x', sandboxExec: '/usr/bin/sandbox-exec', profile: '/x/p.sb' }, missing: '' };
+const TOOLS = { tools: { whisper: '/x/whisper-cli', ffmpeg: '/x/ffmpeg', model: '/x/model.bin', sandboxExec: '/usr/bin/sandbox-exec', gpu: true }, missing: '' };
 
 // a stand-in run: ffmpeg writes a WAV of `seconds`, whisper answers `text`; counts how many run at once
 function stubRun({ text = 'Hello from the phone.', seconds = 3, slowMs = 0, fail = '' } = {}) {
   const seen = { live: 0, most: 0, argv: [], works: [] };
-  const run = async ({ bin, args, work }) => {
+  const run = async ({ tools, tool, bin = tools[tool], args, work }) => {
     seen.live++; seen.most = Math.max(seen.most, seen.live); seen.argv.push([bin, ...args]); seen.works.push(work);
     try {
       if (slowMs) await new Promise(r => setTimeout(r, slowMs));
       if (bin.endsWith('ffmpeg')) {
-        if (fail === 'convert') return { code: 1, out: '', timedOut: false };
+        if (fail === 'convert') return { code: 1, out: '', timedOut: false, group: 'gone' };
         fs.writeFileSync(args[args.length - 1], Buffer.alloc(44 + 32000 * seconds));
-        return { code: 0, out: '', timedOut: false };
+        return { code: 0, out: '', timedOut: false, group: 'gone' };
       }
-      if (fail === 'timeout') return { code: -1, out: '', timedOut: true };
-      return { code: 0, out: `${text}\n[BLANK_AUDIO]\n`, timedOut: false };
+      if (fail === 'timeout') return { code: -1, out: '', timedOut: true, group: 'gone' };
+      if (fail === 'group') return { code: 0, out: 'words', timedOut: false, group: 'remains' };
+      return { code: 0, out: `${text}\n[BLANK_AUDIO]\n`, timedOut: false, group: 'gone' };
     } finally { seen.live--; }
   };
   return { run, seen };
 }
 
-async function linkWith({ speech, find = () => TOOLS } = {}) {
+async function linkWith({ speech, find = () => TOOLS, audioReadMs } = {}) {
   const dir = tmp();
   const key = L.newKey({ hub_origin: 'https://blog.example.com', publish: 'drafts-only' });
   L.writeLinkKey(dir, key);
   const logs = [];
   const link = L.createHubLink({ keyDir: dir, repliesFile: path.join(dir, L.HUB_LINK_REPLIES_FILE), log: l => logs.push(l), perMinute: 10000,
     bind: async () => ({ verdict: 'unverified', code: 'not-verified' }), fileReply: () => null, press: async () => ({ ok: false }), cancel: () => ({ ok: false }),
-    queue: () => ({ entries: [], run: null }), readPage: () => null, speech: speech || S.createSpeech({ find, run: stubRun().run, log: l => logs.push(l) }) });
+    queue: () => ({ entries: [], run: null }), readPage: () => null, speech: speech || S.createSpeech({ find, run: stubRun().run, log: l => logs.push(l) }), ...(audioReadMs ? { audioReadMs } : {}) });
   const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const port = srv.address().port;
@@ -67,7 +68,17 @@ async function linkWith({ speech, find = () => TOOLS } = {}) {
       rq.end(buf);
     });
   };
-  return { send, logs, dir, close: () => new Promise(r => srv.close(r)) };
+  // a request whose body is sent slowly (or never finished): headers of the right form, the right key id and a fresh time, a wrong
+  // signature; `release()` ends it
+  const slow = ({ type = 'audio/webm', bytes = 1000, headers = {} } = {}) => {
+    const k = L.readLinkKey(dir).key;
+    const rq = http.request({ host: '127.0.0.1', port, path: '/hub-link/transcribe', method: 'POST', headers: { 'content-type': type, 'content-length': bytes,
+      'x-hub-link-key': k.key_id, 'x-hub-link-ts': String(Math.floor(Date.now() / 1000)), 'x-hub-link-nonce': crypto.randomBytes(16).toString('hex'), 'x-hub-link-sig': 'ab'.repeat(32), ...headers } });
+    const answered = new Promise(resolve => { rq.on('response', res => { let b = ''; res.on('data', c => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b })); }); rq.on('error', () => resolve({ status: 'reset' })); });
+    rq.write(WEBM.subarray(0, 100));
+    return { answered, release: () => { try { rq.end(Buffer.alloc(bytes - 100)); } catch { } } };
+  };
+  return { send, slow, logs, dir, close: () => new Promise(r => srv.close(r)) };
 }
 
 test('the audio is checked by its type AND its first bytes; the allow-list is three containers', () => {
@@ -167,7 +178,7 @@ test('JOBS: one runs at a time; at most 3 open (429 speech-busy); 20 an hour (42
 });
 
 test('FAILED jobs say one code and a fixed sentence: unreadable audio, a run over its time, no speech', async () => {
-  for (const [opts, why] of [[{ fail: 'convert' }, 'unreadable-audio'], [{ fail: 'timeout' }, 'timed-out'], [{ text: '[BLANK_AUDIO]' }, 'no-speech']]) {
+  for (const [opts, why] of [[{ fail: 'convert' }, 'unreadable-audio'], [{ fail: 'timeout' }, 'timed-out'], [{ text: '[BLANK_AUDIO]' }, 'no-speech'], [{ fail: 'group' }, 'internal']]) {
     const sp = S.createSpeech({ find: () => TOOLS, run: stubRun(opts).run });
     const k = await linkWith({ speech: sp });
     try {
@@ -214,10 +225,132 @@ test('REAL: ffmpeg and whisper-cli run contained; the folder is gone after; an o
   // the sandbox itself: the contained ffmpeg cannot read a file outside its folder
   const tools = find().tools;
   const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-jail-')));
-  const out = await S.runJailed({ tools, bin: tools.ffmpeg, work, timeoutMs: 20000, args: ['-nostdin', '-loglevel', 'error', '-i', clip, '-f', 'wav', '-y', path.join(work, 'x.wav')] });
+  const out = await S.runJailed({ tools, tool: 'ffmpeg', work, timeoutMs: 20000, args: ['-nostdin', '-loglevel', 'error', '-i', clip, '-f', 'wav', '-y', path.join(work, 'x.wav')] });
   assert.notEqual(out.code, 0, 'a file outside the job folder cannot be read');
-  const net = await S.runJailed({ tools, bin: tools.ffmpeg, work, timeoutMs: 20000, args: ['-nostdin', '-loglevel', 'error', '-i', 'http://example.com/a.webm', '-f', 'wav', '-y', path.join(work, 'y.wav')] });
+  const net = await S.runJailed({ tools, tool: 'ffmpeg', work, timeoutMs: 20000, args: ['-nostdin', '-loglevel', 'error', '-i', 'http://example.com/a.webm', '-f', 'wav', '-y', path.join(work, 'y.wav')] });
   assert.notEqual(net.code, 0, 'no network');
   fs.rmSync(work, { recursive: true, force: true });
   fs.rmSync(clipDir, { recursive: true, force: true });
+});
+
+// ---- the profiles themselves, under the real sandbox (macOS only; skipped elsewhere) ----
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+const mac = process.platform === 'darwin' && fs.existsSync('/usr/bin/sandbox-exec');
+const fakeTools = () => ({ whisper: '/usr/bin/true', ffmpeg: '/usr/bin/true', model: '/usr/bin/true', sandboxExec: '/usr/bin/sandbox-exec', brew: '/opt/homebrew' });
+
+test('PROFILES: deny by default; each tool reads only system files, its Homebrew keg, its job folder (and the model); writes only the job folder', () => {
+  for (const tool of ['ffmpeg', 'whisper']) {
+    const p = S.speechProfile(tool, { gpu: true });
+    assert.match(p, /^\(version 1\)\n/);
+    assert.match(p, /\(deny default\)/);
+    assert.ok(!/\(allow default\)/.test(p));
+    assert.ok(!/network/.test(p.replace(/;.*$/gm, '')), 'no network rule at all (denied by default)');
+    assert.ok(!/process-fork/.test(p.replace(/;.*$/gm, '')), 'no fork');
+    assert.match(p, /\(allow process-exec \(literal \(param "BIN"\)\)\)/);
+    assert.match(p, /\(allow signal \(target self\)\)/);
+    assert.match(p, /\(allow file-write\* \(subpath \(param "WORK"\)\)/);
+  }
+  assert.ok(!/mach-lookup|iokit/.test(S.speechProfile('ffmpeg', { gpu: true }).replace(/;.*$/gm, '')), 'ffmpeg: no services, no devices');
+  assert.ok(!/mach-lookup|iokit/.test(S.speechProfile('whisper', { gpu: false }).replace(/;.*$/gm, '')), 'whisper on the CPU: none either');
+  const g = S.speechProfile('whisper', { gpu: true }).replace(/;.*$/gm, '');
+  assert.deepEqual(g.match(/global-name "[^"]+"/g), ['global-name "com.apple.MTLCompilerService"'], 'one service: Metal\'s shader compiler');
+  assert.deepEqual(g.match(/iokit-user-client-class "[^"]+"/g), ['iokit-user-client-class "AGXDeviceUserClient"'], 'one device class: the GPU');
+});
+
+test('REFUSED UNDER THE REAL PROFILES: the clipboard, preferences, another process, /etc, a file outside the job folder, the network, fork, exec', { skip: !mac && 'macOS only' }, async () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-probe-')));
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-scratch-')));
+  fs.writeFileSync(path.join(scratch, 'outside.txt'), 'outside the job folder');
+  fs.writeFileSync(path.join(work, 'inside.txt'), 'inside');
+  const victim = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });
+  let connected = 0;
+  const server = net.createServer(c => { connected++; c.destroy(); });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  const tools = fakeTools();
+  try {
+    for (const tool of ['ffmpeg', 'whisper']) {
+      const run = (bin, args) => S.runJailed({ tools, tool, bin, args, work, timeoutMs: 10000 });
+      // (pbpaste: its exit status only; the clipboard is never printed or changed)
+      assert.notEqual((await run('/usr/bin/pbpaste', [])).code, 0, `${tool}: the clipboard`);
+      const prefs = await run('/usr/bin/defaults', ['read', 'com.apple.finder']);
+      assert.ok(prefs.code !== 0 || prefs.out.replace(/\s/g, '') === '{}', `${tool}: preferences read as nothing`);
+      assert.notEqual((await run('/bin/kill', ['-0', String(victim.pid)])).code, 0, `${tool}: another process`);
+      assert.notEqual((await run('/bin/cat', ['/etc/hosts'])).code, 0, `${tool}: /etc`);
+      assert.notEqual((await run('/bin/cat', [path.join(scratch, 'outside.txt')])).code, 0, `${tool}: outside the job folder`);
+      assert.notEqual((await run('/usr/bin/nc', ['-z', '-G', '2', '127.0.0.1', String(port)])).code, 0, `${tool}: localhost`);
+      const forked = await run('/bin/sh', ['-c', '/bin/echo forked']);
+      assert.ok(!forked.out.includes('forked'), `${tool}: fork`);
+      assert.notEqual((await run('/usr/bin/env', ['/bin/sh', '-c', 'true'])).code, 0, `${tool}: exec of another program`);
+      const inside = await run('/bin/cat', [path.join(work, 'inside.txt')]);
+      assert.deepEqual([inside.code, inside.out], [0, 'inside'], `${tool}: its own folder is readable (the profile is not simply broken)`);
+    }
+    assert.equal(connected, 0, 'nothing reached the listener');
+    assert.equal(victim.exitCode, null, 'the other process is alive');
+  } finally {
+    victim.kill(); server.close();
+    fs.rmSync(work, { recursive: true, force: true }); fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test('THE GROUP IS KILLED ON EVERY PATH: a child left behind by a normal exit is gone, and the answer says the group is gone', { skip: !mac && 'macOS only' }, async () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-group-')));
+  // (a permissive profile for this one test only: the real ones refuse fork, so a leftover child cannot be made under them)
+  const r = await S.runJailed({ tools: fakeTools(), tool: 'ffmpeg', bin: '/bin/sh', args: ['-c', `/bin/sleep 30 >/dev/null 2>&1 & echo $! > ${path.join(work, 'pid')}; exit 0`], work,
+    timeoutMs: 10000, profileText: '(version 1)\n(allow default)\n' });
+  assert.deepEqual([r.code, r.timedOut, r.group], [0, false, 'gone']);
+  const pid = Number(fs.readFileSync(path.join(work, 'pid'), 'utf8'));
+  let alive = true;
+  try { process.kill(pid, 0); } catch { alive = false; }
+  assert.equal(alive, false, 'the child left behind is gone');
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test('CPU TIME IS LIMITED besides the wall clock (macOS enforces RLIMIT_CPU): a spinning tool is stopped by its CPU limit', { skip: !mac && 'macOS only' }, async () => {
+  const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-cpu-')));
+  const t0 = Date.now();
+  const r = await S.runJailed({ tools: fakeTools(), tool: 'ffmpeg', bin: '/usr/bin/yes', args: [], work, timeoutMs: 30000, limits: { cpuSec: 1 } });
+  assert.notEqual(r.code, 0);
+  assert.equal(r.timedOut, false, 'not the wall clock');
+  assert.equal(r.signal, 'SIGXCPU', 'the CPU limit');
+  assert.ok(Date.now() - t0 < 15000, `stopped in ${Date.now() - t0} ms`);
+  fs.rmSync(work, { recursive: true, force: true });
+});
+
+test('BEFORE ANY BYTE IS READ: an unsigned caller is 401 whether speech is on or off; a stale time or another key is 401 at once', async () => {
+  for (const find of [() => TOOLS, () => ({ tools: null, missing: 'ffmpeg' })]) {
+    const k = await linkWith({ find });
+    try {
+      const unsigned = await k.send('transcribe', WEBM, { type: 'audio/webm', headers: { 'x-hub-link-sig': '', 'x-hub-link-key': '', 'x-hub-link-ts': '', 'x-hub-link-nonce': '' } });
+      assert.equal(unsigned.status, 401, 'unsigned audio');
+      const t = await k.send('transcript', { job: 'a'.repeat(24) }, { headers: { 'x-hub-link-sig': '' } });
+      assert.equal(t.status, 401, 'unsigned transcript');
+    } finally { await k.close(); }
+  }
+  const off = await linkWith({ find: () => ({ tools: null, missing: 'ffmpeg' }) });
+  try { assert.equal((await off.send('transcribe', WEBM, { type: 'audio/webm' })).status, 404, 'signed, speech off: 404'); } finally { await off.close(); }
+  const k = await linkWith();
+  try {
+    // (answered before the body: these requests never send the rest of it, and are answered all the same)
+    for (const headers of [{ 'x-hub-link-ts': '1' }, { 'x-hub-link-key': 'ffffffff' }, { 'x-hub-link-nonce': 'short' }, { 'x-hub-link-sig': 'zz' }]) {
+      const r = k.slow({ headers });
+      assert.equal((await r.answered).status, 401, JSON.stringify(headers));
+      r.release();
+    }
+  } finally { await k.close(); }
+});
+
+test('UNVERIFIED BODIES: at most 2 read at once (429 beyond), each with a read deadline (408)', async () => {
+  const k = await linkWith({ audioReadMs: 400 });
+  try {
+    const a = k.slow(), b = k.slow();
+    await new Promise(r => setTimeout(r, 100));
+    const c = k.slow();
+    assert.equal((await c.answered).status, 429, 'a third unverified body is not read');
+    const [ra, rb] = await Promise.all([a.answered, b.answered]);
+    assert.deepEqual([ra.status, rb.status], [408, 408], 'never finished: dropped at the deadline');
+    // the slots are free again: a signed one is read and accepted
+    assert.equal((await k.send('transcribe', WEBM, { type: 'audio/webm' })).status, 200);
+  } finally { await k.close(); }
 });

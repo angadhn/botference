@@ -71,6 +71,9 @@ export const HUB_LINK_LIMITS = Object.freeze({
   textResponseBytes: 256 * 1024,
   // how long a status waits for a rid still being filed before answering 503 (inside the Hub's 8 s fetch timeout)
   statusWaitMs: 5000,
+  // a recording's body is read before its signature can be checked: at most this many at once, each within this time
+  audioReading: 2,
+  audioReadMs: 20000,
 });
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
@@ -267,16 +270,25 @@ export function createNonceCache({ ttlMs = HUB_LINK_LIMITS.nonceMs, max = HUB_LI
 }
 /** → { ok: true } | { ok: false, why } — `why` is a reason code for the log, never for the answer. The nonce is taken last, only
  *  for a request whose signature is good (so a forger cannot burn the Hub's nonces). */
-export function verifySigned({ headers, urlPath, body, key, nowSec, nonces, extra = [] }) {
+/** The checks that need no body: the four headers present and of their form, the current key id, the time within the window. Made
+ *  BEFORE a large body is read (the audio route), so an unsigned caller costs no read. → { ok } | { ok: false, why } */
+export function preCheck({ headers, key, nowSec }) {
   const h = headers || {};
   const kid = String(h[SIG_HEADERS.key] || ''), tsRaw = String(h[SIG_HEADERS.ts] || ''), nonce = String(h[SIG_HEADERS.nonce] || ''), sig = String(h[SIG_HEADERS.sig] || '');
   if (!kid || !tsRaw || !nonce || !sig) return { ok: false, why: 'missing-header' };
-  // (the key id is not a secret: it names which key, so a rotated one is told apart in the log)
   if (kid !== key.key_id) return { ok: false, why: 'wrong-key' };
   if (!/^\d{1,12}$/.test(tsRaw)) return { ok: false, why: 'bad-ts' };
   if (Math.abs(Number(tsRaw) - nowSec) > HUB_LINK_LIMITS.skewSec) return { ok: false, why: 'stale-ts' };
   if (!NONCE_RE.test(nonce)) return { ok: false, why: 'bad-nonce' };
   if (!SIG_RE.test(sig)) return { ok: false, why: 'bad-sig' };
+  return { ok: true };
+}
+export function verifySigned({ headers, urlPath, body, key, nowSec, nonces, extra = [] }) {
+  // (the key id is not a secret: it names which key, so a rotated one is told apart in the log)
+  const pre = preCheck({ headers, key, nowSec });
+  if (!pre.ok) return pre;
+  const h = headers || {};
+  const tsRaw = String(h[SIG_HEADERS.ts]), nonce = String(h[SIG_HEADERS.nonce]), sig = String(h[SIG_HEADERS.sig]);
   const want = signRequest(key.secret, urlPath, tsRaw, nonce, body, extra);
   if (!hexEqual(want, sig)) return { ok: false, why: 'bad-sig' };
   const n = nonces.take(nonce);
@@ -422,7 +434,7 @@ export const HUB_LINK_SAY = Object.freeze({
  *   press({ url, thread_id }) → Promise<blyg-queue press answer>   (by 'hub-link')
  *   cancel(entry_id) → blyg-queue cancel answer
  *   queue() → { entries, run }        readPage(url) → page | null
- *   log(line), perMinute (tests only: the request limit a minute), statusWaitMs (tests only)
+ *   log(line), perMinute (tests only: the request limit a minute), statusWaitMs, audioReadMs (tests only)
  * }
  */
 export function createHubLink(deps) {
@@ -439,6 +451,9 @@ export function createHubLink(deps) {
   const holding = { replies: 0, presses: 0 };
   // speech is offered when the tools are on this machine (hub-speech SPEECH_GATES); the routes are 404 otherwise
   const speechGate = () => (deps.speech ? deps.speech.gate() : 'off');
+  // the audio bodies being read before their signature can be checked (HUB_LINK_LIMITS.audioReading at once), and how long each may take
+  const reading = { n: 0 };
+  const audioReadMs = Number.isInteger(deps.audioReadMs) && deps.audioReadMs > 0 ? deps.audioReadMs : HUB_LINK_LIMITS.audioReadMs;
   const statusWait = Number.isInteger(deps.statusWaitMs) && deps.statusWaitMs > 0 ? deps.statusWaitMs : HUB_LINK_LIMITS.statusWaitMs;
   // a passage left `pending` with no fill running (the companion restarted mid-fill) is failed "interrupted", through the gap's own move
   // function, on the computer's side (deps.settleStale), before a reply's state or text is read
@@ -541,6 +556,8 @@ export function createHubLink(deps) {
       return { status: 200, body: { ok: true, job: r.job, state: 'pending' } };
     },
     async transcript(data) {
+      // (speech off: its routes do not exist; said only after the signature, like every route's answer)
+      if (speechGate() !== 'on') return { status: 404, body: { ok: false, error: 'not found' } };
       const id = typeof data.job === 'string' && /^[0-9a-f]{24}$/.test(data.job) ? data.job : '';
       if (!id) return { status: 400, body: { ok: false, error: 'job required' } };
       const v = deps.speech.view(id);
@@ -652,19 +669,25 @@ export function createHubLink(deps) {
     },
   };
 
-  function readRaw(req, cap) {
+  // (`deadlineMs`: a body not all read by then is dropped: `late`)
+  function readRaw(req, cap, deadlineMs = 0) {
     return new Promise(resolve => {
       const chunks = [];
       let size = 0, over = false;
-      req.on('data', c => { if (over) return; size += c.length; if (size > cap) { over = true; resolve({ over: true }); return; } chunks.push(c); });
-      req.on('end', () => { if (!over) resolve({ body: Buffer.concat(chunks) }); });
-      req.on('error', () => { if (!over) { over = true; resolve({ over: true }); } });
+      const timer = deadlineMs ? setTimeout(() => { if (!over) { over = true; resolve({ late: true }); } }, deadlineMs) : null;
+      const done = v => { if (timer) clearTimeout(timer); resolve(v); };
+      req.on('data', c => { if (over) return; size += c.length; if (size > cap) { over = true; done({ over: true }); return; } chunks.push(c); });
+      req.on('end', () => { if (!over) { over = true; done({ body: Buffer.concat(chunks) }); } });
+      req.on('error', () => { if (!over) { over = true; done({ over: true }); } });
     });
   }
 
   /** A recording: its type on the allow-list, its size under the cap, its type and length signed with its bytes, its first bytes the
    *  container its type names. The bytes go to the job and nowhere else. */
   async function handleAudio(req, res, url, name, key, refuse) {
+    // BEFORE ANY BYTE IS READ: the headers' form, the key id and the time (the same 401 whether speech is on or off)
+    const pre = preCheck({ headers: req.headers, key, nowSec: Math.floor(ms() / 1000) });
+    if (!pre.ok) { req.resume(); say(`refused ${pre.why}`); res.writeHead(401, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return; }
     const type = String(req.headers['content-type'] || '');
     const container = audioTypeOf(type);
     if (!container) return refuse(415, 'audio-type');
@@ -675,10 +698,17 @@ export function createHubLink(deps) {
       if (declared > 2 * SPEECH_LIMITS.audioBytes) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
       req.resume(); return tooLarge(false);
     }
-    const got = await readRaw(req, SPEECH_LIMITS.audioBytes);
+    // AT MOST 2 BODIES NOT YET VERIFIED are read at once, each within its deadline
+    if (reading.n >= HUB_LINK_LIMITS.audioReading) { say('limited audio-reading'); res.writeHead(429, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'limit', limit: 'audio-reading' })); try { req.destroy(); } catch { /* gone */ } return; }
+    reading.n++;
+    let got;
+    try { got = await readRaw(req, SPEECH_LIMITS.audioBytes, audioReadMs); } finally { reading.n--; }
+    if (got.late) { say('refused audio-late'); res.writeHead(408, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-slow' })); try { req.destroy(); } catch { /* gone */ } return; }
     if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
     const v = verifySigned({ headers: req.headers, urlPath: url, body: got.body, key, nowSec: Math.floor(ms() / 1000), nonces, extra: [type, String(got.body.length)] });
     if (!v.ok) { say(`refused ${v.why}`); return answer(res, 401, { ok: false, error: 'refused' }); }
+    // (speech off: said only to a caller that signed)
+    if (speechGate() !== 'on') return answer(res, 404, { ok: false, error: 'not found' });
     if (!perMinute.take()) { say('limited requests-per-minute'); return answer(res, 429, { ok: false, error: 'limit', limit: 'requests-per-minute' }); }
     if (sniffAudio(got.body) !== container) { say('refused audio-bytes'); return answer(res, 415, { ok: false, error: 'not-audio', say: HUB_LINK_SAY['not-audio'] }); }
     try {
@@ -699,8 +729,6 @@ export function createHubLink(deps) {
     // a browser page always sends an Origin on a POST; the Hub's server never does
     if (req.headers.origin !== undefined) return refuse(403, 'origin-header');
     if (String(req.url || '').includes('?')) return refuse(400, 'query');
-    // speech off (a tool missing): its routes do not exist
-    if ((HUB_LINK_ROUTES[name].body === 'audio' || name === 'transcript') && speechGate() !== 'on') { req.resume(); return answer(res, 404, { ok: false, error: 'not found' }); }
     if (HUB_LINK_ROUTES[name].body === 'audio') return handleAudio(req, res, url, name, key, refuse);
     if (!isJson(req.headers['content-type'])) return refuse(415, 'content-type');
     const declared = Number(req.headers['content-length']);
