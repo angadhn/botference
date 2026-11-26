@@ -12966,6 +12966,13 @@ which the site keeps rendering as it did.)
 matched by instruction), so a legacy passage is written again exactly as before and its item does not change; only an edit that asks
 (`keep.moveFormat`) moves it, writing the text and the label together. A new passage is markdown. The stored form's characters are
 named in `STORED_DROP` and plain space/tab/newline (no Unicode-aware class), so it agrees with the site's on every string (fuzzed).
+**RE-CHECK** (2026-11-26): a published post's passage forms come from its `blyg_generated` AS PARSED by a real YAML parser (blyg-run
+`generatedOf`: Ruby's Psych, the site's own reader; every YAML shape) and are matched by POSITION (the n-th written passage is the n-th
+entry; a missing entry is legacy, as the site reads it). When they cannot be told (front matter unreadable, a form that is not one of
+the list, or a passage added or removed while a legacy one is published) the new version is refused with a plain sentence
+(`FORMS_UNKNOWN_SAY`), never guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
+zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
+a post with a deliberate link the writer cannot normalise has no bare address made clickable.
 **BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a
 wikilink, a reference definition or alone on a quote line; trailing punctuation left out; http and https only) and listed in the note's
 `blyg_silent_links`, so the site never makes them references; the lone-link response still reads only what the owner linked on purpose. Compared in the

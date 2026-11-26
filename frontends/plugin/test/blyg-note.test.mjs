@@ -650,14 +650,80 @@ test('a passage keeps its form across an edit: legacy stays legacy unless the mo
   const legacyScope = N.agentScope(g, { block: true, format: 'legacy' });
   assert.match(legacyScope, /\\- \\\*\\\*one\\\*\\\*/);
   const before = `---\ntitle: "x"\nblyg_generated:\n  - model: "claude-opus-5"\n    at: 2026-11-24T10:00:00Z\n---\nIntro\n\n${legacyScope}\n\nAfter\n`;
-  const edited = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before } });
+  const generated = [{ model: 'claude-opus-5', at: '2026-11-24T10:00:00Z' }];
+  const edited = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated } });
   assert.ok(edited.ok, edited.error);
   assert.ok(edited.text.includes(`\n${legacyScope}\n`), 'the legacy passage is written exactly as before: ' + edited.text);
   assert.ok(!/format:/.test(edited.text), 'and stays legacy');
-  const moved = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, moveFormat: 'markdown' } });
+  const moved = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated, moveFormat: 'markdown' } });
   assert.ok(moved.text.includes('[=]- **one**\n- two[/TK]') && /format: markdown/.test(moved.text), 'moved on purpose: converted and labelled together');
   const fresh = make(page, page.threads);
   assert.ok(/format: markdown/.test(fresh.text) && fresh.text.includes('[=]- **one**\n- two[/TK]'), 'a new passage is markdown');
-  assert.deepEqual(N.passageFormsOf(edited.text).map(x => x.format), ['legacy']);
-  assert.deepEqual(N.passageFormsOf(fresh.text).map(x => x.format), ['markdown']);
+});
+
+// RE-CHECK 2026-11-26, item 3: deliberate links whose address holds a bar or parentheses are read whole (balanced parentheses), so
+// a bare address beside them is the same target and is left as typed; an address the writer cannot normalise leaves every bare
+// address of the post as typed.
+test('a deliberate link with a bar or parentheses is read whole; an address that cannot be normalised leaves the post\'s bare addresses as typed', () => {
+  assert.deepEqual(N.explicitLinks('See [Bob](https://bob.example/p/(1)) and [B2](<https://b.example/x y>) and [B3](https://c.example/a_(b)_c "t")'),
+    ['https://bob.example/p/(1)', 'https://b.example/x y', 'https://c.example/a_(b)_c']);
+  for (const words of ['See [Bob](https://bob.example/p?a=b|c) and https://bob.example/p again',
+    'See [Bob](https://bob.example/p/(1)) and https://bob.example/p/(1) again']) {
+    const p = webPage([{ id: 't1', quote: '', msgs: [mine(words)] }]);
+    const r = make(p, p.threads);
+    assert.ok(r.ok, r.error);
+    assert.ok(!/blyg_silent_links/.test(r.text), words + '\n' + r.text);
+    assert.ok(!/<https:\/\/bob\.example\/p/.test(r.text.split('\n---\n').slice(1).join('')), 'left as typed: ' + r.text);
+  }
+  const odd = webPage([{ id: 't1', quote: '', msgs: [mine('See [odd](https://bob.example/%zz) and https://other.example/x here')] }]);
+  const r = make(odd, odd.threads);
+  assert.ok(!/blyg_silent_links/.test(r.text) && /and https:\/\/other\.example\/x here/.test(r.text), 'when in doubt, nothing is made clickable: ' + r.text);
+});
+
+// item 4: a passage's form is read from the front matter by a real YAML parser (handed in: the companion asks Ruby's Psych) and
+// matched by POSITION; when it cannot be told, the edit is refused with a plain sentence instead of a guess.
+test('passage forms come from parsed front matter, by position; an edit that cannot tell them is refused', () => {
+  const g = (instruction, text) => ({ instruction, mode: 'filled-by-agent', agent: 'claude', text });
+  const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk same\nMiddle\n/tk same\nAfter'), gaps: [g('same', '**a**'), g('same', '**b**')] }] }]);
+  const fresh = make(page, page.threads);
+  const before = fresh.text;
+  // the same two passages, the same instruction: forms by position, and a mixed pair keeps each its own
+  const mixed = { before, generated: [{}, { format: 'markdown' }] };
+  const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', ...mixed } });
+  assert.ok(r.ok, r.error);
+  const scopes = [...r.text.matchAll(/\[TK\] same \[=\]([\s\S]*?)\[\/TK\]/g)].map(m => m[1]);
+  assert.deepEqual(scopes, ['\\*\\*a\\*\\*', '**b**'], 'first legacy, second markdown: by position, never swapped');
+  // whatever YAML shape the entries came in, they arrive parsed: the forms are read from the values
+  assert.deepEqual(N.formsFromGenerated([{ format: 'markdown' }, null, {}, { model: 'm', format: 'markdown' }]), ['markdown', 'legacy', 'legacy', 'markdown']);
+  // fewer entries than passages: a missing entry is legacy, as the site reads it
+  const short = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated: [{ format: 'markdown' }] } });
+  assert.deepEqual([...short.text.matchAll(/\[TK\] same \[=\]([\s\S]*?)\[\/TK\]/g)].map(m => m[1]), ['**a**', '\\*\\*b\\*\\*']);
+  // a passage added or taken away while a legacy one is there: which keeps which form cannot be told
+  const three = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk same\nMiddle\n/tk same\nMore\n/tk other\nAfter'), gaps: [g('same', '**a**'), g('same', '**b**'), g('other', 'c')] }] }]);
+  const grown = N.renderShortNote({ page: three, threads: three.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', ...mixed } });
+  assert.equal(grown.ok, false);
+  assert.match(grown.error, /cannot be told/);
+  const allMd = N.renderShortNote({ page: three, threads: three.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated: [{ format: 'markdown' }, { format: 'markdown' }] } });
+  assert.ok(allMd.ok && (allMd.text.match(/format: markdown/g) || []).length === 3, 'all markdown before: every passage stays markdown');
+  for (const bad of [{ generated: 'not a list' }, { generated: [{ format: 'html' }] }, { generated: null, unreadable: 'the front matter could not be read' }]) {
+    const x = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, ...bad } });
+    assert.equal(x.ok, false, JSON.stringify(bad));
+    assert.match(x.error, /agent passages? .*cannot be told|could not be read/, JSON.stringify(bad));
+  }
+});
+
+rb('blyg-run reads a published note\'s blyg_generated with a real YAML parser, in every shape; unreadable front matter is said, not guessed', async () => {
+  const { generatedOf } = await import('../blyg-run.mjs');
+  const shapes = {
+    'unindented list, trailing comment': '---\nblyg_generated:\n- model: m   # a comment\n  format: markdown\n- model: n\n---\nx',
+    'inline list of flow maps': '---\nblyg_generated: [{format: markdown}, {model: n}]\n---\nx',
+    'dash then newline': '---\nblyg_generated:\n  -\n    format: markdown\n  -\n    model: n\n---\nx',
+    'quoted value': '---\nblyg_generated:\n  - format: "markdown"\n  - {}\n---\nx',
+  };
+  for (const [name, note] of Object.entries(shapes)) {
+    assert.deepEqual(N.formsFromGenerated(generatedOf(note).generated), ['markdown', 'legacy'], name);
+  }
+  assert.deepEqual(generatedOf('---\ntitle: x\n---\nbody'), { generated: [] }, 'no key: no entries (every passage legacy, as the site reads it)');
+  assert.ok(generatedOf('---\nblyg_generated: [\n---\nx').unreadable);
+  assert.ok(generatedOf('no front matter').unreadable);
 });

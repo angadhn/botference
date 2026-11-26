@@ -262,16 +262,37 @@ const BARE_URL = /https?:\/\/[^\s<>"'`|{}\\[\]]+/gi;
 // fragment dropped, unreserved percent-escapes decoded (others upper-cased), no trailing slash. The site parses with Ruby's strict URI
 // (RFC 3986), so anything that one would refuse is null here too; a test compares the two when BLYG_BOTFERENCE_TREE is set.
 const RUBY_STRIP = /^[\t\n\v\f\r \0]+|[\t\n\v\f\r \0]+$/g;
+// Ruby's own URI grammar (uri/rfc3986_parser.rb RFC3986_URI, Ruby 3.2), written out: the same text matches here exactly when it
+// matches there, with the same parts. (Ruby's `\g<…>` subroutines are spelled out; `{,n}` is `{0,n}`.)
+const RFC3986_URI = (() => {
+  const H = '[0-9A-Fa-f]';
+  const DEC = '(?:[1-9]\\d|1\\d{2}|2[0-4]\\d|25[0-5]|\\d)';
+  const V4 = `${DEC}\\.${DEC}\\.${DEC}\\.${DEC}`;
+  const LS32 = `(?:${H}{1,4}:${H}{1,4}|${V4})`;
+  const V6 = `(?:(?:${H}{1,4}:){6}${LS32}|::(?:${H}{1,4}:){5}${LS32}|${H}{1,4}?::(?:${H}{1,4}:){4}${LS32}` +
+    `|(?:(?:${H}{1,4}:)?${H}{1,4})?::(?:${H}{1,4}:){3}${LS32}|(?:(?:${H}{1,4}:){0,2}${H}{1,4})?::(?:${H}{1,4}:){2}${LS32}` +
+    `|(?:(?:${H}{1,4}:){0,3}${H}{1,4})?::${H}{1,4}:${LS32}|(?:(?:${H}{1,4}:){0,4}${H}{1,4})?::${LS32}` +
+    `|(?:(?:${H}{1,4}:){0,5}${H}{1,4})?::${H}{1,4}|(?:(?:${H}{1,4}:){0,6}${H}{1,4})?::)`;
+  const FUT = `v${H}+\\.[!$&-.0-;=A-Z_a-z~]+`;
+  const PCT = `%${H}${H}`;
+  const SEG = `(?:${PCT}|[!$&-.0-;=@-Z_a-z~])`;
+  return new RegExp(`^([A-Za-z][+\\-.0-9A-Za-z]*):(?:\\/\\/(?:((?:${PCT}|[!$&-.0-;=A-Z_a-z~])*)@)?` +
+    `(\\[(?:${V6}|${FUT})\\]|${V4}|(?:${PCT}|[!$&-.0-9;=A-Z_a-z~])*)(?::(\\d*))?((?:\\/${SEG}*)*)` +
+    `|(\\/(?:${SEG}+(?:\\/${SEG}*)*)?)|(${SEG}+(?:\\/${SEG}*)*)|())(?:\\?([^#]*))?(?:#((?:${PCT}|[!$&-.0-;=@-Z_a-z~\\/?])*))?$`);
+})();
 export function normalizeLinkAddress(url) {
   const u = String(url == null ? '' : url).replace(RUBY_STRIP, '');
-  if (!/^[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*$/.test(u) || /%(?![0-9A-Fa-f]{2})/.test(u)) return null;
-  const m = /^([Hh][Tt][Tt][Pp][Ss]?):\/\/(?:([^/?#@[\]]*)@)?(\[[^\]/?#]*\]|[^/?#:@[\]]*)(?::(\d*))?(\/[^?#]*)?(\?[^#]*)?(#.*)?$/.exec(u);
-  if (!m || !m[3]) return null;
-  if (/[[\]#]/.test((m[6] || '') + (m[7] || '').slice(1)) || /[[\]]/.test(m[5] || '')) return null;   // (RFC 3986: neither in a path, query or fragment)
+  if (!/^[\x00-\x7f]*$/.test(u)) return null;                     // (Ruby's URI: ASCII only)
+  const m = RFC3986_URI.exec(u);
+  if (!m) return null;
+  const scheme = m[1].toLowerCase();
+  if (scheme !== 'http' && scheme !== 'https') return null;        // (URI::HTTP and URI::HTTPS only)
+  if (m[3] === undefined || m[3] === '') return null;               // (no authority, or an empty host)
+  if (m[9] !== undefined && /%[^0-9A-Fa-f][^0-9A-Fa-f]/.test(m[9].replace(/[\t\r\n]/g, ''))) return null;   // (URI#query=: "invalid percent escape")
+  const dflt = scheme === 'https' ? 443n : 80n;
+  const port = m[4] ? BigInt(m[4]) : dflt;                          // (an empty port is the default one)
   let host = m[3].toLowerCase();
-  if (host.startsWith('www.')) host = host.slice(4);   // (`www.` alone leaves nothing, as the site's does)
-  const dflt = m[1].toLowerCase() === 'https' ? 443 : 80;
-  const port = m[4] ? Number(m[4]) : dflt;
+  if (host.startsWith('www.')) host = host.slice(4);                // (`www.` alone leaves nothing, as the site's does)
   const path = (m[5] || '').replace(/%([0-9A-Fa-f]{2})/g, (x, h) => { const c = String.fromCharCode(parseInt(h, 16)); return /[A-Za-z0-9\-._~]/.test(c) ? c : x.toUpperCase(); });
   return `${host}${port === dflt ? '' : `:${port}`}${path.replace(/\/+$/, '')}`;
 }
@@ -315,12 +336,35 @@ export function linkBareUrls(text, { deliberate = [] } = {}) {
   return { text: out + t.slice(at), urls };
 }
 // The addresses the owner linked ON PURPOSE in their words (a markdown link's destination, an autolink), outside code.
+// A markdown link's destination after `](` at `from`: `<…>` as written, else up to the first space or unbalanced `)` (balanced
+// parentheses are part of it). → the destination, or null.
+function destinationAt(t, from) {
+  let i = from;
+  while (i < t.length && /[ \t]/.test(t[i])) i++;
+  if (t[i] === '\n') { i++; while (i < t.length && /[ \t]/.test(t[i])) i++; }
+  if (t[i] === '<') { const end = t.indexOf('>', i + 1); return end === -1 || t.slice(i + 1, end).includes('\n') ? null : t.slice(i + 1, end); }
+  let depth = 0;
+  let j = i;
+  for (; j < t.length; j++) {
+    const c = t[j];
+    if (c === '\\' && j + 1 < t.length) { j++; continue; }
+    if (/\s/.test(c)) break;
+    if (c === '(') depth++;
+    else if (c === ')') { if (!depth) break; depth--; }
+  }
+  return j > i ? t.slice(i, j) : null;
+}
 export function explicitLinks(text) {
   const t = String(text);
   const mask = Grammar.codeMask(t);
   const out = [];
-  for (const x of t.matchAll(/(!?)\[[^\]]*\]\(\s*<?(https?:\/\/[^\s)>]+)>?/g)) if (!x[1] && !mask[x.index]) out.push(x[2]);
-  for (const x of t.matchAll(/<(https?:\/\/[^\s<>"'`]+)>/g)) if (!mask[x.index]) out.push(x[1]);
+  for (const x of t.matchAll(/(!?)\[[^\]]*\]\(/g)) {
+    if (x[1] || mask[x.index]) continue;
+    const d = destinationAt(t, x.index + x[0].length);
+    if (d && /^https?:\/\//i.test(d)) out.push(d);
+  }
+  for (const x of t.matchAll(/<(https?:\/\/[^\s<>"'`]+)>/gi)) if (!mask[x.index]) out.push(x[1]);
+  for (const x of t.matchAll(/^ {0,3}\[[^\]]+\]:[ \t]*<?(https?:\/\/[^\s>]+)>?/gim)) if (!mask[x.index]) out.push(x[1]);
   return [...new Set(out)];
 }
 const LIQUID_IN_CODE = /\{[{%]/;
@@ -431,36 +475,29 @@ export function formatMove(from, to) {
   if (!FORMAT_MOVES[from].includes(to)) throw new Error(`a passage cannot move from ${from} to ${to}`);
   return to;
 }
-// The written passages of a note (its text, as on disk), in order: { key, format }. `key`: the instruction as written in the scope
-// (`impyrt <model>` for a pasted one). The n-th written scope is the n-th blyg_generated entry.
-const SCOPE_HEAD = /\[TK\](?:impyrt([^=\n]*)=| ([^\n]*?) \[=\])/g;
-export function passageFormsOf(noteText) {
-  const t = String(noteText || '');
-  const fm = /^---\n([\s\S]*?)\n---\n/.exec(t);
-  const body = fm ? t.slice(fm[0].length) : t;
-  const formats = [];
-  if (fm) {
-    let inList = false;
-    for (const line of fm[1].split('\n')) {
-      if (/^blyg_generated:\s*$/.test(line)) { inList = true; continue; }
-      if (!inList) continue;
-      if (/^\S/.test(line)) break;
-      if (/^\s*- /.test(line)) formats.push('legacy');
-      if (/^\s*(?:- )?format:\s*["']?markdown["']?\s*$/.test(line) && formats.length) formats[formats.length - 1] = 'markdown';
-    }
-  }
-  return [...body.matchAll(SCOPE_HEAD)].map((m, i) => ({ key: m[1] !== undefined ? `impyrt${m[1]}`.trim() : m[2], format: formats[i] || 'legacy' }));
+// THE FORMS OF A PUBLISHED POST'S PASSAGES, read from its front matter AS PARSED by a real YAML parser (the companion hands in
+// `keep.generated`, the parsed `blyg_generated`; blyg-run asks Ruby's Psych, the parser the site reads it with). The n-th written
+// passage is the n-th entry, and a missing entry, or one without `format`, is legacy: exactly the site's rule (Generation.format_of).
+export function formsFromGenerated(list) {
+  if (!Array.isArray(list)) throw new Error('blyg_generated is not a list');
+  return list.map(e => {
+    const f = e && typeof e === 'object' && !Array.isArray(e) ? e.format : undefined;
+    if (f === undefined || f === null) return 'legacy';
+    if (!AGENT_TEXT_FORMATS.includes(f)) throw new Error(`a blyg_generated entry names the form ${JSON.stringify(String(f)).slice(0, 40)}`);
+    return f;
+  });
 }
-// The form a passage is written in: its form in the note on disk (matched by its instruction, first unused), moved only when the
-// edit asks (`moveFormat`), else NEW_PASSAGE_FORMAT for a passage the note did not have.
-function formOf(forms, key) {
+const SCOPE_HEAD = /\[TK\](?:impyrt[^=\n]*=| [^\n]*? \[=\])/g;
+const writtenPassagesIn = noteText => (String(noteText || '').replace(/^---\n[\s\S]*?\n---\n/, '').match(SCOPE_HEAD) || []).length;
+export const FORMS_UNKNOWN_SAY = 'The forms of this post\'s agent passages cannot be told';
+// The form of the passage at `position` (in note order): the published one's, moved only when the edit asks (`moveFormat`);
+// NEW_PASSAGE_FORMAT for a passage past the published ones.
+function formAt(forms, position) {
   if (!forms) return NEW_PASSAGE_FORMAT;
-  const hit = forms.kept.find((x, i) => x.key === key && !forms.used.has(i));
-  if (!hit) return NEW_PASSAGE_FORMAT;
-  forms.used.add(forms.kept.indexOf(hit));
-  return forms.moveFormat ? formatMove(hit.format, forms.moveFormat) : formatMove(hit.format, hit.format);
+  if (position >= forms.count) return NEW_PASSAGE_FORMAT;
+  const kept = forms.kept[position] || 'legacy';
+  return forms.moveFormat ? formatMove(kept, forms.moveFormat) : formatMove(kept, kept);
 }
-const scopeKey = (g, escape) => (g.mode === 'pasted-by-reader' ? `impyrt ${importedModelToken(g.model)}`.trim() : scopeInstruction(g.instruction, { escape }));
 export function agentScope(g, { block = false, escape = 'liquid', format = NEW_PASSAGE_FORMAT } = {}) {
   formatMove(format, format);
   const text = format === 'markdown' ? storedAgentMarkdown(g.text, { inline: !block }) : scopeText(g.text, { block, escape });
@@ -497,7 +534,7 @@ export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
  * written as the site's generated passage (above); a gap that is pending, failed or unknown BLOCKS. A bracket mark the owner typed
  * as words (`[TK]`) is no longer a gap: it is written so the site shows the letters and never reads it as its own grammar.
  */
-export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [] } = {}) {
+export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false } = {}) {
   const blocked = [];
   const generated = [];
   const src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
@@ -516,7 +553,7 @@ export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [] 
       if (hasTkMark(g.text)) { blocked.push(AGENT_TK_SAY); return; }
       // THE BOX IS ALWAYS A BLOCK OF ITS OWN: a gap typed inside a sentence publishes as the words before it (a paragraph), the box,
       // and the words after it (a new paragraph). Never inline.
-      const format = formOf(forms, scopeKey(g, escape));
+      const format = formAt(forms, forms ? forms.next++ : 0);
       const scope = agentScope(g, { block: true, escape, format });
       out = out.replace(/[ \t]+$/, '') + `${HOLD_A}${scopes.length}${HOLD_B}`;
       scopes.push(`\n\n${scope}\n\n`);
@@ -537,7 +574,9 @@ export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [] 
   // bare web addresses in the owner's words become clickable (never a reference: see linkBareUrls)
   const explicit = explicitLinks(out);
   const purpose = [...new Set([...deliberate, ...explicit.map(normalizeLinkAddress).filter(Boolean)])];
-  const linked = linkBareUrls(out, { deliberate: purpose });
+  // a deliberate link the site's spelling cannot be worked out for: no bare address of the post is touched (when in doubt, as typed)
+  const doubt = bareOff || explicit.some(u => normalizeLinkAddress(u) === null);
+  const linked = doubt ? { text: out, urls: [] } : linkBareUrls(out, { deliberate: purpose });
   out = linked.text;
   const bareLinks = linked.urls.filter(u => !purpose.includes(normalizeLinkAddress(u)));
   blocked.push(...linkProblems(out));
@@ -805,11 +844,22 @@ export function linkTargetsOf(threads, points = null) {
 export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null }) {
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   // every address the owner linked on purpose anywhere in the post, as the site spells it (a bare one that matches is left as typed)
-  const deliberate = [...new Set((Array.isArray(threads) ? threads : []).flatMap(t => includedMsgs(t, points && points[t.id]))
-    .flatMap(m => explicitLinks(clean(withRuns(stripMore(m.text), m.runs, null)))).map(normalizeLinkAddress).filter(Boolean))];
-  // each passage's form: as in the note on disk when this is a new version of a published post (keep.before), else markdown
-  const forms = keep && keep.before ? { kept: passageFormsOf(keep.before), used: new Set(), moveFormat: keep.moveFormat || null } : null;
-  const opts = { escape, forms, deliberate };
+  const typedLinks = (Array.isArray(threads) ? threads : []).flatMap(t => includedMsgs(t, points && points[t.id]))
+    .flatMap(m => explicitLinks(clean(withRuns(stripMore(m.text), m.runs, null))));
+  const deliberate = [...new Set(typedLinks.map(normalizeLinkAddress).filter(Boolean))];
+  const bareOff = typedLinks.some(u => normalizeLinkAddress(u) === null);
+  // each passage's form, by position: as published (keep.generated, parsed) when this is a new version of a published post, else
+  // markdown. When they cannot be told, the new version is refused: a passage's form is never guessed.
+  let forms = null;
+  if (keep && keep.before) {
+    let kept;
+    try {
+      if (keep.unreadable) throw new Error(String(keep.unreadable));
+      kept = formsFromGenerated(keep.generated === undefined ? [] : keep.generated);
+    } catch (e) { return { ok: false, error: `${FORMS_UNKNOWN_SAY}: ${e.message}. Nothing was written.` }; }
+    forms = { kept, count: writtenPassagesIn(keep.before), next: 0, moveFormat: keep.moveFormat || null };
+  }
+  const opts = { escape, forms, deliberate, bareOff };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
   if (threads.length > LIMITS.comments) return { ok: false, error: `at most ${LIMITS.comments} comments can go in one post` };
   const item = blygItemOf(page);
@@ -862,6 +912,10 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
   }
   if (blocked.length) return { ok: false, error: [...new Set(blocked)].join('; '), blocked: [...new Set(blocked)] };
+  // a passage added or taken away while a legacy one is published: which passage keeps which form cannot be told
+  if (forms && generated.length !== forms.count && forms.kept.slice(0, forms.count).concat(Array(Math.max(0, forms.count - forms.kept.length)).fill('legacy')).some(f => f !== 'markdown') && !forms.moveFormat) {
+    return { ok: false, error: `${FORMS_UNKNOWN_SAY}: the post had ${forms.count} and would now have ${generated.length}, and some are in the older form. Publish the change in two steps (first without adding or removing a passage), or ask for the passages to move to the new form. Nothing was written.` };
+  }
   let body = blocks.join('\n\n');
   if (earlier && earlier.title && earlier.link) {
     const href = earlier.link.startsWith('/') ? earlier.link.replace(/[()\s]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase()) : safeWebUrl(earlier.link);

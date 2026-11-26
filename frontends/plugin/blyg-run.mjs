@@ -543,6 +543,19 @@ function frontOf(text) {
   if (!head.startsWith('---')) return '';
   return head.split(/\n---\s*\n/)[0];
 }
+// A published note's `blyg_generated`, read by a REAL YAML parser: Ruby's Psych, the one the site reads it with (every YAML shape of
+// the list, comments and flow maps included). → { generated } (an absent key: no entries, every passage legacy, as the site reads it),
+// or { unreadable } with a plain reason: the new version is then refused (blyg-note.mjs FORMS_UNKNOWN_SAY), never guessed.
+const GENERATED_RB = 'd = YAML.safe_load($stdin.read, permitted_classes: [Date, Time]); ' +
+  'puts JSON.generate(d.is_a?(Hash) ? { "present" => d.key?("blyg_generated"), "list" => d["blyg_generated"] } : { "present" => false })';
+export function generatedOf(noteText) {
+  const m = /^---\n([\s\S]*?)\n---\n/.exec(String(noteText || ''));
+  if (!m) return { unreadable: 'the note has no front matter' };
+  try {
+    const r = JSON.parse(execFileSync('ruby', ['-ryaml', '-rjson', '-rdate', '-e', GENERATED_RB], { input: m[1], encoding: 'utf8', timeout: 15000, stdio: ['pipe', 'pipe', 'ignore'] }));
+    return { generated: r.present ? r.list : [] };
+  } catch { return { unreadable: 'its front matter could not be read as YAML here (is ruby on the PATH?)' }; }
+}
 const fmValue = (fm, key) => { const m = new RegExp(`^${key}:\\s*["']?([^\\s"']+)["']?\\s*$`, 'm').exec(fm); return m ? m[1] : ''; };
 function headOf(file) {
   try {
@@ -1115,9 +1128,10 @@ export function createPublisher(deps) {
     const now = clock();
     const slug = String(pub.slug || path.basename(rel, '.md').replace(/[^a-z0-9-]/g, '').slice(0, LIMITS.slugChars) || 'note');
     // a post that answered the one blyg post it linked to keeps that target (never gained or lost on an edit); each agent passage keeps
-    // its form (`before`: the note on disk, blyg-note.mjs passageFormsOf)
+    // its form (`before`: the note on disk; its blyg_generated read by a real YAML parser, generatedOf)
     const linkStub = pub.link_stub && typeof pub.link_stub === 'object' ? pub.link_stub : null;
-    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid, keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before }, points, linkStub });
+    const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid,
+      keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before, ...(deps.generatedOf || generatedOf)(before) }, points, linkStub });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
