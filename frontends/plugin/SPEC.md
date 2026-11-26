@@ -14247,6 +14247,8 @@ Whoever holds the key can, until it is replaced:
   messages, not their text;
 - ask an agent again for a passage of such a saved draft (not one the owner edited by hand), within the hourly passage limit;
 - throw away such a saved draft while it is untouched since filing (nothing else in its thread, its text as filed).
+- learn, for a blyg post, the post on the owner's site that a reply to it could be added to (`earlier`): its id, public address,
+  title, first date and version, which are public already; and add replies to it (counted as publishes, within the day's limit);
 - send recordings to be turned into text (`transcribe`): CPU time on the owner's computer within the speech caps (3 jobs open, 20 an
   hour, 4.5 MiB and 3 minutes each, one run at a time, each killed at its time and CPU limits), run in a deny-by-default sandbox, and the
   text of those recordings back. Nothing is filed, published or kept. A parser exploit in ffmpeg or whisper would reach the system's
@@ -14354,3 +14356,33 @@ sending. It files nothing and publishes nothing.
   was signed, or no hash header, is 401. A tool outside a Homebrew Cellar turns speech off; under every accepted profile (ffmpeg,
   whisper on the GPU and on the CPU) the owner's home, /etc/hosts, a scratch file and the whole Cellar stay refused, and a real clip
   still transcribes.
+
+### Add to my earlier reply, from the Hub (2026-11-26, `earlier`, `reply.add_to`, `publish.as`)
+Replying from the Hub to a post the owner has already replied to, the owner may add the new reply to that earlier post (it goes out
+as the post's next version) instead of a new post. This is the plugin's own "Add to your earlier post" (blyg-run `earlierPostFor`,
+join `add`): no second path.
+- `earlier { post: { page, origin, id } }` → `{ ok, earlier: [ { id, address, permalink, title, date, version } ] }`: the post a comment
+  on that blyg post's page would be added to now: 0 or 1 (the plugin's rule: the newest post published from that page, while its note
+  is still the one written from here, every comment it holds is still on the page, one more fits and the page answers the same
+  target). Only for a page record that IS that blyg post (its stored item's origin and id). Public facts only (title cut at 120). A
+  question of its own rather than a field of `reply`, because the Hub asks it before the owner writes (to offer the choice); it needs
+  no rid. (`blyg-run earlierPublicOf`, which asks `earlierPostFor` with no comment yet, or with the filed comment.)
+- `reply { …, add_to: <id> }`: kept on the record. A press of that reply (Publish now, or `publish` later) asks the plugin again: only
+  when that post is still the one a comment there would be added to is it pressed, through the queue, with join `add`, the post's id
+  and version (the run refuses if it changed between: `ADD_CHANGED_SAY`), and every check of that path: the note unchanged since it
+  was published from here (else the forced look, `outside`), every comment still there, the same target, the edit commands set up.
+  It counts as one publish against the day's limit. Otherwise nothing is pressed, the reply stays `saved` with `press.refused:
+  'cannot-add'` and a fixed sentence; `publish { rid, as: 'new' }` (`HUB_LINK_PUBLISH_AS = ['as-asked', 'new']`) then publishes it as
+  a new post.
+- Every view of such a reply carries `adds_to: { id, title, address, state }`, `state` from `HUB_LINK_ADD_STATES = ['ready',
+  'cannot-add']`, derived at each view (never stored); a pressed one keeps the title and address it was pressed with.
+- Exactly once: a reply, publish or cancel with the same rid acts once (the record); the same addition sent three times and published
+  twice more is one new version with one added section.
+- Mentions: as the plugin's path does: a new version notifies only for a source or a response target the post did not have before
+  (blyg-run startEdit `newly`). Adding a reply that quotes the same blyg post the earlier post already answered or quoted sends no
+  second mention to that author; a passage of another post would be new, and is mentioned.
+- Tests: `hub-link-add` (earlier for that post only, its shape; add_to pressed with join add, the post and its version; the view;
+  three sends and two publishes press once; cannot-add refused, `as: 'new'` presses a new post, a bad `as` or id refused; the day
+  limit counts an addition), `hub-link-server` (through the real companion and the fake command set: earlier names the post just
+  published; the addition sent three times and published twice more runs the edit steps once; the thread joins the same post at
+  version 2; the note holds the addition once).
