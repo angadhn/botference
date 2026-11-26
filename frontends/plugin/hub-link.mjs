@@ -90,6 +90,31 @@ export const HUB_LINK_PUBLISH_AS = Object.freeze(['as-asked', 'new']);
  *    cannot-add  it is not (gone, changed outside, another post since, or the add commands are not set up) */
 export const HUB_LINK_ADD_STATES = Object.freeze(['ready', 'cannot-add']);
 const POST_ID_RE = /^[0-9A-Za-z_-]{1,64}$/;
+/** WHAT A REPLY IS ABOUT, one list (a reply has exactly one; the record keeps it in `target`; targetOf is the one function that reads it
+ *  from a request, and refuses a request with none or with two):
+ *    post      a blyg post of the Feed (`post: {page, origin, id}`) and a passage of it
+ *    clipping  one of the owner's allow-listed clippings (`clipping: <id>`) and a passage of it
+ *    compose   nothing: a stand-alone short post (`compose: true`), no quote, no sources, no mention. Its thread sits on ONE fixed private
+ *              page record, "posts written from the Hub" (composeUrlOf: a constant address under the Hub's own origin from the pairing,
+ *              never fetched, never published as a source or a link), so the thread, note and queue path is the one the others use. */
+export const HUB_LINK_TARGETS = Object.freeze(['post', 'clipping', 'compose']);
+/** The synthetic page record's address under the Hub's origin (an https origin: hubOriginOf). Nothing is ever fetched from it. */
+export const HUB_COMPOSE_PATH = '/blyg/hub/written-here';
+export const HUB_COMPOSE_TITLE = 'Posts written from the Hub';
+export const composeUrlOf = origin => `${String(origin).replace(/\/+$/, '')}${HUB_COMPOSE_PATH}`;
+/** → { kind } | { error } (a 400's words): exactly one of `post`, `clipping`, `compose` (which is `true`, and has no quote and no add_to). */
+export function targetOf(data) {
+  const named = HUB_LINK_TARGETS.filter(k => (k === 'compose' ? data.compose : data[k]) !== undefined);
+  if (named.length !== 1) return { error: named.length ? `exactly one of post, clipping or compose, not ${named.join(' and ')}` : 'post, clipping or compose required' };
+  const kind = named[0];
+  if (kind === 'clipping' && !(typeof data.clipping === 'string' && CLIPPING_ID_RE.test(data.clipping))) return { error: 'clipping must be an id from clippings' };
+  if (kind === 'compose') {
+    if (data.compose !== true) return { error: 'compose must be true' };
+    if (data.quote !== undefined) return { error: 'a stand-alone post has no quote' };
+    if (data.add_to !== undefined) return { error: 'a stand-alone post is never added to an earlier one' };
+  }
+  return { kind };
+}
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
 /** Every route, one table: the handler is looked up here and nowhere else (an unknown name is 404). */
@@ -459,6 +484,7 @@ export const HUB_LINK_SAY = Object.freeze({
  * deps: {
  *   keyDir, repliesFile, now() → Date,
  *   bind({ post, quote }) → Promise<{ verdict: 'verified', url } | { verdict: 'unverified', code, reason }>   (verifyShown, source hub)
+ *   bindCompose({ origin }) → { verdict: 'verified', url, compose: true }   (the synthetic page record of stand-alone posts, made or found)
  *   fileReply({ bound, quote, comment }) → { url, thread_id } | { code }   (a thread on the verified page, owner-typed on channel hub-link)
  *   press({ url, thread_id, join?, post?, postVersion?, prompts? }) → Promise<blyg-queue press answer>   (by 'hub-link')
  *   cancel(entry_id) → blyg-queue cancel answer
@@ -582,9 +608,10 @@ export function createHubLink(deps) {
   }
 
   // a reply whose slot is held: verified, filed, recorded, pressed when asked (the caller gives the slot back)
-  async function fileOne(rid, data, key, post, quote, comment, slot) {
+  async function fileOne(rid, data, key, kind, post, quote, comment, slot) {
     // (a clipping: the quote checked against the clipping's own plain text, and the page record for its source made or found)
-    const b = data.clipping !== undefined ? deps.bindClipping({ id: data.clipping, quote })
+    const b = kind === 'compose' ? deps.bindCompose({ origin: key.hub_origin })
+      : kind === 'clipping' ? deps.bindClipping({ id: data.clipping, quote })
       : await deps.bind({ post: { page: post.page.slice(0, 2048), origin: post.origin.slice(0, 2048), id: post.id.slice(0, 64) }, quote });
     if (b.verdict !== 'verified' && b.code === 'unknown-clipping') return { status: 404, body: { ok: false, error: 'unknown clipping' } };
     // (another request for this rid may have finished while this one was verifying: it is in flight-locked, but be sure)
@@ -602,7 +629,8 @@ export function createHubLink(deps) {
     }
     store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
       msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment), add_to: typeof data.add_to === 'string' ? data.add_to : '',
-      ...(b.clipping ? { clipping: String(b.clipping) } : { post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } }) });
+      target: kind,
+      ...(kind === 'compose' ? {} : kind === 'clipping' ? { clipping: String(b.clipping) } : { post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } }) });
     slot.give();   // (the record counts itself from here)
     logState(rid, 'saved');
     if (data.intent === 'publish') await pressRecord(store.get(rid), key);
@@ -664,23 +692,23 @@ export function createHubLink(deps) {
       const kept = store.get(rid);
       if (kept && kept.step === 'withdrawn') return { status: 409, body: { ok: false, error: 'cancelled', ...viewOf(rid), say: HUB_LINK_SAY.cancelled, repeated: true } };
       if (kept) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
-      // THE TARGET: a blyg post (`post`) or an allow-listed clipping (`clipping`), exactly one
-      if (data.post !== undefined && data.clipping !== undefined) return { status: 400, body: { ok: false, error: 'post or clipping, not both' } };
-      if (data.post === undefined && data.clipping === undefined) return { status: 400, body: { ok: false, error: 'post or clipping required' } };
-      if (data.clipping !== undefined && !(typeof data.clipping === 'string' && CLIPPING_ID_RE.test(data.clipping))) return { status: 400, body: { ok: false, error: 'clipping must be an id from clippings' } };
+      // THE TARGET (HUB_LINK_TARGETS): exactly one of a blyg post, an allow-listed clipping, or none (a stand-alone post)
+      const t = targetOf(data);
+      if (t.error) return { status: 400, body: { ok: false, error: t.error } };
+      const kind = t.kind;
       const post = data.post && typeof data.post === 'object' ? data.post : {};
-      const quote = str(data.quote, HUB_LINK_LIMITS.bodyBytes), comment = str(data.comment, HUB_LINK_LIMITS.bodyBytes);
-      if (!quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
+      const quote = kind === 'compose' ? '' : str(data.quote, HUB_LINK_LIMITS.bodyBytes), comment = str(data.comment, HUB_LINK_LIMITS.bodyBytes);
+      if (kind !== 'compose' && !quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
       if (data.add_to !== undefined && !(typeof data.add_to === 'string' && POST_ID_RE.test(data.add_to))) return { status: 400, body: { ok: false, error: 'add_to must be a post id from earlier' } };
-      if (data.post !== undefined && (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string')) return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
+      if (kind === 'post' && (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string')) return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
       if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
         logState(rid, 'limited', 'replies-per-hour');
         return { status: 429, body: { ok: false, error: 'limit', limit: 'replies-per-hour', say: HUB_LINK_SAY['replies-per-hour'] } };
       }
       const slot = holdReply();
-      try { return await fileOne(rid, data, key, post, quote, comment, slot); } finally { slot.give(); }
+      try { return await fileOne(rid, data, key, kind, post, quote, comment, slot); } finally { slot.give(); }
     },
 
     async status(data) {

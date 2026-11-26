@@ -14288,6 +14288,9 @@ Whoever holds the key can, until it is replaced:
   author, source address, date, word count) and its text; nothing else in that folder or anywhere else, never a file name or path;
   and reply to them (filed on the page record of the clipping's source address, published as a response to that web page). The
   owner stops it at once by removing a file or a collection from the setting, or the whole `clippings` setting, on the computer;
+- file and publish STAND-ALONE posts (`reply { compose: true, … }`): short posts of the key holder's own words, with no quote, source
+  or mention, under the owner's name, within the same limits (a publish is one of the day's 10, a filing one of the hour's 20);
+  they all sit on one private page record the computer makes at a constant address under the Hub's own origin, which is never fetched;
 - read back the text of each reply it filed itself: that one message as it now stands, including the owner's later edits to it on the
   computer, with the agent passages written into it, at most 48 KiB a reply; and the count of the thread's other publishable
   messages, not their text;
@@ -14508,3 +14511,23 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   paged with its plain text; anything off the list 404; a quote not in the clipping refused; post and clipping together refused; a
   reply published with `blyg_stub_of {url, title}` and the web quote; `earlier` names it and an addition goes out as version 2; a
   draft read back and discarded; the setting removed → an empty list and 404 at once).
+
+### A stand-alone post from the Hub (2026-11-26, `reply { compose: true }`, `HUB_LINK_TARGETS`)
+- THE TARGET KINDS are one list (`HUB_LINK_TARGETS`: `post`, `clipping`, `compose`), read from a request by one function (`targetOf`),
+  which refuses a request with none or with two (400) and keeps the kind in the record's `target`. `compose` is `compose: true`: no
+  quote (refused, 400), no `add_to` (refused, 400; a stand-alone post is never added to an earlier one), and `comment` and `intent` as for
+  any reply. A record from before the field has no `target`; nothing reads it for those.
+- WHERE ITS THREAD SITS: one fixed private page record, "Posts written from the Hub", at `<hub_origin>/blyg/hub/written-here`
+  (`composeUrlOf`: a constant under the Hub's own origin from the pairing, `HUB_COMPOSE_PATH`). It is made when the first one is filed,
+  forced to `export_response: 'not-a-response'` at each filing, never fetched, and never published as a source or a link. Each post is a
+  thread of its own on it, with an empty quote and no anchor, filed on channel `hub-link` like the others.
+- THE NOTE is the plugin's own short post with no quote, unchanged: `created`, `released`, `blyg`, `blyg_id`, `permalink`, the owner's
+  words and any agent passage's box, and nothing else: no `blyg_stub_of`, no `blyg_sources`, nobody told, nothing of the synthetic page.
+- EVERYTHING ELSE is the same code as for a reply: exactly once by rid, the press and its day limit (a stand-alone publish counts as one of
+  the day's 10; a filing as one of the hour's 20), drafts read-back (`blocks`), redo, discard, `/tk` lines, speech, the `prompts` choice.
+  Posts published this way share one page, so one that needs the owner's look holds the later ones behind it, as any page's does.
+- Tests: `hub-link-compose` (the list; exactly one target, no quote, no add_to; filed on the synthetic page and never verified as a post;
+  the record's `target`; exactly once by rid; the day's and the hour's limits; discard and a cancel before it arrives),
+  `hub-link-compose-server` (through the real companion: the page record made once, titled, not a response; refusals file nothing; discard;
+  a `/tk` line filled and read back; one note however often the request is sent, a plain short post naming nothing of the page; a second
+  post a note of its own), `blyg-note` (the stand-alone note: no stub, no sources, nobody told, an agent passage kept).

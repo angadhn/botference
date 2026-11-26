@@ -68,7 +68,7 @@ import { createRebuilder } from './rebuild.mjs';
 import * as publish from './publish.mjs';
 import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
 import { createQueue } from './blyg-queue.mjs';
-import { createHubLink, HUB_LINK_REPLIES_FILE } from './hub-link.mjs';
+import { createHubLink, HUB_LINK_REPLIES_FILE, HUB_COMPOSE_TITLE, composeUrlOf } from './hub-link.mjs';
 import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping, clippingPublishable } from './clippings.mjs';
 import { createSpeech } from './hub-speech.mjs';
 import { secretsDir } from '../shared/secrets.mjs';
@@ -3303,9 +3303,22 @@ async function bindVerified(data) {
 // The quote kept is the passage as the VERIFIED text has it, with the text around it as the anchor (never the Hub's).
 // (`answer`: the verified blyg answer, for a post; for a clipping none, and `text` is the clipping's plain text with `passage` already in
 // the clipping's form)
-function hubLinkFileReply({ url, quote, comment, answer = null, text: given = '', passage: givenPassage = '' }) {
+function hubLinkFileReply({ url, quote, comment, answer = null, text: given = '', passage: givenPassage = '', compose = false }) {
   const page = store.readPage(url);
   if (!page || !mayRead(page, true)) return { code: 'not-writable' };
+  // A STAND-ALONE POST (hub-link.mjs HUB_LINK_TARGETS 'compose'): a thread with no quote and no anchor on the one synthetic page
+  if (compose) {
+    const thread = store.addThread(page, { quote: '', prefix: '', suffix: '', text: comment, author: store.readConfig().author || 'owner' });
+    thread.via = 'hub-link';
+    const msg = thread.msgs[0];
+    msg.provenance = OWNER_TYPED; msg.channel = 'hub-link';
+    const fresh = attachGaps(null, msg);
+    store.savePage(page);
+    broadcast({ type: 'page', url: page.url });
+    startGaps(page, thread.id, msg, fresh);
+    noteDecisions(page);
+    return { url: page.url, thread_id: thread.id, ts: msg.ts };
+  }
   const text = answer ? String(answer.text || '') : String(given).replace(/\n\n/g, '\n');
   const passage = givenPassage || blygMod.passageOf(quote);
   const at = text.indexOf(passage);
@@ -3333,9 +3346,23 @@ const hubLink = createHubLink({
   keyDir: secretsDir(),
   repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),
-  fileReply: ({ bound, quote, comment }) => (bound.clipping
-    ? hubLinkFileReply({ url: bound.url, quote, comment, text: bound.text, passage: passageOfClipping(quote) })
-    : hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer })),
+  fileReply: ({ bound, quote, comment }) => (bound.compose
+    ? hubLinkFileReply({ url: bound.url, quote: '', comment, compose: true })
+    : bound.clipping
+      ? hubLinkFileReply({ url: bound.url, quote, comment, text: bound.text, passage: passageOfClipping(quote) })
+      : hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer })),
+  // A STAND-ALONE POST: its thread goes on ONE fixed private page record, "posts written from the Hub", at a constant address under the
+  // Hub's own origin (from the pairing); never fetched, and never a response, so no note names it (blyg-note: no quote, no stub, no sources)
+  bindCompose: ({ origin }) => {
+    const url = composeUrlOf(origin);
+    const there = store.readPage(url);
+    if (there && !mayRead(there, true)) return { verdict: 'unverified', code: 'not-writable' };
+    const page = there || store.upsertPage({ url, title: HUB_COMPOSE_TITLE });
+    page.export_response = 'not-a-response';
+    store.savePage(page);
+    broadcast({ type: 'page', url: page.url });
+    return { verdict: 'verified', url: page.url, compose: true };
+  },
   // THE OWNER'S CLIPPINGS (clippings.mjs): only the allow-listed files of the `clippings` setting, read at each request
   clippings: () => { const s = clippingSettings(); return s ? listClippings(s).collections : []; },
   clipping: id => { const s = clippingSettings(); const c = s && findClipping(s, id); return c ? { facts: c.facts, body: c.body, pages: c.pages } : null; },

@@ -912,3 +912,35 @@ test('the owner\'s hand in the note: edited_by_author for text, prompt_reworded 
   const r = make(page, page.threads);
   assert.match(r.text, /\n {4}edited_by_author: true\n {4}prompt_reworded: true\n/);
 });
+
+// A STAND-ALONE POST written from the Hub (the hub link's `compose` target): a thread with no quote on one private page record at a
+// synthetic address of the Hub's own origin. The note is a plain short post: the owner's words and any agent passage, and nothing of
+// that page (no stub, no sources, no mention, no address).
+const COMPOSE_URL = 'https://hub.example.test/blyg/hub/written-here';
+test('a stand-alone post (no quote, on the Hub\'s synthetic page): front matter and the owner\'s words only; nothing of the page', () => {
+  const page = { url: COMPOSE_URL, title: 'Posts written from the Hub', export_response: 'not-a-response', threads: [thread('t1', '', 'A thought of my own.\n\nAnd a second paragraph.')] };
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  assert.equal(r.text, `---
+created: 2026-11-23
+released: "2026-11-23"
+blyg: true
+blyg_id: "${BID}"
+permalink: /b/${BID}
+---
+A thought of my own.
+
+And a second paragraph.
+`);
+  assert.ok(!/blyg_stub_of|blyg_sources|hub\.example|written-here|Posts written/.test(r.text));
+  assert.deepEqual(r.sources, []);
+  assert.equal(r.notify, '', 'nobody is told');
+});
+test('a stand-alone post keeps an agent passage as its box, and still names nothing of the synthetic page', () => {
+  const page = { url: COMPOSE_URL, title: 'Posts written from the Hub', threads: [{ id: 't1', quote: '', msgs: [{ ...mine('Before.\n/tk say hello\nAfter.'), gaps: [{ instruction: 'say hello', mode: 'filled-by-agent', agent: 'claude', model: 'claude-opus-5', at: '2026-11-24T10:00:00Z', text: 'Hello, reader.' }] }] }] };
+  const r = make(page, page.threads);
+  assert.ok(r.ok, r.error);
+  assert.ok(!/blyg_stub_of|blyg_sources|hub\.example|written-here/.test(r.text));
+  assert.match(r.text, /Before\.\n\n\[TK\] say hello \[=\]Hello, reader\.\[\/TK\]\n\nAfter\./);
+  assert.match(r.text, /blyg_generated:/);
+});
