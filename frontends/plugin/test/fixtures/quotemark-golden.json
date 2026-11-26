@@ -1,0 +1,371 @@
+{
+ "blyg one comment": {
+  "ok": true,
+  "text": "---\ntitle: \"I agree\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\nblyg_sources:\n  - \"https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/\"\nblyg_stub_of:\n  origin: \"https://blyg.example.test/notes/\"\n  id: \"0123456789abcdefghjkmnpqrs\"\n  version: 2\n---\nI agree.\n\n![[0123456789abcdefghjkmnpqrs | A made-up post]]\n> A sentence that the post really says.\n",
+  "title": "I agree",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [
+   "https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/"
+  ],
+  "generated": [],
+  "notify": "The author of the post you quoted will be told you responded",
+  "snapshot": {
+   "quotes": [
+    "dd894040a657c3f09764b158"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "dd894040a657c3f09764b158",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "826ff0dab649a97ffdd7779a"
+      }
+     ]
+    }
+   ],
+   "sources": [
+    "https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/"
+   ],
+   "stub": "e40cd093a9966c85fdb865b3",
+   "target": "0f13621bc2209eaeefa20ece"
+  }
+ },
+ "blyg three comments": {
+  "ok": true,
+  "text": "---\ntitle: \"First\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\nblyg_sources:\n  - \"https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/\"\nblyg_stub_of:\n  origin: \"https://blyg.example.test/notes/\"\n  id: \"0123456789abcdefghjkmnpqrs\"\n  version: 2\n---\nFirst.\n\n![[0123456789abcdefghjkmnpqrs | A made-up post]]\n> A sentence that the post really says.\n\nSecond.\n\nThird.\n",
+  "title": "First",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [
+   "https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/"
+  ],
+  "generated": [],
+  "notify": "The author of the post you quoted will be told you responded",
+  "snapshot": {
+   "quotes": [
+    "dd894040a657c3f09764b158"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "dd894040a657c3f09764b158",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "6ccbae3c549451073bfcd5d5"
+      },
+      {
+       "ts": "2026-11-22T10:01:00Z",
+       "sha": "1e8bbbab2a0b0e51cce5a686"
+      },
+      {
+       "ts": "2026-11-22T10:02:00Z",
+       "sha": "560c6aac8e55899e661512b8"
+      }
+     ]
+    }
+   ],
+   "sources": [
+    "https://blyg.example.test/notes/t/0123456789abcdefghjkmnpqrs/"
+   ],
+   "stub": "e40cd093a9966c85fdb865b3",
+   "target": "0f13621bc2209eaeefa20ece"
+  }
+ },
+ "web page, url card": {
+  "ok": true,
+  "text": "---\ntitle: \"This matches. And more\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nThis matches.\n\nAnd more.\n\n> Hiring is slowing.\n>\n> For juniors.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "This matches. And more",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "4cc20456833fb53e61193830"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "4cc20456833fb53e61193830",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "d5d156bc7788bb2916039617"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "web response": {
+  "ok": true,
+  "text": "---\ntitle: \"A reply\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\nblyg_stub_of:\n  url: \"https://news.example.test/a/story?id=7\"\n  title: \"A story\"\n---\nA reply.\n\n> Hiring is slowing.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "A reply",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "4df7d42b6a2daf3b77148424"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "4df7d42b6a2daf3b77148424",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "31b060a8a741f9e538a1eabf"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "eea85b351b95aeee4323c3ca",
+   "target": "fd5f1a736de4a67792f0dbfb"
+  }
+ },
+ "no quote": {
+  "ok": true,
+  "text": "---\ntitle: \"Only my words\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nOnly my words.\n",
+  "title": "Only my words",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "",
+  "snapshot": {
+   "quotes": [
+    ""
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "7c9dcdc18f004e1b90146f13"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "two threads (add to an earlier post)": {
+  "ok": true,
+  "text": "---\ntitle: \"About one\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nAbout one.\n\n> One.\n>\n> https://news.example.test/a/story?id=7\n\nAbout two.\n\n> Two.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "About one",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "70277bfc409b502132d7a48b",
+    "1eb32d1ee4458814f94f8b92"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "70277bfc409b502132d7a48b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "c2aec485ec6324b7668715dd"
+      }
+     ]
+    },
+    {
+     "thread": "t2",
+     "quote": "1eb32d1ee4458814f94f8b92",
+     "msgs": [
+      {
+       "ts": "2026-11-22T11:00:00Z",
+       "sha": "343de49e1532f2c2eab873b6"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "the letters in a sentence": {
+  "ok": true,
+  "text": "---\ntitle: \"Type /quote to move it. /quote it not\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nType /quote to move it.\n/quote it\nnot /quote\n\n> Q.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "Type /quote to move it. /quote it not",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "b5cc54febd390682460c453b"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "b5cc54febd390682460c453b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "2117dbe9906b03f519651f1e"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "in code": {
+  "ok": true,
+  "text": "---\ntitle: \"Before /quote After /quote x\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nBefore\n\n```\n/quote\n```\n\nAfter `/quote`\n\n    x\n\n> Q.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "Before /quote After /quote x",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "b5cc54febd390682460c453b"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "b5cc54febd390682460c453b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "ae7bf856bca203bdf0bd7342"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "in an agent passage": {
+  "ok": true,
+  "text": "---\ntitle: \"Mine. After\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\nblyg_generated:\n  - model: \"m\"\n    format: markdown\nblyg_prompts: locked\n---\nMine.\n\n[TK] write /quote [=]Agent line.\n/quote\nMore agent.[/TK]\n\nAfter.\n\n> Q.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "Mine. After",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [
+   {
+    "model": "m",
+    "format": "markdown",
+    "agent": "claude"
+   }
+  ],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "b5cc54febd390682460c453b"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "b5cc54febd390682460c453b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "6f1727636b557624de49c3a0"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "inline agent passage": {
+  "ok": true,
+  "text": "---\ntitle: \"A b\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\nblyg_generated:\n  - model: \"m\"\n    format: markdown\nblyg_prompts: locked\n---\nA\n\n[TK] go [=]/quote[/TK]\n\nb\n\n> Q.\n>\n> https://news.example.test/a/story?id=7\n",
+  "title": "A b",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [
+   {
+    "model": "m",
+    "format": "markdown",
+    "agent": "claude"
+   }
+  ],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "b5cc54febd390682460c453b"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "b5cc54febd390682460c453b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "beff6e6cf3aff0ee7d4a1e70"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ },
+ "an earlier post": {
+  "ok": true,
+  "text": "---\ntitle: \"Words\"\ncreated: 2026-11-23\nreleased: \"2026-11-23\"\nblyg: true\nblyg_id: \"0000000000000000000000000z\"\npermalink: /b/0000000000000000000000000z\n---\nWords.\n\n> Q.\n>\n> https://news.example.test/a/story?id=7\n\nEarlier: [Before](/b/before)\n",
+  "title": "Words",
+  "slug": "s",
+  "permalink": "/b/0000000000000000000000000z",
+  "sources": [],
+  "generated": [],
+  "notify": "Its page will be asked whether it accepts mentions",
+  "snapshot": {
+   "quotes": [
+    "b5cc54febd390682460c453b"
+   ],
+   "threads": [
+    {
+     "thread": "t1",
+     "quote": "b5cc54febd390682460c453b",
+     "msgs": [
+      {
+       "ts": "2026-11-22T10:00:00Z",
+       "sha": "44dcebcdcc564a642123c985"
+      }
+     ]
+    }
+   ],
+   "sources": [],
+   "stub": "",
+   "target": "e3b0c44298fc1c149afbf4c8"
+  }
+ }
+}

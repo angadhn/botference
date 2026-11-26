@@ -16,6 +16,7 @@
 // The words (KINDS × AGENTS, in one table, WORDS):
 //   /tk  /tk-claude  /tk-codex        ASK an agent to write the passage; what follows is the instruction. Plain /tk is Claude.
 //   /tkimpyrt-claude  /tkimpyrt-codex  text the reader PASTED from that maker's tool: no agent is asked; what follows is the text.
+// The other line word, /quote (quoteMarks, below), is no gap: it places the thread's quoted passage.
 // Never a gap: anything in code (an inline code span, a fenced block); a slash word
 // after a backslash (`\/tk`: the letters); a word with nothing after it; a word
 // glued to a word before it ("a/tk(" in a link).
@@ -161,7 +162,30 @@
     return s.replace(/\\\/tk/gi, (m, i) => (mask[i] ? m : m.slice(1)));
   }
 
-  const api = { MAX_GAPS, INSTRUCTION_MAX, PASTED_MAX, KINDS, AGENTS, WORDS, parseGaps, gapsFor, gapKey, codeMask, unescape };
+  // THE /quote MARKER. A line that is only the word `/quote` (any case, spaces or tabs around it) says where the thread's quoted
+  // passage goes in the post (blyg-note.mjs renderShortNote). Never a marker: in code (an inline code span, a fenced block), inside
+  // a gap (a /tk line's instruction; an agent's passage is not in the reader's text at all), or anything else on the line.
+  const QUOTE_WORD = '/quote';
+  const QUOTE_LINE = /^[ \t]*\/quote[ \t]*$/i;
+  /** Every marker line of `text`, in order: [{ start, end }] (text.slice(start, end) is the whole line). `gaps`: the gaps already
+   *  read from it (gapsFor), else parseGaps(text). */
+  function quoteMarks(text, gaps) {
+    const s = String(text == null ? '' : text);
+    if (!/\/quote/i.test(s)) return [];
+    const mask = codeMask(s);
+    const found = Array.isArray(gaps) ? gaps : parseGaps(s);
+    const out = [];
+    let at = 0;
+    for (const line of s.split('\n')) {
+      const m = QUOTE_LINE.exec(line);
+      const word = at + line.search(/\//);
+      if (m && !mask[word] && !found.some(g => word >= g.start && word < g.end)) out.push({ start: at, end: at + line.length });
+      at += line.length + 1;
+    }
+    return out;
+  }
+
+  const api = { MAX_GAPS, INSTRUCTION_MAX, PASTED_MAX, KINDS, AGENTS, WORDS, parseGaps, gapsFor, gapKey, codeMask, unescape, QUOTE_WORD, quoteMarks };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BFPTkGrammar = api;
 })(typeof self !== 'undefined' ? self : (typeof window !== 'undefined' ? window : globalThis));

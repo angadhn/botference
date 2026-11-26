@@ -529,6 +529,15 @@ const HOLD_B = '\ue001';
 //   the quoted passage (the page's words)        PASSAGE_TK_SAY
 // Inside the owner's code formatting (a code span or block) they are code, which the site allows. A /tk instruction is never
 // published (the site leaves it out of the page and the wire), so it is not refused.
+const QUOTE_HELD = new RegExp(`[ \\t]*${HOLD_A}Q+${HOLD_B}[ \\t]*`);
+// the /quote marker, in the owner's words: the refusal of a second one, and the composer's hint (the Hub's reply box shows the same)
+export const QUOTE_ONCE_SAY = 'Only one /quote line can place the quoted passage: remove the others, or put them in code formatting';
+export const QUOTE_HINT = 'A line with only /quote puts the quoted passage there.';
+/** A comment's text without its /quote marker lines (for a label made of its first words: never the marker). */
+export const withoutQuoteMarks = text => {
+  const s = String(text == null ? '' : text);
+  return Grammar.quoteMarks(s, Grammar.gapsFor(s, [])).reduceRight((t, m) => t.slice(0, m.start) + t.slice(m.end), s);
+};
 export const OWNER_TK_SAY = 'Your comment contains the letters [TK]; remove them or put them in code formatting';
 export const AGENT_TK_SAY = 'an agent\'s passage holds letters your site keeps for marking agents\' passages: edit that passage (or remove it), then publish';
 export const PASSAGE_TK_SAY = 'the passage you quoted holds letters your site keeps for marking agents\' passages, so it cannot be published from here: quote a different part of the page';
@@ -544,10 +553,17 @@ export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
 export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false } = {}) {
   const blocked = [];
   const generated = [];
-  const src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
+  let src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
   if (src.length > LIMITS.commentChars) return { text: '', blocked: [`a comment is longer than ${LIMITS.commentChars} characters`], generated };
   const stored = Array.isArray(msg.gaps) ? msg.gaps : [];
   const found = Grammar.gapsFor(src, stored);
+  // THE /quote MARKER (tkgrammar.js quoteMarks): the first one is held, the same length, while the owner's words are made safe, and
+  // the text is split there at the end; any other is left as typed (renderShortNote refuses a thread with more than one)
+  const marks = Grammar.quoteMarks(src, found);
+  if (marks.length) {
+    const m = marks[0];
+    src = src.slice(0, m.start) + HOLD_A + 'Q'.repeat(m.end - m.start - 2) + HOLD_B + src.slice(m.end);
+  }
   const scopes = [];
   let out = '';
   let at = 0;
@@ -594,7 +610,15 @@ export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [],
   }
   out = out.replace(new RegExp(`${HOLD_A}(\\d+)${HOLD_B}`, 'g'), (m, n) => scopes[Number(n)] || '');
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { text: out, blocked, generated, bareLinks, explicitLinks: explicit };
+  // with a marker: `parts` are the words above it and below it, and `text` (what a comment is known by: its hash in the snapshot)
+  // says where it stood, so moving it is an edit of the comment. `text` is never written into a post when there are parts.
+  const held = out.split(QUOTE_HELD);
+  if (held.length === 2) {
+    const parts = held.map(x => x.trim());
+    out = [parts[0], Grammar.QUOTE_WORD, parts[1]].filter(Boolean).join('\n\n');
+    return { text: out, parts, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit };
+  }
+  return { text: out, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit };
 }
 
 // ---- a quoted passage, as the note writes it -----------------------------------
@@ -872,6 +896,7 @@ export function linkTargetsOf(threads, points = null) {
   }
   return out;
 }
+const QUOTE_SLOT = Symbol('the quoted passage');
 export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null, prompts = DEFAULT_PROMPTS }) {
   const nowArg = now;
   if (!PROMPT_MODES.includes(prompts)) return { ok: false, error: `prompts must be one of ${PROMPT_MODES.join(', ')}` };
@@ -931,20 +956,31 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     }
     const words = [];
     const said = [];
+    // THE /quote MARKER: in the thread's combined text, the passage goes where the owner's one marker line stood (a line of its
+    // own, in any of the thread's messages); `seq` is that text in order, with QUOTE_SLOT for the passage. One marker per thread.
+    const seq = [];
+    let marked = 0;
     for (const m of includedMsgs(t, points && points[t.id])) {
       const r = ownText(m, opts);
       blocked.push(...r.blocked);
       generated.push(...r.generated);
       bareLinks.push(...(r.bareLinks || []));
       explicit.push(...(r.explicitLinks || []));
-      if (r.text) { words.push(r.text); said.push({ ts: String(m.ts || ''), sha: hashOf(r.text) }); }
+      marked += r.quoteMarks || 0;
+      const own = r.parts ? r.parts.filter(Boolean).join('\n\n') : r.text;
+      if (r.parts) seq.push(...[r.parts[0], QUOTE_SLOT, r.parts[1]].filter(Boolean));
+      else if (r.text) seq.push(r.text);
+      if (own) words.push(own);
+      if (r.text) said.push({ ts: String(m.ts || ''), sha: hashOf(r.text) });
     }
+    if (marked > 1) blocked.push(QUOTE_ONCE_SAY);
     snapshot.push({ thread: String(t.id || ''), quote: quote.trim() ? hashOf(quote.trim()) : '', msgs: said });
     if (!words.length && !blocked.length) return { ok: false, error: 'that comment has no words to publish' };
     // the name is the OWNER's first words: an agent's passage (a generated-passage scope) is not part of it
     if (!titleSource && words.length) titleSource = words[0].replace(/\[TK\](?:impyrt[^=\n]*=| [^\n]*? \[=\])[\s\S]*?\[\/TK\]/g, ' ');
     if (!words.length) continue;
-    blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
+    if (seq.includes(QUOTE_SLOT)) blocks.push(seq.map(x => (x === QUOTE_SLOT ? quoteBlockText : x)).filter(Boolean).join('\n\n'));
+    else blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
   }
   if (blocked.length) return { ok: false, error: [...new Set(blocked)].join('; '), blocked: [...new Set(blocked)] };
   // FORMS MOVED: the passages of a post that holds a legacy one changed in number or order (the owner added a comment with a passage

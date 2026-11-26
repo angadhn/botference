@@ -13256,7 +13256,15 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
   one that is pending, failed or unknown, or a leftover `[TK]` mark outside code, blocks publishing
   with a plain sentence.
 - **The post** (`blyg-note.mjs`): front matter from the owner's template, then for each thread the owner's first
-  comment, the quoted passage, and the thread's remaining comments (the words come first). A page that is a Blygger post (strictly validated id, origin, version):
+  comment, the quoted passage, and the thread's remaining comments (the words come first). **The `/quote` marker** moves the
+  passage: a line that is only `/quote` (any case, spaces around it; `tkgrammar.js` `quoteMarks`) in any of the thread's messages puts
+  the passage at that point of the thread's combined text (the words above it, the passage, the words below it), so a post can open
+  with the quote. Never a marker: in code, in a `/tk` line or an agent's passage, or with anything else on the line. One per thread: a
+  second is refused before anything is written (`QUOTE_ONCE_SAY`); a thread with no passage drops the line. The marker is never
+  written; without one the post is byte for byte as before; the title is the owner's first words (after the quote when it opens the
+  post), and sources, `blyg_stub_of`, links and who is told are the same wherever it sits. Each thread of a post (an addition to an
+  earlier post) places its own. The composer's hint for a passage's thread ends with `QUOTE_HINT`: "A line with only /quote puts the
+  quoted passage there." (the Hub's reply box shows the same words). A page that is a Blygger post (strictly validated id, origin, version):
   the passage as `![[<id> | label]]` with `> ` lines directly under it when it passes the post's check,
   `blyg_sources`, and `blyg_stub_of` (origin, id, the version read; the id written as a quoted string, since a page may choose an
   id such as `0x…` that a YAML 1.1 reader would take for a number) when the page is a response. An

@@ -14211,6 +14211,8 @@ async function selftestWorkspace() {
   const thints = [...S.querySelectorAll('.pane[data-pane="comments"] .composer .hint')];
   check('\u2026while a comment thread on the same page keeps the ordinary one',
     thints.length > 0 && thints.every(h => h.textContent.startsWith('@claude, @codex or @all to bring in the bots')));
+  check('\u2026and says where a line with only /quote puts the quoted passage',
+    thints.length > 0 && thints.every(h => h.textContent.endsWith('. A line with only /quote puts the quoted passage there.')));
   d.open('chat');
   await sleep(60);
 

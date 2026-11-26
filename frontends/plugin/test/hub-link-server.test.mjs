@@ -525,6 +525,39 @@ await test('D1 THREE ADDITIONS TO ONE POST a second apart, while a slow publish 
   } finally { await stop(srv4); }
 });
 
+await test('/quote from the Hub: filed as typed; the post opens with the quote, named by the owner\'s words; an addition places its own', async () => {
+  const rig = makeRig({ confirm: 'never' }); rigs.push(rig);
+  const root5 = tmp('quote');
+  setHome(root5, rig, 'never');
+  cli(['off'], { dir: SECRETS, say }); pair('one-click');
+  const srv5 = await boot(root5, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
+  const S = srv5.base;
+  const status = async (base, rid) => (await send(base, 'status', { rids: [rid] })).json.replies[0];
+  try {
+    const first = await reply(S, 'rid-quote-00001', { comment: '/quote\nQuote first from the phone.', intent: 'publish' });
+    assert.equal(first.status, 200, first.body);
+    await waitFor(async () => (await status(S, 'rid-quote-00001')).state === 'published', 'published');
+    const t1 = (await threadsOf(S, POST_A)).find(t => t.msgs[0].text === '/quote\nQuote first from the phone.');
+    assert.ok(t1, 'the comment is filed exactly as typed');
+    const postId = t1.blyg_published.permalink.split('/').filter(Boolean).pop();
+    const noteOf = () => fs.readdirSync(rig.folder).map(f => fs.readFileSync(path.join(rig.folder, f), 'utf8')).find(t => t.includes('Quote first from the phone.'));
+    const [front, body] = noteOf().split('\n---\n');
+    assert.match(body, /^!\[\[[0-9a-z]{26} \| [^\]]*\]\]\n> /, 'the quote first');
+    assert.match(body, /\n\nQuote first from the phone\.\n/);
+    // the name (the queue's label, the companion's title; the site names an untitled post by its first words likewise)
+    const q = JSON.parse(fs.readFileSync(path.join(root5, '.botference', 'plugin', 'blyg-publish-queue.json'), 'utf8'));
+    assert.ok(q.entries.some(e => e.label.startsWith('Quote first from the phone')), JSON.stringify(q.entries.map(e => e.label)));
+    assert.ok(!/^title:/m.test(front), 'the default template writes no title: the site names it');
+    assert.ok(!front.includes(SAYS[A]), 'no quoted words in the front matter');
+    const add = await reply(S, 'rid-quote-00002', { comment: 'An addition, above.\n/quote\nAnd below.', intent: 'publish', add_to: postId });
+    assert.equal(add.status, 200, add.body);
+    await waitFor(async () => (await status(S, 'rid-quote-00002')).state === 'published', 'the addition published');
+    const after = noteOf().split('\n---\n')[1];
+    assert.match(after, /\n\nAn addition, above\.\n\n!\[\[[0-9a-z]{26} \| [^\]]*\]\]\n> [^\n]*\n\nAnd below\./, after);
+    assert.ok(!/\/quote/i.test(noteOf()), 'the marker is never written');
+  } finally { await stop(srv5); }
+});
+
 cleanup();
 web.close();
 for (const r of rigs) r.done();

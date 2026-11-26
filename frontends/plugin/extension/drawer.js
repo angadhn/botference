@@ -532,6 +532,10 @@
   }
 
   const HINT = '@claude, @codex or @all to bring in the bots · Enter sends, Shift+Enter for a new line';
+  // a comment on a passage: a line with only /quote puts the passage there when the thread is published as a blyg post
+  // (blyg-note.mjs QUOTE_HINT, the same words; the Hub's reply box shows them too)
+  const QUOTE_HINT = 'A line with only /quote puts the quoted passage there.';
+  const THREAD_HINT = HINT + '. ' + QUOTE_HINT;
   // …except on a project artifact's page chat, which IS a council chat: the
   // council's own rule is that plain text goes to the room, and the companion
   // routes an untagged message there (server.mjs untaggedGoesToAll). The line
@@ -2252,6 +2256,7 @@
     {"cmd": "/tk-codex", "args": "<instruction>", "hint": "Codex writes this passage; /tk-codex(…) inline", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/tkimpyrt-claude", "args": "<pasted text>", "hint": "Marks text you pasted from Claude; /tkimpyrt-claude(…)", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/tkimpyrt-codex", "args": "<pasted text>", "hint": "Marks text you pasted from Codex; /tkimpyrt-codex(…)", "group": "Talking to the bots", "scope": ["plugin"]},
+    {"cmd": "/quote", "args": "", "hint": "Alone on a line: the quoted passage goes there in a blyg post", "group": "Talking to the bots", "scope": ["plugin"]},
     {"cmd": "/help", "args": "", "hint": "This list", "group": "Help", "scope": ["tui", "council", "plugin"]},
   ];
   // the plugin's share of a table (live or fallback), in the table's order
@@ -5272,7 +5277,7 @@ ${bubbleShellHtml()}`;
         ${ready ? rewriteHtml(t) : ''}
         <div class="thread">${msgs}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
         ${statusHtml(t.id)}
-        ${composerHtml(t.id, 'Reply…', '', '', true)}
+        ${composerHtml(t.id, 'Reply…', '', THREAD_HINT, true)}
       </div>`;
     }
 
@@ -5313,7 +5318,7 @@ ${bubbleShellHtml()}`;
         </div>
         ${open ? `<div class="thread">${msgsHtml(t.id, t.msgs)}${outboxHtml(t.id)}${streamsHtml(t.id)}</div>
           ${statusHtml(t.id)}
-          ${composerHtml(t.id, 'Reply — replying reopens this thread…', '', '', true)}` : ''}
+          ${composerHtml(t.id, 'Reply — replying reopens this thread…', '', THREAD_HINT, true)}` : ''}
       </div>`;
     }
 
@@ -5333,7 +5338,7 @@ ${bubbleShellHtml()}`;
         ${composerHtml('__new__',
           struck ? 'Why it should go — optional…' : 'Comment on this passage…',
           '<button class="cancel" data-act="cancel-new" type="button">Cancel</button>',
-          struck ? 'Send files the strikeout — a note is optional' : '', true)}
+          struck ? 'Send files the strikeout — a note is optional' : THREAD_HINT, true)}
         ${statusHtml('__new__')}
       </div>`;
     }
@@ -13931,8 +13936,8 @@ ${bubbleShellHtml()}`;
         <div class="bstatus"></div>
         ${fresh
           ? composerHtml(NEW_ID, struck ? 'Why it should go — optional…' : 'Comment on this passage…', '',
-              struck ? 'Send files the strikeout — a note is optional' : '', true)
-          : composerHtml(t.id, 'Reply…', '', '', true)}
+              struck ? 'Send files the strikeout — a note is optional' : THREAD_HINT, true)
+          : composerHtml(t.id, 'Reply…', '', THREAD_HINT, true)}
         <span class="bsize" title="drag to resize · double-click to reset"
           aria-hidden="true">${SIZE_SVG}</span>`;
       // the reader reaching the foot themselves answers the pip as surely as
