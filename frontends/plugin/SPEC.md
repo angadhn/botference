@@ -14302,10 +14302,12 @@ sending. It files nothing and publishes nothing.
 - `transcribe`: the body is the recording's bytes. Its content type must be on `AUDIO_TYPES` (`audio/webm`, `audio/ogg`, `audio/mp4`,
   parameters allowed) and its first bytes must be that container (EBML, `OggS`, an ISO `ftyp` box; `sniffAudio`); never a file name.
   At most `SPEECH_LIMITS.audioBytes` (4718592, about 3 minutes as browsers record). The signed string gains two lines: the content
-  type exactly as sent, and the body's length in bytes. BEFORE the body is read: the four headers' form, the key id and the time window
-  (401, the connection closed); the type (415); a declared length over the cap (413); at most 2 bodies not yet verified read at once
-  (429 `audio-reading` beyond, the connection closed), each within 20 s (408 `too-slow`). Then the signature over the bytes (401), then
-  speech on (404), the request limit (429), the first bytes (415). Answers at once `{ ok, job, state: 'pending' }`.
+  type exactly as sent, and the body's length in bytes. The request also names the body's sha256 in `x-hub-link-body-sha256` and its
+  length in Content-Length, so the WHOLE SIGNATURE is checked BEFORE the body is read: the four headers' form, the key id (compared in
+  constant time) and the time window, the type (415), the body hash header and Content-Length (401), the HMAC over the string with
+  that hash, type and length, and the nonce (401; the connection closed). Only then, for a key holder: a declared length over the cap
+  (413); at most 2 bodies read at once (429 `audio-reading` beyond, the connection closed), each within 20 s (408 `too-slow`); the body
+  read must be exactly that length with exactly that hash (401). Then speech on (404), the request limit (429), the first bytes (415). Answers at once `{ ok, job, state: 'pending' }`.
 - `transcript { job }` → `{ ok, job, state: 'pending' }`, `{ ok, job, state: 'done', text, seconds }`, `{ ok, job, state: 'failed', why,
   say }` (`SPEECH_FAILURES`: unreadable-audio, no-speech, timed-out, unavailable, internal); a job unknown or forgotten: 404.
 - A JOB (`JOB_STATES`: queued, converting, transcribing, done, failed; one field, moved only by `moveJob`) lives in memory only. At most
@@ -14320,8 +14322,13 @@ sending. It files nothing and publishes nothing.
   fixed file name, deleted in a `finally`), with PATH, HOME and TMPDIR set to the folder and nothing else of the companion's
   environment. Each tool has its own profile (`speechProfile`), DENY BY DEFAULT: it may start only itself (no other program, no fork),
   signal only itself, read the sysctl values (proven needed), read the root entry, /System (with the dyld shared cache), /usr/lib,
-  /dev/null and the random devices, its own Homebrew keg (`<prefix>/Cellar` and `<prefix>/opt`: program files), its job folder and,
-  for whisper, the model; write only its job folder. No network of any kind, no mach service, no IOKit, so no clipboard, no
+  /dev/null and the random devices, its own Homebrew formula folder and the formula folders of exactly the libraries it loads
+  (`linkedKegs`: `otool -L`, transitively, once per tool, plus the plugins those formulas keep in lib/ and libexec/; each only under
+  the tool's own Homebrew prefix), with the `<prefix>/opt/<formula>` links it loads them through, its job folder and, for whisper, the
+  model; write only its job folder. A TOOL IS RUN ONLY FROM A HOMEBREW CELLAR: its real path must be inside
+  `<prefix>/Cellar/<formula>/<version>/` of /opt/homebrew or /usr/local (`homebrewPlace`); anything else (a tool in the owner's home,
+  /bin, a copy), a library outside the system roots and that prefix, or no `otool` turns speech OFF with a sentence saying why; there
+  is no fallback. No network of any kind, no mach service, no IOKit, so no clipboard, no
   preferences (cfprefsd), no keychain, no other process. The one exception: whisper on Apple silicon uses the GPU (Metal) and may open
   the `AGXDeviceUserClient` IOKit class and look up `com.apple.MTLCompilerService` (each proven needed by a run that fails without
   it; nothing else was). Elsewhere whisper runs on the CPU (`-ng`) with neither. A parser exploit could still reach: the system files
@@ -14342,5 +14349,8 @@ sending. It files nothing and publishes nothing.
   real profiles of both tools (macOS): the clipboard (pbpaste's exit status only), preferences (read as nothing), signalling another
   process, /etc/hosts, a file outside the job folder, a localhost connection, fork and exec are refused, and the job folder is
   readable; a child left behind by a normal exit is killed with the group; a spinning tool is stopped by its CPU limit (SIGXCPU);
-  before any byte is read an unsigned caller is 401 whether speech is on or off; at most 2 unverified bodies at once, each with a
-  deadline.
+  before any byte is read an unsigned caller is 401 whether speech is on or off; a caller with the key id but not the secret is 401
+  before its body and takes no read slot; at most 2 key holders' bodies at once, each with a deadline; a body not the one whose hash
+  was signed, or no hash header, is 401. A tool outside a Homebrew Cellar turns speech off; under every accepted profile (ffmpeg,
+  whisper on the GPU and on the CPU) the owner's home, /etc/hosts, a scratch file and the whole Cellar stay refused, and a real clip
+  still transcribes.
