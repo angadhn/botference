@@ -86,6 +86,8 @@ export function safeWebUrl(raw) {
 /** The words of a comment with the markdown taken off, for a name. */
 function plainWords(text) {
   return oneLine(String(text || '')
+    // (an autolink is read as the bare address it was typed as: linkBareUrls does not change a post's name)
+    .replace(/<(https?:\/\/[^\s<>]+)>/g, '$1')
     .replace(/!?\[\[([^\]|]*\|)?([^\]]*)\]\]/g, '$2')
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/<[^>]*>/g, ' ')
@@ -247,6 +249,54 @@ export function linkProblems(text) {
   }
   return [...new Set(out)];
 }
+// A WEB ADDRESS TYPED BARE in the owner's own words is written as an autolink (`<https://…>`), so it is clickable on the post. It is
+// still not a reference, a response or a mention to anyone: the addresses made clickable here are listed in the note's
+// `blyg_silent_links` (renderShortNote), so the site never upgrades them, and the lone-link response (linkTargetsOf) reads the owner's
+// TYPED text, where they are bare. Left as typed: an address in code, one already in a link (its text or its destination), an
+// autolink, a wikilink or a reference definition, one alone on a quote line (the site's quote card, as before), one after a backslash
+// or glued to a word. Trailing punctuation (and an unbalanced closing bracket) is not part of the address. http and https only.
+// → { text, urls }: urls, each once, in order.
+const BARE_URL = /https?:\/\/[^\s<>"'`|{}\\[\]]+/gi;
+export function linkBareUrls(text) {
+  const t = String(text);
+  const mask = Grammar.codeMask(t);
+  const urls = [];
+  let out = '';
+  let at = 0;
+  for (const m of t.matchAll(BARE_URL)) {
+    const i = m.index;
+    if (mask[i] || i < at) continue;
+    const prev = i ? t[i - 1] : '';
+    if (prev && !/[\s(*_\u00a0]/.test(prev)) continue;
+    if (prev === '(' && t[i - 2] === ']') continue;
+    const lineStart = t.lastIndexOf('\n', i - 1) + 1;
+    const lineEnd = t.indexOf('\n', i) === -1 ? t.length : t.indexOf('\n', i);
+    const before = t.slice(lineStart, i);
+    const after = t.slice(i + m[0].length, lineEnd);
+    if (/^[^[\]]*\]\s*[([]/.test(after) || /^[^[\]]*\]\]/.test(after)) continue;                 // a link's text, or a wikilink
+    if (/^\s{0,3}\[[^\]]+\]:\s*$/.test(before)) continue;                                      // a reference definition
+    if (/^\s{0,3}>\s*$/.test(before) && /^[.,;:!?)]*\s*$/.test(after)) continue;                 // alone on a quote line: a quote card
+    if ((before.match(/\[\[/g) || []).length > (before.match(/\]\]/g) || []).length) continue;   // inside a wikilink
+    let url = m[0].replace(/[.,;:!?*_~]+$/, '');
+    while (url.endsWith(')') && (url.match(/\(/g) || []).length < (url.match(/\)/g) || []).length) url = url.slice(0, -1).replace(/[.,;:!?*_~]+$/, '');
+    let ok = false;
+    try { const u = new URL(url); ok = (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname && !u.username && !u.password; } catch { ok = false; }
+    if (!ok || url.length > 600) continue;
+    out += t.slice(at, i) + '<' + url + '>';
+    at = i + url.length;
+    if (!urls.includes(url)) urls.push(url);
+  }
+  return { text: out + t.slice(at), urls };
+}
+// The addresses the owner linked ON PURPOSE in their words (a markdown link's destination, an autolink), outside code.
+export function explicitLinks(text) {
+  const t = String(text);
+  const mask = Grammar.codeMask(t);
+  const out = [];
+  for (const x of t.matchAll(/(!?)\[[^\]]*\]\(\s*<?(https?:\/\/[^\s)>]+)>?/g)) if (!x[1] && !mask[x.index]) out.push(x[2]);
+  for (const x of t.matchAll(/<(https?:\/\/[^\s<>"'`]+)>/g)) if (!mask[x.index]) out.push(x[1]);
+  return [...new Set(out)];
+}
 const LIQUID_IN_CODE = /\{[{%]/;
 const codeHasLiquid = text => {
   const mask = Grammar.codeMask(text);
@@ -286,15 +336,70 @@ const scopeInstruction = (instruction, { escape = 'liquid' } = {}) => {
   if (escape === 'liquid') i = liquidEntities(i);
   return i || 'passage';
 };
+// THE MARKDOWN FORM (the example site's `format: markdown`, _plugins/blygger_agent_markdown.rb; written from 2026-11-26 on, in place of
+// the escaped-text form above): the agent's markdown is kept as markdown, and the site renders it alone from an allow-list (lists,
+// bold, tables, code, links marked as the agent's and never references, images only from the site or named by the owner). In the NOTE
+// only what would act on the note itself is written as character references, outside code (the site's AgentMarkdown.stored does
+// exactly the same; its test compares the two when BLYG_BOTFERENCE_TREE is set):
+//   [TK] [/TK] [=]         the scope's own grammar
+//   [[ ![[ [^               wikilinks, transclusions, footnotes
+//   < (not an autolink)    raw HTML
+//   { }                    Liquid, kramdown attribute lists and extensions
+//   a lone backtick        a code span that could pair with the owner's code and hide [/TK]
+// An unclosed fence is closed; a block that holds a fence or an indented line starts and ends with a newline, so neither `[=]` nor
+// `[/TK]` shares a line with code.
+export const AGENT_TEXT_FORMATS = Object.freeze(['legacy', 'markdown']);
+export const AGENT_TEXT_FORMAT = 'markdown';
+const PRIVATE_USE = /[\ue000-\ue005]/g;
+const fenceOf = l => /^ {0,3}(`{3,}|~{3,})/.exec(l);
+function fencedLines(lines) {
+  let fence = null;
+  return lines.map(l => {
+    if (fence) { if (new RegExp(`^ {0,3}${fence[0] === '`' ? '`' : '~'}{${fence.length},}\\s*$`).test(l)) fence = null; return true; }
+    const m = fenceOf(l);
+    if (m) { fence = m[1]; return true; }
+    return false;
+  });
+}
+const outsideSpans = (line, fix) => {
+  const parts = line.split(/((`+).*?\2)/);
+  let out = '';
+  for (let i = 0; i < parts.length; i += 3) out += fix(parts[i] || '') + (parts[i + 1] || '');
+  return out;
+};
+// (a link whose address names any scheme but http or https, or hides one behind a character reference: its `](` is written `&#93;(`,
+// so it is the characters; the site shows such a link as text anyway)
+const BAD_DEST = /\]\((?=\s*<?\s*(?!https?:\/\/)[^\s)\/?#]*?(?::|&#|&colon))/gi;
+export function storedAgentMarkdown(raw, { inline = false } = {}) {
+  let t = clean(raw).replace(PRIVATE_USE, '').replace(/\t/g, '    ');
+  t = t.split('\n').map(l => l.replace(/\s+$/, '')).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (inline) t = t.replace(/\s*\n\s*/g, ' ');
+  let lines = t.split('\n');
+  const code = fencedLines(lines);
+  lines = lines.map((l, i) => (code[i] ? l : outsideSpans(l, s => s
+    .replace(/\[(?=\/?TK\]|=\])/gi, '&#91;').replace(/!?\[(?=\[|\^)/g, m => m.replace('[', '&#91;'))
+    .replace(/<(?!https?:\/\/[^\s<>]+>)/g, '&lt;').replace(/\{/g, '&#123;').replace(/\}/g, '&#125;').replace(/`/g, '&#96;')
+    .replace(BAD_DEST, '&#93;('))));
+  let open = null;
+  lines.forEach((l, i) => {
+    const m = code[i] && fenceOf(l);
+    if (!m) return;
+    open = open === null ? m[1] : (new RegExp(`^ {0,3}${open[0] === '`' ? '`' : '~'}{${open.length},}\\s*$`).test(l) ? null : open);
+  });
+  if (open && !inline) lines.push(open);
+  let out = lines.join('\n');
+  if (!inline && (code.some(Boolean) || lines.some(l => /^(?: {4}|\t)/.test(l)))) out = `\n${out}\n`;
+  return out;
+}
 export function agentScope(g, { block = false, escape = 'liquid' } = {}) {
-  const text = scopeText(g.text, { block, escape });
+  const text = storedAgentMarkdown(g.text, { inline: !block });
   if (g.mode === 'pasted-by-reader') { const m = importedModelToken(g.model); return `[TK]impyrt${m ? ' ' + m : ''}=${text}[/TK]`; }
   return `[TK] ${scopeInstruction(g.instruction, { escape })} [=]${text}[/TK]`;
 }
 /** The blyg_generated entry for one agent-text gap. */
 export const generatedEntry = g => ({ ...(g.model ? { model: String(g.model) } : {}), ...(g.at ? { at: String(g.at) } : {}),
-  ...(READER_HAND_MODES.includes(g.mode) ? { edited_by_author: true } : {}),
-  // (for the owner's view only: generatedLines writes model, at and edited_by_author, nothing else)
+  ...(READER_HAND_MODES.includes(g.mode) ? { edited_by_author: true } : {}), format: AGENT_TEXT_FORMAT,
+  // (for the owner's view only: generatedLines writes model, at, edited_by_author and format, nothing else)
   agent: g.agent === 'codex' ? 'codex' : 'claude' });
 // a placeholder for a scope while the owner's own words around it are made safe (private-use characters, never in a placeholder twice)
 const HOLD_A = '\ue000';
@@ -357,6 +462,11 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
   { const mask = Grammar.codeMask(out);
     if ([...out.matchAll(TK_MARK)].some(m => !mask[m.index])) blocked.push(OWNER_TK_SAY);
     out = out.replace(TK_MARK, (m, i) => (mask[i] ? m : '&#91;' + m.slice(1))); }
+  // bare web addresses in the owner's words become clickable (never a reference: see linkBareUrls)
+  const explicit = explicitLinks(out);
+  const linked = linkBareUrls(out);
+  out = linked.text;
+  const bareLinks = linked.urls.filter(u => !explicit.includes(u));
   blocked.push(...linkProblems(out));
   out = neutraliseHtml(out);
   if (escape === 'liquid') {
@@ -365,7 +475,7 @@ export function ownText(msg, { escape = 'liquid' } = {}) {
   }
   out = out.replace(new RegExp(`${HOLD_A}(\\d+)${HOLD_B}`, 'g'), (m, n) => scopes[Number(n)] || '');
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { text: out, blocked, generated };
+  return { text: out, blocked, generated, bareLinks, explicitLinks: explicit };
 }
 
 // ---- a quoted passage, as the note writes it -----------------------------------
@@ -497,7 +607,7 @@ export function checkTemplate(text) {
 }
 
 /** The keys a note adds when it quotes or responds to a Blygger post (or a web page), as lines. */
-export function blygKeyLines({ sources = [], stubOf = null, generated = [] } = {}) {
+export function blygKeyLines({ sources = [], stubOf = null, generated = [], silentLinks = [] } = {}) {
   const out = [];
   const list = [...new Set(sources.filter(Boolean))];
   if (list.length) out.push('blyg_sources:', ...list.map(u => `  - ${yamlString(u)}`));
@@ -509,8 +619,11 @@ export function blygKeyLines({ sources = [], stubOf = null, generated = [] } = {
     // (the page's title, when it had one: the site's "In response to" line shows it; never on the wire)
     out.push('blyg_stub_of:', `  url: ${yamlString(stubOf.url)}`, ...(stubOf.title ? [`  title: ${yamlString(stubOf.title)}`] : []));
   }
-  // one entry per agent-written passage, in note order (tkgaps.generatedLines: model, at, edited_by_author)
+  // one entry per agent-written passage, in note order (tkgaps.generatedLines: model, at, edited_by_author, format)
   for (const l of generatedLines(generated)) out.push(...l.split('\n'));
+  // the addresses the owner typed bare and this writer made clickable (linkBareUrls): the site never makes them references
+  const silent = [...new Set(silentLinks.map(u => safeWebUrl(u)).filter(Boolean))];
+  if (silent.length) out.push('blyg_silent_links:', ...silent.map(u => `  - ${yamlString(u)}`));
   return out;
 }
 
@@ -631,6 +744,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const snapshot = [];
   let titleSource = '';
   let webQuoted = false;
+  const bareLinks = [];
+  const explicit = [];
   for (const t of threads) {
     const el = eligibleThread(t);
     if (!el.ok) return { ok: false, error: el.why };
@@ -657,6 +772,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
       const r = ownText(m, opts);
       blocked.push(...r.blocked);
       generated.push(...r.generated);
+      bareLinks.push(...(r.bareLinks || []));
+      explicit.push(...(r.explicitLinks || []));
       if (r.text) { words.push(r.text); said.push({ ts: String(m.ts || ''), sha: hashOf(r.text) }); }
     }
     snapshot.push({ thread: String(t.id || ''), quote: quote.trim() ? hashOf(quote.trim()) : '', msgs: said });
@@ -682,7 +799,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const dateOk = d => /^\d{4}-\d\d-\d\d$/.test(String(d || ''));
   const front = renderFront((home && home.template) || DEFAULT_TEMPLATE, {
     title: oneLine(title).replace(/[<>{}]/g, ''), created: keep && dateOk(keep.created) ? keep.created : day, released: keep && dateOk(keep.released) ? keep.released : day,
-    slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated }),
+    slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated,
+      silentLinks: [...new Set(bareLinks)].filter(u => !explicit.includes(u)) }),
   });
   const text = `---\n${front.join('\n')}\n---\n${body}\n`;
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };

@@ -442,7 +442,7 @@ export async function askForGap({ gap, msgText, quote = '', page, post = null, a
     at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z') };
 }
 
-/** blyg_generated: one entry per agent-written gap (filled, edited, adopted or pasted) in note order: model, at, edited_by_author. */
+/** blyg_generated: one entry per agent-written gap (filled, edited, adopted or pasted) in note order: model, at, edited_by_author, format. */
 export function generatedLines(entries) {
   if (!entries || !entries.length) return [];
   const clean = v => String(v).replace(/[\u0000-\u001f\u007f<>]/g, '').trim().slice(0, 100);
@@ -451,7 +451,10 @@ export function generatedLines(entries) {
     const at = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(String(e.at || '')) ? e.at : '';
     // `edited_by_author: true`: the author edited or adopted this agent text (the example site shows "<Agent> + <author>" on the page;
     // it never reaches the Blygger wire)
-    const members = [...(model ? [`model: ${JSON.stringify(model)}`] : []), ...(at ? [`at: ${at}`] : []), ...(e.edited_by_author ? ['edited_by_author: true'] : [])];
+    // `format: markdown`: the passage is stored as the agent's markdown (blyg-note.mjs storedAgentMarkdown), which the site renders
+    // from an allow-list; an entry without it is the older escaped-text form, which the site keeps rendering as it always did
+    const members = [...(model ? [`model: ${JSON.stringify(model)}`] : []), ...(at ? [`at: ${at}`] : []), ...(e.edited_by_author ? ['edited_by_author: true'] : []),
+      ...(e.format === 'markdown' ? ['format: markdown'] : [])];
     if (!members.length) return '  - {}';
     return members.map((m, i) => (i ? '    ' : '  - ') + m).join('\n');
   })];

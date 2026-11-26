@@ -12955,6 +12955,15 @@ the site's generated passage: `[TK] <instruction> [=]<text>[/TK]`, or `[TK]impyr
 box "<Agent>" or "<Agent> + <author>"). The text is escaped as plain text whoever touched it last (adopted included: this replaces the
 earlier rule); inside the scope a backtick and a TK mark are character references. The instruction is one inert line (the example site
 never shows it on the page or the wire). A `[TK]` the owner typed as words is shown as the letters (`&#91;TK]`), never read as grammar.
+(SUPERSEDED 2026-11-26 for the text: it is now kept as the agent's MARKDOWN, `storedAgentMarkdown`, and its entry says `format: markdown`;
+the example site renders it alone from an allow-list (lists, bold, tables, code, links marked as the agent's and never references, images
+only from the site or named in the instruction). In the note only what would act on the note is a character reference: the TK marks,
+`[[`, `![[`, `[^`, `<` that is not an autolink, braces, a lone backtick, `](` before a non-http(s) address; an unclosed fence is closed.
+The site's `AgentMarkdown.stored` is the same function; its test compares the two. Entries without `format` are the escaped form above,
+which the site keeps rendering as it did.)
+**BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a
+wikilink, a reference definition or alone on a quote line; trailing punctuation left out; http and https only) and listed in the note's
+`blyg_silent_links`, so the site never makes them references; the lone-link response still reads only what the owner linked on purpose.
 **THE AGENT-TEXT RULE** (`reviewFor`, `REVIEW_REASONS`): a post with any such passage ALWAYS stops at `planned` for the owner's look,
 whatever `confirm` says (`run.review = 'agent-text'`). (SUPERSEDED 2026-11-25: with one click it publishes straight in its box; see "The look
 policy" under the publish queue.)

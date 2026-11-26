@@ -259,21 +259,21 @@ test('the owner\'s own words: trusted as content, but Liquid is made inert, fron
   assert.ok(N.renderShortNote({ page: code, threads: code.threads, home: { ...HOME, escape: 'none' }, now: NOW, slug: 's' }).ok);
 });
 
-test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the site\'s generated-passage form, escaped as text, with one blyg_generated entry each; an unfilled or failed one BLOCKS; a [TK] the owner typed is shown as the letters', () => {
+test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the site\'s generated-passage form, kept as markdown in the site\'s markdown format, with one blyg_generated entry each; an unfilled or failed one BLOCKS; a [TK] the owner typed is shown as the letters', () => {
   const gap = (mode, text, extra = {}) => ({ instruction: 'say hello', mode, ...(text ? { text } : {}), agent: 'claude', model: 'claude-opus-5', at: '2026-11-24T10:00:00Z', ...extra });
   const one = (text, gaps) => { const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine(text), gaps }] }]); return make(p, p.threads); };
   const filled = one('Intro\n/tk say hello\nAfter', [gap('filled-by-agent', 'Hello, reader. [[x]]')]);
   assert.ok(filled.ok, filled.error);
-  // a line gap is a block of its own; brackets as character references (no raw [ or ] for a site's own markup to read)
-  assert.match(filled.text, /Intro\n\n\[TK\] say hello \[=\]Hello, reader\. &#91;&#91;x&#93;&#93;\[\/TK\]\n\nAfter\n$/, filled.text);
-  assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n---/);
+  // a line gap is a block of its own; a wikilink's bracket as a character reference (nothing for the site's own markup to read)
+  assert.match(filled.text, /Intro\n\n\[TK\] say hello \[=\]Hello, reader\. &#91;\[x\]\]\[\/TK\]\n\nAfter\n$/, filled.text);
+  assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n {4}format: markdown\n---/);
   assert.deepEqual(filled.generated.map(g => [g.agent, !!g.edited_by_author]), [['claude', false]]);
   assert.equal(one('/tk say hello\nMy own words follow it.', [gap('filled-by-agent', 'Agent words first.')]).title, 'My own words follow it', 'the name is the owner\'s first words, never the agent\'s or a mark');
   // edited and adopted: the same form, the text as it now stands, still escaped, and marked as having the owner's hand in it
   // (an INLINE gap, typed inside a sentence, is a block of its own all the same: the words before, the box, the words after)
   for (const mode of ['edited-by-reader', 'adopted-by-reader']) {
     const r = one('Intro /tk(say hello) after', [gap(mode, 'Mine **b** [[x]]')]);
-    assert.match(r.text, /\nIntro\n\n\[TK\] say hello \[=\]Mine \\\*\\\*b\\\*\\\* &#91;&#91;x&#93;&#93;\[\/TK\]\n\nafter\n$/, mode);
+    assert.match(r.text, /\nIntro\n\n\[TK\] say hello \[=\]Mine \*\*b\*\* &#91;\[x\]\]\[\/TK\]\n\nafter\n$/, mode);
     assert.match(r.text, /edited_by_author: true/, mode);
   }
   // pasted from an agent's tool: the impyrt form, with the model of that agent, a block of its own too
@@ -472,7 +472,7 @@ test('short posts are text: raw HTML in the owner\'s own words is written so it 
   assert.match(own, /\*\*bold\*\*/, 'markdown is kept in the owner\'s words');
   assert.match(own, /`<code>`/, 'a code span shows < literally: not double-escaped');
   assert.match(own, /\[h\]\(https:\/\/ok\.example\.test\)/, 'an https link is kept');
-  assert.match(box, /\\\*\\\*bold\\\*\\\*/, 'in the box markdown is text');
+  assert.match(box, /\*\*bold\*\*/, 'in the box markdown stays markdown (the site renders it from an allow-list)');
   // a stray bar never becomes a table; a wikilink keeps its own
   assert.equal(N.neutraliseHtml('a | b\n- | -\nsee [[x | y]]'), 'a \\| b\n- \\| -\nsee [[x | y]]');
 });
@@ -554,4 +554,54 @@ test('an agent\'s text in a scope can set no attribute and redefine none of the 
     const t = N.scopeText(h, { block });
     assert.ok(!/\{:|\{#|\[|^\s*#|<b/m.test(t.replace(/&#91;|&#123;/g, '')), `${JSON.stringify(h)} → ${JSON.stringify(t)}`);
   }
+});
+
+// THE MARKDOWN FORM of an agent's passage (format: markdown): markdown kept, only what would act on the NOTE as character references.
+test('an agent\'s passage is stored as markdown: lists, bold, tables, code and links kept; nothing can end the scope, pair with the owner\'s code, run Liquid or add HTML', () => {
+  const S = N.storedAgentMarkdown;
+  assert.equal(S('- **A browser plugin.** One click.\n- **A Hub.** Mine.'), '- **A browser plugin.** One click.\n- **A Hub.** Mine.');
+  assert.equal(S('| a | b |\n|---|---|\n| 1 | 2 |'), '| a | b |\n|---|---|\n| 1 | 2 |');
+  assert.equal(S('See [a post](https://x.example/t/1/) and <https://y.example/>.'), 'See [a post](https://x.example/t/1/) and <https://y.example/>.');
+  assert.equal(S('a [TK] b [/TK] c [=] d [[w]] ![[0000000000000000000000000z]] e[^1] <b onclick=x> {{ x }} {% y %} {: .z} {#i} a ` lone'),
+    'a &#91;TK] b &#91;/TK] c &#91;=] d &#91;[w]] !&#91;[0000000000000000000000000z]] e&#91;^1] &lt;b onclick=x> &#123;&#123; x &#125;&#125; &#123;% y %&#125; &#123;: .z&#125; &#123;#i&#125; a &#96; lone');
+  assert.equal(S('[a](javascript:alert(1)) [d](java&#115;cript:x) [m](mailto:a@b) [ok](https://ok.example/)'),
+    '[a&#93;(javascript:alert(1)) [d&#93;(java&#115;cript:x) [m&#93;(mailto:a@b) [ok](https://ok.example/)');
+  assert.equal(S('Use `{{ x }}` here'), 'Use `{{ x }}` here', 'a code span is code');
+  assert.equal(S('```\nopen {{ x }}'), '\n```\nopen {{ x }}\n```\n', 'an unclosed fence is closed; neither [=] nor [/TK] shares a line with code');
+  assert.equal(S('para\n\n    indented'), '\npara\n\n    indented\n');
+  assert.equal(S('one\ntwo', { inline: true }), 'one two');
+  // in a note: one scope, whatever the agent wrote around fences, backticks and indents
+  for (const raw of ['```\nunclosed [/TK]', 'a ` b', '- a\n\n    - b', '~~~\nx', 'x\n\n```js\ny\n```']) {
+    const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Mine `code` here\n/tk go\nAfter `more`'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: raw }] }] }]);
+    const r = make(p, p.threads);
+    if (/\[\/TK\]/.test(raw)) { assert.equal(r.ok, false); continue; }
+    assert.ok(r.ok, r.error);
+    assert.equal((r.text.match(/\[\/TK\]/g) || []).length, 1, raw);
+    assert.match(r.text, /format: markdown/);
+  }
+  assert.deepEqual(N.AGENT_TEXT_FORMATS, ['legacy', 'markdown']);
+});
+
+// A BARE ADDRESS in the owner's own words is clickable on the post, and still tells nobody: it is listed in blyg_silent_links, and the
+// lone-link response reads the owner's typed text (where it is bare).
+test('a bare web address in the owner\'s words becomes an autolink, listed as silent; code, links, quote cards and agents\' passages are left alone', () => {
+  const L = t => N.linkBareUrls(t);
+  assert.deepEqual(L('at https://other.example.test/blyg/.'), { text: 'at <https://other.example.test/blyg/>.', urls: ['https://other.example.test/blyg/'] });
+  assert.deepEqual(L('(https://code.example.test/project).'), { text: '(<https://code.example.test/project>).', urls: ['https://code.example.test/project'] });
+  assert.equal(L('see https://a.example/x_(y)) and https://b.example/q?x=1,').text, 'see <https://a.example/x_(y)>) and <https://b.example/q?x=1>,');
+  const kept = '[x](https://a.b/) <https://c.d/> `https://e.f` [https://g.h](https://g.h) [[https://i]] word:https://no.example \\https://n.o ftp://f.example/ javascript://x';
+  assert.deepEqual(L(kept), { text: kept, urls: [] });
+  assert.deepEqual(L('```\nhttps://in.code\n```').urls, []);
+  assert.deepEqual(L('> a quote\n>\n> https://card.example/x').urls, [], 'the site\'s quote card stays as it was');
+  assert.deepEqual(L('[ref]: https://def.example/').urls, []);
+  const p = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Mine at https://other.example.test/blyg/ and (https://code.example.test/project). Also [linked](https://linked.example/) and https://linked.example/ again.\n/tk go\n'),
+    gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 'Agent https://agent.example/x' }] }] }]);
+  const r = make(p, p.threads);
+  assert.ok(r.ok, r.error);
+  assert.match(r.text, /Mine at <https:\/\/other\.example\.test\/blyg\/> and \(<https:\/\/code\.example\.test\/project>\)\./);
+  assert.match(r.text, /blyg_silent_links:\n {2}- "https:\/\/other\.example\.test\/blyg\/"\n {2}- "https:\/\/code\.example\.test\/project"\n/);
+  assert.ok(!/silent_links:[\s\S]*linked\.example/.test(r.text.split('\n---\n')[0]), 'an address the owner also linked on purpose keeps its reference');
+  assert.ok(!/<https:\/\/agent\.example/.test(r.text) && !/silent_links:[\s\S]*agent\.example/.test(r.text.split('\n---\n')[0]), 'an agent\'s address is the site\'s to render, not the owner\'s');
+  assert.deepEqual(N.linkTargetsOf(p.threads), ['https://linked.example/'], 'the lone-link response reads only what the owner linked on purpose');
+  assert.equal(r.title, N.titleOf('Mine at https://other.example.test/blyg/ and (https://code.example.test/project). Also [linked](https://linked.example/) and https://linked.example/ again.'), 'the name is the same words as before');
 });
