@@ -334,6 +334,25 @@ await test('A PASSAGE LEFT WRITING BY A RESTART is failed "interrupted" at the n
   await waitFor(async () => (await status(S, 'rid-dintr-0001')).fill === 'ready' && oneshots() === before + 1, 'written again');
 });
 
+await test('AN OWNER\'S EDIT ON THE COMPUTER: the Hub reads the edited text, marked edited, with a new text_rev; Publish sends the edited text once', async () => {
+  await reply(S, 'rid-dedit-0001', { comment: 'Filed from the phone.' });
+  const before = await statusText('rid-dedit-0001');
+  const t = (await threadsOf(S, POST_A)).find(x => x.msgs[0].text === 'Filed from the phone.');
+  const e = await POST(S, '/edit', { url: POST_A, thread_id: t.id, ts: t.msgs[0].ts, author: 'owner', text: 'Rewritten at the desk.', resend: false });
+  assert.equal(e.status, 200, e.body);
+  const after = await statusText('rid-dedit-0001');
+  assert.deepEqual([after.state, after.text_state, after.blocks.map(b => b.text)], ['saved', 'edited-on-computer', ['Rewritten at the desk.']]);
+  assert.notEqual(after.text_rev, before.text_rev);
+  const notes = () => rig.calls().filter(c => c.step === 'plan').length;
+  const planned = notes();
+  assert.equal((await send(S, 'publish', { rid: 'rid-dedit-0001' })).status, 200);
+  await waitFor(async () => (await status(S, 'rid-dedit-0001')).state === 'published', 'published');
+  assert.equal(notes(), planned + 1, 'one run');
+  const q = JSON.parse(fs.readFileSync(path.join(root, '.botference', 'plugin', 'blyg-publish-queue.json'), 'utf8'));
+  assert.equal(q.entries.filter(x => x.label.startsWith('Rewritten at the desk')).length, 1, 'the edited text, pressed once');
+  assert.equal(q.entries.filter(x => x.label.startsWith('Filed from the phone')).length, 0);
+});
+
 await test('CANCEL A SAVED DRAFT from the Hub deletes its thread', async () => {
   await reply(S, 'rid-dgone-0001', { comment: 'Throw me away.' });
   assert.ok((await threadsOf(S, POST_A)).some(t => t.msgs[0].text === 'Throw me away.'));
@@ -360,7 +379,7 @@ await test('CONFIRM ALWAYS is honoured: a Hub press waits for the owner\'s look 
   assert.equal(r.status, 200, r.body);
   const s = await waitFor(async () => { const x = await status(S, 'rid-look-00014'); return x.state === 'awaiting_look' ? x : null; }, 'awaiting the look');
   assert.equal(s.state, 'awaiting_look');
-  assert.equal(rig.calls().filter(x => x.step === 'publish').length, 7, 'nothing published unseen');
+  assert.equal(rig.calls().filter(x => x.step === 'publish').length, 8, 'nothing published unseen');
 });
 
 await test('OFF: the key is deleted and every route is 404 at once', async () => {

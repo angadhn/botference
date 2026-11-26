@@ -3327,11 +3327,11 @@ const hubLink = createHubLink({
   cancel: entry => blygQueue.cancel({ entry }),
   // a saved draft's passage asked again (as the drawer's refill), and a saved draft thrown away (as the drawer's delete of a thread)
   gapBudget: url => gapBudget(url).left,
-  // (only the message the link filed: its ts, and its channel still the link's)
+  // (only the message the link filed: the record's ts, in a thread the link made)
   redoGap: ({ url, thread_id, ts, gap_id }) => {
     const page = store.readPage(url);
     const thread = page && store.findThread(page, thread_id);
-    const msg = thread && thread.via === 'hub-link' ? (thread.msgs || []).find(m => m && m.ts === ts && m.channel === 'hub-link') : null;
+    const msg = thread && thread.via === 'hub-link' ? (thread.msgs || []).find(m => m && m.ts === ts) : null;
     const gap = msg && ownerTyped(msg) && (msg.gaps || []).find(g => g.id === gap_id);
     if (!gap || !canGapMove(gap, 'pending')) return { ok: false };
     gapMove(gap, 'pending');
@@ -3344,7 +3344,7 @@ const hubLink = createHubLink({
   discard: ({ url, thread_id, ts }) => {
     const page = store.readPage(url);
     const i = page ? page.threads.findIndex(t => t && t.id === thread_id && t.via === 'hub-link' && (t.msgs || []).length === 1
-      && t.msgs[0].ts === ts && t.msgs[0].channel === 'hub-link') : -1;
+      && t.msgs[0].ts === ts) : -1;
     if (i < 0) return { ok: false };
     store.deleteRuns(store.pageKey(page.url), store.runIdsOf(page.threads[i].msgs));
     page.threads.splice(i, 1);
@@ -3356,7 +3356,7 @@ const hubLink = createHubLink({
   settleStale: ({ url, thread_id, ts }) => {
     const page = store.readPage(url);
     const thread = page && store.findThread(page, thread_id);
-    const msg = thread && (thread.msgs || []).find(m => m && m.ts === ts && m.channel === 'hub-link');
+    const msg = thread && thread.via === 'hub-link' ? (thread.msgs || []).find(m => m && m.ts === ts) : null;
     let moved = false;
     for (const g of (msg && msg.gaps) || []) {
       if (g && g.mode === 'pending' && !liveFills.has(fillKey(page.url, thread_id, ts, g.id)) && canGapMove(g, 'failed')) { gapMove(g, 'failed', { reason: 'interrupted' }); moved = true; }

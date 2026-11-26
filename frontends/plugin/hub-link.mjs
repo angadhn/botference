@@ -150,14 +150,21 @@ export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = 
   }
   return { blocks, cut: false };
 }
-/** THE MESSAGE THE LINK FILED in a thread: the one with the record's `msg_ts` whose channel is still 'hub-link' (an edit by the owner on
- *  the computer makes it theirs, `drawer`). A record from before `msg_ts` was kept: the first message, if it is still the link's. */
+/** THE MESSAGE THE LINK FILED in a thread: the one with the record's `msg_ts` (the record is what says the link filed it: an owner's
+ *  edit on the computer re-stamps the message's channel, and it is still this reply). A record from before `msg_ts` was kept: the
+ *  first message, while its channel is still the link's. Gone (deleted on the computer) → null: the reply has ended. */
 export function filedMsgOf(record, thread) {
   if (!record || !thread) return null;
   const msgs = Array.isArray(thread.msgs) ? thread.msgs : [];
-  const m = record.msg_ts ? msgs.find(x => x && x.ts === record.msg_ts && x.channel === 'hub-link') : (msgs[0] && msgs[0].channel === 'hub-link' ? msgs[0] : null);
+  const m = record.msg_ts ? msgs.find(x => x && x.ts === record.msg_ts) : (msgs[0] && msgs[0].channel === 'hub-link' ? msgs[0] : null);
   return m || null;
 }
+/** THE FILED TEXT NOW, one value derived by textStateOf from the record's `text_hash` and the message's text (never stored):
+ *    as-filed            the words are those the Hub sent
+ *    edited-on-computer  the owner changed them on the computer (Publish sends them as they are now) */
+export const HUB_LINK_TEXT_STATES = Object.freeze(['as-filed', 'edited-on-computer']);
+export const textStateOf = (record, msg) => (!record || !record.text_hash || !msg ? ''
+  : textHashOf(msg.text) === record.text_hash ? 'as-filed' : 'edited-on-computer');
 export const textHashOf = t => crypto.createHash('sha256').update(String(t == null ? '' : t)).digest('hex').slice(0, 16);
 /** What Publish would send for the filed message, as a short hash: its text and every passage's id, mode and text. */
 export const textRevOf = msg => crypto.createHash('sha256').update(JSON.stringify([String(msg.text || ''),
@@ -452,6 +459,7 @@ export function createHubLink(deps) {
       v.fill = fillOf(gaps);
       if (v.fill === 'failed') v.fill_why = scrubPaths((gaps.find(g => g.mode === 'failed') || {}).reason).slice(0, 300);
       v.text_rev = textRevOf(first);
+      { const ts = textStateOf(rec, first); if (ts) v.text_state = ts; }
       // the thread's other messages Publish would include (the Hub shows only the filed one)
       v.extra_messages = (thread.msgs || []).filter(m => m && m !== first && isPublishableMsg(m)).length;
       if (text) { const b = blocksOf(first); v.blocks = b.blocks; if (b.cut) v.text_cut = true; }

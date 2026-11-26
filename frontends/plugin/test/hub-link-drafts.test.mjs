@@ -180,10 +180,7 @@ test('R1 ONLY THE FILED MESSAGE: later messages are never read back; the filed o
     k.thread('t1').msgs[0].gaps = [gap('g1', 'filled-by-agent', { text: 'x' })];
     assert.equal((await k.send('redo', { rid: 'rid-first-0001', gap: 'g1' })).status, 409);
     assert.deepEqual(k.seen.redos, []);
-    // a message with the filed ts that is no longer the Hub's (the owner edited it on the computer: its channel is theirs now)
-    const k2 = await linkWith();
-    try { await k2.draft('rid-first-0002'); k2.thread('t1').msgs[0].channel = 'drawer';
-      assert.equal((await k2.send('status', { rids: ['rid-first-0002'], text: true })).json.replies[0].blocks, undefined); } finally { await k2.close(); }
+
   } finally { await k.close(); }
 });
 
@@ -253,5 +250,25 @@ test('R6 REDO refuses a passage the owner edited by hand on the computer', async
     const r = await k.send('redo', { rid: 'rid-edited-001', gap: 'g1' });
     assert.deepEqual([r.status, r.json.error, r.json.say], [409, 'edited-on-computer', 'You changed this passage on your computer; write it again there.']);
     assert.deepEqual(k.seen.redos, []);
+  } finally { await k.close(); }
+});
+
+test('R7 AN OWNER\'S EDIT ON THE COMPUTER keeps the reply: its current text is read back, text_rev changes, it is marked edited, it is not ended', async () => {
+  const k = await linkWith({ text: 'As filed.\n/tk explain', gaps: [gap('g1', 'filled-by-agent', { instruction: 'explain', text: 'A' })] });
+  try {
+    await k.draft('rid-edit-00001');
+    const before = (await k.send('status', { rids: ['rid-edit-00001'], text: true })).json.replies[0];
+    assert.deepEqual([before.state, before.text_state], ['saved', 'as-filed']);
+    // the drawer's /edit: new text, and the message re-stamped as typed there
+    Object.assign(k.thread('t1').msgs[0], { text: 'Edited on the computer.\n/tk explain', channel: 'drawer' });
+    const after = (await k.send('status', { rids: ['rid-edit-00001'], text: true })).json.replies[0];
+    assert.deepEqual([after.state, after.text_state, after.fill], ['saved', 'edited-on-computer', 'ready']);
+    assert.notEqual(after.text_rev, before.text_rev);
+    assert.deepEqual(after.blocks.map(b => b.text), ['Edited on the computer.\n', 'A']);
+    assert.equal((await k.send('cancel', { rid: 'rid-edit-00001' })).json.error, 'changed-on-computer');
+    assert.equal((await k.send('redo', { rid: 'rid-edit-00001', gap: 'g1' })).status, 200, 'an agent passage it did not touch may be written again');
+    const p = await k.send('publish', { rid: 'rid-edit-00001' });
+    assert.deepEqual([p.status, k.seen.presses], [200, ['t1']]);
+    assert.deepEqual(L.HUB_LINK_TEXT_STATES, ['as-filed', 'edited-on-computer']);
   } finally { await k.close(); }
 });
