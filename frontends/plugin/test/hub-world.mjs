@@ -78,7 +78,8 @@ export function invariants(w, o = A, { atRest = true } = {}) {
   if (atRest) for (const id of Object.keys(arch)) if (!ids.includes(id)) bad.push(`P3 archive record ${id} not in the ledger`);
   for (const [id, r] of Object.entries(feed)) {
     if (r.kind === 'withdrawn') continue;
-    if (s.peek('body', r.body || r.key) === null) bad.push(`P4 the body of unread ${id} is gone`);
+    // (an `older` record stepped aside: its text was released on purpose, and it is not read)
+    if (r.read !== 'older' && s.peek('body', r.body || r.key) === null) bad.push(`P4 the body of unread ${id} is gone`);
     if (ids.includes(id) && r.read !== 'edited') bad.push(`P2 read ${id} is unread as ${r.read}`);
   }
   // P5 the day's edit-return count is not undercounted: every return of the last 24 hours is in the ledger's `returns`

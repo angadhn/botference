@@ -397,7 +397,7 @@ test('a one-character change to a long post you read keeps it read (judged by it
   r.done();
 });
 
-test('an edit-return counts against the per-blyg unread cap: at the cap the post is held, not returned', async () => {
+test('an edit-return is never held back by the per-blyg unread limit: it comes back, and the oldest unread post steps aside', async () => {
   const r = rig({ settings: { following_unread_target: 500, following_max_items_per_blyg: 10 } });
   const site = r.web.add(A);
   publish(site, A, 12);
@@ -405,12 +405,18 @@ test('an edit-return counts against the per-blyg unread cap: at the cap the post
   await r.f.refresh();
   assert.equal((await feed(r)).length, 10);
   await r.f.readMove(await keyOf(r, A, 12), 'tick');
-  await r.f.refresh(); // the eleventh comes in: at the cap again
+  await r.f.refresh(); // the eleventh comes in: at the limit again
   assert.equal((await feed(r)).length, 10);
+  const oldest = (await feed(r)).map(h => h.title).sort((a, b) => Number(a.split(' ')[1]) - Number(b.split(' ')[1]))[0];
   site.put(makeDoc({ id: idOf(12), origin: A, title: 'Post 12', body: 'New words.', version: 2, created: day(12), updated: day(200) }));
   const s = await r.f.refresh();
-  assert.equal(s.edited, 0);
-  assert.equal((await feed(r)).length, 10);
+  assert.equal(s.edited, 1, 'it comes back');
+  assert.equal(s.stepped_aside, 1);
+  const now = await feed(r);
+  assert.equal(now.length, 10, 'still at the limit');
+  assert.equal(now.find(h => h.title === 'Post 12').read, 'edited');
+  assert.ok(!now.some(h => h.title === oldest), `the oldest unread (${oldest}) stepped aside`);
+  assert.equal((await r.f.view({ limit: 1000 })).older.map(l => l.title).join(), oldest, 'listed under Older posts');
   r.done();
 });
 

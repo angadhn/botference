@@ -554,10 +554,15 @@ the companion on your own computer. Open `http://127.0.0.1:4189/hub` (the
 drawer's feed icon, or the link on the extension's options page; `/following`
 opens the same page). It has four views, side by side:
 
-- **Feed**: the posts of the blygs you follow that you have not read. The count on its tab is the number unread.
+- **Feed**: the posts of the blygs you follow that you have not read, newest first; at its foot, **Older posts** pages back.
 - **Mentions**: responses to your own posts, from your own site's inbox.
 - **Background**: what should not interrupt reading.
 - **Archive**: the posts you ticked as read (see "The Archive and the unread target" below).
+
+**No unread counters.** The Hub shows no number of posts anywhere: not on the tabs, the filters, a blyg's row, the last
+refresh line or the pages. Reading is not an inbox to clear. The one number is the mentions you have not marked seen, in
+brackets on the Mentions tab ("Mentions (3)"); a mention drops out of it when you mark it seen. (The limits below still
+count unread posts behind the scenes; the page never shows those counts.)
 
 Below them is **Following**, the list of blygs you follow, where you add one,
 import a blogroll and change the settings. The Hub is the reading half of a
@@ -643,13 +648,13 @@ the blygs cannot starve it. The Mentions view lists responses newest
 first, grouped by your post, each with the responder, the blyg, what they did,
 the passage, a link to the source (Open, below) and, when the source is a post of
 a blyg you follow, a link to its entry in the Feed. The tab shows how many are
-unseen. Following the spec (§15.5), a response is a mention with words of its own
+unseen, in brackets: "Mentions (3)" (and just "Mentions" when none is). Following the spec (§15.5), a response is a mention with words of its own
 (a reply, a quote, a fork); a notice (a bare link, or a repost with no words of
 its own) never appears there and goes to Background as "linked from" or
 "reposted by"; a plain mention, whose source is not a blyg post and was checked
 only by its link (§15.6), is held apart under its own heading as a lower class;
 and a mention that does not say which it is is shown in Mentions labelled "class
-unknown", not guessed. "Accepted, never verified" entries, and how many were
+unknown", not guessed. "Accepted, never verified" entries, and whether some were
 blocked, are noted at the foot. Each mention has a "details" toggle with what the
 inbox sent, as escaped JSON.
 **The real shape of the inbox's mentions is unverified**: Discuss reads what a
@@ -680,14 +685,28 @@ asked again after 10 minutes, then 20, doubling up to 6 hours, and **Retry**
 forces it) or *gone* (it answered three times in a row without a manifest or
 index; not asked again until you resume it). A post is *new*, *opened* (you opened
 it), *responded* (you exported a note for it), *edited* (you had ticked it, and a real
-edit brought it back: "edited since you read it"), *archived* (you ticked it as read) or
+edit brought it back: "edited since you read it"), *older* (unread, but it stepped aside
+when newer posts came in at a limit: see "Limits"; listed under **Older posts**, without
+its text), *archived* (you ticked it as read) or
 *archived_changed* (still in the Archive, but a newer wording exists that you have not
 read: the Archive line says "edited again"). The first four are in the Feed; opening a
 post never archives it, only your own tick does. (Older versions also had *seen*; a post
 stored that way is loaded as *new*.)
 
 **Limits.** At most 500 blygs; 200 unread posts held per blyg and 2000 in all (archived posts do not count); per
-refresh at most 200 requests and 60 seconds, and 50 post documents per blyg.
+refresh at most 200 requests and 60 seconds, and 50 post documents per blyg. The unread limits are the right way round: a
+**new post always comes in**. When a blyg then holds more unread posts than its limit, its *oldest* unread posts step
+aside (state *older*), and when all blygs together hold more than theirs, the oldest of all step aside first. A post that
+steps aside is never deleted and never marked read: a small record of it stays (its blyg, kind, title or first words,
+dates and page address, about a third of a kilobyte, at most 1,000 per blyg; past that the oldest leave the list and are
+read back again in their turn), and only its stored text is let go, so what is kept stays bounded. A starred post, one you
+answered (*responded*) and one that came back *edited* never step aside. The Feed's **Older posts** pages back through the
+posts it holds and then through these; **Read it here** on one fetches its text again from its blyg (one request, through
+the same guard as every other) and the page says so if that fails. As you read and there is room again, the reading back
+brings the newest of them back into the Feed, with their text, before it reads any further back. Nothing is held back in
+silence: if a refresh leaves new posts of a blyg waiting (it ran out of time or requests, or that blyg's share of them, or
+its new posts are failing and wait for a back-off), or a blyg changed many posts you had read, the Feed says so in one
+plain line for that blyg.
 A blyg's index and every post document must come from inside the blyg's own
 origin (same scheme, host and port, under its path), also after redirects: a
 manifest that points elsewhere is refused and the reason is shown beside the
@@ -721,10 +740,10 @@ and runs one script and one style under a Content-Security-Policy.
 **The Archive and the unread target.** Press **✓ Read** in the row under a post (beside "Open original") and the post moves to the Archive: it
 leaves the Feed, its text is deleted from the companion, and a small record stays (its blyg, kind, title or first words
 up to 120 characters, version read, dates and its whole page address, about half a kilobyte). The Archive tab lists those
-records, newest ticked first, 50 lines at a time ("show more" adds 50, up to 1000), each starting with an **Unread** button
+records, newest ticked first, 50 lines at a time (**Older posts** pages back, up to 1000), each starting with an **Unread** button
 and with "Open original"; its search box filters the records by title and blyg. **Unread** puts the post back in the Feed as *new*, fetching its
 text again (one request), so it needs the blyg to be reachable and not paused; if it cannot be fetched the post stays
-archived. On a thread with folded parts the button says "✓ Read (and its 3 parts)" and archives the parts the Feed showed
+archived. On a thread with folded parts the button says "✓ Read (and its parts)" and archives the parts the Feed showed
 with it; a post the thread only links to stays where it is. **Mark all read** archives exactly the posts the Feed is showing,
 with their parts, after a confirmation (the page sends them 100 at a time). At most 500 archive records are kept per blyg
 (never a starred one); past that the oldest ticked are dropped from the list. Dropping a record never makes the post unread again: each blyg also keeps a small list of
@@ -739,8 +758,9 @@ comes back to the Feed as *edited*, badged "edited since you read it" (nothing o
 cannot be told from a large one, so the record keeps a 30-byte fingerprint of the words you read instead: an edit that
 changes less than `following_barely_changed_percent` of a post of at least 100/percent words is recorded and the post stays
 read); a version with identical content is maintenance and changes nothing. Edits are wanted,
-but not often, so a post comes back at most once in 7 days, at most 3 posts of one blyg in one refresh and 10 in a day, and
-not when that blyg already has as many unread posts as its cap; otherwise it stays in the Archive as *archived_changed*,
+but not often, so a post comes back at most once in 7 days, at most 3 posts of one blyg in one refresh and 10 in a day
+(a blyg at its unread limit is no reason to hold one back: its oldest unread post steps aside, as for a new post); otherwise
+it stays in the Archive as *archived_changed*,
 whose line says "edited again", with **Mark read** (keep it read, at the newer version), "Open original" and **Unread**,
 and it comes back at a later refresh once those limits allow. At most 3 edited posts of one blyg are in the Feed at once (the
 next come back as you tick them), and when more than 5 posts of one blyg you had read change within a day none comes back:
@@ -755,7 +775,8 @@ its own. A fold covers the versions published in the burst: a part edited later 
 **Reading back.** A refresh keeps the Feed stocked: while it holds fewer unread posts than `following_unread_target`
 (default 50, 1 to 500) it also reads further back in each blyg's index, going round the blygs one post at a time (the one
 read back longest ago first) and within a blyg from its newest post that is not yet fetched to its oldest, so each blyg is
-read backwards in time. It stops at the target, at the refresh's request and time limits, or at the holding caps, and
+read backwards in time; a blyg's posts that stepped aside (*older*) are read back first, newest first. It stops at the
+target, at the refresh's request and time limits, or at a blyg's unread limit (reading back never makes a post step aside), and
 carries on at the next refresh: running out of budget is not an error and counts against nobody. Withdrawn posts are never
 fetched. A post published since the last refresh (dated after the newest post the Hub has itself fetched from that blyg,
 and not in the future) is always fetched, target or not, within that blyg's fair share of the refresh (its requests divided by
@@ -773,7 +794,7 @@ there" deletes it.
 
 **The star.** **☆ Star** (after ✓ Read) marks a post to come back to, on any device: pressed, it says **★ Starred**, and
 the **Starred** tab lists the starred posts, newest starred first, each a light line (kind, blyg, first words, dates, when
-starred, and where the post is now: unread in the Feed, read in the Archive) with "Open original" and "Remove star". A star
+starred, and where the post is now: unread in the Feed, under Older posts, read in the Archive) with "Open original" and "Remove star". A star
 is yours alone and nothing about it is sent to any blyg. It is independent of reading: starring never marks a post read,
 and marking it read (or Unread) never removes its star; an edit of a starred post you read follows the edit rule. At most
 500 posts are starred (the next star is refused, saying so). "Stop following" keeps a blyg's starred lines; "Stop following
@@ -792,7 +813,11 @@ unfollow is never lost to a refresh. A refresh fetches first and only then appli
 refresh or top-up runs at a time (a lease kept in the store, which lapses if its holder dies). A post's text nothing names
 is deleted only once it is an hour old. A `following.json` of the older layout (every post inside it) is converted on first
 read; it is copied to `following-pre-shard.json` until the conversion is done, and a conversion that is cut short is
-simply done again. A post keeps its last 10 versions in its history.
+simply done again. The layout is numbered in `following.json` (`layout`): 4 since the limits were turned round (a feed may
+hold *older* records). A store of layout 3 is moved to 4 on its first read by one write of `following.json` and nothing
+else; an engine of an older layout then refuses to write to it ("the Hub is being updated") instead of reading an older
+record as a new post with no text. To go back to older code, set `layout` back to 3 by hand first (its *older* posts then
+show as new, without text, until a refresh or a tick). A post keeps its last 10 versions in its history.
 
 ## Reading in the Hub
 

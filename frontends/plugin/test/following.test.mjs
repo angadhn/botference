@@ -481,7 +481,7 @@ test('settings: named, validated, defaults kept for what is refused; my_origins 
 });
 
 test('read state: one function moves it, and refuses a move the table does not allow', () => {
-  assert.deepEqual(F.READ_STATES, ['new', 'opened', 'responded', 'edited', 'archived', 'archived_changed']);
+  assert.deepEqual(F.READ_STATES, ['new', 'opened', 'responded', 'edited', 'older', 'archived', 'archived_changed']);
   const rec = read => ({ read });
   const go = (from, ev) => F.moveRead(rec(from), ev);
   // every legal move, from every state it names
@@ -494,6 +494,8 @@ test('read state: one function moves it, and refuses a move the table does not a
     ['archived', 'edit', 'edited'], ['edited', 'edit', 'edited'],
     ['archived', 'hold', 'archived_changed'], ['archived_changed', 'hold', 'archived_changed'],
     ['archived_changed', 'release', 'edited'], ['archived_changed', 'revert', 'archived'],
+    // the limits: only an unread post nobody marked steps aside (not responded, not edited); the reading back restores it
+    ['new', 'step_aside', 'older'], ['opened', 'step_aside', 'older'], ['older', 'restore', 'new'], ['older', 'tick', 'archived'],
   ];
   for (const [from, ev, to] of legal) assert.equal(go(from, ev), to, `${from} ${ev}`);
   // and every other (state, move) pair is refused, with the table as the only judge
