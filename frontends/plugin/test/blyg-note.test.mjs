@@ -862,3 +862,43 @@ test('prompts in the drawer: the box is drawn for the RESULTING post, starts fro
   const run = fs.readFileSync(new URL('../blyg-run.mjs', import.meta.url), 'utf8');
   assert.ok(!/prompts_only/.test(run), 'no unread flag');
 });
+
+// The drawer's prompts block, run on its own (the drawer's browser tests need a browser): which post a press changes decides where
+// the box starts and whether a tick is remembered. A new version whose own choice could not be read starts LOCKED, and is never
+// remembered; only a brand-new post starts from, and writes, the remembered choice.
+test('prompts in the drawer: a new version with no readable choice starts locked, and a tick there is not remembered', () => {
+  const src = fs.readFileSync(new URL('../extension/drawer.js', import.meta.url), 'utf8');
+  const block = src.slice(src.indexOf("    const PROMPT_CHOICES = ['locked', 'shown'];"), src.indexOf('    function pubPromptsHtml()'));
+  const make = (pub) => {
+    const writes = [];
+    const D = { pub: { view: 'choosing', thread: 't1', shown: 'never', join: 'none', earlier: null, own: null, edit: false, prompts: 'locked', promptsLast: 'shown', ...pub }, page: { threads: [] } };
+    const api = new Function('D', 'readKey', 'writeKey', 'pubAbove', `${block}; return { pubPromptsReset, pubPrompts, pubPromptsOffered };`)(
+      D, () => {}, (k, v) => writes.push([k, v]), () => []);
+    return { D, writes, ...api };
+  };
+  // a new version, its own choice unknown (the companion did not answer, or the note was not found)
+  let x = make({ edit: true, own: null });
+  x.pubPromptsReset();
+  assert.equal(x.D.pub.prompts, 'locked', 'starts locked, not from the remembered choice');
+  x.pubPrompts('shown');
+  assert.deepEqual([x.D.pub.promptsLast, x.writes], ['shown', []], 'not remembered (the remembered choice is for brand-new posts)');
+  x.D.pub.promptsLast = 'locked';
+  x.pubPrompts('shown');
+  assert.equal(x.D.pub.promptsLast, 'locked');
+  // a new version whose note says shown
+  x = make({ edit: true, own: { prompts: 'shown', agent_text: true } });
+  x.pubPromptsReset();
+  assert.equal(x.D.pub.prompts, 'shown');
+  // adding to an earlier post: its own choice; a tick not remembered
+  x = make({ join: 'add', earlier: { prompts: 'locked', agent_text: true } });
+  x.pubPromptsReset();
+  assert.equal(x.D.pub.prompts, 'locked');
+  x.pubPrompts('shown');
+  assert.deepEqual(x.writes, []);
+  // a brand-new post: the remembered choice, and a tick is remembered
+  x = make({});
+  x.pubPromptsReset();
+  assert.equal(x.D.pub.prompts, 'shown');
+  x.pubPrompts('locked');
+  assert.deepEqual(x.writes, [['blygPrompts', 'locked']]);
+});

@@ -3287,16 +3287,25 @@ ${bubbleShellHtml()}`;
     // change: this thread's published post (a new version: `own`), the earlier post it would be added to (`earlier`), or none (a
     // brand-new post). The box starts from that post's own choice as its NOTE says (the companion reads it), and from the remembered
     // choice only for a brand-new post; with no box drawn, nothing is sent ('') and the run keeps the post's own value (new: locked).
+    // WHICH POST a press changes, one of PUB_PROMPT_POSTS (decided here, from the box's own state, never kept in a second field):
+    //   new       a brand-new post: the box starts from the remembered choice, and a tick is remembered
+    //   existing  a new version of this thread's post, or an earlier post it is added to: the box starts from that post's own choice as
+    //             its note says, LOCKED when that could not be read (the companion did not answer, or the note was not found); a tick
+    //             there is never remembered
+    const PUB_PROMPT_POSTS = ['new', 'existing'];
+    const pubPromptsPost = () => (D.pub.edit || (D.pub.join === 'add' && D.pub.earlier) ? 'existing' : 'new');
+    // the existing post's facts as the companion read them (null: unknown, or a brand-new post)
     const pubPromptsTarget = () => (D.pub.edit ? D.pub.own : D.pub.join === 'add' && D.pub.earlier ? D.pub.earlier : null);
     function pubPromptsReset() {
+      if (pubPromptsPost() === 'new') { D.pub.prompts = D.pub.promptsLast; return; }
       const target = pubPromptsTarget();
-      D.pub.prompts = target && PROMPT_CHOICES.indexOf(target.prompts) !== -1 ? target.prompts : target ? 'locked' : D.pub.promptsLast;
+      D.pub.prompts = target && PROMPT_CHOICES.indexOf(target.prompts) !== -1 ? target.prompts : 'locked';
     }
     // the one function that changes the box's choice (remembered as the owner's last only for a brand-new post)
     function pubPrompts(to) {
       if (PROMPT_CHOICES.indexOf(to) === -1) throw new Error('prompts: no such choice ' + to);
       D.pub.prompts = to;
-      if (!pubPromptsTarget()) { D.pub.promptsLast = to; writeKey('blygPrompts', to); }
+      if (pubPromptsPost() === 'new') { D.pub.promptsLast = to; writeKey('blygPrompts', to); }
     }
     // a thread holding an agent's passage (the box offers the choice only then)
     const PUB_AGENT_MODES = ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader'];
@@ -3307,7 +3316,7 @@ ${bubbleShellHtml()}`;
       if (D.pub.view !== 'choosing' && D.pub.view !== 'starting') return false;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === D.pub.thread);
       const target = pubPromptsTarget();
-      return pubHasAgentText(t) || !!(target && target.agent_text) || (!target && pubAbove(D.pub.thread, D.pub.shown).some(pubHasAgentText));
+      return pubHasAgentText(t) || !!(target && target.agent_text) || (pubPromptsPost() === 'new' && pubAbove(D.pub.thread, D.pub.shown).some(pubHasAgentText));
     }
     function pubPromptsHtml() {
       if (!pubPromptsOffered()) return '';
