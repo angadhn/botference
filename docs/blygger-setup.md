@@ -43,24 +43,23 @@ with `botference blyg-home`.
 **From a phone, with a hosted Hub**
 
 - Read the blygs you follow. Select text in a post and press Reply.
-- Type, or press Speak. The recording goes to your computer, which turns it
+- Type, or press the microphone button. The recording goes to your computer, which turns it
   into text with whisper.cpp and returns it to the reply box.
 - Publish now, or Save as draft. A draft shows the agent's passage before you
-  publish. Drafts are listed in one view.
+  publish.
 - Reply again to a post you have already answered, and choose to add to your
   earlier reply (a new version of the same post) or to make a new post.
-- Write a post that answers nobody with the Compose button.
+- Write a post that answers nobody as a stand-alone post.
 - Read articles you clipped into a folder of your notes (an allow-list on the
   computer says which), and reply to their passages. The post responds to the
   original page.
 
 **On your site**
 
-- A reply shows the conversation it belongs to: the first post, the posts in
-  between (folded), the post answered, then your post.
-- An agent passage's card can show the prompt you wrote. That is a choice per
-  post, and it is off unless you turn it on. The prompt is never put in the
-  Blygger item: the protocol forbids instruction text there.
+- In the drawer, an agent passage's card can show the prompt you wrote. That is
+  a choice per post, and it is off unless you turn it on. The prompt is never
+  put in the Blygger item: the protocol forbids instruction text there. The
+  Hub's reply does not pass this choice yet.
 
 ## How a reply travels from the phone
 
@@ -73,8 +72,7 @@ with `botference blyg-home`.
 4. Agents fill any `/tk` lines. They run as one-shot commands with no tools.
 5. The publish queue runs your site's commands: plan, build and test, push.
 6. Mentions go to the authors your post answers or quotes.
-7. The Hub shows the state of the reply at each step. It says "not published"
-   only when the computer has said so for that reply.
+7. The Hub asks the companion for the state of the reply.
 
 Pairing is one command on the computer, `botference hub-link pair`, and two
 environment variables on the Hub's host. `--publish drafts-only` makes the

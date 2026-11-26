@@ -127,7 +127,8 @@ exact passage. The same Hub can add to an earlier reply as a new version,
 start a post that answers nobody, and show clipped articles to read and reply
 to. [docs/blygger-setup.md](docs/blygger-setup.md) describes the parts, how a
 reply travels, what is in this repository and what is not, and what you need
-to copy it.
+to copy it. For the Blygger hackathon entry, start with
+[HACKATHON.md](HACKATHON.md).
 
 **Useful for:** people who write a Blygger blog, or want to follow some.
 
