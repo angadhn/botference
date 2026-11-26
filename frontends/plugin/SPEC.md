@@ -14106,7 +14106,9 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
     `hub-link`), so its `/tk` gaps are asked at once as for any owner-typed message (GAP_LIMITS apply); no agent is summoned. The thread
     carries `via: 'hub-link'`; the drawer shows one quiet line, "from your Hub". The record is written (`hub-link-replies.json`).
   - `intent: 'publish'` with `publish: one-click` is then pressed (below). With `drafts-only`, or a draft, it is `saved`.
-- `status { rids: [1..20] }` → `{ ok, replies: [view, …] }`; a rid with no record is `{ rid, state: 'unknown' }`.
+- `status { rids: [1..20] }` → `{ ok, replies: [view, …] }`; a rid with no record is `{ rid, state: 'unknown' }`. A rid whose reply
+  is still being filed (verifying the passage) is waited for, at most 5 s (`statusWaitMs`); still filing then: `503 { ok:false,
+  error:'a reply is still being filed; ask again' }` for the whole request. So `unknown` never means "on its way".
 - `publish { rid }` → the view. A saved reply is pressed; a pressed one answers `repeated: true`; an unknown rid `404 { …, state:
   'unknown' }`; a reply no longer saved (its thread deleted, or published from the drawer) `409` with its view.
 - `cancel { rid }` → the view. Only while its queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is
@@ -14139,8 +14141,11 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
 function, `linkStateOf(record, page, queue)`, from the record, the thread on its page and the queue entry (`ENTRY_TO_LINK`, checked at
 load to cover every `ENTRY_STATES` value): queued→queued; filling→filling; needs_look→awaiting_look; running→publishing, or awaiting_look
 while ITS run waits at a look (`planned` with `confirm: always`); giving_up→publishing; published, failed, cancelled as themselves. An
-entry the owner's drawer press took over (`replaced_by`) is followed. A record not pressed: `saved` (or `published` when the owner
-published the thread from the drawer, `cancelled` when they deleted it). A pressed record whose entry is no longer kept (the queue keeps
+entry the owner's drawer press took over (`replaced_by`) is followed. A record not pressed: the state of an OPEN queue entry for its
+thread when there is one (`openEntryFor`, by page address and thread: the owner pressed the Hub's draft in the drawer, or a record
+write was lost after a press), else `saved` (or `published` when the owner published the thread from the drawer, `cancelled` when they
+deleted it). While such an entry is open the Hub cannot press the thread (`publish` answers 409 with that state): its press would replace
+the owner's choices or queue a second version. A pressed record whose entry is no longer kept (the queue keeps
 the newest 20 finished): `published` if the thread is, `cancelled` if the thread is gone, else `failed`. `refused` is answered by `reply`
 only.
 
@@ -14149,7 +14154,8 @@ only.
 } }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed', 'withdrawn']`, one field (`step`),
 moved only by `moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. `withdrawn` is
 born so (a cancel of a rid never seen: `{ rid, step, at }` only), is final, never counts against a limit, and at most 500 are kept (the
-oldest withdrawn one is forgotten first; filed records are never dropped for one). An unreadable file (or one not
+oldest withdrawn one is forgotten first; filed records are never dropped for one). A withdrawal is kept only if it is written: when
+the write fails, the cancel answers `500 { ok:false, error:'internal error' }` with no state and nothing is remembered. An unreadable file (or one not
 this shape) is never written over: every route but ping answers 503 rather than risk acting twice or calling a rid unknown. A write
 that fails (a full disk) leaves the record as it is in memory, which every answer reports; the file catches up at the next write that
 succeeds (a restart before then reads the file as it last was).
