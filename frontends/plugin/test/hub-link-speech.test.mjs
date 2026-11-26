@@ -184,26 +184,33 @@ const TINY = '/opt/homebrew/share/whisper.cpp/for-tests-ggml-tiny.bin';
 const JFK = '/opt/homebrew/share/whisper.cpp/jfk.wav';
 const real = (() => { try { return S.speechTools({ env: { ...process.env, BOTFERENCE_WHISPER_MODEL: TINY } }).tools && fs.existsSync(JFK); } catch { return false; } })();
 test('REAL: ffmpeg and whisper-cli run contained; the folder is gone after; an over-time run is killed with its group', { skip: !real && 'whisper-cli, ffmpeg or the test model is not on this machine' }, async () => {
-  const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('bfspeech-')).length;
+  // (ONLY THIS TEST'S OWN JOBS are checked: their folders and their processes, by the folders' exact paths. Another speech job on the
+  // machine, from another companion or another test run at the same time, is none of this test's business: a machine-wide count or
+  // a grep for any `bfspeech-` made this test fail whenever one was running.)
+  const works = [];
+  const run = opts => { works.push(opts.work); return S.runJailed(opts); };
   const clipDir = tmp();
   const clip = path.join(clipDir, 'c.webm');
   execFileSync('/opt/homebrew/bin/ffmpeg', ['-nostdin', '-loglevel', 'error', '-y', '-i', JFK, '-c:a', 'libopus', '-b:a', '32k', clip]);
   const find = () => S.speechTools({ env: { ...process.env, BOTFERENCE_WHISPER_MODEL: TINY } });
-  const sp = S.createSpeech({ find });
+  const sp = S.createSpeech({ find, run });
   const r = sp.submit({ audio: fs.readFileSync(clip), container: 'webm' });
   await sp.idle();
   const v = sp.view(r.job);
   assert.ok(v.state === 'done' || (v.state === 'failed' && v.why === 'no-speech'), JSON.stringify(v));   // (the test model's words are not the point)
   if (v.state === 'done') assert.ok(v.seconds > 10 && v.seconds < 12, 'the 11 s clip, read by ffmpeg in the sandbox');
   // a run over its time: killed, the job failed, nothing left running, the folder gone
-  const slow = S.createSpeech({ find, limits: { transcribeMs: 1 } });
+  const slow = S.createSpeech({ find, run, limits: { transcribeMs: 1 } });
   const s = slow.submit({ audio: fs.readFileSync(clip), container: 'webm' });
   await slow.idle();
   assert.equal(slow.view(s.job).why, 'timed-out');
   let ps = '';
   try { ps = execFileSync('/bin/ps', ['-Ao', 'command'], { encoding: 'utf8' }); } catch { ps = ''; }
-  assert.ok(!/bfspeech-/.test(ps), 'no sandboxed tool left running');
-  assert.equal(fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('bfspeech-')).length, before, 'every job folder deleted');
+  assert.ok(works.length >= 3, 'the tools ran');
+  for (const w of new Set(works)) {
+    assert.ok(!ps.includes(w), 'no tool of this test\'s jobs left running');
+    assert.equal(fs.existsSync(w), false, 'every job folder of this test deleted');
+  }
   // the sandbox itself: the contained ffmpeg cannot read a file outside its folder
   const tools = find().tools;
   const work = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-hubspeech-jail-')));
