@@ -495,6 +495,23 @@
     return to;
   }
 
+  // EVERY WORD about what a press publishes comes from this one table, read through pubWords: the extent in force picks the row.
+  // A thread with one message has nothing to cut, so it always reads "this message" (whatever the extent). "all of it" is the whole
+  // thread and "message" is one entry; the words never say "comment" here, which could be read as one message.
+  //   head   the dialog's heading and the main button's words ("Publish " + head)
+  //   subject  the same thing as the subject of a sentence ("All of this thread goes after the earlier post")
+  //   into   how a sentence names it ("Turn … into a short post")
+  //   line   the sentence saying which messages go out (empty when the head already says it all)
+  const PUB_WORDS = Object.freeze({
+    whole: Object.freeze({ head: 'all of it', subject: 'All of this thread', into: 'all of your thread', line: 'Every message of yours in this thread is included.' }),
+    upto: Object.freeze({ head: 'up to this message', subject: 'The thread up to this message', into: 'your thread up to this message', line: 'Your messages above it are included. Later ones stay private.' }),
+    single: Object.freeze({ head: 'this message', subject: 'This message', into: 'this message', line: '' }),
+  });
+  function pubWords(extent, single) {
+    if (PUB_EXTENTS.indexOf(extent) === -1) throw new Error('how much of the thread: no such extent ' + extent);
+    return PUB_WORDS[single ? 'single' : extent];
+  }
+
   // ── whether an exported note is a RESPONSE to its page ─────────────────
   // Blygger's "stub" (spec §10.6). One field on the page record,
   // export_response, one of RESPONSE_MODES. The reader's explicit choice, once
@@ -991,7 +1008,7 @@
     PUB_STEP_WORDS, PUB_STEP_DOING, PUB_KEYS, pubStepsOf, pubFailureOf, pubPaceWords,
     PUB_WATCH_STATES, PUB_WATCH_MOVES, pubWatchMove, pubWatchCan, pubWatchAdd, PUB_FOLD_MS, PUB_NOTICE_KINDS, pubNoticeOf, pubBadgeMark,
     PUB_ENTRY_STATES, PUB_UNDER_WAY, PUB_CANCELLABLE, PUB_QUEUE_STATES, PUB_OWNER_RESUMES, pubPaused, pubQueueNotices, PUB_LOOK_WHY, pubUnderWay, pubEntrySay, pubEntryLine, pubEntryNotice, pubTellables, PUB_PIC_STATES, PUB_PIC_MOVES, PUB_PIC_TRIES, pubPicMove,
-    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE, PUB_EXTENTS, PUB_EXTENT_MOVES, pubExtentMove,
+    PUB_JOINS, PUB_JOIN_MOVES, pubJoinMove, BLYG_PUBLISH_JOINS, PUB_OUTSIDE, PUB_OUTSIDE_MOVES, pubOutsideMove, BLYG_PUBLISH_OUTSIDE, PUB_EXTENTS, PUB_EXTENT_MOVES, pubExtentMove, PUB_WORDS, pubWords,
     EXPORT_TARGETS, DEFAULT_EXPORT_TARGET, exportTargetOf,
     HOSTED_HUBS_MAX, hostedHubsOf,
     READER_MODES, ONBOARDING, ONBOARDING_MOVES, READER_ACTIONS, readerUrlOf, onboardingOf, onboardingMove, readerChoiceFrom, readerTarget, readerAction, createOffers, OFFER_MS,

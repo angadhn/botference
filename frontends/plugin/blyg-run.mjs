@@ -179,7 +179,7 @@ export const EXTENTS = Object.freeze(['whole', 'upto']);
 // how long the checks of a new post's links may take, all together (a lone link to a blyg post); past it no target is set
 export const LINK_CHECK_MS = 15000;
 export const UPTO_BACK_SAY = 'Your post already includes later messages of this thread, so it cannot be published only up to this one. To take words out of your post, delete the message.';
-export const UPTO_GONE_SAY = 'That message is not one of yours in this comment any more, so nothing was started.';
+export const UPTO_GONE_SAY = 'That message is not one of yours in this thread any more, so nothing was started.';
 export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be added to from here. Nothing was started. Close this and choose “Publish as a new post”.';
 /** WHY A RUN STOPS AT `planned` FOR THE OWNER'S LOOK, or why it does not. The facts a post can carry (each recorded on the run as
  *  `reasons`, so the dialog and the log say why a look was or was not asked):
@@ -807,7 +807,7 @@ export function createPublisher(deps) {
     const S = home.settings;
     const threads = page.threads || [];
     const at = threads.findIndex(t => t && t.id === threadId);
-    if (at < 0) return fail(404, 'That comment is not on this page any more.');
+    if (at < 0) return fail(404, 'That thread is not on this page any more.');
     const here = threads[at];
     // the point, when one was chosen: one of the owner's publishable messages in this thread
     if (extent === 'upto' && !(here.msgs || []).some(m => isPublishableMsg(m) && String(m.ts) === String(upto))) return fail(409, UPTO_GONE_SAY);
@@ -953,7 +953,7 @@ export function createPublisher(deps) {
     const home = settingsNow();
     if (!home.ok || !page) return { ok: true, earlier: null };
     const here = (page.threads || []).find(t => t && t.id === threadId);
-    if (!here) return fail(404, 'That comment is not on this page any more.');
+    if (!here) return fail(404, 'That thread is not on this page any more.');
     const e = earlierPostFor(page, here, home.settings);
     return { ok: true, earlier: e ? { title: e.title, version: e.version, post: e.post } : null };
   }
@@ -996,7 +996,7 @@ export function createPublisher(deps) {
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
     const picked = scope === 'one' ? [here] : [...aboveOf(threads, at, S), here];
-    if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} comments can go in one post.`);
+    if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} threads can go in one post.`);
     // the chain: only for one comment, and only when an earlier post from this page is on the record
     let earlier = null;
     if (scope === 'one') {
@@ -1079,7 +1079,7 @@ export function createPublisher(deps) {
     const picked = [...(mates.length ? mates : [here]), ...(adding ? [adding] : [])];
     if (!picked.some(t => (t.msgs || []).some(m => isPublishableMsg(m) && String(m.text || '').trim()))) return fail(409, 'Withdrawing a post is done on your site, not from here.');
     for (const t of picked) { const el = eligibleThread(t); if (!el.ok) return fail(409, el.why === 'that comment has no words' ? 'Withdrawing a post is done on your site, not from here.' : el.why); }
-    if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} comments can go in one post.`);
+    if (picked.length > LIMITS.comments) return fail(409, `At most ${LIMITS.comments} threads can go in one post.`);
     // a comment the post holds whose thread is no longer on this page is LEFT OUT of this version: said in the dialog, never unseen
     const leftOut = recordedIdsOf(pub).filter(i => !picked.some(t => String(t.id) === i)).length;
     if (adding && leftOut) return fail(409, ADD_GONE_SAY);
@@ -1390,4 +1390,4 @@ export const REFUSAL_ABOUT = Object.freeze(['entry', 'site']);
 // (an exception while starting ONE post is about that post: it fails, the detail is in the run's log, and a queue goes on)
 const START_BROKE_SAY = 'Something went wrong on the companion while starting this post, so it was not published; the troubleshooting details say what.';
 export const settingChangedSay = (shown, inForce) => `The setting changed: your drawer showed “${String(shown || 'nothing').slice(0, 12)}” but “${inForce}” is in force (${inForce === 'never' ? 'one click publishes' : 'you will see the note first'}). Nothing was started. Open the menu again.`;
-const LIQUID_SAY = 'This comment, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the comment (for example write “{ {”), or quote a different passage.';
+const LIQUID_SAY = 'This thread, or the passage it quotes, shows “{{” or “{%”. Your site keeps Liquid-looking text out of what it publishes, so it would refuse this post at the end of its checks. Nothing was written. Change the message (for example write “{ {”), or quote a different passage.';

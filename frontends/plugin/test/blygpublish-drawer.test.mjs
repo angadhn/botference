@@ -115,7 +115,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   ok('a published one says so, with a link only for a plain http(s) address', q('.pubdone a') && q('.pubdone a').getAttribute('href') === 'https://site.example.test/b/already-out'
     && qa('.pubdone').length === 2 && qa('.pubdone a').length === 1);
   ok('the link opens safely', q('.pubdone a').getAttribute('rel') === 'noopener noreferrer');
-  eq('it has a name for the screen reader', q('.thr-pub').getAttribute('aria-label'), 'publish this comment as a blyg');
+  eq('it has a name for the screen reader', q('.thr-pub').getAttribute('aria-label'), 'publish all of this thread as a blyg');
   const guest = await make({ owner: false });
   eq('a non-owner sees no paper-plane and no "published" mark', [guest.qa('.thr-pub').length, guest.qa('.pubdone').length], [0, 0]);
   guest.drawer.open('comments'); await tick(5);
@@ -141,7 +141,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   const { server, q, qa, dlg, drawer, view, click } = await make();
   click(qa('.thr-pub')[1]); await tick();                                   // the second comment: there is one above it
   eq('choosing', [view(), dlg().hidden], ['choosing', false]);
-  eq('both scopes are offered, the second with its count', qa('.pubdlg [data-act="pub-scope"]').map(b => [b.dataset.scope, b.textContent]), [['one', 'Just this comment'], ['above', 'This and the 1 above']]);
+  eq('both scopes are offered, the second with its count', qa('.pubdlg [data-act="pub-scope"]').map(b => [b.dataset.scope, b.textContent]), [['one', 'Prepare this message'], ['above', 'This thread and the 1 thread above']]);
   await settle(); click(q('[data-act="pub-scope"][data-scope="above"]')); await tick();
   eq('start sends the thread, the scope and the setting the owner was shown, nothing else', server.calls.at(-1), { op: 'start', body: { thread_id: 't2', scope: 'above', confirm: 'always' } });
   eq('planning is shown as working', view(), 'working');
@@ -219,7 +219,7 @@ async function make({ trusted = true, owner = true, server = companion() } = {})
   const server = companion(); server.confirm = 'never';
   const { q, qa, dlg, view, click, drawer } = await make({ server });
   click(qa('.thr-pub')[0]); await tick();
-  ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish just this comment/.test(dlg().textContent));
+  ok('choosing says it publishes now', /publishes it now: there is no further step/.test(dlg().textContent) && /Publish this message/.test(dlg().textContent));
   await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('start sent, and the dialog is out of the way', [server.calls.at(-1), dlg().hidden, view()], [{ op: 'start', body: { thread_id: 't1', scope: 'one', confirm: 'never' } }, true, 'working']);
   eq('the thread carries ONE line of progress, in the owner\'s words', [qa('.publine').length, q('.publine').textContent], [1, 'Publishing as a blyg… checking that only this note changes']);
@@ -693,7 +693,7 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   eq('the companion is asked about this comment', server.calls.find(c => c.op === 'earlier'), { op: 'earlier', body: { thread_id: 't2' } });
   eq('two named options, "add" chosen', x.qa('.pubjoin [data-act="pub-join"]').map(b => [b.dataset.join, b.textContent, b.getAttribute('aria-checked')]),
     [['add', 'Add to your earlier post from this page', 'true'], ['new', 'Publish as a new post', 'false']]);
-  eq('…in a radio group with a name', [x.q('.pubjoin').getAttribute('role'), x.q('.pubjoin').getAttribute('aria-label')], ['radiogroup', 'Where this comment goes']);
+  eq('…in a radio group with a name', [x.q('.pubjoin').getAttribute('role'), x.q('.pubjoin').getAttribute('aria-label')], ['radiogroup', 'Where this post goes']);
   eq('adding: one button, for the next version, and Close', x.qa('.pubdlg .pbtn').map(b => b.textContent), ['Prepare version 3', 'Close']);
   ok('it names the post and says where the comment goes', /after the earlier one, as version 3 of “Already out”/.test(x.dlg().textContent));
   // "Publish as a new post": today's choice of scopes
@@ -868,7 +868,8 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   eq('a plane on each of the owner\'s messages, none on the bot\'s', x.qa('.msg-pub').map(b => b.dataset.ts), ['1', '2', '3']);
   x.click(x.q('.msg-pub[data-ts="2"]')); await tick(5);
   eq('its plane opens the choice for up to that message', [x.view(), x.drawer.pub.extent, x.drawer.pub.upto], ['choosing', 'upto', '2']);
-  ok('…and says the later ones stay private', /messages after it stay private/.test(x.dlg().textContent));
+  eq('…the heading and main button say up to this message', [x.q('.pubdlg h2').textContent, x.q('[data-act="pub-scope"][data-scope="one"]').textContent], ['Publish up to this message', 'Prepare up to this message']);
+  ok('…and says the later ones stay private', /Your messages above it are included\. Later ones stay private\./.test(x.dlg().textContent) && x.q('.pubdlg h2').textContent === 'Publish up to this message');
   await settle(); x.click(x.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   eq('the start carries extent: upto and the message', server.calls.filter(c => c.op === 'start').at(-1).body, { thread_id: 'tm', scope: 'one', confirm: 'always', extent: 'upto', upto: '2' });
   // the header plane: the whole thread (nothing about an extent is sent), after closing
@@ -880,14 +881,28 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   await tick(10);
   y.click(y.q('.thr-pub[data-target="tm"]')); await tick(5);
   eq('the header: whole', y.drawer.pub.extent, 'whole');
+  eq('…and the heading and main button say all of it, with the line', [y.q('.pubdlg h2').textContent, y.q('[data-act="pub-scope"][data-scope="one"]').textContent, /Every message of yours in this thread is included\./.test(y.dlg().textContent)], ['Publish all of it', 'Prepare all of it', true]);
   await settle(); y.click(y.q('[data-act="pub-scope"][data-scope="one"]')); await tick();
   ok('…and no extent is sent', !('extent' in s2.calls.filter(c => c.op === 'start').at(-1).body));
+  // the heading and the main button follow the extent (one table, CFG.pubWords)
+  eq('words: whole', [CFG.pubWords('whole', false).head, CFG.pubWords('whole', false).line], ['all of it', 'Every message of yours in this thread is included.']);
+  eq('words: upto', CFG.pubWords('upto', false).head, 'up to this message');
+  eq('words: a one-message thread is always "this message"', [CFG.pubWords('whole', true).head, CFG.pubWords('upto', true).head], ['this message', 'this message']);
+  ok('words: an unknown extent is refused', (() => { try { CFG.pubWords('some', false); return false; } catch (_) { return true; } })());
+  // a thread of one message: plain "Publish this message", from either plane
+  const s4 = companion();
+  const w = await make({ server: s4 });
+  w.drawer.setPage({ url: 'https://example.com/article', title: 'An article', page_chat: [], threads: [
+    { id: 'ts', quote: 'passage', msgs: [mine('Only.', { ts: '1' })] }] });
+  await tick(10);
+  w.click(w.q('.msg-pub[data-ts="1"]')); await tick(5);
+  eq('single message: heading and main button', [w.q('.pubdlg h2').textContent, w.q('[data-act="pub-scope"][data-scope="one"]').textContent, w.drawer.pub.extent], ['Publish this message', 'Prepare this message', 'upto']);
   // a republish that now includes further messages says how many
   const s3 = companion();
   s3.run = s3.make('planned', { kind: 'edit', version: 2, further: 2, confirm: 'always' });
   const z = await make({ server: s3 });
   await tick(10); z.click(z.q('[data-act="pub-review"]')); await tick();
-  ok('the dialog says how many further messages will now be included', /2 further messages of this comment will now be included/.test(z.dlg().textContent), z.dlg().textContent.slice(0, 300));
+  ok('the dialog says how many further messages will now be included', /2 further messages of this thread will now be included/.test(z.dlg().textContent), z.dlg().textContent.slice(0, 300));
 }
 
 // ---- THE PUBLISH QUEUE in the drawer: a press accepted at once, the thread's place, the Publishing list and its Cancel, a post set aside ----
@@ -939,7 +954,7 @@ for (const [mode, view0, act] of [['planning', 'working', ''], ['planned', 'conf
   ok('queue: "needs your look" on the thread, with a way to look', chip().some(t => /needs your look/.test(t)) && !!q('.publookbtn[data-target="t1"]'), JSON.stringify(chip()));
   click(q('.publookbtn[data-target="t1"]')); await tick(10);
   ok('queue: the dialog says why it was set aside', view() === 'choosing' && q('.pubdlg .publook') && /left out/.test(q('.pubdlg .publook').textContent));
-  ok('queue: and offers to prepare it for the look', /Just this comment/.test(q('.pubdlg').textContent));
+  ok('queue: and offers to prepare it for the look', /Prepare this message/.test(q('.pubdlg').textContent));
   await settle(); click(q('[data-act="pub-scope"][data-scope="one"]')); await tick(10);
   eq('queue: the start says the owner is looking', server.calls.filter(c => c.op === 'start').at(-1).body.look, 'yes');
   // failed, and paused

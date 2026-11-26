@@ -686,7 +686,7 @@ test('P4: a thread deleted before its turn fails with a plain sentence; adding t
   rig.control({});
   await until(() => [add, ra, rd].every(r => !['queued', 'running'].includes(b.stateOf(r.queued.id))), 'settled', 30000);
   assert.deepEqual([b.stateOf(add.queued.id), b.stateOf(ra.queued.id), b.stateOf(rd.queued.id)], ['published', 'published', 'failed']);
-  assert.equal(b.entries().find(e => e.id === rd.queued.id).failure.say, 'That comment is not on this page any more.');
+  assert.equal(b.entries().find(e => e.id === rd.queued.id).failure.say, 'That thread is not on this page any more.');
   const note = noteWith(rig, /alpha/);
   assert.match(note, /Alpha edited and pressed\./); assert.match(note, /Charlie thread words\./);
   assert.deepEqual([b.entries().find(e => e.id === add.queued.id).result.version, b.entries().find(e => e.id === ra.queued.id).result.version], [2, 3]);

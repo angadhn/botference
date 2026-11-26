@@ -10714,8 +10714,8 @@ ${bubbleShellHtml()}`;
           + `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish a new version of this post" aria-label="publish a new version of this post">${PLANE_SVG}</button>`;
       }
       if (!pubThreadOk(t)) return '';
-      return `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish as blyg: turn this comment into a short post on your site"`
-        + ` aria-label="publish this comment as a blyg">${PLANE_SVG}</button>`;
+      return `<button class="rebtn thr-pub" data-act="pub-open" data-target="${esc(t.id)}" type="button" title="Publish all of this thread as a blyg: every message of yours in it, as a short post on your site"`
+        + ` aria-label="publish all of this thread as a blyg">${PLANE_SVG}</button>`;
     }
     // an address is a link only when it is plainly http(s)
     function safeHttp(u) {
@@ -10809,7 +10809,7 @@ ${bubbleShellHtml()}`;
       const where = D.pub.queue && D.pub.queue.state === 'paused_for_run' ? 'It waits until the post that went wrong is dealt with.'
         : CFG.pubPaused(D.pub.queue) ? 'Your queue is paused: see “Publishing” above your comments.'
         : e.ahead > 0 ? (e.ahead === 1 ? 'One post is ahead of it.' : e.ahead + ' posts are ahead of it.') : 'It goes out next.';
-      return (replaced ? 'Replaced your earlier press of this comment: the latest text will go out. ' : 'Queued. ') + where + ' You\'ll be told when it\'s live.';
+      return (replaced ? 'Replaced your earlier press of this thread: the latest text will go out. ' : 'Queued. ') + where + ' You\'ll be told when it\'s live.';
     }
     // why a look was or was not asked (the run records every reason; blyg-run REVIEW_FACTS), in one quiet line each
     const PUB_REASON_SAY = Object.freeze({
@@ -10960,9 +10960,14 @@ ${bubbleShellHtml()}`;
     }
     function pubUptoBtn(target, r) {
       if (!pubUptoOk(target, r)) return '';
-      return `<button class="rebtn msg-pub" data-act="pub-open-upto" data-target="${esc(target)}" data-ts="${esc(r.ts)}" type="button" title="Publish the comment up to and including this message (the later ones stay private)"`
-        + ` aria-label="publish up to and including this message">${PLANE_SVG}</button>`;
+      return `<button class="rebtn msg-pub" data-act="pub-open-upto" data-target="${esc(target)}" data-ts="${esc(r.ts)}" type="button" title="Publish up to this message. Your messages above it are included. Later ones stay private."`
+        + ` aria-label="publish up to this message">${PLANE_SVG}</button>`;
     }
+    // the thread has one message of its own (agent turns and tool lines do not count): its plane has nothing to cut
+    const pubSingle = t => !!t && (t.msgs || []).filter(m => m && m.kind !== 'tools').length === 1;
+    // THE WORDS for the extent in force on a thread, from the one table in config.js (never from a flag)
+    const pubWordsFor = (t, extent) => CFG.pubWords(extent || D.pub.extent, pubSingle(t));
+    const pubCap = s => s.charAt(0).toUpperCase() + s.slice(1);
     async function pubOpen(id, upto) {
       if (!D.owner || D.pub.view !== 'closed') return;
       const t = ((D.page && D.page.threads) || []).find(x => x && x.id === id);
@@ -11345,7 +11350,8 @@ ${bubbleShellHtml()}`;
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-outside-keep">Keep the post as it is</button>`
               + `<button class="pbtn" type="button" data-act="pub-outside-replace">Replace it with this thread's text</button>${closeBtn}</div>`;
           }
-          const uptoSay = P.extent === 'upto' ? '<p class="pubupto">Up to and including the message you chose: the messages after it stay private.</p>' : '';
+          const words = pubWordsFor(t);
+          const uptoSay = words.line ? `<p class="pubupto">${esc(words.line)}</p>` : '';
           if (P.edit && t) {
             const v = (Number(t.blyg_published.version) || 1) + 1;
             return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${uptoSay}
@@ -11353,21 +11359,22 @@ ${bubbleShellHtml()}`;
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           // an earlier post from this page can take it: ONE choice, adding to it by default (D.pub.join)
-          const joinHtml = P.join === 'none' ? '' : `<div class="pubjoin" role="radiogroup" aria-label="Where this comment goes">`
+          const joinHtml = P.join === 'none' ? '' : `<div class="pubjoin" role="radiogroup" aria-label="Where this post goes">`
             + ['add', 'new'].map(j => `<button class="pjoin" type="button" role="radio" aria-checked="${P.join === j ? 'true' : 'false'}" data-act="pub-join" data-join="${j}">`
               + `${j === 'add' ? 'Add to your earlier post from this page' : 'Publish as a new post'}</button>`).join('') + '</div>';
           if (P.join === 'add' && P.earlier) {
             const v = (Number(P.earlier.version) || 1) + 1;
             const named = P.earlier.title ? `“${esc(P.earlier.title)}”` : 'your earlier post';
-            return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
-              <p>${look ? `This comment goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with this comment after the earlier one.`}</p>
+            return `<h2>${esc(pubCap('Publish ' + words.head))}</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
+              <p>${look ? `${words.subject} goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with ${words.subject.charAt(0).toLowerCase() + words.subject.slice(1)} after the earlier one.`}</p>
               <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           const n = pubAbove(P.thread, P.shown).length;
-          return `<h2>Publish as blyg</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
-            <p>${look ? 'Turn your comment into a short post on your own site. Nothing is published yet: first you will see exactly what would be.' : 'Turn your comment into a short post on your own site. Choosing one of these publishes it now: there is no further step.'}</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Just this comment' : 'Publish just this comment'}</button>
-            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This and the ' + n + ' above' : 'Publish this and the ' + n + ' above'}</button>` : ''}${closeBtn}</div>`;
+          const aboveWords = n === 1 ? '1 thread above' : n + ' threads above';
+          return `<h2>${esc(pubCap('Publish ' + words.head))}</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
+            <p>${look ? `Turn ${esc(words.into)} into a short post on your own site. Nothing is published yet: first you will see exactly what would be.` : `Turn ${esc(words.into)} into a short post on your own site. Choosing one of these publishes it now: there is no further step.`}</p>
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${esc(pubCap((look ? 'Prepare ' : 'Publish ') + words.head))}</button>
+            ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This thread and the ' + aboveWords : 'Publish this thread and the ' + aboveWords}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting':
           return `<h2>Preparing your post…</h2><ol class="pubsteps"><li class="now"><span class="pubtick">•</span><span class="pubword">${esc(CFG.PUB_STEP_WORDS.note)}</span><span class="pubnow">now</span></li></ol><div class="pubbtns">${closeBtn}</div>`;
@@ -11385,10 +11392,10 @@ ${bubbleShellHtml()}`;
             ${run.preview_url && !pic ? `<p><a class="pubseeit" href="${esc(safeHttp(run.preview_url))}" target="_blank" rel="noopener noreferrer">See how it will look</a> <span class="pubquiet">it can take a few seconds to appear</span></p>` : ''}
             ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
             ${pubLeftOutHtml(run)}
-            ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this comment will now be included.</p>` : ''}
+            ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this thread will now be included.</p>` : ''}
             ${pubReasonsHtml(run)}
             ${err}
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : 'Publish'}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;
+            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-confirm">${edit ? 'Publish version ' + esc(run.version) : esc(pubCap('Publish ' + pubWordsFor(((D.page && D.page.threads) || []).find(x => x && x.id === P.thread), run.extent === 'upto' ? 'upto' : 'whole').head))}</button><button class="pbtn" type="button" data-act="pub-cancel">Cancel</button>${closeBtn}</div>`;
         }
         case 'running':
           return `<h2>Publishing…</h2>${pubFor(run)}${pubStepsHtml(run)}${err}<div class="pubbtns">${closeBtn}</div>${pubDetailsHtml(run)}`;

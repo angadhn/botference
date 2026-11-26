@@ -411,7 +411,7 @@ export function createQueue(deps) {
     if (join && !JOINS.includes(join)) return { ok: false, status: 400, error: 'no such choice' };
     if (outside && outside !== 'replace') return { ok: false, status: 400, error: 'outside must be replace or absent' };
     const here = (page.threads || []).find(t => t && t.id === threadId);
-    if (!here) return { ok: false, status: 404, error: 'That comment is not on this page any more.' };
+    if (!here) return { ok: false, status: 404, error: 'That thread is not on this page any more.' };
     if (shown !== inForce) return { ok: false, status: 409, error: settingChangedSay(shown, inForce) };
     // a pause the owner can lift is lifted by their next press (the site may be fixed by now; if not, it pauses again, said again)
     // (…by the owner at the computer: a press from the Hub never lifts one, the owner resolves it where they can see why)
