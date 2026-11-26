@@ -179,3 +179,96 @@ test('every route is in one table, under /hub-link/', () => {
   assert.deepEqual(Object.keys(L.HUB_LINK_ROUTES).sort(), ['cancel', 'ping', 'publish', 'reply', 'status']);
   for (const [name, r] of Object.entries(L.HUB_LINK_ROUTES)) assert.equal(r.path, `/hub-link/${name}`);
 });
+
+// ---- the routes in this process, with stand-ins for the companion (no server, no web) ----
+import http from 'node:http';
+async function linkWith({ bind, press, publish = 'one-click' } = {}) {
+  const dir = tmp();
+  const key = L.newKey({ hub_origin: 'https://blog.example.com', publish });
+  L.writeLinkKey(dir, key);
+  const seen = { threads: 0, presses: 0, binds: 0 };
+  const link = L.createHubLink({ keyDir: dir, repliesFile: path.join(dir, L.HUB_LINK_REPLIES_FILE), log: () => {}, perMinute: 10000,
+    bind: async a => { seen.binds++; return bind ? bind(a) : { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; },
+    fileReply: () => ({ url: 'https://blyg.example.com/t/x/', thread_id: `t${++seen.threads}` }),
+    press: async () => { if (press) await press(); return { ok: true, queued: { id: `e${++seen.presses}` } }; },
+    cancel: () => ({ ok: true }), queue: () => ({ entries: [], run: null }), readPage: () => null });
+  const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const send = async (route, obj, raw) => {
+    const body = raw !== undefined ? raw : JSON.stringify(obj);
+    const r = await fetch(`http://127.0.0.1:${srv.address().port}/hub-link/${route}`, { method: 'POST', body,
+      headers: { 'content-type': 'application/json', ...L.signedHeaders(key, `/hub-link/${route}`, body) } });
+    return { status: r.status, json: await r.json().catch(() => null) };
+  };
+  return { send, seen, dir, close: () => new Promise(r => srv.close(r)) };
+}
+const slow = ms => new Promise(r => setTimeout(r, ms));
+const replyOf = (rid, extra = {}) => ({ rid, post: { page: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x' }, quote: 'a passage of words here', comment: 'x', intent: 'publish', ...extra });
+
+test('LIMITS HOLD UNDER CONCURRENCY: 30 replies at once file at most 20 and press at most 10; the rest are 429 or refused presses', async () => {
+  const k = await linkWith({ bind: async () => { await slow(150); return { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; }, press: () => slow(100) });
+  try {
+    const got = await Promise.all(Array.from({ length: 30 }, (_, i) => k.send('reply', replyOf(`rid-race-${String(i).padStart(4, '0')}`))));
+    assert.equal(k.seen.threads, 20, 'filed');
+    assert.equal(got.filter(g => g.status === 429).length, 10);
+    assert.equal(k.seen.presses, 10, 'pressed');
+    const recs = JSON.parse(fs.readFileSync(path.join(k.dir, L.HUB_LINK_REPLIES_FILE), 'utf8')).records;
+    assert.deepEqual([recs.filter(r => r.step === 'pressed').length, recs.filter(r => r.press_refused === 'publishes-per-day').length], [10, 10]);
+  } finally { await k.close(); }
+});
+
+test('a refused reply gives its slot back: 20 refused at once (a 21st meanwhile is 429: the slots are held), then 20 good ones are all filed', async () => {
+  let refuse = true;
+  const k = await linkWith({ publish: 'drafts-only', bind: async () => { await slow(50); return refuse ? { verdict: 'unverified', code: 'not-verified', reason: 'no' } : { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; } });
+  try {
+    const bad = await Promise.all(Array.from({ length: 21 }, (_, i) => k.send('reply', replyOf(`rid-bad-${String(i).padStart(4, '0')}`))));
+    assert.deepEqual([bad.filter(b => b.status === 422).length, bad.filter(b => b.status === 429).length], [20, 1]);
+    refuse = false;
+    for (let i = 0; i < 20; i++) assert.equal((await k.send('reply', replyOf(`rid-good-${String(i).padStart(4, '0')}`))).status, 200, `good ${i}`);
+    assert.equal((await k.send('reply', replyOf('rid-good-over'))).status, 429);
+  } finally { await k.close(); }
+});
+
+test('ONE LENGTH LIMIT, the encoded body: a long reply in a few bytes is filed; one over 16 KiB in any script is 413 with a fixed sentence', async () => {
+  const k = await linkWith({ publish: 'drafts-only' });
+  try {
+    const long = await k.send('reply', replyOf('rid-long-0001', { comment: 'a'.repeat(12000) }));
+    assert.equal(long.status, 200, JSON.stringify(long.json));
+    const wide = await k.send('reply', replyOf('rid-wide-0001', { comment: '語'.repeat(6000) }));
+    assert.equal(wide.status, 413);
+    assert.deepEqual(wide.json, { ok: false, error: 'too-large', say: L.HUB_LINK_SAY['too-large'] });
+    assert.match(wide.json.say, /16 KB/);
+    assert.equal(k.seen.threads, 1);
+  } finally { await k.close(); }
+});
+
+test('A CANCEL BEFORE THE REPLY is remembered: the reply arriving later is refused as cancelled, and nothing is filed, across a restart', async () => {
+  const k = await linkWith();
+  try {
+    const c = await k.send('cancel', { rid: 'rid-early-0001' });
+    assert.deepEqual([c.status, c.json.state], [200, 'cancelled']);
+    const again = await k.send('cancel', { rid: 'rid-early-0001' });
+    assert.deepEqual([again.status, again.json.state, again.json.repeated], [200, 'cancelled', true]);
+    const r = await k.send('reply', replyOf('rid-early-0001'));
+    assert.deepEqual([r.status, r.json.state, r.json.error], [409, 'cancelled', 'cancelled']);
+    assert.deepEqual([k.seen.binds, k.seen.threads, k.seen.presses], [0, 0, 0], 'never verified, filed or pressed');
+    assert.equal((await k.send('status', { rids: ['rid-early-0001'] })).json.replies[0].state, 'cancelled');
+    assert.equal((await k.send('publish', { rid: 'rid-early-0001' })).json.state, 'cancelled');
+    const back = L.createReplyStore({ file: path.join(k.dir, L.HUB_LINK_REPLIES_FILE) });
+    assert.equal(back.get('rid-early-0001').step, 'withdrawn', 'kept on disk');
+    assert.equal(back.repliesSince(3600e3), 0, 'a withdrawn rid is not a reply');
+  } finally { await k.close(); }
+});
+
+test('withdrawn rids are bounded: past the cap the oldest is forgotten; filed records are never dropped for one', () => {
+  const dir = tmp();
+  let n = 0;
+  const s = L.createReplyStore({ file: path.join(dir, 'r.json'), now: () => new Date(Date.UTC(2026, 10, 26, 0, 0, n++)) });
+  s.add({ rid: 'rid-filed-001', at: new Date(Date.UTC(2026, 10, 25)).toISOString(), intent: 'draft', page_url: 'https://x.example.com/', thread_id: 't' });
+  for (let i = 0; i <= L.HUB_LINK_LIMITS.withdrawnMax; i++) s.withdraw(`rid-w-${String(i).padStart(5, '0')}`);
+  assert.equal(s.get('rid-w-00000'), null, 'the oldest withdrawn one is forgotten');
+  assert.equal(s.get(`rid-w-${String(L.HUB_LINK_LIMITS.withdrawnMax).padStart(5, '0')}`).step, 'withdrawn');
+  assert.equal(s.get('rid-filed-001').step, 'saved');
+  assert.throws(() => L.moveRecord({ step: 'withdrawn' }, 'pressed'), L.IllegalRecordMove, 'withdrawn is final');
+  assert.equal(L.linkStateOf({ rid: 'rid-w-00001', step: 'withdrawn' }, null, { entries: [] }), 'cancelled');
+});

@@ -55,8 +55,8 @@ export const HUB_LINK_LIMITS = Object.freeze({
   repliesPerHour: 20,
   publishesPerDay: 10,
   statusRids: 20,
-  commentChars: 8000,
-  quoteChars: 2000,
+  // (the ONE length limit is bodyBytes, the encoded body: no separate character counts, so no script passes one and fails the other)
+  withdrawnMax: 500,
 });
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
@@ -89,10 +89,13 @@ export const ENTRY_TO_LINK = Object.freeze({ queued: 'queued', filling: 'filling
 for (const s of ENTRY_STATES) if (!ENTRY_TO_LINK[s]) throw new Error(`hub-link: no Hub state for the queue's ${s}`);
 
 /** A record's step, one field (`record.step`), moved only by moveRecord:
- *    saved    the thread is filed; nothing pressed (yet)
- *    pressed  a press was accepted by the queue (`entry_id`); never pressed again for this rid */
-export const RECORD_STEPS = Object.freeze(['saved', 'pressed']);
-export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed']), pressed: Object.freeze([]) });
+ *    saved      the thread is filed; nothing pressed (yet)
+ *    pressed    a press was accepted by the queue (`entry_id`); never pressed again for this rid
+ *    withdrawn  the Hub cancelled a rid this companion had never seen (the reply may still be on its way): born so, final; a reply
+ *               with that rid is refused as cancelled. At most HUB_LINK_LIMITS.withdrawnMax kept (the oldest forgotten first), and
+ *               like every record forgotten after 30 days */
+export const RECORD_STEPS = Object.freeze(['saved', 'pressed', 'withdrawn']);
+export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed']), pressed: Object.freeze([]), withdrawn: Object.freeze([]) });
 export class IllegalRecordMove extends Error {}
 export function moveRecord(rec, to, facts = {}) {
   if (!RECORD_STEPS.includes(to)) throw new Error(`hub link record: no such step ${String(to).slice(0, 20)}`);
@@ -211,6 +214,7 @@ export function entryOf(record, entries) {
  */
 export function linkStateOf(record, page, queue) {
   if (!record) return 'unknown';
+  if (record.step === 'withdrawn') return 'cancelled';
   const thread = page && Array.isArray(page.threads) ? page.threads.find(t => t && t.id === record.thread_id) : null;
   const published = !!(thread && thread.blyg_published && thread.blyg_published.at);
   if (record.step === 'saved') return !thread ? 'cancelled' : published ? 'published' : 'saved';
@@ -230,8 +234,8 @@ export const ridTag = rid => String(rid || '').replace(/[^A-Za-z0-9_-]/g, '').sl
  *    unreadable  there but not readable JSON or not this shape: kept as it was, never written over; writes are refused (503) so no
  *                rid is ever acted on twice, and status answers `unknown` */
 export const RECORD_FILE_STATES = Object.freeze(['ok', 'unreadable']);
-const recShapeOk = r => r && typeof r === 'object' && ridOk(r.rid) && RECORD_STEPS.includes(r.step) && typeof r.page_url === 'string'
-  && typeof r.thread_id === 'string' && HUB_LINK_INTENTS.includes(r.intent) && typeof r.at === 'string';
+const recShapeOk = r => r && typeof r === 'object' && ridOk(r.rid) && RECORD_STEPS.includes(r.step) && typeof r.at === 'string'
+  && (r.step === 'withdrawn' || (typeof r.page_url === 'string' && typeof r.thread_id === 'string' && HUB_LINK_INTENTS.includes(r.intent)));
 export function createReplyStore({ file, now = () => new Date(), keepDays = 30 }) {
   let file_state = 'ok';
   let recs = new Map();
@@ -250,12 +254,22 @@ export function createReplyStore({ file, now = () => new Date(), keepDays = 30 }
     for (const [k, r] of recs) if (new Date(r.at).getTime() < cut) recs.delete(k);
     writeJson(file, { version: 1, records: [...recs.values()] }, { mode: 0o600 });
   };
-  const since = (field, ms) => { const t = now().getTime(); return [...recs.values()].filter(r => r[field] && t - new Date(r[field]).getTime() < ms).length; };
+  // (a withdrawn rid is not a reply: it never counts against a limit)
+  const since = (field, ms) => { const t = now().getTime(); return [...recs.values()].filter(r => r.step !== 'withdrawn' && r[field] && t - new Date(r[field]).getTime() < ms).length; };
   return {
     get state() { return file_state; },
     get: rid => recs.get(rid) || null,
     /** a new record (step saved), written at once */
     add(rec) { if (recs.has(rec.rid)) throw new Error('hub link record: rid already kept'); recs.set(rec.rid, { ...rec, step: 'saved' }); persist(); return recs.get(rec.rid); },
+    /** a rid cancelled before its reply arrived: remembered as withdrawn (bounded: the oldest withdrawn is forgotten past the cap) */
+    withdraw(rid) {
+      if (recs.has(rid)) throw new Error('hub link record: rid already kept');
+      const old = [...recs.values()].filter(r => r.step === 'withdrawn');
+      for (const r of old.slice(0, Math.max(0, old.length - HUB_LINK_LIMITS.withdrawnMax + 1))) recs.delete(r.rid);
+      recs.set(rid, { rid, step: 'withdrawn', at: now().toISOString() });
+      persist();
+      return recs.get(rid);
+    },
     move(rid, to, facts) { const r = recs.get(rid); moveRecord(r, to, facts); persist(); return r; },
     note(rid, facts) { const r = recs.get(rid); Object.assign(r, facts); persist(); return r; },
     repliesSince: ms => since('at', ms),
@@ -281,6 +295,8 @@ export const HUB_LINK_SAY = Object.freeze({
   'not-set-up': 'Publishing is not set up on your computer.',
   'queue-refused': 'Your computer did not queue it.',
   'gone': 'The reply is no longer on your computer.',
+  'too-large': `This reply is too long to send to your computer: at most ${HUB_LINK_LIMITS.bodyBytes / 1024} KB of text.`,
+  'cancelled': 'This reply was cancelled.',
 });
 
 /**
@@ -303,6 +319,10 @@ export function createHubLink(deps) {
   const store = createReplyStore({ file: deps.repliesFile, now: clock });
   const say = line => { try { (deps.log || (l => process.stderr.write(`hub-link: ${l}\n`)))(line); } catch { /* nowhere */ } };
   const inflight = new Map(); // rid → the promise of the request already acting on it (a second one waits for it)
+  // SLOTS HELD by requests still working (verifying a passage, or waiting for the queue): counted with the records, so requests at once
+  // cannot all pass a limit that only the finished ones would have reached. Taken before the await, given back when it ends.
+  const holding = { replies: 0, presses: 0 };
+  const holdReply = () => { let held = true; holding.replies++; return { give() { if (held) { held = false; holding.replies--; } } }; };
 
   const stateFor = (rec, q) => {
     const page = rec ? deps.readPage(rec.page_url) : null;
@@ -336,12 +356,38 @@ export function createHubLink(deps) {
   async function pressRecord(rec, key) {
     const refuse = code => { store.note(rec.rid, { press_refused: code }); logState(rec.rid, 'press-refused', code); return code; };
     if (key.publish !== 'one-click') return refuse('drafts-only');
-    if (store.pressesSince(86400 * 1000) >= HUB_LINK_LIMITS.publishesPerDay) return refuse('publishes-per-day');
-    const r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id });
+    if (store.pressesSince(86400 * 1000) + holding.presses >= HUB_LINK_LIMITS.publishesPerDay) return refuse('publishes-per-day');
+    holding.presses++;
+    let r;
+    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id }); } finally { holding.presses--; }
     if (!r || !r.ok || !r.queued) return refuse(r && /not set up/i.test(String(r.error || '')) ? 'not-set-up' : 'queue-refused');
     store.move(rec.rid, 'pressed', { entry_id: String(r.queued.id), pressed_at: clock().toISOString(), press_refused: '' });
     logState(rec.rid, 'pressed');
     return '';
+  }
+
+  // a reply whose slot is held: verified, filed, recorded, pressed when asked (the caller gives the slot back)
+  async function fileOne(rid, data, key, post, quote, comment, slot) {
+    const b = await deps.bind({ post: { page: post.page.slice(0, 2048), origin: post.origin.slice(0, 2048), id: post.id.slice(0, 64) }, quote });
+    // (another request for this rid may have finished while this one was verifying: it is in flight-locked, but be sure)
+    if (store.get(rid)) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
+    if (b.verdict !== 'verified') {
+      const code = HUB_LINK_SAY[b.code] ? b.code : 'not-verified';
+      logState(rid, 'refused', code);
+      return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
+    }
+    const filed = deps.fileReply({ bound: b, quote, comment });
+    if (!filed || !filed.thread_id) {
+      const code = (filed && HUB_LINK_SAY[filed.code]) ? filed.code : 'not-writable';
+      logState(rid, 'refused', code);
+      return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
+    }
+    store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
+      post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } });
+    slot.give();   // (the record counts itself from here)
+    logState(rid, 'saved');
+    if (data.intent === 'publish') await pressRecord(store.get(rid), key);
+    return { status: 200, body: { ok: true, ...viewOf(rid) } };
   }
 
   // (each answers { status, body }; a rid in flight is waited for, so two copies of one request do the work once)
@@ -352,37 +398,20 @@ export function createHubLink(deps) {
       const rid = data.rid;
       if (!ridOk(rid)) return { status: 400, body: { ok: false, error: 'rid must be 8 to 64 letters, digits, - or _' } };
       const kept = store.get(rid);
+      if (kept && kept.step === 'withdrawn') return { status: 409, body: { ok: false, error: 'cancelled', ...viewOf(rid), say: HUB_LINK_SAY.cancelled, repeated: true } };
       if (kept) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
       const post = data.post && typeof data.post === 'object' ? data.post : {};
-      const quote = str(data.quote, HUB_LINK_LIMITS.quoteChars + 1), comment = str(data.comment, HUB_LINK_LIMITS.commentChars + 1);
+      const quote = str(data.quote, HUB_LINK_LIMITS.bodyBytes), comment = str(data.comment, HUB_LINK_LIMITS.bodyBytes);
       if (!quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
-      if (quote.length > HUB_LINK_LIMITS.quoteChars || comment.length > HUB_LINK_LIMITS.commentChars) return { status: 400, body: { ok: false, error: 'too long' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
       if (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
-      if (store.repliesSince(3600 * 1000) >= HUB_LINK_LIMITS.repliesPerHour) {
+      if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
         logState(rid, 'limited', 'replies-per-hour');
         return { status: 429, body: { ok: false, error: 'limit', limit: 'replies-per-hour', say: HUB_LINK_SAY['replies-per-hour'] } };
       }
-      const b = await deps.bind({ post: { page: post.page.slice(0, 2048), origin: post.origin.slice(0, 2048), id: post.id.slice(0, 64) }, quote });
-      // (another request for this rid may have finished while this one was verifying: it is in flight-locked, but be sure)
-      if (store.get(rid)) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
-      if (b.verdict !== 'verified') {
-        const code = HUB_LINK_SAY[b.code] ? b.code : 'not-verified';
-        logState(rid, 'refused', code);
-        return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
-      }
-      const filed = deps.fileReply({ bound: b, quote, comment });
-      if (!filed || !filed.thread_id) {
-        const code = (filed && HUB_LINK_SAY[filed.code]) ? filed.code : 'not-writable';
-        logState(rid, 'refused', code);
-        return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
-      }
-      store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
-        post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } });
-      logState(rid, 'saved');
-      if (data.intent === 'publish') await pressRecord(store.get(rid), key);
-      return { status: 200, body: { ok: true, ...viewOf(rid) } };
+      const slot = holdReply();
+      try { return await fileOne(rid, data, key, post, quote, comment, slot); } finally { slot.give(); }
     },
 
     async status(data) {
@@ -408,7 +437,9 @@ export function createHubLink(deps) {
       const rid = data.rid;
       if (!ridOk(rid)) return { status: 400, body: { ok: false, error: 'rid required' } };
       const rec = store.get(rid);
-      if (!rec) return { status: 404, body: { ok: false, error: 'unknown rid', rid, state: 'unknown' } };
+      // NEVER SEEN: the reply may still be on its way (the Hub cancels what it is not sure arrived). Remembered as withdrawn, so that
+      // reply is refused as cancelled when it comes.
+      if (!rec) { store.withdraw(rid); logState(rid, 'withdrawn'); return { status: 200, body: { ok: true, ...viewOf(rid) } }; }
       const v = viewOf(rid);
       if (v.state === 'cancelled') return { status: 200, body: { ok: true, ...v, repeated: true } };
       const e = entryOf(rec, deps.queue().entries);
@@ -444,9 +475,11 @@ export function createHubLink(deps) {
     if (String(req.url || '').includes('?')) return refuse(400, 'query');
     if (!isJson(req.headers['content-type'])) return refuse(415, 'content-type');
     const declared = Number(req.headers['content-length']);
-    if (Number.isFinite(declared) && declared > HUB_LINK_LIMITS.bodyBytes) return refuse(413, 'too-large');
+    // THE one length limit: the encoded body. Said in a fixed sentence the Hub can show as it is.
+    const tooLarge = () => { say('refused too-large'); res.writeHead(413, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'too-large', say: HUB_LINK_SAY['too-large'] })); };
+    if (Number.isFinite(declared) && declared > HUB_LINK_LIMITS.bodyBytes) { req.resume(); return tooLarge(); }
     const got = await readRaw(req, HUB_LINK_LIMITS.bodyBytes);
-    if (got.over) { say('refused too-large'); res.writeHead(413, { ...JSON_HEAD, connection: 'close' }).end(JSON.stringify({ ok: false, error: 'refused' })); try { req.destroy(); } catch { /* gone */ } return; }
+    if (got.over) { tooLarge(); try { req.destroy(); } catch { /* gone */ } return; }
     const v = verifySigned({ headers: req.headers, urlPath: url, body: got.body, key, nowSec: Math.floor(ms() / 1000), nonces });
     if (!v.ok) { say(`refused ${v.why}`); return answer(res, 401, { ok: false, error: 'refused' }); }
     if (!perMinute.take()) { say('limited requests-per-minute'); return answer(res, 429, { ok: false, error: 'limit', limit: 'requests-per-minute' }); }

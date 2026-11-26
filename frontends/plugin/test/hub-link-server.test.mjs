@@ -163,7 +163,9 @@ await test('A REPLY is filed on the post\'s own page record as the owner typed i
   assert.deepEqual([t.blyg.status, t.blyg.id], ['blyg', A], 'stamped as a highlight on the post\'s own page is');
   assert.ok(!t.msgs[0].route, 'no agent is summoned');
   const recs = JSON.parse(fs.readFileSync(recordsFile(root), 'utf8')).records;
-  assert.deepEqual(recs.map(x => [x.rid, x.step, x.thread_id]), [['rid-draft-0001', 'saved', t.id]]);
+  // (the signed cancel of an unseen rid in the refusal walk above is remembered as withdrawn: that is not a reply)
+  assert.deepEqual(recs.filter(x => x.step !== 'withdrawn').map(x => [x.rid, x.step, x.thread_id]), [['rid-draft-0001', 'saved', t.id]]);
+  assert.deepEqual(recs.filter(x => x.step === 'withdrawn').map(x => x.rid), ['zzzzzzzz']);
   assert.equal(fs.statSync(recordsFile(root)).mode & 0o777, 0o600);
   const log = srv.out();
   assert.ok(!log.includes('My reply from the phone') && !log.includes(SAYS[A]) && !log.includes(keyNow().secret), 'no text, quote or secret in the log');
