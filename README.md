@@ -120,6 +120,15 @@ agent passages. `botference hub-link pair` links a Hub hosted on your blog to
 the companion, so a reply you write there on your phone is filed, filled and
 published through your computer.
 
+One complete set-up built this way: you read the blygs you follow in a private
+Hub on your phone, select a passage, type or speak a reply, and your computer
+at home publishes it to your own static site as a response that quotes the
+exact passage. The same Hub can add to an earlier reply as a new version,
+start a post that answers nobody, and show clipped articles to read and reply
+to. [docs/blygger-setup.md](docs/blygger-setup.md) describes the parts, how a
+reply travels, what is in this repository and what is not, and what you need
+to copy it.
+
 **Useful for:** people who write a Blygger blog, or want to follow some.
 
 **State:** experimental. It was built during the Blygger hackathon, 20–27
