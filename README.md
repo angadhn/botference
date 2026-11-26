@@ -116,7 +116,9 @@ at a time. An agent can write a passage of your comment (`/tk`), and the
 passage stays in a box marked as an AI's text. The Hub (`/hub` on the
 companion) is a private feed of the blygs you follow. For drafts that you
 write in Obsidian, `botference fill-gap` gives a blog's own scripts the same
-agent passages.
+agent passages. `botference hub-link pair` links a Hub hosted on your blog to
+the companion, so a reply you write there on your phone is filed, filled and
+published through your computer.
 
 **Useful for:** people who write a Blygger blog, or want to follow some.
 
@@ -286,6 +288,7 @@ From a target project root:
 botference init                            # Create project-local botference/ state (and register it with Discuss)
 botference site                            # Just the Discuss half, for a repo already initialised
 botference fill-gap < request.json        # One agent passage for a gap in your own draft (JSON in, JSON out; for a blog's scripts)
+botference hub-link pair --hub https://blog.example.com   # Let your hosted Hub send replies to this computer (also: rotate, off, status)
 botference profile                         # Profiles: whose Claude/Codex accounts and history the bots use
 botference profile add ada                 # A new profile with its own logins and history; signs it in
 botference profile use ada                 # Switch the whole machine (restarts Discuss + council)

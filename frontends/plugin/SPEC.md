@@ -14034,3 +14034,141 @@ Tests (`blyg-queue`): an old post edited in the drawer and a new post on its pag
 parked, looked at while busy, the drawer's text published after the look, the others after it (P3); `outside` parked, looked at while
 busy, Cancel at the look keeps the note exactly, and a look when the runner is free asks the outside question; a thread deleted before its
 turn and add-to-earlier with a re-press (P4); an exception in one start; a file left in place; a stale record and a Forget.
+
+## Amendment (2026-11-26): the hub link — a reply written in the owner's hosted Hub, published through their computer
+
+The owner reads their hosted Blygger Hub (a server function on their own blog) on a phone. Selecting a passage there and replying
+should end as it does in the drawer: a thread on the quoted post's own page record, its `/tk` lines written by an agent on the owner's
+subscription, published through the queue. The Hub cannot do any of that itself; the companion on the owner's computer can. The hub link
+is the one door between them: server to server, signed, from the Hub's function to `/hub-link/*`. The Hub polls for the state; the
+companion never calls back. When the computer is off or asleep the Hub keeps the reply as `held` and sends it again later with the same
+`rid` (the Hub side is the blog's, not specified here).
+
+### The link is its own principal (`hub-link.mjs`, `server.mjs` one dispatch line)
+- It is never the owner (`hosted.isOwner`), never a guest, never a session. `/hub-link/*` is dispatched in `handler` after the Host check
+  and `sourceRefused`, BEFORE `hosted.authorized`, and answers only a request signed with the link's key. No owner session, cookie,
+  bearer or Access token opens a `/hub-link/*` route (401), and the link's headers open nothing else: every owner route, `/blyg-publish/*`
+  included, is behind the sign-in gate, which never reads them (401).
+- It can do exactly `HUB_LINK_ROUTES`: ping, reply, status, publish, cancel. It reads no page, thread or setting beyond the state of its
+  own rids, and changes no setting.
+
+### The key (`botference hub-link`, `hub-link-cli.mjs`)
+- `hub-link.json` in the secrets folder (`shared/secrets.mjs`: `~/.botference` unless `BOTFERENCE_SECRETS_DIR`), mode 0600:
+  `{ key_id: 8 hex, secret: 32 random bytes base64url, hub_origin: an https origin, publish: HUB_LINK_PUBLISH, created_at }`. Read at
+  every request, so pair, rotate and off take effect without a restart.
+- `pair --hub https://<hub origin> [--publish one-click|drafts-only] [--companion https://<name>]` writes it (refused when one is there,
+  or when `--hub` / `--companion` is not an https origin: no http, no path, no query, no credentials) and prints, once:
+  `BLYG_HUB_STUDIO_URL=https://<companion>` (from `--companion`, else `PLUGIN_READING_HOSTNAME` or the first `PLUGIN_PUBLIC_HOSTNAMES`,
+  else a placeholder said as such), `BLYG_HUB_STUDIO_KEY=<key_id>.<secret>`, and "Key <key_id>, fingerprint <first 8 hex of sha256 of
+  the secret string>". `--publish` defaults to `drafts-only`.
+- `rotate [--publish …]`: a new key id and secret, the same Hub; the old key is refused from the next request. Prints the two lines.
+- `off`: deletes the file; every `/hub-link/*` path is then 404. `status`: the Hub's origin, the publish setting, the key id and the
+  fingerprint; never the secret.
+- `HUB_LINK_GATES = ['off', 'on', 'broken']`, derived from the file at each request: a file that is unreadable or not the shape `pair`
+  writes is `broken`, answered like `off` (404), said once in the log, and never written over (pair and rotate refuse; off deletes it).
+- `HUB_LINK_PUBLISH = ['drafts-only', 'one-click']`, changed only on the machine (pair, rotate --publish), never over HTTP.
+
+### A signed request (the wire format, version `v1`)
+- `POST /hub-link/<route>`, `content-type: application/json`, body at most 16 KiB (`HUB_LINK_LIMITS.bodyBytes`), no query string, and
+  NO `Origin` header (a page in a browser always sends one on a POST; the Hub's server never does).
+- Headers: `x-hub-link-key: <key_id>`, `x-hub-link-ts: <unix seconds>`, `x-hub-link-nonce: <16 random bytes as 32 lowercase hex>`,
+  `x-hub-link-sig: <64 lowercase hex>` = HMAC-SHA256 keyed with the secret's 32 bytes (base64url-decoded) over
+  `"v1\nPOST\n<path>\n<ts>\n<nonce>\n<lowercase hex sha256 of the exact body bytes>"`, where `<path>` is the request path
+  (`/hub-link/reply`).
+- Checked in this order: the gate (404), the route name (404), the method (405), an Origin header (403), a query (400), the content type
+  (415), the size (413), then the signature: all four headers present, the key id is the current one, `|ts − now| ≤ 120 s`, the
+  signature (compared in constant time), and last the nonce, never seen in the last 10 minutes (taken only for a request whose signature
+  is good, so a forger cannot spend the Hub's nonces; memory only: a restart forgets them, harmless because every write is idempotent by
+  rid). Every signature failure is the same `401 {"ok":false,"error":"refused"}`. Then the request limit (429), then the JSON (400).
+- An optional outer layer, when Cloudflare Access covers the companion's name: the Hub sends an Access service token
+  (`CF-Access-Client-Id/Secret`); the companion does not read it.
+
+### The routes (`HUB_LINK_ROUTES`) — request and answer JSON
+- `ping {}` → `{ ok, version: 'v1', publish, key_id }` (the Hub's "Check the link").
+- `reply { rid, post: { page, origin, id, version }, quote, comment, intent: 'publish'|'draft' }` → `{ ok, rid, state, … }` (the reply's
+  view, below). `rid`: 8 to 64 of `[A-Za-z0-9_-]`; `quote` ≤ 2000 and `comment` ≤ 8000 characters, both non-empty.
+  - A rid already kept answers its view with `repeated: true` and does nothing else (two copies arriving together: the second waits for
+    the first and answers from its record).
+  - The companion trusts nothing the Hub says about the post. It verifies the claim exactly as `POST /blyg/bind` does, through the same
+    function (`bindVerified`, factored out of that route, whose answers are unchanged): `blyg.verifyShown({ source: 'hub' })` reads the
+    item document of that origin and id through the guarded fetches; the passage must pass the bindable-passage rule and be the post's
+    text. The thread is filed at the ITEM's own `page` address, never the Hub's `post.page`; "a page already recorded at that address is
+    another post" and a page that is not this companion's to write are refused. Checks off (`blyg_checks: off`) refuses.
+  - Refused → `422 { ok: false, error: 'refused', rid, state: 'refused', reason, say }`, `reason` one of `not-verified`, `checks-off`,
+    `other-post`, `not-writable`, and NOTHING is written: no record, no thread (a page record may be made by the verified binding itself,
+    exactly as `/blyg/bind` makes one).
+  - Filed: one thread on the post's page record. Its quote is the passage as the verified text has it, its `prefix`/`suffix` the 32
+    characters around it in that text (never the Hub's), its blyg stamp the verified answer's; the message is the owner's
+    (`author` = the configured owner name), `provenance: 'owner-typed'`, `channel: 'hub-link'` (tkgaps `MSG_CHANNELS` gains
+    `hub-link`), so its `/tk` gaps are asked at once as for any owner-typed message (GAP_LIMITS apply); no agent is summoned. The thread
+    carries `via: 'hub-link'`; the drawer shows one quiet line, "from your Hub". The record is written (`hub-link-replies.json`).
+  - `intent: 'publish'` with `publish: one-click` is then pressed (below). With `drafts-only`, or a draft, it is `saved`.
+- `status { rids: [1..20] }` → `{ ok, replies: [view, …] }`; a rid with no record is `{ rid, state: 'unknown' }`.
+- `publish { rid }` → the view. A saved reply is pressed; a pressed one answers `repeated: true`; an unknown rid `404 { …, state:
+  'unknown' }`; a reply no longer saved (its thread deleted, or published from the drawer) `409` with its view.
+- `cancel { rid }` → the view. Only while its queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is
+  cancelled through `blygQueue.cancel`. Already cancelled: `repeated: true`. A draft never pressed, or an entry already running or
+  finished: `409` with its view.
+- The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, ahead? (queued), address?, version? (published), say? (failed:
+  the queue's one sentence, paths scrubbed), press?: { refused, say } (saved after a press was refused: drafts-only, publishes-per-day,
+  not-set-up, queue-refused) }`. Nothing else of the page.
+- Other answers: `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
+  `requests-per-minute`, `replies-per-hour`; `503` when the records file is unreadable (write routes only); `500 internal error`.
+
+### Publishing from the Hub (`blyg-queue PRESSED_BY`)
+- A press goes through `blygQueue.press({ …, scope: 'one', shown: the setting in force, by: 'hub-link' })`. `PRESSED_BY = ['owner',
+  'hub-link']` is recorded on the entry (`pressed_by`; absent on older entries: the owner). The owner is AWAY from the computer, so a
+  Hub press is ALWAYS queued (never run at once in a dialog nobody is at) and its presence is the unattended one: `away`, or
+  `promised_look` while the setting is `confirm: always` (honoured: it stops at the look, "awaiting_look"). With `away`, a forced look
+  (`LOOK_FORCED`) sets it aside before anything is written, as for any queued press. It may not ask for a look, it never lifts a pause
+  the owner lifts (the owner resolves those where they can see why), and not set up is refused before anything runs. QUEUE_MAX, the
+  outside-edit question and every other guard of the queue apply unchanged. The run's troubleshooting log notes "pressed from the
+  owner's Hub (hub link)"; the drawer's publish notices are the queue's own.
+- A press accepted moves the record to `pressed` with the entry id. `publish: drafts-only` never presses.
+
+### The state the Hub is told (`HUB_LINK_STATES`, `linkStateOf`)
+`refused | saved | filling | queued | awaiting_look | publishing | published | failed | cancelled`, never stored: derived by ONE
+function, `linkStateOf(record, page, queue)`, from the record, the thread on its page and the queue entry (`ENTRY_TO_LINK`, checked at
+load to cover every `ENTRY_STATES` value): queued→queued; filling→filling; needs_look→awaiting_look; running→publishing, or awaiting_look
+while ITS run waits at a look (`planned` with `confirm: always`); giving_up→publishing; published, failed, cancelled as themselves. An
+entry the owner's drawer press took over (`replaced_by`) is followed. A record not pressed: `saved` (or `published` when the owner
+published the thread from the drawer, `cancelled` when they deleted it). A pressed record whose entry is no longer kept (the queue keeps
+the newest 20 finished): `published` if the thread is, `cancelled` if the thread is gone, else `failed`. `refused` is answered by `reply`
+only.
+
+### The records (`<companion data dir>/hub-link-replies.json`, 0600)
+`{ version: 1, records: [{ rid, step, at, intent, page_url, thread_id, entry_id, pressed_at, press_refused, post: { origin, id, version
+} }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed']`, one field (`step`), moved only by
+`moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. An unreadable file (or one not
+this shape) is never written over: the write routes answer 503 rather than risk acting twice; status answers `unknown`.
+
+### Limits (`HUB_LINK_LIMITS`)
+30 signed requests a minute (memory), 20 replies an hour and 10 presses a day (counted from the records, so a restart does not reset
+them; a refused reply is not counted). GAP_LIMITS and QUEUE_MAX apply as ever. Past the replies limit: 429, nothing written. Past the
+publishes limit: the reply is filed and `saved` with `press.refused: 'publishes-per-day'`.
+
+### Logs
+`hub-link: <first 8 of the rid> <state or event> [<reason code>]`, and `hub-link: refused <check>` for a refused request. Never a text,
+a quote, the secret, a signature or a body.
+
+### What a leaked key can do
+File threads on page records of real blyg posts whose text holds the passage; spend the owner's subscription through `/tk` within the
+limits; make the companion read item documents of blygs it names (the guarded fetch; about 30 a minute); publish up to 10 replies a day,
+and only with `one-click`. It cannot read pages, threads or settings, change anything else, or reach `/blyg-publish/*`. Revoke with
+`botference hub-link rotate` or `off`.
+
+### Tests
+`hub-link` (signing: the exact string, good, wrong key, wrong secret, stale both ways, replayed nonce, a forger cannot burn a nonce, body
+mismatch, missing headers; the nonce cache and the request window on a fake clock; https origins; the key file 0600 and `broken`; every
+ENTRY_STATE through linkStateOf, a run at its look, replaced_by, saved/cancelled/published without an entry; moveRecord; the record
+store 0600, atomic, read back, counted by time, an unreadable file kept). `hub-link-queue` (a Hub press is queued with the runner free
+and goes live, presence away, logged; promised_look under confirm always; look, unknown presser and not set up refused; a pause not
+lifted). `hub-link-cli` (pair, the printed lines, status without the secret, https only, rotate refuses the old key, off, an unreadable
+file never written over, the launcher). `hub-link-server` (through the real companion, hosted, with the pretend web, the stand-in
+one-shot and the fake command set: 404 unpaired; every route refused for a wrong key, a stale timestamp, a replayed nonce, a body not the
+one signed, no signature, an Origin, a GET, a body over the cap, a non-JSON type; the link's headers refused on ten owner routes; the
+owner's password refused on every link route, over the tunnel and on the loopback; a reply filed as the owner on channel hub-link with
+`via`, its anchor from the verified text, nothing in the log; a duplicate rid, also two at once, is one thread; a passage not in the post
+writes nothing; a moved post files under the item's page; a `/tk` gap filled by the one-shot; drafts-only never presses; rotate;
+one-click goes live once and repeats do nothing; cancel while queued, twice, and not while running; a restart between reply and publish;
+confirm always waits for the look; off → 404; the three limits; an unreadable records file → 503, kept).

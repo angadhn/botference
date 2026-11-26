@@ -38,6 +38,9 @@ botference \- run Claude and Codex together: a council, a web annotator, documen
 .B botference fill-gap
 < \fIrequest.json\fR
 .br
+.B botference hub-link
+\fBpair\fR \fB\-\-hub\fR \fIhttps-origin\fR [\fB\-\-publish\fR \fBone-click\fR|\fBdrafts-only\fR] [\fB\-\-companion\fR \fIhttps-origin\fR] | \fBrotate\fR [\fB\-\-publish\fR \fImode\fR] | \fBoff\fR | \fBstatus\fR
+.br
 .B botference profile
 [\fBinit\fR \fIname\fR | \fBadd\fR \fIname\fR [\fB\-\-no-login\fR] | \fBlogin\fR \fIname\fR [\fBclaude\fR|\fBcodex\fR] | \fBuse\fR \fIname\fR | \fBremove\fR \fIname\fR [\fB\-\-delete-data\fR] | \fBcurrent\fR | \fBaccount\fR [\fBadd\fR|\fBuse\fR \fBclaude\fR|\fBcodex\fR \fIlabel\fR]]
 .br
@@ -429,6 +432,15 @@ and writes \fB{"text","model","at"}\fR (exit 0) or \fB{"error"}\fR (exit 1; 2 wh
 The agent runs as a contained one-shot (no tools, minimal environment, Codex in sandbox-exec, 90 seconds), with the model set
 for it in the companion's settings of the current folder, read only. The draft is passed as quoted data; the answer is
 untrusted text. \fBtask\fR \fBnote\fR asks for at most 80 words on the draft's structure or logic.
+.SH HUB-LINK (REPLIES FROM YOUR HOSTED HUB)
+.B botference hub-link pair \-\-hub
+\fIhttps://your-blog\fR links the Blygger Hub hosted on your blog to the Discuss companion on this computer. It writes a key to
+\fBhub-link.json\fR in the secrets folder (mode 0600) and prints, once, the two lines to put in the Hub's environment,
+\fBBLYG_HUB_STUDIO_URL\fR and \fBBLYG_HUB_STUDIO_KEY\fR, and the key's fingerprint. The Hub then signs each request to the
+companion's \fB/hub-link/*\fR routes: a reply you write in the Hub becomes a thread on the quoted post's page, its \fB/tk\fR lines
+are written by an agent, and with \fB\-\-publish one-click\fR (default \fBdrafts-only\fR) it is published through the publish
+queue. \fB\-\-hub\fR must be an https origin. \fBrotate\fR makes a new key (the old one is refused at once); \fBoff\fR deletes
+it (the routes answer 404); \fBstatus\fR shows the Hub, the publish setting, the key id and the fingerprint, never the secret.
 .SH SEE (AGENT EYES)
 .B botference see
 renders a page in headless Chrome (the system browser \- no Playwright,
