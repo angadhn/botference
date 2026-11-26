@@ -14049,8 +14049,8 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   and `sourceRefused`, BEFORE `hosted.authorized`, and answers only a request signed with the link's key. No owner session, cookie,
   bearer or Access token opens a `/hub-link/*` route (401), and the link's headers open nothing else: every owner route, `/blyg-publish/*`
   included, is behind the sign-in gate, which never reads them (401).
-- It can do exactly `HUB_LINK_ROUTES`: ping, reply, status, publish, cancel. It reads no page, thread or setting beyond the state of its
-  own rids, and changes no setting.
+- It can do exactly `HUB_LINK_ROUTES`: ping, reply, status, publish, cancel, redo. It reads no page, thread or setting beyond the state
+  of its own rids and the text of the replies it filed itself, and changes no setting.
 
 ### The key (`botference hub-link`, `hub-link-cli.mjs`)
 - `hub-link.json` in the secrets folder (`shared/secrets.mjs`: `~/.botference` unless `BOTFERENCE_SECRETS_DIR`), mode 0600:
@@ -14109,15 +14109,34 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
 - `status { rids: [1..20] }` → `{ ok, replies: [view, …] }`; a rid with no record is `{ rid, state: 'unknown' }`. A rid whose reply
   is still being filed (verifying the passage) is waited for, at most 5 s (`statusWaitMs`); still filing then: `503 { ok:false,
   error:'a reply is still being filed; ask again' }` for the whole request. So `unknown` never means "on its way".
+  `status { rids: [1..5], text: true }` adds `blocks` to the view of each reply this link filed (saved or pressed, its thread still
+  there): its first message only, in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id,
+  instruction, state, text, model, at, reason? }` for each agent passage (`state` is the gap's tkgaps mode; `reason` for a failed one,
+  paths scrubbed; a removed passage is left out with its `/tk` mark). The owner's words are bounded by the reply's own 16 KiB; the agent
+  text is cut at 32 KiB in all (`agentTextBytes`). Never another thread, message, page, setting or path. The Hub must show it as text
+  only (textContent), never as markup.
 - `publish { rid }` → the view. A saved reply is pressed; a pressed one answers `repeated: true`; an unknown rid `404 { …, state:
   'unknown' }`; a reply no longer saved (its thread deleted, or published from the drawer) `409` with its view.
-- `cancel { rid }` → the view. Only while its queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is
-  cancelled through `blygQueue.cancel`. Already cancelled: `repeated: true`. A draft never pressed, or an entry already running or
-  finished: `409` with its view. A rid this companion has NEVER SEEN (the Hub cancels a reply it is not sure arrived): `200 { ok, rid,
+- `cancel { rid }` → the view. A SAVED DRAFT (never pressed, not pressed in the drawer either) is thrown away: its thread is deleted as
+  the drawer deletes one (its run output too) and the record moves to `discarded` (state `cancelled`). A pressed reply: only while its
+  queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is cancelled through `blygQueue.cancel`.
+  Already cancelled: `repeated: true`. A draft the owner pressed in the drawer, or an entry already running or finished: `409` with its
+  view.
+- `redo { rid, gap }` → the view. One agent passage of a SAVED draft (its block's `id`) is asked again: its gap filled, edited or
+  failed → `pending` (tkgaps `gapMove`), then filled by the same contained one-shot. Counted against the page's hourly passage limit
+  (GAP_LIMITS.perPageHour): none left → `429 { ok:false, error:'limit', limit:'passages-per-hour', say, …view }`. A passage still being
+  written, a pasted one, or a reply no longer a saved draft (pressed, published, thrown away): `409` with the view; no such passage or
+  rid: `404`. The owner's own words are never changed from the Hub. A rid this companion has NEVER SEEN (the Hub cancels a reply it is not sure arrived): `200 { ok, rid,
   state: 'cancelled' }`, and the rid is remembered as `withdrawn`, so its reply, if it comes later, is refused as cancelled.
-- The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, ahead? (queued), address?, version? (published), say? (failed:
-  the queue's one sentence, paths scrubbed), press?: { refused, say } (saved after a press was refused: drafts-only, publishes-per-day,
-  not-set-up, queue-refused) }`. Nothing else of the page.
+- The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, fill?, fill_why?, blocks? (asked for), ahead? (queued),
+  address?, version? (published), say? (failed: the queue's one sentence, paths scrubbed), press?: { refused, say } (saved after a
+  press was refused: drafts-only, publishes-per-day, not-set-up, queue-refused) }`. Nothing else of the page.
+- `fill` (while the reply's thread is there): `HUB_LINK_FILLS = ['writing', 'ready', 'failed']`, derived by ONE function, `fillOf`, from
+  the gaps' modes and never stored: a passage `pending` → `writing`; else one `failed` → `failed` (`fill_why`: its reason, paths
+  scrubbed); else `ready` (a reply with no passages is ready). A draft's passages are asked for when it is SAVED, as for any message the
+  owner typed (same one-shot, same limits); no press is needed, and a Publish takes the written passages as they are and asks for
+  nothing again (a passage still `pending` at the press is waited for by the queue, as ever). So the Hub can say "saved, passages still
+  being written", "saved, ready" and "saved, a passage failed (why)".
 - Other answers: `413 { ok:false, error:'too-large', say:'This reply is too long to send to your computer: at most 16 KB of text.' }`
   for a body over 16384 bytes (the sentence is fixed); `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
   `requests-per-minute`, `replies-per-hour`; `503 { ok:false, error:'the hub link records on the computer are unreadable' }` from every route but ping when the records file
@@ -14151,8 +14170,8 @@ only.
 
 ### The records (`<companion data dir>/hub-link-replies.json`, 0600)
 `{ version: 1, records: [{ rid, step, at, intent, page_url, thread_id, entry_id, pressed_at, press_refused, post: { origin, id, version
-} }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed', 'withdrawn']`, one field (`step`),
-moved only by `moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. `withdrawn` is
+} }] }`, written atomically (fsjson), forgotten after 30 days. `RECORD_STEPS = ['saved', 'pressed', 'withdrawn', 'discarded']`, one field (`step`),
+moved only by `moveRecord`, which refuses any move but saved → pressed and saved → discarded (a saved draft the Hub threw away; final): a rid is pressed at most once, across restarts. `withdrawn` is
 born so (a cancel of a rid never seen: `{ rid, step, at }` only), is final, never counts against a limit, and at most 500 are kept (the
 oldest withdrawn one is forgotten first; filed records are never dropped for one). A withdrawal is kept only if it is written: when
 the write fails, the cancel answers `500 { ok:false, error:'internal error' }` with no state and nothing is remembered. An unreadable file (or one not
@@ -14182,8 +14201,11 @@ Whoever holds the key can, until it is replaced:
   agent subscription (within GAP_LIMITS);
 - make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
   public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
-- fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour.
-It cannot read pages, threads or settings, change any setting, or reach `/blyg-publish/*` or any other owner route.
+- fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour;
+- read back the text of the replies it filed itself: their own words and the agent passages written into them (and ask for a passage
+  again, and throw such a draft away). Nothing else.
+It cannot read any other thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or any other
+owner route.
 How to end it: on the computer, `botference hub-link rotate` (a new key; the old one is refused from the next request), or
 `botference hub-link off` and then pair again with `botference hub-link pair`; put the new key in the Hub's environment.
 
@@ -14205,3 +14227,9 @@ owner's password refused on every link route, over the tunnel and on the loopbac
 writes nothing; a moved post files under the item's page; a `/tk` gap filled by the one-shot; drafts-only never presses; rotate;
 one-click goes live once and repeats do nothing; cancel while queued, twice, and not while running; a restart between reply and publish;
 confirm always waits for the look; off → 404; the three limits; an unreadable records file → 503, kept).
+Drafts from the Hub (2026-11-26, later): `hub-link-drafts` (fillOf every case; blocksOf order, a removed passage left out, the agent
+cap; a draft's fill and text only when asked and only for its own rid, at most 5; redo asked again, refused while pending, over the
+hourly limit and once pressed; cancel throws a saved draft away once, not one the owner pressed in the drawer; record steps; twelve
+Publish calls in a row press ten in order and refuse two for the day). `hub-link-server` adds: a draft's passage written at save
+and read back as blocks, Publish asking for nothing again; redo through the one-shot; cancel deleting the draft's thread; three
+drafts published in a row as three queue entries in order, all live.
