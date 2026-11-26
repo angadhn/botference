@@ -450,7 +450,7 @@ export const HUB_LINK_SAY = Object.freeze({
  *   keyDir, repliesFile, now() → Date,
  *   bind({ post, quote }) → Promise<{ verdict: 'verified', url } | { verdict: 'unverified', code, reason }>   (verifyShown, source hub)
  *   fileReply({ bound, quote, comment }) → { url, thread_id } | { code }   (a thread on the verified page, owner-typed on channel hub-link)
- *   press({ url, thread_id }) → Promise<blyg-queue press answer>   (by 'hub-link')
+ *   press({ url, thread_id, join?, post?, postVersion?, prompts? }) → Promise<blyg-queue press answer>   (by 'hub-link')
  *   cancel(entry_id) → blyg-queue cancel answer
  *   queue() → { entries, run }        readPage(url) → page | null
  *   log(line), perMinute (tests only: the request limit a minute), statusWaitMs, audioReadMs (tests only)
@@ -561,7 +561,8 @@ export function createHubLink(deps) {
     }
     holding.presses++;
     let r;
-    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id, ...(add ? { join: add.join, post: add.post, postVersion: add.postVersion } : {}) }); } finally { holding.presses--; }
+    // (`prompts`: the post's prompts choice, when the Hub's reply carries one: passed through as it is; the queue checks it)
+    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id, ...(add ? { join: add.join, post: add.post, postVersion: add.postVersion } : {}), ...(rec.prompts ? { prompts: String(rec.prompts) } : {}) }); } finally { holding.presses--; }
     if (!r || !r.ok || !r.queued) return refuse(r && /not set up/i.test(String(r.error || '')) ? 'not-set-up' : 'queue-refused');
     store.move(rec.rid, 'pressed', { entry_id: String(r.queued.id), pressed_at: clock().toISOString(), press_refused: '', ...(add ? { add_title: add.title, add_address: add.address } : { add_to: '' }) });
     logState(rec.rid, 'pressed');

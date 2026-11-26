@@ -2576,7 +2576,9 @@
       // (config.js PUB_OUTSIDE, moved only by pubOutside); `lost` the companion's count of lines that would go (a fact). `extent` is how
       // much of the thread (config.js PUB_EXTENTS, moved only by pubExtent); `upto` the chosen message's time stamp (a fact of `upto`).
       pub: { view: 'closed', run: null, thread: '', scope: '', error: '', poll: 0, shown: '', opener: 'plane', ask: 'none', pic: { state: 'none', image: '', tries: 0, timer: 0 },
-        join: 'none', earlier: null, outside: 'none', lost: 0, extent: 'whole', upto: '', queue: null },
+        join: 'none', earlier: null, outside: 'none', lost: 0, extent: 'whole', upto: '', queue: null,
+        // the post's prompts choice in the box (PROMPT_CHOICES), and the owner's last choice, remembered (blygPrompts)
+        prompts: 'locked', promptsLast: 'locked' },
       // the one quiet line that says an inline /tk passage publishes as a block of its own: TK_BLOCK_HINTS (unseen | said), moved by
       // tkHintMove (said once per drawer, never again)
       tkBlockHint: 'unseen',
@@ -3102,6 +3104,7 @@
       paintQuiz();
       paintTabs();
       restoreTab();
+      restorePrompts();
       restoreWidth();
       restoreExportMode();
       restoreTyping();
@@ -3274,6 +3277,26 @@ ${bubbleShellHtml()}`;
     }
 
     // ---- tab memory (per hostname) --------------------------------------
+    // ---- the post's prompts (blyg-note.mjs PROMPT_MODES): "Show my prompts with this post", remembered ---------------------
+    const PROMPT_CHOICES = ['locked', 'shown'];
+    function restorePrompts() {
+      readKey('blygPrompts', v => { if (PROMPT_CHOICES.indexOf(v) !== -1) D.pub.promptsLast = v; });
+    }
+    // the one function that changes the box's choice (and remembers it as the owner's last)
+    function pubPrompts(to) {
+      if (PROMPT_CHOICES.indexOf(to) === -1) throw new Error('prompts: no such choice ' + to);
+      D.pub.prompts = to;
+      D.pub.promptsLast = to;
+      writeKey('blygPrompts', to);
+    }
+    // a thread holding an agent's passage (the box offers the choice only then)
+    const PUB_AGENT_MODES = ['filled-by-agent', 'edited-by-reader', 'adopted-by-reader', 'pasted-by-reader'];
+    const pubHasAgentText = t => !!t && (t.msgs || []).some(m => m && Array.isArray(m.gaps) && m.gaps.some(g => g && PUB_AGENT_MODES.indexOf(g.mode) !== -1));
+    function pubPromptsHtml(t) {
+      if (!pubHasAgentText(t)) return '';
+      return `<label class="pubprompts"><input type="checkbox" data-act="pub-prompts"${D.pub.prompts === 'shown' ? ' checked' : ''}> Show my prompts with this post</label>`;
+    }
+
     function restoreTab() {
       // per-site memory is overridden, not consulted, where Comments is dead
       if (!CAPS.highlights) return;
@@ -8404,6 +8427,7 @@ ${bubbleShellHtml()}`;
       'pub-open': (btn, target) => pubOpen(target),
       'pub-open-upto': (btn, target) => pubOpen(target, btn.dataset.ts),
       'pub-scope': (btn, t, e) => pubStart(btn.dataset.scope, e),
+      'pub-prompts': (btn) => { if (D.pub.view === 'choosing') pubPrompts(btn.checked ? 'shown' : 'locked'); },
       // a post changed outside the plugin: keep it (nothing is written) or replace it (the start again, with outside: 'replace')
       'pub-outside-keep': () => { if (D.pub.view === 'choosing' && D.pub.outside !== 'none') pubClose(); },
       'pub-outside-replace': (btn, t, e) => { if (D.pub.view === 'choosing' && D.pub.outside !== 'none') { pubOutside('replacing'); pubStart(D.pub.scope || 'one', e); } },
@@ -11005,6 +11029,8 @@ ${bubbleShellHtml()}`;
       }
       if (earlier) { pubJoin('add'); D.pub.earlier = earlier; }
       // (a run going on in the background stays known: its chip and the header's mark keep saying it)
+      // the box's prompts choice: a published post's own (a new version keeps it unless the owner changes it), else the last one chosen
+      { const had = t && t.blyg_published && t.blyg_published.prompts; D.pub.prompts = PROMPT_CHOICES.indexOf(had) !== -1 ? had : D.pub.promptsLast; }
       if (!pubGo('choosing', { thread: id, scope: '', error: '', run: r.run && r.run.id ? r.run : null, shown: r.confirm, opener, edit: pubPublished(t) })) pubJoin('none');
     }
     // CLICKJACKING. A page can cover the drawer with something it controls (a top-layer <dialog> or popover with `pointer-events:none`, an
@@ -11163,7 +11189,7 @@ ${bubbleShellHtml()}`;
       if (!pubGo('starting', { scope, opener: 'start' })) return;
       let r = null;
       const cut = D.pub.extent === 'upto' && D.pub.upto ? { extent: 'upto', upto: D.pub.upto } : {};
-      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}), ...cut, ...(looking ? { look: 'yes' } : {}) }); } catch (_) { r = null; }
+      try { r = await cb('onBlygPublish')('start', { thread_id: thread, scope, confirm: D.pub.shown, ...(join ? { join } : {}), ...shownPost, ...(replacing ? { outside: 'replace' } : {}), ...cut, ...(looking ? { look: 'yes' } : {}), prompts: D.pub.prompts }); } catch (_) { r = null; }
       pubHeard(r);
       // ACCEPTED INTO THE QUEUE: the dialog steps out of the way at once; the thread's chip says its place
       if (r && r.ok && r.queued) {
@@ -11356,7 +11382,7 @@ ${bubbleShellHtml()}`;
             const v = (Number(t.blyg_published.version) || 1) + 1;
             return `<h2>Publish a new version</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${uptoSay}
               <p>${look ? `This makes version ${v} of your post. Nothing is published yet: first you will see it.` : `This publishes version ${v} of your post now.`}</p>
-              <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
+              ${pubPromptsHtml(t)}<div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           // an earlier post from this page can take it: ONE choice, adding to it by default (D.pub.join)
           const joinHtml = P.join === 'none' ? '' : `<div class="pubjoin" role="radiogroup" aria-label="Where this post goes">`
@@ -11367,13 +11393,13 @@ ${bubbleShellHtml()}`;
             const named = P.earlier.title ? `“${esc(P.earlier.title)}”` : 'your earlier post';
             return `<h2>${esc(pubCap('Publish ' + words.head))}</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
               <p>${look ? `${words.subject} goes after the earlier one, as version ${v} of ${named}. Nothing is published yet: first you will see it.` : `This publishes version ${v} of ${named} now, with ${words.subject.charAt(0).toLowerCase() + words.subject.slice(1)} after the earlier one.`}</p>
-              <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
+              ${pubPromptsHtml(t)}<div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${look ? 'Prepare version ' + v : 'Publish version ' + v}</button>${closeBtn}</div>`;
           }
           const n = pubAbove(P.thread, P.shown).length;
           const aboveWords = n === 1 ? '1 thread above' : n + ' threads above';
           return `<h2>${esc(pubCap('Publish ' + words.head))}</h2><p class="pubq">${esc(first)}</p>${err}${lookSay}${queueSay}${joinHtml}${uptoSay}
             <p>${look ? `Turn ${esc(words.into)} into a short post on your own site. Nothing is published yet: first you will see exactly what would be.` : `Turn ${esc(words.into)} into a short post on your own site. Choosing one of these publishes it now: there is no further step.`}</p>
-            <div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${esc(pubCap((look ? 'Prepare ' : 'Publish ') + words.head))}</button>
+            ${pubPromptsHtml(t)}<div class="pubbtns"><button class="pbtn primary" type="button" data-act="pub-scope" data-scope="one">${esc(pubCap((look ? 'Prepare ' : 'Publish ') + words.head))}</button>
             ${n ? `<button class="pbtn" type="button" data-act="pub-scope" data-scope="above">${look ? 'This thread and the ' + aboveWords : 'Publish this thread and the ' + aboveWords}</button>` : ''}${closeBtn}</div>`;
         }
         case 'starting':

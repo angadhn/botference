@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import * as N from '../blyg-note.mjs';
 
 const hasRuby = (() => { try { execFileSync('ruby', ['-v'], { stdio: 'ignore' }); return true; } catch { return false; } })();
@@ -266,7 +267,7 @@ test('/tk: an agent-written passage (filled, edited, adopted, pasted) is the sit
   assert.ok(filled.ok, filled.error);
   // a line gap is a block of its own; a wikilink's bracket as a character reference (nothing for the site's own markup to read)
   assert.match(filled.text, /Intro\n\n\[TK\] say hello \[=\]Hello, reader\. &#91;\[x\]\]\[\/TK\]\n\nAfter\n$/, filled.text);
-  assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n {4}format: markdown\n---/);
+  assert.match(filled.text, /blyg_generated:\n {2}- model: "claude-opus-5"\n {4}at: 2026-11-24T10:00:00Z\n {4}format: markdown\nblyg_prompts: locked\n---/);
   assert.deepEqual(filled.generated.map(g => [g.agent, !!g.edited_by_author]), [['claude', false]]);
   assert.equal(one('/tk say hello\nMy own words follow it.', [gap('filled-by-agent', 'Agent words first.')]).title, 'My own words follow it', 'the name is the owner\'s first words, never the agent\'s or a mark');
   // edited and adopted: the same form, the text as it now stands, still escaped, and marked as having the owner's hand in it
@@ -802,4 +803,45 @@ test('generatedOf works under the system Ruby 2.6 too, in the site\'s folder; no
   const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk go\nAfter'), gaps: [{ instruction: 'go', mode: 'filled-by-agent', agent: 'claude', text: 't' }] }] }]);
   const r = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before: note, refusal: RUBY_NEEDED_SAY } });
   assert.deepEqual([r.ok, r.error], [false, RUBY_NEEDED_SAY]);
+});
+
+// PROMPTS: the post's choice (PROMPT_MODES: locked | shown, one field), written by the note writer as `blyg_prompts` when the post has
+// an agent passage; the site then shows each passage's prompt on the post's page only (or nowhere, locked: the default).
+test('prompts: the note writer writes the one field when there is an agent passage; locked by default; an unknown choice is refused', () => {
+  assert.deepEqual(N.PROMPT_MODES, ['locked', 'shown']);
+  assert.equal(N.DEFAULT_PROMPTS, 'locked');
+  assert.equal(N.promptsMove('locked', 'shown'), 'shown');
+  assert.equal(N.promptsMove('shown', 'locked'), 'locked');
+  assert.throws(() => N.promptsMove('locked', 'open'), /unknown/);
+  const gap = { instruction: 'say hello', mode: 'filled-by-agent', agent: 'claude', text: 'Hello.' };
+  const withPassage = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk say hello\nAfter'), gaps: [gap] }] }]);
+  const plain = webPage([thread('t1', '', 'Only my words.')]);
+  const front = r => r.text.split('\n---\n')[0];
+  const run = (page, prompts) => N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', ...(prompts === undefined ? {} : { prompts }) });
+  assert.match(front(run(withPassage, 'shown')), /\nblyg_prompts: shown$/m);
+  assert.match(front(run(withPassage, 'locked')), /\nblyg_prompts: locked$/m);
+  assert.match(front(run(withPassage)), /\nblyg_prompts: locked$/m, 'default locked');
+  assert.ok(!/blyg_prompts/.test(run(plain, 'shown').text), 'no agent passage: nothing to show, no field');
+  const bad = run(withPassage, 'open');
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /prompts/);
+});
+
+test('prompts: the drawer has the one checkbox, remembered, sent with every press; the press carries it through the queue', () => {
+  const drawer = fs.readFileSync(new URL('../extension/drawer.js', import.meta.url), 'utf8');
+  assert.ok(drawer.includes('Show my prompts with this post'));
+  assert.ok(/data-act="pub-prompts"/.test(drawer));
+  assert.ok(/writeKey\('blygPrompts'/.test(drawer) && /readKey\('blygPrompts'/.test(drawer), 'remembered');
+  assert.ok(/prompts: D\.pub\.prompts/.test(drawer), 'sent with the press');
+  const config = fs.readFileSync(new URL('../extension/config.js', import.meta.url), 'utf8');
+  assert.ok(/body: \[[^\]]*'prompts'/.test(config), 'a field of the start request');
+});
+
+test('prompts: a new version that changes only the prompts choice is told apart (the site makes no new version of the item for it)', async () => {
+  const { promptsOnlyChange } = await import('../blyg-run.mjs');
+  const a = '---\ntitle: "x"\nblyg_prompts: locked\n---\nBody\n';
+  assert.equal(promptsOnlyChange(a, a.replace('locked', 'shown')), true);
+  assert.equal(promptsOnlyChange(a, a), false, 'nothing changed is not a change');
+  assert.equal(promptsOnlyChange(a, a.replace('locked', 'shown').replace('Body', 'Body, edited')), false);
+  assert.equal(promptsOnlyChange('---\ntitle: "x"\n---\nBody\n', a.replace('locked', 'shown')), true, 'an older note without the field');
 });

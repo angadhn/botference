@@ -3330,11 +3330,12 @@ const hubLink = createHubLink({
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),
   fileReply: ({ bound, quote, comment }) => hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer }),
   // (`join: 'add'`, the post and its version: the plugin's own add-to-earlier path, exactly as the drawer's "Add to your earlier post")
-  press: ({ url, thread_id, join = '', post = '', postVersion = '' }) => {
+  // (`prompts`: the post's prompts choice, when the Hub's reply box sends one: blyg-note.mjs PROMPT_MODES; absent keeps the default)
+  press: ({ url, thread_id, join = '', post = '', postVersion = '', prompts = '' }) => {
     const page = store.readPage(url);
     if (!page) return Promise.resolve({ ok: false, status: 404, error: 'gone' });
     const v = validateHome(store.readConfig().blyg_home);
-    return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link', join, post: String(post), postVersion: String(postVersion) });
+    return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link', join, post: String(post), postVersion: String(postVersion), prompts: String(prompts || '') });
   },
   // what a reply can be added to: for a blyg post's page record (it must be that post's), and for one filed thread
   earlier: ({ page, origin, id }) => {
@@ -4523,7 +4524,7 @@ export function handler(req, res) {
         // and queued (`queued`: its entry; `replaced`: it took the place of this thread's earlier waiting press)
         const r = await blygQueue.press({ page, threadId: String(data.thread_id || ''), scope: String(data.scope || ''), shown: String(data.confirm || ''), join: String(data.join || ''),
           post: String(data.post || ''), postVersion: String(data.post_version || ''), outside: String(data.outside || ''),
-          extent: String(data.extent || 'whole'), upto: String(data.upto || ''), look: data.look === 'yes' });
+          extent: String(data.extent || 'whole'), upto: String(data.upto || ''), look: data.look === 'yes', prompts: String(data.prompts || '') });
         // a post changed outside the plugin: the refusal carries the question for the owner (the sentence and a count of lines)
         if (!r.ok && r.outside) return res.writeHead(r.status, JSON_HEAD).end(JSON.stringify({ ok: false, error: r.error, outside: r.outside }));
         if (r.ok && r.queued) return ok(res, { queued: r.queued, replaced: !!r.replaced, queue: queueFor() });

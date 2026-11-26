@@ -41,7 +41,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { RUN_LIVE, RUN_FINISHED, FAILED_MODES, INTERRUPTED_MODES, publishedNothing, stepNamed, IllegalMove, EXTENTS, JOINS, settingChangedSay } from './blyg-run.mjs';
-import { eligibleThread, isPublishedThread, includedMsgs, SCOPES } from './blyg-note.mjs';
+import { eligibleThread, isPublishedThread, includedMsgs, SCOPES, PROMPT_MODES } from './blyg-note.mjs';
 
 export const ENTRY_STATES = Object.freeze(['queued', 'filling', 'needs_look', 'running', 'giving_up', 'published', 'failed', 'cancelled']);
 export const ENTRY_MOVES = Object.freeze({
@@ -115,7 +115,8 @@ function entryProblem(e) {
   if (!PRESENCES.includes(e.presence)) return 'presence';
   const a = e.args;
   if (!a || typeof a !== 'object' || !SCOPES.includes(a.scope) || !EXTENTS.includes(a.extent) || !isStr(a.upto) || (a.extent === 'upto') !== !!a.upto
-    || !(a.join === '' || JOINS.includes(a.join)) || !(a.outside === '' || a.outside === 'replace') || !isStr(a.post) || !isStr(a.post_version)) return 'args';
+    || !(a.join === '' || JOINS.includes(a.join)) || !(a.outside === '' || a.outside === 'replace') || !isStr(a.post) || !isStr(a.post_version)
+    || !(a.prompts === undefined || a.prompts === '' || PROMPT_MODES.includes(a.prompts))) return 'args';
   if (!Array.isArray(e.snapshot) || !e.snapshot.length || !e.snapshot.every(t => t && isStr(t.id) && Array.isArray(t.msgs) && t.msgs.every(m => m && typeof m === 'object'))) return 'snapshot';
   if ((e.state === 'running' || e.state === 'giving_up') && !isStr(e.run_id)) return 'run';
   return '';
@@ -263,7 +264,7 @@ export function createQueue(deps) {
     const a = e.args;
     // (`shown` is the setting in force: the look promised at the press is carried by `presence`, the stricter of the two applying)
     const r = await pub.start({ page: p, threadId: e.thread_id, scope: a.scope, shown: deps.confirmNow(), join: a.join, post: a.post, postVersion: a.post_version,
-      outside: e.presence === 'asked_to_look' ? 'replace' : a.outside, extent: a.extent, upto: a.upto, id, presence: presenceFor(e), drawerText });
+      outside: e.presence === 'asked_to_look' ? 'replace' : a.outside, extent: a.extent, upto: a.upto, id, presence: presenceFor(e), drawerText, prompts: a.prompts || '' });
     if (r.ok && e.pressed_by === 'hub-link' && pub.log) pub.log.write(id, { ev: 'note', text: 'pressed from the owner\'s Hub (hub link)' });
     if (r.ok) { if (e.state === 'running' && pub.book.run.id === id) reconcile(e); return r; }
     if (e.state !== 'running') return r;
@@ -408,7 +409,10 @@ export function createQueue(deps) {
    * runner was free and nothing waited (run at once, as before the queue); else `{ ok, queued: entry view, replaced }` (accepted at
    * once); or a refusal. `look`: the owner opened a post set aside for their look.
    */
-  async function press({ page, threadId, scope, shown, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', look = false, by = 'owner' }) {
+  // `prompts`: the post's prompts choice (blyg-note.mjs PROMPT_MODES; '' the default or, for a new version, the post's own), carried
+  // with the entry to the run (the drawer's checkbox; the Hub's reply box passes the same field through hub-link.mjs)
+  async function press({ page, threadId, scope, shown, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', look = false, by = 'owner', prompts = '' }) {
+    if (prompts && !PROMPT_MODES.includes(prompts)) return { ok: false, status: 400, error: `prompts must be one of ${PROMPT_MODES.join(', ')}` };
     if (!PRESSED_BY.includes(by)) return { ok: false, status: 400, error: 'no such presser' };
     const away = by === 'hub-link';
     if (away && look) return { ok: false, status: 400, error: 'a look is asked for at the computer' };
@@ -416,7 +420,7 @@ export function createQueue(deps) {
     // (from the Hub, not set up: refused here; the runner's own refusal would start a run in a dialog nobody is at)
     if (!inForce && away) return { ok: false, status: 409, error: 'Publishing is not set up on your computer.' };
     // not set up (or broken): the runner says why, in its own words, and nothing is queued
-    if (!inForce) return pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto });
+    if (!inForce) return pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto, prompts });
     if (!SCOPES.includes(scope)) return { ok: false, status: 400, error: 'scope must be one or above' };
     if (!EXTENTS.includes(extent) || (extent === 'upto' ? !upto : !!upto)) return { ok: false, status: 400, error: 'no such extent' };
     if (join && !JOINS.includes(join)) return { ok: false, status: 400, error: 'no such choice' };
@@ -428,7 +432,7 @@ export function createQueue(deps) {
     // (…by the owner at the computer: a press from the Hub never lifts one, the owner resolves it where they can see why)
     if (OWNER_RESUMES.includes(rec.state) && !away) moveQueue('running');
     const mineOpen = open().filter(e => sameThread(e, page.url, threadId));
-    const args = { scope, join: join || '', post: String(post || ''), post_version: String(postVersion || ''), outside: outside || '', extent, upto: extent === 'upto' ? String(upto) : '' };
+    const args = { scope, join: join || '', post: String(post || ''), post_version: String(postVersion || ''), outside: outside || '', extent, upto: extent === 'upto' ? String(upto) : '', prompts: prompts || '' };
     const presence = look ? 'asked_to_look' : inForce === 'always' ? 'promised_look' : 'away';
     const parkedOne = mineOpen.find(e => e.state === 'needs_look');
     const waiting = rec.entries.some(e => e.state === 'queued');
@@ -437,7 +441,7 @@ export function createQueue(deps) {
     // THE RUNNER IS FREE AND NOTHING WAITS: run it at once, as before the queue (the dialog shows what it does, the look included)
     // (a look the owner asked for runs at once whenever the runner is free: they are at the dialog now)
     if (!away && !runnerBusy() && rec.state === 'running' && (look || (!waiting && !behind))) {
-      const r = await pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto, presence: look ? 'asked_to_look' : 'here' });
+      const r = await pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto, presence: look ? 'asked_to_look' : 'here', prompts });
       if (!r.ok) return r;
       // (a post of this thread set aside for a look is the one now run; anything else of this thread still waiting is replaced by it)
       const e = parkedOne || birth({ page, here, args, presence, state: 'running' });

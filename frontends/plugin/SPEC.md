@@ -12977,6 +12977,14 @@ get; Ruby missing or failing says `RUBY_NEEDED_SAY`. Only an unreadable front ma
 with a plain sentence (`FORMS_UNKNOWN_SAY`); nothing is guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
 zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
 a post with a deliberate link the writer cannot normalise has no bare address made clickable.
+**PROMPTS** (2026-11-26): a post's prompts (its /tk instructions) are `locked` (default: nowhere in the public site) or `shown` (the
+site's page of the post shows each passage's prompt in its card; never the item, a feed or the stream), `PROMPT_MODES` in blyg-note.mjs,
+one field (`blyg_prompts`, written only for a post with an agent passage), changed through `promptsMove`. The publish box offers "Show my
+prompts with this post" when the post has an agent passage, remembered (`blygPrompts`) and sent with every press as `prompts`; a new
+version starts from the post's own choice (`blyg_published.prompts`). The press carries it through the queue (`args.prompts`) to the
+run; the Hub's reply passes the same field through hub-link (`rec.prompts`, not built yet). A new version that changes ONLY the choice
+(`promptsOnlyChange`) is published as an edit that makes no new version of the item (the site's rule), changelog "Prompts shown." /
+"Prompts locked.".
 **BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a
 wikilink, a reference definition or alone on a quote line; trailing punctuation left out; http and https only) and listed in the note's
 `blyg_silent_links`, so the site never makes them references; the lone-link response still reads only what the owner linked on purpose. Compared in the

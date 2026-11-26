@@ -47,7 +47,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeJson, readJsonState } from './fsjson.mjs';
 import { validateHome, fingerprint, minimalEnv, expandArgv, filenameFor, runCommand, runCheck, TIME_LIMITS_MS, STEPS, COMMAND_FOR, EDIT_STEPS, previewUrlFor } from './blyg-home.mjs';
-import { renderShortNote, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
+import { renderShortNote, PROMPT_MODES, DEFAULT_PROMPTS, ownText, includedMsgs, linkTargetsOf, blygItemOf, LINK_STUB_MAX, eligibleThread, isPublishedThread, isPublishableMsg, slugOf, dayOf, newBlygId, isBlygId, showsLiquid, readingOf, changelogLine, stubOfPage, stubTargetOf, hashOf, postTextOf, changelogPrompt, changelogAnswerOk, SCOPES, LIMITS } from './blyg-note.mjs';
 import { createRunLog, LOG_DIR_NAME } from './blyg-log.mjs';
 import { samePage } from './blyg.mjs';
 import { renderPreview as realRender, findChrome } from './preview-render.mjs';
@@ -574,6 +574,8 @@ export function generatedOf(noteText, { ruby = 'ruby', cwd = undefined, env = un
   if (r && r.yaml_error) return { unreadable: 'its front matter could not be read as YAML' };
   return { generated: r && r.present ? r.list : [] };
 }
+// Two texts of a note that differ in nothing but the `blyg_prompts` line: a new version of only the prompts choice.
+export const promptsOnlyChange = (a, b) => { const w = t => String(t).replace(/^blyg_prompts:.*\n/m, ''); return a !== b && w(a) === w(b); };
 const fmValue = (fm, key) => { const m = new RegExp(`^${key}:\\s*["']?([^\\s"']+)["']?\\s*$`, 'm').exec(fm); return m ? m[1] : ''; };
 function headOf(file) {
   try {
@@ -826,8 +828,11 @@ export function createPublisher(deps) {
     return r;
   }
   // (`drawerText`: the caller gives another comment of the post as it is in the drawer, its published text unknown: recorded as a reason)
-  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', presence = 'here', drawerText = false }) {
+  // `prompts`: the post's prompts choice from the press (blyg-note.mjs PROMPT_MODES); '' is the default for a new post and, for a new
+  // version, the choice the post already has.
+  async function startChecked({ page, threadId, scope, shown, id, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', presence = 'here', drawerText = false, prompts = '' }) {
     if (!SCOPES.includes(scope)) return fail(400, `scope must be one of ${SCOPES.join(', ')}`);
+    if (prompts && !PROMPT_MODES.includes(prompts)) return fail(400, `prompts must be one of ${PROMPT_MODES.join(', ')}`);
     if (!EXTENTS.includes(extent)) return fail(400, `extent must be one of ${EXTENTS.join(', ')}`);
     if (extent === 'upto' ? !upto : !!upto) return fail(400, 'upto is the message a post goes up to, and only with extent upto');
     if (join && !JOINS.includes(join)) return fail(400, `join must be one of ${JOINS.join(', ')}`);
@@ -872,9 +877,9 @@ export function createPublisher(deps) {
       if (!earlier) return fail(409, ADD_GONE_SAY);
       // THE POST SHOWN IS THE POST ADDED TO: the start carries the id and the version the dialog named
       if (String(post) !== earlier.post || Number(postVersion) !== earlier.version) return fail(409, ADD_CHANGED_SAY);
-      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, presence, drawerText });
+      return startEdit({ page, here: earlier.thread, S, id, adding: here, outside, cut, chosen: here, presence, drawerText, prompts });
     }
-    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, presence, drawerText }) : startNew({ page, threads, at, here, scope, S, id, cut, presence });
+    return editing ? startEdit({ page, here, S, shown, id, outside, cut, chosen: here, presence, drawerText, prompts }) : startNew({ page, threads, at, here, scope, S, id, cut, presence, prompts: prompts || DEFAULT_PROMPTS });
   }
 
   // THE THREADS OF A POST published from here, in the order they went into it: the order recorded when it was last published (a
@@ -1047,7 +1052,7 @@ export function createPublisher(deps) {
     }
     return found.size === 1 ? [...found.values()][0] : null;
   }
-  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' }, presence = 'here' }) {
+  async function startNew({ page, threads, at, here, scope, S, id, cut = { extent: 'whole', upto: '' }, presence = 'here', prompts = DEFAULT_PROMPTS }) {
     const points = cut.extent === 'upto' ? { [here.id]: cut.upto } : {};
     const el = eligibleThread(here);
     if (!el.ok) return fail(409, el.why);
@@ -1063,12 +1068,12 @@ export function createPublisher(deps) {
     const now = clock();
     const date = dayOf(now, S.timezone);
     const taken = permalinksIn(S.folder);
-    let first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points });
+    let first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points, prompts });
     if (!first.ok) return fail(409, first.error);
     // A LONE LINK: a new post that quotes no blyg post and answers nothing, whose words link to exactly one other blyg's post, is a
     // response to that post (only a new post: a published one never gains a target on a later edit)
     const linkStub = !stubOfPage(page) && !(first.sources || []).length ? await lonePostLink(linkTargetsOf(picked, points), id) : null;
-    if (linkStub) first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points, linkStub });
+    if (linkStub) first = renderShortNote({ page, threads: picked, home: S, now, slug: 'x', earlier, points, linkStub, prompts });
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
     // EVERY REASON TO LOOK IS KNOWN HERE, before the note is written: a queued press whose look is forced writes nothing and is set
     // aside (a new post has none of LOOK_FORCED; the check stays so the one policy is read in one place)
@@ -1081,7 +1086,7 @@ export function createPublisher(deps) {
     for (let n = 0; n < 60 && !rendered; n++) {
       const trySlug = n ? `${base.slice(0, LIMITS.slugChars - 4)}-${n + 1}` : base;
       const bid = newBlygId();   // the address is made of it; the FILE keeps the first-words slug
-      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier, points, linkStub });
+      const r = renderShortNote({ page, threads: picked, home: S, now, slug: trySlug, id: bid, earlier, points, linkStub, prompts });
       if (!r.ok) return fail(409, r.error);
       let fileName;
       try { fileName = filenameFor(S.filename, { slug: trySlug, date }); } catch (e) { return fail(409, e.message); }
@@ -1101,13 +1106,13 @@ export function createPublisher(deps) {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), 0o644);
       try { fs.writeSync(fd, rendered.text); } finally { fs.closeSync(fd); }
     } catch (e) { return fail(409, e && e.code === 'EEXIST' ? 'A note of that name appeared meanwhile; try again.' : 'Could not write the note.'); }
-    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, presence, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0,
+    return drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind: 'new', version: 1, presence, extra: { chained_to: earlier ? { title: earlier.title } : null, extent: cut.extent, points, further: 0, prompts,
       ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   // A NEW VERSION of a post published from here: the same note file, rewritten with the same id and address (created and released
   // kept), the changelog line written from the difference (no model), and the site's commands in their edit form.
-  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, presence = 'here', drawerText = false }) {
+  async function startEdit({ page, here, S, id, adding = null, outside = '', cut = { extent: 'whole', upto: '' }, chosen = null, presence = 'here', drawerText = false, prompts = '' }) {
     const pub = { ...here.blyg_published, ...(postOf(here.blyg_published.permalink) || {}) };
     // THE POINTS: as recorded, with the chosen thread's moved (only forward) or, from the header, taken to the end
     const points = { ...(pub.points && typeof pub.points === 'object' ? pub.points : {}) };
@@ -1148,8 +1153,11 @@ export function createPublisher(deps) {
     // a post that answered the one blyg post it linked to keeps that target (never gained or lost on an edit); each agent passage keeps
     // its form (`before`: the note on disk; its blyg_generated read by a real YAML parser, generatedOf)
     const linkStub = pub.link_stub && typeof pub.link_stub === 'object' ? pub.link_stub : null;
+    // the post's prompts: as pressed, else as the post has them (a new version from the Hub keeps them)
+    const had = PROMPT_MODES.includes(fmValue(fm, 'blyg_prompts')) ? fmValue(fm, 'blyg_prompts') : DEFAULT_PROMPTS;
+    const choice = prompts || had;
     const rendered = renderShortNote({ page, threads: picked, home: S, now, slug, id: bid,
-      keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before, ...(deps.generatedOf || generatedOf)(before, { cwd: S.top }) }, points, linkStub });
+      keep: { created: fmValue(fm, 'created'), released: fmValue(fm, 'released'), before, ...(deps.generatedOf || generatedOf)(before, { cwd: S.top }) }, points, linkStub, prompts: choice });
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
@@ -1164,6 +1172,10 @@ export function createPublisher(deps) {
     let changelog = pub.snapshot ? changelogLine(pub.snapshot, rendered.snapshot) : 'Edited the post.';
     // (replacing an outside edit is a change even when the comments are as they were published)
     if (!changelog && note.outside) changelog = 'Edited the post.';
+    // ONLY THE PROMPTS CHOICE CHANGED: the site's page changes and its item does not (an item never carries a prompt), so this is
+    // published as an edit that makes NO new version (the site's rule for a change that leaves the item as it was)
+    const promptsOnly = promptsOnlyChange(before, rendered.text);
+    if (promptsOnly) changelog = choice === 'shown' ? 'Prompts shown.' : 'Prompts locked.';
     if (!changelog) return fail(409, 'Nothing has changed since you published this.');
     { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
       if (presence === 'away' && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
@@ -1175,12 +1187,15 @@ export function createPublisher(deps) {
     const newly = (rendered.snapshot.sources || []).some(u => !((pub.snapshot && pub.snapshot.sources) || []).includes(u))
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', presence,
-      version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
+      version: (Number(pub.version) || 1) + (promptsOnly ? 0 : 1), extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
+        prompts: choice, prompts_only: promptsOnly,
         forms_moved: !!rendered.formsMoved, outside_replaced: !!note.outside, drawer_text: !!drawerText, extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {
     const agentText = (rendered.generated || []).length > 0;
+    // (the prompts choice belongs to a post with an agent passage: it is what its page shows, so the page's record may say it)
+    if (extra && !agentText) delete extra.prompts;
     const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub),
       outsideReplaced: !!(extra && extra.outside_replaced), drawerText: !!(extra && extra.drawer_text), asked: presence === 'asked_to_look' });
     // WHAT EACH THREAD SAID in this version (the owner's included messages), kept in the post's record once published: a later queued
@@ -1230,7 +1245,8 @@ export function createPublisher(deps) {
     const run = book.run;
     const address = addressFrom(output, run.permalink);
     const bid = (run.permalink || '').split('/').filter(Boolean).pop() || '';
-    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1 };
+    const published = { at: clock().toISOString(), title: run.title, permalink: run.permalink || '', ...(address ? { address } : {}), version: run.version || 1,
+      ...(PROMPT_MODES.includes(run.prompts) ? { prompts: run.prompts } : {}) };
     try {
       recordPost(run.permalink, { version: run.version || 1, note_rel: run.note_rel, note_sha: run.note_sha, slug: run.slug, ...(isBlygId(bid) ? { blyg_id: bid } : {}),
         snapshot: run.snapshot || null, thread_ids: run.thread_ids || [], points: run.points && typeof run.points === 'object' ? run.points : {},

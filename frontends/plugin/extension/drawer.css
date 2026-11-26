@@ -2713,6 +2713,8 @@ li.md-task.done .md-tasktext { text-decoration: line-through; color: var(--muted
 .pubfor { color: var(--muted); font-size: 12px }
 .pubcard p a { color: var(--done-line); text-decoration: underline; word-break: break-all }
 .pubquiet { color: var(--muted); font-size: 12px }
+.pubprompts { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; font-size: 13px; cursor: pointer }
+.pubprompts input { margin: 0 }
 .pubchange { padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--rail); border-radius: 4px }
 .pubnotify { font-size: 12.5px }
 .pubread { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--card-line); border-radius: 8px; max-height: 280px; overflow: auto; font-family: var(--serif) }

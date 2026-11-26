@@ -231,7 +231,7 @@
   // `reply`: 'json' (the companion's answer), or 'image' (the bytes of a PNG, handed to the drawer as a data: address).
   const BLYG_PUBLISH_OPS = Object.freeze({
     // (`look`: 'yes' when the owner opens a post the queue set aside for their look; the companion queues or runs every press)
-    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto', 'look'], reply: 'json' }),
+    start: Object.freeze({ method: 'POST', path: '/blyg-publish/start', offer: 'none', body: ['url', 'thread_id', 'scope', 'confirm', 'join', 'post', 'post_version', 'outside', 'extent', 'upto', 'look', 'prompts'], reply: 'json' }),
     // a post waiting in the publish queue is taken out (nothing of it was written)
     'queue-cancel': Object.freeze({ method: 'POST', path: '/blyg-publish/queue-cancel', offer: 'none', body: ['entry'], reply: 'json' }),
     // "Try the queue again": the owner lifts a pause for the site or for an error

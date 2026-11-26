@@ -760,3 +760,21 @@ test('A RECORD NOT TRUSTED to rebuild a post: one older than the version the thr
   await until(() => b.stateOf(r2.queued.id) === 'needs_look', 'parked after the Forget');
   assert.equal(b.entries().find(e => e.id === r2.queued.id).why, 'unknown-text');
 });
+
+test('PROMPTS: a press carries the post\'s prompts choice to the note, also from the queue; absent is locked; a bad one is refused', async t => {
+  const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
+  const gap = { id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said by the agent.' };
+  const one = pageOf(1, [{ id: 'f', quote: 'q', msgs: [mine('Mine. /tk(say it)', { ts: 'f1', channel: 'drawer', gaps: [gap] })] }]);
+  const two = pageOf(2, [{ id: 'g', quote: 'q', msgs: [mine('Also mine. /tk(say it)', { ts: 'g1', channel: 'drawer', gaps: [gap] })] }]);
+  const b = boot(rig, { pages: [one, two] }); t.after(() => b.q.stop());
+  assert.equal((await b.press(one.url, 'f', { prompts: 'open' })).ok, false, 'not one of PROMPT_MODES');
+  rig.control({ apply: 'hold' });
+  await b.press(one.url, 'f', { prompts: 'shown' });
+  const queued = await b.press(two.url, 'g', {});
+  assert.equal(b.q.record.entries.find(e => e.id === queued.queued.id).args.prompts, '', 'nothing chosen: the default');
+  rig.control({});
+  await until(() => b.entries().every(e => e.state === 'published'), 'both published', 20000);
+  const notes = fs.readdirSync(rig.folder).map(n => fs.readFileSync(path.join(rig.folder, n), 'utf8'));
+  assert.ok(notes.some(n => /^blyg_prompts: shown$/m.test(n) && /Mine\./.test(n)), 'pressed shown: written shown');
+  assert.ok(notes.some(n => /^blyg_prompts: locked$/m.test(n) && /Also mine\./.test(n)), 'pressed without: locked');
+});

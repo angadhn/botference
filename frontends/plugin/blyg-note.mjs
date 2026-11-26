@@ -724,7 +724,21 @@ export function checkTemplate(text) {
 }
 
 /** The keys a note adds when it quotes or responds to a Blygger post (or a web page), as lines. */
-export function blygKeyLines({ sources = [], stubOf = null, generated = [], silentLinks = [] } = {}) {
+// A POST'S PROMPTS (its /tk instructions) on the site's page of the post, one of PROMPT_MODES, chosen per post at publish (the publish
+// box's "Show my prompts with this post", remembered; the Hub's reply passes the same `prompts`), held in the note's `blyg_prompts` and
+// changed only through promptsMove:
+//   locked  not in the public site at all (the default; an absent field is locked too)
+//   shown   the post's own page shows each passage's prompt in its card (never the item, a feed or the stream: the site's rule)
+// Written only for a post that has an agent passage.
+export const PROMPT_MODES = Object.freeze(['locked', 'shown']);
+export const DEFAULT_PROMPTS = 'locked';
+const PROMPT_MOVES = Object.freeze({ locked: Object.freeze(['shown']), shown: Object.freeze(['locked']) });
+export function promptsMove(from, to) {
+  if (!PROMPT_MODES.includes(from) || !PROMPT_MODES.includes(to)) throw new Error(`unknown prompts choice ${JSON.stringify(PROMPT_MODES.includes(from) ? to : from)}`);
+  if (from !== to && !PROMPT_MOVES[from].includes(to)) throw new Error(`prompts cannot move from ${from} to ${to}`);
+  return to;
+}
+export function blygKeyLines({ sources = [], stubOf = null, generated = [], silentLinks = [], prompts = DEFAULT_PROMPTS } = {}) {
   const out = [];
   const list = [...new Set(sources.filter(Boolean))];
   if (list.length) out.push('blyg_sources:', ...list.map(u => `  - ${yamlString(u)}`));
@@ -738,6 +752,7 @@ export function blygKeyLines({ sources = [], stubOf = null, generated = [], sile
   }
   // one entry per agent-written passage, in note order (tkgaps.generatedLines: model, at, edited_by_author, format)
   for (const l of generatedLines(generated)) out.push(...l.split('\n'));
+  if (generated.length) out.push(`blyg_prompts: ${promptsMove(DEFAULT_PROMPTS, prompts)}`);
   // the addresses the owner typed bare and this writer made clickable (linkBareUrls): the site never makes them references
   const silent = [...new Set(silentLinks.map(u => safeWebUrl(u)).filter(Boolean))];
   if (silent.length) out.push('blyg_silent_links:', ...silent.map(u => `  - ${yamlString(u)}`));
@@ -846,8 +861,9 @@ export function linkTargetsOf(threads, points = null) {
   }
   return out;
 }
-export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null }) {
+export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null, prompts = DEFAULT_PROMPTS }) {
   const nowArg = now;
+  if (!PROMPT_MODES.includes(prompts)) return { ok: false, error: `prompts must be one of ${PROMPT_MODES.join(', ')}` };
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   // every address the owner linked on purpose anywhere in the post, as the site spells it (a bare one that matches is left as typed)
   const typedLinks = (Array.isArray(threads) ? threads : []).flatMap(t => includedMsgs(t, points && points[t.id]))
@@ -934,7 +950,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const reshaped = written.length !== forms.count || written.some((h, i) => h !== forms.heads[i]);
     const anyLegacy = forms.heads.some((_, i) => (forms.kept[i] || 'legacy') === 'legacy');
     if (reshaped && anyLegacy) {
-      const again = renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep: { ...keep, moveFormat: formatMove('legacy', 'markdown') }, points, linkStub });
+      const again = renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep: { ...keep, moveFormat: formatMove('legacy', 'markdown') }, points, linkStub, prompts });
       return again.ok ? { ...again, formsMoved: true } : again;
     }
   }
@@ -953,7 +969,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const dateOk = d => /^\d{4}-\d\d-\d\d$/.test(String(d || ''));
   const front = renderFront((home && home.template) || DEFAULT_TEMPLATE, {
     title: oneLine(title).replace(/[<>{}]/g, ''), created: keep && dateOk(keep.created) ? keep.created : day, released: keep && dateOk(keep.released) ? keep.released : day,
-    slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated,
+    slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated, prompts,
       silentLinks: [...new Set(bareLinks)].filter(u => !deliberate.includes(normalizeLinkAddress(u))) }),
   });
   const text = `---\n${front.join('\n')}\n---\n${body}\n`;
