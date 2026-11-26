@@ -844,4 +844,5 @@ test('prompts: a new version that changes only the prompts choice is told apart 
   assert.equal(promptsOnlyChange(a, a), false, 'nothing changed is not a change');
   assert.equal(promptsOnlyChange(a, a.replace('locked', 'shown').replace('Body', 'Body, edited')), false);
   assert.equal(promptsOnlyChange('---\ntitle: "x"\n---\nBody\n', a.replace('locked', 'shown')), true, 'an older note without the field');
+  assert.equal(promptsOnlyChange('---\ntitle: "x"\n---\nBody\n', a), false, 'the default written out is no change');
 });

@@ -574,8 +574,13 @@ export function generatedOf(noteText, { ruby = 'ruby', cwd = undefined, env = un
   if (r && r.yaml_error) return { unreadable: 'its front matter could not be read as YAML' };
   return { generated: r && r.present ? r.list : [] };
 }
-// Two texts of a note that differ in nothing but the `blyg_prompts` line: a new version of only the prompts choice.
-export const promptsOnlyChange = (a, b) => { const w = t => String(t).replace(/^blyg_prompts:.*\n/m, ''); return a !== b && w(a) === w(b); };
+// Two texts of a note that differ in nothing but the prompts choice (`blyg_prompts`; absent is the default, locked): a new version of only
+// that choice. The same choice written out where it was absent is no change at all.
+export const promptsOnlyChange = (a, b) => {
+  const w = t => String(t).replace(/^blyg_prompts:.*\n/m, '');
+  const mode = t => { const m = /^blyg_prompts:\s*(\S+)\s*$/m.exec(String(t)); return m && PROMPT_MODES.includes(m[1]) ? m[1] : DEFAULT_PROMPTS; };
+  return w(a) === w(b) && mode(a) !== mode(b);
+};
 const fmValue = (fm, key) => { const m = new RegExp(`^${key}:\\s*["']?([^\\s"']+)["']?\\s*$`, 'm').exec(fm); return m ? m[1] : ''; };
 function headOf(file) {
   try {
@@ -1161,7 +1166,9 @@ export function createPublisher(deps) {
     if (!rendered.ok) return fail(409, rendered.error);
     if (rendered.permalink.replace(/\/+$/, '') !== String(pub.permalink || '').replace(/\/+$/, '')) return fail(409, 'The post\'s address would change, so a new version is not written from here.');
     if (S.escape === 'liquid' && showsLiquid(rendered.text)) return fail(409, LIQUID_SAY);
-    if (rendered.text === before) return fail(409, 'Nothing has changed since you published this.');
+    if (rendered.text === before || (rendered.text.replace(/^blyg_prompts:.*\n/m, '') === before.replace(/^blyg_prompts:.*\n/m, '') && !promptsOnlyChange(before, rendered.text))) {
+      return fail(409, 'Nothing has changed since you published this.');
+    }
     // CHANGED OUTSIDE THE PLUGIN: asked first, always; nothing is written until the owner answers `replace`
     // (the policy says so: `outside` is one of LOOK_FORCED; a queued press is set aside with nothing written)
     if (note.outside && outside !== 'replace' && presence === 'away' && reviewFor(S.confirm, { outside: true }).review === 'outside') return parked('outside');
