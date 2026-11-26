@@ -94,8 +94,9 @@ day. At most 30 agent passages per page per hour. A leaked key can file
 replies, spend those agent calls, publish up to 10 posts a day under your name
 (with `one-click`) and read the clippings you listed. Run
 `botference hub-link rotate` to replace the key, or `botference hub-link off`
-to end the link. The repository does not say whether your subscription's terms
-allow this use. Check them yourself.
+to end the link. In this set-up the agent runs for the
+owner of the subscription only, on that person's own computer. Check your
+subscription's terms. To run agents for other people, use API keys.
 
 ## Adapting it to your site
 
