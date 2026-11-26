@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://botference.com/sitemap.xml

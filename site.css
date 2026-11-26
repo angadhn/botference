@@ -1,0 +1,116 @@
+/* Shared by the text pages (blygger.html, laws.html). The home page keeps
+   its own inline styles; the colours, type, header and footer here are the
+   same values, so every page looks like one site. */
+:root {
+  --bg: #070a0e;
+  --panel: #0e131a;
+  --border: #1b2430;
+  --text: #dbe2ea;
+  --muted: #7f8c9c;
+  --accent: #34d399;
+  --accent2: #22d3ee;
+  --claude: #d97757;
+  --codex: #4a86c8;
+  --max: 1120px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, monospace;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+a { color: var(--text); text-decoration: none; }
+a:hover { color: var(--accent); }
+code { font: inherit; }
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+/* ── header ─────────────────────────────────────────────────── */
+header .wrap {
+  display: flex; align-items: center; gap: 22px; min-height: 64px;
+  font-size: 13px; letter-spacing: .4px;
+}
+.logo { font-weight: 700; letter-spacing: 1px; color: var(--text); }
+.logo span { color: var(--accent); }
+header nav { margin-left: auto; display: flex; gap: 22px; color: var(--muted); }
+header nav a { color: var(--muted); }
+header nav a[aria-current="page"] { color: var(--text); border-bottom: 1px solid var(--accent); }
+
+/* ── a page of text ─────────────────────────────────────────── */
+.doc { max-width: 760px; margin: 0 auto; padding: 56px 24px 0; }
+.doc .eyebrow {
+  color: var(--muted); font-size: 11px; letter-spacing: 5px; text-transform: uppercase;
+}
+.doc h1 {
+  margin-top: 16px; font-size: clamp(28px, 5vw, 42px); line-height: 1.1;
+  font-weight: 700; letter-spacing: -1px;
+}
+.doc h1 em { font-style: normal; color: var(--accent); }
+.doc .lede { margin-top: 18px; color: var(--muted); font-size: 15px; line-height: 1.7; }
+.doc h2 {
+  margin: 56px 0 0; font-size: 12px; font-weight: 400; color: var(--muted);
+  letter-spacing: 2.4px; text-transform: uppercase;
+  border-top: 1px solid var(--border); padding-top: 18px;
+}
+.doc h2::before { content: "# "; color: var(--accent); }
+.doc h3 { margin: 28px 0 0; font-size: 15px; font-weight: 700; }
+.doc p, .doc ul, .doc ol { margin-top: 14px; font-size: 14.5px; line-height: 1.75; }
+.doc ul { padding-left: 20px; }
+.doc li + li { margin-top: 6px; }
+.doc p a, .doc li a { border-bottom: 1px solid var(--border); }
+.doc p a:hover, .doc li a:hover { border-color: var(--accent); }
+.doc code { color: var(--accent); overflow-wrap: anywhere; }
+.doc blockquote {
+  margin-top: 14px; padding: 4px 0 4px 16px; border-left: 2px solid var(--accent);
+  color: var(--muted); font-size: 14px; line-height: 1.7;
+}
+.doc .note { color: var(--muted); font-size: 13px; }
+
+/* the laws: each one a card with its four facts */
+.laws { list-style: none; padding: 0; counter-reset: law; }
+.laws > li {
+  counter-increment: law; margin-top: 18px; padding: 16px 18px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+}
+.laws > li + li { margin-top: 14px; }
+.laws .law { margin: 0; font-size: 14.5px; line-height: 1.65; }
+.laws .law::before { content: "L" counter(law) "  "; color: var(--accent); font-weight: 700; white-space: pre; }
+.laws dl {
+  margin-top: 12px; display: grid; grid-template-columns: 96px 1fr; gap: 6px 14px;
+  font-size: 12.5px; line-height: 1.6; color: var(--muted);
+}
+.laws dt { letter-spacing: 1.6px; text-transform: uppercase; font-size: 10.5px; padding-top: 2px; }
+.laws dd { min-width: 0; }
+.laws .status { color: var(--accent2); }
+
+/* the blyg (blyg/, made by scripts/blyg.mjs) */
+.blyg-list { list-style: none; padding: 0 !important; }
+.blyg-list li { margin-top: 14px; }
+.blyg-list li span { display: block; color: var(--muted); font-size: 12.5px; }
+.blyg-list a { border-bottom: 1px solid var(--border); }
+.blyg-post h1 { margin-top: 16px; }
+.blyg-post h2 { margin-top: 40px; }
+.doc .blyg-meta { margin-top: 28px; color: var(--muted); font-size: 12.5px; }
+.blyg-changelog { padding-left: 0 !important; list-style: none; color: var(--muted); font-size: 13px !important; }
+.doc .note a { border-bottom: 1px solid var(--border); }
+
+/* ── footer ─────────────────────────────────────────────────── */
+footer { margin-top: 72px; padding: 26px 0 56px; color: var(--muted); font-size: 12px; }
+footer .wrap { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+footer .spacer { margin-left: auto; }
+footer a { color: var(--muted); }
+
+@media (max-width: 760px) {
+  .wrap { padding: 0 16px; }
+  .doc { padding: 36px 16px 0; }
+  footer .spacer { display: none; }
+}
+@media (max-width: 520px) {
+  header .wrap { gap: 14px; font-size: 12px; letter-spacing: 0; }
+  header nav { gap: 12px; }
+  .laws > li { padding: 14px 14px; }
+  .laws dl { grid-template-columns: 1fr; gap: 2px; }
+  .laws dd { margin-bottom: 6px; }
+}

@@ -1,0 +1,25 @@
+{
+  "blyg": "0.4",
+  "id": "2h9xxjswp8cjd700cb3javfpsm",
+  "kind": "thread",
+  "origin": "https://botference.com/blyg/",
+  "page": "t/2h9xxjswp8cjd700cb3javfpsm/",
+  "author": {
+    "name": "botference"
+  },
+  "created": "2026-11-26T01:22:54Z",
+  "updated": "2026-11-26T01:22:54Z",
+  "version": 1,
+  "content_md": "# botference is five tools\n\nBotference runs Claude Code and Codex side by side. It uses the command-line tools that you already have, on your own computer. It started as a planning council. It now holds five tools, and you can use each one alone.\n\n- **Council.** You, Claude and Codex plan in one chat, in your terminal. A bot can hand the floor to the other bot, so the two argue a point before they come back to you. Planning is the most mature part of botference.\n- **Discuss.** A browser extension and a small local server, the companion. Highlight a passage on any web page, write a comment, and mention `@claude`, `@codex` or `@all`. The bots answer in the same thread, at the side of the page.\n- **Document review.** Margin comments on a LaTeX or Markdown source, rendered as a web page. Tag a bot in a comment, and it answers or suggests a change.\n- **Blygger publishing.** Publish a Discuss thread to your own site as a blyg post. This part is experimental.\n- **Agent tools.** `botference see` takes a phone and a desktop screenshot of a page for a coding agent. `botference service` keeps a server running after the agent's shell ends.\n\nOne person builds botference for their own work, so some parts assume that person's set-up. The [home page](https://botference.com/) says who each tool is for and how ready it is. The source is on [GitHub](https://github.com/angadhn/botference), under the MIT license.\n\nThis blyg holds release notes and short posts about botference. It is itself made by a small script in the repository, from Markdown files.\n",
+  "content_html": "<h1>botference is five tools</h1>\n<p>Botference runs Claude Code and Codex side by side. It uses the command-line tools that you already have, on your own computer. It started as a planning council. It now holds five tools, and you can use each one alone.</p>\n<ul>\n<li><strong>Council.</strong> You, Claude and Codex plan in one chat, in your terminal. A bot can hand the floor to the other bot, so the two argue a point before they come back to you. Planning is the most mature part of botference.</li>\n<li><strong>Discuss.</strong> A browser extension and a small local server, the companion. Highlight a passage on any web page, write a comment, and mention <code>@claude</code>, <code>@codex</code> or <code>@all</code>. The bots answer in the same thread, at the side of the page.</li>\n<li><strong>Document review.</strong> Margin comments on a LaTeX or Markdown source, rendered as a web page. Tag a bot in a comment, and it answers or suggests a change.</li>\n<li><strong>Blygger publishing.</strong> Publish a Discuss thread to your own site as a blyg post. This part is experimental.</li>\n<li><strong>Agent tools.</strong> <code>botference see</code> takes a phone and a desktop screenshot of a page for a coding agent. <code>botference service</code> keeps a server running after the agent's shell ends.</li>\n</ul>\n<p>One person builds botference for their own work, so some parts assume that person's set-up. The <a href=\"https://botference.com/\">home page</a> says who each tool is for and how ready it is. The source is on <a href=\"https://github.com/angadhn/botference\">GitHub</a>, under the MIT license.</p>\n<p>This blyg holds release notes and short posts about botference. It is itself made by a small script in the repository, from Markdown files.</p>",
+  "content_hash": "sha256:d6ba96d983a94ce19209a8b9bff8c38777e6f68fe01d5543274958c79fb44f1f",
+  "media": [],
+  "transclusions": [],
+  "changelog": [
+    {
+      "version": 1,
+      "at": "2026-11-26T01:22:54Z",
+      "note": null
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botference for Blygger — read, discuss and publish blygs from the browser</title>
+<meta name="description" content="Discuss, the botference browser extension, on Blygger: highlight a passage, discuss it with Claude and Codex, and publish the thread to your own site as a blyg post.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0b0e12">
+<meta property="og:site_name" content="Botference">
+<meta property="og:title" content="Botference for Blygger">
+<meta property="og:description" content="Highlight a passage, discuss it with Claude and Codex, and publish the thread to your own site as a blyg post.">
+<meta property="og:image" content="https://botference.com/og-image.png">
+<meta property="og:url" content="https://botference.com/blygger.html">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://botference.com/blygger.html">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
+<link rel="blyg" href="https://botference.com/blyg/blyg.json">
+<link rel="alternate" type="application/rss+xml" title="The botference blyg" href="https://botference.com/blyg/feed.xml">
+<link rel="stylesheet" href="site.css">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-GR3QKD82JS"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-GR3QKD82JS');
+</script>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
+    <nav>
+      <a href="blygger.html" aria-current="page">Blygger</a>
+      <a href="laws.html">Laws</a>
+      <a href="blyg/">Blyg</a>
+      <a href="https://github.com/angadhn/botference">GitHub</a>
+      <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+    </nav>
+  </div>
+</header>
+
+<main class="doc">
+  <p class="eyebrow">the browser extension, on Blygger</p>
+  <h1>Read a blyg. Discuss it.<br><em>Publish your answer.</em></h1>
+  <p class="lede">
+    <a href="https://blygger.org">Blygger</a> is an open protocol for small blogs that quote each other by reference.
+    Discuss, the botference browser extension, now reads Blygger posts and publishes to them.
+    It was built during the Blygger hackathon, 20–27 November 2026.
+  </p>
+
+  <h2>Highlight and discuss</h2>
+  <p>
+    Highlight a passage on any web page or blyg. Write a comment on it, or chat about the page.
+    Mention <code>@claude</code>, <code>@codex</code> or <code>@all</code> to ask the agents.
+    They answer in the same thread, in a drawer at the side of the page.
+  </p>
+  <p>
+    On a Blygger post, the extension checks the post's own documents first.
+    Each highlight then records the post and its version.
+    The extension also tells you when a highlight is not word for word in the post.
+  </p>
+  <p>
+    A blyg's home feed shows many posts on one page.
+    A highlight there belongs to a post only after the companion fetches that post and finds the passage in it.
+    The companion is the small local server that the extension talks to.
+  </p>
+
+  <h2>Agent passages, in a marked box</h2>
+  <p>
+    Type <code>/tk-claude</code> or <code>/tk-codex</code> and an instruction in your own comment.
+    The agent writes that passage, and the drawer shows it in a box marked as an AI's text.
+    You can ask again, edit it, accept it, or remove it.
+    An edited or accepted passage stays in its box when you publish.
+    The instruction itself is not published.
+  </p>
+  <p>
+    Each passage comes from a separate one-shot run with no tools: <code>claude -p</code>, or a locked-down
+    <code>codex exec</code> in an operating-system sandbox on macOS.
+    The agent gets the page and your comment as data, and nothing else.
+  </p>
+
+  <h2>Publish a thread as a blyg post</h2>
+  <p>
+    Press the paper plane on your thread to publish it to your own site as a short blyg post.
+    The post holds your words and the passage you highlighted.
+    On a Blygger post, the passage is a quote by reference, and the post is a response to that post by default.
+    Your site's publisher then sends the mentions, so the other blog learns of the response.
+  </p>
+  <ul>
+    <li><b>One-click publishing.</b> With <code>confirm: never</code>, the press is the publish. The post stops for your look in two cases only: a comment that was in it would be left out, or its note was changed outside the plugin.</li>
+    <li><b>A publish queue.</b> Every press is accepted at once. Posts go out one at a time, in the order you pressed them, up to 20 waiting. A notice tells you when each one is live.</li>
+    <li><b>New versions.</b> Publish the same thread again and the post gets a new version, with the same id and address.</li>
+    <li><b>Copy for Blygger Studio.</b> If you write in <a href="https://github.com/blygger/blygger-studio">Blygger Studio</a>, copy the thread as Studio's own markdown and paste it there.</li>
+  </ul>
+  <p>
+    The plugin writes the note into your site's notes folder.
+    Then it runs your site's own commands, which check, build and push the post.
+    The example set-up is a Jekyll site; see <a href="https://github.com/angadhn/botference/blob/main/docs/blygger.md">docs/blygger.md</a>.
+  </p>
+
+  <h2>Agent passages in drafts written in Obsidian</h2>
+  <p>
+    A site can use the same agents in drafts that you write in Obsidian.
+    The command <code>botference fill-gap</code> fills one gap and returns the text as JSON.
+    On the example Jekyll site, a note with <code>agents: on</code> in its front matter opts in, and
+    <code>scripts/blyg-fill</code> asks for each <code>/tk</code> line.
+    The script keeps the answers in a separate file beside the note. It never writes the note.
+  </p>
+
+  <h2>What it runs on</h2>
+  <p>
+    The agents run on your normal Claude or ChatGPT subscription, through the
+    <code>claude</code> and <code>codex</code> command-line tools on your own computer.
+    You can use an API key instead.
+  </p>
+  <p>
+    The companion can also run on another computer of yours.
+    You reach it through a Cloudflare tunnel, and it asks you to log in first: with a password, or through Cloudflare Access.
+    Only the owner can publish, queue, cancel or resume a post.
+  </p>
+
+  <h2>What it promises</h2>
+  <p>
+    The plugin publishes in your name, so its promises matter. The <a href="laws.html">laws page</a> lists, in one sentence each,
+    what the plugin promises when it publishes a blyg, where each promise comes from, and how it is checked today.
+    The laws are proposed, not yet adopted.
+  </p>
+  <p class="note">
+    Start here: <code>./botference discuss</code>, then load <code>frontends/plugin/extension</code> as an unpacked extension.
+    The <a href="https://github.com/angadhn/botference#discuss-botference-discuss">README</a> has the full set-up.
+  </p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 botference · MIT</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/angadhn/botference">GitHub</a>
+    <a href="https://github.com/angadhn/botference/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+  </div>
+</footer>
+
+</body>
+</html>
