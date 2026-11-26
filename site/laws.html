@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Botference laws (proposed) — what publishing a blyg promises</title>
+<meta name="description" content="Proposed laws for publishing a blyg from botference: one sentence each, with the source of each promise and how it is checked today.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0b0e12">
+<meta property="og:site_name" content="Botference">
+<meta property="og:title" content="Botference laws (proposed)">
+<meta property="og:description" content="What publishing a blyg from botference promises, one sentence each, with its source and how it is checked today.">
+<meta property="og:image" content="https://botference.com/og-image.png">
+<meta property="og:url" content="https://botference.com/laws.html">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://botference.com/laws.html">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon.png">
+<link rel="stylesheet" href="site.css">
+<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-GR3QKD82JS"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', 'G-GR3QKD82JS');
+</script>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="logo" href="/" title="Botference — home">botference<span>_</span></a>
+    <nav>
+      <a href="blygger.html">Blygger</a>
+      <a href="laws.html" aria-current="page">Laws</a>
+      <a href="https://github.com/angadhn/botference">GitHub</a>
+      <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+    </nav>
+  </div>
+</header>
+
+<main class="doc">
+  <p class="eyebrow">proposed · not yet adopted</p>
+  <h1>The laws of<br><em>publishing a blyg.</em></h1>
+  <p class="lede">
+    When botference <a href="blygger.html">publishes a blyg</a> for its owner, it makes promises.
+    This page writes each promise as one sentence, says where it comes from, and says how it is checked today.
+    Every law here is a proposal. Only the owner can adopt one.
+  </p>
+
+  <h2>Why laws</h2>
+  <p>
+    The Blygger project explains this idea in
+    <a href="https://blyg.blygger.org/t/2fhnkb3zbh4jpxxbd7yv11tr4d/">“How Blygger Studio is tested now, and why there is more test code than product code”</a>.
+    A law is “one sentence, in plain words, that starts with ‘For every…’”, and it cites where its promise comes from.
+    Each law is then checked by a small, independent model of what should happen, against generated sequences of actions.
+    Small bugs are planted in the product, one at a time, to prove that some law fails for each of them.
+    The post credits that oracle framework to Kyle Mathews.
+  </p>
+  <blockquote>People own the laws. … An AI may propose a law; it may not adopt or change one.</blockquote>
+  <p>
+    The same post says that a Blygger client does not need any of this: “The protocol asks only that what you publish conforms.”
+    So botference does not need laws to be a Blygger client. It wants them for a different reason.
+  </p>
+  <p>
+    AI models write most of botference's code. This week, independent reviews found real faults again and again,
+    and the tests that the authoring model wrote had passed every time.
+    In one fault, a queued press could publish an older text of a comment than one the owner had already pressed.
+    In another, an agent's text could carry hidden HTML attributes into the published page.
+    Some reviews also planted small faults in the code and found tests that did not notice them.
+  </p>
+  <p>
+    A test that the same model writes from the same code shares that model's blind spots.
+    A law is written from the promise, not from the code, and a person decides whether it is the right promise.
+    That is the check botference does not have yet.
+  </p>
+
+  <h2>The laws</h2>
+  <p class="note">
+    <b>Authority</b> is where the promise comes from: a section of <code>frontends/plugin/SPEC.md</code> with its date, the
+    CHANGELOG, or the Blygger protocol.
+    <b>Checked today</b> names test files that exist now. They test chosen examples. None of them uses an independent
+    model, generated sequences of actions, or planted bugs. Some tests are in the owner's own site (a Jekyll site), not in this repository; the law says so.
+  </p>
+
+  <ol class="laws">
+    <li>
+      <p class="law">For every thread the owner presses to publish, the post goes out with the text of the owner's latest press of that thread, never an older press and never text the owner did not press.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “the publish queue”: “What goes out: the text at the press” and the review fix “No entry publishes an older text of a thread” (2026-11-25).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>frontends/plugin/test/blyg-queue.test.mjs</code>: “THE WRONG TEXT NEVER GOES LIVE” and its mirror.</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every new version published from the plugin, the post keeps its id, its address and its creation date, and its version number goes up by exactly one.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Publishing again: a new VERSION of the same post” (2026-11-24).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-run.test.mjs</code>: “PUBLISHING AGAIN” and “ADD TO THE EARLIER POST”.</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every one-click publish, the site's plan changes only that post's note and the files the site keeps for what the note itself quotes or links; a plan that would change anything else stops the run before the site is built or pushed.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Publish as blyg”, “One click” (2026-11-23), and “Owner setup for Publish as blyg” (<code>plan_guard</code>, <code>--only-note</code>).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-run.test.mjs</code>: the guard flags go on every plan, apply and publish, and a refused plan stops the run before apply; the note is never written outside the notes folder. In the owner's site: <code>tests/blyg_draft_test.rb</code> and <code>tests/blyg_publish_test.rb</code> (the <code>--only-note</code> refusals).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every passage that an agent wrote, or that the owner pasted from an agent, the published post shows it inside the marked agent box, even after the owner edits or accepts it, and the instruction behind it never appears on the post's page.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Agent text on a published post” (2026-11-24) and “The box: marked, never named, always a block” (review round 5, 2026-11-24).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-note.test.mjs</code> (the generated-passage form); <code>blyg-run.test.mjs</code> (“THE LOOK POLICY”: the box in the preview); <code>blyg-liquid-build.test.mjs</code> (a real Jekyll build, which runs only when <code>BLYG_BLOG_TREE</code> names a checkout of the site and is skipped otherwise). In the owner's site: <code>tests/blygger_tk_test.rb</code> (the instruction is not on the page).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every agent passage, its text is published as text: it never becomes an HTML element, an HTML attribute, a script, a kramdown attribute list, or a link whose scheme is not http, https, mailto or a relative address.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Text that goes into the note” (2026-11-23) and “Agent text on a published post” (2026-11-24); the owner's site's note format, “Agent passages in a draft”.</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-note.test.mjs</code> (“inside a generated passage nothing can end the scope…”, “an agent's text in a scope can set no attribute…”, “short posts are text”); <code>blyg-liquid-build.test.mjs</code> when it runs. In the owner's site: <code>tests/blygger_tk_test.rb</code> (hostile output, hidden schemes) and <code>tests/blygger_build_test.rb</code>.</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every post published with one click, the plugin stops for the owner's look for two reasons only: a comment that was in the post would be left out, or a note changed outside the plugin would be replaced.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “The look policy (the owner, 2026-11-25)”; CHANGELOG 2026-11-25.</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-run.test.mjs</code> (“THE LOOK POLICY”); <code>blyg-queue.test.mjs</code> (“A FORCED LOOK”, “OUTSIDE”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every post when the setting is <code>confirm: always</code>, nothing is published until the owner has seen the note and pressed Publish, and a press made under that setting keeps its look even if the setting changes before its turn.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “One click” (2026-11-23) and “the publish queue”: “<code>confirm: always</code>” and the review fix “Where the owner is, one value” (2026-11-25).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-run.test.mjs</code> (“confirm always: … the run waits at planned for the click”); <code>blyg-queue.test.mjs</code> (“CONFIRM ALWAYS”, “A LOOK PROMISED AT THE PRESS is kept”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every press the companion accepts, the post ends published, failed with a stated reason, cancelled by the owner, or waiting for the owner with a stated reason; it is never dropped without a word.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “the publish queue”, review fix “Nothing is swallowed” and “An unreadable queue file is kept” (2026-11-25).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-queue.test.mjs</code>, by examples: a malformed entry, an exception while starting, an unreadable queue file, a restart, giving up after a restart. No test checks every sequence of presses.</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every run that fails after the site may have published, the queue pauses on that run and nothing is tried again until the owner acts.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “the publish queue”, “When a run fails” (2026-11-25); “The run” (“nothing is retried by itself”, 2026-11-23).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-queue.test.mjs</code> (“A FAILURE AFTER PUSH PAUSES the queue”, “A RESTART while paused”); <code>blyg-run.test.mjs</code> (each step that fails “retries nothing by itself”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every request to publish, queue, cancel, resume, retry or give up a post, the companion acts only for the owner through the pinned extension, and refuses a guest, an anonymous caller and a script on the companion's own page.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Publish as blyg”: “Which requests may reach the routes” and “Routes and events” (2026-11-23); the queue's routes (2026-11-25).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-publish-server.test.mjs</code> (“hosted: every route is refused to an anonymous caller (401), a wrong password (401) and a guest (403)”, “a guest cannot … start a run, or act on one”, “the companion's own page cannot start, advance or read a publish”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every post, the post answers at most one target; a post that links to two or more blyg posts answers none of them, and a new version never gains a target that the post was first published without.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “A lone link to a blyg post makes the post a response to it” (2026-11-24); Blygger protocol, <code>blyg_stub_of</code>.</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-run.test.mjs</code> (“A LONE LINK”, “A LONE LINK, kept”); <code>blyg-note.test.mjs</code> (“a post's one target”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every highlight made on a blyg's home feed, the companion files it under a post only after it fetches that post and finds the passage in the post's text; otherwise the highlight stays a quote of the feed page.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “A highlight on a blyg's home feed belongs to the post it sits in” and its review fixes (2026-11-24); Blygger protocol 0.4, §10.2 (the quoting rule).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>feedbind-server.test.mjs</code> (verified, unverified, a copying site, too short, several candidates); <code>feedbind.test.mjs</code>.</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every guest of a hosted companion, the guest never receives an agent's instruction, an agent's passage, or agent text that the owner pasted; each one shows as “[an agent's passage]”.</p>
+      <dl>
+        <dt>Authority</dt><dd>SPEC, “Publish as blyg, review round 5”: “Guests never receive a gap” (2026-11-24).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd><code>blyg-server.test.mjs</code> (“a hosted GUEST never receives a gap: not its fill, its instruction, or pasted words (/page, an answer, SSE)”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every draft note without <code>agents: on</code>, no agent is asked, and its <code>/tk</code> lines are built and published exactly as typed.</p>
+      <dl>
+        <dt>Authority</dt><dd>The owner's site's note format, “Agent passages in a draft” (“Only opted-in notes”).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd>In the owner's site: <code>tests/blyg_fill_test.rb</code> (“a note without the key is never sent”), <code>tests/blygger_build_test.rb</code> (“… a note without the key is untouched”), <code>tests/blyg_publish_test.rb</code> (“without the key, tk lines are text”).</dd>
+      </dl>
+    </li>
+    <li>
+      <p class="law">For every run of <code>scripts/blyg-fill</code>, the note file stays exactly as the owner left it; the answers go only to the note's separate fills file.</p>
+      <dl>
+        <dt>Authority</dt><dd>The owner's site's note format, “Agent passages in a draft” (“The note itself is never written”).</dd>
+        <dt>Status</dt><dd class="status">Proposed</dd>
+        <dt>Checked today</dt><dd>Not checked by a test yet. The tests read the fills file; none compares the note before and after a run.</dd>
+      </dl>
+    </li>
+  </ol>
+
+  <h2>How a law is adopted</h2>
+  <ul>
+    <li>The owner reads each law, then adopts it, edits it, or rejects it. An AI does none of these.</li>
+    <li>An adopted law then gets an independent check. The check is written from the law, not from the code.</li>
+    <li>A law that changes later changes the same way: the owner decides, and the date is recorded.</li>
+  </ul>
+
+  <h2>Status</h2>
+  <p>15 laws proposed on 2026-11-26. None adopted yet. A copy for review is in the repository at <a href="https://github.com/angadhn/botference/blob/main/docs/laws.md">docs/laws.md</a>.</p>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>© 2026 botference · MIT</span>
+    <span class="spacer"></span>
+    <a href="https://github.com/angadhn/botference">GitHub</a>
+    <a href="https://github.com/angadhn/botference/blob/main/CHANGELOG.md">Changelog</a>
+    <a href="https://github.com/sponsors/angadhn">Sponsor</a>
+  </div>
+</footer>
+
+</body>
+</html>
