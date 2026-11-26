@@ -9,27 +9,156 @@
 > [!NOTE]
 > This README was AI-generated. I (Angadh) have skimmed and supervised its creation.
 
-Multi-LLM planning where you and the AIs collaborate in a **council** — a
-free-form group chat where the bots can also hand each other the floor and
-hash things out directly, with you steering. The result is an
-`implementation-plan.md` and `checkpoint.md` you can take into any workflow.
+Botference runs Claude and Codex side by side on your own computer. It uses
+the `claude` and `codex` command-line tools that you already have, so it runs
+on your existing subscriptions. One tool is enough to start.
 
-**The primary contribution of this repository is plan mode** — a multi-LLM
-planning session where Claude and Codex collaborate in real time. This is the
-part that works well and is ready for use.
+Botference started as a planning tool. It is now five products in one
+repository. Some of them share data: for example, Discuss saves its bot chats
+as council chats. You can use each product alone.
 
-> [!WARNING]
-> This is vibe-coded. Use at your own risk. Research-plan mode and build mode
-> are deeply experimental — under active development, will change without
-> notice, and not recommended for general use. If you are here to get things
-> done, use `botference plan` and take the resulting plan into your own
-> workflow.
+Botference is a personal project. One person builds it for their own work, and
+some parts assume that person's set-up. Each product below says how ready it
+is.
 
-**Ink TUI** — projects panel (left), full-width council panel (right), input
-field and status line at the bottom. This is the primary interface and
-default planner UI:
+## The five products
 
-![Ink UI — council panel with status line](docs/images/ink-ui.png)
+| Product | What it does | Start with | State |
+|---------|--------------|------------|-------|
+| [Council](#1-council-claude-and-codex-in-one-room) | You, Claude and Codex plan and argue in one chat | `./botference` | Planning is ready to use |
+| [Discuss](#2-discuss-comment-on-any-web-page-and-ask-the-bots) | Comment on any web page and ask the bots about it | `./botference discuss` | In daily use; changes often |
+| [Document review](#3-document-review-margin-comments-on-your-latex-or-markdown) | Margin comments on your LaTeX or Markdown, with bot replies | `botference review` | Works; needs pandoc |
+| [Blygger publishing](#4-blygger-publishing-read-follow-and-publish-blyg-posts) | Read, follow and publish posts on Blygger blogs | [docs/blygger.md](docs/blygger.md) | Experimental |
+| [Agent tools](#5-agent-tools-screenshots-and-long-running-services) | Screenshots and long-running services for coding agents | `botference see` | Small and simple |
+
+### 1. Council: Claude and Codex in one room
+
+The council is a chat in your terminal with three members: you, Claude and
+Codex. A bot can hand the floor to the other bot, so the two argue a point
+before they come back to you. A turn and token budget limits each exchange,
+and you can type to interrupt at any time.
+
+Ask for a plan, and the bots write `implementation-plan.md` and
+`checkpoint.md`. Ask for code, and the bots can start build agents and run the
+project's tests. The same council also runs as a web app in your browser
+(`botference plan --web`) and on your phone through a tunnel
+(`botference plan --share`).
+
+**Useful for:** people who use both Claude Code and Codex and want two models
+to check each other's plans and designs.
+
+**State:** the most mature product. Planning is ready to use. Builds from the
+council are newer. The `research-plan` mode and the `build` loop are
+experimental (see [Overview](#overview)).
+
+**Start:** `cd ink-ui && npm install` once, then `./botference`.
+
+![The council in the terminal: a projects panel on the left, and Claude and Codex discussing a question on the right](docs/images/ink-ui.png)
+
+### 2. Discuss: comment on any web page and ask the bots
+
+Discuss is a browser extension for Chrome or Brave, plus a small local server
+called the companion. Highlight a passage on any article and write a comment
+on it. Mention `@claude`, `@codex` or `@all`, and the bots answer in the same
+thread, in a drawer at the side of the page. A thread without a mention stays
+a private note.
+
+Discuss exports each page to one Obsidian note. It also has a library chat
+that asks about every page you annotated, and a question vault. The question
+vault (also called the memorizer) turns a passage into a quiz question and
+asks it back on a schedule. A reading room shows your pages and threads on a
+phone.
+
+**Useful for:** people who read a lot on the web, want to discuss what they
+read with an AI, and keep their notes in Obsidian.
+
+**State:** in daily use, and it changes often. The extension is not in a
+store: you load it once as an unpacked extension in developer mode. Without
+the `claude` or `codex` tool, highlights, comments and export still work. A
+permanent address for your phone needs your own domain on Cloudflare; the
+defaults name the owner's domain, so set `BOTFERENCE_PLUGIN_HOSTNAME`.
+
+**Start:** `./botference discuss`, then load `frontends/plugin/extension` at
+`chrome://extensions` (see [Discuss](#discuss-botference-discuss)).
+
+![An article in the browser with two highlighted passages, and the Discuss drawer open on the right with a comment thread](site/plugin-annotator.png)
+
+### 3. Document review: margin comments on your LaTeX or Markdown
+
+Run `botference review` in a document repository. It renders your LaTeX,
+Markdown or Jupyter Book as a web page with comments in the margin, like
+Google Docs. Tag a bot in a comment, and it answers in the thread or suggests
+a change. When you accept a change, Apply writes it to the source files and
+Commit commits it with git.
+
+Other people can review through git, or through a password-protected link
+(`botference review --share`).
+
+**Useful for:** people who write papers, theses or books in LaTeX or Markdown
+and want comments from people and bots on the same page.
+
+**State:** works, and needs pandoc. The review hub, which keeps several papers
+online at one address, needs your own domain on Cloudflare (see
+[Document Review](#document-review-paper-review)).
+
+**Start:** `botference review` in the folder of your document.
+
+### 4. Blygger publishing: read, follow and publish blyg posts
+
+[Blygger](https://blygger.org) is an open protocol for small blogs that quote
+each other by reference. A post on such a blog is a blyg post. Discuss
+recognises blyg posts, checks each highlight against the post's text, and
+exports quotes by reference.
+
+From a Discuss thread, one press publishes your words and the highlighted
+passage to your own site as a blyg post. A publish queue sends the posts one
+at a time. An agent can write a passage of your comment (`/tk`), and the
+passage stays in a box marked as an AI's text. The Hub (`/hub` on the
+companion) is a private feed of the blygs you follow. For drafts that you
+write in Obsidian, `botference fill-gap` gives a blog's own scripts the same
+agent passages.
+
+**Useful for:** people who write a Blygger blog, or want to follow some.
+
+**State:** experimental. It was built during the Blygger hackathon, 20–27
+November 2026. Publishing runs your site's own commands, and the only example
+set-up is one Jekyll site. The [laws for publishing](docs/laws.md) are
+proposed, not adopted.
+
+**Start:** [docs/blygger.md](docs/blygger.md), or
+[botference.com/blygger.html](https://botference.com/blygger.html).
+
+### 5. Agent tools: screenshots and long-running services
+
+`botference see` opens a page or a local HTML file in headless Chrome. It
+writes one screenshot for a phone and one for a desktop, so that an agent can
+look at the page it built. `botference service` starts a server or a tunnel
+that keeps running after the agent's shell ends.
+
+**Useful for:** people who let coding agents build web pages, charts or
+servers.
+
+**State:** small commands with few parts. `see` needs Chrome installed.
+
+**Start:** `botference see <url>` (see [Agent Eyes](#agent-eyes-botference-see)
+and [Long-Running Services](#long-running-services)).
+
+### Parts built for one set-up
+
+Some parts assume the owner's own accounts and machines:
+
+- The council can read the mail of a Google account set up for the bots, and
+  review a Google Doc from its link. Both need a Google Cloud OAuth client
+  and a separate Google account (see
+  [docs/google-docs-review.md](docs/google-docs-review.md)).
+- Autostart for the companion (`--install-autostart`) and the review hub's
+  device approval work on macOS only.
+
+## The council's terminal UI
+
+The Ink TUI has a projects panel on the left, a full-width council panel on
+the right, and an input field and status line at the bottom. It is the
+council's main interface.
 
 The Projects panel lists `Inbox` plus every folder under `projects/`. The
 controller sends the recent resumable chats for **every** project — up to
@@ -57,7 +186,8 @@ turn, so you can `/resume <its-id>` to come back later. `/resume <id>` reaches
 any saved chat, including one filed under a different project; opening it
 makes that chat's project the active one.
 
-The Ink TUI is the only frontend. First use after clone: `cd ink-ui && npm
+The Ink TUI is the council's terminal frontend (`botference plan --web` serves
+the same council in a browser). First use after clone: `cd ink-ui && npm
 install`. It supports app-level pane-clamped text selection, multiline input
 (Shift+Enter), streaming, and activity status. Use `--claude` to skip Codex
 and run a solo Claude session (no TUI, just the Claude CLI).
@@ -73,7 +203,7 @@ expand them in `botference/project.json`.
 
 ## Approach
 
-Botference is built around one metaphor: the **council** — an open room where
+The council is built around one metaphor — an open room where
 you and the AIs all talk, like a three-person group chat. You steer the
 conversation, ask questions, push back, and direct who speaks; the bots can
 also hand each other the floor and debate directly (budgeted, and you can
@@ -2536,7 +2666,7 @@ the status bar is who will *write the plan*. These are independent.
 
 ## Overview
 
-Botference has two main modes: **planning** and **building**.
+The council has two main modes: **planning** and **building**.
 
 ### Planning
 
