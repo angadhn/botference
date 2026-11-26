@@ -82,6 +82,10 @@ export const STARTED_BY = Object.freeze(['owner', 'queue']);
  *              is ALWAYS queued (never run at once in a dialog nobody is at), its presence is `away` (or `promised_look` under
  *              confirm 'always'), it never lifts a pause, and it may never ask for a look */
 export const PRESSED_BY = Object.freeze(['owner', 'hub-link']);
+/** Why the QUEUE took an entry out (`entry.cancelled_for`; absent: the owner cancelled it, or a later press replaced it):
+ *    cannot-add  a Hub addition whose earlier post, when its turn came, was no longer the post a comment there is added to (gone,
+ *                changed by hand, another post since): nothing was written; the hub link gives the reply back as a saved draft */
+export const ENTRY_CANCEL_REASONS = Object.freeze(['cannot-add']);
 export const QUEUE_MAX = 20;
 export const FINISHED_KEPT = 20;
 export const FILL_WAIT_MS = 5 * 60 * 1000;
@@ -283,6 +287,13 @@ export function createQueue(deps) {
     if (got.park && !asked) { moveEntry(e, 'needs_look', { why: got.park }); return; }
     const page = got.park ? got.live : got.page;
     if (gapsOf(e, page).some(g => g.mode === 'pending')) { moveEntry(e, 'filling', { fill_since: clock().toISOString() }); return; }
+    // A HUB ADDITION is added to the earlier post AS IT STANDS NOW (an addition pressed while another to the same post was publishing
+    // carries the version it saw): the same question the press asked, asked again; the post as it now is, or the entry is taken out
+    if (e.pressed_by === 'hub-link' && e.args.join === 'add' && typeof pub.earlierPublicOf === 'function') {
+      const now = pub.earlierPublicOf({ page, threadId: e.thread_id });
+      if (!now || now.post !== e.args.post) { moveEntry(e, 'cancelled', { cancelled_for: 'cannot-add' }); return; }
+      e.args.post_version = String(now.version);
+    }
     await startEntry(e, page, { drawerText: !!got.park });
   }
   let pumping = Promise.resolve();
@@ -476,7 +487,7 @@ export function createQueue(deps) {
     return { id: e.id, state: e.state, presence: e.presence || 'away', page_url: e.page_url, page_title: e.page_title || '', thread_id: e.thread_id, label: e.label || '', kind: e.kind || 'new',
       pressed_at: e.pressed_at || '', at: e.at, ahead, run: e.run_id || '', started_by: e.started_by || '', why: e.why || '', replaced: e.replaced || 0,
       result: e.result || null, failure: e.failure || null, paused_by: !!(rec.paused && rec.paused.entry === e.id), pressed_by: PRESSED_BY.includes(e.pressed_by) ? e.pressed_by : 'owner',
-      replaced_by: e.replaced_by || '' };
+      replaced_by: e.replaced_by || '', cancelled_for: ENTRY_CANCEL_REASONS.includes(e.cancelled_for) ? e.cancelled_for : '' };
   }
   function view() {
     return { state: rec.state, max, paused: rec.paused ? { say: rec.paused.say, at: rec.paused.at } : null, entries: rec.entries.map(viewOf),

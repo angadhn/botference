@@ -138,12 +138,14 @@ test('linkStateOf: a draft is saved; no record is unknown; a deleted thread is c
   assert.equal(L.linkStateOf(rec(), page(), { entries: [] }), 'failed');
 });
 
-test('a record\'s step moves only saved → pressed', () => {
+test('a record\'s step moves saved → pressed, and back to saved only for an addition the queue gave back (hub-link giveBack)', () => {
   const r = { step: 'saved' };
   L.moveRecord(r, 'pressed', { entry_id: 'e1' });
   assert.deepEqual(r, { step: 'pressed', entry_id: 'e1' });
-  assert.throws(() => L.moveRecord(r, 'saved'), L.IllegalRecordMove);
   assert.throws(() => L.moveRecord(r, 'pressed'), L.IllegalRecordMove);
+  assert.throws(() => L.moveRecord(r, 'discarded'), L.IllegalRecordMove);
+  L.moveRecord(r, 'saved', { entry_id: '' });
+  assert.equal(r.step, 'saved');
   assert.throws(() => L.moveRecord({ step: 'saved' }, 'gone'), /no such step/);
 });
 

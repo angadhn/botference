@@ -482,6 +482,49 @@ await test('ADD TO MY EARLIER REPLY: earlier names it; the addition goes into it
   } finally { await stop(srv3); }
 });
 
+await test('D1 THREE ADDITIONS TO ONE POST a second apart, while a slow publish runs: three new versions, three sections, in order, each once', async () => {
+  const rig = makeRig({ confirm: 'never' }); rigs.push(rig);
+  const root4 = tmp('add3');
+  setHome(root4, rig, 'never');
+  cli(['off'], { dir: SECRETS, say }); pair('one-click');
+  const srv4 = await boot(root4, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
+  const S = srv4.base;
+  const status = async rid => (await send(S, 'status', { rids: [rid] })).json.replies[0];
+  try {
+    await reply(S, 'rid-three-base1', { comment: 'The base reply.', intent: 'publish' });
+    await waitFor(async () => (await status('rid-three-base1')).state === 'published', 'the base live');
+    const t0 = (await threadsOf(S, POST_A)).find(t => t.msgs[0].text === 'The base reply.');
+    const postId = t0.blyg_published.permalink.split('/').filter(Boolean).pop();
+    rig.control({ publish_edit: 'hold' });
+    const rids = ['rid-three-add01', 'rid-three-add02', 'rid-three-add03'];
+    for (const [i, rid] of rids.entries()) {
+      assert.equal((await reply(S, rid, { comment: `Addition ${i + 1}.`, intent: 'publish', add_to: postId })).status, 200);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    rig.control({});
+    const versions = [];
+    for (const rid of rids) {
+      const v = await waitFor(async () => { const x = await status(rid); return ['published', 'failed', 'saved'].includes(x.state) ? x : null; }, `${rid} done`, 90000);
+      assert.equal(v.state, 'published', `${rid}: ${JSON.stringify(v)}`);
+      versions.push(v.version);
+    }
+    assert.deepEqual(versions, [2, 3, 4], 'three new versions, in order (each reply\'s own)');
+    assert.equal(rig.calls().filter(c => c.step === 'publish_edit').length, 3);
+    const ts = await threadsOf(S, POST_A);
+    assert.deepEqual(rids.map((_, i) => ts.find(t => t.msgs[0].text === `Addition ${i + 1}.`).blyg_published.version), [4, 4, 4], 'all in the post, now at version 4');
+    const note = fs.readdirSync(rig.folder).map(n => fs.readFileSync(path.join(rig.folder, n), 'utf8')).find(x => x.includes(postId));
+    const at = rids.map((_, i) => note.indexOf(`Addition ${i + 1}.`));
+    assert.ok(at.every(x => x > 0) && at[0] < at[1] && at[1] < at[2], 'in order');
+    for (let i = 1; i <= 3; i++) assert.equal(note.split(`Addition ${i}.`).length - 1, 1, `section ${i} once`);
+    // D2 through the real path: the post's note edited by hand is no longer offered, and an addition is refused saying so
+    const file = fs.readdirSync(rig.folder).map(n => path.join(rig.folder, n)).find(f => fs.readFileSync(f, 'utf8').includes(postId));
+    fs.appendFileSync(file, '\nAn edit made by hand.\n');
+    assert.deepEqual((await send(S, 'earlier', { post: postOf(A) })).json.earlier, []);
+    const out = await reply(S, 'rid-three-out01', { comment: 'After the hand edit.', intent: 'publish', add_to: postId });
+    assert.deepEqual([out.json.state, out.json.press && out.json.press.refused], ['saved', 'cannot-add-outside']);
+  } finally { await stop(srv4); }
+});
+
 cleanup();
 web.close();
 for (const r of rigs) r.done();

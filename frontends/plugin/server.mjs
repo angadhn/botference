@@ -3320,6 +3320,8 @@ function hubLinkFileReply({ url, quote, comment, answer }) {
   noteDecisions(page);
   return { url: page.url, thread_id: thread.id, ts: msg.ts };
 }
+// (a publish of this page queued or running: its note may be mid-rewrite by our own run, which is not an outside change)
+const hubLinkPageBusy = url => blygQueue.view().entries.some(x => ['queued', 'filling', 'needs_look', 'running', 'giving_up'].includes(x.state) && store.normUrl(x.page_url) === store.normUrl(url));
 const hubLink = createHubLink({
   // speech for the Hub's reply box (hub-speech.mjs): contained ffmpeg and whisper-cli, jobs in memory only; off when a tool is missing
   speech: createSpeech({ log: line => console.log(`hub-link: ${line}`) }),
@@ -3339,12 +3341,12 @@ const hubLink = createHubLink({
     const p = store.readPage(page);
     const item = p && p.blyg && p.blyg.status === 'blyg' ? p.blyg.item : null;
     if (!item || item.origin !== origin || item.id !== id) return [];
-    const e = blygPublish.earlierPublicOf({ page: p });
-    return e ? [e] : [];
+    const e = blygPublish.earlierPublicOf({ page: p, outside: hubLinkPageBusy(p.url) ? 'offer' : 'refuse' });
+    return e && e.post ? [e] : [];
   },
   earlierFor: ({ url, thread_id }) => {
     const p = store.readPage(url);
-    return p ? blygPublish.earlierPublicOf({ page: p, threadId: thread_id }) : null;
+    return p ? blygPublish.earlierPublicOf({ page: p, threadId: thread_id, outside: hubLinkPageBusy(p.url) ? 'offer' : 'refuse' }) : null;
   },
   cancel: entry => blygQueue.cancel({ entry }),
   // a saved draft's passage asked again (as the drawer's refill), and a saved draft thrown away (as the drawer's delete of a thread)

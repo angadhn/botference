@@ -888,11 +888,16 @@ export function createPublisher(deps) {
     return !!now && snapshot.stub === hashOf(JSON.stringify(now.url ? { url: now.url } : now));
   }
   /** THE EARLIER POST a comment may be added to: of the posts published from this page by another of the owner's threads, the most
-   *  recent (by when it was first published), and only when its note is still the one written from here (the post's record holds
-   *  its hash and the file still has it), all its threads are still here and publishable, one more fits, and the page still answers
-   *  the same target. → { thread, permalink, title, version } or null. */
+   *  recent (by when it was first published), and only when its note can be found in the notes folder (a plain file carrying the
+   *  post's id, recorded from here with its hash), all its threads are still here and publishable, one more fits, and the page still
+   *  answers the same target. A note CHANGED OUTSIDE THE PLUGIN since (its hash differs) is offered to the drawer, whose run then asks
+   *  the outside question before anything is written, and refused to the hub link (`outside: 'refuse'`).
+   *  → { thread, permalink, title, version, address, date } or null. */
   // (`here` null: a comment not written yet — the hub link asks before the owner replies; otherwise the comment must be publishable)
-  function earlierPostFor(page, here, S) {
+  // (`why`: told `reason: 'outside'` when the one candidate was refused because its note was changed outside the plugin. The DRAWER is
+  // offered such a post (`outside: 'offer'`: the owner is there and the run asks the outside question before anything is written);
+  // the HUB LINK is not (`outside: 'refuse'`: nobody could answer that question from the phone))
+  function earlierPostFor(page, here, S, why = {}, { outside = 'offer' } = {}) {
     if (!page || (here && (isPublishedThread(here) || !eligibleThread(here).ok))) return null;
     if (!EDIT_STEPS.every(k => S.commands[k])) return null;
     const threads = page.threads || [];
@@ -911,7 +916,10 @@ export function createPublisher(deps) {
     const rec = postOf(permalink);
     if (!rec || !rec.note_sha || !rec.snapshot) return null;
     const pub = { ...thread.blyg_published, ...rec };
-    if (!publishedNoteOf(pub, S).ok) return null;
+    const note = publishedNoteOf(pub, S);
+    if (!note.ok) return null;
+    // A NOTE CHANGED OUTSIDE THE PLUGIN is not offered to the hub link: its addition would wait at a look nobody can answer there
+    if (note.outside && outside === 'refuse') { why.reason = 'outside'; return null; }
     const mates = matesOf(threads, pub);
     if (mates.length + 1 > LIMITS.comments || !mates.every(t => eligibleThread(t).ok)) return null;
     // every comment the post holds is still here: adding never drops one silently
@@ -962,13 +970,17 @@ export function createPublisher(deps) {
   /** THE SAME QUESTION FOR THE HUB LINK (earlierPostFor, the one answer): for a comment of the page (`threadId`), or for one not written
    *  yet (no `threadId`: asked before the owner replies). → the post's public facts { post, title, version, address, permalink, date },
    *  or null. */
-  function earlierPublicOf({ page, threadId = '' }) {
+  // (`outside`: 'refuse' (the default), or 'offer' while the caller knows a publish of this page is queued or running: the note then
+  // differs from its record because OUR run is rewriting it, and the queue asks again, with 'refuse', when the addition's turn comes)
+  function earlierPublicOf({ page, threadId = '', outside = 'refuse' }) {
     const home = settingsNow();
     if (!home.ok || !page) return null;
     const here = threadId ? (page.threads || []).find(t => t && t.id === threadId) : null;
     if (threadId && !here) return null;
-    const e = earlierPostFor(page, here, home.settings);
-    return e ? { post: e.post, title: e.title, version: e.version, address: e.address, permalink: e.permalink, date: e.date } : null;
+    const why = {};
+    const e = earlierPostFor(page, here, home.settings, why, { outside: outside === 'offer' ? 'offer' : 'refuse' });
+    // (no post: null, or `{ refused: 'outside' }` when the one candidate's note was changed by hand)
+    return e ? { post: e.post, title: e.title, version: e.version, address: e.address, permalink: e.permalink, date: e.date } : why.reason ? { refused: why.reason } : null;
   }
 
   // which threads "this and the ones above" takes: the owner's earlier unpublished eligible threads (with confirm 'never', only those

@@ -21,15 +21,15 @@ async function linkWith({ earlier = EARLIER } = {}) {
   const key = L.newKey({ hub_origin: 'https://blog.example.com', publish: 'one-click' });
   L.writeLinkKey(dir, key);
   const pages = new Map([[URL_X, { url: URL_X, threads: [] }]]);
-  const state = { earlier, presses: [] };
+  const state = { earlier, presses: [], entries: [] };
   const link = L.createHubLink({ keyDir: dir, repliesFile: path.join(dir, L.HUB_LINK_REPLIES_FILE), log: () => {}, perMinute: 10000,
     bind: async () => ({ verdict: 'verified', url: URL_X, origin: ORIGIN, id: 'x', version: 1 }),
     fileReply: ({ comment }) => { const p = pages.get(URL_X); const id = `t${p.threads.length + 1}`; const ts = `2026-11-26T10:00:0${p.threads.length}.000Z`;
       p.threads.push({ id, via: 'hub-link', msgs: [{ ts, author: 'owner', provenance: 'owner-typed', channel: 'hub-link', text: comment }] }); return { url: URL_X, thread_id: id, ts }; },
-    press: async a => { state.presses.push(a); return { ok: true, queued: { id: `e${state.presses.length}` } }; },
-    cancel: () => ({ ok: true }), queue: () => ({ entries: [], run: null }), readPage: u => pages.get(u) || null,
+    press: async a => { state.presses.push(a); const id = `e${state.presses.length}`; state.entries.push({ id, state: 'queued', page_url: URL_X, thread_id: a.thread_id }); return { ok: true, queued: { id } }; },
+    cancel: () => ({ ok: true }), queue: () => ({ entries: state.entries, run: null }), readPage: u => pages.get(u) || null,
     // the plugin's own add-to-earlier answer, for a page (no comment yet) or for one of its threads
-    earlier: ({ page, origin, id }) => (page === URL_X && origin === ORIGIN && id === 'x' && state.earlier ? [state.earlier] : []),
+    earlier: ({ page, origin, id }) => (page === URL_X && origin === ORIGIN && id === 'x' && state.earlier && state.earlier.post ? [state.earlier] : []),
     earlierFor: () => state.earlier });
   const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
@@ -100,5 +100,47 @@ test('the day limit counts an addition as one publish', async () => {
   try {
     for (let i = 0; i < 11; i++) await k.reply(`rid-addday-${String(i).padStart(4, '0')}`, { add_to: EARLIER.post });
     assert.equal(k.state.presses.length, 10);
+  } finally { await k.close(); }
+});
+
+test('D1 AN ADDITION THE QUEUE COULD NOT MAKE goes back to a saved draft (never failed): cannot-add with the Hub\'s sentence, its day slot given back; publish as new works', async () => {
+  const k = await linkWith();
+  try {
+    const r = await k.reply('rid-addback-001', { add_to: EARLIER.post });
+    assert.equal(r.json.state, 'queued');
+    // when its turn came the earlier post could no longer take it: the queue took the entry out, saying why
+    Object.assign(k.state.entries[0], { state: 'cancelled', cancelled_for: 'cannot-add' });
+    k.state.earlier = { ...EARLIER, post: '01anotherpostsincethenxx' };
+    const v = (await k.send('status', { rids: ['rid-addback-001'] })).json.replies[0];
+    assert.deepEqual([v.state, v.press.refused, v.press.say], ['saved', 'cannot-add-changed', 'Your earlier reply changed, so this was not added. Publish it as a new post, or discard it.']);
+    const n = await k.send('publish', { rid: 'rid-addback-001', as: 'new' });
+    assert.equal(n.status, 200);
+    assert.deepEqual(k.state.presses.map(p => p.join || 'new'), ['add', 'new']);
+    // (an entry the owner cancelled is still just cancelled)
+    k.state.earlier = EARLIER;
+    await k.reply('rid-addback-002', { add_to: EARLIER.post });
+    k.state.entries[2].state = 'cancelled';
+    assert.equal((await k.send('status', { rids: ['rid-addback-002'] })).json.replies[0].state, 'cancelled');
+  } finally { await k.close(); }
+});
+
+test('D2 AN EARLIER POST EDITED BY HAND: cannot-add with a sentence saying so', async () => {
+  const k = await linkWith({ earlier: { refused: 'outside' } });
+  try {
+    const r = await k.reply('rid-addout-0001', { add_to: EARLIER.post });
+    assert.deepEqual([r.json.state, r.json.press.refused], ['saved', 'cannot-add-outside']);
+    assert.match(r.json.press.say, /edited by hand/);
+    assert.deepEqual((await k.send('earlier', { post: { page: URL_X, origin: ORIGIN, id: 'x' } })).json.earlier, [], 'not offered');
+  } finally { await k.close(); }
+});
+
+test('D5 A STALE cannot-add is cleared when the earlier post can take additions again', async () => {
+  const k = await linkWith({ earlier: null });
+  try {
+    const r = await k.reply('rid-addstale-01', { add_to: EARLIER.post });
+    assert.equal(r.json.press.refused, 'cannot-add');
+    k.state.earlier = EARLIER;
+    const v = (await k.send('status', { rids: ['rid-addstale-01'] })).json.replies[0];
+    assert.deepEqual([v.state, v.press, v.adds_to.state], ['saved', undefined, 'ready']);
   } finally { await k.close(); }
 });

@@ -204,7 +204,8 @@ export function untouchedSinceFiling(record, thread) {
  *               with that rid is refused as cancelled. At most HUB_LINK_LIMITS.withdrawnMax kept (the oldest forgotten first), and
  *               like every record forgotten after 30 days */
 export const RECORD_STEPS = Object.freeze(['saved', 'pressed', 'withdrawn', 'discarded']);
-export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed', 'discarded']), pressed: Object.freeze([]), withdrawn: Object.freeze([]),
+// (pressed → saved: only an addition the queue took out because its earlier post could no longer take it: nothing was published)
+export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed', 'discarded']), pressed: Object.freeze(['saved']), withdrawn: Object.freeze([]),
   discarded: Object.freeze([]) });
 export class IllegalRecordMove extends Error {}
 export function moveRecord(rec, to, facts = {}) {
@@ -437,6 +438,8 @@ export const HUB_LINK_SAY = Object.freeze({
   'changed-on-computer': 'This draft was changed on your computer; discard it there.',
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
   'cannot-add': 'Your earlier reply can no longer be added to from here (it changed, or another reply went out since). Publish this one as a new post instead.',
+  'cannot-add-outside': 'Your earlier reply was edited by hand on your computer, so this is not added to it from here. Publish it as a new post, or discard it.',
+  'cannot-add-changed': 'Your earlier reply changed, so this was not added. Publish it as a new post, or discard it.',
   'audio-too-large': `The recording is too long to send: at most ${SPEECH_LIMITS.audioBytes} bytes (about 3 minutes).`,
   'not-audio': 'That is not a recording your computer can read (WebM, Ogg or MP4 audio).',
   'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
@@ -488,6 +491,7 @@ export function createHubLink(deps) {
   };
   /** What the Hub is told about one rid: its state, and what it shows with it. Nothing else of the page is ever in it. */
   function viewOf(rid, q = deps.queue(), { text = false } = {}) {
+    giveBack(rid, q);
     const rec = store.get(rid);
     const { page, state } = stateFor(rec, q);
     const v = { rid, state };
@@ -518,7 +522,9 @@ export function createHubLink(deps) {
     // (a reply sent to be added to an earlier post: which post, and whether it can go there now; nothing else of that post)
     if (rec.add_to && thread && (rec.step === 'saved' || rec.step === 'pressed')) {
       const e = rec.step === 'saved' ? deps.earlierFor({ url: rec.page_url, thread_id: rec.thread_id }) : null;
-      const ready = rec.step === 'pressed' || (e && e.post === rec.add_to);
+      const ready = rec.step === 'pressed' || !!(e && e.post && e.post === rec.add_to);
+      // (a refusal that no longer holds is cleared: the post can take it now)
+      if (rec.step === 'saved' && ready && String(rec.press_refused || '').startsWith('cannot-add')) store.note(rid, { press_refused: '' });
       v.adds_to = { id: rec.add_to, title: e && ready ? String(e.title || '').slice(0, 120) : String(rec.add_title || ''), address: e && ready ? String(e.address || '') : String(rec.add_address || ''),
         state: ready ? 'ready' : 'cannot-add' };
     }
@@ -527,6 +533,17 @@ export function createHubLink(deps) {
   }
   const logState = (rid, what, extra = '') => say(`${ridTag(rid)} ${what}${extra ? ` ${extra}` : ''}`);
 
+  /** AN ADDITION THE QUEUE TOOK OUT (its earlier post could no longer take it when its turn came: blyg-queue cancelled_for
+   *  'cannot-add'): nothing was published, so the reply goes back to a saved draft, its day slot given back, said why; the Hub may then
+   *  publish it as a new post. */
+  function giveBack(rid, q) {
+    const rec = store.get(rid);
+    if (!rec || rec.step !== 'pressed' || !rec.add_to) return;
+    const e = entryOf(rec, q.entries);
+    if (!e || e.state !== 'cancelled' || e.cancelled_for !== 'cannot-add') return;
+    store.move(rid, 'saved', { entry_id: '', pressed_at: '', press_refused: 'cannot-add-changed' });
+    logState(rid, 'given-back', 'cannot-add');
+  }
   /** A press for a saved record: the publish setting, the day's limit, then the queue. Writes the record's step on success. */
   async function pressRecord(rec, key, as = 'as-asked') {
     const refuse = code => { store.note(rec.rid, { press_refused: code }); logState(rec.rid, 'press-refused', code); return code; };
@@ -539,7 +556,7 @@ export function createHubLink(deps) {
     let add = null;
     if (rec.add_to && as !== 'new') {
       const e = deps.earlierFor({ url: rec.page_url, thread_id: rec.thread_id });
-      if (!e || e.post !== rec.add_to) return refuse('cannot-add');
+      if (!e || e.post !== rec.add_to) return refuse(e && e.refused === 'outside' ? 'cannot-add-outside' : 'cannot-add');
       add = { join: 'add', post: e.post, postVersion: Number(e.version) || 1, title: String(e.title || '').slice(0, 120), address: String(e.address || '') };
     }
     holding.presses++;
@@ -591,7 +608,7 @@ export function createHubLink(deps) {
     async earlier(data) {
       const p = data.post && typeof data.post === 'object' ? data.post : null;
       if (!p || typeof p.page !== 'string' || typeof p.origin !== 'string' || typeof p.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id} required' } };
-      const list = deps.earlier({ page: p.page.slice(0, 2048), origin: p.origin.slice(0, 2048), id: p.id.slice(0, 64) }) || [];
+      const list = (deps.earlier({ page: p.page.slice(0, 2048), origin: p.origin.slice(0, 2048), id: p.id.slice(0, 64) }) || []).filter(e => e && e.post);
       return { status: 200, body: { ok: true, earlier: list.map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
         title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 })) } };
     },
