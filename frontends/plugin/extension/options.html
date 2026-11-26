@@ -54,7 +54,12 @@
     color: var(--fg); background: var(--bg);
     border: 1px solid var(--line); border-radius: 8px;
   }
-  input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
+  select {
+    display: block; padding: 8px 10px; font: 14px/1.4 var(--sans);
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 8px;
+  }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px }
   .row.tight { margin-top: 0 }
   .row.tight input { flex: 1 1 200px }
@@ -186,6 +191,20 @@
       <p class="hint">If you also read your Hub at its own address on the web, put that page's exact address here (https, one per line,
         at most five). A passage you highlight in a post there then belongs to that post, as on the companion's own Hub. Only
         these exact pages are believed; any other page on the same site is not. Saved with the button above.</p>
+    </div>
+  </div>
+
+  <h2 class="sub">The drawer</h2>
+  <div class="card">
+    <div class="field">
+      <label for="layout">Where the drawer sits</label>
+      <select id="layout">
+        <option value="push">Push the page aside</option>
+        <option value="overlay">Lay over the page</option>
+      </select>
+      <p class="hint" id="layoutstatus">Push narrows the page by the drawer's width so nothing is covered, and moves
+        buttons fixed to the right edge with it. Some pages cannot be pushed (a very narrow window, the PDF viewer),
+        and there the drawer lies over the page instead.</p>
     </div>
   </div>
 

@@ -109,6 +109,7 @@
     password: el('password').value,
     handle: el('handle').value,
     pdf: el('pdf').checked,
+    layout: el('layout').value,
     // the reader the feed icon opens (config.js): kept as it was by every save that is not about it
     reader_url: readerNow.url,
     reader_onboarding: readerNow.onboarding,
@@ -185,6 +186,7 @@
     el('password').value = cfg.password;
     el('handle').value = cfg.handle;
     el('pdf').checked = cfg.pdf !== false;
+    el('layout').value = CFG.layoutOf(cfg.layout);
     readerNow = { url: cfg.reader_url, onboarding: cfg.reader_onboarding };
     const rb = el('reader-url');
     if (rb) rb.value = cfg.reader_url;
@@ -230,6 +232,14 @@
     s.textContent = on
       ? 'on — PDFs now open in Discuss'
       : 'off — PDFs go to the browser’s own viewer';
+  });
+
+  // Same as the PDF box: no Save, the drawer follows the moment this lands (it watches storage)
+  el('layout').addEventListener('change', async () => {
+    const out = await CFG.writeConfig(fields());
+    const s = el('layoutstatus');
+    s.className = 'ok';
+    s.textContent = out[CFG.KEYS.layout] === 'push' ? 'push — the page moves over to make room' : 'overlay — the drawer covers the page’s right edge';
   });
 
   el('save').addEventListener('click', async () => {

@@ -675,7 +675,7 @@
   // same two places — the worker, which installs the redirect rule, and the
   // options page, which is where it is turned off.
   const KEYS = { base: 'bfp:companion', password: 'bfp:password', handle: 'bfp:handle', learned: 'bfp:learned-auth',
-                 pdf: 'bfp:pdf', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding', hostedHubs: 'bfp:hosted-hubs' };
+                 pdf: 'bfp:pdf', layout: 'bfp:layout', readerUrl: 'bfp:reader-url', onboarding: 'bfp:reader-onboarding', hostedHubs: 'bfp:hosted-hubs' };
   // absent means on: an extension installed before this existed should still
   // open PDFs in the viewer, because that is the feature
   const readBool = (v, dflt) => (v === undefined || v === null ? !!dflt : !!v);
@@ -943,11 +943,11 @@
   // ---- storage (the only chrome.* in this file) ---------------------------
   function readConfig(area) {
     const store = area || (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local);
-    const fallback = { base: DEFAULT_BASE, password: '', handle: '', auth_learned: '', pdf: true, reader_url: '', reader_onboarding: 'unasked', hosted_hubs: [] };
+    const fallback = { base: DEFAULT_BASE, password: '', handle: '', auth_learned: '', pdf: true, layout: DEFAULT_LAYOUT, reader_url: '', reader_onboarding: 'unasked', hosted_hubs: [] };
     if (!store) return Promise.resolve(fallback);
     return new Promise(resolve => {
       try {
-        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.learned, KEYS.pdf, KEYS.readerUrl, KEYS.onboarding, KEYS.hostedHubs], r => {
+        store.get([KEYS.base, KEYS.password, KEYS.handle, KEYS.learned, KEYS.pdf, KEYS.layout, KEYS.readerUrl, KEYS.onboarding, KEYS.hostedHubs], r => {
           const got = r || {};
           resolve({
             base: normalizeBase(got[KEYS.base]) || DEFAULT_BASE,
@@ -955,6 +955,7 @@
             handle: sanitizeHandle(got[KEYS.handle]),
             auth_learned: learnedOf(got[KEYS.learned], got[KEYS.base]),
             pdf: readBool(got[KEYS.pdf], true),
+            layout: layoutOf(got[KEYS.layout]),
             reader_url: readerUrlOf(got[KEYS.readerUrl]).value,
             reader_onboarding: onboardingOf(got[KEYS.onboarding]),
             hosted_hubs: hostedHubsOf(got[KEYS.hostedHubs] || []).value,
@@ -971,6 +972,7 @@
       [KEYS.password]: clean(cfg && cfg.password),
       [KEYS.handle]: sanitizeHandle(cfg && cfg.handle),
       [KEYS.pdf]: readBool(cfg && cfg.pdf, true),
+      [KEYS.layout]: layoutOf(cfg && cfg.layout),
       [KEYS.readerUrl]: readerUrlOf(cfg && cfg.reader_url).value,
       [KEYS.onboarding]: onboardingOf(cfg && cfg.reader_onboarding),
       [KEYS.hostedHubs]: hostedHubsOf((cfg && cfg.hosted_hubs) || []).value,
@@ -993,7 +995,38 @@
     return new Promise(resolve => { try { store.remove(KEYS.learned, () => resolve()); } catch { resolve(); } });
   }
 
+
+  // ---- how the drawer sits against the page --------------------------------
+  // ONE list of the two ways, and ONE function that says which of them applies to a page right now.
+  //   overlay  the drawer is laid over the page's right edge and covers whatever is there
+  //   push     the page is narrowed by the drawer's width, so the page sits beside the drawer and nothing is covered
+  // The reader's CHOICE is stored (KEYS.layout, set on the options page, default push); what a page GETS is layoutFor's answer, because
+  // push cannot work everywhere. The drawer keeps the choice in one field (D.layout) and changes it only through layoutMove.
+  const LAYOUT_MODES = Object.freeze(['overlay', 'push']);
+  const DEFAULT_LAYOUT = 'push';
+  const layoutOf = v => (LAYOUT_MODES.indexOf(v) !== -1 ? v : DEFAULT_LAYOUT);
+  // (current, next) → next; a value that is not one of LAYOUT_MODES is refused
+  function layoutMove(current, next) {
+    if (LAYOUT_MODES.indexOf(next) === -1) throw new Error('drawer layout: no such mode ' + next);
+    return next;
+  }
+  // The page must keep at least this much beside the drawer, or push is not worth it
+  const PUSH_PAGE_MIN = 320;
+  // THE ONE RULE for where push falls back to overlay. env = { protocol, pathname, framed, innerWidth, width }:
+  //   · the extension's own PDF viewer page (chrome-extension://…/pdf/viewer.html), which lays out its own panes
+  //   · a frame, whose width is not the window's
+  //   · a window narrower than the drawer's width + PUSH_PAGE_MIN
+  function layoutFor(choice, env) {
+    if (layoutOf(choice) !== 'push') return 'overlay';
+    const e = env || {};
+    if (e.protocol === 'chrome-extension:' || e.protocol === 'moz-extension:') return 'overlay';
+    if (e.framed) return 'overlay';
+    if (!(Number(e.innerWidth) >= Number(e.width) + PUSH_PAGE_MIN)) return 'overlay';
+    return 'push';
+  }
+
   const api = {
+    LAYOUT_MODES, DEFAULT_LAYOUT, PUSH_PAGE_MIN, layoutOf, layoutMove, layoutFor,
     DEFAULT_BASE, KEYS, HANDLE_MAX,
     normalizeBase, wsUrlFor, authHeaders, sanitizeHandle, isLocal, httpUrl,
     readConfig, writeConfig,

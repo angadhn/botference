@@ -2850,7 +2850,8 @@
                 keyPending: null },
       relaying: false,     // a POST /relay is in flight — every relay button waits
       width: W_DEFAULT,
-      pushed: null,        // saved inline style of <html> while the page is pushed
+      layout: CFG.DEFAULT_LAYOUT,   // the reader's choice, one of CFG.LAYOUT_MODES; moved only by setLayout
+      pushed: null,        // the style records of the push (see pushPage) while the page is pushed; null otherwise
       host: null, shadow: null, el: {},
       mounted: false,
       // NOT `open`: Object.assign below publishes an open() METHOD on D, and a
@@ -3112,6 +3113,8 @@
       restoreTab();
       restorePrompts();
       restoreWidth();
+      restoreLayout();
+      watchLayoutKey();
       restoreExportMode();
       restoreTyping();
       restoreBubbles();
@@ -3346,27 +3349,181 @@ ${bubbleShellHtml()}`;
       readKey(TAB_KEY, m => writeKey(TAB_KEY, { ...(m || {}), [hn]: D.tab }));
     }
 
-    // ---- width + page push ----------------------------------------------
-    // The drawer used to sit on top of the article; at half-screen widths that
-    // covered the text it exists to annotate. Now it pushes: an inline
-    // margin-right on <html> equal to the drawer's width, transitioned in step
-    // with the panel's own slide. The host stays position:fixed, so if a page's
-    // own root styling ignores the margin (rare on static articles) the drawer
-    // simply overlaps again — the degradation is silent and harmless.
+    // ---- width + how the drawer sits against the page --------------------
+    // Two layouts, ONE list (config.js LAYOUT_MODES: overlay | push), the choice in ONE field (D.layout), changed only by setLayout.
+    // What a page actually gets is CFG.layoutFor(D.layout, env): push falls back to overlay on the extension's PDF viewer page, in a
+    // frame, and in a window narrower than the drawer + PUSH_PAGE_MIN. That is the only place the fallback is decided.
+    //
+    // PUSH, and what it does:
+    //   1. <html> gets margin-right = the drawer's width (inline, !important), so the page's normal content reflows beside the drawer.
+    //   2. position:fixed elements do not follow a margin (they hang from the viewport), so a pass finds the ones whose box reaches
+    //      under the drawer and moves each by the drawer's width: a bar that spans the window is narrowed, anything else is moved
+    //      left (by `right`, or by `left` where `right` does not move it; each is MEASURED, and undone if it did not work).
+    //      Sticky elements are in the page's flow and already follow the margin, so they are left alone.
+    //      A MutationObserver (nodes added, class changes) and the window's resize run the pass again for what appears later.
+    //   3. Everything written is recorded per element (STYLE RECORDS below) and put back exactly on close, on pagehide, when the
+    //      choice becomes overlay, and when the extension is lost (contextLost).
+    // KNOWN LIMITS: a page that is sized in `vw` units, or that picks its layout with a media query, still sees the full window
+    // width (only a real browser side panel changes the viewport); a fixed element inside a transformed ancestor is not found by
+    // its viewport position; a page that rewrites an element's inline style at every frame can undo a move.
     const rootEl = () => (typeof document !== 'undefined' && document.documentElement) || null;
+    const pushEnv = () => ({
+      protocol: (typeof location !== 'undefined' && location.protocol) || '',
+      framed: (() => { try { return window.top !== window; } catch (_) { return true; } })(),
+      innerWidth: typeof window !== 'undefined' ? window.innerWidth : 0,
+      width: D.width,
+    });
+    const layoutNow = () => CFG.layoutFor(D.layout, pushEnv());
+    function setLayout(next) {
+      D.layout = CFG.layoutMove(D.layout, next);
+      if (D.opened) pushPage(true, false);
+      return D.layout;
+    }
+    function restoreLayout() { readKey(CFG.KEYS.layout, v => { setLayout(CFG.layoutOf(v)); }); }
+    function watchLayoutKey() {
+      try {
+        chrome.storage.onChanged.addListener((ch, area) => {
+          if (area === 'local' && ch[CFG.KEYS.layout]) setLayout(CFG.layoutOf(ch[CFG.KEYS.layout].newValue));
+        });
+      } catch { /* no storage (harness): the field stands */ }
+    }
+
+    // STYLE RECORDS. A record keeps what an element's inline style was before the push touched it, and the attribute text right
+    // after the push's last write. Undo: if the attribute is still exactly what the push left, the original text goes back
+    // byte for byte (or the attribute is removed if there was none); if the page edited it meanwhile, only the properties the push
+    // wrote go back, one by one, and nothing the page wrote is lost.
+    const newRecord = () => ({ orig: null, ours: null, props: new Map(), touched: false });
+    function styleSet(el, rec, name, value) {   // value null: this property goes back to what it was
+      if (!rec.touched) { rec.orig = el.getAttribute('style'); rec.touched = true; }
+      if (!rec.props.has(name)) {
+        if (value === null) return;
+        rec.props.set(name, { value: el.style.getPropertyValue(name), priority: el.style.getPropertyPriority(name) });
+      }
+      if (value === null) putBack(el, rec.props.get(name), name); else el.style.setProperty(name, value, 'important');
+      rec.ours = el.getAttribute('style');
+    }
+    function putBack(el, was, name) {
+      if (was.value) el.style.setProperty(name, was.value, was.priority); else el.style.removeProperty(name);
+    }
+    function styleUndo(el, rec) {
+      if (!rec.touched) return;
+      if (el.getAttribute('style') === rec.ours) {
+        if (rec.orig === null) el.removeAttribute('style'); else el.setAttribute('style', rec.orig);
+      } else {
+        for (const [name, was] of rec.props) putBack(el, was, name);
+        if (rec.orig === null && el.getAttribute('style') === '') el.removeAttribute('style');
+      }
+      rec.touched = false; rec.props.clear();
+    }
+
+    const isOurs = el => !!el && (el === D.host || (el.id && /^bfp/i.test(el.id)) || (el.hasAttribute && el.hasAttribute('data-bfp-ui')));
+    const viewW = () => { const r = rootEl(); return (r && r.clientWidth) || window.innerWidth || 0; };
+    const num = v => { const n = parseFloat(v); return Number.isFinite(n) ? n : NaN; };
+    const FIXED_SCAN_MAX = 30000;
+
+    // Move ONE fixed element out from under the drawer (or narrow it), measuring the result; true if it ended up clear.
+    function clearDrawer(el, W) {
+      let cs, r;
+      try { cs = getComputedStyle(el); } catch (_) { return false; }
+      if (cs.position !== 'fixed' || cs.display === 'none') return false;
+      try { r = el.getBoundingClientRect(); } catch (_) { return false; }
+      const vw = viewW(), edge = vw - W;
+      if (!(r.width > 0 && r.height > 0) || r.right <= edge + 0.5 || r.left >= vw - 0.5) return false;   // clear already, or parked off-screen
+      const rec = newRecord();
+      const bail = () => { styleUndo(el, rec); return false; };
+      const clear = () => { try { return el.getBoundingClientRect().right <= edge + 1; } catch (_) { return false; } };
+      if (r.left <= 1 && r.width >= vw * 0.9) {                       // a bar across the window: narrowed, not shifted
+        const w = num(cs.width);
+        if (!(w > W)) return false;
+        styleSet(el, rec, 'width', (w - W) + 'px');
+        if (!clear()) return bail();
+      } else {
+        const right = num(cs.right), left = num(cs.left);
+        let done = false;
+        if (Number.isFinite(right)) {
+          styleSet(el, rec, 'right', (right + W) + 'px');
+          done = Math.abs(el.getBoundingClientRect().left - (r.left - W)) < 1;
+          if (!done) styleSet(el, rec, 'right', null);
+        }
+        if (!done && Number.isFinite(left)) {
+          styleSet(el, rec, 'left', (left - W) + 'px');
+          done = Math.abs(el.getBoundingClientRect().left - (r.left - W)) < 1;
+        }
+        if (!done) return bail();
+      }
+      D.pushed.moved.set(el, rec);
+      return true;
+    }
+    function scanFixed(from, W) {
+      const walk = (document.createTreeWalker && document.createTreeWalker(from, 1 /* SHOW_ELEMENT */)) || null;
+      if (!walk) return;
+      let n = 0, node = from.nodeType === 1 ? from : walk.nextNode();
+      for (; node && n < FIXED_SCAN_MAX; node = walk.nextNode(), n++) {
+        if (node === D.host || isOurs(node)) continue;
+        if (node.localName === 'head' || node.localName === 'script' || node.localName === 'style') continue;
+        if (!D.pushed.moved.has(node)) clearDrawer(node, W);
+      }
+    }
+    function releaseFixed() {
+      if (!D.pushed) return;
+      for (const [el, rec] of D.pushed.moved) styleUndo(el, rec);
+      D.pushed.moved.clear();
+    }
+    function fixedPass() {
+      if (!D.pushed) return;
+      clearTimeout(D.pushed.passTimer);
+      releaseFixed();
+      D.pushed.passWidth = D.width;
+      const root = rootEl();
+      if (root) scanFixed(root, D.width);
+    }
+    // re-look at nodes the page added or reclassed since: each is undone first (it may have stopped being fixed), then judged again
+    function rescan(nodes) {
+      if (!D.pushed) return;
+      for (const el of nodes) {
+        if (!el || el.nodeType !== 1 || !el.isConnected) continue;
+        const rec = D.pushed.moved.get(el);
+        if (rec) { styleUndo(el, rec); D.pushed.moved.delete(el); }
+        scanFixed(el, D.width);
+      }
+    }
+    function watchFixed() {
+      if (!D.pushed || D.pushed.watch || !window.MutationObserver) return;
+      const queue = new Set();
+      let timer = 0;
+      D.pushed.watch = new MutationObserver(list => {
+        for (const m of list) {
+          if (m.type === 'attributes') { if (m.target !== rootEl() && !isOurs(m.target)) queue.add(m.target); }
+          else for (const n of m.addedNodes) if (n.nodeType === 1 && !isOurs(n)) queue.add(n);
+        }
+        if (!queue.size || timer) return;
+        timer = setTimeout(() => { timer = 0; const batch = [...queue]; queue.clear(); rescan(batch); }, 80);
+      });
+      try { D.pushed.watch.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'hidden'] }); }
+      catch (_) { D.pushed.watch = null; }
+    }
 
     function pushPage(on, animate) {
       const html = rootEl();
       if (!html) return;
       try {
-        if (on) {
-          if (!D.pushed) D.pushed = { margin: html.style.marginRight, transition: html.style.transition };
-          html.style.transition = animate === false ? '' : 'margin-right .22s cubic-bezier(.32,.72,0,1)';
-          html.style.marginRight = D.width + 'px';
+        if (on && layoutNow() === 'push') {
+          if (!D.pushed) D.pushed = { root: newRecord(), moved: new Map(), watch: null, passWidth: 0, passTimer: 0 };
+          styleSet(html, D.pushed.root, 'transition', animate === false ? null : 'margin-right .22s cubic-bezier(.32,.72,0,1)');
+          styleSet(html, D.pushed.root, 'margin-right', D.width + 'px');
+          if (D.pushed.passWidth !== D.width) {
+            // a drag changes the width at every mouse move: the fixed elements follow when it settles
+            if (animate === false) { clearTimeout(D.pushed.passTimer); D.pushed.passTimer = setTimeout(fixedPass, 80); }
+            else fixedPass();
+          }
+          watchFixed();
         } else if (D.pushed) {
-          html.style.marginRight = D.pushed.margin;
-          html.style.transition = D.pushed.transition;
+          const p = D.pushed;
           D.pushed = null;
+          clearTimeout(p.passTimer);
+          if (p.watch) { try { p.watch.disconnect(); } catch (_) { /* gone */ } }
+          for (const [el, rec] of p.moved) styleUndo(el, rec);
+          styleUndo(html, p.root);
         }
       } catch { /* a page that refuses inline styles: overlay, as before */ }
     }
@@ -3452,9 +3609,6 @@ ${bubbleShellHtml()}`;
     // mousemove stream can never drift.
     function beginDrag(ev) {
       ev.preventDefault();
-      const html = rootEl();
-      const priorTransition = html ? html.style.transition : '';
-      if (html) html.style.transition = '';
       D.el.panel.classList.add('dragging');
       const move = e => {
         const x = e.touches ? e.touches[0].clientX : e.clientX;
@@ -3464,7 +3618,7 @@ ${bubbleShellHtml()}`;
         window.removeEventListener('mousemove', move, true);
         window.removeEventListener('mouseup', up, true);
         D.el.panel.classList.remove('dragging');
-        if (html) html.style.transition = priorTransition;
+        if (D.opened) pushPage(true, false);
         rememberWidth();
       };
       window.addEventListener('mousemove', move, true);
@@ -3474,6 +3628,7 @@ ${bubbleShellHtml()}`;
     function onWinResize() {
       // halving the window must not leave the drawer owning most of it
       const w = clampWidth(D.width);
+      if (D.pushed) D.pushed.passWidth = 0;   // the window moved every fixed box: look again
       if (w !== D.width) applyWidth(w, false);
       else if (D.opened) pushPage(true, false);
     }
@@ -8685,6 +8840,9 @@ ${bubbleShellHtml()}`;
       D.el.grip.addEventListener('mousedown', beginDrag);
       D.el.grip.addEventListener('dblclick', e => { if (!isTrustedEvent(e)) return; e.preventDefault(); applyWidth(W_DEFAULT); rememberWidth(); });
       window.addEventListener('resize', onWinResize);
+      // the page going away (or into the back/forward cache) takes its narrowing with it; coming back puts it again
+      window.addEventListener('pagehide', () => pushPage(false));
+      window.addEventListener('pageshow', e => { if (e && e.persisted && D.opened) pushPage(true, false); });
 
       // popover: any in-drawer click outside it dismisses it (the gear's own
       // click is the toggle and must not be eaten here)
@@ -15022,6 +15180,7 @@ ${bubbleShellHtml()}`;
       // not — and, if it never got its styles, takes itself off the page
       // rather than sit there as raw text over somebody's reading.
       contextLost() {
+        pushPage(false);   // the page is never left narrowed by a drawer that can no longer put it back
         setConn('unload');
         try { if (detachWatch) detachWatch.disconnect(); } catch (_) { /* gone already */ }
         try { if (headWatch) headWatch.disconnect(); } catch (_) { /* gone already */ }
@@ -15091,6 +15250,8 @@ ${bubbleShellHtml()}`;
         return D;
       },
       isOpen: () => D.opened,
+      setLayout,
+      layoutNow,
       isPagesOpen: () => D.view === 'pages',
       // Where the reader is inside the drawer, for a page that is about to
       // reload itself (content.js reloadForArtifact): the tab and each pane's
