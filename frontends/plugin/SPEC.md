@@ -14472,7 +14472,9 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
 - `clippings {}` → the collections, each clipping's `{ id, title, author, source, published, words }`, oldest first. `clipping { id,
   page? }` → those facts and one page of the body: `markdown` (pages of at most 40000 characters, split at blank lines) and `text`, its
   plain form. Neither touches the records (an unreadable records file does not stop them).
-- THE PLAIN TEXT (`clippingText`, version 1; WIRE-clip.md has the rules, and their linear reading). Every rule is one linear pass (a
+- THE PLAIN TEXT (`clippingText`, version 2: version 1 with every inside bounded, as the Hub writes it: `CLIP_BOUNDS` = a bracket's or
+  a tag's insides at most 500 characters, an address at most 2000, a footnote label 1 to 100, nothing across a line end; past a bound
+  the mark stays in the text; WIRE-clip.md has the patterns and their linear reading). Every rule is one linear pass (a
   table of where the next `]`, `)`, `>` is); the output is that of the regular expressions they were first written as (a test checks
   20000 random strings against them), without their quadratic time on unclosed `[`, `![`, `[^` or `<a ` (a 1 MiB hostile paragraph
   takes milliseconds). A page's text is the rule without its front-matter step (`bodyText`). The rule: HTML-only lines, image-only lines and thematic breaks
@@ -14489,7 +14491,7 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   `/quote`, the owner's hand and speech work as for any reply; the record keeps `clipping` in place of `post`.
 - Tests: `clippings` (the plain-text rule, the canonical address, the setting and its errors, the file rules (symlink out, a
   folder, too large, a name with `..`, a hard link), the list's order and facts with no names, pages, the passage check, the CLI; the
-  linear rule against the regular expressions on 20000 random strings; fourteen hostile 1 MiB paragraphs each under 1.5 s; a page
+  linear rule against the bounded patterns on 20000 random strings and at, below and past every bound; fourteen hostile 1 MiB paragraphs each under 1.5 s; a page
   beginning `---`; tracking-v2 (a search's `s` and a forum's `post_id` kept, the query not re-encoded, a user and password refused,
   secrets dropped and named); the cache (nothing read again; a changed file has a new rev); a title from the address);
   `hub-link-clip` (through the real companion: only allow-listed files listed, no names or paths, a symlink out left out; a clipping

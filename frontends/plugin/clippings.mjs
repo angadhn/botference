@@ -130,7 +130,12 @@ export function canonicalSourceOf(raw) {
 }
 export const canonicalSource = raw => canonicalSourceOf(raw).url;
 
-// ---- the plain text (clippingText v1): what a quote is checked against, and what the Hub may show for selection ------------------
+// ---- the plain text (clippingText v2): what a quote is checked against, and what the Hub may show for selection ------------------
+// v2 = v1 with every inside BOUNDED, as the Hub writes it (WIRE-clip.md "clippingText v2"): a bracket's or a tag's insides at most
+// CLIP_BOUNDS.inside characters, an address at most .address, a footnote label 1 to .label; nothing crosses a line end. Past a bound
+// the mark is not taken out (its characters stay, on both sides alike).
+export const CLIP_BOUNDS = Object.freeze({ inside: 500, address: 2000, label: 100 });
+const B = CLIP_BOUNDS;
 // EVERY RULE IS ONE LINEAR PASS (the same output as the regular expressions WIRE-clip.md writes them as, which were quadratic on a
 // paragraph of unclosed `[`, `![`, `[^` or `<a `): each pass walks its string once with a table of where the next `]`, `)`, `>` (or
 // space) is, so a match is decided at each place in constant time. There is no paragraph cap: a hostile 1 MiB file takes
@@ -153,25 +158,25 @@ export function marksOff(t) {
   return s.replace(/\s+/g, ' ').trim();
 }
 // the inline passes, each linear, each the leftmost non-overlapping matches of its pattern
-function imagesOff(s) {                       // !\[[^\]]*\]\([^)]*\)  → ''
+function imagesOff(s) {                       // !\[[^\]\n]{0,500}\]\([^)\n]{0,2000}\)  → ''
   const rb = nextOf(s, c => c === ']'), rp = nextOf(s, c => c === ')');
   let out = '';
   for (let i = 0; i < s.length;) {
     if (s[i] === '!' && s[i + 1] === '[') {
       const j = rb[i + 2];
-      if (j >= 0 && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0) { i = k + 1; continue; } }
+      if (j >= 0 && j - (i + 2) <= B.inside && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0 && k - (j + 2) <= B.address) { i = k + 1; continue; } }
     }
     out += s[i]; i++;
   }
   return out;
 }
-function footnotesOff(s, definition) {         // \[\^[^\]]+\]:\s*  (definition) or \[\^[^\]]+\]  → ''
+function footnotesOff(s, definition) {         // \[\^[^\]\n]{1,100}\]:\s*  (definition) or \[\^[^\]\n]{1,100}\]  → ''
   const rb = nextOf(s, c => c === ']');
   let out = '';
   for (let i = 0; i < s.length;) {
     if (s[i] === '[' && s[i + 1] === '^') {
       const j = rb[i + 2];
-      if (j > i + 2 && (!definition || s[j + 1] === ':')) {
+      if (j > i + 2 && j - (i + 2) <= B.label && (!definition || s[j + 1] === ':')) {
         let k = j + 1;
         if (definition) { k = j + 2; while (k < s.length && /\s/.test(s[k])) k++; }
         i = k; continue;
@@ -181,54 +186,54 @@ function footnotesOff(s, definition) {         // \[\^[^\]]+\]:\s*  (definition)
   }
   return out;
 }
-function linksOff(s) {                         // \[([^\]]*)\]\([^)]*\)  → $1
+function linksOff(s) {                         // \[([^\]\n]{0,500})\]\([^)\n]{0,2000}\)  → $1
   const rb = nextOf(s, c => c === ']'), rp = nextOf(s, c => c === ')');
   let out = '';
   for (let i = 0; i < s.length;) {
     if (s[i] === '[') {
       const j = rb[i + 1];
-      if (j >= 0 && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0) { out += s.slice(i + 1, j); i = k + 1; continue; } }
+      if (j >= 0 && j - (i + 1) <= B.inside && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0 && k - (j + 2) <= B.address) { out += s.slice(i + 1, j); i = k + 1; continue; } }
     }
     out += s[i]; i++;
   }
   return out;
 }
-function autolinksOff(s) {                     // <(https?:\/\/[^>\s]+)>  → $1
+function autolinksOff(s) {                     // <(https?:\/\/[^>\s]{1,2000})>  → $1
   const stop = nextOf(s, c => c === '>' || /\s/.test(c));
   let out = '';
   for (let i = 0; i < s.length;) {
     if (s[i] === '<') {
       const p = s.startsWith('https://', i + 1) ? 9 : s.startsWith('http://', i + 1) ? 8 : 0;
-      if (p) { const k = stop[i + p]; if (k > i + p && s[k] === '>') { out += s.slice(i + 1, k); i = k + 1; continue; } }
+      if (p) { const k = stop[i + p]; if (k > i + p && k - (i + p) <= B.address && s[k] === '>') { out += s.slice(i + 1, k); i = k + 1; continue; } }
     }
     out += s[i]; i++;
   }
   return out;
 }
-function tagsOff(s) {                          // <\/?[A-Za-z][^>]*>  → ''
+function tagsOff(s) {                          // <\/?[A-Za-z][^>\n]{0,500}>  → ''
   const gt = nextOf(s, c => c === '>');
   let out = '';
   for (let i = 0; i < s.length;) {
     if (s[i] === '<') {
       const l = s[i + 1] === '/' ? i + 2 : i + 1;
-      if (/[A-Za-z]/.test(s[l] || '')) { const k = gt[l + 1]; if (k >= 0) { i = k + 1; continue; } }
+      if (/[A-Za-z]/.test(s[l] || '')) { const k = gt[l + 1]; if (k >= 0 && k - (l + 1) <= B.inside) { i = k + 1; continue; } }
     }
     out += s[i]; i++;
   }
   return out;
 }
-/** an image-only line, `^(\[)?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?$`, decided in one pass */
+/** an image-only line, `^(\[)?!\[[^\]\n]{0,500}\]\([^)\n]{0,2000}\)(\]\([^)\n]{0,2000}\))?$`, decided in one pass */
 function imageOnly(t) {
   let i = t[0] === '[' ? 1 : 0;
   const img = () => {
     if (t[i] !== '!' || t[i + 1] !== '[') return false;
-    const j = t.indexOf(']', i + 2); if (j < 0 || t[j + 1] !== '(') return false;
-    const k = t.indexOf(')', j + 2); if (k < 0) return false;
+    const j = t.indexOf(']', i + 2); if (j < 0 || j - (i + 2) > B.inside || t[j + 1] !== '(') return false;
+    const k = t.indexOf(')', j + 2); if (k < 0 || k - (j + 2) > B.address) return false;
     i = k + 1; return true;
   };
   if (!img()) return false;
   if (i === t.length) return true;
-  if (t[i] === ']' && t[i + 1] === '(') { const k = t.indexOf(')', i + 2); return k === t.length - 1; }
+  if (t[i] === ']' && t[i + 1] === '(') { const k = t.indexOf(')', i + 2); return k === t.length - 1 && k - (i + 2) <= B.address; }
   return false;
 }
 // (the regular expressions they stand for are anchored or fixed-width, and so linear as they are)

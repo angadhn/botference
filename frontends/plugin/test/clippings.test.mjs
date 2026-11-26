@@ -140,7 +140,7 @@ test('botference clippings check | list: names the config file, says every probl
 });
 
 // ---- review: linear text rules, the same output as the regular expressions; the source address v2; reading; the cache ----
-// THE REFERENCE: the rule exactly as first built (regular expressions; quadratic on hostile input), to check the linear passes against
+// THE REFERENCE: clippingText v2 as the Hub writes it (WIRE-clip-bounds.md: bounded regular expressions), to check the linear passes
 function referenceText(md) {
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
   const body = m ? md.slice(m[0].length) : md;
@@ -150,9 +150,10 @@ function referenceText(md) {
     const t = line.trim();
     if (/^<.*>$/.test(t)) return null;
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) return null;
-    if (/^(\[)?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?$/.test(t)) return null;
-    return line.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[\^[^\]]+\]:\s*/g, '').replace(/\[\^[^\]]+\]/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
-      .replace(/<(https?:\/\/[^>\s]+)>/g, '$1').replace(/<\/?[A-Za-z][^>]*>/g, '').replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '');
+    if (/^(\[)?!\[[^\]\n]{0,500}\]\([^)\n]{0,2000}\)(\]\([^)\n]{0,2000}\))?$/.test(t)) return null;
+    return line.replace(/!\[[^\]\n]{0,500}\]\([^)\n]{0,2000}\)/g, '').replace(/\[\^[^\]\n]{1,100}\]:\s*/g, '').replace(/\[\^[^\]\n]{1,100}\]/g, '')
+      .replace(/\[([^\]\n]{0,500})\]\([^)\n]{0,2000}\)/g, '$1').replace(/<(https?:\/\/[^>\s]{1,2000})>/g, '$1').replace(/<\/?[A-Za-z][^>\n]{0,500}>/g, '')
+      .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '');
   });
   const paras = []; let cur = [];
   for (const l of lines) { if (l === null) continue; if (!l.trim()) { if (cur.length) paras.push(cur.join(' ')); cur = []; continue; } cur.push(l); }
@@ -219,4 +220,15 @@ test('THE CACHE AND rev: a second read of an unchanged file reads nothing; a cha
   const t = C.listClippings({ folder: dir, collections: [{ name: 'R', files: ['Private name.md'] }] }).collections[0].clippings[0];
   assert.equal(t.title, 'the-slug');
   assert.ok(!JSON.stringify(t).includes('Private name'));
+});
+
+test('clippingText v2: THE BOUNDS (CLIP_BOUNDS: insides 500, addresses 2000, footnote labels 100), at and past each limit, as the bounded patterns', () => {
+  assert.deepEqual(C.CLIP_BOUNDS, { inside: 500, address: 2000, label: 100 });
+  const cases = [];
+  for (const n of [499, 500, 501]) cases.push(`A [${'w'.repeat(n)}](https://x.example) link.`, `An ![${'a'.repeat(n)}](https://x.example/i.png) image.`, `A <span ${'x'.repeat(n - 6)}>tag</span>.`,
+    `[![${'a'.repeat(n)}](https://i.example/x.png)](https://x.example)`);
+  for (const n of [1999, 2000, 2001]) cases.push(`A [link](https://x.example/${'p'.repeat(n - 18)}) end.`, `Auto <https://${'h'.repeat(n - 8)}> end.`, `![a](${'u'.repeat(n)})`);
+  for (const n of [99, 100, 101]) cases.push(`Note [^${'l'.repeat(n)}] here.`, `[^${'l'.repeat(n)}]: the note.`);
+  cases.push(`A [${'w '.repeat(260)}](https://x.example) link.`, `An ![${'a'.repeat(501)}](https://x.example/i.png) image.`, `A <span ${'x'.repeat(501)}>tag</span>.`, `Note [^${'l'.repeat(101)}] here.`);
+  for (const md of cases) assert.equal(C.clippingText(md), referenceText(md), JSON.stringify(md.slice(0, 30)) + ` (${md.length})`);
 });
