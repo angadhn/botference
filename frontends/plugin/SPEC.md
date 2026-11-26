@@ -14111,7 +14111,7 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   error:'a reply is still being filed; ask again' }` for the whole request. So `unknown` never means "on its way".
   `status { rids: [1..5], text: true }` adds `blocks` to the view of each reply this link filed (saved or pressed, its thread still
   there): THE MESSAGE THE LINK FILED only (`filedMsgOf`: the record keeps its `msg_ts`, and the record is what says the link filed
-  it), AS IT NOW STANDS, in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id, instruction,
+  it; a record from before `msg_ts` was kept: the thread's first message, whatever its channel now), AS IT NOW STANDS, in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id, instruction,
   state, text, model, at, reason? }` for each agent passage (`state` is the gap's tkgaps mode; `reason` for a failed one, paths
   scrubbed; a removed passage is left out with its `/tk` mark). Never another message of the thread (the owner's later notes, an
   agent's answers), page, setting or path. An OWNER'S EDIT of that message on the computer keeps it this reply: the blocks show the

@@ -152,11 +152,12 @@ export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = 
 }
 /** THE MESSAGE THE LINK FILED in a thread: the one with the record's `msg_ts` (the record is what says the link filed it: an owner's
  *  edit on the computer re-stamps the message's channel, and it is still this reply). A record from before `msg_ts` was kept: the
- *  first message, while its channel is still the link's. Gone (deleted on the computer) → null: the reply has ended. */
+ *  first message, whatever its channel now. Gone (deleted on the computer) → null: the reply has ended. */
 export function filedMsgOf(record, thread) {
   if (!record || !thread) return null;
   const msgs = Array.isArray(thread.msgs) ? thread.msgs : [];
-  const m = record.msg_ts ? msgs.find(x => x && x.ts === record.msg_ts) : (msgs[0] && msgs[0].channel === 'hub-link' ? msgs[0] : null);
+  // (a record from before `msg_ts`: the thread's first message, whatever its channel now; the thread was the link's from the start)
+  const m = record.msg_ts ? msgs.find(x => x && x.ts === record.msg_ts) : msgs[0];
   return m || null;
 }
 /** THE FILED TEXT NOW, one value derived by textStateOf from the record's `text_hash` and the message's text (never stored):

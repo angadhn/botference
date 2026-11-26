@@ -370,3 +370,12 @@ test('D3 A CANCEL WHOSE WITHDRAWAL CANNOT BE WRITTEN is a 500 with no state, and
     assert.equal((await k.send('status', { rids: ['rid-nodisk-0001'] })).json.replies[0].state, 'unknown');
   } finally { fs.chmodSync(k.dir, 0o700); await k.close(); }
 });
+
+test('A RECORD FROM BEFORE msg_ts: the first message whatever its channel (an owner edit re-stamps it); saved while the thread is there unpublished', () => {
+  const old = { rid: 'rid-legacy-001', step: 'saved', page_url: 'https://blyg.example.com/t/x/', thread_id: 't1', intent: 'draft', at: '2026-11-26T08:00:00Z' };
+  const edited = { url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [{ ts: 'a', channel: 'drawer', text: 'edited on the computer' }] }] };
+  assert.equal(L.filedMsgOf(old, edited.threads[0]).text, 'edited on the computer');
+  assert.equal(L.linkStateOf(old, edited, { entries: [] }), 'saved');
+  assert.equal(L.linkStateOf(old, { threads: [] }, { entries: [] }), 'cancelled', 'the thread deleted');
+  assert.equal(L.linkStateOf(old, { threads: [{ id: 't1', msgs: [] }] }, { entries: [] }), 'cancelled', 'no message left');
+});
