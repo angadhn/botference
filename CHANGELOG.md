@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-26
+
+- **Botference describes itself as five products.** The README's opening, the website's home page and the man page's NAME and DESCRIPTION now list the council, Discuss, document review, Blygger publishing and the agent tools, with who each is for and how ready it is, instead of calling botference a planning tool.
+
 ## 2026-11-25
 
 - **Publish as blyg: every press is accepted at once and published in order.** *Behaviour change.* A press while another post is going out is no longer refused: it joins a publish queue on the companion (up to 20 posts; it survives a restart) and goes out by itself, one at a time, each after the one before. The thread says its place ("queued · 2 ahead"), a small "Publishing" list in the drawer lets you cancel a post not yet running, and the toolbar badge counts posts under way; posts going live within a minute are one notice ("3 posts are live"), problems get their own. Pressing a thread again while it waits replaces its text with the latest. A failure where nothing was published is given up by itself and the queue goes on; one where your site may have published pauses the queue until you deal with it. With one click (`confirm: never`) a look is now forced only when publishing would lose something already published (a comment no longer on the page, or a note changed outside the plugin): such a post is set aside for your look and the others go on; an agent's passage, a response to a linked post and a header plane taking an "up to here" post to the end now publish straight (the reason is still recorded). A post whose agent passage is still being written waits for it (up to five minutes). With `confirm: always` each queued post waits for your look when its turn comes. See SPEC "the publish queue".

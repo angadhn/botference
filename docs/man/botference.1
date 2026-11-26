@@ -1,6 +1,6 @@
 .TH BOTFERENCE 1 "July 2026" "botference" "User Commands"
 .SH NAME
-botference \- a multi-LLM planning council for the terminal
+botference \- run Claude and Codex together: a council, a web annotator, document review and Blygger publishing
 .SH SYNOPSIS
 .B botference
 [\fIoptions\fR] [\fBinit\fR|\fBplan\fR|\fBresearch-plan\fR|\fBarchive\fR]
@@ -48,7 +48,13 @@ botference \- a multi-LLM planning council for the terminal
 [\fIrange\fR] [\fB\-\-dry-run\fR] [\fB\-\-model\fR \fIid\fR] [\fB\-\-out\fR \fIdir\fR]
 .SH DESCRIPTION
 .B botference
-puts you, Claude Code, and Codex in one terminal room. The bots debate
+runs Claude Code and Codex side by side through their own command-line
+tools. It holds five products: the council (\fBplan\fR, the default), a
+browser annotator called Discuss (\fBdiscuss\fR), document review
+(\fBreview\fR), Blygger publishing through Discuss, and tools for agents
+(\fBsee\fR, \fBservice\fR).
+.PP
+The council puts you, Claude Code, and Codex in one terminal room. The bots debate
 each other in free-form exchanges \- handing the floor back and forth on a
 budget \- while you steer, until the council converges on an
 implementation plan written by an agreed lead.
