@@ -76,6 +76,12 @@ export const NEEDS_LOOK_WHY = Object.freeze(['left-out', 'outside', 'unknown-tex
 /** How an entry came to the runner, one value set once: `owner` (the press found the runner free and ran it at once, as before the
  *  queue) or `queue` (the queue started it later). */
 export const STARTED_BY = Object.freeze(['owner', 'queue']);
+/** WHO PRESSED, one value set at the press (`entry.pressed_by`; absent on entries made before it existed: the owner):
+ *    owner     the owner's drawer (POST /blyg-publish/start)
+ *    hub-link  the owner's hosted Hub, through the signed hub link (hub-link.mjs): the owner is away from this machine, so the press
+ *              is ALWAYS queued (never run at once in a dialog nobody is at), its presence is `away` (or `promised_look` under
+ *              confirm 'always'), it never lifts a pause, and it may never ask for a look */
+export const PRESSED_BY = Object.freeze(['owner', 'hub-link']);
 export const QUEUE_MAX = 20;
 export const FINISHED_KEPT = 20;
 export const FILL_WAIT_MS = 5 * 60 * 1000;
@@ -254,6 +260,7 @@ export function createQueue(deps) {
     // (`shown` is the setting in force: the look promised at the press is carried by `presence`, the stricter of the two applying)
     const r = await pub.start({ page: p, threadId: e.thread_id, scope: a.scope, shown: deps.confirmNow(), join: a.join, post: a.post, postVersion: a.post_version,
       outside: e.presence === 'asked_to_look' ? 'replace' : a.outside, extent: a.extent, upto: a.upto, id, presence: presenceFor(e), drawerText });
+    if (r.ok && e.pressed_by === 'hub-link' && pub.log) pub.log.write(id, { ev: 'note', text: 'pressed from the owner\'s Hub (hub link)' });
     if (r.ok) { if (e.state === 'running' && pub.book.run.id === id) reconcile(e); return r; }
     if (e.state !== 'running') return r;
     // a refusal about the SITE or this machine (a failed pre-flight, a broken setting): the post goes back to its place and the queue
@@ -390,8 +397,13 @@ export function createQueue(deps) {
    * runner was free and nothing waited (run at once, as before the queue); else `{ ok, queued: entry view, replaced }` (accepted at
    * once); or a refusal. `look`: the owner opened a post set aside for their look.
    */
-  async function press({ page, threadId, scope, shown, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', look = false }) {
+  async function press({ page, threadId, scope, shown, join = '', post = '', postVersion = '', outside = '', extent = 'whole', upto = '', look = false, by = 'owner' }) {
+    if (!PRESSED_BY.includes(by)) return { ok: false, status: 400, error: 'no such presser' };
+    const away = by === 'hub-link';
+    if (away && look) return { ok: false, status: 400, error: 'a look is asked for at the computer' };
     const inForce = deps.confirmNow();
+    // (from the Hub, not set up: refused here; the runner's own refusal would start a run in a dialog nobody is at)
+    if (!inForce && away) return { ok: false, status: 409, error: 'Publishing is not set up on your computer.' };
     // not set up (or broken): the runner says why, in its own words, and nothing is queued
     if (!inForce) return pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto });
     if (!SCOPES.includes(scope)) return { ok: false, status: 400, error: 'scope must be one or above' };
@@ -402,7 +414,8 @@ export function createQueue(deps) {
     if (!here) return { ok: false, status: 404, error: 'That comment is not on this page any more.' };
     if (shown !== inForce) return { ok: false, status: 409, error: settingChangedSay(shown, inForce) };
     // a pause the owner can lift is lifted by their next press (the site may be fixed by now; if not, it pauses again, said again)
-    if (OWNER_RESUMES.includes(rec.state)) moveQueue('running');
+    // (…by the owner at the computer: a press from the Hub never lifts one, the owner resolves it where they can see why)
+    if (OWNER_RESUMES.includes(rec.state) && !away) moveQueue('running');
     const mineOpen = open().filter(e => sameThread(e, page.url, threadId));
     const args = { scope, join: join || '', post: String(post || ''), post_version: String(postVersion || ''), outside: outside || '', extent, upto: extent === 'upto' ? String(upto) : '' };
     const presence = look ? 'asked_to_look' : inForce === 'always' ? 'promised_look' : 'away';
@@ -412,7 +425,7 @@ export function createQueue(deps) {
     const behind = rec.entries.some(x => x.page_url === page.url && x.thread_id !== threadId && ['needs_look', 'filling', 'giving_up'].includes(x.state));
     // THE RUNNER IS FREE AND NOTHING WAITS: run it at once, as before the queue (the dialog shows what it does, the look included)
     // (a look the owner asked for runs at once whenever the runner is free: they are at the dialog now)
-    if (!runnerBusy() && rec.state === 'running' && (look || (!waiting && !behind))) {
+    if (!away && !runnerBusy() && rec.state === 'running' && (look || (!waiting && !behind))) {
       const r = await pub.start({ page, threadId, scope, shown, join, post, postVersion, outside, extent, upto, presence: look ? 'asked_to_look' : 'here' });
       if (!r.ok) return r;
       // (a post of this thread set aside for a look is the one now run; anything else of this thread still waiting is replaced by it)
@@ -427,19 +440,19 @@ export function createQueue(deps) {
     // pressed while its own entry runs, a new entry goes behind it (a new version)
     const same = mineOpen.find(e => CANCELLABLE.includes(e.state));
     if (same) {
-      Object.assign(same, { args, presence, snapshot: snapshotOf(page, here, scope), label: labelOf(here), seq: ++rec.seq, pressed_at: clock().toISOString(), replaced: (same.replaced || 0) + 1 });
+      Object.assign(same, { args, presence, snapshot: snapshotOf(page, here, scope), label: labelOf(here), seq: ++rec.seq, pressed_at: clock().toISOString(), replaced: (same.replaced || 0) + 1, pressed_by: by });
       if (same.state !== 'queued') moveEntry(same, 'queued');
       else { persist(); announce(); }
       soon();
       return { ok: true, queued: viewOf(same), replaced: true };
     }
     if (open().length >= max) return { ok: false, status: 409, error: FULL_SAY };
-    const e = birth({ page, here, args, presence, state: 'queued' });
+    const e = birth({ page, here, args, presence, state: 'queued', by });
     soon();
     return { ok: true, queued: viewOf(e), replaced: false };
   }
-  function birth({ page, here, args, presence, state }) {
-    const e = { id: crypto.randomBytes(6).toString('hex'), seq: ++rec.seq, state, presence, at: clock().toISOString(), pressed_at: clock().toISOString(),
+  function birth({ page, here, args, presence, state, by = 'owner' }) {
+    const e = { id: crypto.randomBytes(6).toString('hex'), seq: ++rec.seq, state, presence, pressed_by: by, at: clock().toISOString(), pressed_at: clock().toISOString(),
       page_url: page.url, page_title: words(page.title, 12), thread_id: here.id, label: labelOf(here), kind: isPublishedThread(here) || args.join === 'add' ? 'edit' : 'new',
       post: isPublishedThread(here) ? String(here.blyg_published.permalink || '') : args.join === 'add' ? String(args.post || '') : '', args, snapshot: snapshotOf(page, here, args.scope), replaced: 0 };
     rec.entries.push(e);
@@ -462,7 +475,8 @@ export function createQueue(deps) {
     const ahead = at < 0 ? 0 : at + (runnerBusy() ? 1 : 0);
     return { id: e.id, state: e.state, presence: e.presence || 'away', page_url: e.page_url, page_title: e.page_title || '', thread_id: e.thread_id, label: e.label || '', kind: e.kind || 'new',
       pressed_at: e.pressed_at || '', at: e.at, ahead, run: e.run_id || '', started_by: e.started_by || '', why: e.why || '', replaced: e.replaced || 0,
-      result: e.result || null, failure: e.failure || null, paused_by: !!(rec.paused && rec.paused.entry === e.id) };
+      result: e.result || null, failure: e.failure || null, paused_by: !!(rec.paused && rec.paused.entry === e.id), pressed_by: PRESSED_BY.includes(e.pressed_by) ? e.pressed_by : 'owner',
+      replaced_by: e.replaced_by || '' };
   }
   function view() {
     return { state: rec.state, max, paused: rec.paused ? { say: rec.paused.say, at: rec.paused.at } : null, entries: rec.entries.map(viewOf),
