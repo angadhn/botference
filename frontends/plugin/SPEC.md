@@ -12968,9 +12968,11 @@ matched by instruction), so a legacy passage is written again exactly as before 
 named in `STORED_DROP` and plain space/tab/newline (no Unicode-aware class), so it agrees with the site's on every string (fuzzed).
 **RE-CHECK** (2026-11-26): a published post's passage forms come from its `blyg_generated` AS PARSED by a real YAML parser (blyg-run
 `generatedOf`: Ruby's Psych, the site's own reader; every YAML shape) and are matched by POSITION (the n-th written passage is the n-th
-entry; a missing entry is legacy, as the site reads it). When they cannot be told (front matter unreadable, a form that is not one of
-the list, or a passage added or removed while a legacy one is published) the new version is refused with a plain sentence
-(`FORMS_UNKNOWN_SAY`), never guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
+entry; a missing entry is legacy, as the site reads it). When the post's passages change in number or order (the owner adds a comment with
+a passage to an earlier post, from the drawer or the Hub) and it holds a legacy passage, every legacy passage moves to markdown through
+`formatMove` with that edit, written again from the text the agent wrote (or the owner's own edit of it) and labelled together; the
+publish box says `FORMS_MOVED_SAY` (run.forms_moved). Only an unreadable front matter or an unknown form name refuses the new version,
+with a plain sentence (`FORMS_UNKNOWN_SAY`); nothing is guessed. `normalizeLinkAddress` is Ruby's own URI grammar (RFC3986_URI) written out, with its query check:
 zero differences from the site over fuzzed addresses. A deliberate link's destination is read with balanced parentheses (and in `<…>`);
 a post with a deliberate link the writer cannot normalise has no bare address made clickable.
 **BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a

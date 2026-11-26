@@ -512,6 +512,8 @@ export function viewOf(run) {
     unsure: publishUnsure(run) ? EDIT_UNSURE_SAY : '',
     chained_to: run.chained_to || null,
     left_out: Number(run.left_out) || 0,
+    // this new version moves the post's older agent passages to the markdown form (blyg-note.mjs FORMS_MOVED_SAY)
+    forms_moved: run.forms_moved === true,
     extent: EXTENTS.includes(run.extent) ? run.extent : 'whole', further: Number(run.further) || 0,
     abandon_failure: run.mode === 'abandon_failed' ? String(run.abandon_failure_line || '') : '',
     preview_url: run.preview_url || '',
@@ -1158,7 +1160,7 @@ export function createPublisher(deps) {
       || (rendered.snapshot.stub && rendered.snapshot.stub !== ((pub.snapshot && pub.snapshot.stub) || ''));
     return drafted({ id, page, picked, scope: 'one', rendered: { ...rendered, notify: newly ? rendered.notify : '' }, slug, rel, S, date: dayOf(now, S.timezone), kind: 'edit', presence,
       version: (Number(pub.version) || 1) + 1, extra: { changelog, changelog_from: 'program-fixed', prev_text: before, prev_sha: sha(before), chained_to: null, left_out: leftOut,
-        outside_replaced: !!note.outside, drawer_text: !!drawerText, extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
+        forms_moved: !!rendered.formsMoved, outside_replaced: !!note.outside, drawer_text: !!drawerText, extent: cut.extent, points, further, ...(linkStub ? { link_stub: linkStub } : {}) } });
   }
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {

@@ -698,11 +698,10 @@ test('passage forms come from parsed front matter, by position; an edit that can
   // fewer entries than passages: a missing entry is legacy, as the site reads it
   const short = N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated: [{ format: 'markdown' }] } });
   assert.deepEqual([...short.text.matchAll(/\[TK\] same \[=\]([\s\S]*?)\[\/TK\]/g)].map(m => m[1]), ['**a**', '\\*\\*b\\*\\*']);
-  // a passage added or taken away while a legacy one is there: which keeps which form cannot be told
+  // a passage added while a legacy one is there: every legacy passage moves to markdown with this edit (see the test below)
   const three = webPage([{ id: 't1', quote: '', msgs: [{ ...mine('Intro\n/tk same\nMiddle\n/tk same\nMore\n/tk other\nAfter'), gaps: [g('same', '**a**'), g('same', '**b**'), g('other', 'c')] }] }]);
   const grown = N.renderShortNote({ page: three, threads: three.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', ...mixed } });
-  assert.equal(grown.ok, false);
-  assert.match(grown.error, /cannot be told/);
+  assert.ok(grown.ok && grown.formsMoved && (grown.text.match(/format: markdown/g) || []).length === 3, grown.error);
   const allMd = N.renderShortNote({ page: three, threads: three.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', before, generated: [{ format: 'markdown' }, { format: 'markdown' }] } });
   assert.ok(allMd.ok && (allMd.text.match(/format: markdown/g) || []).length === 3, 'all markdown before: every passage stays markdown');
   for (const bad of [{ generated: 'not a list' }, { generated: [{ format: 'html' }] }, { generated: null, unreadable: 'the front matter could not be read' }]) {
@@ -726,4 +725,54 @@ rb('blyg-run reads a published note\'s blyg_generated with a real YAML parser, i
   assert.deepEqual(generatedOf('---\ntitle: x\n---\nbody'), { generated: [] }, 'no key: no entries (every passage legacy, as the site reads it)');
   assert.ok(generatedOf('---\nblyg_generated: [\n---\nx').unreadable);
   assert.ok(generatedOf('no front matter').unreadable);
+});
+
+// RE-CHECK 2, the owner's ordinary edit ("add to earlier post", the Hub): when the passages of a post that holds a legacy one change in
+// number or order, every legacy passage moves to markdown through formatMove with that edit (text and label together, the text the
+// agent wrote, or the owner's own edit of it), so position no longer matters; the edit is never refused for it.
+test('adding, removing or reordering passages moves every legacy passage to markdown with the edit, from its original text', () => {
+  const g = (instruction, text, mode = 'filled-by-agent') => ({ instruction, mode, agent: 'claude', model: 'm', at: '2026-11-24T10:00:00Z', text });
+  const one = g('one', '- **first** point\n- second');
+  const two = g('two', '*two* words');
+  const legacyNote = (gaps) => {
+    const scopes = gaps.map(x => N.agentScope(x, { block: true, format: 'legacy' }));
+    return { before: `---\ntitle: "x"\nblyg_generated:\n${gaps.map(() => '  - model: "m"\n    at: 2026-11-24T10:00:00Z').join('\n')}\n---\nIntro\n\n${scopes.join('\n\nMid\n\n')}\n\nAfter\n`,
+      generated: gaps.map(() => ({ model: 'm', at: '2026-11-24T10:00:00Z' })) };
+  };
+  const edit = (text, gaps, published) => {
+    const page = webPage([{ id: 't1', quote: '', msgs: [{ ...mine(text), gaps }] }]);
+    return N.renderShortNote({ page, threads: page.threads, home: HOME, now: NOW, slug: 's', keep: { created: '2026-11-23', released: '2026-11-23', ...published } });
+  };
+  const scopesOf = t => [...t.matchAll(/\[TK\] (\w+) \[=\]([\s\S]*?)\[\/TK\]/g)].map(m => [m[1], m[2]]);
+  const allMarkdown = (r, n) => { assert.ok(r.ok, r.error); assert.equal((r.text.match(/format: markdown/g) || []).length, n, r.text); assert.ok(r.formsMoved); };
+  // a passage added BEFORE the legacy one
+  let r = edit('Intro\n/tk new\nMid\n/tk one\nAfter', [g('new', 'brand **new**'), one], legacyNote([one]));
+  allMarkdown(r, 2);
+  assert.deepEqual(scopesOf(r.text), [['new', 'brand **new**'], ['one', '- **first** point\n- second']], 'the text the agent wrote, not the escaped form');
+  // a passage removed AFTER the legacy one
+  r = edit('Intro\n/tk one\nAfter', [one], legacyNote([one, two]));
+  allMarkdown(r, 1);
+  assert.deepEqual(scopesOf(r.text), [['one', '- **first** point\n- second']]);
+  // two legacy passages reordered
+  r = edit('Intro\n/tk two\nMid\n/tk one\nAfter', [two, one], legacyNote([one, two]));
+  allMarkdown(r, 2);
+  assert.deepEqual(scopesOf(r.text), [['two', '*two* words'], ['one', '- **first** point\n- second']]);
+  // a legacy passage the owner edited by hand keeps the owner's edit (and says so)
+  const mineEdit = g('one', 'My **own** words now', 'edited-by-reader');
+  r = edit('Intro\n/tk new\nMid\n/tk one\nAfter', [g('new', 'n'), mineEdit], legacyNote([mineEdit]));
+  allMarkdown(r, 2);
+  assert.deepEqual(scopesOf(r.text)[1], ['one', 'My **own** words now']);
+  assert.match(r.text, /edited_by_author: true/);
+  // nothing added, removed or moved: the legacy passage stays legacy, as published
+  r = edit('Intro\n/tk one\nMid\n/tk two\nAfter', [one, two], legacyNote([one, two]));
+  assert.ok(r.ok && !r.formsMoved && !/format:/.test(r.text), r.text);
+  assert.equal(N.FORMS_MOVED_SAY, 'Older agent passages in this post will now show their formatting.');
+});
+
+test('the publish box is told when an edit moves older passages (the run view carries forms_moved)', async () => {
+  const { viewOf } = await import('../blyg-run.mjs');
+  assert.equal(viewOf({ mode: 'drafted', forms_moved: true }).forms_moved, true);
+  assert.equal(viewOf({ mode: 'drafted' }).forms_moved, false);
+  const fs = await import('node:fs');
+  assert.ok(fs.readFileSync(new URL('../extension/drawer.js', import.meta.url), 'utf8').includes("run.forms_moved === true ? `<p class=\"pubquiet\">${esc('Older agent passages in this post will now show their formatting.')}"));
 });

@@ -487,9 +487,14 @@ export function formsFromGenerated(list) {
     return f;
   });
 }
-const SCOPE_HEAD = /\[TK\](?:impyrt[^=\n]*=| [^\n]*? \[=\])/g;
-const writtenPassagesIn = noteText => (String(noteText || '').replace(/^---\n[\s\S]*?\n---\n/, '').match(SCOPE_HEAD) || []).length;
+const SCOPE_HEAD = /\[TK\](?:impyrt([^=\n]*)=| ([^\n]*?) \[=\])/g;
+// The written passages of a published note, in order, each by its head as written (`[TK] <instruction> [=]`, or `impyrt <model>`).
+const writtenPassagesIn = noteText => [...String(noteText || '').replace(/^---\n[\s\S]*?\n---\n/, '').matchAll(SCOPE_HEAD)]
+  .map(m => (m[1] !== undefined ? `impyrt${m[1]}`.trim() : m[2]));
+const passageHead = (g, escape) => (g.mode === 'pasted-by-reader' ? `impyrt ${importedModelToken(g.model)}`.trim() : scopeInstruction(g.instruction, { escape }));
 export const FORMS_UNKNOWN_SAY = 'The forms of this post\'s agent passages cannot be told';
+// Said in the publish box when an edit moves the post's older passages (FORMS_MOVED below).
+export const FORMS_MOVED_SAY = 'Older agent passages in this post will now show their formatting.';
 // The form of the passage at `position` (in note order): the published one's, moved only when the edit asks (`moveFormat`);
 // NEW_PASSAGE_FORMAT for a passage past the published ones.
 function formAt(forms, position) {
@@ -842,6 +847,7 @@ export function linkTargetsOf(threads, points = null) {
   return out;
 }
 export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null }) {
+  const nowArg = now;
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   // every address the owner linked on purpose anywhere in the post, as the site spells it (a bare one that matches is left as typed)
   const typedLinks = (Array.isArray(threads) ? threads : []).flatMap(t => includedMsgs(t, points && points[t.id]))
@@ -857,7 +863,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
       if (keep.unreadable) throw new Error(String(keep.unreadable));
       kept = formsFromGenerated(keep.generated === undefined ? [] : keep.generated);
     } catch (e) { return { ok: false, error: `${FORMS_UNKNOWN_SAY}: ${e.message}. Nothing was written.` }; }
-    forms = { kept, count: writtenPassagesIn(keep.before), next: 0, moveFormat: keep.moveFormat || null };
+    const heads = writtenPassagesIn(keep.before);
+    forms = { kept, count: heads.length, heads, next: 0, moveFormat: keep.moveFormat || null };
   }
   const opts = { escape, forms, deliberate, bareOff };
   if (!page || !Array.isArray(threads) || !threads.length) return { ok: false, error: 'nothing to publish' };
@@ -912,9 +919,23 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     blocks.push([words[0], ...(quoteBlockText ? [quoteBlockText] : []), ...words.slice(1)].join('\n\n'));
   }
   if (blocked.length) return { ok: false, error: [...new Set(blocked)].join('; '), blocked: [...new Set(blocked)] };
-  // a passage added or taken away while a legacy one is published: which passage keeps which form cannot be told
-  if (forms && generated.length !== forms.count && forms.kept.slice(0, forms.count).concat(Array(Math.max(0, forms.count - forms.kept.length)).fill('legacy')).some(f => f !== 'markdown') && !forms.moveFormat) {
-    return { ok: false, error: `${FORMS_UNKNOWN_SAY}: the post had ${forms.count} and would now have ${generated.length}, and some are in the older form. Publish the change in two steps (first without adding or removing a passage), or ask for the passages to move to the new form. Nothing was written.` };
+  // FORMS MOVED: the passages of a post that holds a legacy one changed in number or order (the owner added a comment with a passage
+  // to an earlier post, removed one, or the order moved): position no longer says which passage had which form, so every passage of
+  // the post moves to markdown through formatMove, with this edit (the text written again from what the agent wrote, or the owner's own
+  // edit of it, and labelled together). Never a guess, never a refusal: the post gets a new version anyway.
+  if (forms && !forms.moveFormat) {
+    const written = threads.flatMap(t => includedMsgs(t, points && points[t.id])).flatMap(m => {
+      const src = clean(withRuns(stripMore(m.text), m.runs, null));
+      const stored = Array.isArray(m.gaps) ? m.gaps : [];
+      return Grammar.gapsFor(src, stored).map((f, i) => (stored[i] && stored[i].instruction === f.instruction ? stored[i] : null))
+        .filter(g => g && AGENT_TEXT_MODES.includes(g.mode)).map(g => passageHead(g, escape));
+    });
+    const reshaped = written.length !== forms.count || written.some((h, i) => h !== forms.heads[i]);
+    const anyLegacy = forms.heads.some((_, i) => (forms.kept[i] || 'legacy') === 'legacy');
+    if (reshaped && anyLegacy) {
+      const again = renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep: { ...keep, moveFormat: formatMove('legacy', 'markdown') }, points, linkStub });
+      return again.ok ? { ...again, formsMoved: true } : again;
+    }
   }
   let body = blocks.join('\n\n');
   if (earlier && earlier.title && earlier.link) {

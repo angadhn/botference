@@ -11392,6 +11392,7 @@ ${bubbleShellHtml()}`;
             ${run.preview_url && !pic ? `<p><a class="pubseeit" href="${esc(safeHttp(run.preview_url))}" target="_blank" rel="noopener noreferrer">See how it will look</a> <span class="pubquiet">it can take a few seconds to appear</span></p>` : ''}
             ${run.notify ? `<p class="pubnotify">${esc(run.notify)}.</p>` : ''}
             ${pubLeftOutHtml(run)}
+            ${run && run.forms_moved === true ? `<p class="pubquiet">${esc('Older agent passages in this post will now show their formatting.')}</p>` : ''}
             ${Number(run.further) > 0 ? `<p class="pubfurther">${Number(run.further) === 1 ? 'One further message' : esc(String(Number(run.further))) + ' further messages'} of this thread will now be included.</p>` : ''}
             ${pubReasonsHtml(run)}
             ${err}
