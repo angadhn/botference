@@ -14247,6 +14247,9 @@ Whoever holds the key can, until it is replaced:
   messages, not their text;
 - ask an agent again for a passage of such a saved draft (not one the owner edited by hand), within the hourly passage limit;
 - throw away such a saved draft while it is untouched since filing (nothing else in its thread, its text as filed).
+- send recordings to be turned into text (`transcribe`): CPU time on the owner's computer within the speech caps (3 jobs open, 20 an
+  hour, 4.5 MiB and 3 minutes each, one run at a time, each killed at its time limit), run in the sandbox (no network, no file but the
+  model and its own folder), and the text of those recordings back. Nothing is filed, published or kept.
 It cannot read any other message, thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or
 any other owner route.
 How to end it: on the computer, `botference hub-link rotate` (a new key; the old one is refused from the next request), or
@@ -14285,3 +14288,37 @@ restart with a passage left pending on disk: failed `interrupted` at the next st
 Owner edits (same day): `hub-link-drafts` R7 (an edit on the computer keeps the reply: edited text read back, new `text_rev`,
 `text_state` edited-on-computer, discard refused, Publish pressed); `hub-link-server` adds an edit through the drawer's `/edit`, read
 back edited and published once with the edited text.
+
+### Speech from the Hub's reply box (2026-11-26, `hub-speech.mjs`, `hub-speech.sb`)
+The owner presses a microphone button in the Hub's reply box; the browser records; the Hub's function sends the recording over the
+signed link; this computer turns it into text with whisper.cpp; the text goes back into the reply box, for the owner to edit before
+sending. It files nothing and publishes nothing.
+- `ping` says `speech: 'on' | 'off'` (`SPEECH_GATES`, derived at each request by `speechTools`: macOS's sandbox-exec and the profile,
+  whisper-cli, ffmpeg, and a model, each a real absolute path from a fixed list or `BOTFERENCE_WHISPER_BIN` / `BOTFERENCE_FFMPEG_BIN` /
+  `BOTFERENCE_WHISPER_MODEL`). Off: `transcribe` and `transcript` are 404.
+- `transcribe`: the body is the recording's bytes. Its content type must be on `AUDIO_TYPES` (`audio/webm`, `audio/ogg`, `audio/mp4`,
+  parameters allowed) and its first bytes must be that container (EBML, `OggS`, an ISO `ftyp` box; `sniffAudio`); never a file name.
+  At most `SPEECH_LIMITS.audioBytes` (4718592, about 3 minutes as browsers record). The signed string gains two lines: the content
+  type exactly as sent, and the body's length in bytes. Answers at once `{ ok, job, state: 'pending' }`.
+- `transcript { job }` → `{ ok, job, state: 'pending' }`, `{ ok, job, state: 'done', text, seconds }`, `{ ok, job, state: 'failed', why,
+  say }` (`SPEECH_FAILURES`: unreadable-audio, no-speech, timed-out, unavailable, internal); a job unknown or forgotten: 404.
+- A JOB (`JOB_STATES`: queued, converting, transcribing, done, failed; one field, moved only by `moveJob`) lives in memory only. At most
+  3 open (429 `speech-busy`), 20 accepted an hour (429 `speech-per-hour`), one runs at a time (in order), a finished job is forgotten
+  after 10 minutes. ffmpeg keeps at most 180 s (`-t`) and has 30 s; whisper has 120 s; a run over its time is killed with its whole
+  process group (`detached`, `kill(-pid)`).
+- CONTAINED: each tool runs as `sandbox-exec -f hub-speech.sb … <tool> <argv>` (no shell; argv from fixed values and the job's own
+  paths), in a fresh private folder (`mkdtemp`, 0700, a fixed file name, deleted in a `finally`), with PATH, HOME and TMPDIR set to
+  the folder and nothing else of the companion's environment. The profile: no network at all; no file read under /Users, /Volumes or
+  the temporary folders but the model and the job's folder; no write but the job's folder; no program but the tool itself. ffmpeg reads
+  only the `file` protocol and the demuxer of the sniffed container. Language: English (`-l en`), no auto-detect: the owner writes in
+  English and detection on a short clip guesses wrong.
+- PRIVATE: neither the recording nor the text is logged, written outside the job's folder, or put on a page record. The log says the
+  job id's first 6 characters, the state and a failure code.
+- Measured here (whisper.cpp 1.9.5, ggml-large-v3-turbo, Apple GPU): a 30 s clip about 6 s and a 2 minute clip about 6 s from submit
+  to done in the sandbox (most of it loading the model; outside the sandbox 0.9 s and 1.8 s).
+- Tests (`hub-link-speech`): the allow-list and the sniffing; the job table; ping on and off, every speech route 404 when off; a job
+  pending then done, the argv (fixed tools, the demuxer, `-protocol_whitelist file`, `-t 180`, `-l en`), nothing logged, the folder
+  gone; refused: a type off the list, bytes not that container, a script, a JSON type, a body over the cap, a type or bytes not the
+  ones signed, no signature, an Origin; one at a time, 3 open, 20 an hour, forgotten after 10 minutes; each failure code; and, when
+  the tools are on the machine, the real tools in the real sandbox with whisper.cpp's tiny test model: a clip read, an over-time run
+  killed with nothing left running and every folder deleted, a file outside the job's folder and the network both refused.
