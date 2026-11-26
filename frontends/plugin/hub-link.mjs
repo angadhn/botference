@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
-import { ENTRY_STATES } from './blyg-queue.mjs';
+import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
 
 export const HUB_LINK_FILE = 'hub-link.json';
 export const HUB_LINK_REPLIES_FILE = 'hub-link-replies.json';
@@ -57,6 +57,8 @@ export const HUB_LINK_LIMITS = Object.freeze({
   statusRids: 20,
   // (the ONE length limit is bodyBytes, the encoded body: no separate character counts, so no script passes one and fails the other)
   withdrawnMax: 500,
+  // how long a status waits for a rid still being filed before answering 503 (inside the Hub's 8 s fetch timeout)
+  statusWaitMs: 5000,
 });
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
@@ -212,17 +214,26 @@ export function entryOf(record, entries) {
  * null); queue: { entries (blyg-queue view entries), run (the runner's current run: {id, mode, confirm}) }. → a HUB_LINK_STATES value,
  * or 'unknown' when there is no record.
  */
+/** An OPEN queue entry for a record's thread, whoever pressed it (the owner may press a Hub-filed draft in the drawer), or null. */
+export const openEntryFor = (record, entries) => (record && (entries || []).find(e => e && OPEN_STATES.includes(e.state)
+  && e.page_url === record.page_url && e.thread_id === record.thread_id)) || null;
+const entryState = (e, run) => (e.state === 'running' && run && run.id && run.id === e.run && run.mode === 'planned' && run.confirm === 'always'
+  ? 'awaiting_look' : ENTRY_TO_LINK[e.state]);
 export function linkStateOf(record, page, queue) {
   if (!record) return 'unknown';
   if (record.step === 'withdrawn') return 'cancelled';
   const thread = page && Array.isArray(page.threads) ? page.threads.find(t => t && t.id === record.thread_id) : null;
   const published = !!(thread && thread.blyg_published && thread.blyg_published.at);
-  if (record.step === 'saved') return !thread ? 'cancelled' : published ? 'published' : 'saved';
+  const run = queue && queue.run;
+  if (record.step === 'saved') {
+    // (a draft pressed elsewhere, in the drawer, or by the Hub before a record write was lost: that entry is its state)
+    const open = openEntryFor(record, queue && queue.entries);
+    if (open) return entryState(open, run);
+    return !thread ? 'cancelled' : published ? 'published' : 'saved';
+  }
   const e = entryOf(record, queue && queue.entries);
   if (!e) return published ? 'published' : !thread ? 'cancelled' : 'failed';
-  const run = queue && queue.run;
-  if (e.state === 'running' && run && run.id && run.id === e.run && run.mode === 'planned' && run.confirm === 'always') return 'awaiting_look';
-  return ENTRY_TO_LINK[e.state];
+  return entryState(e, run);
 }
 
 // ---- the records --------------------------------------------------------------------------------------------------------------------
@@ -262,12 +273,14 @@ export function createReplyStore({ file, now = () => new Date(), keepDays = 30 }
     /** a new record (step saved), written at once */
     add(rec) { if (recs.has(rec.rid)) throw new Error('hub link record: rid already kept'); recs.set(rec.rid, { ...rec, step: 'saved' }); persist(); return recs.get(rec.rid); },
     /** a rid cancelled before its reply arrived: remembered as withdrawn (bounded: the oldest withdrawn is forgotten past the cap) */
+    // (all or nothing: a withdrawal that cannot be written is not kept, so nothing ever answers `cancelled` for it)
     withdraw(rid) {
       if (recs.has(rid)) throw new Error('hub link record: rid already kept');
+      const before = new Map(recs);
       const old = [...recs.values()].filter(r => r.step === 'withdrawn');
       for (const r of old.slice(0, Math.max(0, old.length - HUB_LINK_LIMITS.withdrawnMax + 1))) recs.delete(r.rid);
       recs.set(rid, { rid, step: 'withdrawn', at: now().toISOString() });
-      persist();
+      try { persist(); } catch (e) { recs = before; throw e; }
       return recs.get(rid);
     },
     move(rid, to, facts) { const r = recs.get(rid); moveRecord(r, to, facts); persist(); return r; },
@@ -307,7 +320,7 @@ export const HUB_LINK_SAY = Object.freeze({
  *   press({ url, thread_id }) → Promise<blyg-queue press answer>   (by 'hub-link')
  *   cancel(entry_id) → blyg-queue cancel answer
  *   queue() → { entries, run }        readPage(url) → page | null
- *   log(line), perMinute (tests only: the request limit a minute)
+ *   log(line), perMinute (tests only: the request limit a minute), statusWaitMs (tests only)
  * }
  */
 export function createHubLink(deps) {
@@ -322,6 +335,7 @@ export function createHubLink(deps) {
   // SLOTS HELD by requests still working (verifying a passage, or waiting for the queue): counted with the records, so requests at once
   // cannot all pass a limit that only the finished ones would have reached. Taken before the await, given back when it ends.
   const holding = { replies: 0, presses: 0 };
+  const statusWait = Number.isInteger(deps.statusWaitMs) && deps.statusWaitMs > 0 ? deps.statusWaitMs : HUB_LINK_LIMITS.statusWaitMs;
   const holdReply = () => { let held = true; holding.replies++; return { give() { if (held) { held = false; holding.replies--; } } }; };
 
   const stateFor = (rec, q) => {
@@ -338,7 +352,7 @@ export function createHubLink(deps) {
     const first = thread && (thread.msgs || [])[0];
     const gaps = first && Array.isArray(first.gaps) ? first.gaps.filter(g => g && g.mode !== 'removed') : [];
     if (gaps.length) v.gaps = { total: gaps.length, written: gaps.filter(g => g.mode !== 'pending').length, failed: gaps.filter(g => g.mode === 'failed').length };
-    const e = entryOf(rec, q.entries);
+    const e = rec.step === 'saved' ? openEntryFor(rec, q.entries) : entryOf(rec, q.entries);
     if (state === 'queued' && e) v.ahead = Number(e.ahead) || 0;
     if (state === 'published') {
       const p = (thread && thread.blyg_published) || {};
@@ -356,6 +370,8 @@ export function createHubLink(deps) {
   async function pressRecord(rec, key) {
     const refuse = code => { store.note(rec.rid, { press_refused: code }); logState(rec.rid, 'press-refused', code); return code; };
     if (key.publish !== 'one-click') return refuse('drafts-only');
+    // an entry for this thread already open (the owner pressed it in the drawer): never pressed over (it would replace the owner's choices)
+    if (openEntryFor(rec, deps.queue().entries)) { logState(rec.rid, 'press-skipped', 'open-entry'); return 'open-entry'; }
     if (store.pressesSince(86400 * 1000) + holding.presses >= HUB_LINK_LIMITS.publishesPerDay) return refuse('publishes-per-day');
     holding.presses++;
     let r;
@@ -417,6 +433,15 @@ export function createHubLink(deps) {
     async status(data) {
       const rids = Array.isArray(data.rids) ? data.rids : null;
       if (!rids || !rids.length || rids.length > HUB_LINK_LIMITS.statusRids || !rids.every(ridOk)) return { status: 400, body: { ok: false, error: `rids: 1 to ${HUB_LINK_LIMITS.statusRids} ids` } };
+      // a rid still being filed is waited for (bounded): read now, it would be `unknown`, which the Hub takes for "never arrived"
+      const busy = [...new Set(rids)].filter(rid => inflight.has(rid));
+      if (busy.length) {
+        let timer = null;
+        const done = await Promise.race([Promise.allSettled(busy.map(rid => inflight.get(rid))).then(() => true),
+          new Promise(r => { timer = setTimeout(() => r(false), statusWait); })]);
+        clearTimeout(timer);
+        if (!done) return { status: 503, body: { ok: false, error: 'a reply is still being filed; ask again' } };
+      }
       const q = deps.queue();
       return { status: 200, body: { ok: true, replies: [...new Set(rids)].map(rid => viewOf(rid, q)) } };
     },

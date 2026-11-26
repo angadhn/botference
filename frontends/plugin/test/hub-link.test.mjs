@@ -182,7 +182,7 @@ test('every route is in one table, under /hub-link/', () => {
 
 // ---- the routes in this process, with stand-ins for the companion (no server, no web) ----
 import http from 'node:http';
-async function linkWith({ bind, press, publish = 'one-click', readPage = () => null, queue = () => ({ entries: [], run: null }) } = {}) {
+async function linkWith({ bind, press, publish = 'one-click', readPage = () => null, queue = () => ({ entries: [], run: null }), statusWaitMs } = {}) {
   const dir = tmp();
   const key = L.newKey({ hub_origin: 'https://blog.example.com', publish });
   L.writeLinkKey(dir, key);
@@ -191,7 +191,7 @@ async function linkWith({ bind, press, publish = 'one-click', readPage = () => n
     bind: async a => { seen.binds++; return bind ? bind(a) : { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; },
     fileReply: () => ({ url: 'https://blyg.example.com/t/x/', thread_id: `t${++seen.threads}` }),
     press: async () => { if (press) await press(); return { ok: true, queued: { id: `e${++seen.presses}` } }; },
-    cancel: () => ({ ok: true }), queue, readPage });
+    cancel: () => ({ ok: true }), queue, readPage, ...(statusWaitMs ? { statusWaitMs } : {}) });
   const srv = http.createServer((q, s) => link.handle(q, s, q.url.split('?')[0]));
   await new Promise(r => srv.listen(0, '127.0.0.1', r));
   const send = async (route, obj, raw) => {
@@ -306,4 +306,66 @@ test('A SAVED DRAFT AGED OUT after 30 days: status answers unknown; the store to
   assert.equal(L.linkStateOf(s.get('rid-old-draft1'), { threads: [{ id: 't1' }] }, { entries: [] }), 'unknown');
   assert.deepEqual(fs.readdirSync(dir).sort(), [L.HUB_LINK_REPLIES_FILE, 'page.json'].sort());
   assert.equal(fs.readFileSync(path.join(dir, 'page.json'), 'utf8'), '{"threads":[{"id":"t1"}]}', 'the draft thread is the page store\'s, untouched');
+});
+
+const PAGE_X = { url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [] }] };
+const verifiedSlowly = ms => async () => { await slow(ms); return { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; };
+
+test('D1 STATUS WAITS for a reply still being filed: never unknown for a rid in flight', async () => {
+  const k = await linkWith({ publish: 'drafts-only', readPage: () => PAGE_X, bind: verifiedSlowly(300) });
+  try {
+    const filing = k.send('reply', replyOf('rid-inflight-01', { intent: 'draft' }));
+    await slow(50);
+    const s = await k.send('status', { rids: ['rid-inflight-01', 'rid-nothere-01'] });
+    assert.equal(s.status, 200);
+    assert.deepEqual(s.json.replies.map(r => r.state), ['saved', 'unknown']);
+    assert.equal((await filing).status, 200);
+  } finally { await k.close(); }
+});
+
+test('D1 …bounded: a filing slower than the wait is 503 "still being filed", never unknown', async () => {
+  const k = await linkWith({ publish: 'drafts-only', readPage: () => PAGE_X, bind: verifiedSlowly(400), statusWaitMs: 100 });
+  try {
+    const filing = k.send('reply', replyOf('rid-inflight-02', { intent: 'draft' }));
+    await slow(30);
+    const s = await k.send('status', { rids: ['rid-inflight-02'] });
+    assert.deepEqual([s.status, s.json], [503, { ok: false, error: 'a reply is still being filed; ask again' }]);
+    await filing;
+  } finally { await k.close(); }
+});
+
+test('D2 A HUB DRAFT THE OWNER PRESSED IN THE DRAWER shows the queue\'s state, and the Hub cannot press it again', async () => {
+  let entries = [];
+  const k = await linkWith({ readPage: () => PAGE_X, queue: () => ({ entries, run: null }) });
+  try {
+    assert.equal((await k.send('reply', replyOf('rid-drawer-001', { intent: 'draft' }))).json.state, 'saved');
+    entries = [{ id: 'own1', state: 'queued', ahead: 2, page_url: PAGE_X.url, thread_id: 't1', pressed_by: 'owner' }];
+    const s = (await k.send('status', { rids: ['rid-drawer-001'] })).json.replies[0];
+    assert.deepEqual([s.state, s.ahead], ['queued', 2]);
+    const p = await k.send('publish', { rid: 'rid-drawer-001' });
+    assert.deepEqual([p.status, p.json.state], [409, 'queued']);
+    assert.equal(k.seen.presses, 0, 'the owner\'s entry is not pressed over');
+    entries = [{ id: 'own1', state: 'running', run: 'r1', page_url: PAGE_X.url, thread_id: 't1' }];
+    assert.equal((await k.send('status', { rids: ['rid-drawer-001'] })).json.replies[0].state, 'publishing');
+    entries = [{ id: 'own1', state: 'cancelled', page_url: PAGE_X.url, thread_id: 't1' }];
+    assert.equal((await k.send('status', { rids: ['rid-drawer-001'] })).json.replies[0].state, 'saved', 'a finished entry is not open');
+  } finally { await k.close(); }
+});
+
+test('D2 linkStateOf: a saved record with an open entry for its thread takes that entry\'s state', () => {
+  const r = rec({ step: 'saved', entry_id: '' });
+  for (const [st, want] of [['queued', 'queued'], ['filling', 'filling'], ['needs_look', 'awaiting_look'], ['running', 'publishing'], ['giving_up', 'publishing']])
+    assert.equal(L.linkStateOf(r, page(), { entries: [{ id: 'o', state: st, page_url: r.page_url, thread_id: 't1' }] }), want, st);
+  assert.equal(L.linkStateOf(r, page(), { entries: [{ id: 'o', state: 'queued', page_url: r.page_url, thread_id: 'other' }] }), 'saved');
+});
+
+test('D3 A CANCEL WHOSE WITHDRAWAL CANNOT BE WRITTEN is a 500 with no state, and nothing is remembered', async () => {
+  const k = await linkWith();
+  try {
+    fs.chmodSync(k.dir, 0o500);
+    const c = await k.send('cancel', { rid: 'rid-nodisk-0001' });
+    fs.chmodSync(k.dir, 0o700);
+    assert.deepEqual([c.status, c.json], [500, { ok: false, error: 'internal error' }]);
+    assert.equal((await k.send('status', { rids: ['rid-nodisk-0001'] })).json.replies[0].state, 'unknown');
+  } finally { fs.chmodSync(k.dir, 0o700); await k.close(); }
 });
