@@ -445,6 +445,7 @@ export const HUB_LINK_SAY = Object.freeze({
   'cancelled': 'This reply was cancelled.',
   'changed-on-computer': 'This draft was changed on your computer; discard it there.',
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
+  'address-unconfirmed': 'This clipping’s address changed when a private part of it was taken out, so it is not published until you confirm the address on your computer (botference clippings check).',
   'not-in-clipping': 'That passage isn’t in the clipping as kept on your computer.',
   'cannot-add': 'Your earlier reply can no longer be added to from here (it changed, or another reply went out since). Publish this one as a new post instead.',
   'cannot-add-outside': 'Your earlier reply was edited by hand on your computer, so this is not added to it from here. Publish it as a new post, or discard it.',
@@ -557,6 +558,8 @@ export function createHubLink(deps) {
   async function pressRecord(rec, key, as = 'as-asked') {
     const refuse = code => { store.note(rec.rid, { press_refused: code }); logState(rec.rid, 'press-refused', code); return code; };
     if (key.publish !== 'one-click') return refuse('drafts-only');
+    // (a reply to a clipping whose address lost a secret-named parameter: it may name another page now; not until the owner confirms it)
+    if (rec.clipping && typeof deps.clippingPublishable === 'function' && !deps.clippingPublishable(rec.clipping)) return refuse('address-unconfirmed');
     // an entry for this thread already open (the owner pressed it in the drawer): never pressed over (it would replace the owner's choices)
     if (openEntryFor(rec, deps.queue().entries)) { logState(rec.rid, 'press-skipped', 'open-entry'); return 'open-entry'; }
     if (store.pressesSince(86400 * 1000) + holding.presses >= HUB_LINK_LIMITS.publishesPerDay) return refuse('publishes-per-day');

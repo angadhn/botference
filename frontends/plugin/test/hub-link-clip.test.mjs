@@ -27,10 +27,13 @@ const clipFile = (title, source, published, body) => `---\ntitle: ${title}\nsour
 const BODY1 = 'Shipyards were *busy* during the war. The [Maritime Commission](https://en.example.com/mc) planned hundreds of ships.[^1]\n\n![](https://img.example.com/a.png)\n\n<iframe src="https://chart.example.com/x"></iframe>\n\nA second paragraph about welding and prefabrication.\n\n[^1]: A note.';
 fs.writeFileSync(path.join(vault, 'Ships one.md'), clipFile('How ships were built', 'https://www.example.com/p/ships-one?s=w&utm_source=x', '2025-05-07', BODY1));
 fs.writeFileSync(path.join(vault, 'Ships zero.md'), clipFile('An older one', 'https://www.example.com/p/ships-zero', '2022-03-04', 'Older words about shipbuilding productivity in yards.'));
+fs.writeFileSync(path.join(vault, 'Sheet.md'), clipFile('A shared sheet', 'https://docs.example.com/sheet/ccc?key=0AbC&gid=1', '2025-06-01', 'A sheet of numbers about ships in the yards.'));
 fs.writeFileSync(path.join(vault, 'Not listed.md'), clipFile('Private', 'https://www.example.com/p/private', '2024-01-01', 'PRIVATE words never to be read.'));
 fs.writeFileSync(path.join(outside, 'secret.md'), clipFile('Secret', 'https://www.example.com/p/secret', '2024-01-01', 'SECRET outside the folder.'));
 fs.symlinkSync(path.join(outside, 'secret.md'), path.join(vault, 'Linked.md'));
-const SETTING = { folder: vault, collections: [{ name: 'Shipbuilding', files: ['Ships one.md', 'Ships zero.md', 'Linked.md'] }] };
+const SETTING = { folder: vault, collections: [{ name: 'Shipbuilding', files: ['Ships one.md', 'Ships zero.md', 'Linked.md'] }, { name: 'Sheets', files: ['Sheet.md'] }],
+  // (the owner names the Substack custom domain its clippings come from: Substack's own parameters are removed there)
+  substack_hosts: ['www.example.com'] };
 
 const rig = makeRig({ confirm: 'never' });
 const root = tmp('root');
@@ -64,7 +67,7 @@ const ID1 = C.clippingId('Ships one.md');
 await test('CLIPPINGS: the allow-listed files only, oldest first, facts only (no file names, no paths); a symlink out is left out', async () => {
   const r = await send('clippings', {});
   assert.equal(r.status, 200);
-  assert.equal(r.json.collections.length, 1);
+  assert.equal(r.json.collections.length, 2);
   const c = r.json.collections[0];
   assert.equal(c.name, 'Shipbuilding');
   assert.deepEqual(c.clippings.map(x => x.title), ['An older one', 'How ships were built']);
@@ -123,6 +126,22 @@ await test('DRAFTS FROM A CLIPPING: text read back, discard works', async () => 
   const s = (await send('status', { rids: ['rid-clip-dra-01'], text: true })).json.replies[0];
   assert.deepEqual(s.blocks.map(b => b.text), ['A draft from a clipping.']);
   assert.equal((await send('cancel', { rid: 'rid-clip-dra-01' })).json.state, 'cancelled');
+});
+
+await test('AN ADDRESS CHANGED BY A DROPPED SECRET-NAMED PARAMETER: a reply is filed but not published until the owner confirms the address', async () => {
+  const SHEET = C.clippingId('Sheet.md');
+  const r = await send('reply', { rid: 'rid-clip-sheet01', clipping: SHEET, quote: 'A sheet of numbers about ships', comment: 'About the sheet.', intent: 'publish' });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.deepEqual([r.json.state, r.json.press.refused], ['saved', 'address-unconfirmed']);
+  assert.match(r.json.press.say, /address/);
+  const file = path.join(root, '.botference', 'plugin', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(file, 'utf8'));
+  cfg.clippings.confirmed_sources = ['https://docs.example.com/sheet/ccc?gid=1'];
+  fs.writeFileSync(file, JSON.stringify(cfg));
+  const p = await send('publish', { rid: 'rid-clip-sheet01' });
+  assert.equal(p.status, 200);
+  assert.ok(['queued', 'publishing', 'published'].includes(p.json.state), JSON.stringify(p.json));
+  await waitFor(async () => ['published', 'failed'].includes((await status('rid-clip-sheet01')).state), 'done', 60000);
 });
 
 await test('THE SETTING REMOVED: the list is empty and every clipping 404 at once', async () => {

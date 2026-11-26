@@ -8,7 +8,9 @@
 //
 // The setting (edit config.json by hand):
 //   "clippings": { "folder": "/absolute/path/to/the/clippings/folder",
-//                  "collections": [ { "name": "A name", "files": ["A clipped article.md", "…"] } ] }
+//                  "collections": [ { "name": "A name", "files": ["A clipped article.md", "…"] } ],
+//                  "substack_hosts": ["www.example.com"],          (optional: Substack custom domains, whose s, r, … are removed)
+//                  "confirmed_sources": ["https://…"] }            (optional: addresses the owner checked after a secret was taken out)
 // Exit 0: valid (every listed file read); 1: a problem; 2: usage.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,9 +27,13 @@ export function main(argv, { config = () => readConfig(), configPath = CONFIG_PA
     for (const e of v.errors) say(`  - ${e}`);
     return 1;
   }
-  const { collections, problems, dropped } = listClippings(v.settings);
-  // (a secret in a clipping's address is never sent: say that it was taken out, by name only)
-  for (const d of dropped) say(`  note: ${d.collection} / ${d.file}: taken out of its address: ${d.names.join(', ')}`);
+  const { collections, problems, changed } = listClippings(v.settings);
+  // (a secret-named part of a clipping's address is never sent, and taking it out may make the address name another page: until the
+  // owner adds the address as shown to "confirmed_sources", a reply to it is not published. The part's value is never shown.)
+  for (const d of changed) {
+    if (d.confirmed) say(`  confirmed: ${d.collection} / ${d.file}: ${d.source} (${d.names.join(', ')} taken out)`);
+    else say(`  address changed: check it: ${d.collection} / ${d.file}: ${d.names.join(', ')} taken out, now ${d.source} (add it to "confirmed_sources" when it is the right page)`);
+  }
   if (cmd === 'list') {
     for (const c of collections) {
       say(`${c.name} (${c.clippings.length})`);

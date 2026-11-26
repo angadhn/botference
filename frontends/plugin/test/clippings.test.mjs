@@ -47,10 +47,10 @@ test('the plain-text rule (clippingText v1): images, HTML lines, links, footnote
   ].join('\n\n'));
 });
 
-test('the canonical source (tracking-v2): utm_* and the fragment removed, other parameters kept as they are; http(s) only', () => {
-  assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w'), 'https://www.example.com/p/a-post');
-  assert.equal(C.canonicalSource('https://www.example.com/p/a?utm_source=x&utm_medium=y&id=7&r=abc#section'), 'https://www.example.com/p/a?id=7');
-  assert.equal(C.canonicalSource('https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw'), 'https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw', 'only utm_* on any host');
+test('the canonical source (tracking-v3): utm_*, click ids and the fragment removed, other parameters kept as they are; http(s) only', () => {
+  assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w'), 'https://www.example.com/p/a-post?s=w', 'not a Substack host the owner named');
+  assert.equal(C.canonicalSource('https://www.example.com/p/a?utm_source=x&utm_medium=y&id=7&r=abc#section'), 'https://www.example.com/p/a?id=7&r=abc');
+  assert.equal(C.canonicalSource('https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw'), 'https://example.com/a?page=3&ref=tw', 'utm_* and the click ids on any host');
   for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url', '']) assert.equal(C.canonicalSource(bad), '', bad);
 });
 
@@ -86,7 +86,7 @@ test('the list: allow-listed files only, each with its id (never the name), fact
   fs.writeFileSync(path.join(dir, 'a.md'), clip({ title: 'First', published: '2022-03-04', author: '  - "[[One]]"\n  - "[[Two]]"' }));
   fs.writeFileSync(path.join(dir, 'nosource.md'), '---\ntitle: X\n---\nbody\n');
   fs.writeFileSync(path.join(dir, 'unlisted.md'), clip({ title: 'Not on the list' }));
-  const list = C.listClippings({ folder: dir, collections: [{ name: 'Reading', files: ['b.md', 'a.md', 'nosource.md', 'gone.md'] }] });
+  const list = C.listClippings({ folder: dir, collections: [{ name: 'Reading', files: ['b.md', 'a.md', 'nosource.md', 'gone.md'] }], substack_hosts: ['www.example.com'] });
   assert.equal(list.collections.length, 1);
   const got = list.collections[0].clippings;
   assert.deepEqual(got.map(c => c.title), ['First', 'Second']);
@@ -123,7 +123,7 @@ test('botference clippings check | list: names the config file, says every probl
   const dir = tmp();
   fs.writeFileSync(path.join(dir, 'a.md'), clip({ title: 'First' }));
   const run = (argv, setting) => { const out = []; const code = cli(argv, { config: () => ({ clippings: setting }), configPath: '/x/config.json', say: s => out.push(s) }); return { code, text: out.join('\n') }; };
-  const good = { folder: dir, collections: [{ name: 'Reading', files: ['a.md'] }] };
+  const good = { folder: dir, collections: [{ name: 'Reading', files: ['a.md'] }], substack_hosts: ['www.example.com'] };
   const c = run(['check'], good);
   assert.equal(c.code, 0, c.text);
   assert.match(c.text, /config file: \/x\/config\.json/);
@@ -191,7 +191,7 @@ test('THE SOURCE ADDRESS, tracking-v2: utm_* everywhere; Substack\'s own paramet
   assert.equal(c('https://ex.com/a?q=a%20b&utm_source=x'), 'https://ex.com/a?q=a%20b', 'not re-encoded');
   assert.equal(c('https://ex.com/p?amp&utm_medium=e'), 'https://ex.com/p?amp', 'a bare name stays bare');
   assert.equal(c('https://x.substack.com/p/slug?utm_source=email&token=eyJTOKEN&isFreemail=true&r=2a&s=w'), 'https://x.substack.com/p/slug');
-  assert.equal(c('https://www.example.com/p/a-post?s=w&r=1x'), 'https://www.example.com/p/a-post', 'a Substack post on its own domain (/p/<slug>)');
+  assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w&r=1x', { substackHosts: ['www.example.com'] }), 'https://www.example.com/p/a-post', 'a Substack post on a domain the owner named');
   assert.equal(c('https://ex.com/a?id=7&access_token=abc&sig=1#frag'), 'https://ex.com/a?id=7');
   assert.equal(c('https://user:pw@ex.com/a'), '', 'never an address with a user or password');
   assert.deepEqual(C.canonicalSourceOf('https://x.substack.com/p/slug?token=eyJ&utm_source=e').dropped, ['token']);
@@ -231,4 +231,46 @@ test('clippingText v2: THE BOUNDS (CLIP_BOUNDS: insides 500, addresses 2000, foo
   for (const n of [99, 100, 101]) cases.push(`Note [^${'l'.repeat(n)}] here.`, `[^${'l'.repeat(n)}]: the note.`);
   cases.push(`A [${'w '.repeat(260)}](https://x.example) link.`, `An ![${'a'.repeat(501)}](https://x.example/i.png) image.`, `A <span ${'x'.repeat(501)}>tag</span>.`, `Note [^${'l'.repeat(101)}] here.`);
   for (const md of cases) assert.equal(C.clippingText(md), referenceText(md), JSON.stringify(md.slice(0, 30)) + ` (${md.length})`);
+});
+
+// ---- follow-ups after clippings went live ----
+test('F1 A LINE WITH U+2028 OR U+2029: HTML-only is decided by its first and last character after trim, the same on both sides', () => {
+  assert.equal(C.clippingText('Before.\n<b>x y</b>\nAfter.'), 'Before. After.', 'an HTML-only line even with a line separator inside');
+  assert.equal(C.clippingText('Before.\n<b>x y</b>\nAfter.'), 'Before. After.');
+  assert.equal(C.clippingText('<i>a</i> and text'), 'a and text');
+});
+test('F2 SUBSTACK\'S NAMES only on hosts under substack.com and the hosts the owner names (substack_hosts); never by the path shape', () => {
+  assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w&r=1x'), 'https://www.example.com/p/a-post?s=w&r=1x', 'not by /p/<slug>');
+  assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w&r=1x', { substackHosts: ['www.example.com'] }), 'https://www.example.com/p/a-post');
+  assert.equal(C.canonicalSource('https://writer.substack.com/p/a?s=w'), 'https://writer.substack.com/p/a');
+  assert.equal(C.validateClippings({ folder: '/', collections: [{ name: 'x', files: ['a.md'] }], substack_hosts: ['Not A Host!'] }).errors.some(e => /substack_hosts/.test(e)), true);
+});
+test('F3 A SECRET-NAMED PARAMETER DROPPED changes the address: the clipping is marked for the owner to check, and publishable only once confirmed', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'sheet.md'), clip({ source: 'https://docs.example.com/spreadsheet/ccc?key=0AbC&gid=1' }));
+  fs.writeFileSync(path.join(dir, 'plain.md'), clip({ source: 'https://www.example.com/p/plain' }));
+  const s = { folder: dir, collections: [{ name: 'R', files: ['sheet.md', 'plain.md'] }] };
+  const l = C.listClippings(s);
+  assert.deepEqual(l.changed.map(x => [x.file, x.names, x.confirmed]), [['sheet.md', ['key'], false]]);
+  const sheet = C.findClipping(s, C.clippingId('sheet.md'));
+  assert.equal(C.clippingPublishable(s, sheet), false, 'not until the owner confirms the address');
+  assert.equal(C.clippingPublishable(s, C.findClipping(s, C.clippingId('plain.md'))), true);
+  const ok = { ...s, confirmed_sources: [sheet.facts.source] };
+  assert.equal(C.clippingPublishable(ok, C.findClipping(ok, C.clippingId('sheet.md'))), true);
+  assert.equal(C.listClippings(ok).changed[0].confirmed, true);
+});
+test('F4 `amp;token=`, a name with control characters, and F5 click ids, all caught on every host', () => {
+  assert.equal(C.canonicalSource('https://ex.com/a?id=1&amp;token=abc'), 'https://ex.com/a?id=1');
+  assert.equal(C.canonicalSource('https://ex.com/a?id=1&to%00ken=abc&%09sig=x'), 'https://ex.com/a?id=1');
+  assert.deepEqual(C.canonicalSourceOf('https://ex.com/a?id=1&amp;token=abc').dropped, ['token']);
+  assert.equal(C.canonicalSource('https://ex.com/a?fbclid=1&gclid=2&mc_cid=3&mc_eid=4&igshid=5&page=3'), 'https://ex.com/a?page=3');
+});
+test('F3 the owner\'s check marks a changed address "address changed: check it" until it is confirmed', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'sheet.md'), clip({ source: 'https://docs.example.com/spreadsheet/ccc?key=0AbC&gid=1' }));
+  const run = setting => { const out = []; cli(['list'], { config: () => ({ clippings: setting }), configPath: '/x', say: s => out.push(s) }); return out.join('\n'); };
+  const s = { folder: dir, collections: [{ name: 'R', files: ['sheet.md'] }] };
+  assert.match(run(s), /address changed: check it.*key.*https:\/\/docs\.example\.com\/spreadsheet\/ccc\?gid=1/);
+  assert.ok(!/0AbC/.test(run(s)), 'the secret itself never shown');
+  assert.ok(!/address changed/.test(run({ ...s, confirmed_sources: ['https://docs.example.com/spreadsheet/ccc?gid=1'] })), 'confirmed: no mark');
 });

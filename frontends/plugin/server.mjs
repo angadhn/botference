@@ -69,7 +69,7 @@ import * as publish from './publish.mjs';
 import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
 import { createQueue } from './blyg-queue.mjs';
 import { createHubLink, HUB_LINK_REPLIES_FILE } from './hub-link.mjs';
-import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping } from './clippings.mjs';
+import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping, clippingPublishable } from './clippings.mjs';
 import { createSpeech } from './hub-speech.mjs';
 import { secretsDir } from '../shared/secrets.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
@@ -3355,6 +3355,7 @@ const hubLink = createHubLink({
     broadcast({ type: 'page', url: page.url });
     return { verdict: 'verified', url: page.url, clipping: id, text: c.text };
   },
+  clippingPublishable: id => { const s = clippingSettings(); return clippingPublishable(s, s && findClipping(s, id)); },
   earlierForClipping: id => {
     const s = clippingSettings();
     const c = s && findClipping(s, id);

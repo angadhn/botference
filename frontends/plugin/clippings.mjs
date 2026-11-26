@@ -4,7 +4,9 @@
 //
 // THE SETTING (`clippings` in the companion's config.json, changed only on this machine; `botference clippings check | list`):
 //   { "folder": "/absolute/path/to/the/clippings/folder",
-//     "collections": [ { "name": "A name", "files": ["A clipped article.md", "Another one.md"] } ] }
+//     "collections": [ { "name": "A name", "files": ["A clipped article.md", "Another one.md"] } ],
+//     "substack_hosts": ["www.example.com"],       (optional) Substack custom domains: Substack's own parameters are removed there
+//     "confirmed_sources": ["https://…"] }        (optional) addresses the owner checked after a secret-named part was taken out
 // A file name is a plain name inside that folder: no separator, no `..`, not hidden; read only when its real path is a plain file
 // directly inside the folder's real path (a symlink out is refused) and at most CLIPPING_LIMITS.fileBytes.
 //
@@ -50,7 +52,12 @@ export function validateClippings(raw) {
       seen.add(f);
     }
   });
-  return { ok: !errors.length, errors, settings: errors.length ? null : { folder, collections: cols.map(c => ({ name: c.name.trim(), files: c.files.slice() })) } };
+  const hosts = raw.substack_hosts === undefined ? [] : raw.substack_hosts;
+  if (!Array.isArray(hosts) || !hosts.every(h => typeof h === 'string' && /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(h)) || hosts.length > 50) errors.push('"substack_hosts" must be a list of host names (lower case, like www.example.com)');
+  const confirmed = raw.confirmed_sources === undefined ? [] : raw.confirmed_sources;
+  if (!Array.isArray(confirmed) || !confirmed.every(u => typeof u === 'string' && /^https?:\/\//.test(u) && u.length <= 2048) || confirmed.length > 500) errors.push('"confirmed_sources" must be a list of addresses, as `botference clippings check` shows them');
+  return { ok: !errors.length, errors, settings: errors.length ? null : { folder, collections: cols.map(c => ({ name: c.name.trim(), files: c.files.slice() })),
+    substack_hosts: hosts.slice(), confirmed_sources: confirmed.slice() } };
 }
 
 /** One file, by its plain name, inside the folder, read FROM ITS OPEN DESCRIPTOR: opened with O_NOFOLLOW (a symlink is refused), then
@@ -97,38 +104,48 @@ const unquote = v => (/^"(.*)"$/.test(v) || /^'(.*)'$/.test(v) ? v.slice(1, -1) 
 const oneLine = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 const authorOf = a => (Array.isArray(a) ? a : a ? [a] : []).map(x => String(x).replace(/^\[\[|\]\]$/g, '').trim()).filter(Boolean).join(', ');
 
-// ---- the canonical source address (tracking-v2) ----------------------------------------------------------------------------------
+// ---- the canonical source address (tracking-v3) ----------------------------------------------------------------------------------
 // The page's own address with what only tracks a reader, or carries a secret, taken out of the RAW query (what stays is never decoded
-// or re-encoded): the fragment; `utm_*` on every host; the names a platform adds on its own pages only on its pages (a small named
-// table); and SECRETS on every host (said by name in `dropped`, so the owner's check can show it). An address with a user or a password
-// is refused whole.
-export const CANONICAL_RULE = 'tracking-v2';
+// or re-encoded): the fragment; on every host `utm_*` and the click ids (CLICK_IDS); Substack's own names only on Substack's hosts
+// (under substack.com, and the hosts the owner names in the setting, `substack_hosts`: a custom domain cannot be told by its look); and
+// SECRETS on every host (named in `dropped`: such a drop may change which page the address names, so the clipping is publishable only
+// once the owner has confirmed its address, `confirmed_sources`). A parameter's name is read decoded, with control characters and
+// white space taken out and any leading `amp;` (an `&amp;` left in an address) removed. An address with a user or a password is
+// refused whole.
+export const CANONICAL_RULE = 'tracking-v3';
+export const CLICK_IDS = Object.freeze(['fbclid', 'gclid', 'mc_cid', 'mc_eid', 'igshid']);
 export const SECRET_PARAMS = Object.freeze(['token', 'access_token', 'refresh_token', 'id_token', 'auth', 'auth_token', 'key', 'api_key', 'apikey',
   'sig', 'signature', 'secret', 'password', 'pass', 'session', 'sessionid', 'jwt', 'code']);
-/** host rules: which names belong to which platform's pages. Substack: a host under substack.com, or any host's `/p/<slug>` post page
- *  (Substack's custom domains: their post pages have that shape) */
-export const PLATFORM_PARAMS = Object.freeze([
-  Object.freeze({ name: 'substack', applies: u => /(^|\.)substack\.com$/.test(u.hostname) || /^\/p\/[^/]+\/?$/.test(u.pathname),
-    params: Object.freeze(['s', 'r', 'triedRedirect', 'publication_id', 'post_id', 'isFreemail', 'sd', 'showWelcomeOnShare']) }),
-]);
-const nameOf = piece => { const k = piece.split('=')[0]; try { return decodeURIComponent(k.replace(/\+/g, ' ')); } catch { return k; } };
-/** → { url, dropped (secret names taken out) } ('' when it cannot be used) */
-export function canonicalSourceOf(raw) {
+export const SUBSTACK_PARAMS = Object.freeze(['s', 'r', 'triedRedirect', 'publication_id', 'post_id', 'isFreemail', 'sd', 'showWelcomeOnShare']);
+const isSubstackHost = (host, named) => /(^|\.)substack\.com$/.test(host) || named.includes(host);
+const nameOf = piece => {
+  const k = piece.split('=')[0];
+  let n;
+  try { n = decodeURIComponent(k.replace(/\+/g, ' ')); } catch { n = k; }
+  n = n.replace(/[\u0000-\u001f\u007f\s]/g, '');
+  while (/^amp;/i.test(n)) n = n.slice(4);
+  return n;
+};
+/** → { url, dropped (secret names taken out) } ('' when it cannot be used). `substackHosts`: the owner's `substack_hosts`. */
+export function canonicalSourceOf(raw, { substackHosts = [] } = {}) {
   let u;
   try { u = new URL(String(raw || '').trim()); } catch { return { url: '', dropped: [] }; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return { url: '', dropped: [] };
   if (u.username || u.password) return { url: '', dropped: [] };
-  const platform = PLATFORM_PARAMS.filter(p => p.applies(u)).flatMap(p => p.params);
+  const platform = isSubstackHost(u.hostname, substackHosts) ? SUBSTACK_PARAMS : [];
   const dropped = [];
   const kept = (u.search ? u.search.slice(1).split('&') : []).filter(piece => {
     if (!piece) return false;
     const n = nameOf(piece);
-    if (SECRET_PARAMS.includes(n.toLowerCase())) { dropped.push(n); return false; }
-    return !(/^utm_/i.test(n) || platform.includes(n));
+    if (SECRET_PARAMS.includes(n.toLowerCase())) { dropped.push(n.toLowerCase()); return false; }
+    return !(/^utm_/i.test(n) || CLICK_IDS.includes(n.toLowerCase()) || platform.includes(n));
   });
   return { url: `${u.origin}${u.pathname}${kept.length ? `?${kept.join('&')}` : ''}`, dropped };
 }
-export const canonicalSource = raw => canonicalSourceOf(raw).url;
+export const canonicalSource = (raw, opts) => canonicalSourceOf(raw, opts).url;
+/** May a reply to this clipping be published? Unless a secret-named parameter was dropped from its address (which may name another
+ *  page then), or the owner has confirmed the address as it now is (`confirmed_sources`). */
+export const clippingPublishable = (settings, c) => !!c && (!c.dropped.length || ((settings && settings.confirmed_sources) || []).includes(c.facts.source));
 
 // ---- the plain text (clippingText v2): what a quote is checked against, and what the Hub may show for selection ------------------
 // v2 = v1 with every inside BOUNDED, as the Hub writes it (WIRE-clip.md "clippingText v2"): a bracket's or a tag's insides at most
@@ -297,22 +314,22 @@ const cache = new Map();   // real folder + name → { key, loaded }
 const wordsOf = t => (String(t).match(/\S+/g) || []).length;
 const titleFromSource = src => { try { const u = new URL(src); const seg = u.pathname.split('/').filter(Boolean).pop(); return seg ? decodeURIComponent(seg) : u.hostname; } catch { return ''; } };
 /** One allow-listed file read and understood: → { facts, body, text, pages, dropped } or { problem }. */
-export function loadClipping(folder, name) {
+export function loadClipping(folder, name, { substackHosts = [] } = {}) {
   if (!plainName(name)) return { problem: 'not a plain file name' };
   let st = null;
   try { st = fs.lstatSync(path.join(folder, name)); } catch { st = null; }
   const ck = `${folder}\u0000${name}`;
-  const key = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : '';
+  const key = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}:${substackHosts.join(',')}` : '';
   const hit = cache.get(ck);
   if (hit && key && hit.key === key) return hit.loaded;
-  const loaded = parse(name, readClipping(folder, name));
+  const loaded = parse(name, readClipping(folder, name), substackHosts);
   if (key) cache.set(ck, { key, loaded });
   return loaded;
 }
-function parse(name, r) {
+function parse(name, r, substackHosts) {
   if (r.problem) return { problem: r.problem };
   const { fm, body } = frontMatter(r.raw);
-  const { url: source, dropped } = canonicalSourceOf(typeof fm.source === 'string' ? fm.source : '');
+  const { url: source, dropped } = canonicalSourceOf(typeof fm.source === 'string' ? fm.source : '', { substackHosts });
   if (!source) return { problem: 'no usable source' };
   const text = bodyText(body);
   const published = typeof fm.published === 'string' && /^\d{4}-\d{2}-\d{2}/.test(fm.published) ? fm.published.slice(0, 10) : '';
@@ -323,27 +340,34 @@ function parse(name, r) {
 }
 /** The collections as the Hub sees them, and (for the owner's check) each file left out and why, and secrets taken out of addresses. */
 export function listClippings(settings, { now = Date.now, deadlineMs = LIST_DEADLINE_MS } = {}) {
-  const collections = [], problems = [], dropped = [];
+  const collections = [], problems = [], dropped = [], changed = [];
+  const opts = { substackHosts: settings.substack_hosts || [] };
   const until = now() + deadlineMs;
   for (const c of settings.collections) {
     const got = [];
     for (const f of c.files) {
       if (now() > until) { problems.push({ collection: c.name, file: f, problem: 'not read in time (the next call reads it)' }); continue; }
-      const l = loadClipping(settings.folder, f);
+      const l = loadClipping(settings.folder, f, opts);
       if (l.problem) problems.push({ collection: c.name, file: f, problem: l.problem });
-      else { got.push(l.facts); if (l.dropped.length) dropped.push({ collection: c.name, file: f, names: l.dropped }); }
+      else {
+        got.push(l.facts);
+        if (l.dropped.length) {
+          dropped.push({ collection: c.name, file: f, names: l.dropped });
+          changed.push({ collection: c.name, file: f, names: l.dropped, source: l.facts.source, confirmed: clippingPublishable(settings, l) });
+        }
+      }
     }
     got.sort((a, b) => (a.published || '9999').localeCompare(b.published || '9999') || a.title.localeCompare(b.title));
     collections.push({ name: c.name, clippings: got });
   }
-  return { collections, problems, dropped };
+  return { collections, problems, dropped, changed };
 }
 /** An allow-listed clipping by id: → { name, facts, body, text, pages } or null. */
 export function findClipping(settings, id) {
   if (!settings || !/^[0-9a-f]{16}$/.test(String(id || ''))) return null;
   for (const c of settings.collections) for (const f of c.files) {
     if (clippingId(f) !== id) continue;
-    const l = loadClipping(settings.folder, f);
+    const l = loadClipping(settings.folder, f, { substackHosts: settings.substack_hosts || [] });
     return l.problem ? null : { name: f, ...l };
   }
   return null;
