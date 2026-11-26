@@ -36,7 +36,7 @@ import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
 import { isPublishableMsg } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
-import { pagesOf, clippingText } from './clippings.mjs';
+import { pagesOf, bodyText } from './clippings.mjs';
 const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
 // (what `earlier` answers: public facts of zero or one post)
 const earlierView = list => (list || []).filter(e => e && e.post).map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
@@ -640,9 +640,10 @@ export function createHubLink(deps) {
       if (!Number.isInteger(page) || page < 1) return { status: 400, body: { ok: false, error: 'page must be a whole number from 1' } };
       const c = deps.clipping ? deps.clipping(data.id) : null;
       if (!c) return { status: 404, body: { ok: false, error: 'unknown clipping' } };
-      const pages = pagesOf(c.body);
+      // (the pages are the body's, front matter already off: a page's text never strips a front-matter-shaped block of its own)
+      const pages = Array.isArray(c.pages) ? c.pages : pagesOf(c.body);
       if (page > pages.length) return { status: 400, body: { ok: false, error: `page must be 1 to ${pages.length}` } };
-      return { status: 200, body: { ok: true, ...c.facts, page, pages: pages.length, markdown: pages[page - 1], text: clippingText(pages[page - 1]) } };
+      return { status: 200, body: { ok: true, ...c.facts, page, pages: pages.length, markdown: pages[page - 1], text: bodyText(pages[page - 1]) } };
     },
     async transcript(data) {
       // (speech off: its routes do not exist; said only after the signature, like every route's answer)

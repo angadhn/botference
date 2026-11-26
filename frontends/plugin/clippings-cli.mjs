@@ -25,7 +25,9 @@ export function main(argv, { config = () => readConfig(), configPath = CONFIG_PA
     for (const e of v.errors) say(`  - ${e}`);
     return 1;
   }
-  const { collections, problems } = listClippings(v.settings);
+  const { collections, problems, dropped } = listClippings(v.settings);
+  // (a secret in a clipping's address is never sent: say that it was taken out, by name only)
+  for (const d of dropped) say(`  note: ${d.collection} / ${d.file}: taken out of its address: ${d.names.join(', ')}`);
   if (cmd === 'list') {
     for (const c of collections) {
       say(`${c.name} (${c.clippings.length})`);

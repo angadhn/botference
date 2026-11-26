@@ -68,7 +68,8 @@ await test('CLIPPINGS: the allow-listed files only, oldest first, facts only (no
   const c = r.json.collections[0];
   assert.equal(c.name, 'Shipbuilding');
   assert.deepEqual(c.clippings.map(x => x.title), ['An older one', 'How ships were built']);
-  assert.deepEqual(c.clippings[1], { id: ID1, title: 'How ships were built', author: 'A Writer', source: SOURCE, published: '2025-05-07', words: c.clippings[1].words });
+  assert.deepEqual(c.clippings[1], { id: ID1, title: 'How ships were built', author: 'A Writer', source: SOURCE, published: '2025-05-07', words: c.clippings[1].words, rev: c.clippings[1].rev });
+  assert.match(c.clippings[1].rev, /^[0-9a-f]{12}$/);
   const all = JSON.stringify(r.json);
   for (const no of ['Ships one.md', vault, 'PRIVATE', 'SECRET', 'Private', 'Secret']) assert.ok(!all.includes(no), no);
 });
@@ -77,6 +78,7 @@ await test('CLIPPING: markdown and its plain text, paged; anything not on the li
   const r = await send('clipping', { id: ID1 });
   assert.equal(r.status, 200);
   assert.deepEqual([r.json.page, r.json.pages, r.json.source], [1, 1, SOURCE]);
+  assert.equal(r.json.rev, (await send('clippings', {})).json.collections[0].clippings[1].rev, 'the same rev as the list');
   assert.match(r.json.markdown, /\[Maritime Commission\]\(https:\/\/en\.example\.com\/mc\)/);
   assert.equal(r.json.text, 'Shipyards were busy during the war. The Maritime Commission planned hundreds of ships.\n\nA second paragraph about welding and prefabrication.\n\nA note.');
   for (const name of ['Not listed.md', 'Linked.md', 'nothing.md']) assert.equal((await send('clipping', { id: C.clippingId(name) })).status, 404, name);

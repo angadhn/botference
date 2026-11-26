@@ -53,21 +53,31 @@ export function validateClippings(raw) {
   return { ok: !errors.length, errors, settings: errors.length ? null : { folder, collections: cols.map(c => ({ name: c.name.trim(), files: c.files.slice() })) } };
 }
 
-/** One file, by its plain name, inside the folder: → { problem: '' | a sentence, raw } (raw: the file's text). */
+/** One file, by its plain name, inside the folder, read FROM ITS OPEN DESCRIPTOR: opened with O_NOFOLLOW (a symlink is refused), then
+ *  that open file checked (a regular file, ONE link, so a hard link to a file elsewhere is refused, at most the cap) and at most the
+ *  cap read from it. → { problem: '' | a sentence, raw, stat } */
 export function readClipping(folder, name) {
   if (!plainName(name)) return { problem: 'not a plain file name', raw: '' };
   let realFolder;
   try { realFolder = fs.realpathSync(folder); } catch { return { problem: 'the folder is not there', raw: '' }; }
-  const file = path.join(realFolder, name);
-  let st;
-  try { st = fs.lstatSync(file); } catch { return { problem: 'not there', raw: '' }; }
-  if (!st.isFile() || st.isSymbolicLink()) return { problem: 'not a plain file inside the folder', raw: '' };
-  let real;
-  try { real = fs.realpathSync(file); } catch { return { problem: 'not there', raw: '' }; }
-  if (path.dirname(real) !== realFolder) return { problem: 'not a plain file inside the folder', raw: '' };
-  if (st.size > CLIPPING_LIMITS.fileBytes) return { problem: `larger than ${CLIPPING_LIMITS.fileBytes} bytes`, raw: '' };
-  try { return { problem: '', raw: fs.readFileSync(real, 'utf8') }; } catch { return { problem: 'could not be read', raw: '' }; }
+  let fd;
+  try { fd = fs.openSync(path.join(realFolder, name), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)); }
+  catch (e) { return { problem: e && e.code === 'ENOENT' ? 'not there' : 'not a plain file inside the folder', raw: '' }; }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.nlink !== 1) return { problem: 'not a plain file inside the folder', raw: '' };
+    if (st.size > CLIPPING_LIMITS.fileBytes) return { problem: `larger than ${CLIPPING_LIMITS.fileBytes} bytes`, raw: '' };
+    const buf = Buffer.alloc(CLIPPING_LIMITS.fileBytes + 1);
+    let n = 0, got;
+    while (n < buf.length && (got = fs.readSync(fd, buf, n, buf.length - n, n)) > 0) n += got;
+    if (n > CLIPPING_LIMITS.fileBytes) return { problem: `larger than ${CLIPPING_LIMITS.fileBytes} bytes`, raw: '' };
+    stats.reads++;
+    return { problem: '', raw: buf.subarray(0, n).toString('utf8'), stat: st };
+  } catch { return { problem: 'could not be read', raw: '' }; } finally { try { fs.closeSync(fd); } catch { /* closed */ } }
 }
+const stats = { reads: 0 };
+/** (tests) how many files have been read */
+export const clippingStats = () => ({ reads: stats.reads });
 
 // ---- the front matter: the few keys Obsidian Web Clipper writes, one line or a list of `- ` lines --------------------------------
 function frontMatter(raw) {
@@ -87,45 +97,153 @@ const unquote = v => (/^"(.*)"$/.test(v) || /^'(.*)'$/.test(v) ? v.slice(1, -1) 
 const oneLine = (s, n) => String(s == null ? '' : s).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 const authorOf = a => (Array.isArray(a) ? a : a ? [a] : []).map(x => String(x).replace(/^\[\[|\]\]$/g, '').trim()).filter(Boolean).join(', ');
 
-// ---- the canonical source address (tracking-v1) ----------------------------------------------------------------------------------
-export const TRACKING_PARAMS = Object.freeze(['fbclid', 'gclid', 'mc_cid', 'mc_eid', 'ref', 'ref_src', 's', 'r', 'triedRedirect', 'publication_id', 'post_id', 'isFreemail', 'sd', 'showWelcomeOnShare']);
-export const CANONICAL_RULE = 'tracking-v1';
-export function canonicalSource(raw) {
+// ---- the canonical source address (tracking-v2) ----------------------------------------------------------------------------------
+// The page's own address with what only tracks a reader, or carries a secret, taken out of the RAW query (what stays is never decoded
+// or re-encoded): the fragment; `utm_*` on every host; the names a platform adds on its own pages only on its pages (a small named
+// table); and SECRETS on every host (said by name in `dropped`, so the owner's check can show it). An address with a user or a password
+// is refused whole.
+export const CANONICAL_RULE = 'tracking-v2';
+export const SECRET_PARAMS = Object.freeze(['token', 'access_token', 'refresh_token', 'id_token', 'auth', 'auth_token', 'key', 'api_key', 'apikey',
+  'sig', 'signature', 'secret', 'password', 'pass', 'session', 'sessionid', 'jwt', 'code']);
+/** host rules: which names belong to which platform's pages. Substack: a host under substack.com, or any host's `/p/<slug>` post page
+ *  (Substack's custom domains: their post pages have that shape) */
+export const PLATFORM_PARAMS = Object.freeze([
+  Object.freeze({ name: 'substack', applies: u => /(^|\.)substack\.com$/.test(u.hostname) || /^\/p\/[^/]+\/?$/.test(u.pathname),
+    params: Object.freeze(['s', 'r', 'triedRedirect', 'publication_id', 'post_id', 'isFreemail', 'sd', 'showWelcomeOnShare']) }),
+]);
+const nameOf = piece => { const k = piece.split('=')[0]; try { return decodeURIComponent(k.replace(/\+/g, ' ')); } catch { return k; } };
+/** → { url, dropped (secret names taken out) } ('' when it cannot be used) */
+export function canonicalSourceOf(raw) {
   let u;
-  try { u = new URL(String(raw || '').trim()); } catch { return ''; }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') return '';
-  u.hash = '';
-  for (const k of [...u.searchParams.keys()]) if (/^utm_/i.test(k) || TRACKING_PARAMS.includes(k)) u.searchParams.delete(k);
-  return u.href.replace(/\?$/, '');
+  try { u = new URL(String(raw || '').trim()); } catch { return { url: '', dropped: [] }; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return { url: '', dropped: [] };
+  if (u.username || u.password) return { url: '', dropped: [] };
+  const platform = PLATFORM_PARAMS.filter(p => p.applies(u)).flatMap(p => p.params);
+  const dropped = [];
+  const kept = (u.search ? u.search.slice(1).split('&') : []).filter(piece => {
+    if (!piece) return false;
+    const n = nameOf(piece);
+    if (SECRET_PARAMS.includes(n.toLowerCase())) { dropped.push(n); return false; }
+    return !(/^utm_/i.test(n) || platform.includes(n));
+  });
+  return { url: `${u.origin}${u.pathname}${kept.length ? `?${kept.join('&')}` : ''}`, dropped };
 }
+export const canonicalSource = raw => canonicalSourceOf(raw).url;
 
 // ---- the plain text (clippingText v1): what a quote is checked against, and what the Hub may show for selection ------------------
+// EVERY RULE IS ONE LINEAR PASS (the same output as the regular expressions WIRE-clip.md writes them as, which were quadratic on a
+// paragraph of unclosed `[`, `![`, `[^` or `<a `): each pass walks its string once with a table of where the next `]`, `)`, `>` (or
+// space) is, so a match is decided at each place in constant time. There is no paragraph cap: a hostile 1 MiB file takes
+// milliseconds (test/clippings.test.mjs times it).
 const ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' ' };
+/** where the next character satisfying `test` is, from each position (-1: none), in one backward pass */
+function nextOf(s, test) {
+  const at = new Int32Array(s.length + 1).fill(-1);
+  for (let i = s.length - 1; i >= 0; i--) at[i] = test(s[i]) ? i : at[i + 1];
+  return at;
+}
 /** Rules 6 to 8 of WIRE-clip.md, on one paragraph (also applied to a quote): escapes and entities, then the marks, then white space. */
 export function marksOff(t) {
-  return String(t)
+  const s = String(t)
     .replace(/\\([\\`*_{}[\]()#+\-.!|<>~&])/g, '$1')
     .replace(/&(amp|lt|gt|quot|#39|nbsp);/g, m => ENTITIES[m])
     .replace(/[*~`]/g, '')
-    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1')
-    .replace(/\s+/g, ' ').trim();
+    // (this one is linear as it is: a run of `_` is taken whole at its first character, never retried from inside it)
+    .replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1');
+  return s.replace(/\s+/g, ' ').trim();
 }
-export function clippingText(md) {
-  const body = frontMatter(String(md || '')).body;
-  const lines = body.split(/\r?\n/).map(line => {
+// the inline passes, each linear, each the leftmost non-overlapping matches of its pattern
+function imagesOff(s) {                       // !\[[^\]]*\]\([^)]*\)  → ''
+  const rb = nextOf(s, c => c === ']'), rp = nextOf(s, c => c === ')');
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    if (s[i] === '!' && s[i + 1] === '[') {
+      const j = rb[i + 2];
+      if (j >= 0 && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0) { i = k + 1; continue; } }
+    }
+    out += s[i]; i++;
+  }
+  return out;
+}
+function footnotesOff(s, definition) {         // \[\^[^\]]+\]:\s*  (definition) or \[\^[^\]]+\]  → ''
+  const rb = nextOf(s, c => c === ']');
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    if (s[i] === '[' && s[i + 1] === '^') {
+      const j = rb[i + 2];
+      if (j > i + 2 && (!definition || s[j + 1] === ':')) {
+        let k = j + 1;
+        if (definition) { k = j + 2; while (k < s.length && /\s/.test(s[k])) k++; }
+        i = k; continue;
+      }
+    }
+    out += s[i]; i++;
+  }
+  return out;
+}
+function linksOff(s) {                         // \[([^\]]*)\]\([^)]*\)  → $1
+  const rb = nextOf(s, c => c === ']'), rp = nextOf(s, c => c === ')');
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    if (s[i] === '[') {
+      const j = rb[i + 1];
+      if (j >= 0 && s[j + 1] === '(') { const k = rp[j + 2]; if (k >= 0) { out += s.slice(i + 1, j); i = k + 1; continue; } }
+    }
+    out += s[i]; i++;
+  }
+  return out;
+}
+function autolinksOff(s) {                     // <(https?:\/\/[^>\s]+)>  → $1
+  const stop = nextOf(s, c => c === '>' || /\s/.test(c));
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    if (s[i] === '<') {
+      const p = s.startsWith('https://', i + 1) ? 9 : s.startsWith('http://', i + 1) ? 8 : 0;
+      if (p) { const k = stop[i + p]; if (k > i + p && s[k] === '>') { out += s.slice(i + 1, k); i = k + 1; continue; } }
+    }
+    out += s[i]; i++;
+  }
+  return out;
+}
+function tagsOff(s) {                          // <\/?[A-Za-z][^>]*>  → ''
+  const gt = nextOf(s, c => c === '>');
+  let out = '';
+  for (let i = 0; i < s.length;) {
+    if (s[i] === '<') {
+      const l = s[i + 1] === '/' ? i + 2 : i + 1;
+      if (/[A-Za-z]/.test(s[l] || '')) { const k = gt[l + 1]; if (k >= 0) { i = k + 1; continue; } }
+    }
+    out += s[i]; i++;
+  }
+  return out;
+}
+/** an image-only line, `^(\[)?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?$`, decided in one pass */
+function imageOnly(t) {
+  let i = t[0] === '[' ? 1 : 0;
+  const img = () => {
+    if (t[i] !== '!' || t[i + 1] !== '[') return false;
+    const j = t.indexOf(']', i + 2); if (j < 0 || t[j + 1] !== '(') return false;
+    const k = t.indexOf(')', j + 2); if (k < 0) return false;
+    i = k + 1; return true;
+  };
+  if (!img()) return false;
+  if (i === t.length) return true;
+  if (t[i] === ']' && t[i + 1] === '(') { const k = t.indexOf(')', i + 2); return k === t.length - 1; }
+  return false;
+}
+// (the regular expressions they stand for are anchored or fixed-width, and so linear as they are)
+const HTML_LINE = t => t.length >= 2 && t[0] === '<' && t[t.length - 1] === '>';
+const BREAK_LINE = /^(-{3,}|\*{3,}|_{3,})$/;
+const LINE_MARKS = /^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/;
+/** the rule on a body that has no front matter of its own: a clipping's body, or one page of it (rules 2 to 8) */
+export function bodyText(body) {
+  const lines = String(body || '').split(/\r?\n/).map(line => {
     const t = line.trim();
-    if (/^<.*>$/.test(t)) return null;                                                            // an HTML-only line
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) return null;                                             // a thematic break
-    if (/^(\[)?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?$/.test(t)) return null;                          // an image-only line
-    let s = line
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')                                                       // inline images
-      .replace(/\[\^[^\]]+\]:\s*/g, '')                                                           // a footnote definition's label
-      .replace(/\[\^[^\]]+\]/g, '')                                                               // footnote references
-      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                                                    // links
-      .replace(/<(https?:\/\/[^>\s]+)>/g, '$1')                                                   // autolinks
-      .replace(/<\/?[A-Za-z][^>]*>/g, '');                                                        // other inline HTML tags
-    s = s.replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '');                          // heading, quote, list marks
-    return s;
+    if (HTML_LINE(t)) return null;                                                // an HTML-only line
+    if (BREAK_LINE.test(t)) return null;                                          // a thematic break
+    if (imageOnly(t)) return null;                                                // an image-only line
+    const s = tagsOff(autolinksOff(linksOff(footnotesOff(footnotesOff(imagesOff(line), true), false))));
+    return s.replace(LINE_MARKS, '');                                             // heading, quote, list marks
   });
   const paras = [];
   let cur = [];
@@ -137,6 +255,8 @@ export function clippingText(md) {
   if (cur.length) paras.push(cur.join(' '));
   return paras.map(marksOff).filter(Boolean).join('\n\n');
 }
+/** the rule on a whole FILE: its front matter (only at its very start) removed (rule 1), then bodyText */
+export const clippingText = md => bodyText(frontMatter(String(md || '')).body);
 /** Is the passage the clipping's own text? Its paragraphs through the same rules, each found in order, joined as in the text. */
 export function passageInClipping(text, quote) {
   const parts = String(quote || '').split(/\r?\n/).map(marksOff).filter(Boolean);
@@ -164,34 +284,56 @@ export function pagesOf(body) {
 }
 
 // ---- the list and one clipping -------------------------------------------------------------------------------------------------------
+// A CACHE per file, kept while the file's stat (device, inode, size, change time) is the same: a call for an unchanged file reads
+// nothing (one stat). Each file is at most 1 MiB and the rules are linear, so even a cold call is bounded; LIST_DEADLINE_MS bounds one
+// call's reading: files not reached by then are left out of that answer (and read on the next call).
+export const LIST_DEADLINE_MS = 2000;
+const cache = new Map();   // real folder + name → { key, loaded }
 const wordsOf = t => (String(t).match(/\S+/g) || []).length;
-/** One allow-listed file read and understood: → { facts, body, text } or { problem }. */
+const titleFromSource = src => { try { const u = new URL(src); const seg = u.pathname.split('/').filter(Boolean).pop(); return seg ? decodeURIComponent(seg) : u.hostname; } catch { return ''; } };
+/** One allow-listed file read and understood: → { facts, body, text, pages, dropped } or { problem }. */
 export function loadClipping(folder, name) {
-  const r = readClipping(folder, name);
+  if (!plainName(name)) return { problem: 'not a plain file name' };
+  let st = null;
+  try { st = fs.lstatSync(path.join(folder, name)); } catch { st = null; }
+  const ck = `${folder}\u0000${name}`;
+  const key = st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : '';
+  const hit = cache.get(ck);
+  if (hit && key && hit.key === key) return hit.loaded;
+  const loaded = parse(name, readClipping(folder, name));
+  if (key) cache.set(ck, { key, loaded });
+  return loaded;
+}
+function parse(name, r) {
   if (r.problem) return { problem: r.problem };
   const { fm, body } = frontMatter(r.raw);
-  const source = canonicalSource(typeof fm.source === 'string' ? fm.source : '');
+  const { url: source, dropped } = canonicalSourceOf(typeof fm.source === 'string' ? fm.source : '');
   if (!source) return { problem: 'no usable source' };
-  const text = clippingText(r.raw);
+  const text = bodyText(body);
   const published = typeof fm.published === 'string' && /^\d{4}-\d{2}-\d{2}/.test(fm.published) ? fm.published.slice(0, 10) : '';
-  return { facts: { id: clippingId(name), title: oneLine(typeof fm.title === 'string' ? fm.title : name.replace(/\.md$/i, ''), CLIPPING_LIMITS.titleChars),
-    author: oneLine(authorOf(fm.author), CLIPPING_LIMITS.authorChars), source, published, words: wordsOf(text) }, body, text };
+  // (no title: the source address's last path segment, or its host; never the file name, which is the owner's)
+  const title = oneLine(typeof fm.title === 'string' && fm.title.trim() ? fm.title : titleFromSource(source), CLIPPING_LIMITS.titleChars);
+  return { facts: { id: clippingId(name), title, author: oneLine(authorOf(fm.author), CLIPPING_LIMITS.authorChars), source, published, words: wordsOf(text),
+    rev: crypto.createHash('sha256').update(r.raw).digest('hex').slice(0, 12) }, body, text, pages: pagesOf(body), dropped };
 }
-/** The collections as the Hub sees them, and (for the owner's check) each file left out and why. */
-export function listClippings(settings) {
-  const collections = [], problems = [];
+/** The collections as the Hub sees them, and (for the owner's check) each file left out and why, and secrets taken out of addresses. */
+export function listClippings(settings, { now = Date.now, deadlineMs = LIST_DEADLINE_MS } = {}) {
+  const collections = [], problems = [], dropped = [];
+  const until = now() + deadlineMs;
   for (const c of settings.collections) {
     const got = [];
     for (const f of c.files) {
+      if (now() > until) { problems.push({ collection: c.name, file: f, problem: 'not read in time (the next call reads it)' }); continue; }
       const l = loadClipping(settings.folder, f);
-      if (l.problem) problems.push({ collection: c.name, file: f, problem: l.problem }); else got.push(l.facts);
+      if (l.problem) problems.push({ collection: c.name, file: f, problem: l.problem });
+      else { got.push(l.facts); if (l.dropped.length) dropped.push({ collection: c.name, file: f, names: l.dropped }); }
     }
     got.sort((a, b) => (a.published || '9999').localeCompare(b.published || '9999') || a.title.localeCompare(b.title));
     collections.push({ name: c.name, clippings: got });
   }
-  return { collections, problems };
+  return { collections, problems, dropped };
 }
-/** An allow-listed clipping by id: → { name, facts, body, text } or null. */
+/** An allow-listed clipping by id: → { name, facts, body, text, pages } or null. */
 export function findClipping(settings, id) {
   if (!settings || !/^[0-9a-f]{16}$/.test(String(id || ''))) return null;
   for (const c of settings.collections) for (const f of c.files) {

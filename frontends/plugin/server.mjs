@@ -3338,7 +3338,7 @@ const hubLink = createHubLink({
     : hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer })),
   // THE OWNER'S CLIPPINGS (clippings.mjs): only the allow-listed files of the `clippings` setting, read at each request
   clippings: () => { const s = clippingSettings(); return s ? listClippings(s).collections : []; },
-  clipping: id => { const s = clippingSettings(); const c = s && findClipping(s, id); return c ? { facts: c.facts, body: c.body } : null; },
+  clipping: id => { const s = clippingSettings(); const c = s && findClipping(s, id); return c ? { facts: c.facts, body: c.body, pages: c.pages } : null; },
   // A REPLY TO A CLIPPING: the quote is the clipping's own text; the thread goes on the page record of its SOURCE address (made as an
   // ordinary web page's would be, titled from the clipping, marked a response; the live page is never fetched here), and from there the
   // plugin's ordinary web-page path publishes it (blyg_stub_of {url, title}, the web quote, the page asked about mentions)

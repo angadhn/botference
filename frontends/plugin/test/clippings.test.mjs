@@ -47,10 +47,10 @@ test('the plain-text rule (clippingText v1): images, HTML lines, links, footnote
   ].join('\n\n'));
 });
 
-test('the canonical source (tracking-v1): tracking parameters and the fragment removed, other parameters kept; http(s) only', () => {
+test('the canonical source (tracking-v2): utm_* and the fragment removed, other parameters kept as they are; http(s) only', () => {
   assert.equal(C.canonicalSource('https://www.example.com/p/a-post?s=w'), 'https://www.example.com/p/a-post');
   assert.equal(C.canonicalSource('https://www.example.com/p/a?utm_source=x&utm_medium=y&id=7&r=abc#section'), 'https://www.example.com/p/a?id=7');
-  assert.equal(C.canonicalSource('https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw'), 'https://example.com/a?page=3');
+  assert.equal(C.canonicalSource('https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw'), 'https://example.com/a?fbclid=1&gclid=2&page=3&ref=tw', 'only utm_* on any host');
   for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'not a url', '']) assert.equal(C.canonicalSource(bad), '', bad);
 });
 
@@ -90,7 +90,7 @@ test('the list: allow-listed files only, each with its id (never the name), fact
   assert.equal(list.collections.length, 1);
   const got = list.collections[0].clippings;
   assert.deepEqual(got.map(c => c.title), ['First', 'Second']);
-  assert.deepEqual(got[0], { id: C.clippingId('a.md'), title: 'First', author: 'One, Two', source: 'https://www.example.com/p/a-post', published: '2022-03-04', words: 3 });
+  assert.deepEqual(got[0], { id: C.clippingId('a.md'), title: 'First', author: 'One, Two', source: 'https://www.example.com/p/a-post', published: '2022-03-04', words: 3, rev: got[0].rev });
   assert.equal(C.clippingId('a.md'), crypto.createHash('sha256').update('a.md').digest('hex').slice(0, 16));
   assert.ok(!JSON.stringify(list).includes('a.md') && !JSON.stringify(list).includes(dir), 'no names, no paths');
   assert.deepEqual(list.problems.map(p => p.problem).sort(), ['no usable source', 'not there']);
@@ -137,4 +137,86 @@ test('botference clippings check | list: names the config file, says every probl
   assert.equal(bad.code, 1);
   assert.match(bad.text, /not valid/);
   assert.equal(run(['dance'], good).code, 2);
+});
+
+// ---- review: linear text rules, the same output as the regular expressions; the source address v2; reading; the cache ----
+// THE REFERENCE: the rule exactly as first built (regular expressions; quadratic on hostile input), to check the linear passes against
+function referenceText(md) {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(md);
+  const body = m ? md.slice(m[0].length) : md;
+  const marks = t => String(t).replace(/\\([\\`*_{}[\]()#+\-.!|<>~&])/g, '$1').replace(/&(amp|lt|gt|quot|#39|nbsp);/g, x => ({ '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'", '&nbsp;': ' ' })[x])
+    .replace(/[*~`]/g, '').replace(/(^|[^\p{L}\p{N}])_+|_+(?=[^\p{L}\p{N}]|$)/gu, '$1').replace(/\s+/g, ' ').trim();
+  const lines = body.split(/\r?\n/).map(line => {
+    const t = line.trim();
+    if (/^<.*>$/.test(t)) return null;
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) return null;
+    if (/^(\[)?!\[[^\]]*\]\([^)]*\)(\]\([^)]*\))?$/.test(t)) return null;
+    return line.replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[\^[^\]]+\]:\s*/g, '').replace(/\[\^[^\]]+\]/g, '').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/<(https?:\/\/[^>\s]+)>/g, '$1').replace(/<\/?[A-Za-z][^>]*>/g, '').replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/, '');
+  });
+  const paras = []; let cur = [];
+  for (const l of lines) { if (l === null) continue; if (!l.trim()) { if (cur.length) paras.push(cur.join(' ')); cur = []; continue; } cur.push(l); }
+  if (cur.length) paras.push(cur.join(' '));
+  return paras.map(marks).filter(Boolean).join('\n\n');
+}
+test('THE LINEAR RULE GIVES THE SAME TEXT as the regular expressions, on 20000 random strings of the characters that matter', () => {
+  const alphabet = ['[', ']', '(', ')', '!', '^', ':', '<', '>', '/', 'a', 'b', ' ', '\n', '\n\n', '_', '*', '~', '`', '\\', '&amp;', 'https://', 'http://', '#', '-', '1.', '>', 'x', 'é', '\t', '---'];
+  let seed = 7;
+  const rnd = n => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  for (let k = 0; k < 20000; k++) {
+    let s = '';
+    const len = 1 + rnd(40);
+    for (let i = 0; i < len; i++) s += alphabet[rnd(alphabet.length)];
+    assert.equal(C.clippingText(s), referenceText(s), JSON.stringify(s));
+  }
+});
+test('HOSTILE INPUT IS LINEAR: a megabyte of unclosed `[`, `![`, `[^`, `\\[`, `<a `, `](`, backticks, `_` runs, each in milliseconds', () => {
+  for (const unit of ['[', '![', '[^', '\\[', '<a ', '](', '`', '**x', ' _a', '_', '[x](', '<https://a', '[^a]', '![a](']) {
+    const md = `para ${unit.repeat(Math.ceil(1024 * 1024 / unit.length))} end`;
+    const t = Date.now();
+    C.clippingText(md);
+    assert.ok(Date.now() - t < 1500, `${JSON.stringify(unit)}: ${Date.now() - t} ms`);
+  }
+});
+test('A PAGE IS NOT A FILE: front matter is removed only at the start of the file; a later page beginning `---` keeps its words', () => {
+  const page2 = '---\nhidden: words here\n---\nvisible after';
+  assert.equal(C.bodyText(page2), 'hidden: words here visible after', 'the `---` lines are only thematic breaks there');
+  assert.equal(C.clippingText(page2), 'visible after', 'a whole file: its own front matter');
+});
+test('THE SOURCE ADDRESS, tracking-v2: utm_* everywhere; Substack\'s own parameters only on Substack; secrets dropped and said; the query not re-encoded', () => {
+  const c = u => C.canonicalSource(u);
+  assert.equal(c('https://ex.com/?s=apple'), 'https://ex.com/?s=apple', 's kept on another site (a search)');
+  assert.equal(c('https://forum.ex/view?post_id=123'), 'https://forum.ex/view?post_id=123');
+  assert.equal(c('https://ex.com/a?q=a%20b&utm_source=x'), 'https://ex.com/a?q=a%20b', 'not re-encoded');
+  assert.equal(c('https://ex.com/p?amp&utm_medium=e'), 'https://ex.com/p?amp', 'a bare name stays bare');
+  assert.equal(c('https://x.substack.com/p/slug?utm_source=email&token=eyJTOKEN&isFreemail=true&r=2a&s=w'), 'https://x.substack.com/p/slug');
+  assert.equal(c('https://www.example.com/p/a-post?s=w&r=1x'), 'https://www.example.com/p/a-post', 'a Substack post on its own domain (/p/<slug>)');
+  assert.equal(c('https://ex.com/a?id=7&access_token=abc&sig=1#frag'), 'https://ex.com/a?id=7');
+  assert.equal(c('https://user:pw@ex.com/a'), '', 'never an address with a user or password');
+  assert.deepEqual(C.canonicalSourceOf('https://x.substack.com/p/slug?token=eyJ&utm_source=e').dropped, ['token']);
+});
+test('READING A FILE: no symlink, one link, at most the cap, from the open file; a hard link to a file elsewhere refused', () => {
+  const dir = tmp(), out = tmp();
+  fs.writeFileSync(path.join(out, 'secret.md'), clip({ body: 'SECRET' }));
+  fs.linkSync(path.join(out, 'secret.md'), path.join(dir, 'hard.md'));
+  assert.equal(C.readClipping(dir, 'hard.md').problem, 'not a plain file inside the folder');
+  fs.writeFileSync(path.join(dir, 'ok.md'), clip());
+  assert.equal(C.readClipping(dir, 'ok.md').problem, '');
+});
+test('THE CACHE AND rev: a second read of an unchanged file reads nothing; a changed file is read again with a new rev; no title falls back to the address', () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, 'a.md'), clip());
+  const s = { folder: dir, collections: [{ name: 'R', files: ['a.md'] }] };
+  const first = C.listClippings(s).collections[0].clippings[0];
+  assert.match(first.rev, /^[0-9a-f]{12}$/);
+  const reads = C.clippingStats().reads;
+  C.listClippings(s); C.findClipping(s, first.id);
+  assert.equal(C.clippingStats().reads, reads, 'nothing read again');
+  fs.writeFileSync(path.join(dir, 'a.md'), clip({ body: 'Changed words, more of them.' }));
+  const second = C.listClippings(s).collections[0].clippings[0];
+  assert.notEqual(second.rev, first.rev);
+  fs.writeFileSync(path.join(dir, 'Private name.md'), '---\nsource: https://www.example.com/p/the-slug?s=w\n---\nWords.\n');
+  const t = C.listClippings({ folder: dir, collections: [{ name: 'R', files: ['Private name.md'] }] }).collections[0].clippings[0];
+  assert.equal(t.title, 'the-slug');
+  assert.ok(!JSON.stringify(t).includes('Private name'));
 });
