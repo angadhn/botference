@@ -223,7 +223,8 @@ await test('DRAFTS-ONLY never presses: "publish now" ends at saved, said why; pu
   assert.deepEqual([p.status, p.json.state, p.json.press.refused], [200, 'saved', 'drafts-only']);
   assert.deepEqual(rig.calls(), []);
   assert.equal((await send(S, 'publish', { rid: 'rid-never-0009' })).status, 404, 'an unknown rid');
-  assert.equal((await send(S, 'cancel', { rid: 'rid-nopub-0008' })).status, 409, 'a draft is not in the queue');
+  const gone = await send(S, 'cancel', { rid: 'rid-nopub-0008' });
+  assert.deepEqual([gone.status, gone.json.state], [200, 'cancelled'], 'a saved draft is thrown away');
 });
 
 const oldKey = keyNow();
@@ -285,13 +286,58 @@ await test('A RESTART between reply and publish: the record is read back; the pu
   assert.equal(rig.calls().filter(x => x.step === 'publish').length, 3);
 });
 
+const oneshots = () => { try { return fs.readFileSync(path.join(root, 'oneshot.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length; } catch { return 0; } };
+const statusText = async rid => (await send(S, 'status', { rids: [rid], text: true })).json.replies[0];
+
+await test('A DRAFT FILLS AT SAVE: its passage is written without a press, read back as blocks; Publish does not ask again', async () => {
+  const before = oneshots();
+  const r = await reply(S, 'rid-dfill-0001', { comment: 'Saved for later.\n/tk the river in a line' });
+  assert.equal(r.json.state, 'saved');
+  const ready = await waitFor(async () => { const x = await statusText('rid-dfill-0001'); return x.fill === 'ready' ? x : null; }, 'the passage written');
+  assert.equal(oneshots(), before + 1);
+  assert.deepEqual(ready.blocks.map(b => [b.kind, b.text]), [['own', 'Saved for later.\n'], ['agent', 'ONESHOT filled text.']]);
+  assert.equal(ready.blocks[1].state, 'filled-by-agent');
+  assert.equal((await send(S, 'publish', { rid: 'rid-dfill-0001' })).status, 200);
+  await waitFor(async () => (await status(S, 'rid-dfill-0001')).state === 'published', 'published');
+  assert.equal(oneshots(), before + 1, 'nothing written twice');
+});
+
+await test('REDO from the Hub: one passage asked again through the same one-shot', async () => {
+  await reply(S, 'rid-dredo-0001', { comment: 'Again please.\n/tk one more line' });
+  const x = await waitFor(async () => { const v = await statusText('rid-dredo-0001'); return v.fill === 'ready' ? v : null; }, 'first fill');
+  const before = oneshots();
+  const r = await send(S, 'redo', { rid: 'rid-dredo-0001', gap: x.blocks.find(b => b.kind === 'agent').id });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  await waitFor(async () => (await status(S, 'rid-dredo-0001')).fill === 'ready' && oneshots() === before + 1, 'filled again');
+});
+
+await test('CANCEL A SAVED DRAFT from the Hub deletes its thread', async () => {
+  await reply(S, 'rid-dgone-0001', { comment: 'Throw me away.' });
+  assert.ok((await threadsOf(S, POST_A)).some(t => t.msgs[0].text === 'Throw me away.'));
+  const c = await send(S, 'cancel', { rid: 'rid-dgone-0001' });
+  assert.deepEqual([c.status, c.json.state], [200, 'cancelled']);
+  assert.ok(!(await threadsOf(S, POST_A)).some(t => t.msgs[0].text === 'Throw me away.'), 'gone from the page');
+});
+
+await test('THREE DRAFTS PUBLISHED IN A ROW are three queue entries, in order, and all go live', async () => {
+  rig.control({ plan: 'hold' });
+  const rids = ['rid-row1-00001', 'rid-row2-00002', 'rid-row3-00003'];
+  for (const [i, rid] of rids.entries()) await reply(S, rid, { comment: `Row draft ${i + 1}.` });
+  for (const rid of rids) assert.equal((await send(S, 'publish', { rid })).status, 200);
+  const q = JSON.parse(fs.readFileSync(path.join(root, '.botference', 'plugin', 'blyg-publish-queue.json'), 'utf8'));
+  const mine = q.entries.filter(e => /^Row draft/.test(e.label)).sort((a, b) => a.seq - b.seq);
+  assert.deepEqual(mine.map(e => [e.label, e.pressed_by]), [['Row draft 1.', 'hub-link'], ['Row draft 2.', 'hub-link'], ['Row draft 3.', 'hub-link']]);
+  rig.control({});
+  for (const rid of rids) await waitFor(async () => (await status(S, rid)).state === 'published', `${rid} published`, 60000);
+});
+
 await test('CONFIRM ALWAYS is honoured: a Hub press waits for the owner\'s look on the computer', async () => {
   setHome(root, rig, 'always');
   const r = await reply(S, 'rid-look-00014', { comment: 'Look at me first.', intent: 'publish' });
   assert.equal(r.status, 200, r.body);
   const s = await waitFor(async () => { const x = await status(S, 'rid-look-00014'); return x.state === 'awaiting_look' ? x : null; }, 'awaiting the look');
   assert.equal(s.state, 'awaiting_look');
-  assert.equal(rig.calls().filter(x => x.step === 'publish').length, 3, 'nothing published unseen');
+  assert.equal(rig.calls().filter(x => x.step === 'publish').length, 7, 'nothing published unseen');
 });
 
 await test('OFF: the key is deleted and every route is 404 at once', async () => {

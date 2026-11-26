@@ -176,7 +176,7 @@ test('rid: 8 to 64 of letters, digits, - and _; a log tag is its first 8', () =>
 });
 
 test('every route is in one table, under /hub-link/', () => {
-  assert.deepEqual(Object.keys(L.HUB_LINK_ROUTES).sort(), ['cancel', 'ping', 'publish', 'reply', 'status']);
+  assert.deepEqual(Object.keys(L.HUB_LINK_ROUTES).sort(), ['cancel', 'ping', 'publish', 'redo', 'reply', 'status']);
   for (const [name, r] of Object.entries(L.HUB_LINK_ROUTES)) assert.equal(r.path, `/hub-link/${name}`);
 });
 

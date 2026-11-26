@@ -32,7 +32,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
+import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
+// the /tk grammar, shared with the drawer (where each gap sits in the reply's text)
+const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 
 export const HUB_LINK_FILE = 'hub-link.json';
 export const HUB_LINK_REPLIES_FILE = 'hub-link-replies.json';
@@ -57,6 +60,10 @@ export const HUB_LINK_LIMITS = Object.freeze({
   statusRids: 20,
   // (the ONE length limit is bodyBytes, the encoded body: no separate character counts, so no script passes one and fails the other)
   withdrawnMax: 500,
+  // a reply's text read back (`status {text:true}`): for at most this many rids at once, and the agent passages of one reply cut at
+  // this many bytes in all (its own words are already bounded by bodyBytes)
+  textRids: 5,
+  agentTextBytes: 32 * 1024,
   // how long a status waits for a rid still being filed before answering 503 (inside the Hub's 8 s fetch timeout)
   statusWaitMs: 5000,
 });
@@ -68,7 +75,8 @@ export const HUB_LINK_ROUTES = Object.freeze({
   reply: Object.freeze({ path: '/hub-link/reply', does: 'files a reply as a thread on the post\'s page record; presses it when asked and allowed' }),
   status: Object.freeze({ path: '/hub-link/status', does: 'the state of up to 20 replies by rid' }),
   publish: Object.freeze({ path: '/hub-link/publish', does: 'presses a saved reply into the publish queue' }),
-  cancel: Object.freeze({ path: '/hub-link/cancel', does: 'takes a reply out of the queue while it has not started' }),
+  cancel: Object.freeze({ path: '/hub-link/cancel', does: 'takes a reply out of the queue while it has not started, or throws a saved draft away' }),
+  redo: Object.freeze({ path: '/hub-link/redo', does: 'asks the agent again for one passage of a saved draft' }),
 });
 const ROUTE_BY_PATH = new Map(Object.entries(HUB_LINK_ROUTES).map(([name, r]) => [r.path, name]));
 
@@ -90,14 +98,54 @@ export const ENTRY_TO_LINK = Object.freeze({ queued: 'queued', filling: 'filling
   giving_up: 'publishing', published: 'published', failed: 'failed', cancelled: 'cancelled' });
 for (const s of ENTRY_STATES) if (!ENTRY_TO_LINK[s]) throw new Error(`hub-link: no Hub state for the queue's ${s}`);
 
+/** A DRAFT'S AGENT PASSAGES, one value derived by fillOf from its gaps (never stored; the gaps' own modes are tkgaps GAP_MODES):
+ *    writing  a passage is still being written (pending)
+ *    ready    every passage asked for is written (or there is none): Publish will not ask again for what is written
+ *    failed   a passage could not be written (`fill_why`: the first reason); Redo asks again */
+export const HUB_LINK_FILLS = Object.freeze(['writing', 'ready', 'failed']);
+export function fillOf(gaps) {
+  const live = (gaps || []).filter(g => g && g.mode !== 'removed');
+  if (live.some(g => g.mode === 'pending')) return 'writing';
+  if (live.some(g => g.mode === 'failed')) return 'failed';
+  return 'ready';
+}
+const cutBytes = (t, n) => { const b = Buffer.from(String(t), 'utf8'); if (b.length <= n) return String(t); return b.subarray(0, n).toString('utf8').replace(/\uFFFD+$/, ''); };
+/**
+ * THE REPLY'S OWN TEXT as blocks, in order: { kind: 'own', text } for the owner's words between passages, and { kind: 'agent', id,
+ * instruction, state (its gap's mode), text, model, at, reason? } for each passage (a removed one is left out with its mark). The
+ * agent text is cut at HUB_LINK_LIMITS.agentTextBytes in all. Only the reply's first message: never the thread's other messages.
+ */
+export function blocksOf(msg, { agentBytes = HUB_LINK_LIMITS.agentTextBytes } = {}) {
+  const text = String((msg && msg.text) || '');
+  const gaps = Array.isArray(msg && msg.gaps) ? msg.gaps : [];
+  const marks = Grammar.parseGaps(text);
+  const out = [];
+  let at = 0, left = agentBytes;
+  const own = t => { if (t) out.push({ kind: 'own', text: t }); };
+  marks.forEach((m, i) => {
+    own(text.slice(at, m.start));
+    at = m.end;
+    const g = gaps[i];
+    if (!g || g.mode === 'removed') return;
+    const t = cutBytes(g.text || '', Math.max(0, left));
+    left -= Buffer.byteLength(t);
+    out.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || ''), state: String(g.mode), text: t, model: String(g.model || ''),
+      at: String(g.at || ''), ...(g.mode === 'failed' ? { reason: scrubPaths(g.reason).slice(0, 300) } : {}) });
+  });
+  own(text.slice(at));
+  return out;
+}
+
 /** A record's step, one field (`record.step`), moved only by moveRecord:
  *    saved      the thread is filed; nothing pressed (yet)
+ *    discarded  a saved draft the Hub threw away (`cancel`): its thread is deleted; final
  *    pressed    a press was accepted by the queue (`entry_id`); never pressed again for this rid
  *    withdrawn  the Hub cancelled a rid this companion had never seen (the reply may still be on its way): born so, final; a reply
  *               with that rid is refused as cancelled. At most HUB_LINK_LIMITS.withdrawnMax kept (the oldest forgotten first), and
  *               like every record forgotten after 30 days */
-export const RECORD_STEPS = Object.freeze(['saved', 'pressed', 'withdrawn']);
-export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed']), pressed: Object.freeze([]), withdrawn: Object.freeze([]) });
+export const RECORD_STEPS = Object.freeze(['saved', 'pressed', 'withdrawn', 'discarded']);
+export const RECORD_MOVES = Object.freeze({ saved: Object.freeze(['pressed', 'discarded']), pressed: Object.freeze([]), withdrawn: Object.freeze([]),
+  discarded: Object.freeze([]) });
 export class IllegalRecordMove extends Error {}
 export function moveRecord(rec, to, facts = {}) {
   if (!RECORD_STEPS.includes(to)) throw new Error(`hub link record: no such step ${String(to).slice(0, 20)}`);
@@ -221,7 +269,7 @@ const entryState = (e, run) => (e.state === 'running' && run && run.id && run.id
   ? 'awaiting_look' : ENTRY_TO_LINK[e.state]);
 export function linkStateOf(record, page, queue) {
   if (!record) return 'unknown';
-  if (record.step === 'withdrawn') return 'cancelled';
+  if (record.step === 'withdrawn' || record.step === 'discarded') return 'cancelled';
   const thread = page && Array.isArray(page.threads) ? page.threads.find(t => t && t.id === record.thread_id) : null;
   const published = !!(thread && thread.blyg_published && thread.blyg_published.at);
   const run = queue && queue.run;
@@ -310,6 +358,7 @@ export const HUB_LINK_SAY = Object.freeze({
   'gone': 'The reply is no longer on your computer.',
   'too-large': `This reply is too long to send to your computer: at most ${HUB_LINK_LIMITS.bodyBytes / 1024} KB of text.`,
   'cancelled': 'This reply was cancelled.',
+  'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
 });
 
 /**
@@ -343,7 +392,7 @@ export function createHubLink(deps) {
     return { page, state: linkStateOf(rec, page, q) };
   };
   /** What the Hub is told about one rid: its state, and what it shows with it. Nothing else of the page is ever in it. */
-  function viewOf(rid, q = deps.queue()) {
+  function viewOf(rid, q = deps.queue(), { text = false } = {}) {
     const rec = store.get(rid);
     const { page, state } = stateFor(rec, q);
     const v = { rid, state };
@@ -352,6 +401,12 @@ export function createHubLink(deps) {
     const first = thread && (thread.msgs || [])[0];
     const gaps = first && Array.isArray(first.gaps) ? first.gaps.filter(g => g && g.mode !== 'removed') : [];
     if (gaps.length) v.gaps = { total: gaps.length, written: gaps.filter(g => g.mode !== 'pending').length, failed: gaps.filter(g => g.mode === 'failed').length };
+    // the passages' progress, and (asked for) the reply's own text: only while its thread is there and is this record's
+    if (first && (rec.step === 'saved' || rec.step === 'pressed')) {
+      v.fill = fillOf(gaps);
+      if (v.fill === 'failed') v.fill_why = scrubPaths((gaps.find(g => g.mode === 'failed') || {}).reason).slice(0, 300);
+      if (text) v.blocks = blocksOf(first);
+    }
     const e = rec.step === 'saved' ? openEntryFor(rec, q.entries) : entryOf(rec, q.entries);
     if (state === 'queued' && e) v.ahead = Number(e.ahead) || 0;
     if (state === 'published') {
@@ -433,6 +488,8 @@ export function createHubLink(deps) {
     async status(data) {
       const rids = Array.isArray(data.rids) ? data.rids : null;
       if (!rids || !rids.length || rids.length > HUB_LINK_LIMITS.statusRids || !rids.every(ridOk)) return { status: 400, body: { ok: false, error: `rids: 1 to ${HUB_LINK_LIMITS.statusRids} ids` } };
+      const text = data.text === true;
+      if (text && rids.length > HUB_LINK_LIMITS.textRids) return { status: 400, body: { ok: false, error: `text: for 1 to ${HUB_LINK_LIMITS.textRids} rids` } };
       // a rid still being filed is waited for (bounded): read now, it would be `unknown`, which the Hub takes for "never arrived"
       const busy = [...new Set(rids)].filter(rid => inflight.has(rid));
       if (busy.length) {
@@ -443,7 +500,7 @@ export function createHubLink(deps) {
         if (!done) return { status: 503, body: { ok: false, error: 'a reply is still being filed; ask again' } };
       }
       const q = deps.queue();
-      return { status: 200, body: { ok: true, replies: [...new Set(rids)].map(rid => viewOf(rid, q)) } };
+      return { status: 200, body: { ok: true, replies: [...new Set(rids)].map(rid => viewOf(rid, q, { text })) } };
     },
 
     async publish(data, key) {
@@ -458,6 +515,26 @@ export function createHubLink(deps) {
       return { status: 200, body: { ok: true, ...viewOf(rid) } };
     },
 
+    // ASK AGAIN for one agent passage of a saved draft (its gap: filled, edited or failed → pending), within the page's hourly limit
+    async redo(data) {
+      const rid = data.rid;
+      if (!ridOk(rid) || typeof data.gap !== 'string' || !data.gap) return { status: 400, body: { ok: false, error: 'rid and gap required' } };
+      const rec = store.get(rid);
+      if (!rec) return { status: 404, body: { ok: false, error: 'unknown rid', rid, state: 'unknown' } };
+      const v = viewOf(rid);
+      if (rec.step !== 'saved' || v.state !== 'saved') return { status: 409, body: { ok: false, error: 'not a saved draft', ...v } };
+      const page = deps.readPage(rec.page_url);
+      const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
+      const g = thread && (((thread.msgs || [])[0] || {}).gaps || []).find(x => x && x.id === data.gap && x.kind !== 'impyrt');
+      if (!g) return { status: 404, body: { ok: false, error: 'no such passage', ...v } };
+      if (!['filled-by-agent', 'edited-by-reader', 'failed'].includes(g.mode)) return { status: 409, body: { ok: false, error: 'that passage cannot be asked again now', ...v } };
+      if (!(deps.gapBudget(rec.page_url) > 0)) { logState(rid, 'limited', 'passages-per-hour'); return { status: 429, body: { ok: false, error: 'limit', limit: 'passages-per-hour', say: HUB_LINK_SAY['passages-per-hour'], ...v } }; }
+      const r = deps.redoGap({ url: rec.page_url, thread_id: rec.thread_id, gap_id: g.id });
+      if (!r || !r.ok) return { status: 409, body: { ok: false, error: 'that passage cannot be asked again now', ...viewOf(rid) } };
+      logState(rid, 'redo');
+      return { status: 200, body: { ok: true, ...viewOf(rid) } };
+    },
+
     async cancel(data) {
       const rid = data.rid;
       if (!ridOk(rid)) return { status: 400, body: { ok: false, error: 'rid required' } };
@@ -467,6 +544,14 @@ export function createHubLink(deps) {
       if (!rec) { store.withdraw(rid); logState(rid, 'withdrawn'); return { status: 200, body: { ok: true, ...viewOf(rid) } }; }
       const v = viewOf(rid);
       if (v.state === 'cancelled') return { status: 200, body: { ok: true, ...v, repeated: true } };
+      // A SAVED DRAFT is thrown away: its thread deleted (not one the owner pressed in the drawer: that is theirs, `v.state` says so)
+      if (rec.step === 'saved' && v.state === 'saved') {
+        const d = deps.discard({ url: rec.page_url, thread_id: rec.thread_id });
+        if (!d || !d.ok) return { status: 409, body: { ok: false, error: 'it could not be thrown away', ...viewOf(rid) } };
+        store.move(rid, 'discarded', { discarded_at: clock().toISOString() });
+        logState(rid, 'discarded');
+        return { status: 200, body: { ok: true, ...viewOf(rid) } };
+      }
       const e = entryOf(rec, deps.queue().entries);
       if (rec.step !== 'pressed' || !e) return { status: 409, body: { ok: false, error: 'not in the queue', ...v } };
       const r = deps.cancel(e.id);

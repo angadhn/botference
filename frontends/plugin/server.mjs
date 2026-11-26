@@ -3316,6 +3316,31 @@ const hubLink = createHubLink({
     return blygQueue.press({ page, threadId: thread_id, scope: 'one', shown: v.ok ? v.settings.confirm : '', by: 'hub-link' });
   },
   cancel: entry => blygQueue.cancel({ entry }),
+  // a saved draft's passage asked again (as the drawer's refill), and a saved draft thrown away (as the drawer's delete of a thread)
+  gapBudget: url => gapBudget(url).left,
+  redoGap: ({ url, thread_id, gap_id }) => {
+    const page = store.readPage(url);
+    const thread = page && store.findThread(page, thread_id);
+    const msg = thread && thread.via === 'hub-link' ? thread.msgs[0] : null;
+    const gap = msg && ownerTyped(msg) && (msg.gaps || []).find(g => g.id === gap_id);
+    if (!gap || !canGapMove(gap, 'pending')) return { ok: false };
+    gapMove(gap, 'pending');
+    store.savePage(page);
+    broadcast({ type: 'page', url: page.url });
+    startGaps(page, thread_id, msg, [gap.id]);
+    return { ok: true };
+  },
+  discard: ({ url, thread_id }) => {
+    const page = store.readPage(url);
+    const i = page ? page.threads.findIndex(t => t && t.id === thread_id && t.via === 'hub-link') : -1;
+    if (i < 0) return { ok: false };
+    store.deleteRuns(store.pageKey(page.url), store.runIdsOf(page.threads[i].msgs));
+    page.threads.splice(i, 1);
+    store.savePage(page);
+    broadcast({ type: 'page', url: page.url });
+    noteDecisions(page);
+    return { ok: true };
+  },
   queue: () => { const run = blygPublish.current(); return { entries: blygQueue.view().entries, run: run ? { id: run.id, mode: run.mode, confirm: run.confirm } : null }; },
   readPage: url => store.readPage(url),
   log: line => console.log(`hub-link: ${line}`),
