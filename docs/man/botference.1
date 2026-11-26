@@ -41,6 +41,9 @@ botference \- run Claude and Codex together: a council, a web annotator, documen
 .B botference hub-link
 \fBpair\fR \fB\-\-hub\fR \fIhttps-origin\fR [\fB\-\-publish\fR \fBone-click\fR|\fBdrafts-only\fR] [\fB\-\-companion\fR \fIhttps-origin\fR] | \fBrotate\fR [\fB\-\-publish\fR \fImode\fR] | \fBoff\fR | \fBstatus\fR
 .br
+.B botference clippings
+\fBcheck\fR | \fBlist\fR
+.br
 .B botference profile
 [\fBinit\fR \fIname\fR | \fBadd\fR \fIname\fR [\fB\-\-no-login\fR] | \fBlogin\fR \fIname\fR [\fBclaude\fR|\fBcodex\fR] | \fBuse\fR \fIname\fR | \fBremove\fR \fIname\fR [\fB\-\-delete-data\fR] | \fBcurrent\fR | \fBaccount\fR [\fBadd\fR|\fBuse\fR \fBclaude\fR|\fBcodex\fR \fIlabel\fR]]
 .br
@@ -441,6 +444,12 @@ companion's \fB/hub-link/*\fR routes: a reply you write in the Hub becomes a thr
 are written by an agent, and with \fB\-\-publish one-click\fR (default \fBdrafts-only\fR) it is published through the publish
 queue. \fB\-\-hub\fR must be an https origin. \fBrotate\fR makes a new key (the old one is refused at once); \fBoff\fR deletes
 it (the routes answer 404); \fBstatus\fR shows the Hub, the publish setting, the key id and the fingerprint, never the secret.
+.SH CLIPPINGS (A READING LIST FOR YOUR HUB)
+.B botference clippings check
+reads the \fBclippings\fR setting in the companion's config.json (a folder of clipped articles and named collections of file names)
+and says every problem and every listed file it cannot read;
+.B list
+shows each collection as the Hub sees it (id, date, words, title, source address). Only the listed files can be read by the hub link.
 .SH SEE (AGENT EYES)
 .B botference see
 renders a page in headless Chrome (the system browser \- no Playwright,

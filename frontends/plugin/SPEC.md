@@ -14284,6 +14284,10 @@ Whoever holds the key can, until it is replaced:
 - make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
   public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
 - fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour;
+- read the owner's ALLOW-LISTED CLIPPINGS (`clippings`, `clipping`): for each file named in the `clippings` setting, its facts (title,
+  author, source address, date, word count) and its text; nothing else in that folder or anywhere else, never a file name or path;
+  and reply to them (filed on the page record of the clipping's source address, published as a response to that web page). The
+  owner stops it at once by removing a file or a collection from the setting, or the whole `clippings` setting, on the computer;
 - read back the text of each reply it filed itself: that one message as it now stands, including the owner's later edits to it on the
   computer, with the agent passages written into it, at most 48 KiB a reply; and the count of the thread's other publishable
   messages, not their text;
@@ -14441,3 +14445,39 @@ join `add`): no second path.
   edit of the note, `earlier` is empty and an addition is cannot-add-outside; and, through the real companion: earlier names the post just
   published; the addition sent three times and published twice more runs the edit steps once; the thread joins the same post at
   version 2; the note holds the addition once).
+
+### Clippings: a Reading list from the owner's notes (2026-11-26, `clippings.mjs`, `clippings-cli.mjs`, routes `clippings`, `clipping`)
+The owner clips articles into a folder of their notes (Obsidian Web Clipper: front matter with `source`, `title`, `author`,
+`published`; the article as markdown). The Hub shows an allow-listed selection as a Reading list; the owner selects a passage and
+replies exactly as to a blyg post, and the post responds to and quotes the ORIGINAL web page.
+- THE SETTING, `clippings` in the companion's config.json (changed only on the machine; never over HTTP; `botference clippings check
+  | list`, run in the companion's project folder, read it and the listed files and write nothing): `{ "folder": "<absolute path>",
+  "collections": [ { "name": "…", "files": ["<file name>", …] } ] }`, at most 20 collections of 100 files. Invalid or absent: the list
+  is empty and every clipping 404.
+- A FILE is read only when it is named in the setting, is a plain name (no separator, no `..`, not hidden), its real path is a plain
+  file directly inside the folder's real path (a symlink out is refused), at most 1 MiB, and has a `source:` that is an http(s)
+  address. Its id is the first 16 hex of sha256 of its name; the name and the path are never sent.
+- THE SOURCE ADDRESS is canonical (`canonicalSource`, rule `tracking-v1`): the fragment and the tracking parameters `utm_*`, `fbclid`,
+  `gclid`, `mc_cid`, `mc_eid`, `ref`, `ref_src`, `s`, `r`, `triedRedirect`, `publication_id`, `post_id`, `isFreemail`, `sd`,
+  `showWelcomeOnShare` removed.
+- `clippings {}` → the collections, each clipping's `{ id, title, author, source, published, words }`, oldest first. `clipping { id,
+  page? }` → those facts and one page of the body: `markdown` (pages of at most 40000 characters, split at blank lines) and `text`, its
+  plain form. Neither touches the records (an unreadable records file does not stop them).
+- THE PLAIN TEXT (`clippingText`, version 1; WIRE-clip.md has the rules): HTML-only lines, image-only lines and thematic breaks
+  removed; inline images, footnote references and inline tags removed; links as their text; footnote definitions as their text; line
+  marks (headings, quotes, lists) removed; escapes and entities resolved; then `*`, `~`, `` ` `` and word-edge `_` removed; each
+  paragraph one line. A quote is put through the same mark and space rules (`marksOff`) and must be found in that text, and pass the
+  usual length rule (`bindablePassage`).
+- A REPLY TO A CLIPPING (`reply { clipping: <id>, … }`, in place of `post`): checked against the clipping's text (refused: 422
+  `not-in-clipping`, nothing written); filed on the page record of the source address, made like an ordinary web page's when there is
+  none (titled from the clipping, marked a response: `export_response: 'response'`), and THE LIVE PAGE IS NOT FETCHED. From there it is
+  the plugin's ordinary web-page path, unchanged: the note responds to the page (`blyg_stub_of: { url, title }`), its quote is the web
+  quote ending with the page's address, and the site's publish asks the page whether it accepts mentions (WEB_PAGE_ASKED_SAY). The
+  thread anchors on the clipping's text (prefix and suffix from it). `earlier { clipping }`, `add_to`, drafts read-back, redo, discard,
+  `/quote`, the owner's hand and speech work as for any reply; the record keeps `clipping` in place of `post`.
+- Tests: `clippings` (the plain-text rule, the canonical address, the setting and its errors, the file rules (symlink out, a
+  folder, too large, a name with `..`), the list's order and facts with no names, pages, the passage check, the CLI);
+  `hub-link-clip` (through the real companion: only allow-listed files listed, no names or paths, a symlink out left out; a clipping
+  paged with its plain text; anything off the list 404; a quote not in the clipping refused; post and clipping together refused; a
+  reply published with `blyg_stub_of {url, title}` and the web quote; `earlier` names it and an addition goes out as version 2; a
+  draft read back and discarded; the setting removed → an empty list and 404 at once).
