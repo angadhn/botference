@@ -67,7 +67,7 @@ await test('the pages: /hub shows a Read button per post, /hub?view=archive the 
   assert.match(arc, /hub-archive-line/);
   assert.match(arc, /Post 3/);
   assert.ok(!/Distinctive words/.test(arc), 'no body text on the Archive');
-  assert.match(arc, /Archive \(<span data-n="archive">1<\/span>\)/);
+  assert.match(arc, /aria-current="page">Archive<\/a>/, 'the tab, with no count');
   const none = (await GET(B, '/hub?view=archive&q=nothing', { accept: 'text/html' })).body;
   assert.match(none, /Nothing in the Archive matches that/);
   const hit = (await GET(B, '/hub?view=archive&q=post%203', { accept: 'text/html' })).body;

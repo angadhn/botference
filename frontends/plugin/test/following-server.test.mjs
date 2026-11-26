@@ -391,7 +391,8 @@ await test('Mentions end to end: the inbox is asked with the token over netguard
   // the page
   const html = (await GET(B, '/following?view=mentions', { accept: 'text/html' })).body;
   assert.match(html, /On gardens/);
-  assert.match(html, /2 accepted, never verified/);
+  assert.match(html, /Accepted, never verified/);
+  assert.ok(!/\d+ accepted/.test(html), 'in words, not a count');
   // the token is in no response and no file the companion keeps
   for (const text of [html, JSON.stringify(await dataOf('?view=mentions')), JSON.stringify(await dataOf('?view=background')),
     fs.readFileSync(path.join(root, '.botference', 'plugin', 'following.json'), 'utf8'), fs.readFileSync(path.join(root, '.botference', 'plugin', 'config.json'), 'utf8'), srv.out()]) {
@@ -445,7 +446,7 @@ await test('the Hub and its older address serve the same page', async () => {
   assert.match(a.body, /<title>Hub /);
   assert.match(a.body, /<h1>Hub<\/h1>/);
   assert.match(a.body, /<h2>Following<\/h2>/);
-  for (const w of ['Feed', 'Mentions', 'Background']) assert.match(a.body, new RegExp(`>${w} \\(`));
+  for (const w of ['Feed', 'Mentions', 'Background']) assert.match(a.body, new RegExp(`>${w}</a>`));
   assert.equal(a.body.replace(/nonce="[^"]*"/g, ''), b.body.replace(/nonce="[^"]*"/g, ''));
 });
 

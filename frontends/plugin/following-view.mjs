@@ -11,6 +11,10 @@
 // textContent, never innerHTML.
 //
 // A reader's posts are not re-rendered here: an excerpt and a link, nothing more.
+//
+// NO UNREAD COUNTERS. The page shows no number of posts anywhere: none on the tabs, the filters, a blyg's row, the last
+// refresh, the pages ("Older posts" and "Newer posts" say where they go, not how many). The one number is the mentions not
+// yet marked read, in brackets on the Mentions tab ("Mentions (3)"); a mention marked read stops counting.
 import { escHtml } from './hosted.mjs';
 import { FILTERS, FILTER_LABELS, VIEWS, READ_STATES, cleanText, FOLLOWING_NUMBERS, INBOX_STATES, formatDate } from './following.mjs';
 
@@ -76,10 +80,13 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 #hub-pill{position:absolute;z-index:20;box-shadow:0 2px 10px rgba(0,0,0,.25);border-radius:999px;padding:.25rem .8rem}
 .hub-composer{margin:.4rem 0;padding:.5rem;border:1px solid var(--line);border-radius:.4rem;background:var(--card)}
 .hub-composer blockquote{margin:0 0 .4rem;font-size:.9em;color:var(--mut)}.hub-composer button{margin:.3rem .4rem 0 0}
+.hub-waiting{margin:.3rem 0}.hub-older-head{margin-top:1.2rem}nav.hub-pages{display:flex;flex-wrap:wrap;gap:.6rem;margin:.8rem 0}
+nav.hub-pages a{padding:.3rem .8rem;border:1px solid var(--line);border-radius:1rem;text-decoration:none}
+article.hub-older .hub-entry-body{margin:.2rem 0}
 @media (max-width:560px){
   table.blygs,table.blygs tbody,table.blygs tr,table.blygs td{display:block;width:100%}table.blygs thead{display:none}
   table.blygs tr{border:1px solid var(--line);border-radius:.5rem;padding:.5rem .6rem;margin:.5rem 0;background:var(--card)}
-  table.blygs td{border:0;padding:.1rem 0}table.blygs td.b-state::before{content:"State: "}table.blygs td.b-posts::before{content:"Posts: "}
+  table.blygs td{border:0;padding:.1rem 0}table.blygs td.b-state::before{content:"State: "}
   table.blygs td.b-acts{display:flex;flex-wrap:wrap;gap:.4rem;margin-top:.4rem}
   .acts.right{justify-content:flex-start}
 }
@@ -87,7 +94,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere}
 
 const VIEW_LABELS = Object.freeze({ feed: 'Feed', mentions: 'Mentions', background: 'Background', starred: 'Starred', archive: 'Archive' });
 // The read button and the star of one post, under its text (in its row of actions). Their labels say what a press does.
-const readBtn = (k, parts) => `<button type="button" class="tick" data-act="tick" data-key="${k}" aria-label="Mark as read: move to Archive${parts ? ` (and its ${parts} part${parts === 1 ? '' : 's'})` : ''}">\u2713 Read${parts ? ` (and its ${parts} part${parts === 1 ? '' : 's'})` : ''}</button>`;
+const readBtn = (k, parts) => `<button type="button" class="tick" data-act="tick" data-key="${k}" aria-label="Mark as read: move to Archive${parts ? ' (and its parts)' : ''}">\u2713 Read${parts ? ' (and its parts)' : ''}</button>`;
 export const starBtn = (k, star) => (star === 'starred'
   ? `<button type="button" class="star" data-act="unstar" data-key="${k}" aria-pressed="true" aria-label="Starred: remove star">\u2605 Starred</button>`
   : `<button type="button" class="star" data-act="star" data-key="${k}" aria-pressed="false" aria-label="Star: come back to it later">\u2606 Star</button>`);
@@ -133,7 +140,7 @@ function entry(e) {
   const ident = h.identity === 'disagrees'
     ? `<div class="warn">When this post was opened its page disagreed with this list: ${t(h.identity_note || 'it names another post', 300)}. Discuss used its own check there.</div>` : '';
   const folded = e.members.length
-    ? `<div class="mut">${e.members.length} published together, <a href="/hub?view=background">in Background</a></div>` : '';
+    ? `<div class="mut">Published with other parts, <a href="/hub?view=background">in Background</a></div>` : '';
   const pins = (h.pinned_list || []).length ? `<div class="mut">pinned: ${h.pinned_list.map(n => `v${Number(n)}`).join(', ')}</div>` : '';
   const k = escHtml(h.key);
   const title = h.title ? `<div class="title hub-entry-title"><a href="#e-${k}" data-act="read" data-key="${k}">${t(h.title, 200)}</a></div>` : '';
@@ -149,6 +156,33 @@ function entry(e) {
     <div class="acts right hub-entry-actions"><button type="button" data-act="respond" data-key="${k}">Respond</button><button type="button" data-act="read" data-key="${k}">Read here</button><button type="button" data-act="open" data-key="${k}">Open original</button>${readBtn(k, e.members.length)}${starBtn(k, h.star)}${menu}</div></article>`;
 }
 
+// A post that stepped aside (read state `older`): listed under "Older posts" with its blyg, date and title, and NO text: the
+// Hub released it. "Read it here" fetches it again from its blyg (through the companion, within its limits); if that fails the
+// page says why. ✓ Read moves it to the Archive; the star works as everywhere.
+function olderEntry(l) {
+  const k = escHtml(l.key);
+  return `<article class="entry hub-older read-older" id="e-${k}" data-key="${k}">
+    <div class="meta mut"><span class="kind">${t(l.kind, 20)}</span><strong>${t(l.blyg_label || l.origin, 160)}</strong><span>${day(l.updated || l.created)}</span></div>
+    ${l.title ? `<div class="title">${t(l.title, 200)}</div>` : ''}
+    <div class="hub-entry-body hub-older-body"><div class="moremsg"><button type="button" class="link" data-act="read" data-key="${k}">Read it here</button> <span class="mut">(its text is fetched from its blyg)</span></div></div>
+    <div class="acts right hub-entry-actions"><button type="button" data-act="open" data-key="${k}">Open original</button>${readBtn(k, 0)}${starBtn(k, l.star)}</div></article>`;
+}
+// "Newer posts" and "Older posts": where the list of the tab goes, never how long it is. `base` is the address of the tab.
+function pager(data, base) {
+  const pg = data.page || {};
+  const at = n => `${base}${base.includes('?') ? '&amp;' : '?'}start=${Number(n)}${pg.limit ? `&amp;n=${Number(pg.limit)}` : ''}`;
+  const links = [pg.newer !== null && pg.newer !== undefined ? `<a href="${at(pg.newer)}" class="hub-newer">Newer posts</a>` : '',
+    pg.older !== null && pg.older !== undefined ? `<a href="${at(pg.older)}" class="hub-older-link">Older posts</a>` : ''].filter(Boolean);
+  return links.length ? `<nav class="hub-pages" aria-label="pages">${links.join('')}</nav>` : '';
+}
+// What waits, one plain line a blyg (following.mjs view: `waiting`). No number.
+const WAIT_WORDS = Object.freeze({
+  new_waiting: 'some of its newer posts are still to come: the last refresh ran out of time or requests before it reached them, and the next one brings them',
+  new_failing: 'its newer posts could not be fetched; they are asked for again a little later',
+  mass_edit: 'it changed many posts you had read: they wait in the Archive, marked "edited again"',
+});
+const waitingLines = data => (data.waiting || []).map(w => `<p class="mut hub-waiting" data-origin="${t(w.origin, 500)}">${t(w.blyg_title || w.origin, 160)}: ${w.why.map(x => escHtml(WAIT_WORDS[x] || '')).filter(Boolean).join('; ')}.</p>`).join('');
+
 // An Archive line: an Unread button that puts it back in the Feed, kind, blyg, title or first words, dates, Open original. NO text of the post.
 // A post held there with a newer wording (archived_changed) says "edited again" and offers Mark read (keep it read, at the newer version).
 function archiveLine(l) {
@@ -162,7 +196,7 @@ function archiveLine(l) {
     ${l.page ? `<button type="button" class="link" data-act="open" data-key="${k}" title="${t(l.page, 500)}">Open original</button>` : ''}${again ? `<button type="button" class="link" data-act="mark-read" data-key="${k}">Mark read</button>` : ''}</div>`;
 }
 // A Starred line: like an Archive line (no text of the post), with when it was starred, and where the post is now.
-const WHERE_WORDS = Object.freeze({ feed: 'unread, in your Feed', archive: 'read, in the Archive', withdrawn: 'withdrawn', gone: 'no longer held here', unfollowed: 'its blyg is not followed now' });
+const WHERE_WORDS = Object.freeze({ feed: 'unread, in your Feed', older: 'unread, under Older posts in your Feed', archive: 'read, in the Archive', withdrawn: 'withdrawn', gone: 'no longer held here', unfollowed: 'its blyg is not followed now' });
 function starredLine(l) {
   const k = escHtml(l.key);
   const where = l.where === 'feed' ? `<a href="/hub#e-${k}">${WHERE_WORDS.feed}</a>` : escHtml(WHERE_WORDS[l.where] || '');
@@ -173,15 +207,14 @@ function starredLine(l) {
 }
 function starredPane(data) {
   return `<p class="mut">Posts you starred to come back to. A star is yours alone: nothing about it is sent to any blyg. It stays when you mark a post read.</p>
-    <section aria-label="starred" id="hub-starred">${data.starred.length ? data.starred.map(starredLine).join('') : '<p class="mut">Nothing starred yet. Star a post in the Feed to keep it here.</p>'}</section>`;
+    <section aria-label="starred" id="hub-starred">${data.starred.length ? data.starred.map(starredLine).join('') : '<p class="mut">Nothing starred yet. Star a post in the Feed to keep it here.</p>'}</section>${pager(data, '/hub?view=starred')}`;
 }
 function archivePane(data) {
   const q = data.archive_query || '';
-  const more = data.archive_total > data.archive.length
-    ? `<p class="mut">${data.archive.length} of ${Number(data.archive_total)} shown. <a href="/hub?view=archive&amp;${q ? `q=${encodeURIComponent(q)}&amp;` : ''}n=${Math.min(1000, data.archive.length + 50)}">show more</a></p>` : '';
+  const more = pager(data, `/hub?view=archive${q ? `&amp;q=${encodeURIComponent(q)}` : ''}`);
   return `<p class="mut">Posts you marked read. Only a small record of each is kept, not its text; press Unread on one to bring it back to the Feed (it is fetched again).</p>
     <form method="get" action="/hub" role="search"><input type="hidden" name="view" value="archive"><input type="search" name="q" value="${escHtml(q)}" placeholder="search titles and blygs" aria-label="search the Archive"></form>
-    ${(data.archive_notices || []).map(n => `<p class="warn hub-mass-edit">${t(n.blyg_title || n.origin, 160)} changed ${Number(n.held)} posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.</p>`).join('')}
+    ${(data.archive_notices || []).map(n => `<p class="warn hub-mass-edit">${t(n.blyg_title || n.origin, 160)} changed many posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.</p>`).join('')}
     <section aria-label="archive" id="hub-archive">${data.archive.length ? data.archive.map(archiveLine).join('') : `<p class="mut">${q ? 'Nothing in the Archive matches that.' : 'Nothing archived yet. Press ✓ Read under a post in the Feed when you have read it.'}</p>`}</section>${more}`;
 }
 
@@ -215,7 +248,7 @@ function mentionsPane(data) {
   const box = data.inbox;
   const warn = box.token_warning ? `<p class="warn">${t(box.token_warning, 300)}</p>` : '';
   const line = `${warn}<p class="mut">Your inbox: ${escHtml(INBOX_WORDS[box.state] || box.state)}${box.error ? ` (${t(box.error, 200)})` : ''}${box.generated_at ? `; generated ${when(box.generated_at)}` : ''}.
-    ${box.blocked_count ? `${Number(box.blocked_count)} blocked. ` : ''}${data.tabs.mentions_unseen ? `<button type="button" data-act="mention-seen-all">Mark all seen</button>` : ''}</p>`;
+    ${box.blocked_count ? 'Some were blocked. ' : ''}${data.tabs.mentions_unseen ? `<button type="button" data-act="mention-seen-all">Mark all seen</button>` : ''}</p>`;
   const verified = data.mentions.filter(m => m.reason !== 'plain mention (lower class)');
   const plain = data.mentions.filter(m => m.reason === 'plain mention (lower class)');
   const groups = new Map();
@@ -223,7 +256,7 @@ function mentionsPane(data) {
   const body = [...groups.values()].map(list => `<section><h2>${t(list[0].post_title || list[0].post_url || 'A post of yours', 200)}</h2>
       ${list[0].post_url ? `<div class="mut">${addr(list[0].post_url)}</div>` : ''}${list.map(m => mentionCard(m, m.reason)).join('')}</section>`).join('');
   const nv = box.never_verified_count
-    ? `<p class="mut">${Number(box.never_verified_count)} accepted, never verified${box.never_verified.length ? `: ${box.never_verified.map(x => t(x, 160)).join('; ')}` : ''}.</p>` : '';
+    ? `<p class="mut">Accepted, never verified${box.never_verified.length ? `: ${box.never_verified.map(x => t(x, 160)).join('; ')}` : ''}.</p>` : '';
   return `${line}${body || (box.state === 'off' ? '<p class="mut">Set an inbox below to see responses to your posts here.</p>' : '<p class="mut">No responses yet.</p>')}
     ${plain.length ? `<h2>Plain mentions</h2><p class="mut">A lower class: the source is not a blyg post and was checked only by its link.</p>${plain.map(m => mentionCard(m, m.reason)).join('')}` : ''}${nv}
     <p class="mut">Notices (links and reposts) are in <a href="/hub?view=background">Background</a>.</p>`;
@@ -280,10 +313,10 @@ const SCRIPT = `
     if(a==='tick'||a==='untick'||a==='star'||a==='unstar')return rowAct(b,a);
     if(a==='tick-all'){var ticks=[];document.querySelectorAll('#hub-posts .hub-entry').forEach(function(e){if(!e.hidden)ticks.push({key:e.dataset.key,members:membersOf(e)});});
       if(!ticks.length)return;
-      if(!confirm('Mark the '+ticks.length+' post'+(ticks.length===1?'':'s')+' shown as read (move them to the Archive)?'))return;
+      if(!confirm('Mark the posts shown as read (move them to the Archive)?'))return;
       // 100 a request (the Hub takes no more at once), one request after another
       var total=0,parts=0,i=0;
-      var next=function(){if(i>=ticks.length){done({ok:true},'archived '+total+(parts?', and '+parts+' parts':''));return;}
+      var next=function(){if(i>=ticks.length){done({ok:true},total?'moved to the Archive':'nothing to move');return;}
         var batch=ticks.slice(i,i+100);i+=100;
         return post('/following/read',{ticks:batch}).then(function(r){if(!(r&&r.ok)){say((r&&r.error)||'failed',true);return;}total+=Number(r.archived)||0;parts+=Number(r.parts)||0;return next();});};
       return next();}
@@ -299,7 +332,6 @@ const SCRIPT = `
   // Read (Feed), Unread (Archive) and the star: a button each in the row of actions, handled here and nowhere else. A post's own
   // text is inert and cannot hold one (the sanitiser removes buttons, ids and classes), and a control inside a post's text is ignored.
   function membersOf(row){var m=row&&row.dataset&&row.dataset.members;return m?m.split(' ').filter(Boolean):[];}
-  function count(name,d){document.querySelectorAll('[data-n="'+name+'"]').forEach(function(n){n.textContent=String(Math.max(0,(Number(n.textContent)||0)+d));});}
   // A row's request (Read, Unread, a star): ONE field (data-tick on the row), one of ROW_MODES, moved only by rowMove, which refuses
   // a move not in the table: a second press while the first is being sent does nothing. No button is disabled: the mode is the
   // field, and aria-busy only shows it.
@@ -330,11 +362,11 @@ const SCRIPT = `
     return post('/following/read',body).then(function(r){
       rowMove(row,'ready');
       if(!(r&&r.ok)){say((r&&r.error)||'failed',true);return;}
-      if(a==='unstar'&&row.classList.contains('hub-starred-line')){row.remove();count('starred',-1);say('star removed');return;}
-      if(a==='star'||a==='unstar'){starLabel(b,a==='star');count('starred',a==='star'?1:-1);say(a==='star'?'starred':'star removed');return;}
+      if(a==='unstar'&&row.classList.contains('hub-starred-line')){row.remove();say('star removed');return;}
+      if(a==='star'||a==='unstar'){starLabel(b,a==='star');say(a==='star'?'starred':'star removed');return;}
       var parts=Number(r.parts)||0;
-      row.remove();count('feed',a==='untick'?1:-1);count('archive',a==='untick'?-1:1+parts);
-      say(a==='untick'?'back in the Feed':parts?'archived, and its '+parts+' part'+(parts===1?'':'s'):'');
+      row.remove();
+      say(a==='untick'?'back in the Feed':parts?'archived, with its parts':'');
       // the Feed fell below its target and a blyg has more queued: one top-up (never two at once, never queued)
       if(a==='tick'&&r.topup)topUp();
     });
@@ -419,16 +451,16 @@ const SCRIPT = `
  */
 export function followingPage({ data, settings, refused = [], notice = '', nonce = '', locale = 'en-US', theme = { state: 'none', reason: '' } }) {
   LOCALE = locale;
+  // (no counts: see NO UNREAD COUNTERS at the top; the one number is the mentions not yet marked read)
   const tabs = VIEWS.map(v => {
-    const n = data.tabs[v];
-    const extra = v === 'mentions' && data.tabs.mentions_unseen ? ` <span class="badge">${Number(data.tabs.mentions_unseen)} unseen</span>` : '';
-    return `<a href="/hub${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])} (<span data-n="${escHtml(v)}">${Number(n) || 0}</span>)${extra}</a>`;
+    const unseen = v === 'mentions' ? Number(data.tabs.mentions_unseen) || 0 : 0;
+    return `<a href="/hub${v === 'feed' ? '' : `?view=${v}`}"${v === data.view ? ' aria-current="page"' : ''}>${escHtml(VIEW_LABELS[v])}${unseen ? ` (<span data-n="mentions-unseen">${unseen}</span>)` : ''}</a>`;
   }).join('');
-  const nav = FILTERS.map(f => `<a href="/hub${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])} (${Number(data.counts[f]) || 0})</a>`).join('');
+  const nav = FILTERS.map(f => `<a href="/hub${f === 'all' ? '' : `?filter=${f}`}"${f === data.filter ? ' aria-current="page"' : ''}>${escHtml(FILTER_LABELS[f])}</a>`).join('');
   const last = data.last_run;
-  const lastLine = last ? `Last refresh ${when(last.at)}: ${Number(last.new)} new${last.backfilled ? ` (${Number(last.backfilled)} read back from earlier)` : ''}, ${Number(last.edited)} edited, ${Number(last.requests)} requests${last.deferred ? `, ${Number(last.deferred)} deferred` : ''}${last.refused ? `, ${Number(last.refused)} refused` : ''}.` : 'Not refreshed yet.';
+  const lastLine = last ? `Last refresh ${when(last.at)}.` : 'Not refreshed yet.';
   const blygs = data.blygs.map(b => `<tr><td class="b-name">${t(b.title || b.origin, 160)}<div class="mut">${addr(b.origin, 60)}</div>${b.last_error ? `<div class="warn">${t(b.last_error, 300)}</div>` : ''}</td>
-      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? `<div class="mut">${Number(b.failures)} failures</div>` : ''}${BACKFILL_WORDS[b.backfill] ? `<div class="${String(b.backfill).startsWith('paused_') ? 'warn' : 'mut'} b-backfill">${escHtml(BACKFILL_WORDS[b.backfill])}${b.bad_documents ? ` (${Number(b.bad_documents)} of them)` : ''}</div>` : ''}${String(b.backfill).startsWith('paused_') ? `<button type="button" data-act="retry" data-origin="${escHtml(b.origin)}" title="forget the documents it could not use, and read its list again">Retry</button>` : ''}</td><td class="b-posts">${Number(b.items)} unread${b.archived ? `<div class="mut">${Number(b.archived)} archived</div>` : ''}</td>
+      <td class="b-state"><span class="badge">${t(b.state, 20)}</span>${b.state === 'unreachable' ? '<div class="mut">asked again after a pause</div>' : ''}${BACKFILL_WORDS[b.backfill] ? `<div class="${String(b.backfill).startsWith('paused_') ? 'warn' : 'mut'} b-backfill">${escHtml(BACKFILL_WORDS[b.backfill])}</div>` : ''}${String(b.backfill).startsWith('paused_') ? `<button type="button" data-act="retry" data-origin="${escHtml(b.origin)}" title="forget the documents it could not use, and read its list again">Retry</button>` : ''}</td>
       <td class="b-acts">${b.state === 'paused' || b.state === 'gone' || b.state === 'unreachable' ? `<button type="button" data-act="resume" data-origin="${escHtml(b.origin)}">${b.state === 'unreachable' ? 'Retry' : 'Resume'}</button>` : ''}
         ${b.state === 'active' || b.state === 'unreachable' ? `<button type="button" data-act="pause" data-origin="${escHtml(b.origin)}">Pause</button>` : ''}
         ${unfollowChoice(b.origin)}</td></tr>`).join('');
@@ -440,13 +472,17 @@ export function followingPage({ data, settings, refused = [], notice = '', nonce
       ? `<p class="mut">What should not interrupt reading: withdrawn posts, posts folded into a burst, versions with no new words, posts of paused blygs, and notices (links and reposts) from your inbox. A post comes back to the Feed when it gets a real new version.</p>
          ${data.background.length ? data.background.map(backgroundEntry).join('') : '<p class="mut">Nothing here.</p>'}`
       : `<nav class="filters" aria-label="filter">${nav}</nav>
+         ${waitingLines(data)}
          <input type="search" id="hub-search" placeholder="search every word" aria-label="search every word on this page">
          <section aria-label="posts" id="hub-posts">${data.entries.length ? data.entries.map(entry).join('')
+           : (data.older || []).length ? ''
            : data.read_all ? '<p class="caught-up" role="status">You have read everything from the blygs you follow.</p>'
            : data.blygs.length ? '<p class="mut">Nothing unread here. A refresh reads further back in the blygs you follow.</p>'
            : '<p class="mut">Nothing here yet. Follow a blyg below, then Refresh now.</p>'}</section>
-         ${data.entry_total > data.entries.length ? `<p class="mut">${data.entries.length} of ${Number(data.entry_total)} shown (search covers these). <a href="/hub?${data.filter === 'all' ? '' : `filter=${escHtml(data.filter)}&amp;`}n=${Math.min(1000, (Number(data.limit) || 100) + 100)}">show more</a></p>` : ''}
-         ${data.tabs.background ? `<p class="mut"><a href="/hub?view=background">${Number(data.tabs.background)} in Background</a></p>` : ''}`;
+         ${(data.older || []).length ? `<section aria-label="older posts" id="hub-older"><h2 class="hub-older-head">Older posts</h2>
+           <p class="mut">Unread posts that stepped aside when newer ones came in. Their text is not kept here: reading one fetches it from its blyg.</p>${data.older.map(olderEntry).join('')}</section>` : ''}
+         ${pager(data, `/hub${data.filter === 'all' ? '' : `?filter=${escHtml(data.filter)}`}`)}
+         ${data.tabs.background ? '<p class="mut"><a href="/hub?view=background">Posts in Background</a></p>' : ''}`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Hub — Discuss</title><style nonce="${escHtml(nonce)}">${CSS}</style>${theme.state === 'ok' ? '<link rel="stylesheet" href="/hub/theme/hub.css">' : ''}</head><body class="hub"><main class="hub-main">
 <p class="mut"><a href="/pages">All annotated pages</a></p>
@@ -458,7 +494,7 @@ ${notice ? `<p class="warn">${t(notice, 300)}</p>` : ''}${refused.length ? `<p c
 ${pane}
 <h2>Following</h2>
 <p class="mut">The blygs you follow. Add one, import a blogroll, or change the settings below.</p>
-<table class="blygs"><thead><tr><th>Blyg</th><th>State</th><th>Posts</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="4" class="mut">None yet.</td></tr>'}</tbody></table>
+<table class="blygs"><thead><tr><th>Blyg</th><th>State</th><th></th></tr></thead><tbody>${blygs || '<tr><td colspan="3" class="mut">None yet.</td></tr>'}</tbody></table>
 <h2>Follow a blyg</h2>
 <form id="follow-form"><label>Any address on it (a post, its front page) <input type="url" name="url" required size="48" placeholder="https://"></label><button type="submit">Follow</button></form>
 <h2>Import a blogroll</h2>

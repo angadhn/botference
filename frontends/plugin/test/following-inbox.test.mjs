@@ -254,8 +254,9 @@ test('the Mentions page: grouped by your post, passage, details as escaped JSON,
   const body = html.replace(/<script nonce="N0NCE">[\s\S]*?<\/script>/, '[our script]');
   assert.match(body, /<h2>On gardens<\/h2>/);
   assert.match(body, /an invented passage about gardens/);
-  assert.match(body, /2 accepted, never verified/);
-  assert.match(body, /1 blocked/);
+  assert.match(body, /Accepted, never verified/);
+  assert.match(body, /Some were blocked/);
+  assert.ok(!/\d+ (accepted|blocked)/.test(body), 'no counts on the Mentions page');
   assert.match(body, /Plain mentions/);
   assert.match(body, /class unknown/);
   assert.match(body, /<details><summary[^>]*>details<\/summary><pre>/);

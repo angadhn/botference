@@ -3516,7 +3516,7 @@ function handleFollowing(route, req, res) {
   };
   const viewOf = async () => withThreads(await following.view({ view: q.get('view') || 'feed', filter: q.get('filter') || 'all', mine: settings().settings.my_origins,
     limit: Math.max(1, Math.min(Number(q.get('n')) || (q.get('view') === 'archive' ? followingMod.LIMITS.archivePage : followingMod.LIMITS.feedEntries), 1000)),
-    q: q.get('q') || '' }));
+    q: q.get('q') || '', start: Math.max(0, Number(q.get('start')) || 0) }));
   const say = fn => async data => {
     try { return ok(res, await fn(data)); } catch (e) { return fail(res, 400, String((e && e.message) || 'failed').slice(0, 300)); }
   };

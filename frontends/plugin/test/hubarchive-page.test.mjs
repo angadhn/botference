@@ -63,7 +63,9 @@ async function hub({ n = 4, settings = {}, evil = false } = {}) {
   x.done = () => fs.rmSync(dir, { recursive: true, force: true });
   return x;
 }
-const countOf = (doc, name) => Number(doc.querySelector(`[data-n="${name}"]`).textContent);
+// NO UNREAD COUNTERS: the page shows no number of posts anywhere; the one number is the mentions not yet seen
+const TABS = ['Feed', 'Mentions', 'Background', 'Starred', 'Archive'];
+const noCounts = doc => { assert.equal(doc.querySelectorAll('[data-n]:not([data-n="mentions-unseen"])').length, 0, 'no counter on the page'); };
 
 test('Feed: every post has ONE "✓ Read" button under its text, beside Open original, labelled for what it does, reachable by keyboard', async () => {
   const x = await hub({ n: 4 });
@@ -86,13 +88,15 @@ test('Feed: every post has ONE "✓ Read" button under its text, beside Open ori
   assert.equal(p.doc.querySelectorAll('button.tick').length, 4, 'one per post, and nothing else on the page');
   assert.equal(p.doc.querySelectorAll('input[type=checkbox]').length, 0);
   const tabs = [...p.doc.querySelectorAll('nav.hub-tabs a')].map(a => a.textContent.replace(/\s+/g, ' ').trim());
-  assert.deepEqual(tabs, ['Feed (4)', 'Mentions (0)', 'Background (0)', 'Starred (0)', 'Archive (0)']);
+  assert.deepEqual(tabs, TABS, 'no counts on the tabs');
+  assert.deepEqual([...p.doc.querySelectorAll('nav.filters:not(.hub-tabs) a')].map(a => a.textContent.trim()), ['All', 'New', 'Threads', 'Fragments', 'Responses to me'], 'nor on the filters');
+  noCounts(p.doc);
   assert.ok(!/Mark seen|Mark all seen|Tick all shown|data-act="(see|seen-all)"/.test(p.html), 'no "seen", no "Tick all shown"');
   assert.match(p.html, /data-act="tick-all">Mark all read</);
   x.done();
 });
 
-test('ticking: one click posts the tick, the post leaves the page in place (no reload), the counts follow; the next unread posts are already there', async () => {
+test('ticking: one click posts the tick, the post leaves the page in place (no reload), no count anywhere; the next unread posts are already there', async () => {
   const x = await hub({ n: 4 });
   const p = await x.run({}, { reply: () => ({ ok: true, read: 'archived', unread: 3, target: 50, topup: false }) });
   const first = p.doc.querySelector('button.tick');
@@ -102,8 +106,7 @@ test('ticking: one click posts the tick, the post leaves the page in place (no r
   assert.deepEqual(p.calls, [{ url: '/following/read', body: { key, move: 'tick', members: [] } }]);
   assert.equal(p.doc.querySelectorAll('article.hub-entry').length, 3);
   assert.equal(p.doc.getElementById('e-' + key), null);
-  assert.equal(countOf(p.doc, 'feed'), 3);
-  assert.equal(countOf(p.doc, 'archive'), 1);
+  noCounts(p.doc);
   assert.equal(p.reloads(), 0, 'no page reload');
   x.done();
 });
@@ -168,7 +171,7 @@ test('a Read that fails leaves the post where it is, its row ready again with th
   assert.equal(row.getAttribute('aria-busy'), 'false');
   assert.equal(c.textContent, '\u2713 Read');
   assert.equal(p.doc.getElementById('msg').textContent, 'no such post');
-  assert.equal(countOf(p.doc, 'feed'), 2);
+  noCounts(p.doc);
   // and it can be pressed again
   p.press(c);
   await p.settle();
@@ -182,7 +185,7 @@ test('Mark all read: asks first; sends exactly the posts shown (not the ones the
   p.doc.querySelector('button[data-act=tick-all]').click();
   await p.settle();
   assert.equal(p.confirms.length, 1);
-  assert.match(p.confirms[0], /Mark the 4 posts shown as read \(move them to the Archive\)\?/);
+  assert.equal(p.confirms[0], 'Mark the posts shown as read (move them to the Archive)?', 'no number in the question');
   assert.deepEqual(p.calls, [], 'declined: nothing is sent');
   p = await x.run();
   const search = p.doc.getElementById('hub-search');
@@ -190,14 +193,14 @@ test('Mark all read: asks first; sends exactly the posts shown (not the ones the
   search.dispatchEvent(new p.w.Event('input', { bubbles: true }));
   p.doc.querySelector('button[data-act=tick-all]').click();
   await p.settle();
-  assert.match(p.confirms[0], /Mark the 1 post shown as read/);
+  assert.equal(p.confirms[0], 'Mark the posts shown as read (move them to the Archive)?');
   const shown = [...p.doc.querySelectorAll('article.hub-entry')].filter(e => !e.hidden).map(e => e.dataset.key);
   assert.deepEqual(p.calls, [{ url: '/following/read', body: { ticks: shown.map(key => ({ key, members: [] })) } }]);
   assert.equal(shown.length, 1);
   x.done();
 });
 
-test('Archive: lines with an Unread button, kind, blyg, title, date and Open original; NO text of the post; counts right', async () => {
+test('Archive: lines with an Unread button, kind, blyg, title, date and Open original; NO text of the post; no counts', async () => {
   const x = await hub({ n: 5 });
   await x.f.tickMany((await Promise.all([2, 4, 5].map(async k => await x.f.keyFor(A, idOf(k))))));
   const p = await x.run({ view: 'archive' });
@@ -219,8 +222,8 @@ test('Archive: lines with an Unread button, kind, blyg, title, date and Open ori
   assert.ok(lines[0].querySelector('button[data-act=open]'));
   assert.equal(p.doc.querySelectorAll('button.tick').length, 0, 'the Feed\'s Read buttons are not on this tab');
   assert.equal(p.doc.querySelector('button[data-act=tick-all]'), null, 'Mark all read belongs to the Feed');
-  assert.deepEqual([...p.doc.querySelectorAll('nav.hub-tabs a')].map(a => a.textContent.replace(/\s+/g, ' ').trim()), ['Feed (2)', 'Mentions (0)', 'Background (0)', 'Starred (0)', 'Archive (3)']);
-  assert.equal(p.doc.querySelector('nav.hub-tabs a[aria-current=page]').textContent.replace(/\s+/g, ' ').trim(), 'Archive (3)');
+  assert.deepEqual([...p.doc.querySelectorAll('nav.hub-tabs a')].map(a => a.textContent.replace(/\s+/g, ' ').trim()), TABS);
+  assert.equal(p.doc.querySelector('nav.hub-tabs a[aria-current=page]').textContent.replace(/\s+/g, ' ').trim(), 'Archive');
   assert.ok(!p.doc.querySelector('nav.filters:not(.hub-tabs)'), 'the Feed\'s sub-filters are not on the Archive');
   assert.ok(p.doc.querySelector('input[type=search][name=q]'), 'a search box, which asks the companion (all records, not only the shown ones)');
   // back to the Feed from here
@@ -228,17 +231,23 @@ test('Archive: lines with an Unread button, kind, blyg, title, date and Open ori
   await p.settle();
   assert.deepEqual(p.calls, [{ url: '/following/read', body: { key: un.dataset.key, move: 'untick' } }]);
   assert.equal(p.doc.querySelectorAll('.hub-archive-line').length, 2);
-  assert.equal(countOf(p.doc, 'archive'), 2);
-  assert.equal(countOf(p.doc, 'feed'), 3);
+  noCounts(p.doc);
   x.done();
 });
 
-test('the Archive pages: 50 lines at a time with "show more"; a search that matches nothing says so; an empty Archive says what to do', async () => {
+test('the Archive pages: 50 lines at a time with "Older posts" (no count); a search that matches nothing says so; an empty Archive says what to do', async () => {
   const x = await hub({ n: 60 });
   await x.f.tickMany((await x.f.view({ limit: 1000 })).entries.map(e => e.head.key));
   const first = await x.run({ view: 'archive', limit: F.LIMITS.archivePage });
   assert.equal(first.doc.querySelectorAll('.hub-archive-line').length, 50);
-  assert.match(first.html, /50 of 60 shown\. <a href="\/hub\?view=archive&amp;n=100">show more<\/a>/);
+  assert.match(first.html, /<a href="\/hub\?view=archive&amp;start=50&amp;n=50" class="hub-older-link">Older posts<\/a>/);
+  assert.ok(!/60|of \d+ shown|show more|Newer posts/.test(first.doc.querySelector('nav.hub-pages').textContent), 'where it goes, never how many');
+  const second = await x.run({ view: 'archive', limit: 50, start: 50 });
+  assert.equal(second.doc.querySelectorAll('.hub-archive-line').length, 10);
+  assert.match(second.html, /<a href="\/hub\?view=archive&amp;start=0&amp;n=50" class="hub-newer">Newer posts<\/a>/);
+  assert.ok(!/Older posts/.test(second.doc.querySelector('nav.hub-pages').textContent), 'the last page');
+  const firstKeys = [...first.doc.querySelectorAll('.hub-archive-line')].map(l => l.dataset.key);
+  assert.ok([...second.doc.querySelectorAll('.hub-archive-line')].every(l => !firstKeys.includes(l.dataset.key)), 'the next lines, none again');
   const none = await x.run({ view: 'archive', q: 'zzzz', limit: 50 });
   assert.match(none.html, /Nothing in the Archive matches that\./);
   const empty = await hub({ n: 1 });
@@ -285,13 +294,13 @@ test('nothing in a post\'s text can forge a Read or Star control: the sanitiser 
   x.done();
 });
 
-test('Background and Mentions are unchanged by the Archive; the Following table says how far back each blyg has been read', async () => {
+test('Background and Mentions are unchanged by the Archive; the Following table says how far back each blyg has been read, and counts nothing', async () => {
   const x = await hub({ n: 3, settings: { following_unread_target: 2 } });
   const html = await x.html();
   assert.match(html, /more to fetch/);
-  assert.match(html, /2 unread/);
+  assert.ok(!/\d+ unread|<th>Posts<\/th>|class="b-posts"/.test(html), 'no unread count for a blyg');
   await x.f.tickMany((await x.f.view()).entries.map(e => e.head.key));
-  assert.match(await x.html(), /2 archived/);
+  assert.ok(!/\d+ archived/.test(await x.html()), 'nor an archived one');
   x.done();
 });
 
@@ -301,7 +310,8 @@ test('a blyg whose reading back is paused says why, in words, with a Retry that 
   x.f.view = async q => { const v = await real(q); v.blygs[0].backfill = 'paused_bad_documents'; v.blygs[0].bad_documents = 100; return v; };
   const p = await x.run();
   const cell = p.doc.querySelector('td.b-state');
-  assert.match(cell.textContent, /reading back is paused: this blyg served documents that could not be used\. New posts are still fetched\. \(100 of them\)/);
+  assert.match(cell.textContent, /reading back is paused: this blyg served documents that could not be used\. New posts are still fetched\./);
+  assert.ok(!/100/.test(cell.textContent), 'in words, not a count');
   assert.ok(cell.querySelector('.b-backfill.warn'));
   const retry = cell.querySelector('button[data-act=retry]');
   retry.click();
@@ -353,7 +363,7 @@ test('an edited post says "edited since you read it" in the Feed; an "edited aga
   x.done();
 });
 
-test('a thread with folded parts carries their keys; ticking it sends them, and the answer "and its N parts" is said', async () => {
+test('a thread with folded parts carries their keys; ticking it sends them, and says so without a count', async () => {
   const x = await hub({ n: 1 });
   const parts = [2, 3].map(k => ({ origin: A, id: idOf(k), version: 1 }));
   for (const k of [2, 3]) x.site.put(makeDoc({ id: idOf(k), origin: A, title: `Part ${k}`, created: '2026-11-05T10:00:00Z' }));
@@ -364,13 +374,13 @@ test('a thread with folded parts carries their keys; ticking it sends them, and 
   const art = p.doc.querySelector(`article[data-key="${head}"]`);
   assert.deepEqual(art.dataset.members.split(' ').sort(), [await x.f.keyFor(A, idOf(2)), await x.f.keyFor(A, idOf(3))].sort());
   const box = art.querySelector('button.tick');
-  assert.equal(box.textContent, '\u2713 Read (and its 2 parts)');
-  assert.equal(box.getAttribute('aria-label'), 'Mark as read: move to Archive (and its 2 parts)');
+  assert.equal(box.textContent, '\u2713 Read (and its parts)');
+  assert.equal(box.getAttribute('aria-label'), 'Mark as read: move to Archive (and its parts)');
   p.press(box);
   await p.settle();
   assert.deepEqual(p.calls[0].body.members.sort(), art.dataset.members.split(' ').sort());
-  assert.equal(p.doc.getElementById('msg').textContent, 'archived, and its 2 parts');
-  assert.equal(countOf(p.doc, 'archive'), 3);
+  assert.equal(p.doc.getElementById('msg').textContent, 'archived, with its parts');
+  noCounts(p.doc);
   x.done();
 });
 
@@ -381,7 +391,7 @@ test('a mass edit is ONE line at the top of the Archive for that blyg, in words'
   const p = await x.run({ view: 'archive' });
   const lines = p.doc.querySelectorAll('.hub-mass-edit');
   assert.equal(lines.length, 1);
-  assert.equal(lines[0].textContent, 'Alpha Notes changed 37 posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.');
+  assert.equal(lines[0].textContent, 'Alpha Notes changed many posts you had read. They stay here, marked "edited again", and come back to the Feed a few at a time.');
   x.done();
 });
 
@@ -408,7 +418,7 @@ test('a companion that cannot be reached (the request itself fails): the row, th
   x.done();
 });
 
-test('the star: one per post beside Read; a press stars it in place (no reload), says so, and counts; again removes it; a failure changes nothing', async () => {
+test('the star: one per post beside Read; a press stars it in place (no reload), says so (no count); again removes it; a failure changes nothing', async () => {
   const x = await hub({ n: 3 });
   await new Promise(res => setTimeout(res, 450)); // (an earlier test's page may still have a reload timer pending)
   let answer = { ok: true, star: 'starred' };
@@ -422,7 +432,7 @@ test('the star: one per post beside Read; a press stars it in place (no reload),
   assert.equal(star.textContent, '\u2605 Starred');
   assert.equal(star.getAttribute('aria-label'), 'Starred: remove star');
   assert.equal(star.getAttribute('aria-pressed'), 'true');
-  assert.equal(countOf(p.doc, 'starred'), 1);
+  noCounts(p.doc);
   assert.equal(p.reloads(), 0);
   assert.equal(p.doc.querySelectorAll('article.hub-entry').length, 3, 'a star does not mark it read: the post stays');
   answer = { ok: false, error: 'at most 500 posts can be starred: remove a star first' };
@@ -434,7 +444,6 @@ test('the star: one per post beside Read; a press stars it in place (no reload),
   p.press(star);
   await p.settle();
   assert.equal(star.textContent, '\u2606 Star');
-  assert.equal(countOf(p.doc, 'starred'), 0);
   x.done();
 });
 
@@ -450,14 +459,13 @@ test('the Starred tab: newest starred first, light lines (no text), where each p
   const byKey = k => lines.find(l => l.dataset.key === k).textContent.replace(/\s+/g, ' ');
   assert.match(byKey(keys[0]), /unread, in your Feed/);
   assert.match(byKey(keys[1]), /read, in the Archive/);
-  assert.equal(countOf(p.doc, 'starred'), 3);
+  noCounts(p.doc);
   const remove = lines[0].querySelector('button[data-act=unstar]');
   assert.equal(remove.textContent, 'Remove star');
   p.press(remove);
   await p.settle();
   assert.deepEqual(p.calls[0].body, { key: lines[0].dataset.key, move: 'unstar' });
   assert.equal(p.doc.querySelectorAll('.hub-starred-line').length, 2);
-  assert.equal(countOf(p.doc, 'starred'), 2);
   const empty = await hub({ n: 1 });
   assert.match((await empty.run({ view: 'starred' })).html, /Nothing starred yet/);
   empty.done(); x.done();
