@@ -14118,7 +14118,10 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   not-set-up, queue-refused) }`. Nothing else of the page.
 - Other answers: `413 { ok:false, error:'too-large', say:'This reply is too long to send to your computer: at most 16 KB of text.' }`
   for a body over 16384 bytes (the sentence is fixed); `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
-  `requests-per-minute`, `replies-per-hour`; `503` when the records file is unreadable (write routes only); `500 internal error`.
+  `requests-per-minute`, `replies-per-hour`; `503 { ok:false, error:'the hub link records on the computer are unreadable' }` from every route but ping when the records file
+  cannot be read (status included: no rid is then said to be anything, `unknown` least of all); `500 { ok:false, error:'internal
+  error', …view }`, carrying the reply's view whenever its rid is recorded (for example the queue accepted the press and writing the
+  record then failed: the view says `queued`, and a later status says the same).
 
 ### Publishing from the Hub (`blyg-queue PRESSED_BY`)
 - A press goes through `blygQueue.press({ …, scope: 'one', shown: the setting in force, by: 'hub-link' })`. `PRESSED_BY = ['owner',
@@ -14147,7 +14150,13 @@ only.
 moved only by `moveRecord`, which refuses any move but saved → pressed: a rid is pressed at most once, across restarts. `withdrawn` is
 born so (a cancel of a rid never seen: `{ rid, step, at }` only), is final, never counts against a limit, and at most 500 are kept (the
 oldest withdrawn one is forgotten first; filed records are never dropped for one). An unreadable file (or one not
-this shape) is never written over: the write routes answer 503 rather than risk acting twice; status answers `unknown`.
+this shape) is never written over: every route but ping answers 503 rather than risk acting twice or calling a rid unknown. A write
+that fails (a full disk) leaves the record as it is in memory, which every answer reports; the file catches up at the next write that
+succeeds (a restart before then reads the file as it last was).
+AGED OUT: a record is forgotten 30 days after its reply arrived (at the first write after that). Its rid then answers `unknown`, and a
+reply with that rid would be filed as new; the Hub deletes its own copy after 7 days, well before. Forgetting a record touches nothing
+else: the thread stays on its page as the owner left it (a saved draft is still a draft in the drawer, and can be published there).
+"Your computer no longer tracks this reply" is the true sentence for `unknown` on a rid the Hub once saw filed.
 
 ### Limits (`HUB_LINK_LIMITS`)
 30 signed requests a minute (memory), 20 replies an hour and 10 presses a day (counted from the records, so a restart does not reset
