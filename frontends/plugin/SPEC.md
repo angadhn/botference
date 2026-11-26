@@ -14110,25 +14110,41 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   is still being filed (verifying the passage) is waited for, at most 5 s (`statusWaitMs`); still filing then: `503 { ok:false,
   error:'a reply is still being filed; ask again' }` for the whole request. So `unknown` never means "on its way".
   `status { rids: [1..5], text: true }` adds `blocks` to the view of each reply this link filed (saved or pressed, its thread still
-  there): its first message only, in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id,
-  instruction, state, text, model, at, reason? }` for each agent passage (`state` is the gap's tkgaps mode; `reason` for a failed one,
-  paths scrubbed; a removed passage is left out with its `/tk` mark). The owner's words are bounded by the reply's own 16 KiB; the agent
-  text is cut at 32 KiB in all (`agentTextBytes`). Never another thread, message, page, setting or path. The Hub must show it as text
-  only (textContent), never as markup.
+  there): THE MESSAGE THE LINK FILED only (`filedMsgOf`: the record keeps its `msg_ts`; the message with that ts whose channel is
+  still `hub-link`), in order, `{ kind: 'own', text }` for the owner's words between passages and `{ kind: 'agent', id, instruction,
+  state, text, model, at, reason? }` for each agent passage (`state` is the gap's tkgaps mode; `reason` for a failed one, paths
+  scrubbed; a removed passage is left out with its `/tk` mark). Never another message of the thread (the owner's later notes, an
+  agent's answers), page, setting or path. If the filed message is gone (deleted on the computer) or is no longer the link's (the
+  owner edited it on the computer, which makes its channel `drawer`), there are no blocks and the reply reads as ended by the
+  computer (`cancelled`, as for a deleted thread). SIZE: one reply's blocks are at most 48 KiB (`blocksJsonBytes`) measured after JSON
+  encoding, own words and agent text together (the owner may have made the message far longer on the computer); a block that does not
+  fit has its text cut to fit, the rest are left out, and the view says `text_cut: true`. A status with text is then at most about
+  256 KiB (`textResponseBytes`; 5 replies). The Hub must show all of it as text only (textContent), never as markup.
 - `publish { rid }` → the view. A saved reply is pressed; a pressed one answers `repeated: true`; an unknown rid `404 { …, state:
   'unknown' }`; a reply no longer saved (its thread deleted, or published from the drawer) `409` with its view.
 - `cancel { rid }` → the view. A SAVED DRAFT (never pressed, not pressed in the drawer either) is thrown away: its thread is deleted as
   the drawer deletes one (its run output too) and the record moves to `discarded` (state `cancelled`). A pressed reply: only while its
   queue entry can still be cancelled (`CANCELLABLE`: queued, filling, needs_look): the entry is cancelled through `blygQueue.cancel`.
   Already cancelled: `repeated: true`. A draft the owner pressed in the drawer, or an entry already running or finished: `409` with its
-  view.
-- `redo { rid, gap }` → the view. One agent passage of a SAVED draft (its block's `id`) is asked again: its gap filled, edited or
-  failed → `pending` (tkgaps `gapMove`), then filled by the same contained one-shot. Counted against the page's hourly passage limit
+  view. A draft is thrown away ONLY if it is untouched since filing (`untouchedSinceFiling`): its thread holds the filed message alone
+  (no later message of the owner's, no agent's answer), its text is the text filed (the record keeps `text_hash`, the first 16 hex of
+  the sha256 of the filed text), and no passage was edited, adopted or removed by hand. Otherwise `409 { ok:false,
+  error:'changed-on-computer', say:'This draft was changed on your computer; discard it there.', …view }` and nothing is deleted. (A
+  record from before `text_hash` was kept is never thrown away from the Hub.) A rid this companion has NEVER SEEN (the Hub cancels a
+  reply it is not sure arrived): `200 { ok, rid, state: 'cancelled' }`, and the rid is remembered as `withdrawn`, so its reply, if it
+  comes later, is refused as cancelled.
+- `redo { rid, gap }` → the view. One agent passage of the FILED MESSAGE of a SAVED draft (its block's `id`) is asked again: its gap
+  filled or failed → `pending` (tkgaps `gapMove`), then filled by the same contained one-shot. A passage the owner edited or adopted by
+  hand on the computer is theirs: `409 { ok:false, error:'edited-on-computer', say:'You changed this passage on your computer; write it
+  again there.', …view }`. Counted against the page's hourly passage limit
   (GAP_LIMITS.perPageHour): none left → `429 { ok:false, error:'limit', limit:'passages-per-hour', say, …view }`. A passage still being
   written, a pasted one, or a reply no longer a saved draft (pressed, published, thrown away): `409` with the view; no such passage or
-  rid: `404`. The owner's own words are never changed from the Hub. A rid this companion has NEVER SEEN (the Hub cancels a reply it is not sure arrived): `200 { ok, rid,
-  state: 'cancelled' }`, and the rid is remembered as `withdrawn`, so its reply, if it comes later, is refused as cancelled.
-- The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, fill?, fill_why?, blocks? (asked for), ahead? (queued),
+  rid: `404`. The owner's own words are never changed from the Hub.
+- A PASSAGE LEFT `pending` WITH NO FILL RUNNING (the companion restarted mid-fill: the server keeps the fills under way, from the ask
+  until its answer is written, in memory) is failed with reason `interrupted` through `gapMove`, before a `status` or `redo` reads that
+  reply, so the Hub can offer to write it again.
+- The VIEW of one reply: `{ rid, state, gaps?: { total, written, failed }, fill?, fill_why?, text_rev?, extra_messages?, blocks?,
+  text_cut? (asked for), ahead? (queued),
   address?, version? (published), say? (failed: the queue's one sentence, paths scrubbed), press?: { refused, say } (saved after a
   press was refused: drafts-only, publishes-per-day, not-set-up, queue-refused) }`. Nothing else of the page.
 - `fill` (while the reply's thread is there): `HUB_LINK_FILLS = ['writing', 'ready', 'failed']`, derived by ONE function, `fillOf`, from
@@ -14137,6 +14153,10 @@ companion never calls back. When the computer is off or asleep the Hub keeps the
   owner typed (same one-shot, same limits); no press is needed, and a Publish takes the written passages as they are and asks for
   nothing again (a passage still `pending` at the press is waited for by the queue, as ever). So the Hub can say "saved, passages still
   being written", "saved, ready" and "saved, a passage failed (why)".
+- `text_rev` (with `fill`): 12 hex, a hash of what Publish would send for the filed message (its text and each passage's id, mode and
+  text); it changes when a passage is written, written again or edited on the computer, so the Hub can tell its copy is stale.
+  `extra_messages`: how many OTHER messages of the thread Publish would also include (the owner's own later comments there, which the
+  Hub does not show).
 - Other answers: `413 { ok:false, error:'too-large', say:'This reply is too long to send to your computer: at most 16 KB of text.' }`
   for a body over 16384 bytes (the sentence is fixed); `400 { ok:false, error }` for a malformed request; `429 { ok:false, error:'limit', limit }` with `limit` one of
   `requests-per-minute`, `replies-per-hour`; `503 { ok:false, error:'the hub link records on the computer are unreadable' }` from every route but ping when the records file
@@ -14202,10 +14222,13 @@ Whoever holds the key can, until it is replaced:
 - make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
   public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
 - fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour;
-- read back the text of the replies it filed itself: their own words and the agent passages written into them (and ask for a passage
-  again, and throw such a draft away). Nothing else.
-It cannot read any other thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or any other
-owner route.
+- read back the text of each reply it filed itself, the filed message only and only while it is still the link's (not after the owner
+  edited it on the computer): the owner's words in it and the agent passages written into it, at most 48 KiB a reply; and the count of
+  the thread's other publishable messages, not their text;
+- ask an agent again for a passage of such a saved draft (not one the owner edited by hand), within the hourly passage limit;
+- throw away such a saved draft while it is untouched since filing (nothing else in its thread, its text as filed).
+It cannot read any other message, thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or
+any other owner route.
 How to end it: on the computer, `botference hub-link rotate` (a new key; the old one is refused from the next request), or
 `botference hub-link off` and then pair again with `botference hub-link pair`; put the new key in the Hub's environment.
 
@@ -14233,3 +14256,9 @@ hourly limit and once pressed; cancel throws a saved draft away once, not one th
 Publish calls in a row press ten in order and refuse two for the day). `hub-link-server` adds: a draft's passage written at save
 and read back as blocks, Publish asking for nothing again; redo through the one-shot; cancel deleting the draft's thread; three
 drafts published in a row as three queue entries in order, all live.
+Review of the drafts (same day): `hub-link-drafts` adds R1 (only the filed message is read back or redone; deleted or edited on the
+computer → no blocks, cancelled), R2 (a draft with a later message, a changed text or a hand-edited passage is not thrown away: 409
+with the fixed sentence), R3 (five 12 MB texts: each reply's blocks within 48 KiB after encoding, the whole answer within 256 KiB),
+R4 (a pending passage with no live fill is failed `interrupted`; a live one stays), R5 (`text_rev` changes with a passage;
+`extra_messages` counts the owner's note, not an agent's answer), R6 (redo of a hand-edited passage refused). `hub-link-server` adds a
+restart with a passage left pending on disk: failed `interrupted` at the next status, then written again by redo.
