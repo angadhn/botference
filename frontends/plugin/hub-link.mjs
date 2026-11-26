@@ -34,6 +34,7 @@ import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
+import { isPublishableMsg } from './blyg-note.mjs';
 // the /tk grammar, shared with the drawer (where each gap sits in the reply's text)
 const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 
@@ -63,7 +64,10 @@ export const HUB_LINK_LIMITS = Object.freeze({
   // a reply's text read back (`status {text:true}`): for at most this many rids at once, and the agent passages of one reply cut at
   // this many bytes in all (its own words are already bounded by bodyBytes)
   textRids: 5,
-  agentTextBytes: 32 * 1024,
+  // …and ONE size for one reply's blocks, own words and agent passages together, measured after JSON encoding (the owner may have
+  // made the message far longer on the computer); the whole answer of a status with text is then bounded too
+  blocksJsonBytes: 48 * 1024,
+  textResponseBytes: 256 * 1024,
   // how long a status waits for a rid still being filed before answering 503 (inside the Hub's 8 s fetch timeout)
   statusWaitMs: 5000,
 });
@@ -109,31 +113,61 @@ export function fillOf(gaps) {
   if (live.some(g => g.mode === 'failed')) return 'failed';
   return 'ready';
 }
-const cutBytes = (t, n) => { const b = Buffer.from(String(t), 'utf8'); if (b.length <= n) return String(t); return b.subarray(0, n).toString('utf8').replace(/\uFFFD+$/, ''); };
 /**
  * THE REPLY'S OWN TEXT as blocks, in order: { kind: 'own', text } for the owner's words between passages, and { kind: 'agent', id,
- * instruction, state (its gap's mode), text, model, at, reason? } for each passage (a removed one is left out with its mark). The
- * agent text is cut at HUB_LINK_LIMITS.agentTextBytes in all. Only the reply's first message: never the thread's other messages.
+ * instruction, state (its gap's mode), text, model, at, reason? } for each passage (a removed one is left out with its mark). Only the
+ * message the link filed (filedMsgOf), never another. → { blocks, cut }: the blocks' JSON is at most `jsonBytes` (UTF-8, after
+ * encoding); a block that does not fit has its text cut to fit and the rest are left out (`cut: true`).
  */
-export function blocksOf(msg, { agentBytes = HUB_LINK_LIMITS.agentTextBytes } = {}) {
+export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = {}) {
   const text = String((msg && msg.text) || '');
   const gaps = Array.isArray(msg && msg.gaps) ? msg.gaps : [];
   const marks = Grammar.parseGaps(text);
-  const out = [];
-  let at = 0, left = agentBytes;
-  const own = t => { if (t) out.push({ kind: 'own', text: t }); };
+  const all = [];
+  let at = 0;
+  const own = t => { if (t) all.push({ kind: 'own', text: t }); };
   marks.forEach((m, i) => {
     own(text.slice(at, m.start));
     at = m.end;
     const g = gaps[i];
     if (!g || g.mode === 'removed') return;
-    const t = cutBytes(g.text || '', Math.max(0, left));
-    left -= Buffer.byteLength(t);
-    out.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || ''), state: String(g.mode), text: t, model: String(g.model || ''),
-      at: String(g.at || ''), ...(g.mode === 'failed' ? { reason: scrubPaths(g.reason).slice(0, 300) } : {}) });
+    all.push({ kind: 'agent', id: String(g.id), instruction: String(g.instruction || '').slice(0, 1000), state: String(g.mode), text: String(g.text || ''),
+      model: String(g.model || '').slice(0, 100), at: String(g.at || '').slice(0, 40), ...(g.mode === 'failed' ? { reason: scrubPaths(g.reason).slice(0, 300) } : {}) });
   });
   own(text.slice(at));
-  return out;
+  const size = v => Buffer.byteLength(JSON.stringify(v));
+  const blocks = [];
+  let used = 2;   // the brackets
+  for (const b of all) {
+    const sep = blocks.length ? 1 : 0;
+    if (used + sep + size(b) <= jsonBytes) { blocks.push(b); used += sep + size(b); continue; }
+    // the largest cut of its text that fits (characters, so a cut never splits a character)
+    let lo = 0, hi = Math.min(b.text.length, jsonBytes);
+    while (lo < hi) { const mid = Math.ceil((lo + hi) / 2); if (used + sep + size({ ...b, text: b.text.slice(0, mid) }) <= jsonBytes) lo = mid; else hi = mid - 1; }
+    const c = { ...b, text: b.text.slice(0, lo) };
+    if (used + sep + size(c) <= jsonBytes) blocks.push(c);
+    return { blocks, cut: true };
+  }
+  return { blocks, cut: false };
+}
+/** THE MESSAGE THE LINK FILED in a thread: the one with the record's `msg_ts` whose channel is still 'hub-link' (an edit by the owner on
+ *  the computer makes it theirs, `drawer`). A record from before `msg_ts` was kept: the first message, if it is still the link's. */
+export function filedMsgOf(record, thread) {
+  if (!record || !thread) return null;
+  const msgs = Array.isArray(thread.msgs) ? thread.msgs : [];
+  const m = record.msg_ts ? msgs.find(x => x && x.ts === record.msg_ts && x.channel === 'hub-link') : (msgs[0] && msgs[0].channel === 'hub-link' ? msgs[0] : null);
+  return m || null;
+}
+export const textHashOf = t => crypto.createHash('sha256').update(String(t == null ? '' : t)).digest('hex').slice(0, 16);
+/** What Publish would send for the filed message, as a short hash: its text and every passage's id, mode and text. */
+export const textRevOf = msg => crypto.createHash('sha256').update(JSON.stringify([String(msg.text || ''),
+  (Array.isArray(msg.gaps) ? msg.gaps : []).map(g => [String(g && g.id), String(g && g.mode), String((g && g.text) || '')])])).digest('hex').slice(0, 12);
+/** A saved draft the Hub may still throw away: its thread holds only the filed message, its text as filed (record `text_hash`), and no
+ *  passage the owner changed by hand (edited, adopted, removed). */
+export function untouchedSinceFiling(record, thread) {
+  const m = filedMsgOf(record, thread);
+  if (!m || !record.text_hash || thread.msgs.length !== 1 || textHashOf(m.text) !== record.text_hash) return false;
+  return !(m.gaps || []).some(g => g && ['edited-by-reader', 'adopted-by-reader', 'removed'].includes(g.mode));
 }
 
 /** A record's step, one field (`record.step`), moved only by moveRecord:
@@ -277,7 +311,8 @@ export function linkStateOf(record, page, queue) {
     // (a draft pressed elsewhere, in the drawer, or by the Hub before a record write was lost: that entry is its state)
     const open = openEntryFor(record, queue && queue.entries);
     if (open) return entryState(open, run);
-    return !thread ? 'cancelled' : published ? 'published' : 'saved';
+    // (its filed message gone, or the owner's now: the computer ended it)
+    return published ? 'published' : !filedMsgOf(record, thread) ? 'cancelled' : 'saved';
   }
   const e = entryOf(record, queue && queue.entries);
   if (!e) return published ? 'published' : !thread ? 'cancelled' : 'failed';
@@ -358,6 +393,8 @@ export const HUB_LINK_SAY = Object.freeze({
   'gone': 'The reply is no longer on your computer.',
   'too-large': `This reply is too long to send to your computer: at most ${HUB_LINK_LIMITS.bodyBytes / 1024} KB of text.`,
   'cancelled': 'This reply was cancelled.',
+  'changed-on-computer': 'This draft was changed on your computer; discard it there.',
+  'edited-on-computer': 'You changed this passage on your computer; write it again there.',
   'passages-per-hour': 'Your computer has written as many agent passages for this post as it will in an hour. Try again later.',
 });
 
@@ -385,6 +422,15 @@ export function createHubLink(deps) {
   // cannot all pass a limit that only the finished ones would have reached. Taken before the await, given back when it ends.
   const holding = { replies: 0, presses: 0 };
   const statusWait = Number.isInteger(deps.statusWaitMs) && deps.statusWaitMs > 0 ? deps.statusWaitMs : HUB_LINK_LIMITS.statusWaitMs;
+  // a passage left `pending` with no fill running (the companion restarted mid-fill) is failed "interrupted", through the gap's own move
+  // function, on the computer's side (deps.settleStale), before a reply's state or text is read
+  const settle = rid => {
+    const rec = store.get(rid);
+    if (!rec || typeof deps.settleStale !== 'function' || !(rec.step === 'saved' || rec.step === 'pressed')) return;
+    const page = deps.readPage(rec.page_url);
+    const m = filedMsgOf(rec, page && (page.threads || []).find(t => t && t.id === rec.thread_id));
+    if (m && (m.gaps || []).some(g => g && g.mode === 'pending')) deps.settleStale({ url: rec.page_url, thread_id: rec.thread_id, ts: m.ts });
+  };
   const holdReply = () => { let held = true; holding.replies++; return { give() { if (held) { held = false; holding.replies--; } } }; };
 
   const stateFor = (rec, q) => {
@@ -398,14 +444,17 @@ export function createHubLink(deps) {
     const v = { rid, state };
     if (!rec) return v;
     const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
-    const first = thread && (thread.msgs || [])[0];
+    const first = filedMsgOf(rec, thread);
     const gaps = first && Array.isArray(first.gaps) ? first.gaps.filter(g => g && g.mode !== 'removed') : [];
     if (gaps.length) v.gaps = { total: gaps.length, written: gaps.filter(g => g.mode !== 'pending').length, failed: gaps.filter(g => g.mode === 'failed').length };
     // the passages' progress, and (asked for) the reply's own text: only while its thread is there and is this record's
     if (first && (rec.step === 'saved' || rec.step === 'pressed')) {
       v.fill = fillOf(gaps);
       if (v.fill === 'failed') v.fill_why = scrubPaths((gaps.find(g => g.mode === 'failed') || {}).reason).slice(0, 300);
-      if (text) v.blocks = blocksOf(first);
+      v.text_rev = textRevOf(first);
+      // the thread's other messages Publish would include (the Hub shows only the filed one)
+      v.extra_messages = (thread.msgs || []).filter(m => m && m !== first && isPublishableMsg(m)).length;
+      if (text) { const b = blocksOf(first); v.blocks = b.blocks; if (b.cut) v.text_cut = true; }
     }
     const e = rec.step === 'saved' ? openEntryFor(rec, q.entries) : entryOf(rec, q.entries);
     if (state === 'queued' && e) v.ahead = Number(e.ahead) || 0;
@@ -454,6 +503,7 @@ export function createHubLink(deps) {
       return { status: 422, body: { ok: false, error: 'refused', rid, state: 'refused', reason: code, say: HUB_LINK_SAY[code] } };
     }
     store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
+      msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment),
       post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } });
     slot.give();   // (the record counts itself from here)
     logState(rid, 'saved');
@@ -499,6 +549,7 @@ export function createHubLink(deps) {
         clearTimeout(timer);
         if (!done) return { status: 503, body: { ok: false, error: 'a reply is still being filed; ask again' } };
       }
+      for (const rid of new Set(rids)) settle(rid);
       const q = deps.queue();
       return { status: 200, body: { ok: true, replies: [...new Set(rids)].map(rid => viewOf(rid, q, { text })) } };
     },
@@ -525,11 +576,15 @@ export function createHubLink(deps) {
       if (rec.step !== 'saved' || v.state !== 'saved') return { status: 409, body: { ok: false, error: 'not a saved draft', ...v } };
       const page = deps.readPage(rec.page_url);
       const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
-      const g = thread && (((thread.msgs || [])[0] || {}).gaps || []).find(x => x && x.id === data.gap && x.kind !== 'impyrt');
+      settle(rid);
+      const mine = filedMsgOf(rec, thread);
+      const g = mine && (mine.gaps || []).find(x => x && x.id === data.gap && x.kind !== 'impyrt');
       if (!g) return { status: 404, body: { ok: false, error: 'no such passage', ...v } };
-      if (!['filled-by-agent', 'edited-by-reader', 'failed'].includes(g.mode)) return { status: 409, body: { ok: false, error: 'that passage cannot be asked again now', ...v } };
+      // (the owner's own edit of a passage is theirs: asking again would throw it away)
+      if (g.mode === 'edited-by-reader' || g.mode === 'adopted-by-reader') return { status: 409, body: { ok: false, error: 'edited-on-computer', say: HUB_LINK_SAY['edited-on-computer'], ...v } };
+      if (!['filled-by-agent', 'failed'].includes(g.mode)) return { status: 409, body: { ok: false, error: 'that passage cannot be asked again now', ...v } };
       if (!(deps.gapBudget(rec.page_url) > 0)) { logState(rid, 'limited', 'passages-per-hour'); return { status: 429, body: { ok: false, error: 'limit', limit: 'passages-per-hour', say: HUB_LINK_SAY['passages-per-hour'], ...v } }; }
-      const r = deps.redoGap({ url: rec.page_url, thread_id: rec.thread_id, gap_id: g.id });
+      const r = deps.redoGap({ url: rec.page_url, thread_id: rec.thread_id, ts: mine.ts, gap_id: g.id });
       if (!r || !r.ok) return { status: 409, body: { ok: false, error: 'that passage cannot be asked again now', ...viewOf(rid) } };
       logState(rid, 'redo');
       return { status: 200, body: { ok: true, ...viewOf(rid) } };
@@ -546,7 +601,10 @@ export function createHubLink(deps) {
       if (v.state === 'cancelled') return { status: 200, body: { ok: true, ...v, repeated: true } };
       // A SAVED DRAFT is thrown away: its thread deleted (not one the owner pressed in the drawer: that is theirs, `v.state` says so)
       if (rec.step === 'saved' && v.state === 'saved') {
-        const d = deps.discard({ url: rec.page_url, thread_id: rec.thread_id });
+        const page = deps.readPage(rec.page_url);
+        const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
+        if (!untouchedSinceFiling(rec, thread)) return { status: 409, body: { ok: false, error: 'changed-on-computer', say: HUB_LINK_SAY['changed-on-computer'], ...v } };
+        const d = deps.discard({ url: rec.page_url, thread_id: rec.thread_id, ts: filedMsgOf(rec, thread).ts });
         if (!d || !d.ok) return { status: 409, body: { ok: false, error: 'it could not be thrown away', ...viewOf(rid) } };
         store.move(rid, 'discarded', { discarded_at: clock().toISOString() });
         logState(rid, 'discarded');

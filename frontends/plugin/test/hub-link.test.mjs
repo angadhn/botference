@@ -105,7 +105,8 @@ test('the key file: 0600, read back, a broken one is the gate `broken` and is ne
 
 // ---- the state the Hub is told ----
 const rec = (extra = {}) => ({ rid: 'rid-00000001', step: 'pressed', page_url: 'https://blyg.example.com/t/x/', thread_id: 't1', intent: 'publish', at: '2026-11-26T10:00:00Z', entry_id: 'e1', ...extra });
-const page = (extra = {}) => ({ url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [], ...extra }] });
+// (the message the link filed: a record without `msg_ts` finds it as the first message, while it is still the link's)
+const page = (extra = {}) => ({ url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [{ channel: 'hub-link' }], ...extra }] });
 
 test('linkStateOf: every queue state has its Hub state', () => {
   const want = { queued: 'queued', filling: 'filling', needs_look: 'awaiting_look', running: 'publishing', giving_up: 'publishing', published: 'published', failed: 'failed', cancelled: 'cancelled' };
@@ -308,7 +309,7 @@ test('A SAVED DRAFT AGED OUT after 30 days: status answers unknown; the store to
   assert.equal(fs.readFileSync(path.join(dir, 'page.json'), 'utf8'), '{"threads":[{"id":"t1"}]}', 'the draft thread is the page store\'s, untouched');
 });
 
-const PAGE_X = { url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [] }] };
+const PAGE_X = { url: 'https://blyg.example.com/t/x/', threads: [{ id: 't1', msgs: [{ channel: 'hub-link' }] }] };
 const verifiedSlowly = ms => async () => { await slow(ms); return { verdict: 'verified', url: 'https://blyg.example.com/t/x/', origin: 'https://blyg.example.com/', id: 'x', version: 1 }; };
 
 test('D1 STATUS WAITS for a reply still being filed: never unknown for a rid in flight', async () => {

@@ -311,6 +311,29 @@ await test('REDO from the Hub: one passage asked again through the same one-shot
   await waitFor(async () => (await status(S, 'rid-dredo-0001')).fill === 'ready' && oneshots() === before + 1, 'filled again');
 });
 
+await test('A PASSAGE LEFT WRITING BY A RESTART is failed "interrupted" at the next status, so the Hub can offer Write again', async () => {
+  await reply(S, 'rid-dintr-0001', { comment: 'Interrupted one.\n/tk a line' });
+  await waitFor(async () => (await status(S, 'rid-dintr-0001')).fill === 'ready', 'filled');
+  await stop(srv);
+  // as if the companion had stopped mid-fill: the passage is still pending on disk
+  const dir = path.join(root, '.botference', 'plugin', 'pages');
+  for (const f of fs.readdirSync(dir)) {
+    const p = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+    const t = (p.threads || []).find(x => x.msgs && x.msgs[0] && x.msgs[0].text === 'Interrupted one.\n/tk a line');
+    if (!t) continue;
+    Object.assign(t.msgs[0].gaps[0], { mode: 'pending' }); delete t.msgs[0].gaps[0].text;
+    fs.writeFileSync(path.join(dir, f), JSON.stringify(p));
+  }
+  srv = await boot(root, { PLUGIN_HUB_LINK_PER_MINUTE: '1000' });
+  S = srv.base;
+  const v = await statusText('rid-dintr-0001');
+  assert.deepEqual([v.fill, v.fill_why], ['failed', 'interrupted']);
+  assert.equal(v.blocks.find(b => b.kind === 'agent').state, 'failed');
+  const before = oneshots();
+  assert.equal((await send(S, 'redo', { rid: 'rid-dintr-0001', gap: v.blocks.find(b => b.kind === 'agent').id })).status, 200);
+  await waitFor(async () => (await status(S, 'rid-dintr-0001')).fill === 'ready' && oneshots() === before + 1, 'written again');
+});
+
 await test('CANCEL A SAVED DRAFT from the Hub deletes its thread', async () => {
   await reply(S, 'rid-dgone-0001', { comment: 'Throw me away.' });
   assert.ok((await threadsOf(S, POST_A)).some(t => t.msgs[0].text === 'Throw me away.'));

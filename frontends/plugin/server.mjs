@@ -3195,7 +3195,14 @@ const findMsg = (page, target, ts) => {
   const msgs = store.msgsOf(page, target || store.PAGE_CHAT);
   return msgs ? msgs.find(m => m && m.ts === ts && ownerTyped(m)) : null;
 };
+// THE FILLS UNDER WAY, by page, message and gap (from startGaps until that gap's answer is written): a gap `pending` that is not here
+// is not being written by anyone (the companion restarted mid-fill), and the hub link fails it "interrupted" (settleStale)
+const liveFills = new Set();
+const fillKey = (url, target, ts, id) => JSON.stringify([store.normUrl(url), target || '', String(ts), id]);
 async function fillGapsOf(url, target, ts, ids) {
+  try { await fillEach(url, target, ts, ids); } finally { for (const id of ids) liveFills.delete(fillKey(url, target, ts, id)); }
+}
+async function fillEach(url, target, ts, ids) {
   for (const id of ids) {
     const page = store.readPage(url);
     const msg = page && findMsg(page, target, ts);
@@ -3219,6 +3226,7 @@ async function fillGapsOf(url, target, ts, ids) {
     const latest = store.readPage(url);
     const m2 = latest && findMsg(latest, target, ts);
     const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
+    liveFills.delete(fillKey(url, target, ts, id));
     if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
     if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at });
     else gapMove(g2, 'failed', { reason: r.reason });
@@ -3229,6 +3237,7 @@ async function fillGapsOf(url, target, ts, ids) {
 // after a write: ask for what is pending (not awaited)
 function startGaps(page, target, msg, ids) {
   if (!ids || !ids.length || !msg) return;
+  for (const id of ids) liveFills.add(fillKey(page.url, target, msg.ts, id));
   fillGapsOf(page.url, target, msg.ts, ids).catch(e => console.warn(`[gaps] ${e.message}`));
 }
 // the export's footbar line: how many gaps are written, and how many not
@@ -3302,7 +3311,7 @@ function hubLinkFileReply({ url, quote, comment, answer }) {
   broadcast({ type: 'page', url: page.url });
   startGaps(page, thread.id, msg, fresh);
   noteDecisions(page);
-  return { url: page.url, thread_id: thread.id };
+  return { url: page.url, thread_id: thread.id, ts: msg.ts };
 }
 const hubLink = createHubLink({
   keyDir: secretsDir(),
@@ -3318,10 +3327,11 @@ const hubLink = createHubLink({
   cancel: entry => blygQueue.cancel({ entry }),
   // a saved draft's passage asked again (as the drawer's refill), and a saved draft thrown away (as the drawer's delete of a thread)
   gapBudget: url => gapBudget(url).left,
-  redoGap: ({ url, thread_id, gap_id }) => {
+  // (only the message the link filed: its ts, and its channel still the link's)
+  redoGap: ({ url, thread_id, ts, gap_id }) => {
     const page = store.readPage(url);
     const thread = page && store.findThread(page, thread_id);
-    const msg = thread && thread.via === 'hub-link' ? thread.msgs[0] : null;
+    const msg = thread && thread.via === 'hub-link' ? (thread.msgs || []).find(m => m && m.ts === ts && m.channel === 'hub-link') : null;
     const gap = msg && ownerTyped(msg) && (msg.gaps || []).find(g => g.id === gap_id);
     if (!gap || !canGapMove(gap, 'pending')) return { ok: false };
     gapMove(gap, 'pending');
@@ -3330,9 +3340,11 @@ const hubLink = createHubLink({
     startGaps(page, thread_id, msg, [gap.id]);
     return { ok: true };
   },
-  discard: ({ url, thread_id }) => {
+  // (hub-link.mjs has checked the thread is untouched since filing; here again: the filed message alone)
+  discard: ({ url, thread_id, ts }) => {
     const page = store.readPage(url);
-    const i = page ? page.threads.findIndex(t => t && t.id === thread_id && t.via === 'hub-link') : -1;
+    const i = page ? page.threads.findIndex(t => t && t.id === thread_id && t.via === 'hub-link' && (t.msgs || []).length === 1
+      && t.msgs[0].ts === ts && t.msgs[0].channel === 'hub-link') : -1;
     if (i < 0) return { ok: false };
     store.deleteRuns(store.pageKey(page.url), store.runIdsOf(page.threads[i].msgs));
     page.threads.splice(i, 1);
@@ -3340,6 +3352,16 @@ const hubLink = createHubLink({
     broadcast({ type: 'page', url: page.url });
     noteDecisions(page);
     return { ok: true };
+  },
+  settleStale: ({ url, thread_id, ts }) => {
+    const page = store.readPage(url);
+    const thread = page && store.findThread(page, thread_id);
+    const msg = thread && (thread.msgs || []).find(m => m && m.ts === ts && m.channel === 'hub-link');
+    let moved = false;
+    for (const g of (msg && msg.gaps) || []) {
+      if (g && g.mode === 'pending' && !liveFills.has(fillKey(page.url, thread_id, ts, g.id)) && canGapMove(g, 'failed')) { gapMove(g, 'failed', { reason: 'interrupted' }); moved = true; }
+    }
+    if (moved) { store.savePage(page); broadcast({ type: 'page', url: page.url }); }
   },
   queue: () => { const run = blygPublish.current(); return { entries: blygQueue.view().entries, run: run ? { id: run.id, mode: run.mode, confirm: run.confirm } : null }; },
   readPage: url => store.readPage(url),
