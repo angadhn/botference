@@ -14362,9 +14362,11 @@ Replying from the Hub to a post the owner has already replied to, the owner may 
 as the post's next version) instead of a new post. This is the plugin's own "Add to your earlier post" (blyg-run `earlierPostFor`,
 join `add`): no second path.
 - `earlier { post: { page, origin, id } }` → `{ ok, earlier: [ { id, address, permalink, title, date, version } ] }`: the post a comment
-  on that blyg post's page would be added to now: 0 or 1 (the plugin's rule: the newest post published from that page, while its note
-  is still the one written from here, every comment it holds is still on the page, one more fits and the page answers the same
-  target). Only for a page record that IS that blyg post (its stored item's origin and id). Public facts only (title cut at 120). A
+  on that blyg post's page would be added to now: 0 or 1 (the plugin's rule: the newest post published from that page, its note in
+  the notes folder, every comment it holds still on the page, one more fits and the page answers the same target), and, for the hub
+  link only, NOT a post whose note was changed by hand outside the plugin (the drawer is offered it and asks the outside question; nobody
+  can answer that from the phone). While a publish of that page is queued or running, the note differs from its record because our own
+  run is rewriting it: that is not taken for a hand edit then (the queue asks again when the addition's turn comes). Only for a page record that IS that blyg post (its stored item's origin and id). Public facts only (title cut at 120). A
   question of its own rather than a field of `reply`, because the Hub asks it before the owner writes (to offer the choice); it needs
   no rid. (`blyg-run earlierPublicOf`, which asks `earlierPostFor` with no comment yet, or with the filed comment.)
 - `reply { …, add_to: <id> }`: kept on the record. A press of that reply (Publish now, or `publish` later) asks the plugin again: only
@@ -14372,8 +14374,16 @@ join `add`): no second path.
   and version (the run refuses if it changed between: `ADD_CHANGED_SAY`), and every check of that path: the note unchanged since it
   was published from here (else the forced look, `outside`), every comment still there, the same target, the edit commands set up.
   It counts as one publish against the day's limit. Otherwise nothing is pressed, the reply stays `saved` with `press.refused:
-  'cannot-add'` and a fixed sentence; `publish { rid, as: 'new' }` (`HUB_LINK_PUBLISH_AS = ['as-asked', 'new']`) then publishes it as
+  'cannot-add'` (or `'cannot-add-outside'`: the earlier post was edited by hand) and a fixed sentence; `publish { rid, as: 'new' }` (`HUB_LINK_PUBLISH_AS = ['as-asked', 'new']`) then publishes it as
   a new post.
+- ADDED AS THE POST STANDS WHEN ITS TURN COMES: a queued Hub addition asks the same question again when the queue reaches it
+  (blyg-queue, for `pressed_by: 'hub-link'` and join `add`) and is added to the post's version THEN, so several additions to one post
+  sent while the first is still publishing go out as consecutive versions, in order, each with its one section. If the post can no
+  longer take it then (another post since, gone, edited by hand), nothing is written: the queue takes the entry out (`cancelled_for:
+  'cannot-add'`, `ENTRY_CANCEL_REASONS`), and the hub link gives the reply back as a SAVED draft (record step pressed → saved, its
+  only such move; its day slot given back) with `press.refused: 'cannot-add-changed'` ("Your earlier reply changed, so this was not
+  added. Publish it as a new post, or discard it."); `publish { rid, as: 'new' }` then works. It never reads `failed` for this.
+- A `cannot-add` refusal that no longer holds (the post can take additions again) is cleared at the next view.
 - Every view of such a reply carries `adds_to: { id, title, address, state }`, `state` from `HUB_LINK_ADD_STATES = ['ready',
   'cannot-add']`, derived at each view (never stored); a pressed one keeps the title and address it was pressed with.
 - Exactly once: a reply, publish or cancel with the same rid acts once (the record); the same addition sent three times and published
@@ -14383,6 +14393,9 @@ join `add`): no second path.
   second mention to that author; a passage of another post would be new, and is mentioned.
 - Tests: `hub-link-add` (earlier for that post only, its shape; add_to pressed with join add, the post and its version; the view;
   three sends and two publishes press once; cannot-add refused, `as: 'new'` presses a new post, a bad `as` or id refused; the day
-  limit counts an addition), `hub-link-server` (through the real companion and the fake command set: earlier names the post just
+  limit counts an addition; an addition the queue took out comes back saved with cannot-add-changed and publishes as new; an earlier
+  post edited by hand is cannot-add-outside and not offered; a stale refusal is cleared), `hub-link-server` (three additions to one
+  post a second apart while a held publish runs: versions 2, 3 and 4 in order, three sections each once, three edit runs; after a hand
+  edit of the note, `earlier` is empty and an addition is cannot-add-outside; and, through the real companion: earlier names the post just
   published; the addition sent three times and published twice more runs the edit steps once; the thread joins the same post at
   version 2; the note holds the addition once).
