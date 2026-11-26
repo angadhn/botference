@@ -14248,8 +14248,10 @@ Whoever holds the key can, until it is replaced:
 - ask an agent again for a passage of such a saved draft (not one the owner edited by hand), within the hourly passage limit;
 - throw away such a saved draft while it is untouched since filing (nothing else in its thread, its text as filed).
 - send recordings to be turned into text (`transcribe`): CPU time on the owner's computer within the speech caps (3 jobs open, 20 an
-  hour, 4.5 MiB and 3 minutes each, one run at a time, each killed at its time limit), run in the sandbox (no network, no file but the
-  model and its own folder), and the text of those recordings back. Nothing is filed, published or kept.
+  hour, 4.5 MiB and 3 minutes each, one run at a time, each killed at its time and CPU limits), run in a deny-by-default sandbox, and the
+  text of those recordings back. Nothing is filed, published or kept. A parser exploit in ffmpeg or whisper would reach the system's
+  own files, the job's folder, the model and, for whisper on Apple silicon, the GPU driver and Metal's shader compiler service; not
+  the owner's files, the network, the clipboard, preferences, another process, or any other program.
 It cannot read any other message, thread, page or setting, change any setting or the owner's own words, or reach `/blyg-publish/*` or
 any other owner route.
 How to end it: on the computer, `botference hub-link rotate` (a new key; the old one is refused from the next request), or
@@ -14289,36 +14291,56 @@ Owner edits (same day): `hub-link-drafts` R7 (an edit on the computer keeps the 
 `text_state` edited-on-computer, discard refused, Publish pressed); `hub-link-server` adds an edit through the drawer's `/edit`, read
 back edited and published once with the edited text.
 
-### Speech from the Hub's reply box (2026-11-26, `hub-speech.mjs`, `hub-speech.sb`)
+### Speech from the Hub's reply box (2026-11-26, `hub-speech.mjs`)
 The owner presses a microphone button in the Hub's reply box; the browser records; the Hub's function sends the recording over the
 signed link; this computer turns it into text with whisper.cpp; the text goes back into the reply box, for the owner to edit before
 sending. It files nothing and publishes nothing.
-- `ping` says `speech: 'on' | 'off'` (`SPEECH_GATES`, derived at each request by `speechTools`: macOS's sandbox-exec and the profile,
+- `ping` says `speech: 'on' | 'off'` (`SPEECH_GATES`, derived at each request by `speechTools`: macOS's sandbox-exec,
   whisper-cli, ffmpeg, and a model, each a real absolute path from a fixed list or `BOTFERENCE_WHISPER_BIN` / `BOTFERENCE_FFMPEG_BIN` /
-  `BOTFERENCE_WHISPER_MODEL`). Off: `transcribe` and `transcript` are 404.
+  `BOTFERENCE_WHISPER_MODEL`). Off: `transcribe` and `transcript` are 404, said only to a caller whose signature is good (an unsigned
+  one is 401 either way).
 - `transcribe`: the body is the recording's bytes. Its content type must be on `AUDIO_TYPES` (`audio/webm`, `audio/ogg`, `audio/mp4`,
   parameters allowed) and its first bytes must be that container (EBML, `OggS`, an ISO `ftyp` box; `sniffAudio`); never a file name.
   At most `SPEECH_LIMITS.audioBytes` (4718592, about 3 minutes as browsers record). The signed string gains two lines: the content
-  type exactly as sent, and the body's length in bytes. Answers at once `{ ok, job, state: 'pending' }`.
+  type exactly as sent, and the body's length in bytes. BEFORE the body is read: the four headers' form, the key id and the time window
+  (401, the connection closed); the type (415); a declared length over the cap (413); at most 2 bodies not yet verified read at once
+  (429 `audio-reading` beyond, the connection closed), each within 20 s (408 `too-slow`). Then the signature over the bytes (401), then
+  speech on (404), the request limit (429), the first bytes (415). Answers at once `{ ok, job, state: 'pending' }`.
 - `transcript { job }` → `{ ok, job, state: 'pending' }`, `{ ok, job, state: 'done', text, seconds }`, `{ ok, job, state: 'failed', why,
   say }` (`SPEECH_FAILURES`: unreadable-audio, no-speech, timed-out, unavailable, internal); a job unknown or forgotten: 404.
 - A JOB (`JOB_STATES`: queued, converting, transcribing, done, failed; one field, moved only by `moveJob`) lives in memory only. At most
   3 open (429 `speech-busy`), 20 accepted an hour (429 `speech-per-hour`), one runs at a time (in order), a finished job is forgotten
-  after 10 minutes. ffmpeg keeps at most 180 s (`-t`) and has 30 s; whisper has 120 s; a run over its time is killed with its whole
-  process group (`detached`, `kill(-pid)`).
-- CONTAINED: each tool runs as `sandbox-exec -f hub-speech.sb … <tool> <argv>` (no shell; argv from fixed values and the job's own
-  paths), in a fresh private folder (`mkdtemp`, 0700, a fixed file name, deleted in a `finally`), with PATH, HOME and TMPDIR set to
-  the folder and nothing else of the companion's environment. The profile: no network at all; no file read under /Users, /Volumes or
-  the temporary folders but the model and the job's folder; no write but the job's folder; no program but the tool itself. ffmpeg reads
-  only the `file` protocol and the demuxer of the sniffed container. Language: English (`-l en`), no auto-detect: the owner writes in
+  after 10 minutes. ffmpeg keeps at most 180 s (`-t`) and has 30 s; whisper has 120 s. Besides the wall clock, the kernel limits each
+  tool (`TOOL_LIMITS`, set by `ulimit` before the exec): CPU seconds (ffmpeg 60, whisper 600 summed over its threads), file size (ffmpeg
+  13000 blocks of 512 bytes, enough for 180 s of WAV; whisper 1) and open files. macOS enforces these; it does not enforce a memory
+  limit (RLIMIT_AS/RLIMIT_DATA), so memory is bounded by the clip's length and the model only. Each run is its own process group,
+  killed whole when it ends on EVERY path and checked gone (`kill(-pgid, 0)` → ESRCH); a group that remains fails the job.
+- CONTAINED: each tool runs as `/bin/sh -c 'ulimit …; exec "$@"' … sandbox-exec -p <its profile> -D … <tool> <argv>` (a fixed script,
+  every value a positional argument; argv from fixed values and the job's own paths), in a fresh private folder (`mkdtemp`, 0700, a
+  fixed file name, deleted in a `finally`), with PATH, HOME and TMPDIR set to the folder and nothing else of the companion's
+  environment. Each tool has its own profile (`speechProfile`), DENY BY DEFAULT: it may start only itself (no other program, no fork),
+  signal only itself, read the sysctl values (proven needed), read the root entry, /System (with the dyld shared cache), /usr/lib,
+  /dev/null and the random devices, its own Homebrew keg (`<prefix>/Cellar` and `<prefix>/opt`: program files), its job folder and,
+  for whisper, the model; write only its job folder. No network of any kind, no mach service, no IOKit, so no clipboard, no
+  preferences (cfprefsd), no keychain, no other process. The one exception: whisper on Apple silicon uses the GPU (Metal) and may open
+  the `AGXDeviceUserClient` IOKit class and look up `com.apple.MTLCompilerService` (each proven needed by a run that fails without
+  it; nothing else was). Elsewhere whisper runs on the CPU (`-ng`) with neither. A parser exploit could still reach: the system files
+  above, its own job folder, the model, and for whisper on the GPU the GPU driver and the shader compiler service. ffmpeg reads only
+  the `file` protocol and the demuxer of the sniffed container. Language: English (`-l en`), no auto-detect: the owner writes in
   English and detection on a short clip guesses wrong.
 - PRIVATE: neither the recording nor the text is logged, written outside the job's folder, or put on a page record. The log says the
   job id's first 6 characters, the state and a failure code.
-- Measured here (whisper.cpp 1.9.5, ggml-large-v3-turbo, Apple GPU): a 30 s clip about 6 s and a 2 minute clip about 6 s from submit
-  to done in the sandbox (most of it loading the model; outside the sandbox 0.9 s and 1.8 s).
+- Measured here (whisper.cpp 1.9.5, ggml-large-v3-turbo), submit to done in the sandbox: on the GPU a 30 s clip 5.4 s and a 2 minute
+  clip 6.7 s; on the CPU (`-ng`, 4 threads) 11.5 s and 40.6 s, with 16 threads about 19 s for 2 minutes. The GPU is used where it is
+  there; the CPU path uses up to 16 threads.
 - Tests (`hub-link-speech`): the allow-list and the sniffing; the job table; ping on and off, every speech route 404 when off; a job
   pending then done, the argv (fixed tools, the demuxer, `-protocol_whitelist file`, `-t 180`, `-l en`), nothing logged, the folder
   gone; refused: a type off the list, bytes not that container, a script, a JSON type, a body over the cap, a type or bytes not the
   ones signed, no signature, an Origin; one at a time, 3 open, 20 an hour, forgotten after 10 minutes; each failure code; and, when
   the tools are on the machine, the real tools in the real sandbox with whisper.cpp's tiny test model: a clip read, an over-time run
-  killed with nothing left running and every folder deleted, a file outside the job's folder and the network both refused.
+  killed with nothing left running and every folder deleted, a file outside the job's folder and the network both refused. Under the
+  real profiles of both tools (macOS): the clipboard (pbpaste's exit status only), preferences (read as nothing), signalling another
+  process, /etc/hosts, a file outside the job folder, a localhost connection, fork and exec are refused, and the job folder is
+  readable; a child left behind by a normal exit is killed with the group; a spinning tool is stopped by its CPU limit (SIGXCPU);
+  before any byte is read an unsigned caller is 401 whether speech is on or off; at most 2 unverified bodies at once, each with a
+  deadline.
