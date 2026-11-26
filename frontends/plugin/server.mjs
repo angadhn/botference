@@ -69,6 +69,7 @@ import * as publish from './publish.mjs';
 import { createPublisher, RUN_FINISHED } from './blyg-run.mjs';
 import { createQueue } from './blyg-queue.mjs';
 import { createHubLink, HUB_LINK_REPLIES_FILE } from './hub-link.mjs';
+import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping } from './clippings.mjs';
 import { createSpeech } from './hub-speech.mjs';
 import { secretsDir } from '../shared/secrets.mjs';
 import { validateHome, storable } from './blyg-home.mjs';
@@ -3300,17 +3301,19 @@ async function bindVerified(data) {
 // the owner, never passes the sign-in gate, and reaches only what these few lines give it: a verified binding, one thread written as
 // the owner typed it on channel 'hub-link' (so its /tk gaps are asked), a press by 'hub-link', a cancel, and the queue's view.
 // The quote kept is the passage as the VERIFIED text has it, with the text around it as the anchor (never the Hub's).
-function hubLinkFileReply({ url, quote, comment, answer }) {
+// (`answer`: the verified blyg answer, for a post; for a clipping none, and `text` is the clipping's plain text with `passage` already in
+// the clipping's form)
+function hubLinkFileReply({ url, quote, comment, answer = null, text: given = '', passage: givenPassage = '' }) {
   const page = store.readPage(url);
   if (!page || !mayRead(page, true)) return { code: 'not-writable' };
-  const text = String(answer.text || '');
-  const passage = blygMod.passageOf(quote);
+  const text = answer ? String(answer.text || '') : String(given).replace(/\n\n/g, '\n');
+  const passage = givenPassage || blygMod.passageOf(quote);
   const at = text.indexOf(passage);
   if (!passage || at < 0) return { code: 'not-verified' };
   const thread = store.addThread(page, { quote: passage, prefix: text.slice(Math.max(0, at - 32), at), suffix: text.slice(at + passage.length, at + passage.length + 32),
     text: comment, author: store.readConfig().author || 'owner' });
   thread.via = 'hub-link';
-  blygMark(thread, answer, passage);
+  if (answer) blygMark(thread, answer, passage);
   const msg = thread.msgs[0];
   msg.provenance = OWNER_TYPED; msg.channel = 'hub-link';
   const fresh = attachGaps(null, msg);
@@ -3320,6 +3323,8 @@ function hubLinkFileReply({ url, quote, comment, answer }) {
   noteDecisions(page);
   return { url: page.url, thread_id: thread.id, ts: msg.ts };
 }
+// the owner's clippings setting, checked at each use (an invalid one reads as none)
+const clippingSettings = () => { const v = validateClippings(store.readConfig().clippings); return v.ok ? v.settings : null; };
 // (a publish of this page queued or running: its note may be mid-rewrite by our own run, which is not an outside change)
 const hubLinkPageBusy = url => blygQueue.view().entries.some(x => ['queued', 'filling', 'needs_look', 'running', 'giving_up'].includes(x.state) && store.normUrl(x.page_url) === store.normUrl(url));
 const hubLink = createHubLink({
@@ -3328,7 +3333,36 @@ const hubLink = createHubLink({
   keyDir: secretsDir(),
   repliesFile: path.join(store.DIR, HUB_LINK_REPLIES_FILE),
   bind: ({ post, quote }) => bindVerified({ page_url: post.page, id: post.id, origin: post.origin, quote, source: 'hub' }),
-  fileReply: ({ bound, quote, comment }) => hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer }),
+  fileReply: ({ bound, quote, comment }) => (bound.clipping
+    ? hubLinkFileReply({ url: bound.url, quote, comment, text: bound.text, passage: passageOfClipping(quote) })
+    : hubLinkFileReply({ url: bound.url, quote, comment, answer: bound.answer })),
+  // THE OWNER'S CLIPPINGS (clippings.mjs): only the allow-listed files of the `clippings` setting, read at each request
+  clippings: () => { const s = clippingSettings(); return s ? listClippings(s).collections : []; },
+  clipping: id => { const s = clippingSettings(); const c = s && findClipping(s, id); return c ? { facts: c.facts, body: c.body } : null; },
+  // A REPLY TO A CLIPPING: the quote is the clipping's own text; the thread goes on the page record of its SOURCE address (made as an
+  // ordinary web page's would be, titled from the clipping, marked a response; the live page is never fetched here), and from there the
+  // plugin's ordinary web-page path publishes it (blyg_stub_of {url, title}, the web quote, the page asked about mentions)
+  bindClipping: ({ id, quote }) => {
+    const s = clippingSettings();
+    const c = s && findClipping(s, id);
+    if (!c) return { verdict: 'unverified', code: 'unknown-clipping' };
+    if (!passageInClipping(c.text, quote)) return { verdict: 'unverified', code: 'not-in-clipping' };
+    const there = store.readPage(c.facts.source);
+    if (there && !mayRead(there, true)) return { verdict: 'unverified', code: 'not-writable' };
+    const page = there || store.upsertPage({ url: c.facts.source, title: c.facts.title });
+    if (!page.export_response) page.export_response = 'response';
+    store.savePage(page);
+    broadcast({ type: 'page', url: page.url });
+    return { verdict: 'verified', url: page.url, clipping: id, text: c.text };
+  },
+  earlierForClipping: id => {
+    const s = clippingSettings();
+    const c = s && findClipping(s, id);
+    if (!c) return null;
+    const p = store.readPage(c.facts.source);
+    const e = p ? blygPublish.earlierPublicOf({ page: p, outside: hubLinkPageBusy(p.url) ? 'offer' : 'refuse' }) : null;
+    return e && e.post ? [e] : [];
+  },
   // (`join: 'add'`, the post and its version: the plugin's own add-to-earlier path, exactly as the drawer's "Add to your earlier post")
   // (`prompts`: the post's prompts choice, when the Hub's reply box sends one: blyg-note.mjs PROMPT_MODES; absent keeps the default)
   press: ({ url, thread_id, join = '', post = '', postVersion = '', prompts = '' }) => {

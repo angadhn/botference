@@ -36,6 +36,11 @@ import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
 import { isPublishableMsg } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
+import { pagesOf, clippingText } from './clippings.mjs';
+const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
+// (what `earlier` answers: public facts of zero or one post)
+const earlierView = list => (list || []).filter(e => e && e.post).map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
+  title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 }));
 // the /tk grammar, shared with the drawer (where each gap sits in the reply's text)
 const Grammar = createRequire(import.meta.url)('./extension/tkgrammar.js');
 
@@ -96,6 +101,9 @@ export const HUB_LINK_ROUTES = Object.freeze({
   cancel: Object.freeze({ path: '/hub-link/cancel', does: 'takes a reply out of the queue while it has not started, or throws a saved draft away' }),
   redo: Object.freeze({ path: '/hub-link/redo', does: 'asks the agent again for one passage of a saved draft' }),
   // speech (hub-speech.mjs): the body of `transcribe` is the recording itself, not JSON, and its type and length are signed too
+  // the owner's allow-listed clippings (clippings.mjs): the list, and one clipping's text
+  clippings: Object.freeze({ path: '/hub-link/clippings', does: 'the allow-listed clippings, by collection: facts only' }),
+  clipping: Object.freeze({ path: '/hub-link/clipping', does: 'one allow-listed clipping: its facts, its markdown and plain text, paged' }),
   earlier: Object.freeze({ path: '/hub-link/earlier', does: 'the owner\'s published reply to a blyg post that a new reply can be added to' }),
   transcribe: Object.freeze({ path: '/hub-link/transcribe', does: 'starts turning a recording into text: a job', body: 'audio' }),
   transcript: Object.freeze({ path: '/hub-link/transcript', does: 'a speech job: pending, done with its text, or failed' }),
@@ -437,6 +445,7 @@ export const HUB_LINK_SAY = Object.freeze({
   'cancelled': 'This reply was cancelled.',
   'changed-on-computer': 'This draft was changed on your computer; discard it there.',
   'edited-on-computer': 'You changed this passage on your computer; write it again there.',
+  'not-in-clipping': 'That passage isn’t in the clipping as kept on your computer.',
   'cannot-add': 'Your earlier reply can no longer be added to from here (it changed, or another reply went out since). Publish this one as a new post instead.',
   'cannot-add-outside': 'Your earlier reply was edited by hand on your computer, so this is not added to it from here. Publish it as a new post, or discard it.',
   'cannot-add-changed': 'Your earlier reply changed, so this was not added. Publish it as a new post, or discard it.',
@@ -571,7 +580,10 @@ export function createHubLink(deps) {
 
   // a reply whose slot is held: verified, filed, recorded, pressed when asked (the caller gives the slot back)
   async function fileOne(rid, data, key, post, quote, comment, slot) {
-    const b = await deps.bind({ post: { page: post.page.slice(0, 2048), origin: post.origin.slice(0, 2048), id: post.id.slice(0, 64) }, quote });
+    // (a clipping: the quote checked against the clipping's own plain text, and the page record for its source made or found)
+    const b = data.clipping !== undefined ? deps.bindClipping({ id: data.clipping, quote })
+      : await deps.bind({ post: { page: post.page.slice(0, 2048), origin: post.origin.slice(0, 2048), id: post.id.slice(0, 64) }, quote });
+    if (b.verdict !== 'verified' && b.code === 'unknown-clipping') return { status: 404, body: { ok: false, error: 'unknown clipping' } };
     // (another request for this rid may have finished while this one was verifying: it is in flight-locked, but be sure)
     if (store.get(rid)) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
     if (b.verdict !== 'verified') {
@@ -587,7 +599,7 @@ export function createHubLink(deps) {
     }
     store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
       msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment), add_to: typeof data.add_to === 'string' ? data.add_to : '',
-      post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } });
+      ...(b.clipping ? { clipping: String(b.clipping) } : { post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } }) });
     slot.give();   // (the record counts itself from here)
     logState(rid, 'saved');
     if (data.intent === 'publish') await pressRecord(store.get(rid), key);
@@ -607,11 +619,30 @@ export function createHubLink(deps) {
     // WHAT A NEW REPLY TO THIS BLYG POST CAN BE ADDED TO: the plugin's own answer (0 or 1 post: the newest published from the post's
     // page, while it can take a comment). Public facts only: its id, address, title, first date, version.
     async earlier(data) {
+      if (data.post !== undefined && data.clipping !== undefined) return { status: 400, body: { ok: false, error: 'post or clipping, not both' } };
+      if (data.clipping !== undefined) {
+        if (!(typeof data.clipping === 'string' && CLIPPING_ID_RE.test(data.clipping))) return { status: 400, body: { ok: false, error: 'clipping must be an id from clippings' } };
+        const got = deps.earlierForClipping(data.clipping);
+        if (!got) return { status: 404, body: { ok: false, error: 'unknown clipping' } };
+        return { status: 200, body: { ok: true, earlier: earlierView(got) } };
+      }
       const p = data.post && typeof data.post === 'object' ? data.post : null;
       if (!p || typeof p.page !== 'string' || typeof p.origin !== 'string' || typeof p.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id} required' } };
-      const list = (deps.earlier({ page: p.page.slice(0, 2048), origin: p.origin.slice(0, 2048), id: p.id.slice(0, 64) }) || []).filter(e => e && e.post);
-      return { status: 200, body: { ok: true, earlier: list.map(e => ({ id: String(e.post), address: String(e.address || ''), permalink: String(e.permalink || ''),
-        title: String(e.title || '').slice(0, 120), date: String(e.date || ''), version: Number(e.version) || 1 })) } };
+      return { status: 200, body: { ok: true, earlier: earlierView(deps.earlier({ page: p.page.slice(0, 2048), origin: p.origin.slice(0, 2048), id: p.id.slice(0, 64) })) } };
+    },
+    // ---- the owner's clippings: read only, the allow-list only (clippings.mjs); no records touched ----
+    async clippings() {
+      return { status: 200, body: { ok: true, collections: deps.clippings ? deps.clippings() : [] } };
+    },
+    async clipping(data) {
+      if (!(typeof data.id === 'string' && CLIPPING_ID_RE.test(data.id))) return { status: 400, body: { ok: false, error: 'id must be a clipping id' } };
+      const page = data.page === undefined ? 1 : data.page;
+      if (!Number.isInteger(page) || page < 1) return { status: 400, body: { ok: false, error: 'page must be a whole number from 1' } };
+      const c = deps.clipping ? deps.clipping(data.id) : null;
+      if (!c) return { status: 404, body: { ok: false, error: 'unknown clipping' } };
+      const pages = pagesOf(c.body);
+      if (page > pages.length) return { status: 400, body: { ok: false, error: `page must be 1 to ${pages.length}` } };
+      return { status: 200, body: { ok: true, ...c.facts, page, pages: pages.length, markdown: pages[page - 1], text: clippingText(pages[page - 1]) } };
     },
     async transcript(data) {
       // (speech off: its routes do not exist; said only after the signature, like every route's answer)
@@ -629,13 +660,17 @@ export function createHubLink(deps) {
       const kept = store.get(rid);
       if (kept && kept.step === 'withdrawn') return { status: 409, body: { ok: false, error: 'cancelled', ...viewOf(rid), say: HUB_LINK_SAY.cancelled, repeated: true } };
       if (kept) return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
+      // THE TARGET: a blyg post (`post`) or an allow-listed clipping (`clipping`), exactly one
+      if (data.post !== undefined && data.clipping !== undefined) return { status: 400, body: { ok: false, error: 'post or clipping, not both' } };
+      if (data.post === undefined && data.clipping === undefined) return { status: 400, body: { ok: false, error: 'post or clipping required' } };
+      if (data.clipping !== undefined && !(typeof data.clipping === 'string' && CLIPPING_ID_RE.test(data.clipping))) return { status: 400, body: { ok: false, error: 'clipping must be an id from clippings' } };
       const post = data.post && typeof data.post === 'object' ? data.post : {};
       const quote = str(data.quote, HUB_LINK_LIMITS.bodyBytes), comment = str(data.comment, HUB_LINK_LIMITS.bodyBytes);
       if (!quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
       if (data.add_to !== undefined && !(typeof data.add_to === 'string' && POST_ID_RE.test(data.add_to))) return { status: 400, body: { ok: false, error: 'add_to must be a post id from earlier' } };
-      if (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string') return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
+      if (data.post !== undefined && (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string')) return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
       if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
         logState(rid, 'limited', 'replies-per-hour');
         return { status: 429, body: { ok: false, error: 'limit', limit: 'replies-per-hour', say: HUB_LINK_SAY['replies-per-hour'] } };
@@ -818,7 +853,7 @@ export function createHubLink(deps) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) return answer(res, 400, { ok: false, error: 'not a JSON object' });
     // (status too: with the records unreadable nothing true can be said about any rid, and `unknown` would be read as "not published";
     // speech touches no record)
-    if (name !== 'ping' && name !== 'transcript' && name !== 'earlier' && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
+    if (!['ping', 'transcript', 'earlier', 'clippings', 'clipping'].includes(name) && store.state !== 'ok') { say('refused records-unreadable'); return answer(res, 503, { ok: false, error: 'the hub link records on the computer are unreadable' }); }
     const rid = ridOk(data.rid) ? data.rid : '';
     try {
       // one request per rid at a time: a copy arriving while the first works waits for it, then answers from the record
