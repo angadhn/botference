@@ -146,14 +146,17 @@ test('D5 A STALE cannot-add is cleared when the earlier post can take additions 
 });
 
 // ---- the post's prompts, chosen in the Hub (`prompts` on a request that presses: one of blyg-note PROMPT_MODES, or absent) ----
+const TK = 'Mine.\n/tk-codex say it in one line';
 test('PROMPTS on publish: `shown` is pressed as shown and said back; no choice presses none (an older Hub: locked for a new post)', async () => {
   const k = await linkWith({ earlier: null });
   try {
-    await k.reply('rid-prompt-00001', { intent: 'draft' });
+    await k.reply('rid-prompt-00001', { intent: 'draft', comment: TK });
     const p = await k.send('publish', { rid: 'rid-prompt-00001', prompts: 'shown' });
     assert.equal(p.status, 200, JSON.stringify(p.json));
     assert.equal(k.state.presses[0].prompts, 'shown');
     assert.equal(p.json.prompts, 'shown', 'the view says the choice back');
+    const rep = await k.send('publish', { rid: 'rid-prompt-00001' });
+    assert.deepEqual([rep.json.repeated, rep.json.prompts, k.state.presses.length], [true, 'shown', 1], 'pressed already: a later Publish now changes nothing, and is told which choice won');
     assert.equal((await k.send('status', { rids: ['rid-prompt-00001'] })).json.replies[0].prompts, 'shown');
     // as an older Hub sends it: no field at all
     await k.reply('rid-prompt-00002', { intent: 'draft' });
@@ -167,12 +170,12 @@ test('PROMPTS on publish: `shown` is pressed as shown and said back; no choice p
 test('PROMPTS on reply with intent publish: carried by the press; with intent draft it is refused and nothing is filed', async () => {
   const k = await linkWith({ earlier: null });
   try {
-    const r = await k.reply('rid-prompt-00003', { prompts: 'shown' });
+    const r = await k.reply('rid-prompt-00003', { prompts: 'shown', comment: TK });
     assert.equal(r.status, 200, JSON.stringify(r.json));
     assert.equal(k.state.presses[0].prompts, 'shown');
-    const again = await k.reply('rid-prompt-00003', { prompts: 'shown' });
+    const again = await k.reply('rid-prompt-00003', { prompts: 'shown', comment: TK });
     assert.deepEqual([again.json.repeated, k.state.presses.length], [true, 1], 'sent again: pressed once');
-    const d = await k.reply('rid-prompt-00004', { intent: 'draft', prompts: 'shown' });
+    const d = await k.reply('rid-prompt-00004', { intent: 'draft', prompts: 'shown', comment: TK });
     assert.equal(d.status, 400);
     assert.match(d.json.error, /when publishing/);
     assert.equal(k.pages.get(URL_X).threads.length, 1, 'nothing filed for the refused one');
@@ -182,7 +185,7 @@ test('PROMPTS on reply with intent publish: carried by the press; with intent dr
 test('PROMPTS REFUSED when it is anything but a named mode: nothing filed, nothing pressed, the draft stays saved', async () => {
   const k = await linkWith({ earlier: null });
   try {
-    await k.reply('rid-prompt-00005', { intent: 'draft' });
+    await k.reply('rid-prompt-00005', { intent: 'draft', comment: TK });
     for (const bad of ['yes', true, 1, '', 'Shown', 'public', null, ['shown'], { mode: 'shown' }]) {
       const p = await k.send('publish', { rid: 'rid-prompt-00005', prompts: bad });
       assert.equal(p.status, 400, JSON.stringify(bad));
@@ -199,10 +202,10 @@ test('PROMPTS REFUSED when it is anything but a named mode: nothing filed, nothi
 test('PROMPTS and ADD TO MY EARLIER REPLY: with prompt presses the addition as shown; Publish now presses no choice, so the post keeps its own', async () => {
   const k = await linkWith();
   try {
-    await k.reply('rid-prompt-00006', { intent: 'draft', add_to: EARLIER.post });
+    await k.reply('rid-prompt-00006', { intent: 'draft', add_to: EARLIER.post, comment: TK });
     await k.send('publish', { rid: 'rid-prompt-00006', prompts: 'shown' });
     assert.deepEqual([k.state.presses[0].join, k.state.presses[0].post, k.state.presses[0].prompts], ['add', EARLIER.post, 'shown']);
-    await k.reply('rid-prompt-00007', { intent: 'draft', add_to: EARLIER.post });
+    await k.reply('rid-prompt-00007', { intent: 'draft', add_to: EARLIER.post, comment: TK });
     await k.send('publish', { rid: 'rid-prompt-00007' });
     assert.equal(k.state.presses[1].join, 'add');
     assert.ok(!('prompts' in k.state.presses[1]), 'no choice: blyg-run startEdit keeps the choice the post has');
@@ -213,12 +216,43 @@ test('PROMPTS: each press carries its own choice (a refused press with prompt, t
   const k = await linkWith();
   try {
     k.state.earlier = { ...EARLIER, post: '01someotherpostidentifie' };
-    await k.reply('rid-prompt-00008', { intent: 'draft', add_to: EARLIER.post });
+    await k.reply('rid-prompt-00008', { intent: 'draft', add_to: EARLIER.post, comment: TK });
     const refused = await k.send('publish', { rid: 'rid-prompt-00008', prompts: 'shown' });
     assert.equal(refused.json.press.refused, 'cannot-add');
+    assert.ok(!('prompts' in refused.json), 'a refused press: the view says no choice while the reply is still saved');
+    assert.ok(!('prompts' in (await k.send('status', { rids: ['rid-prompt-00008'] })).json.replies[0]));
     assert.equal(k.state.presses.length, 0);
     await k.send('publish', { rid: 'rid-prompt-00008', as: 'new' });
     assert.equal(k.state.presses.length, 1);
     assert.ok(!('prompts' in k.state.presses[0]), 'the earlier choice is not kept');
+  } finally { await k.close(); }
+});
+
+test('PROMPTS shown NEEDS AN AGENT PASSAGE in the reply itself: a forged shown on plain words is refused, for a new post and for an addition; nothing filed or pressed', async () => {
+  const k = await linkWith();
+  try {
+    // a reply pressed at once: refused before it is filed
+    for (const extra of [{}, { add_to: EARLIER.post }]) {
+      const r = await k.reply(`rid-forged-${extra.add_to ? 'add' : 'new'}-01`, { prompts: 'shown', ...extra });
+      assert.deepEqual([r.status, r.json.error], [400, L.PROMPTS_NEED_AGENT_SAY]);
+    }
+    assert.equal(k.pages.get(URL_X).threads.length, 0, 'nothing filed');
+    // a saved draft of plain words: its publish with shown is refused, the draft stays, and the plain publish still works
+    for (const [rid, extra] of [['rid-forged-new-02', {}], ['rid-forged-add-02', { add_to: EARLIER.post }]]) {
+      await k.reply(rid, { intent: 'draft', ...extra });
+      const p = await k.send('publish', { rid, prompts: 'shown' });
+      assert.deepEqual([p.status, p.json.error, p.json.state], [400, L.PROMPTS_NEED_AGENT_SAY, 'saved'], rid);
+    }
+    assert.equal(k.state.presses.length, 0, 'nothing pressed');
+    assert.equal((await k.send('publish', { rid: 'rid-forged-add-02' })).status, 200);
+    assert.deepEqual(k.state.presses.map(p => [p.join, 'prompts' in p]), [['add', false]], 'the addition goes out with no choice: the earlier post keeps its own');
+    // a passage the owner took out on the computer is not one (the gap list, without the removed)
+    await k.reply('rid-forged-gone-1', { intent: 'draft', comment: TK });
+    const m = k.pages.get(URL_X).threads.at(-1).msgs[0];
+    m.gaps = [{ id: 'g1', mode: 'removed', instruction: 'say it in one line' }];
+    assert.equal((await k.send('publish', { rid: 'rid-forged-gone-1', prompts: 'shown' })).status, 400);
+    m.gaps = [{ id: 'g1', mode: 'filled-by-agent', instruction: 'say it in one line', text: 'x' }];
+    assert.equal((await k.send('publish', { rid: 'rid-forged-gone-1', prompts: 'shown' })).status, 200);
+    assert.equal(k.state.presses.at(-1).prompts, 'shown');
   } finally { await k.close(); }
 });

@@ -14889,6 +14889,14 @@ text holds an agent passage: "Publish now" and "Publish with prompt".
 - THE RECORD keeps the choice of the last press asked (`prompts`: '' or a mode), replaced by each `publish` (none sent: none), carried
   to `press` → the queue's `args.prompts` → the run. The view says it back (`prompts`, only when a mode), so a Hub that asked `shown`
   of a companion from before this amendment (which ignores the field, and publishes locked) can tell, and says so.
+- `shown` NEEDS AN AGENT PASSAGE IN THE REPLY ITSELF (`shownRefusal`, over `liveGapsOf`: the filed message's gaps that are not removed,
+  the list the view counts; for a reply not filed yet, the grammar's marks in its text). A `shown` on a reply that asked no agent
+  anything is a 400, nothing filed or pressed: a forged or stolen-key request cannot make an earlier post's prompts public by adding
+  a plain sentence to it.
+- THE VIEW SAYS THE CHOICE ONLY ONCE THE REPLY IS PRESSED (`rec.step === 'pressed'`). A press that was refused, or an addition given
+  back to a saved draft, says none (the record still keeps what was asked, and the next `publish` replaces it). A `publish` for a
+  reply already pressed changes nothing and answers `repeated` with the choice of the press that won: the Hub compares it with what
+  it just asked and tells the owner when they differ (the first request's answer was lost).
 - THE PROMPT ITSELF is still never in the Blygger item, a feed or the stream: only `blyg_prompts` in the note changes, and the site's
   page of the post is the one place it reads it.
 - Tests: `test/hub-link-add.test.mjs` (the routes: carried, refused, no choice, an addition, each press its own choice) and

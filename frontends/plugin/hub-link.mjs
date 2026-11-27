@@ -217,6 +217,13 @@ export function blocksOf(msg, { jsonBytes = HUB_LINK_LIMITS.blocksJsonBytes } = 
 /** THE MESSAGE THE LINK FILED in a thread: the one with the record's `msg_ts` (the record is what says the link filed it: an owner's
  *  edit on the computer re-stamps the message's channel, and it is still this reply). A record from before `msg_ts` was kept: the
  *  first message, whatever its channel now. Gone (deleted on the computer) → null: the reply has ended. */
+/** THE REPLY'S AGENT PASSAGES, one reading: the filed message's gap list without the removed ones (what the view counts, what
+ *  `fill` is of, what blocksOf shows); for a text not filed yet, the marks the same grammar would make its gaps from. */
+export const liveGapsOf = msg => (Array.isArray(msg && msg.gaps) ? msg.gaps.filter(g => g && g.mode !== 'removed') : Grammar.parseGaps(String((msg && msg.text) || '')));
+/** `shown` is taken only for a reply that itself holds an agent passage: a request cannot turn public the prompts of a post (an
+ *  earlier one it is added to, least of all) with a reply that asked no agent anything. → '' | the 400's words */
+export const PROMPTS_NEED_AGENT_SAY = 'prompts can be shown only for a reply that holds an agent passage';
+export const shownRefusal = (prompts, msg) => (prompts === 'shown' && !liveGapsOf(msg).length ? PROMPTS_NEED_AGENT_SAY : '');
 export function filedMsgOf(record, thread) {
   if (!record || !thread) return null;
   const msgs = Array.isArray(thread.msgs) ? thread.msgs : [];
@@ -548,7 +555,7 @@ export function createHubLink(deps) {
     if (!rec) return v;
     const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
     const first = filedMsgOf(rec, thread);
-    const gaps = first && Array.isArray(first.gaps) ? first.gaps.filter(g => g && g.mode !== 'removed') : [];
+    const gaps = first && Array.isArray(first.gaps) ? liveGapsOf(first) : [];
     if (gaps.length) v.gaps = { total: gaps.length, written: gaps.filter(g => g.mode !== 'pending').length, failed: gaps.filter(g => g.mode === 'failed').length };
     // the passages' progress, and (asked for) the reply's own text: only while its thread is there and is this record's
     if (first && (rec.step === 'saved' || rec.step === 'pressed')) {
@@ -581,8 +588,9 @@ export function createHubLink(deps) {
         state: ready ? 'ready' : 'cannot-add' };
     }
     if (state === 'saved' && rec.press_refused) v.press = { refused: rec.press_refused, say: HUB_LINK_SAY[rec.press_refused] || '' };
-    // (the prompts choice the last press was asked with, said back: a Hub that asked and does not read it here knows it was not taken)
-    if (PROMPT_MODES.includes(rec.prompts)) v.prompts = rec.prompts;
+    // (the prompts choice the reply was PRESSED with, said back only once it is pressed: a press that was refused, or given back, says
+    // none. A Hub that asked and does not read it here knows it was not taken; one that reads another knows an earlier press won)
+    if (rec.step === 'pressed' && PROMPT_MODES.includes(rec.prompts)) v.prompts = rec.prompts;
     return v;
   }
   const logState = (rid, what, extra = '') => say(`${ridTag(rid)} ${what}${extra ? ` ${extra}` : ''}`);
@@ -719,7 +727,7 @@ export function createHubLink(deps) {
       if (kind !== 'compose' && !quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
-      { const pr = promptsAsked(data, { pressing: data.intent === 'publish' }); if (pr.error) return { status: 400, body: { ok: false, error: pr.error } }; }
+      { const pr = promptsAsked(data, { pressing: data.intent === 'publish' }); const no = pr.error || shownRefusal(pr.prompts, { text: comment }); if (no) return { status: 400, body: { ok: false, error: no } }; }
       if (data.add_to !== undefined && !(typeof data.add_to === 'string' && POST_ID_RE.test(data.add_to))) return { status: 400, body: { ok: false, error: 'add_to must be a post id from earlier' } };
       if (kind === 'post' && (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string')) return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
       if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
@@ -761,6 +769,8 @@ export function createHubLink(deps) {
       if (rec.step === 'pressed') return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
       const now = viewOf(rid);
       if (now.state !== 'saved') return { status: 409, body: { ok: false, error: 'not a saved reply', ...now } };
+      { const page = deps.readPage(rec.page_url); const thread = page && (page.threads || []).find(t => t && t.id === rec.thread_id);
+        const no = shownRefusal(pr.prompts, filedMsgOf(rec, thread)); if (no) return { status: 400, body: { ok: false, error: no, ...now } }; }
       // THIS press's choice replaces whatever an earlier press of the record was asked with (none sent: none, never a kept `shown`)
       if ((rec.prompts || '') !== pr.prompts) store.note(rid, { prompts: pr.prompts });
       await pressRecord(store.get(rid), key, as);
