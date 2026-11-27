@@ -84,6 +84,12 @@ if [ "${1:-}" = "blyg-home" ]; then
   exec node "${BOTFERENCE_HOME}/frontends/plugin/blyg-home-cli.mjs" "$@"
 fi
 
+# --- tk-read: what a /tk passage's agent may read (the tk_read_roots and hub_link_tk_notes settings; frontends/plugin/tk-read-cli.mjs). ---
+if [ "${1:-}" = "tk-read" ]; then
+  shift
+  exec node "${BOTFERENCE_HOME}/frontends/plugin/tk-read-cli.mjs" "$@"
+fi
+
 # --- clippings: check or list the owner's clippings setting for the Hub's Reading list (frontends/plugin/clippings-cli.mjs). ---
 if [ "${1:-}" = "clippings" ]; then
   shift
