@@ -14647,6 +14647,7 @@ reading notes safe enough to ship. Each is below; each has a test.
   ~/.irb_history, ~/.lesshst, ~/.local/share/fish), browser profiles and cookies (~/Library/Cookies, ~/Library/Safari, ~/Library/Mail,
   ~/Library/Messages, and under ~/Library/Application Support: Google, Firefox, BraveSoftware, Microsoft Edge, Arc, Vivaldi, Chromium,
   com.operasoftware.Opera), the owner's past Claude transcripts (~/.claude/projects), and ALL of ~/.config except ~/.config/anthropic.
+  (The repair amendment below takes ~/Library/Keychains off this list: the CLI's sign-in reads the keychain.)
   Narrowed with `claude auth status` and `claude --version` under the wrapper only (no model, no file's contents read, no listing): all
   of ~/.config denied left the CLI signed out; ~/.config/anthropic allowed again signed it in. WHAT REMAINS READABLE at the OS level:
   the rest of the home folder (documents, other dotfiles such as ~/.gitconfig, the rest of ~/Library and ~/.claude), ~/.config/anthropic
@@ -14663,3 +14664,31 @@ reading notes safe enough to ship. Each is below; each has a test.
   unwritten passage blocks the publish), and writes a written passage in the site's filled form (`[TK] … [=]text[/TK]`), which is not a
   gap to fill. Nothing to close.
 
+
+## Amendment (2026-11-27, repair): the wrapper broke Claude's sign-in; what the CLI needs, from real runs
+The first real passages under the wrapper (merged, then reverted on main) all failed after about 2 min 55 s with "the agent stopped
+before it finished", a plain one too. The cause, separated without a model call (the exact arguments, the wrapper, the owner's real
+sign-in, and a local mock provider in place of the API) and confirmed with real runs: with a subscription, the CLI reads its token
+from the macOS keychain by starting `/usr/bin/security`, and writes sign-in state under `~/.config/anthropic`; the wrapper refused
+both (no program but the CLI; ~/Library/Keychains and ~/.config denied), so every API request failed before it was sent, the CLI
+retried ten times with back-off (its stream showed `system/api_retry` events, attempt 1 to 10, about 2 min 55 s), and then ended
+with an error result. `claude auth status` had said "signed in" under the wrapper because it does not fetch the token. The stub tests
+could not see it: a stub needs no sign-in. Nothing about stream-json, `--settings` or the 180 s ceiling was at fault (the ceiling only
+hid that the run was retrying; the run's own error came first).
+- THE FIX, in `claudeJail`: `/usr/bin/security` may start (`CLAUDE_SIGN_IN_PROGRAMS`, that one path exactly; every other program is
+  still refused); `~/Library/Keychains` is no longer in the denied places (the security program reads it; its items stay encrypted,
+  each behind the keychain's own access rules); `~/.config/anthropic` may be read AND written; the CLI's own state folder
+  `~/.local/state/claude` may be written; and the run's own fresh folder is its `TMPDIR` as well as its `CLAUDE_CODE_TMPDIR`, so it
+  does not use the system's shared temporary folder. Still refused, as the sandbox log showed during the real runs: the CLI's own
+  attempts to start `/bin/sh`, `/bin/ps` and `/usr/bin/git` (it carries on without them), reads of ~/.claude/projects and the rest of
+  ~/.config, and the other temporary folders.
+- REAL RUNS (2026-11-27, Claude Code 2.1.330, the companion's exact arguments inside the wrapper, a scratch config): a plain passage
+  1.9 s; a web search 7.4 s (one WebSearch); a notes passage reading a fixture file 3.6 s (one Read); through `botference fill-gap`
+  (the companion's own code path) a plain passage 1.9 s and a notes passage 3.3 s; the opt-in smoke test 1.8 s, 5.9 s and 2.6 s. The
+  stream's event types, as the reader expects them: `system/init`, `assistant` (text or tool_use), `rate_limit_event`, `user` (a tool's
+  result), `result/success`.
+- THE OPT-IN SMOKE TEST, `test/tk-read-real.test.mjs`: three real `claude -p` passages through `runOneShot` in the real wrapper (plain,
+  web search, notes from a fixture), each within a minute; skipped unless `BOTFERENCE_REAL_SMOKE=1`. Run it before merging any change
+  to the one-shot, the capability sets or the wrapper.
+- What stays readable at the OS level now ALSO includes ~/Library/Keychains (encrypted items) and ~/.config/anthropic (the CLI's
+  sign-in), which the CLI may also write.
