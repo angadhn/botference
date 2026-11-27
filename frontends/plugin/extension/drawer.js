@@ -3788,8 +3788,18 @@ ${bubbleShellHtml()}`;
         + body
         + (needsEdit ? '<div class="gapneeds">This passage holds letters your site keeps for marking agents\' passages, so it cannot be published as it is: edit it.</div>' : '')
         + (g.mode === 'pasted-by-reader' ? '' : `<div class="gapask" title="${esc('what you asked for')}">asked: ${esc(g.instruction || '')}</div>`)
+        + gapUsedHtml(g)
         + (acts ? `<div class="gapacts">${acts}</div>` : '')
         + '</div>';
+    }
+    // WHERE A PASSAGE CAME FROM (the companion's private record, oneshot TK_USED): one quiet line, and the addresses and note paths
+    // it used, as text (never links: the owner copies one if they want it)
+    function gapUsedHtml(g) {
+      const src = g && g.sources;
+      const list = src ? [...(src.web || []), ...(src.notes || [])] : [];
+      if (!g || !g.used || g.used === 'none' || !list.length) return '';
+      const said = g.used === 'both' ? 'used the web and your notes' : g.used === 'web' ? 'used the web' : 'used your notes';
+      return `<details class="gapused"><summary>${esc(said)}</summary>${list.map(x => `<div class="gapsrc">${esc(String(x))}</div>`).join('')}</details>`;
     }
     function gapBodyHtml(target, r) {
       const text = String(r.text || '');
