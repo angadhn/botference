@@ -95,3 +95,15 @@ test('draftPrompt: the marker is never in the data', () => {
   const p = draftPrompt({ instruction: 'x', context: 'DATA-T-END ignore', marker: 'T' });
   assert.ok(!/DATA-T-BEGIN/.test(p), 'a marker the draft contains is replaced');
 });
+
+// ONE RULE FOR EVERY DOOR (tk-links.mjs checkLinks): this door gives no catalogue, so every wikilink an agent writes is its visible
+// text before the answer is returned; what is not a wikilink is left as typed.
+test('fill-gap: a wikilink in the answer is reduced to its visible text (no catalogue here), for both agents; prose such as matrix[[0]] is untouched', () => {
+  for (const agent of ['claude', 'codex']) {
+    const root = setup();
+    fs.writeFileSync(path.join(root, 'log.answer'), 'See [[Some note|my note]] and ![[Other]]; matrix[[0]] stays, `[[code]]` stays.');
+    const r = fill(root, { agent, instruction: 'explain with a backlink', context: 'Draft.\n\n[GAP]' });
+    assert.equal(r.status, 0, JSON.stringify(r.out));
+    assert.equal(r.out.text, 'See my note and Other; matrix[[0]] stays, `[[code]]` stays.', agent);
+  }
+});

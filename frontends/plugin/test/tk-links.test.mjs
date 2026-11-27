@@ -171,6 +171,18 @@ test('after the run: a wikilink to an offered name is kept as written; any other
   // no catalogue was given: nothing was offered, so nothing is kept
   assert.deepEqual(L.checkLinks('See [[Harbour cranes|x]] and plain words.', { linking: 'none', names }), { text: 'See x and plain words.', kept: 0, reduced: 1 });
   assert.deepEqual(L.checkLinks('No link at all.', { linking: 'catalogue', names }), { text: 'No link at all.', kept: 0, reduced: 0 });
+  // WHAT IS NOT A WIKILINK IS PROSE, left exactly as typed, with or without a catalogue (the pattern is the site's own: `[[…]]` not
+  // directly after a letter, a digit, `_` or `]`, not directly before `]`, no bracket inside)
+  for (const linking of ['none', 'catalogue']) {
+    for (const prose of ['matrix[[0]]', 'a[[i]][[j]]', 'x = m[[1]] + m_[[2]]', '[[A|[[B]]]]', '[[Harbour cranes|[[Ferry timetables]]]]', 'empty [[]] and [[', 'two\n[[lines\nlong]]']) {
+      assert.deepEqual(L.checkLinks(prose, { linking, names }), { text: prose, kept: 0, reduced: 0 }, `${linking}: ${prose}`);
+    }
+  }
+  assert.deepEqual(L.checkLinks('m[[0]] and [[Harbour cranes|cranes]] and [[Nope|n]] and a[[i]][[j]]', { linking: 'catalogue', names }),
+    { text: 'm[[0]] and [[Harbour cranes|cranes]] and n and a[[i]][[j]]', kept: 1, reduced: 1 });
+  assert.deepEqual(L.checkLinks('m[[0]] and [[Harbour cranes|cranes]] and ([[Nope]])', { linking: 'none', names }), { text: 'm[[0]] and cranes and (Nope)', kept: 0, reduced: 2 });
+  // the command's life is one named state, and its answer is made once
+  assert.deepEqual(L.CATALOGUE_RUN_STATES, ['running', 'timing-out', 'flooding', 'not-started', 'ended']);
 });
 
 test('askForGap: the catalogue goes into the prompt only when there is one, the answer is checked, and the gap records what was kept and reduced', async () => {

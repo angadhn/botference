@@ -73,28 +73,50 @@ export function validateCatalogue(text) {
   return { ok: true, posts, truncated: raw.truncated === true || raw.posts.length > LINK_LIMITS.posts, dropped, error: '' };
 }
 
+// THE COMMAND'S LIFE, one of CATALOGUE_RUN_STATES in one field, moved only by `to` (which refuses a move the table does not list).
+// The answer is made in ONE place, when the process is gone (`ended`), from the state it was in: so it is made once.
+//   running      started
+//   timing-out   past its time: its process group was told to stop
+//   flooding     it printed more than it may: its process group was told to stop
+//   not-started  the program could not be started
+//   ended        answered; nothing follows
+export const CATALOGUE_RUN_STATES = Object.freeze(['running', 'timing-out', 'flooding', 'not-started', 'ended']);
+const CATALOGUE_RUN_MOVES = Object.freeze({ running: Object.freeze(['timing-out', 'flooding', 'not-started', 'ended']),
+  'timing-out': Object.freeze(['ended']), flooding: Object.freeze(['ended']), 'not-started': Object.freeze(['ended']), ended: Object.freeze([]) });
+const CATALOGUE_RUN_FAILS = Object.freeze({ 'timing-out': 'the catalogue command took too long', flooding: 'the catalogue command printed too much',
+  'not-started': 'the catalogue command could not be started' });
 /**
  * Run the catalogue command: argv, never a shell, stdin closed, its own process group, stopped at the time limit or past the size
  * limit. Only stdout is read. → Promise<{ ok, text } | { ok: false, error }>. Never rejects.
  */
 export function runCatalogueCommand({ argv, cwd, env, limitMs = LINK_LIMITS.timeMs, maxBytes = LINK_LIMITS.outputBytes, spawn = realSpawn }) {
   return new Promise(resolve => {
-    let child;
+    let child = null;
     let size = 0;
     const out = [];
-    let answered = false;
-    const answer = r => { if (answered) return; answered = true; clearTimeout(timer); resolve(r); };
+    let state = 'running';
+    const to = next => { if (!CATALOGUE_RUN_MOVES[state].includes(next)) throw new Error(`catalogue: cannot go from ${state} to ${next}`); state = next; };
     const stop = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* gone */ } } };
-    const timer = setTimeout(() => { stop(); answer({ ok: false, error: 'the catalogue command took too long' }); }, limitMs);
+    // the process is gone (or never was): the one place an answer is made
+    const ended = code => {
+      if (state === 'ended') return;
+      const was = state;
+      to('ended');
+      clearTimeout(timer);
+      if (CATALOGUE_RUN_FAILS[was]) resolve({ ok: false, error: CATALOGUE_RUN_FAILS[was] });
+      else resolve(code === 0 ? { ok: true, text: Buffer.concat(out).toString('utf8') } : { ok: false, error: `the catalogue command failed (exit ${code})` });
+    };
+    const timer = setTimeout(() => { if (state === 'running') { to('timing-out'); stop(); } }, limitMs);
     try { child = spawn(argv[0], argv.slice(1), { cwd, env, shell: false, detached: true, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] }); }
-    catch { answer({ ok: false, error: 'the catalogue command could not be started' }); return; }
-    child.on('error', () => answer({ ok: false, error: 'the catalogue command could not be started' }));
+    catch { to('not-started'); ended(null); return; }
+    child.on('error', () => { if (state === 'running') to('not-started'); ended(null); });
     child.stdout.on('data', d => {
+      if (state !== 'running') return;
       size += d.length;
-      if (size > maxBytes) { stop(); answer({ ok: false, error: 'the catalogue command printed too much' }); return; }
+      if (size > maxBytes) { to('flooding'); stop(); return; }
       out.push(d);
     });
-    child.on('close', code => answer(code === 0 ? { ok: true, text: Buffer.concat(out).toString('utf8') } : { ok: false, error: `the catalogue command failed (exit ${code})` }));
+    child.on('close', code => ended(code));
   });
 }
 
@@ -149,7 +171,11 @@ export function promptCatalogue(catalogue, { caps = 'web', roots = [] } = {}) {
 
 // ---- after the run -------------------------------------------------------------------------------------------------------------
 const fenceOf = l => /^ {0,3}(`{3,}|~{3,})/.exec(l);
-const WIKILINK = /(!?)\[\[([^\[\]\n]{1,400})\]\]/g;
+// WHAT COUNTS AS A WIKILINK, exactly as the owner's site reads one in an agent passage (the example site's AgentMarkdown::WIKILINK,
+// _plugins/blygger_agent_markdown.rb; the two are kept the same): `[[` + one line of text with no bracket in it + `]]`, optionally
+// after `!`, NOT directly after a letter, a digit, `_` or `]` (so `matrix[[0]]` and `a[[i]][[j]]` are prose, as typed) and NOT
+// directly before another `]` (so a nested `[[A|[[B]]]]` is no wikilink at all, as typed).
+const WIKILINK = /(?<![A-Za-z0-9_\]])(!?)\[\[([^\[\]\n]{1,400})\]\](?!\])/g;
 /** A wikilink's parts as written: its name, and its visible text (the words after the bar, else the name). */
 export function wikilinkParts(inner) {
   const at = inner.search(/\\?\|/);

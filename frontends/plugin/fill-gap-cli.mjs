@@ -14,6 +14,7 @@
 // read only, never written). It reads nothing else: not the blog, not the draft's files. The draft is quoted data
 // (tkgaps.draftPrompt) and the answer is untrusted plain text, cut at GAP_LIMITS.outputChars; whoever writes it anywhere
 // escapes it. PLUGIN_ONESHOT_CMD (a JSON argv) replaces the agent's CLI in tests, as it does for the companion.
+import { checkLinks } from './tk-links.mjs';
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { runOneShot, codexJail, claudeJail, ONESHOT_AGENTS, CLAUDE_FETCH_RULES_VERSION } from './oneshot.mjs';
@@ -68,6 +69,9 @@ export async function fillGap(req, { env = process.env, config = CONFIG_PATH, no
   const prompt = draftPrompt({ task: req.task, instruction: req.instruction, context: req.context, words: req.words, inline: req.inline, caps, roots });
   const r = await runOneShot(req.agent, prompt, { model, effort, env, caps, roots, fetchHosts, ...override(env) });
   let text = r && r.ok ? String(r.text || '').trim().slice(0, GAP_LIMITS.outputChars) : '';
+  // ONE RULE FOR EVERY DOOR (tk-links.mjs checkLinks): this door gives no catalogue of published posts, so no name was offered, and
+  // every wikilink in the answer is its visible text, as for a /tk passage that ran without one
+  text = checkLinks(text, { linking: 'none' }).text.trim();
   if (req.task === 'note') text = firstWords(text, NOTE_WORDS);
   if (!text) return { error: (r && r.error) || 'the agent wrote nothing' };
   return { text, ...(model ? { model } : {}), at: new Date(now()).toISOString().replace(/\.\d{3}Z$/, 'Z') };
@@ -80,6 +84,8 @@ function override(env) {
   return { spawn: (cmd, args, o) => spawn(argv[0], [...argv.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(env.ONESHOT_LOG ? { ONESHOT_LOG: env.ONESHOT_LOG } : {}) } }),
   jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }),
+  // (the stand-in is no Codex CLI: it has no version and no helper, so a Codex run is held `plain`, oneshot codexRunFor)
+  codexBin: 'codex', codexCliVersion: async () => '', codexHelper: () => false,
   cliVersion: async () => env.PLUGIN_ONESHOT_CLAUDE_VERSION || CLAUDE_FETCH_RULES_VERSION };
 }
 
