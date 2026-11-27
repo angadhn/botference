@@ -535,7 +535,9 @@
   // a comment on a passage: a line with only /quote puts the passage there when the thread is published as a blyg post
   // (blyg-note.mjs QUOTE_HINT, the same words; the Hub's reply box shows them too)
   const QUOTE_HINT = 'A line with only /quote puts the quoted passage there.';
-  const THREAD_HINT = HINT + '. ' + QUOTE_HINT;
+  // (blyg-note.mjs TITLE_HINT, the same words)
+  const TITLE_HINT = 'A first line “# Title” is the post\'s title.';
+  const THREAD_HINT = HINT + '. ' + QUOTE_HINT + ' ' + TITLE_HINT;
   // …except on a project artifact's page chat, which IS a council chat: the
   // council's own rule is that plain text goes to the room, and the companion
   // routes an untagged message there (server.mjs untaggedGoesToAll). The line

@@ -13270,7 +13270,23 @@ note, a guest cannot reach any of it, and nothing goes live without an explicit 
   `blyg_sources`, and `blyg_stub_of` (origin, id, the version read; the id written as a quoted string, since a page may choose an
   id such as `0x…` that a YAML 1.1 reader would take for a number) when the page is a response. An
   ordinary web page: the plain web quote whose last paragraph is the bare URL (and `blyg_stub_of: {url}`
-  only when the owner marked the page a response). The title is the first eight words of the comment;
+  only when the owner marked the page a response). The title is the first eight words of the comment, unless the owner typed one:
+  **THE TITLE LINE.** When the first non-empty line of the post's FIRST message (the owner's own words: the quote card is not their
+  text; the first message of the first thread) is exactly one `#`, a space and a visible character, in column 0 (`blyg-note.mjs`
+  `splitTitleLine`), that line is the post's title: it is written as `title:` in the front matter (`yamlString`, a template's own
+  `title:` line replaced, never doubled), it and the blank lines after it leave the body, and the file name's slug is made from it
+  (`slugOf`, with the same clash handling). Not a title line: `##`, `#tag`, `#` alone, an indented line, a `#` line that is not first
+  (so a `/quote` or `/tk` line before it means it is not first), a line holding a `/tk` instruction or `[TK]`, or one left empty by
+  removing `<>{}` (the characters no title carries). The text is one line, trimmed, markdown markers kept as characters, at most
+  `LIMITS.postTitleChars` (120); a longer line is cut at a word (no ellipsis) for the title and ALSO stays whole as the first line of
+  the body, so nothing typed is lost; nothing is refused. A post that would be only the title line keeps today's behaviour (the line
+  stays text, a heading). An agent's passage never sets a title. The source of the title is one named value, `TITLE_FROM`
+  (`line` | `words`), changed only through `titleFromMove` (`line` → `words` when there is no line or nothing but it; never back).
+  A NEW VERSION of a post takes the title only from the first message as it now stands: a later message beginning `# …` is ordinary
+  text (a heading), and editing the first message (adding, changing or removing the line) and publishing again changes the title;
+  the post's address and file name do not change. The comment's snapshot includes the title line, so editing it is an edit. Hub
+  replies and Compose posts take the same path. The composer's hint says `TITLE_HINT`. The site shows a short post's `title:` as its
+  heading and the item's title, and names an untitled one by its first words;
   the slug is `[a-z0-9-]`, never a reserved name, made unique against the folder's files and
   permalinks. For one comment, an earlier published post from the same page is linked ("Earlier: …").
 - **The default template** (editable) produces `title`, `created`, `released` (today, in the owner's
@@ -13289,7 +13305,7 @@ step, its output, retry or abandon). `always` keeps the confirmation. `plan_guar
 example site's `--only-note`, which is enforced again at apply and push against the plan made then); the companion never
 parses the plan's prose. A plan that exits non-zero, an unfilled `[TK]` or `/tk` placeholder, the caps and eligibility
 all still stop the run by themselves. `prepare` needs a `discard`. The default template writes no `title:` (a short blyg is
-named by its first words; `${title}` is still available in a template).
+named by its first words; `${title}` is still available in a template), except that a title the owner typed as a first line `# Title` is always written.
 
 ### Which requests may reach the routes, and who may set the command set
 

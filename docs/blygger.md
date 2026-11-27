@@ -97,6 +97,16 @@ keys**. The body is plain spec syntax (§10.1), which any Blygger editor
 accepts. The two keys are for a site whose build reads them. Anyone else can
 delete them.
 
+### A title for a post
+
+Start a post's text with one line `# Some title` (one `#`, a space, the title) and that line becomes the post's title, shown as its
+heading on your site, instead of a heading in the text; the line and the blank line after it are not in the body. It works in the
+drawer and in your Hub's reply and compose boxes. Without such a first line nothing changes (a short post is named by its first
+words). It must be the first line of your first message: a `/quote` or `/tk` line before it means it is not first, and `##`, `#tag`
+or a `#` line further down are ordinary text. The title is one line of at most 120 characters; a longer line is cut at a word for
+the title and also stays whole in the text. The title is taken from the post's first message only: a later message that begins
+`# …` is a heading, and editing the first message and publishing again changes the title. A post of only a title line is published as today.
+
 ### The body
 
 - **Your words and the quote.** For each highlight, the comment you wrote

@@ -42,6 +42,7 @@ export const LIMITS = Object.freeze({
   noteChars: 40000,       // the whole note
   titleChars: 80,
   titleWords: 8,
+  postTitleChars: 120,    // a title the owner typed (`# Title` as the first line of the post); a longer line is cut at a word and also kept whole in the body
   slugChars: 48,
   comments: 12,           // threads in one post ("this and the ones above")
   templateChars: 2000,
@@ -102,6 +103,44 @@ export function titleOf(text) {
   if (t.length > LIMITS.titleChars) t = t.slice(0, LIMITS.titleChars).replace(/\s+\S*$/, '');
   t = t.replace(/[\s.,;:!?-]+$/, '').trim();
   return t || 'A short note';
+}
+// WHERE A POST'S TITLE COMES FROM, one of TITLE_FROM, held in one value and changed only through titleFromMove:
+//   line    the owner typed `# Title` as the first line of the post's first message (splitTitleLine): that is the title, and the line leaves the body
+//   words   the first words of the post (titleOf), the site's own fallback: today's behaviour, and what a post falls back to when it has no title line
+//           or nothing but the title line
+export const TITLE_FROM = Object.freeze(['words', 'line']);
+const TITLE_MOVES = Object.freeze({ line: Object.freeze(['words']), words: Object.freeze([]) });
+export function titleFromMove(from, to) {
+  if (!TITLE_FROM.includes(from) || !TITLE_FROM.includes(to)) throw new Error(`unknown title source ${JSON.stringify(TITLE_FROM.includes(from) ? to : from)}`);
+  if (from !== to && !TITLE_MOVES[from].includes(to)) throw new Error(`a title cannot move from ${from} to ${to}`);
+  return to;
+}
+/** The owner's own TITLE LINE: the first non-empty line of `src` (a message's text, already cleaned), exactly one `#`, a space and a
+ *  visible character, in column 0. Not a title: `##`, `#tag`, `#` alone, an indented line, a line with a /tk instruction, a [TK] mark or
+ *  nothing but `<>{}` in it, and any `#` line that is not the first (a /quote or /tk line before it makes it not first).
+ *  → { title, line, rest } where `rest` is `src` without the line and the blank lines after it (the whole of `src` when the line is longer
+ *  than LIMITS.postTitleChars: the title is then cut at a word and the line stays in the body, so nothing typed is lost), or null. */
+export function splitTitleLine(src, stored = []) {
+  const text = String(src == null ? '' : src);
+  const m = /^(?:[ \t]*\n)*(# [^\n]*)(?:\n|$)/.exec(text);
+  if (!m) return null;
+  const line = m[1];
+  const lineStart = m[0].indexOf(line);
+  const lineEnd = lineStart + line.length;
+  if (hasTkMark(line)) return null;
+  if (Grammar.gapsFor(text, stored).some(g => g.start < lineEnd)) return null;
+  let t = oneLine(line.slice(2)).replace(/[<>{}]/g, '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  let kept = false;
+  if (t.length > LIMITS.postTitleChars) {
+    kept = true;
+    let cut = t.slice(0, LIMITS.postTitleChars);
+    if (!/\s/.test(t[LIMITS.postTitleChars])) cut = cut.replace(/\s+\S*$/, '') || cut;
+    t = cut.replace(/[\ud800-\udbff]$/, '').trim();
+  }
+  let rest = text.slice(m[0].length);
+  while (/^[ \t]*\n/.test(rest)) rest = rest.replace(/^[ \t]*\n/, '');
+  return { title: t, line, rest: kept ? text : rest };
 }
 const RESERVED = new Set(['con', 'prn', 'aux', 'nul', 'index', 'feed', 'items', 'tags', 'assets', 'admin', 'api',
   ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`), ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`)]);
@@ -536,6 +575,8 @@ const QUOTE_HELD = new RegExp(`[ \\t]*${HOLD_A}Q+${HOLD_B}[ \\t]*`);
 // the /quote marker, in the owner's words: the refusal of a second one, and the composer's hint (the Hub's reply box shows the same)
 export const QUOTE_ONCE_SAY = 'Only one /quote line can place the quoted passage: remove the others, or put them in code formatting';
 export const QUOTE_HINT = 'A line with only /quote puts the quoted passage there.';
+// the title line, in the owner's words: the composer's hint (the drawer carries the same words; the Hub's reply box can show them too)
+export const TITLE_HINT = 'A first line “# Title” is the post\'s title.';
 /** A comment's text without its /quote marker lines (for a label made of its first words: never the marker). */
 export const withoutQuoteMarks = text => {
   const s = String(text == null ? '' : text);
@@ -553,12 +594,19 @@ export const hasTkMark = t => HAS_TK_MARK.test(String(t || ''));
  * written as the site's generated passage (above); a gap that is pending, failed or unknown BLOCKS. A bracket mark the owner typed
  * as words (`[TK]`) is no longer a gap: it is written so the site shows the letters and never reads it as its own grammar.
  */
-export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false } = {}) {
+export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [], bareOff = false, titleFrom = 'words' } = {}) {
   const blocked = [];
   const generated = [];
   let src = clean(withRuns(stripMore(msg.text), msg.runs, null)).replace(/[\ue000\ue001]/g, '');
   if (src.length > LIMITS.commentChars) return { text: '', blocked: [`a comment is longer than ${LIMITS.commentChars} characters`], generated };
   const stored = Array.isArray(msg.gaps) ? msg.gaps : [];
+  // THE TITLE LINE (only when asked: the post's first message): it leaves the text here, before anything reads the gaps or the /quote marker
+  let title = '';
+  let titleLine = '';
+  if (titleFrom === 'line') {
+    const split = splitTitleLine(src, stored);
+    if (split) { title = split.title; titleLine = split.line; src = split.rest; }
+  }
   const found = Grammar.gapsFor(src, stored);
   // THE /quote MARKER (tkgrammar.js quoteMarks): the first one is held, the same length, while the owner's words are made safe, and
   // the text is split there at the end; any other is left as typed (renderShortNote refuses a thread with more than one)
@@ -619,9 +667,9 @@ export function ownText(msg, { escape = 'liquid', forms = null, deliberate = [],
   if (held.length === 2) {
     const parts = held.map(x => x.trim());
     out = [parts[0], Grammar.QUOTE_WORD, parts[1]].filter(Boolean).join('\n\n');
-    return { text: out, parts, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit };
+    return { text: out, parts, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit, title, titleLine };
   }
-  return { text: out, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit };
+  return { text: out, quoteMarks: marks.length, blocked, generated, bareLinks, explicitLinks: explicit, title, titleLine };
 }
 
 // ---- a quoted passage, as the note writes it -----------------------------------
@@ -904,8 +952,9 @@ export function linkTargetsOf(threads, points = null) {
   return out;
 }
 const QUOTE_SLOT = Symbol('the quoted passage');
-export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null, prompts = DEFAULT_PROMPTS }) {
+export function renderShortNote({ page, threads, home, now, slug, id = '', earlier = null, keep = null, points = null, linkStub = null, prompts = DEFAULT_PROMPTS, titleFrom = 'line' }) {
   const nowArg = now;
+  titleFromMove('line', titleFrom);   // (a caller may ask for 'line', the default, or 'words': never anything else)
   if (!PROMPT_MODES.includes(prompts)) return { ok: false, error: `prompts must be one of ${PROMPT_MODES.join(', ')}` };
   const escape = ESCAPES.includes(home && home.escape) ? home.escape : DEFAULT_ESCAPE;
   // every address the owner linked on purpose anywhere in the post, as the site spells it (a bare one that matches is left as typed)
@@ -938,6 +987,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
   const generated = [];
   const snapshot = [];
   let titleSource = '';
+  let ownTitle = '';
+  const firstMsg = Array.isArray(threads) && threads.length ? includedMsgs(threads[0], points && points[threads[0].id])[0] : null;
   let webQuoted = false;
   const bareLinks = [];
   const explicit = [];
@@ -968,7 +1019,8 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const seq = [];
     let marked = 0;
     for (const m of includedMsgs(t, points && points[t.id])) {
-      const r = ownText(m, opts);
+      const r = ownText(m, { ...opts, titleFrom: m === firstMsg ? titleFrom : 'words' });
+      if (r.title) ownTitle = r.title;
       blocked.push(...r.blocked);
       generated.push(...r.generated);
       bareLinks.push(...(r.bareLinks || []));
@@ -978,9 +1030,13 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
       if (r.parts) seq.push(...[r.parts[0], QUOTE_SLOT, r.parts[1]].filter(Boolean));
       else if (r.text) seq.push(r.text);
       if (own) words.push(own);
-      if (r.text) said.push({ ts: String(m.ts || ''), sha: hashOf(r.text) });
+      if (r.text || r.titleLine) said.push({ ts: String(m.ts || ''), sha: hashOf(r.titleLine ? `${r.titleLine}\n\n${r.text}` : r.text) });
     }
     if (marked > 1) blocked.push(QUOTE_ONCE_SAY);
+    // nothing but a title line to publish: the line stays ordinary text (a heading), as it is today
+    if (ownTitle && !words.length && titleFrom === 'line') {
+      return renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep, points, linkStub, prompts, titleFrom: titleFromMove('line', 'words') });
+    }
     snapshot.push({ thread: String(t.id || ''), quote: quote.trim() ? hashOf(quote.trim()) : '', msgs: said });
     if (!words.length && !blocked.length) return { ok: false, error: 'that comment has no words to publish' };
     // the name is the OWNER's first words: an agent's passage (a generated-passage scope) is not part of it
@@ -1004,7 +1060,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const reshaped = written.length !== forms.count || written.some((h, i) => h !== forms.heads[i]);
     const anyLegacy = forms.heads.some((_, i) => (forms.kept[i] || 'legacy') === 'legacy');
     if (reshaped && anyLegacy) {
-      const again = renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep: { ...keep, moveFormat: formatMove('legacy', 'markdown') }, points, linkStub, prompts });
+      const again = renderShortNote({ page, threads, home, now: nowArg, slug, id, earlier, keep: { ...keep, moveFormat: formatMove('legacy', 'markdown') }, points, linkStub, prompts, titleFrom });
       return again.ok ? { ...again, formsMoved: true } : again;
     }
   }
@@ -1013,7 +1069,7 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     const href = earlier.link.startsWith('/') ? earlier.link.replace(/[()\s]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase()) : safeWebUrl(earlier.link);
     if (href) body += `\n\nEarlier: [${linkText(earlier.title) || 'an earlier note'}](${href})`;
   }
-  const title = titleOf(titleSource);
+  const title = ownTitle || titleOf(titleSource);
   // the page's own target first; else a lone link's post (only when the post quotes no blyg post: the caller checked, and so does this)
   const linked = !stubOfPage(page) && !sources.length && linkStub && linkStub.id && linkStub.page ? linkStub : null;
   const stubOf = stubOfPage(page) || (linked ? { origin: linked.origin, id: linked.id, version: linked.version } : null);
@@ -1026,6 +1082,12 @@ export function renderShortNote({ page, threads, home, now, slug, id = '', earli
     slug, id: isBlygId(id) ? id : newBlygId(), keyLines: blygKeyLines({ sources, stubOf, generated, prompts,
       silentLinks: [...new Set(bareLinks)].filter(u => !deliberate.includes(normalizeLinkAddress(u))) }),
   });
+  if (ownTitle) {
+    // the title the owner typed is the note's `title:` whatever the template says (a template's own `title:` line is replaced, never doubled)
+    const line = `title: ${yamlString(oneLine(title).replace(/[<>{}]/g, ''))}`;
+    const at = front.findIndex(l => /^title:/.test(l));
+    if (at >= 0) front[at] = line; else front.unshift(line);
+  }
   const text = `---\n${front.join('\n')}\n---\n${body}\n`;
   if (text.length > LIMITS.noteChars) return { ok: false, error: `the note would be longer than ${LIMITS.noteChars} characters` };
   const perm = front.map(l => /^permalink:\s*(\S+)\s*$/.exec(l)).find(Boolean);
