@@ -190,20 +190,21 @@ export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be a
  *    outside      a new version would replace a note changed outside the plugin (asked before anything is written: OUTSIDE_SAY)
  *    notes-read   a passage's agent read the owner's notes (tkgaps `used` notes or both; blyg-note generatedEntry `notes_read`)
  *  THE POLICY (the owner, 2026-11-25): with confirm 'never' a look is forced ONLY when something already published would be lost
- *  without the owner having asked for it: LOOK_FORCED (left-out, outside), and (2026-11-27) when a passage's agent read the owner's
- *  notes (notes-read: what it took from them is seen before it is public, whoever pressed and however). The other facts publish
- *  straight. A passage that used only the web forces nothing. With confirm
+ *  without the owner having asked for it: LOOK_FORCED (left-out, outside). The other facts publish straight. A passage whose agent
+ *  read the owner's notes is RECORDED (the fact notes-read) and forces nothing: for some hours on 2026-11-27 it forced a look, which
+ *  held every such post pressed from a phone until the owner reached a computer; the owner ended that the same day ("Please do not
+ *  do these pauses … please let them go from my phone"). With confirm
  *  'always' every post is looked at, as before. `run.review` is the one reason the run stopped, one of REVIEW_REASONS:
  *    setting      the owner's setting is confirm 'always'
  *    left-out     (forced, above)
- *    notes-read   (forced, above)
+ *    notes-read   (a record written on 2026-11-27 may name it: it forced a look then; it forces none now)
  *    asked        the owner asked to look at a post the queue had set aside (blyg-queue)
  *    none         confirm 'never' and nothing forces a look: the run goes straight through
  *  (agent-text, further and link-stub stay in the list: a record written before 2026-11-25 may name them.) */
 //    outside-replaced  the owner answered Replace (or asked to look at a post set aside for it): recorded, never forcing a look
 //    drawer-text       another comment of the post is taken as it is in the drawer now (its published text could not be known): recorded
 export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside', 'outside-replaced', 'drawer-text', 'notes-read']);
-export const LOOK_FORCED = Object.freeze(['left-out', 'outside', 'notes-read']);
+export const LOOK_FORCED = Object.freeze(['left-out', 'outside']);
 export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'outside', 'notes-read', 'asked', 'none']);
 export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, outsideReplaced = false, drawerText = false, notesRead = false, asked = false } = {}) {
   const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside, 'outside-replaced': outsideReplaced, 'drawer-text': drawerText, 'notes-read': notesRead };

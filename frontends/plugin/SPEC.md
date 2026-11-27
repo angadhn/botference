@@ -14858,3 +14858,15 @@ site, not "is a Blygger item". Most of an owner's older essays are pages of thei
   prompt with full first words): asked for "a backlink to my essay on tidal mills" (a page, dated 2016, near the end of the list),
   Claude wrote `[[Tidal mills|my essay on tidal mills]]` in 3.3 s and Codex the same link in 6.2 s.
 
+## Amendment (2026-11-27, later the same day): a passage that read the owner's notes forces no look
+
+- `notes-read` is taken out of blyg-run `LOOK_FORCED`, which is again `left-out`, `outside`: the two cases where something already
+  published would be lost without the owner having asked. The fact is still recorded on the run (`REVIEW_FACTS`), and
+  `NEEDS_LOOK_WHY` still names it, because an entry set aside during those hours may carry it.
+- Why: the forced look held every post whose passage had read the notes, pressed from the hosted Hub on a phone, until the owner
+  reached a computer. The owner's decision: "Please do not do these pauses … please let them go from my phone." With `confirm:
+  "never"` such a post now publishes straight, from the drawer and from the Hub; with `confirm: "always"` every post is looked at,
+  as before.
+- What this gives up, stated once: text an agent took from the owner's notes can be public before the owner has read it on a
+  computer. The Hub's Preview and Save as draft remain the way to read a passage before publishing it from a phone.
+

@@ -80,17 +80,15 @@ test('a Hub press never lifts a pause the owner lifts: it waits, queued', async 
   b.q.stop();
 });
 
-test('A HUB PRESS OF A REPLY WHOSE PASSAGE READ THE OWNER\'S NOTES waits for a look on the computer (needs_look, why notes-read; the Hub sees awaiting_look); a web-only passage goes straight out', async t => {
+test('A HUB PRESS OF A REPLY WHOSE PASSAGE READ THE OWNER\'S NOTES goes straight out, like a web-only one (no look is forced for notes-read: the owner, 2026-11-27)', async t => {
   const rig = makeRig({ confirm: 'never' }); t.after(rig.done);
   const withGap = (id, used) => ({ id, quote: `A passage ${id}.`, msgs: [mine('From the Hub. /tk(say it)', { ts: `${id}-1`, channel: 'hub-link',
     gaps: [{ id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said.', model: 'claude-x', at: '2026-11-24T10:00:00Z', from: 'hub-link', used }] })] });
   const b = boot(rig, { pages: [pageOf(1, [withGap('a', 'both')]), pageOf(2, [withGap('c', 'web')])] });
   const r = await b.press('https://news.example.com/p1', 'a');
   assert.equal(r.ok, true, JSON.stringify(r));
-  await until(() => b.entry(r.queued.id).state === 'needs_look', 'set aside');
-  assert.equal(b.entry(r.queued.id).why, 'notes-read');
-  assert.deepEqual(rig.calls(), [], 'nothing written or published');
-  assert.ok(Q.NEEDS_LOOK_WHY.includes('notes-read'));
+  await until(() => b.entry(r.queued.id).state === 'published', 'the notes one published');
+  assert.ok(Q.NEEDS_LOOK_WHY.includes('notes-read'), 'still a named reason: an entry set aside before the change may carry it');
   const w = await b.press('https://news.example.com/p2', 'c');
   await until(() => b.entry(w.queued.id).state === 'published', 'the web-only one published');
   b.q.stop();
