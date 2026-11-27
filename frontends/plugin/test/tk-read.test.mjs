@@ -25,7 +25,13 @@ test('the capability sets: one named list, chosen by one function from the setti
   assert.equal(T.tkCapsFor({ read: roots, agent: 'claude', channel: 'api' }), 'web+notes', 'fill-gap and tools on the machine');
   assert.equal(T.tkCapsFor({ read: roots, agent: 'claude', channel: 'hub-link' }), 'web', 'the hub link: no notes while the setting is off');
   assert.equal(T.tkCapsFor({ read: { ...roots, hubLinkNotes: 'on' }, agent: 'claude', channel: 'hub-link' }), 'web+notes');
-  assert.equal(T.tkCapsFor({ read: roots, agent: 'codex', channel: 'drawer' }), 'web', 'Codex reads files only through a shell, which it never has');
+  // (the owner, 2026-11-27: both agents read the notes; Codex through the companion's read-only reader)
+  assert.deepEqual(T.NOTES_AGENTS, ['claude', 'codex']);
+  assert.equal(T.tkCapsFor({ read: roots, agent: 'codex', channel: 'drawer' }), 'web+notes');
+  assert.equal(T.tkCapsFor({ read: roots, agent: 'codex', channel: 'hub-link' }), 'web', 'the hub link: no notes while the setting is off, for Codex as for Claude');
+  assert.equal(T.tkCapsFor({ read: { ...roots, hubLinkNotes: 'on' }, agent: 'codex', channel: 'hub-link' }), 'web+notes');
+  assert.equal(T.tkCapsFor({ read: roots, agent: 'codex', channel: '' }), 'web', 'an unknown door: the web only');
+  assert.equal(T.tkCapsFor({ read: roots, agent: 'someone-else', channel: 'drawer' }), 'web');
   assert.equal(T.tkCapsFor({ read: { roots: [], hubLinkNotes: 'on' }, agent: 'claude', channel: 'drawer' }), 'web', 'no roots: no notes (no default guessed)');
   assert.deepEqual(T.TK_CAPS_TIME_MS, { none: 90000, web: 180000, 'web+notes': 180000 });
   // FAIL CLOSED: a gap that does not say who wrote its instruction (written before `from`), or says something unknown, is web only
@@ -91,7 +97,7 @@ test('botference tk-read check: says the roots and the hub link setting, every p
   const { main } = await import('../tk-read-cli.mjs');
   const home = tmp();
   fs.mkdirSync(path.join(home, 'Notes'));
-  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => O.CLAUDE_FETCH_RULES_VERSION }); return { code, text: out.join('\n') }; };
+  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => O.CLAUDE_FETCH_RULES_VERSION, codexVersion: () => O.CODEX_NOTES_VERSION }); return { code, text: out.join('\n') }; };
   const good = run({ tk_read_roots: [path.join(home, 'Notes')] });
   assert.equal(good.code, 0, good.text);
   assert.match(good.text, /Notes/);
@@ -127,7 +133,154 @@ test('ARGUMENTS for `none` are byte-identical to before (the changelog line); `w
   assert.deepEqual(cweb.filter(a => a !== 'web_search="live"' && a !== '--json'), cnone.filter(a => a !== 'web_search="disabled"'));
   assert.ok(cweb.includes('web_search="live"') && cweb.includes('--json'));
   assert.ok(cweb.includes('--sandbox') && cweb[cweb.indexOf('--sandbox') + 1] === 'read-only');
-  assert.deepEqual(O.oneshotCommand('codex', { dir: '/d', out: '/o', caps: 'web+notes' }).args, cweb, 'Codex never gets notes');
+  assert.deepEqual(O.oneshotCommand('codex', { dir: '/d', out: '/o', caps: 'web+notes' }).args, cweb, 'without its reader (or roots) a Codex run is a web run');
+  assert.deepEqual(O.oneshotCommand('codex', { dir: '/d', out: '/o', caps: 'web+notes', roots: [], reader: { node: '/n/node', script: '/o/r.mjs' } }).args, cweb);
+  // …with the reader: the one tool server, in place of "none", its three tools approved for this run; everything else exactly a web run
+  const cnotes = O.oneshotCommand('codex', { dir: '/d', out: '/o', caps: 'web+notes', roots: ['/r/one', '/r "two"'], reader: { node: '/n/node', script: '/o/r.mjs' } }).args;
+  const server = cnotes.find(a => a.startsWith('mcp_servers.notes='));
+  assert.equal(server, 'mcp_servers.notes={command="/n/node",args=["/o/r.mjs","[\\"/r/one\\",\\"/r \\\\\\"two\\\\\\"\\"]"],default_tools_approval_mode="approve",enabled_tools=["list_notes","read_note","search_notes"]}');
+  assert.deepEqual(cnotes.map(a => (a === server ? 'mcp_servers={}' : a)), cweb);
+  assert.ok(!cnotes.includes('mcp_servers={}') && cnotes[cnotes.indexOf(server) - 1] === '-c');
+  for (const f of ['shell_tool', 'unified_exec']) assert.equal(cnotes[cnotes.indexOf(f) - 1], '--disable', `${f} stays off: no shell`);
+  assert.ok(cnotes.includes('--ignore-user-config'), 'the owner\'s own Codex config is never read');
+});
+
+test('Codex notes: the reader reads only inside the roots (links and case followed), and has no tool that writes', async () => {
+  const R = await import('../tk-notes-reader.mjs');
+  const base = tmp();
+  const root = path.join(base, 'notes');
+  fs.mkdirSync(path.join(root, 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'yard.md'), 'The yard built forty ships.\nSecond line.\n');
+  fs.writeFileSync(path.join(root, 'sub', 'deep.md'), 'A deep note about ships.\n');
+  fs.writeFileSync(path.join(root, '.hidden.md'), 'hidden ships\n');
+  fs.writeFileSync(path.join(base, 'outside.txt'), 'CANARY\n');
+  fs.symlinkSync(path.join(base, 'outside.txt'), path.join(root, 'link-out.md'));
+  fs.symlinkSync(base, path.join(root, 'link-dir'));
+  try {
+    const r = R.makeReader([root]);
+    assert.deepEqual(R.TOOLS.map(t => t.name), O.CODEX_READER_TOOLS, 'three tools, all reading');
+    assert.equal(r.read_note({ path: 'yard.md' }).text, 'The yard built forty ships.\nSecond line.\n');
+    assert.equal(r.read_note({ path: path.join(root, 'sub', 'deep.md') }).ok, true);
+    for (const p of [path.join(base, 'outside.txt'), '../outside.txt', 'link-out.md', 'link-dir/outside.txt', '/etc/hosts', '', 'nope.md', 'sub', 'a\0b'])
+      assert.equal(r.read_note({ path: p }).ok, false, p);
+    assert.ok(!JSON.stringify([r.read_note({ path: 'link-out.md' }), r.list_notes({ folder: 'link-dir' }), r.search_notes({ query: 'CANARY' })]).includes('CANARY'));
+    assert.equal(r.list_notes().text, fs.realpathSync(root));
+    assert.deepEqual(r.list_notes({ folder: root }).text.split('\n').slice(1).sort(), ['link-dir/', 'link-out.md', 'sub/', 'yard.md'].sort().map(n => (n === 'link-dir/' ? 'link-dir' : n)));
+    assert.equal(r.list_notes({ folder: base }).ok, false);
+    const hits = r.search_notes({ query: 'SHIPS' }).text.split('\n');
+    assert.equal(hits.length, 2, 'the two notes; not the hidden file, nothing through a link out');
+    assert.ok(hits.some(h => h.endsWith('yard.md:1: The yard built forty ships.')));
+    assert.equal(r.search_notes({ query: 'zebra' }).text, 'nothing found');
+    assert.equal(r.search_notes({ query: ' ' }).ok, false);
+    // the protocol: the three calls a client makes, an unknown tool, an unknown method, a notification
+    const call = (id, name, args) => R.answer(r, { jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+    assert.equal(R.answer(r, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: 'x' } }).result.protocolVersion, 'x');
+    assert.deepEqual(R.answer(r, { jsonrpc: '2.0', id: 2, method: 'tools/list' }).result.tools.map(t => t.name), O.CODEX_READER_TOOLS);
+    assert.deepEqual(call(3, 'read_note', { path: 'yard.md' }).result, { content: [{ type: 'text', text: 'The yard built forty ships.\nSecond line.\n' }], isError: false });
+    assert.equal(call(4, 'read_note', { path: '/etc/hosts' }).result.isError, true);
+    for (const name of ['write_note', 'roots', 'constructor', 'toString']) assert.deepEqual(call(5, name, {}).result, { content: [{ type: 'text', text: 'no such tool' }], isError: true }, name);
+    assert.equal(R.answer(r, { jsonrpc: '2.0', method: 'notifications/initialized' }), null);
+    assert.equal(R.answer(r, { jsonrpc: '2.0', id: 6, method: 'resources/list' }).error.code, -32601);
+    assert.ok(!/fs\.(write|append|unlink|rename|mkdir|rm|copy|chmod|truncate|symlink|createWrite)|child_process|process\.kill/.test(fs.readFileSync(new URL('../tk-notes-reader.mjs', import.meta.url), 'utf8')), 'nothing in it writes or starts a program');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('Codex notes: under the real wrapper a program reads the roots and nothing beside them, writes nowhere, and starts only what is named', { skip: !mac && 'macOS sandbox-exec only' }, () => {
+  const base = tmp();
+  const root = path.join(base, 'notes');
+  const work = path.join(base, 'work');
+  const out = path.join(base, 'out');
+  const home = path.join(base, 'home');
+  for (const d of [root, work, out, path.join(home, '.codex'), path.join(home, '.ssh')]) fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(root, 'yard.md'), 'forty ships\n');
+  fs.writeFileSync(path.join(base, 'canary.txt'), 'CANARY-BESIDE\n');
+  fs.writeFileSync(path.join(home, 'secret.txt'), 'CANARY-HOME\n');
+  fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}\n');
+  fs.writeFileSync(path.join(home, '.ssh', 'id'), 'KEY\n');
+  const node = fs.realpathSync(process.execPath);
+  try {
+    // (the "CLI" is /bin/cat or node itself, run under exactly the argv a notes run is given)
+    const under = (bin, args, extra = {}) => {
+      const j = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, roots: [root], reader: node, bin, ...extra });
+      assert.equal(j.ok, true, j.error);
+      assert.equal(j.argv[1], '-p');
+      return spawnSync(j.argv[0], [...j.argv.slice(1), ...args], { cwd: work, encoding: 'utf8', env: { HOME: home, PATH: process.env.PATH, TMPDIR: out } });
+    };
+    assert.equal(under('/bin/cat', [path.join(root, 'yard.md')]).stdout, 'forty ships\n', 'a root is read');
+    assert.equal(under('/bin/cat', [path.join(home, '.codex', 'auth.json')]).status, 0, 'the CLI\'s own folder: it signs in from there');
+    for (const f of [path.join(base, 'canary.txt'), path.join(home, 'secret.txt'), path.join(home, '.ssh', 'id')]) {
+      const r = under('/bin/cat', [f]);
+      assert.notEqual(r.status, 0, f);
+      assert.match(r.stderr, /Operation not permitted/, f);
+      assert.ok(!/CANARY|KEY/.test(r.stdout));
+    }
+    // no write: not in a root, not beside it, not in the home folder; only the run's own folders
+    const write = f => under(node, ['-e', 'require("fs").writeFileSync(process.argv[1], "x")', f]);
+    for (const f of [path.join(root, 'new.md'), path.join(root, 'yard.md'), path.join(base, 'new.txt'), path.join(home, 'new.txt')]) {
+      assert.notEqual(write(f).status, 0, f);
+    }
+    assert.equal(fs.readFileSync(path.join(root, 'yard.md'), 'utf8'), 'forty ships\n');
+    assert.deepEqual(fs.readdirSync(root), ['yard.md']);
+    assert.equal(write(path.join(out, 'last.txt')).status, 0, 'its own folder');
+    // no program but the CLI and the reader's Node: no shell
+    const sh = under(node, ['-e', 'const r = require("child_process").spawnSync("/bin/sh", ["-c", "echo ran"]); process.stdout.write(String(r.stdout || "") + (r.error ? r.error.code : ""))']);
+    assert.ok(!sh.stdout.includes('ran'), sh.stdout);
+    // a root that is or holds a private place still cannot be read through it
+    const bad = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, roots: [home], reader: node, bin: '/bin/cat' });
+    const viaRoot = spawnSync(bad.argv[0], [...bad.argv.slice(1), path.join(home, '.ssh', 'id')], { cwd: work, encoding: 'utf8' });
+    assert.notEqual(viaRoot.status, 0);
+    // the profile without roots or the helper is the old one, argument for argument
+    assert.deepEqual(O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat' }).argv.slice(0, 3), [O.SANDBOX_EXEC, '-f', O.CODEX_JAIL_PROFILE]);
+    assert.equal(O.codexJail({ env: { HOME: home }, work, out, roots: [root], reader: '', bin: '/bin/cat' }).ok, false, 'a notes run without its reader is not made');
+    // the helper: allowed only when asked for, and only the file beside the CLI
+    const web = O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat', codeMode: true });
+    assert.deepEqual(web.argv.slice(0, 3), [O.SANDBOX_EXEC, '-f', O.CODEX_JAIL_PROFILE], 'no such file beside this stand-in: the profile as shipped');
+    const cliDir = path.join(base, 'cli');
+    fs.mkdirSync(cliDir);
+    fs.copyFileSync('/bin/cat', path.join(cliDir, 'codex'));
+    fs.writeFileSync(path.join(cliDir, O.CODEX_CODE_MODE_HOST), '');
+    const withHost = O.codexJail({ env: { HOME: home }, work, out, bin: path.join(cliDir, 'codex'), codeMode: true });
+    assert.equal(withHost.argv[1], '-p');
+    assert.ok(withHost.argv[2].endsWith(`(allow process-exec (literal "${path.join(cliDir, O.CODEX_CODE_MODE_HOST)}"))`), 'the one file beside the CLI, and nothing else added');
+    assert.ok(!O.codexJail({ env: { HOME: home }, work, out, bin: path.join(cliDir, 'codex') }).argv.join(' ').includes(O.CODEX_CODE_MODE_HOST), 'not unless asked for');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('Codex notes: only on the CLI version it was verified on; on another the run is a web run and says so', async () => {
+  const seen = [];
+  const spawnStub = (cmd, args) => {
+    seen.push(args);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.kill = () => {};
+    const outFile = args[args.indexOf('-o') + 1];
+    setImmediate(() => { fs.writeFileSync(outFile, 'answer'); child.stdout.end(); child.emit('close', 0); });
+    return child;
+  };
+  const jail = o => ({ ok: true, argv: ['/usr/bin/true', JSON.stringify({ roots: o.roots || [], reader: !!o.reader, codeMode: !!o.codeMode })] });
+  const run = v => O.runOneShot('codex', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: spawnStub, jail, codexCliVersion: async () => v, node: process.execPath });
+  const good = await run(O.CODEX_NOTES_VERSION);
+  assert.equal(good.ok, true, good.error);
+  assert.deepEqual(JSON.parse(seen[0][0]), { roots: ['/r/one'], reader: true, codeMode: true });
+  assert.ok(seen[0].some(a => a.startsWith('mcp_servers.notes=')));
+  assert.equal(good.sources.note, undefined);
+  for (const v of ['0.168.0', '']) {
+    const other = await run(v);
+    assert.equal(other.ok, true, other.error);
+    const args = seen[seen.length - 1];
+    assert.deepEqual(JSON.parse(args[0]), { roots: [], reader: false, codeMode: false }, 'no roots, no reader, no helper');
+    assert.ok(args.includes('mcp_servers={}'));
+    assert.equal(other.sources.note, O.CODEX_NOTES_OFF_SAY);
+  }
+  // what a notes run read is recorded from the CLI's events: what was asked for, never what came back
+  const ev = O.codexStream();
+  ev.push(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'notes', tool: 'read_note', arguments: { path: 'yard.md' }, result: { content: [{ type: 'text', text: 'NOTE TEXT' }] } } }));
+  ev.push(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'notes', tool: 'search_notes', arguments: { query: 'ships' } } }));
+  ev.push(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'other', tool: 'read_note', arguments: { path: 'x' } } }));
+  ev.push(JSON.stringify({ type: 'item.started', item: { type: 'web_search', query: '' } }));
+  ev.push(JSON.stringify({ type: 'item.completed', item: { type: 'web_search', query: 'capital' } }));
+  const used = ev.end();
+  assert.deepEqual([used.used, used.sources.notes, used.sources.web], ['both', ['yard.md', 'search: ships'], ['search: capital']]);
+  assert.ok(!JSON.stringify(used).includes('NOTE TEXT'));
 });
 
 test('THE CLAUDE WRAPPER (macOS): writes only its own folders, starts only its own program, refuses the secret places and other temporary folders; a root is readable', { skip: !mac && 'macOS only' }, () => {
@@ -400,7 +553,16 @@ test('THE PRE-APPROVED HOST LIST IS FOR ONE CLI VERSION: a notes run on another 
   // botference tk-read check says it
   const { main } = await import('../tk-read-cli.mjs');
   const home = tmp(); fs.mkdirSync(path.join(home, 'Notes'));
-  const say = v => { const out = []; main(['check'], { config: () => ({ tk_read_roots: [path.join(home, 'Notes')] }), configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => v }); return out.join('\n'); };
+  const say = v => { const out = []; main(['check'], { config: () => ({ tk_read_roots: [path.join(home, 'Notes')] }), configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => v, codexVersion: () => cv }); return out.join('\n'); };
+  let cv = O.CODEX_NOTES_VERSION;
   assert.match(say('2.2.0'), /page fetching is off for notes runs on this version of Claude Code \(2\.2\.0/);
   assert.match(say('2.1.330'), /notes runs may fetch pages from the sites their line names/);
+  // Codex: the same folders, on the version its reader was verified on; on another, the web only, said plainly
+  assert.match(say('2.1.330'), /Codex CLI 0\.167\.2: Codex passages read \(only read\) the same folders, through the companion's notes reader/);
+  cv = '0.170.0';
+  assert.match(say('2.1.330'), /notes reading is off for Codex passages on this version of the Codex CLI \(0\.170\.0; verified on 0\.167\.2\)/);
+  cv = '';
+  assert.match(say('2.1.330'), /\(version unknown; verified on 0\.167\.2\)/);
+  const none = []; main(['check'], { config: () => ({}), configPath: '/x/config.json', home, say: s => none.push(s), claudeVersion: () => '2.1.330', codexVersion: () => O.CODEX_NOTES_VERSION });
+  assert.match(none.join('\n'), /Codex passages: the web only \(no folders are set\)/);
 });

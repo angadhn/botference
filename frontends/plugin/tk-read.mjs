@@ -8,7 +8,8 @@
 // of flags:
 //   none        no tools at all (what a one-shot was before; still used for a post's changelog line, never for a passage now)
 //   web         web search and fetching pages
-//   web+notes   web, and reading (only reading) files under the read roots
+//   web+notes   web, and reading (only reading) files under the read roots (Claude: its own Read, Glob and Grep; Codex: the read-only
+//               reader the companion gives it, tk-notes-reader.mjs; neither gets a shell)
 //
 // THE SETTINGS (the companion's config.json, written by hand on this machine like `clippings`; `botference tk-read check`):
 //   "tk_read_roots": ["/absolute/folder", …]   the folders a passage may read. No default: none set, no notes are read.
@@ -69,16 +70,19 @@ export function validateTkRead(config, { home = os.homedir(), platform = process
 /**
  * THE ONE FUNCTION that says what a passage's agent may use. `read`: validateTkRead's answer; `agent`: claude | codex; `channel`: the
  * line's tkgaps channel (drawer, reading-room, api, hub-link; fill-gap counts as api). Notes need read roots, an agent that can read a
- * file without running a program (Claude's Read/Glob/Grep; Codex reads files only through its shell, which is never given), and,
- * through the hub link, the owner's `hub_link_tk_notes: "on"`.
+ * file without a shell (NOTES_AGENTS: Claude's Read/Glob/Grep; Codex through the companion's read-only reader), and, through the hub
+ * link, the owner's `hub_link_tk_notes: "on"`.
  */
 export function tkCapsFor({ read, agent, channel }) {
   const roots = (read && read.roots) || [];
-  if (!roots.length || agent !== 'claude') return 'web';
+  if (!roots.length || !NOTES_AGENTS.includes(agent)) return 'web';
   if (channel === 'hub-link') return read && read.hubLinkNotes === 'on' ? 'web+notes' : 'web';
   // FAIL CLOSED: only a door on this machine reads notes; a missing or unknown channel (a gap from before `from`, anything else) is web
   return MACHINE_CHANNELS.includes(channel) ? 'web+notes' : 'web';
 }
+// the agents that can read a file without being given a shell: Claude (its own Read, Glob and Grep) and Codex (the read-only reader
+// the companion gives it, tk-notes-reader.mjs). The owner's decision, 2026-11-27: both read the notes, neither may change a file.
+export const NOTES_AGENTS = Object.freeze(['claude', 'codex']);
 // the doors on this machine (tkgaps MSG_CHANNELS less the hub link): the drawer, the companion's own pages, a tool on the machine
 export const MACHINE_CHANNELS = Object.freeze(['drawer', 'reading-room', 'api']);
 

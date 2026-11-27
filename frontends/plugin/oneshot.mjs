@@ -26,6 +26,10 @@
 // even a tool that slipped through could read no file under /Users or /Volumes but the CLI's own folder and its two
 // fresh folders, start no program but the CLI, and reach no port but 443. Where that jail cannot be made (no
 // sandbox-exec: anything but macOS) a Codex gap FAILS ("Codex cannot be contained on this system"); nothing runs.
+// A Codex run WITH tools (a /tk passage: web, web+notes) differs in three named ways, each below: its web search is on; on the CLI
+// version it was verified on (CODEX_NOTES_VERSION) the CLI's own code-mode helper may start (the search and any tool server need it);
+// and a notes run is given ONE tool server, the companion's read-only notes reader (tk-notes-reader.mjs), in a wrapper that also
+// refuses every write outside the run's own folders.
 //
 // Both CLIs get a MINIMAL environment (oneshotEnv): HOME, PATH, TMPDIR, LANG, USER, LOGNAME and the variables that
 // CLI reads to sign in (ONESHOT_AUTH_ENV, names only; their values are never logged). Nothing else of the companion's
@@ -85,17 +89,109 @@ const realNative = p => { try { return fs.realpathSync.native(p); } catch { retu
  * The jail a Codex one-shot runs in: → { ok: true, argv } (what goes before the CLI's own argv: sandbox-exec, the profile and its
  * parameters, the CLI's real path) or { ok: false, error } when it cannot be made here. Nothing is run.
  */
+// A NOTES RUN (`roots` given: the capability set web+notes): the same profile with more rules AFTER it, so they decide (seatbelt: the
+// last matching rule wins). What they add, and nothing else:
+//   READ under each read root (and a look-up, never a listing, of the folders above it);
+//   START two more programs: `reader` (the Node binary that runs tk-notes-reader.mjs, the CLI's only tool for notes; the script itself
+//     is copied into the run's own fresh folder, so no folder of the companion's is opened to the run), and the CLI's own code-mode
+//     helper beside its binary (CODEX_CODE_MODE_HOST, below: without it the CLI cannot call a tool server at all);
+//   NO READ of other temporary folders (/private/tmp, /private/var/folders, /private/var/tmp) but the run's two and the roots;
+//   NO WRITE at all but the CLI's own folder and the run's two (the profile above refuses writes under /Users and /Volumes only);
+//   and LAST, no read or write of the private places under the home folder (CLAUDE_PRIVATE_PLACES, less the CLI's own folder), whatever
+//     a root or a link says.
+// There is still no shell and no write anywhere but the CLI's own folder and the run's two.
 export function codexJail({ env = process.env, work, out, platform = process.platform, sandboxExec = SANDBOX_EXEC, profile = CODEX_JAIL_PROFILE,
-  bin = '' } = {}) {
+  bin = '', roots = [], reader = '', codeMode = false } = {}) {
   if (platform !== 'darwin' || !fs.existsSync(sandboxExec) || !fs.existsSync(profile)) return { ok: false, error: CODEX_UNCONTAINED };
   const home = env.HOME ? realOr(env.HOME) : '';
   if (!home || !path.isAbsolute(home)) return { ok: false, error: CODEX_UNCONTAINED };
   const cliHome = realOr(env.CODEX_HOME || path.join(home, '.codex'));
   const cli = bin || whichReal('codex', env);
   if (!cli) return { ok: false, error: 'could not start codex' };
-  return { ok: true, argv: [sandboxExec, '-f', profile, '-D', `HOME=${home}`, '-D', `CLI_HOME=${cliHome}`, '-D', `WORK=${realOr(work)}`,
-    '-D', `OUT=${realOr(out)}`, '-D', `CLI_BIN=${cli}`, cli] };
+  const params = ['-D', `HOME=${home}`, '-D', `CLI_HOME=${cliHome}`, '-D', `WORK=${realOr(work)}`, '-D', `OUT=${realOr(out)}`, '-D', `CLI_BIN=${cli}`];
+  if (!roots.length && !codeMode) return { ok: true, argv: [sandboxExec, '-f', profile, ...params, cli] };
+  // (`codeMode`: the run may start the CLI's own code-mode helper, CODEX_CODE_MODE_HOST below; a web run needs it to search, a notes
+  // run to call its reader)
+  const host = path.join(path.dirname(cli), CODEX_CODE_MODE_HOST);
+  let hostRule;
+  try { hostRule = codeMode && fs.existsSync(host) ? `(allow process-exec (literal ${q(realNative(host))}))` : ''; } catch { return { ok: false, error: CODEX_UNCONTAINED }; }
+  if (!roots.length && !hostRule) return { ok: true, argv: [sandboxExec, '-f', profile, ...params, cli] };
+  if (!roots.length) {
+    let base;
+    try { base = fs.readFileSync(profile, 'utf8'); } catch { return { ok: false, error: CODEX_UNCONTAINED }; }
+    return { ok: true, argv: [sandboxExec, '-p', [base, '; oneshot.mjs codexJail: the CLI\'s own code-mode helper may start', hostRule].join('\n'), ...params, cli] };
+  }
+  let text;
+  try {
+    if (!reader || !path.isAbsolute(reader)) throw new Error('no reader');
+    const real = roots.map(r => realNative(r));
+    const node = realNative(reader);
+    const priv = CLAUDE_PRIVATE_PLACES.filter(s => realNative(path.join(home, s)) !== realNative(cliHome)).map(s => `(subpath ${q(path.join(realNative(home), s))})`).join(' ');
+    text = [fs.readFileSync(profile, 'utf8'),
+      '; oneshot.mjs codexJail, a notes run: the rules below come after the profile above and decide',
+      '(deny file-read* (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))',
+      // (a path there may be looked up, never listed or read: the run's own folders are found one name at a time)
+      '(allow file-read-metadata (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))',
+      '(allow file-read* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")))',
+      `(allow file-read* ${real.map(r => `(subpath ${q(r)})`).join(' ')})`,
+      `(allow file-read-metadata ${[...new Set(real.flatMap(r => ancestorsOf(r)))].map(a => `(literal ${q(a)})`).join(' ')})`,
+      // (a Node installed under the home folder: its own install may be read; one outside /Users is readable already)
+      ...(/^\/(Users|Volumes)\//.test(node) ? [`(allow file-read* (subpath ${q(path.dirname(path.dirname(node)))}))`,
+        `(allow file-read-metadata ${ancestorsOf(node).map(a => `(literal ${q(a)})`).join(' ')})`] : []),
+      `(allow process-exec (literal ${q(node)}))`,
+      hostRule,
+      // NO WRITE ANYWHERE (not only under /Users and /Volumes: a root may be on any path) but the CLI's own folder and the run's two
+      '(deny file-write*)',
+      '(allow file-write* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")) (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+      `(deny file-read* file-write* ${priv})`,
+    ].join('\n');
+  } catch { return { ok: false, error: CODEX_UNCONTAINED }; }
+  return { ok: true, argv: [sandboxExec, '-p', text, ...params, cli] };
 }
+// THE READER a Codex notes run is given (tk-notes-reader.mjs): three read-only tools confined to the read roots, started by the CLI as
+// a tool server, its calls approved on the command line for this run only (the owner's ~/.codex/config.toml is never read or
+// changed: --ignore-user-config). Verified with real runs on Codex CLI 0.167.2 (2026-11-27): the `-c mcp_servers.<name>` table, its
+// `default_tools_approval_mode` and `enabled_tools` are that version's; on any other version a Codex passage does not read notes
+// (CODEX_NOTES_OFF_SAY) and runs with the web only. The version is asked once per companion start.
+export const CODEX_NOTES_VERSION = '0.167.2';
+// THE CLI'S OWN HELPER: on 0.167.2 the model reaches a tool server, AND THE WEB SEARCH, only through the CLI's "code mode", which runs
+// in a second program shipped beside the CLI (with that feature off, every call of the reader fails: "code-mode host is disabled";
+// with the program refused by the wrapper, as it was until 2026-11-27, a web passage answered "the web search tool was unavailable":
+// real runs). So a run with tools (web, web+notes) on the verified version may start that one program too. It runs small scripts the model writes, in a bare script engine: asked in a real run
+// to list everything it could reach, it showed the language's own objects and the CLI's tool bindings, and no file, process or network
+// interface. THAT IS THE VENDOR'S DESIGN, NOT A RULE OF THIS WRAPPER: the helper runs under the same profile as the CLI, so the
+// profile cannot stop it reading the CLI's own folder (sign-in included) if a later version gave its scripts a file interface. Hence
+// the exact-version gate above, and SPEC "Codex reads notes" says so in the owner's words.
+export const CODEX_CODE_MODE_HOST = 'codex-code-mode-host';
+export const CODEX_NOTES_OFF_SAY = 'notes reading is off for Codex passages on this version of the Codex CLI';
+export const CODEX_READER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'tk-notes-reader.mjs');
+export const CODEX_READER_TOOLS = Object.freeze(['list_notes', 'read_note', 'search_notes']);
+export const parseCodexVersion = out => { const m = String(out || '').trim().match(/(?:^|\s)(\d+\.\d+\.\d+)\b/); return m ? m[1] : ''; };
+let codexVersionOnce = null;
+/** The installed Codex CLI's version ('' when it cannot be told), asked once per process and kept. */
+export function codexVersion(env = process.env) {
+  if (!codexVersionOnce) {
+    codexVersionOnce = new Promise(resolve => {
+      const e = oneshotEnv('codex', env);
+      const bin = whichReal('codex', e);
+      if (!bin) { resolve(''); return; }
+      execFile(bin, ['--version'], { env: e, timeout: 15000, maxBuffer: 4096 }, (err, out) => resolve(err ? '' : parseCodexVersion(out)));
+    });
+  }
+  return codexVersionOnce;
+}
+/** The same, at once (for `botference tk-read check`). */
+export function codexVersionSync(env = process.env) {
+  const e = oneshotEnv('codex', env);
+  const bin = whichReal('codex', e);
+  if (!bin) return '';
+  const r = spawnSync(bin, ['--version'], { env: e, timeout: 15000, encoding: 'utf8' });
+  return r.status === 0 ? parseCodexVersion(r.stdout) : '';
+}
+const tomlString = v => JSON.stringify(String(v));
+/** The `-c` value that gives a Codex run its notes reader: `node`, the reader's copy in the run's folder, the roots. */
+export const codexReaderConfig = ({ node, script, roots }) => `mcp_servers.notes={command=${tomlString(node)},args=[${tomlString(script)},${tomlString(JSON.stringify(roots))}],`
+  + `default_tools_approval_mode="approve",enabled_tools=[${CODEX_READER_TOOLS.map(tomlString).join(',')}]}`;
 // the efforts each CLI is given (the owner's chat setting; medium when none is set)
 export const DEFAULT_EFFORT = 'medium';
 
@@ -172,7 +268,8 @@ const DENY_ALL = ['Bash', 'Read', 'Edit', 'Write', 'NotebookEdit', 'Glob', 'Grep
 
 /** The command for a one-shot of `agent`, or null when there is none. `dir` is the fresh working folder, `out` the file codex
  *  writes its last message to (outside that folder). `fetchHosts`: for a notes run, the hosts its owner's line names (above). */
-export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '', caps = 'none', roots = [], fetchHosts = [], cliVersion = '' } = {}) {
+export function oneshotCommand(agent, { model = '', effort = '', dir = '', out = '', caps = 'none', roots = [], fetchHosts = [], cliVersion = '',
+  reader = null } = {}) {
   if (agent === 'claude' && caps !== 'none') {
     const notes = caps === 'web+notes';
     // (a notes run on a CLI version whose pre-approved list is not the one above: no host, so no WebFetch)
@@ -193,9 +290,12 @@ export function oneshotCommand(agent, { model = '', effort = '', dir = '', out =
       '--output-format', 'text', ...(model ? [`--model=${String(model)}`] : []), ...(effort ? [`--effort=${String(effort)}`] : [])] };
   }
   if (agent === 'codex') {
-    // (web: the model provider's own search tool, run on its side; Codex reads files only through its shell, which it never gets, so
-    // it is never given notes. `--json`: its events on stdout, to record what it searched)
-    const lock = caps === 'none' ? CODEX_LOCKDOWN : CODEX_LOCKDOWN.map(a => (a === 'web_search="disabled"' ? 'web_search="live"' : a));
+    // (web: the model provider's own search tool, run on its side. notes: Codex reads files only through a shell, which it never
+    // gets; it is given the read-only reader instead (`reader`: { node, script }, above), in place of "no tool servers". `--json`: its
+    // events on stdout, to record what it searched and read)
+    const web = caps === 'none' ? CODEX_LOCKDOWN : CODEX_LOCKDOWN.map(a => (a === 'web_search="disabled"' ? 'web_search="live"' : a));
+    const notes = caps === 'web+notes' && !!reader && roots.length > 0;
+    const lock = notes ? web.map(a => (a === 'mcp_servers={}' ? codexReaderConfig({ node: reader.node, script: reader.script, roots }) : a)) : web;
     return { cmd: 'codex', args: ['exec', ...lock, ...(caps === 'none' ? [] : ['--json']), '--cd', dir, '-o', out,
       ...(model ? [`--model=${String(model)}`] : []), '-c', `model_reasoning_effort="${String(effort || DEFAULT_EFFORT).replace(/[^\w-]/g, '')}"`, '-'],
       lastMessage: out };
@@ -318,7 +418,14 @@ export function codexStream() {
       try { ev = JSON.parse(line); } catch { return; }
       const item = ev && (ev.item || ev.msg || ev);
       const kind = String((item && (item.type || item.item_type)) || '');
-      if (/web_search/.test(kind)) addCapped(sources.web, `search: ${clip(item.query || (item.action && item.action.query) || '', 200)}`);
+      // (a search's first event carries no words yet: only one that names its query is recorded)
+      if (/web_search/.test(kind)) { const query = clip(item.query || (item.action && item.action.query) || '', 200).trim(); if (query) addCapped(sources.web, `search: ${query}`); }
+      // (the notes reader's calls: what was asked for, never what came back)
+      else if (kind === 'mcp_tool_call' && item.server === 'notes' && CODEX_READER_TOOLS.includes(item.tool)) {
+        const a = item.arguments && typeof item.arguments === 'object' ? item.arguments : {};
+        const what = item.tool === 'read_note' ? clip(a.path) : item.tool === 'search_notes' ? `search: ${clip(a.query, 200)}${a.folder ? ` in ${clip(a.folder)}` : ''}` : `list: ${clip(a.folder || '')}`.trim();
+        if (what) addCapped(sources.notes, what);
+      }
     },
     end() { return { used: usedOfSources(sources), sources }; },
   };
@@ -339,7 +446,18 @@ const RUN_MOVES = Object.freeze({ running: Object.freeze(['flooded', 'done']), f
  */
 export async function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 0, maxBytes = 64 * 1024, spawn = realSpawn,
   env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps = 'none', roots = [], fetchHosts = [],
-  cliVersion: versionOf = () => claudeVersion(fromEnv) } = {}) {
+  cliVersion: versionOf = () => claudeVersion(fromEnv), codexCliVersion: codexVersionOf = () => codexVersion(fromEnv), node = process.execPath } = {}) {
+  // A CODEX RUN WITH TOOLS needs the CLI version its tools were verified on (CODEX_NOTES_VERSION): only there may the CLI's code-mode
+  // helper start (codexJail `codeMode`), and only there does a notes run read notes; on any other version a notes run is a web run and
+  // its private record says so (and its search, which needs the helper, will not work). Chosen here once for the whole run.
+  let codexNotesOff = false;
+  let codexCodeMode = false;
+  if (agent === 'codex' && caps !== 'none') {
+    let v = '';
+    try { v = String((await codexVersionOf()) || ''); } catch { v = ''; }
+    codexCodeMode = v === CODEX_NOTES_VERSION;
+    if (caps === 'web+notes' && (!codexCodeMode || !roots.length)) { caps = 'web'; roots = []; codexNotesOff = true; }
+  }
   const limit = timeLimitFor(caps, timeoutMs || 0);
   if (!ONESHOT_AGENTS.includes(agent)) return { ok: false, error: `${agent} cannot fill gaps here` };
   // a model name is one argument and never a flag (store.mjs MODEL_RE says the same for what is stored)
@@ -353,13 +471,21 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
     let outDir = '';
     try { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-')); } catch { resolve({ ok: false, error: 'could not make a folder for the agent' }); return; }
     try { outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-out-')); } catch { outDir = ''; }
-    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '', caps, roots, fetchHosts, cliVersion });
+    // (a Codex notes run: the reader, copied into the run's own second folder, and the Node that runs it)
+    let reader = null;
+    if (agent === 'codex' && caps === 'web+notes' && outDir) {
+      try { const script = path.join(realOr(outDir), 'tk-notes-reader.mjs'); fs.copyFileSync(CODEX_READER, script); reader = { node: realNative(node), script }; }
+      catch { reader = null; }
+    }
+    const c = oneshotCommand(agent, { model, effort, dir, out: outDir ? path.join(outDir, 'last.txt') : '', caps, roots, fetchHosts, cliVersion, reader });
     const drop = error => { for (const d of [dir, outDir]) if (d) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp */ } } resolve({ ok: false, error }); };
     if (!c || (c.lastMessage === '' && agent === 'codex')) { drop(`could not start ${agent}`); return; }
     const env = oneshotEnv(agent, fromEnv);
     if (agent === 'codex') {
-      // jailed, or not run at all
-      const j = jail({ env, work: dir, out: outDir });
+      // jailed, or not run at all (a notes run without its reader is not run: it would only be a web run that says it read notes)
+      if (caps === 'web+notes' && !reader) { drop(CODEX_UNCONTAINED); return; }
+      if (caps === 'web+notes') env.TMPDIR = realOr(outDir);   // (other temporary folders are closed to a notes run)
+      const j = jail({ env, work: dir, out: outDir, ...(caps === 'web+notes' ? { roots, reader: reader.node } : {}), ...(codexCodeMode ? { codeMode: true } : {}) });
       if (!j || !j.ok) { drop((j && j.error) || CODEX_UNCONTAINED); return; }
       c.args = [...j.argv.slice(1), ...c.args];
       c.cmd = j.argv[0];
@@ -434,6 +560,7 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
         text = s.text; usedOf = s.used;
       } else { text = out.toString('utf8').trim(); full = out.length >= maxBytes; }
       if (usedOf && fetchOff) usedOf.sources.note = FETCH_OFF_SAY;
+      if (usedOf && codexNotesOff) usedOf.sources.note = CODEX_NOTES_OFF_SAY;
       const extra = usedOf ? { used: usedOf.used, sources: usedOf.sources } : {};
       if (code === 0 || (text && full)) { done(text ? { ok: true, text, ...(model ? { model } : {}), ...extra } : { ok: false, error: 'the agent wrote nothing' }); return; }
       done({ ok: false, error: `the agent stopped (exit ${code})` });
