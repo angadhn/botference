@@ -12990,14 +12990,15 @@ post it changes: the earlier post it is added to, or this thread's own post for 
 `earlierOf`: `earlier.prompts`/`agent_text`, `own`), and starts from that post's own choice (absent in its front matter: locked; never
 from the page record); the remembered choice is the start only for a brand-new post. With no box drawn the press sends no choice ('')
 and the run keeps the post's own value (`startEdit`'s `had`); a brand-new post with no choice is locked. One-click publishing with no box
-(the queue, the Hub) applies the remembered choice to nothing that already exists: it sends ''. Under the checkbox: "Prompts become public
+(the queue; the Hub's "Publish now") applies the remembered choice to nothing that already exists: it sends ''. The Hub's own second
+button, "Publish with prompt", is the owner's choice for THIS post in the Hub, and sends `shown` (the amendment below). Under the checkbox: "Prompts become public
 on your site." Locking a post again removes the prompts from the site, but cannot recall copies already fetched by readers or crawlers.
 **PROMPTS** (2026-11-26): a post's prompts (its /tk instructions) are `locked` (default: nowhere in the public site) or `shown` (the
 site's page of the post shows each passage's prompt in its card; never the item, a feed or the stream), `PROMPT_MODES` in blyg-note.mjs,
 one field (`blyg_prompts`, written only for a post with an agent passage), changed through `promptsMove`. The publish box offers "Show my
 prompts with this post" when the post has an agent passage, remembered (`blygPrompts`) and sent with every press as `prompts`; a new
 version starts from the post's own choice (read from its note; see THE RULE). The press carries it through the queue (`args.prompts`) to the
-run; the Hub's reply passes the same field through hub-link (`rec.prompts`, not built yet). A new version that changes ONLY the choice
+run; the Hub's publish passes the same field through hub-link (`rec.prompts`: see the amendment "Publish with prompt, from the Hub"). A new version that changes ONLY the choice
 (`promptsOnlyChange`) is published as an edit that makes no new version of the item (the site's rule), changelog "Prompts shown." /
 "Prompts locked.".
 **BARE ADDRESSES** in the owner's own words (2026-11-26): written as autolinks `<https://…>` (`linkBareUrls`: not in code, a link, a
@@ -14870,3 +14871,26 @@ site, not "is a Blygger item". Most of an owner's older essays are pages of thei
 - What this gives up, stated once: text an agent took from the owner's notes can be public before the owner has read it on a
   computer. The Hub's Preview and Save as draft remain the way to read a passage before publishing it from a phone.
 
+## Amendment (2026-11-27): Publish with prompt, from the Hub (`prompts` on `publish` and `reply`, `promptsAsked`)
+
+The Hub had no way to say a post's prompts choice, so every post published from it went out `locked`. Two buttons there now, where the
+text holds an agent passage: "Publish now" and "Publish with prompt".
+
+- ON THE WIRE: `publish { rid, as?, prompts? }` and `reply { …, intent: 'publish', prompts? }`. `prompts` is ONE named value, one of
+  blyg-note.mjs `PROMPT_MODES` (`locked`, `shown`), read in one place (`promptsAsked` in hub-link.mjs). Anything else is a 400 before
+  anything is filed or pressed; so is `prompts` on a reply with intent `draft` (a draft makes no choice: the publish that presses it does).
+  It is a field of the JSON body, so the request's signature covers it, and the nonce and timestamp rules are the ones every request has.
+- ABSENT is "no choice", and is what an older Hub sends: a new post is `locked` (the default); a reply added to an earlier post leaves
+  that post's choice as it is (`startEdit`'s `had`). The Hub's "Publish now" sends nothing; "Publish with prompt" sends `shown`. So from
+  the Hub a post's prompts are only ever turned to shown, and only by that button; "Publish now" never locks a post that shows them (the
+  drawer's tick box, which starts from the post's own choice, is where a post is locked again).
+- ADD TO MY EARLIER REPLY: a post has one choice for all of it. "Publish with prompt" on an addition makes the whole post `shown`,
+  earlier passages too; the Hub says so beside the button.
+- THE RECORD keeps the choice of the last press asked (`prompts`: '' or a mode), replaced by each `publish` (none sent: none), carried
+  to `press` → the queue's `args.prompts` → the run. The view says it back (`prompts`, only when a mode), so a Hub that asked `shown`
+  of a companion from before this amendment (which ignores the field, and publishes locked) can tell, and says so.
+- THE PROMPT ITSELF is still never in the Blygger item, a feed or the stream: only `blyg_prompts` in the note changes, and the site's
+  page of the post is the one place it reads it.
+- Tests: `test/hub-link-add.test.mjs` (the routes: carried, refused, no choice, an addition, each press its own choice) and
+  `test/hub-link-server.test.mjs` (a signed request to the real companion, to the note: `blyg_prompts: shown`; no choice: `locked`;
+  an addition with and without).

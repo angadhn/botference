@@ -557,6 +557,62 @@ await test('/quote from the Hub: filed as typed; the post opens with the quote, 
     assert.ok(!/\/quote/i.test(noteOf()), 'the marker is never written');
   } finally { await stop(srv5); }
 });
+await test('PROMPTS FROM THE HUB, to the note: "Publish with prompt" (prompts shown) writes blyg_prompts: shown; "Publish now" (no choice) leaves a new post locked and an earlier post as it is', async () => {
+  const rig = makeRig({ confirm: 'never' }); rigs.push(rig);
+  const root4 = tmp('prompts');
+  setHome(root4, rig, 'never');
+  cli(['off'], { dir: SECRETS, say }); pair('one-click');
+  const srv4 = await boot(root4, { PLUGIN_HUB_LINK_PER_MINUTE: '100000' });
+  const S = srv4.base;
+  const status = async rid => (await send(S, 'status', { rids: [rid] })).json.replies[0];
+  const notes = () => fs.readdirSync(rig.folder).map(n => fs.readFileSync(path.join(rig.folder, n), 'utf8'));
+  const promptsLine = text => (/^blyg_prompts:.*$/m.exec(text) || [''])[0];
+  // a draft with an agent line, filled, then published by a signed `publish` carrying (or not) the choice
+  const draftThenPublish = async (rid, words, body, publish) => {
+    const d = await reply(S, rid, { comment: `${words}\n/tk-claude say something short`, intent: 'draft', ...body });
+    assert.equal(d.status, 200, JSON.stringify(d.json));
+    await waitFor(async () => (await status(rid)).fill === 'ready', `${rid} filled`, 30000);
+    const p = await send(S, 'publish', { rid, ...publish });
+    assert.equal(p.status, 200, JSON.stringify(p.json));
+    const v = await waitFor(async () => { const x = await status(rid); return ['published', 'failed', 'saved'].includes(x.state) ? x : null; }, `${rid} published`, 60000);
+    assert.equal(v.state, 'published', JSON.stringify(v));
+    return notes().find(x => x.includes(words));
+  };
+  try {
+    // refused before anything: not a named mode
+    const d0 = await reply(S, 'rid-pr-bad-0001', { post: postOf(B), quote: SAYS[B], comment: 'Never pressed.\n/tk-claude say something short', intent: 'draft' });
+    assert.equal(d0.status, 200);
+    const bad = await send(S, 'publish', { rid: 'rid-pr-bad-0001', prompts: 'yes' });
+    assert.deepEqual([bad.status, bad.json.error], [400, 'prompts must be one of locked, shown']);
+    assert.equal((await status('rid-pr-bad-0001')).state, 'saved');
+    assert.equal((await send(S, 'cancel', { rid: 'rid-pr-bad-0001' })).json.state, 'cancelled');
+
+    // WITH PROMPT, a new post (on post B's page)
+    const shown = await draftThenPublish('rid-pr-shown-01', 'My words, with the prompt shown.', { post: postOf(B), quote: SAYS[B] }, { prompts: 'shown' });
+    assert.equal(promptsLine(shown), 'blyg_prompts: shown', shown);
+    assert.match(shown, /blyg_generated:/);
+    console.log('--- the note written for a signed publish { prompts: "shown" } ---\n' + shown.split('\n---\n')[0] + '\n---');
+
+    // PUBLISH NOW, a new post (on post A's page): as an older Hub sends it, no choice at all
+    const locked = await draftThenPublish('rid-pr-plain-01', 'My words, published as ever.', {}, {});
+    assert.equal(promptsLine(locked), 'blyg_prompts: locked', locked);
+    console.log('--- the note written for a signed publish with no choice ---\n' + locked.split('\n---\n')[0] + '\n---');
+    const postId = (await threadsOf(S, POST_A)).find(t => t.msgs[0].text.startsWith('My words, published as ever.')).blyg_published.permalink.split('/').filter(Boolean).pop();
+    const noteOfA = () => notes().find(x => x.includes(postId));
+
+    // ADD TO MY EARLIER REPLY. Publish now on a locked post: stays locked
+    await draftThenPublish('rid-pr-add-0001', 'A first addition.', { add_to: postId }, {});
+    assert.equal(promptsLine(noteOfA()), 'blyg_prompts: locked');
+    // with prompt: the whole post's choice becomes shown
+    await draftThenPublish('rid-pr-add-0002', 'A second addition, with prompt.', { add_to: postId }, { prompts: 'shown' });
+    assert.equal(promptsLine(noteOfA()), 'blyg_prompts: shown');
+    // Publish now on a shown post: it is never switched back
+    await draftThenPublish('rid-pr-add-0003', 'A third addition.', { add_to: postId }, {});
+    assert.equal(promptsLine(noteOfA()), 'blyg_prompts: shown');
+    for (const w of ['My words, published as ever.', 'A first addition.', 'A second addition, with prompt.', 'A third addition.']) assert.ok(noteOfA().includes(w), w);
+  } finally { await stop(srv4); }
+});
+
 
 cleanup();
 web.close();

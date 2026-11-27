@@ -34,7 +34,7 @@ import crypto from 'node:crypto';
 import { writeJson, readJsonState, warnUnreadable } from './fsjson.mjs';
 import { createRequire } from 'node:module';
 import { ENTRY_STATES, OPEN_STATES } from './blyg-queue.mjs';
-import { isPublishableMsg } from './blyg-note.mjs';
+import { isPublishableMsg, PROMPT_MODES } from './blyg-note.mjs';
 import { audioTypeOf, sniffAudio, SPEECH_LIMITS } from './hub-speech.mjs';
 import { pagesOf, bodyText } from './clippings.mjs';
 const CLIPPING_ID_RE = /^[0-9a-f]{16}$/;
@@ -118,6 +118,17 @@ export function targetOf(data) {
 }
 /** The reply's intent, from the Hub's two buttons. */
 export const HUB_LINK_INTENTS = Object.freeze(['publish', 'draft']);
+/** THE POST'S PROMPTS, CHOSEN IN THE HUB (`prompts` on a request that presses: `publish`, and `reply` with intent publish): ONE named
+ *  value, one of blyg-note.mjs PROMPT_MODES, or absent. Absent is "no choice": a new post is locked (the default), a post that is
+ *  added to keeps the choice it has (blyg-run startEdit). The Hub's "Publish with prompt" sends `shown`; its "Publish now" sends
+ *  nothing, so it never locks a post that shows its prompts. Anything else is refused (400) before anything is filed or pressed.
+ *  → { prompts: '' | one of PROMPT_MODES } | { error } */
+export function promptsAsked(data, { pressing = true } = {}) {
+  if (data.prompts === undefined) return { prompts: '' };
+  if (typeof data.prompts !== 'string' || !PROMPT_MODES.includes(data.prompts)) return { error: `prompts must be one of ${PROMPT_MODES.join(', ')}` };
+  if (!pressing) return { error: 'prompts are chosen when publishing, not for a draft' };
+  return { prompts: data.prompts };
+}
 /** Every route, one table: the handler is looked up here and nowhere else (an unknown name is 404). */
 export const HUB_LINK_ROUTES = Object.freeze({
   ping: Object.freeze({ path: '/hub-link/ping', does: 'answers the link version and the publish setting' }),
@@ -570,6 +581,8 @@ export function createHubLink(deps) {
         state: ready ? 'ready' : 'cannot-add' };
     }
     if (state === 'saved' && rec.press_refused) v.press = { refused: rec.press_refused, say: HUB_LINK_SAY[rec.press_refused] || '' };
+    // (the prompts choice the last press was asked with, said back: a Hub that asked and does not read it here knows it was not taken)
+    if (PROMPT_MODES.includes(rec.prompts)) v.prompts = rec.prompts;
     return v;
   }
   const logState = (rid, what, extra = '') => say(`${ridTag(rid)} ${what}${extra ? ` ${extra}` : ''}`);
@@ -604,8 +617,8 @@ export function createHubLink(deps) {
     }
     holding.presses++;
     let r;
-    // (`prompts`: the post's prompts choice, when the Hub's reply carries one: passed through as it is; the queue checks it)
-    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id, ...(add ? { join: add.join, post: add.post, postVersion: add.postVersion } : {}), ...(rec.prompts ? { prompts: String(rec.prompts) } : {}) }); } finally { holding.presses--; }
+    // (`prompts`: the post's prompts choice this press was asked with (promptsAsked: one of PROMPT_MODES, or none): the queue checks it again)
+    try { r = await deps.press({ url: rec.page_url, thread_id: rec.thread_id, ...(add ? { join: add.join, post: add.post, postVersion: add.postVersion } : {}), ...(PROMPT_MODES.includes(rec.prompts) ? { prompts: rec.prompts } : {}) }); } finally { holding.presses--; }
     if (!r || !r.ok || !r.queued) return refuse(r && /not set up/i.test(String(r.error || '')) ? 'not-set-up' : 'queue-refused');
     store.move(rec.rid, 'pressed', { entry_id: String(r.queued.id), pressed_at: clock().toISOString(), press_refused: '', ...(add ? { add_title: add.title, add_address: add.address } : { add_to: '' }) });
     logState(rec.rid, 'pressed');
@@ -634,7 +647,7 @@ export function createHubLink(deps) {
     }
     store.add({ rid, at: clock().toISOString(), intent: data.intent, page_url: filed.url, thread_id: filed.thread_id, entry_id: '', pressed_at: '', press_refused: '',
       msg_ts: String(filed.ts || ''), text_hash: textHashOf(comment), add_to: typeof data.add_to === 'string' ? data.add_to : '',
-      target: kind,
+      target: kind, prompts: promptsAsked(data, { pressing: data.intent === 'publish' }).prompts || '',
       ...(kind === 'compose' ? {} : kind === 'clipping' ? { clipping: String(b.clipping) } : { post: { origin: String(b.origin || ''), id: String(b.id || ''), version: Number(b.version) || 0 } }) });
     slot.give();   // (the record counts itself from here)
     logState(rid, 'saved');
@@ -706,6 +719,7 @@ export function createHubLink(deps) {
       if (kind !== 'compose' && !quote.trim()) return { status: 400, body: { ok: false, error: 'quote required' } };
       if (!comment.trim()) return { status: 400, body: { ok: false, error: 'comment required' } };
       if (!HUB_LINK_INTENTS.includes(data.intent)) return { status: 400, body: { ok: false, error: 'intent must be publish or draft' } };
+      { const pr = promptsAsked(data, { pressing: data.intent === 'publish' }); if (pr.error) return { status: 400, body: { ok: false, error: pr.error } }; }
       if (data.add_to !== undefined && !(typeof data.add_to === 'string' && POST_ID_RE.test(data.add_to))) return { status: 400, body: { ok: false, error: 'add_to must be a post id from earlier' } };
       if (kind === 'post' && (typeof post.page !== 'string' || typeof post.origin !== 'string' || typeof post.id !== 'string')) return { status: 400, body: { ok: false, error: 'post {page, origin, id, version} required' } };
       if (store.repliesSince(3600 * 1000) + holding.replies >= HUB_LINK_LIMITS.repliesPerHour) {
@@ -740,12 +754,16 @@ export function createHubLink(deps) {
       if (!ridOk(rid)) return { status: 400, body: { ok: false, error: 'rid required' } };
       const as = data.as === undefined ? 'as-asked' : data.as;
       if (!HUB_LINK_PUBLISH_AS.includes(as)) return { status: 400, body: { ok: false, error: `as must be one of ${HUB_LINK_PUBLISH_AS.join(', ')}` } };
+      const pr = promptsAsked(data);
+      if (pr.error) return { status: 400, body: { ok: false, error: pr.error } };
       const rec = store.get(rid);
       if (!rec) return { status: 404, body: { ok: false, error: 'unknown rid', rid, state: 'unknown' } };
       if (rec.step === 'pressed') return { status: 200, body: { ok: true, ...viewOf(rid), repeated: true } };
       const now = viewOf(rid);
       if (now.state !== 'saved') return { status: 409, body: { ok: false, error: 'not a saved reply', ...now } };
-      await pressRecord(rec, key, as);
+      // THIS press's choice replaces whatever an earlier press of the record was asked with (none sent: none, never a kept `shown`)
+      if ((rec.prompts || '') !== pr.prompts) store.note(rid, { prompts: pr.prompts });
+      await pressRecord(store.get(rid), key, as);
       return { status: 200, body: { ok: true, ...viewOf(rid) } };
     },
 
