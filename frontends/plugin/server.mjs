@@ -47,6 +47,7 @@ import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps
   GAP_LIMITS, forGuest } from './tkgaps.mjs';
 import { runOneShot, codexJail, claudeJail, CLAUDE_FETCH_RULES_VERSION } from './oneshot.mjs';
 import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
+import { loadCatalogue } from './tk-links.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, hostedPeopleOf, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
@@ -73,7 +74,7 @@ import { createHubLink, HUB_LINK_REPLIES_FILE, HUB_COMPOSE_TITLE, composeUrlOf }
 import { validateClippings, listClippings, findClipping, passageInClipping, passageOfClipping, clippingPublishable } from './clippings.mjs';
 import { createSpeech } from './hub-speech.mjs';
 import { secretsDir } from '../shared/secrets.mjs';
-import { validateHome, storable } from './blyg-home.mjs';
+import { validateHome, storable, minimalEnv } from './blyg-home.mjs';
 import { blygHomePage } from './blyg-home-page.mjs';
 import { blygRequestRefusal } from './blyg-request.mjs';
 import { DEFAULT_TEMPLATE, DEFAULT_ESCAPE, LIMITS as BLYG_NOTE_LIMITS } from './blyg-note.mjs';
@@ -3234,8 +3235,14 @@ async function fillEach(url, target, ts, ids, token) {
       const caps = tkCapsFor({ read, agent, channel: gap.from });
       // (a notes run fetches only from the hosts named in THIS INSTRUCTION's own words, tk-read.mjs ownerHosts: never the rest of the
       // message, which on a Hub-filed thread the key holder wrote, even once the owner has reworded the instruction)
+      // THE OWNER'S PUBLISHED POSTS it may link to (tk-links.mjs): the site's own catalogue command, when "Where my blyg lives" names
+      // one; no setting or any failure is no catalogue, and the passage runs as it always did
+      // (the setting is checked whole, as before every publish step, only when it names the command at all)
+      const site = store.readConfig().blyg_home;
+      const catalogue = site && site.commands && site.commands.link_targets
+        ? await loadCatalogue({ home: validateHome(site), envFor: pass => minimalEnv(pass) }) : null;
       r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent, caps, roots: caps === 'web+notes' ? read.roots : [],
-        fetchHosts: caps === 'web+notes' ? ownerHosts(gap.instruction) : [],
+        fetchHosts: caps === 'web+notes' ? ownerHosts(gap.instruction) : [], catalogue,
         post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
         ask: (prompt, o) => askGap(page, prompt, o) });
     }
@@ -3246,7 +3253,7 @@ async function fillEach(url, target, ts, ids, token) {
     const g2 = m2 && (m2.gaps || []).find(g => g.id === id);
     fillDrop(fillKey(url, target, ts, id), token);
     if (!g2 || g2.mode !== 'pending' || g2.instruction !== gap.instruction) continue;
-    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at, used: r.used || '', sources: r.sources || null });
+    if (r.mode === 'filled-by-agent') gapMove(g2, 'filled-by-agent', { text: r.text, agent, model: r.model || '', at: r.at, used: r.used || '', sources: r.sources || null, links: r.links || null });
     else gapMove(g2, 'failed', { reason: r.reason });
     store.savePage(latest);
     broadcast({ type: 'page', url: latest.url });

@@ -6,7 +6,7 @@
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /** The commands the page reports on, in order. */
-export const PAGE_COMMANDS = Object.freeze(['check', 'prepare', 'plan', 'apply', 'publish', 'plan_edit', 'apply_edit', 'publish_edit', 'discard', 'abandon']);
+export const PAGE_COMMANDS = Object.freeze(['check', 'prepare', 'plan', 'apply', 'publish', 'plan_edit', 'apply_edit', 'publish_edit', 'discard', 'abandon', 'link_targets']);
 
 export function blygHomePage({ settings, valid, errors, defaults, nonce }) {
   const s = settings || {};
@@ -48,7 +48,8 @@ ${PAGE_COMMANDS.map(k => row(`command: ${k}`, cmds[k] ? JSON.stringify(cmds[k]) 
 <pre>botference blyg-home show                 # what is set, and where the file is
 botference blyg-home example > blyg-home.json   # a starting point for a Jekyll blog
 botference blyg-home check blyg-home.json # validate a file and print every problem
-botference blyg-home set blyg-home.json   # validate, then write it (refused while a run is under way)</pre>
+botference blyg-home set blyg-home.json   # validate, then write it (refused while a run is under way)
+botference blyg-home links                # run the link_targets command: the published posts a /tk passage may link to</pre>
 <p class="lead">A change takes effect for the next run; a run that is under way stops before its next step if the setting changed.</p>
 </main></body></html>`;
 }

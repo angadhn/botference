@@ -38,7 +38,9 @@ export const COMMAND_FOR = Object.freeze({ new: Object.freeze({ plan: 'plan', ap
   edit: Object.freeze({ plan: 'plan_edit', apply: 'apply_edit', publish: 'publish_edit' }) });
 // `prepare` (optional) runs before `plan`, after the note is written: for a site that has to stage the note or fetch what it
 // quotes first. `discard` (optional) undoes whatever prepare or plan did, when the owner cancels or abandons before apply.
-export const COMMAND_KEYS = Object.freeze(['check', 'prepare', ...STEPS, ...EDIT_STEPS, 'discard', 'abandon']);
+// `link_targets` (optional) is no step of a publish run: it prints the catalogue of the site's published posts, which a `/tk` passage
+// may link to (tk-links.mjs runs it, with its own time and size limits; nothing here does).
+export const COMMAND_KEYS = Object.freeze(['check', 'prepare', ...STEPS, ...EDIT_STEPS, 'discard', 'abandon', 'link_targets']);
 export const TIME_LIMITS_MS = Object.freeze({ check: 15_000, prepare: 300_000, plan: 120_000, apply: 1_800_000, publish: 1_800_000,
   plan_edit: 120_000, apply_edit: 1_800_000, publish_edit: 1_800_000, discard: 60_000, abandon: 60_000 });
 export const OUTPUT = Object.freeze({
@@ -258,6 +260,8 @@ export function validateHome(raw, { env = process.env } = {}) {
   for (const k of editsSet) { const a = checkArgv(k, cmds[k], top || process.cwd(), errors, { changelog: true }); if (a) commands[k] = a; }
   // `check` (optional): the pre-flight, run before ANYTHING is written; about the environment, so it has no {note}
   if (cmds.check !== undefined && cmds.check !== null) { const a = checkArgv('check', cmds.check, top || process.cwd(), errors, { needNote: false }); if (a) commands.check = a; }
+  // `link_targets` (optional): prints the catalogue of the site's published posts (JSON on stdout); read only, so it has no {note}
+  if (cmds.link_targets !== undefined && cmds.link_targets !== null) { const a = checkArgv('link_targets', cmds.link_targets, top || process.cwd(), errors, { needNote: false }); if (a) commands.link_targets = a; }
   const preview = r.preview_url === undefined || r.preview_url === null ? '' : r.preview_url;
   { const p = previewUrlProblem(preview); if (p) errors.push(p); }
   // `preview_selector`: the element of the preview page that IS the post (the picture is cropped to it); default `article`
@@ -283,8 +287,10 @@ export const storable = raw => {
   for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
   return out;
 };
-// (preview_url is left out of the fingerprint: it changes nothing that runs, and a run started before it was set may still show it)
-export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, s.commands, s.confirm, s.plan_guard, s.published_marker])).digest('hex');
+// (preview_url is left out of the fingerprint: it changes nothing that runs, and a run started before it was set may still show it;
+// so is the `link_targets` command, which no publish run ever runs)
+const runCommands = c => { const { link_targets: _catalogue, ...steps } = c || {}; return steps; };
+export const fingerprint = s => crypto.createHash('sha256').update(JSON.stringify([s.folder, s.top, s.filename, s.template, s.escape, s.timezone, s.env_pass, runCommands(s.commands), s.confirm, s.plan_guard, s.published_marker])).digest('hex');
 
 /** `{note}` (and `{changelog}`) made into one argument each: → the argv to run. */
 export function expandArgv(argv, { rel, abs, changelog = '' }) {

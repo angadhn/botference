@@ -78,7 +78,7 @@ if [ "${1:-}" = "plugin" ] || [ "${1:-}" = "discuss" ]; then
 fi
 
 # --- blyg-home: the ONE way to change "Where my blyg lives" (the Publish-as-blyg command set). It is never
-# writable over HTTP; this runs on the machine (frontends/plugin/blyg-home-cli.mjs: show, check, set, example). ---
+# writable over HTTP; this runs on the machine (frontends/plugin/blyg-home-cli.mjs: show, check, set, example, links). ---
 if [ "${1:-}" = "blyg-home" ]; then
   shift
   exec node "${BOTFERENCE_HOME}/frontends/plugin/blyg-home-cli.mjs" "$@"

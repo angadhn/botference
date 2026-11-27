@@ -5,19 +5,21 @@
 //   botference blyg-home check <file.json>  validate a file (the setting itself, or {"blyg_home": {…}}) and print every problem
 //   botference blyg-home set <file.json>    validate, then write it to the companion's config.json (refused while a run is under way)
 //   botference blyg-home example            print an example for a Jekyll blog that uses scripts/blyg-publish
+//   botference blyg-home links              run the `link_targets` command as a /tk passage would, and say what it gave (tk-links.mjs)
 //
 // The setting decides what commands run on this machine, so it is never writable over HTTP (server.mjs answers 405 to any write);
 // this runs on the machine, as the owner, in the environment the companion is started with (BOTFERENCE_PROJECT_ROOT decides which
 // config.json: `show` names it). Exit 0: done / valid; 1: not valid or refused; 2: usage.
 import fs from 'node:fs';
 import path from 'node:path';
-import { validateHome, storable } from './blyg-home.mjs';
+import { validateHome, storable, minimalEnv } from './blyg-home.mjs';
+import { loadCatalogue } from './tk-links.mjs';
 import { readConfig, saveConfig, CONFIG_PATH, DIR } from './store.mjs';
 import { readJsonState } from './fsjson.mjs';
 import { RUN_LIVE, migrateRecord } from './blyg-run.mjs';
 
 const say = s => process.stdout.write(s + '\n');
-const usage = () => { process.stderr.write('Usage: botference blyg-home show | check <file.json> | set <file.json> | example\n'); process.exit(2); };
+const usage = () => { process.stderr.write('Usage: botference blyg-home show | check <file.json> | set <file.json> | example | links\n'); process.exit(2); };
 
 export const EXAMPLE = Object.freeze({
   folder: '/path/to/your/blog/_notes',
@@ -43,6 +45,8 @@ export const EXAMPLE = Object.freeze({
     publish_edit: ['scripts/blyg-publish', '{note}', '--edit', '--generated-note', '{changelog}', '--push'],
     discard: ['scripts/blyg-publish', '{note}', '--unstage-note'],
     abandon: ['scripts/blyg-publish', '--abandon', '{note}'],
+    // (optional) the catalogue of your published posts, which a /tk passage may link to when you ask it for a backlink
+    link_targets: ['scripts/blyg-link-targets'],
   },
 });
 
@@ -64,9 +68,23 @@ function liveRun() {
   return RUN_LIVE.includes(mode) ? mode : '';
 }
 
+/** `links`: the catalogue as a passage would get it. → Promise<exit code>. Prints counts and the first names, never a whole post. */
+export async function links({ config = () => readConfig(), load = loadCatalogue } = {}) {
+  const home = validateHome(config().blyg_home);
+  if (!home.ok) { report(home); return 1; }
+  if (!home.settings.commands.link_targets) { say('No `link_targets` command is set: a /tk passage is given no catalogue and writes no link to your posts.'); return 1; }
+  const c = await load({ home, envFor: pass => minimalEnv(pass) });
+  if (!c.ok) { say(`No catalogue: ${c.error}. A /tk passage runs without one.`); return 1; }
+  say(`${c.posts.length} published post${c.posts.length === 1 ? '' : 's'} a /tk passage may link to${c.truncated ? ' (the site cut its list)' : ''}${c.dropped ? `; ${c.dropped} entr${c.dropped === 1 ? 'y' : 'ies'} dropped as unusable` : ''}.`);
+  for (const p of c.posts.slice(0, 5)) say(`  [[${p.name}]]${p.title ? `  ${p.title}` : ''}${p.date ? `  (${p.date})` : ''}`);
+  if (c.posts.length > 5) say(`  … and ${c.posts.length - 5} more`);
+  return 0;
+}
+
 export function main(argv) {
   const [cmd, file] = argv;
   if (cmd === 'example') { say(JSON.stringify(EXAMPLE, null, 2)); return 0; }
+  if (cmd === 'links') return links();
   if (cmd === 'show') {
     const raw = readConfig().blyg_home;
     say(`config file: ${CONFIG_PATH}`);
@@ -94,4 +112,4 @@ export function main(argv) {
   return 2;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) process.exit(main(process.argv.slice(2)));
+if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) Promise.resolve(main(process.argv.slice(2))).then(code => process.exit(code));
