@@ -32,9 +32,9 @@ publish commands, one press publishes the thread to your site as a blyg post.
 - Drafts, and a reading list made from clipped articles. In the repository.
 - Speech to text with whisper.cpp, on your computer. In the repository.
 - Replying from a hosted feed on a phone. The computer's half is in the
-  repository. The hosted feed's own code is not. It is planned.
+  repository. The hosted feed's own code is not.
 - The example site's publish scripts and Jekyll plugins are not in the
-  repository. They are planned as a Jekyll starter.
+  repository.
 
 ## Try it (path A)
 

@@ -95,11 +95,10 @@ In this repository:
 - The Hub's engine and the Hub page served by the companion.
 - The companion's half of the hub link, including speech and clippings.
 
-Not in this repository yet:
+Not in this repository:
 
 - The hosted Hub: the server function, its sign-in checks and its storage on
-  the site's host. In the example it lives with the site's own code. Moving it
-  here, as something anyone can deploy, is planned.
+  the site's host. In the example it lives with the site's own code.
 - The site's publish commands. They belong to each site. The example is one
   Jekyll site; the commands the companion expects are described in
   [docs/blygger.md](blygger.md).
