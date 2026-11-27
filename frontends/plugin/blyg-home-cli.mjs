@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { validateHome, storable, minimalEnv } from './blyg-home.mjs';
-import { loadCatalogue } from './tk-links.mjs';
+import { loadCatalogue, CATALOGUE_KINDS } from './tk-links.mjs';
 import { readConfig, saveConfig, CONFIG_PATH, DIR } from './store.mjs';
 import { readJsonState } from './fsjson.mjs';
 import { RUN_LIVE, migrateRecord } from './blyg-run.mjs';
@@ -75,7 +75,7 @@ export async function links({ config = () => readConfig(), load = loadCatalogue 
   if (!home.settings.commands.link_targets) { say('No `link_targets` command is set: a /tk passage is given no catalogue and writes no link to your posts.'); return 1; }
   const c = await load({ home, envFor: pass => minimalEnv(pass) });
   if (!c.ok) { say(`No catalogue: ${c.error}. A /tk passage runs without one.`); return 1; }
-  say(`${c.posts.length} published post${c.posts.length === 1 ? '' : 's'} a /tk passage may link to${c.truncated ? ' (the site cut its list)' : ''}${c.dropped ? `; ${c.dropped} entr${c.dropped === 1 ? 'y' : 'ies'} dropped as unusable` : ''}.`);
+  say(`${c.posts.length} published post${c.posts.length === 1 ? '' : 's'} a /tk passage may link to (${CATALOGUE_KINDS.map(k => `${c.posts.filter(p => p.kind === k).length} ${k}`).join(', ')})${c.truncated ? ' (the site cut its list)' : ''}${c.dropped ? `; ${c.dropped} entr${c.dropped === 1 ? 'y' : 'ies'} dropped as unusable` : ''}.`);
   for (const p of c.posts.slice(0, 5)) say(`  [[${p.name}]]${p.title ? `  ${p.title}` : ''}${p.date ? `  (${p.date})` : ''}`);
   if (c.posts.length > 5) say(`  … and ${c.posts.length - 5} more`);
   return 0;

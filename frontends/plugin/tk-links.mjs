@@ -25,14 +25,31 @@ import { spawn as realSpawn } from 'node:child_process';
 import { pathKey } from './tk-read.mjs';
 
 export const TK_LINKING = Object.freeze(['none', 'catalogue']);
+// WHAT A CATALOGUE ENTRY IS, one of CATALOGUE_KINDS (its `kind`, chosen by kindOf and nowhere else): every entry is a note of the
+// owner's that is PUBLISHED on their site, and so may be linked;
+//   blyg   it is also a Blygger item (it has an `id`)
+//   page   a page of the site that is no item (most older essays): no `id`
+// An entry that names no kind (a catalogue from before the field) is a `blyg` when it has a usable id, as every entry then was.
+export const CATALOGUE_KINDS = Object.freeze(['blyg', 'page']);
+// HOW MUCH OF EACH POST'S FIRST WORDS a prompt carries, tried in this order until the whole catalogue fits LINK_LIMITS.promptBytes:
+// every name stays (an old essay is as linkable as a new post); only when the names alone do not fit are the oldest left out.
+export const PROMPT_EXCERPTS = Object.freeze([200, 120, 60, 0]);
 export const LINK_LIMITS = Object.freeze({
   timeMs: 10_000,          // the catalogue command
   outputBytes: 512 * 1024, // …and what it may print
-  posts: 200,              // posts read from it
+  posts: 500,              // posts read from it
   promptBytes: 48 * 1024,  // the catalogue as it goes into a prompt (the newest posts that fit)
   name: 200, title: 200, excerpt: 200, tags: 12, tag: 40, page: 300, file: 300,
 });
 const ID_RE = /^[0-9a-hjkmnp-tv-z]{26}$/;
+/** THE ONE FUNCTION that says what kind an entry is: → one of CATALOGUE_KINDS, or '' (not an entry to keep). */
+export function kindOf(p) {
+  const id = !!p && typeof p.id === 'string' && ID_RE.test(p.id);
+  if (!p || p.kind === undefined || p.kind === null) return id ? 'blyg' : '';
+  if (!CATALOGUE_KINDS.includes(p.kind)) return '';
+  if (p.kind === 'blyg') return id ? 'blyg' : '';
+  return 'page';
+}
 const DATE_RE = /^\d{4}-\d\d-\d\d$/;
 // characters that can hide or reorder text (tkgaps cleanData's list), and controls
 const INVISIBLE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b-\u200f\u202a-\u202e\u2028\u2029\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0]/g;
@@ -44,7 +61,8 @@ export const nameKey = n => String(n == null ? '' : n).normalize('NFC').trim();
 
 /**
  * The catalogue command's output, checked field by field. → { ok, posts, truncated, dropped, error }.
- * A post is kept only with a usable `name` (unique) and `id`; every other field is optional and is dropped alone when it does not fit.
+ * A post is kept only with a usable `name` (unique) and a kind (kindOf: a `blyg` needs its id; a `page` carries none); every other
+ * field is optional and is dropped alone when it does not fit.
  * `file` is kept only as a relative path with no `..` (it is joined to the work tree by the caller, never trusted further).
  */
 export function validateCatalogue(text) {
@@ -57,9 +75,10 @@ export function validateCatalogue(text) {
   let dropped = 0;
   for (const p of raw.posts.slice(0, LINK_LIMITS.posts)) {
     const name = p && typeof p === 'object' && typeof p.name === 'string' ? nameKey(p.name.replace(INVISIBLE, '')) : '';
-    if (!nameOk(name) || seen.has(name) || typeof p.id !== 'string' || !ID_RE.test(p.id)) { dropped++; continue; }
+    const kind = name ? kindOf(p) : '';
+    if (!nameOk(name) || seen.has(name) || !kind) { dropped++; continue; }
     seen.add(name);
-    const post = { name, id: p.id };
+    const post = { name, kind, ...(kind === 'blyg' ? { id: p.id } : {}) };
     if (typeof p.title === 'string' && line(p.title, LINK_LIMITS.title)) post.title = line(p.title, LINK_LIMITS.title);
     if (typeof p.date === 'string' && DATE_RE.test(p.date)) post.date = p.date;
     const tags = Array.isArray(p.tags) ? p.tags.filter(t => typeof t === 'string').map(t => line(t, LINK_LIMITS.tag)).filter(Boolean).slice(0, LINK_LIMITS.tags) : [];
@@ -146,19 +165,25 @@ export function linkingOf(value) {
 }
 
 /**
- * The catalogue as it goes into a prompt: for each post its name, title, id, date, tags and first words; and, ONLY for a run that may
- * read notes (`caps` web+notes), the path of the post's own file when it lies under a read root. Newest first, as the site gave them;
- * cut to LINK_LIMITS.promptBytes (`cut` says so).
+ * The catalogue as it goes into a prompt: for each post its name, kind, title, id (a blyg's), date, tags and first words; and, ONLY
+ * for a run that may read notes (`caps` web+notes), the path of the post's own file when it lies under a read root. Newest first, as
+ * the site gave them. It must fit LINK_LIMITS.promptBytes: the first words are shortened for all (PROMPT_EXCERPTS, in order) before
+ * any post is left out, and then the oldest go (`cut` says a post was left out, here or by the site).
  */
 export function promptCatalogue(catalogue, { caps = 'web', roots = [] } = {}) {
   const notes = caps === 'web+notes' && roots.length > 0 && !!catalogue.top;
   const under = f => roots.some(r => { const a = pathKey(f), b = pathKey(r); return a.startsWith(`${b}/`); });
-  const all = catalogue.posts.map(p => {
-    const e = { name: p.name, ...(p.title ? { title: p.title } : {}), id: p.id, ...(p.date ? { date: p.date } : {}),
-      ...(p.tags ? { tags: p.tags } : {}), ...(p.excerpt ? { first_words: p.excerpt } : {}) };
+  const entries = chars => catalogue.posts.map(p => {
+    const words = chars && p.excerpt ? p.excerpt.slice(0, chars) : '';
+    const e = { name: p.name, kind: p.kind, ...(p.title ? { title: p.title } : {}), ...(p.id ? { id: p.id } : {}), ...(p.date ? { date: p.date } : {}),
+      ...(p.tags ? { tags: p.tags } : {}), ...(words ? { first_words: words } : {}) };
     if (notes && p.file) { const abs = path.join(catalogue.top, p.file); if (under(abs)) e.file = abs; }
     return e;
   });
+  const size = list => Buffer.byteLength(JSON.stringify(list), 'utf8');
+  let all = [];
+  let excerpt = 0;
+  for (const chars of PROMPT_EXCERPTS) { all = entries(chars); excerpt = chars; if (size(all) <= LINK_LIMITS.promptBytes) break; }
   const posts = [];
   let bytes = 2;
   for (const e of all) {
@@ -166,7 +191,7 @@ export function promptCatalogue(catalogue, { caps = 'web', roots = [] } = {}) {
     if (bytes + n > LINK_LIMITS.promptBytes) break;
     posts.push(e); bytes += n;
   }
-  return { posts, cut: posts.length < all.length || !!catalogue.truncated, files: posts.some(e => e.file) };
+  return { posts, cut: posts.length < all.length || !!catalogue.truncated, files: posts.some(e => e.file), excerpt };
 }
 
 // ---- after the run -------------------------------------------------------------------------------------------------------------

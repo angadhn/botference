@@ -65,11 +65,11 @@ test('blyg-home links: runs the catalogue command and says what it gave; no comm
   assert.match(none.out, /No `link_targets` command is set/);
   const script = (name, body) => { const f = path.join(rig.top, name); fs.writeFileSync(f, `#!${process.execPath}\n${body}\n`); fs.chmodSync(f, 0o755); return name; };
   const posts = [{ name: 'Harbour cranes', title: 'Harbour cranes and tides', id: '0123456789abcdefghjkmnpqrs', date: '2026-03-01', excerpt: 'Why a crane waits.' },
-    { name: 'short-lighthouse', id: '0123456789abcdefghjkmnpqrt' }, { name: 'bad|name', id: '0123456789abcdefghjkmnpqrv' }];
+    { name: 'An old essay', kind: 'page', title: 'An old essay' }, { name: 'bad|name', id: '0123456789abcdefghjkmnpqrv' }];
   assert.equal(set({ link_targets: [`./${script('targets', `process.stdout.write(${JSON.stringify(JSON.stringify({ posts }))})`)}`] }).code, 0);
   const ok = cli(root, 'links');
   assert.equal(ok.code, 0, ok.out + ok.err);
-  assert.match(ok.out, /2 published posts a \/tk passage may link to; 1 entry dropped as unusable\./);
+  assert.match(ok.out, /2 published posts a \/tk passage may link to \(1 blyg, 1 page\); 1 entry dropped as unusable\./);
   assert.match(ok.out, /\[\[Harbour cranes\]\]  Harbour cranes and tides  \(2026-03-01\)/);
   assert.ok(!ok.out.includes('Why a crane waits'), 'names only, never a post\'s words');
   assert.equal(set({ link_targets: [`./${script('broken', 'process.exit(4)')}`] }).code, 0);
