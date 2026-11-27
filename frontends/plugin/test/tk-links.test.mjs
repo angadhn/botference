@@ -174,7 +174,7 @@ test('after the run: a wikilink to an offered name is kept as written; any other
   // WHAT IS NOT A WIKILINK IS PROSE, left exactly as typed, with or without a catalogue (the pattern is the site's own: `[[…]]` not
   // directly after a letter, a digit, `_` or `]`, not directly before `]`, no bracket inside)
   for (const linking of ['none', 'catalogue']) {
-    for (const prose of ['matrix[[0]]', 'a[[i]][[j]]', 'x = m[[1]] + m_[[2]]', '[[A|[[B]]]]', '[[Harbour cranes|[[Ferry timetables]]]]', 'empty [[]] and [[', 'two\n[[lines\nlong]]']) {
+    for (const prose of ['matrix[[0]]', 'a[[i]][[j]]', 'x = m[[1]] + m_[[2]]', 'wow![[Harbour cranes]]', '[[A|[[B]]]]', '[[Harbour cranes|[[Ferry timetables]]]]', 'empty [[]] and [[', 'two\n[[lines\nlong]]']) {
       assert.deepEqual(L.checkLinks(prose, { linking, names }), { text: prose, kept: 0, reduced: 0 }, `${linking}: ${prose}`);
     }
   }

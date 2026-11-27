@@ -175,7 +175,8 @@ const fenceOf = l => /^ {0,3}(`{3,}|~{3,})/.exec(l);
 // _plugins/blygger_agent_markdown.rb; the two are kept the same): `[[` + one line of text with no bracket in it + `]]`, optionally
 // after `!`, NOT directly after a letter, a digit, `_` or `]` (so `matrix[[0]]` and `a[[i]][[j]]` are prose, as typed) and NOT
 // directly before another `]` (so a nested `[[A|[[B]]]]` is no wikilink at all, as typed).
-const WIKILINK = /(?<![A-Za-z0-9_\]])(!?)\[\[([^\[\]\n]{1,400})\]\](?!\])/g;
+// (the `!` of an embed is part of it only when IT does not follow such a character: `wow![[A]]` is prose too)
+const WIKILINK = /(?:(?<![A-Za-z0-9_\]])(!)|(?<![A-Za-z0-9_\]!]))\[\[([^\[\]\n]{1,400})\]\](?!\])/g;
 /** A wikilink's parts as written: its name, and its visible text (the words after the bar, else the name). */
 export function wikilinkParts(inner) {
   const at = inner.search(/\\?\|/);

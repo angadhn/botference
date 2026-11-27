@@ -14826,7 +14826,8 @@ Where this section and the two above differ, this one is what the code does.
   wikilink is its visible text).
 - WHAT COUNTS AS A WIKILINK is the example site's own pattern for an agent passage (`AgentMarkdown::WIKILINK`), the same on both
   sides: `[[` + one line with no bracket in it + `]]`, optionally after `!`, not directly after a letter, a digit, `_` or `]`, and
-  not directly before `]`. So `matrix[[0]]`, `a[[i]][[j]]` and a nested `[[A|[[B]]]]` are prose, left as typed, with or without a
+  not directly before `]` (an embed's `!` counts only when it does not itself follow such a character). So `matrix[[0]]`,
+  `a[[i]][[j]]`, `wow![[A]]` and a nested `[[A|[[B]]]]` are prose, left as typed, with or without a
   catalogue, and count as neither kept nor reduced. (A lone `[[0]]` after a space is a wikilink named `0`.)
 - THE CATALOGUE COMMAND'S LIFE is one named state (`CATALOGUE_RUN_STATES`: running, timing-out, flooding, not-started, ended),
   moved by one function that refuses an unlisted move; its answer is made in one place, when the process is gone.
