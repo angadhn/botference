@@ -76,6 +76,33 @@ for (const agent of ['claude', 'codex']) {
   });
 }
 
+// A CATALOGUE OF THE SIZE OF A REAL SITE: about 120 made-up notes, most of them pages that are no Blygger item; the one asked for is
+// a page, old, and near the end of the list.
+const SUBJECTS = ['canal locks', 'salt pans', 'rope walks', 'signal towers', 'dry docks', 'ice houses', 'toll bridges', 'lime kilns', 'net lofts', 'pilot boats',
+  'grain silos', 'buoy tenders', 'sluice gates', 'chain ferries', 'fog horns', 'slipways', 'coal staithes', 'tide tables', 'breakwaters', 'customs sheds'];
+const ANGLES = ['a short history of', 'what I got wrong about', 'notes on', 'the economics of', 'why nobody maintains', 'a walk around'];
+const BIG = SUBJECTS.flatMap((subject, i) => ANGLES.map((angle, j) => {
+  const n = i * ANGLES.length + j;
+  const blyg = n % 6 === 0;
+  return { name: `${angle} ${subject}`.replace(/^./, c => c.toUpperCase()), kind: blyg ? 'blyg' : 'page', ...(blyg ? { id: `0123456789abcdefghjkmn${String(n).padStart(4, '0').replace(/[0-9]/g, d => 'abcdefghjk'[d])}` } : {}),
+    title: `${angle} ${subject}`.replace(/^./, c => c.toUpperCase()), date: `20${String(25 - Math.floor(n / 12)).padStart(2, '0')}-0${(n % 9) + 1}-1${n % 9}`, tags: ['essays'],
+    excerpt: `This made-up essay is ${angle} ${subject}, with enough opening words to look like the start of a real piece of writing about them and their keepers.` };
+}));
+BIG.splice(113, 0, { name: 'Tidal mills', kind: 'page', title: 'Tidal mills of the estuary', date: '2016-03-02', tags: ['essays'],
+  excerpt: 'A mill that grinds twice a day, when the pond the tide filled is let out again through the wheel.' });
+for (const agent of ['claude', 'codex']) {
+  test(`REAL ${agent}: with about 120 notes in the catalogue, it links to the one page that fits, by its exact name`, { skip, timeout: 240000 }, async () => {
+    const catalogue = { ...L.validateCatalogue(JSON.stringify({ posts: BIG })), top: '' };
+    assert.equal(catalogue.posts.length, 121);
+    const given = L.promptCatalogue(catalogue, { caps: 'web' });
+    console.log(`catalogue in the prompt: ${given.posts.length} notes, ${Buffer.byteLength(JSON.stringify(given.posts))} bytes, first words cut to ${given.excerpt}`);
+    assert.equal(given.posts.length, 121, 'every note is offered');
+    const r = await passage(agent, 'use a backlink to my essay on tidal mills to explain this, in two sentences', { catalogue });
+    assert.deepEqual([...new Set(wikilinks(r.text))], ['Tidal mills']);
+    assert.ok(r.links.kept >= 1 && r.links.reduced === 0, JSON.stringify(r.links));
+  });
+}
+
 test('REAL codex: a web search works inside the wrapper', { skip, timeout: 200000 }, async () => {
   const t = Date.now();
   const r = await O.runOneShot('codex', 'Search the web for the capital of Iceland and answer in one short sentence.', { caps: 'web', effort: 'low' });

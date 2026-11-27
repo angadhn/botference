@@ -14835,3 +14835,26 @@ Where this section and the two above differ, this one is what the code does.
   passage 4.7 s; a web search 9.2 s with its query recorded; a named note read and its fact quoted 7.9 s; two files outside the
   roots asked for, both refused and neither's text shown, 13.9 s; asked to create a file in the notes folder, none made, 10.1 s.
 
+## Amendment (2026-11-27, later): the catalogue lists every published note, not only Blygger items (`kind`)
+
+The owner's rule is "it should only backlink to published notes because others won't be able to see it anyway": published on the
+site, not "is a Blygger item". Most of an owner's older essays are pages of their site and no Blygger item.
+
+- A CATALOGUE ENTRY HAS A KIND, one of `CATALOGUE_KINDS` = `blyg` | `page`, chosen by one function (`kindOf`): `blyg` is also a
+  Blygger item and must carry its 26-character `id`; `page` is a page of the site that is no item and carries none (an id given
+  with a page is dropped). An entry with no `kind` (a catalogue from before the field) is a `blyg` when it has a usable id. Any
+  other kind, or a `blyg` without an id, is not kept.
+- THE PROMPT carries `kind` for each entry and says: "its kind (a "blyg" post or a "page" of the site: both are published and may
+  be linked alike)". Nothing else in the prompt changed. The check after the run is unchanged: the exact name from the catalogue.
+- THE BOUND, WITHOUT LOSING A NAME. At most 500 entries are read. The catalogue in a prompt must still fit about 48 KB; when it
+  does not, the first words of EVERY entry are shortened (`PROMPT_EXCERPTS`: 200, then 120, 60, 0 characters) before any entry is
+  left out, so an old essay at the end of the list stays as linkable as the newest post. Only when the names alone do not fit are
+  the oldest left out, and the prompt then says "(the newest of them)".
+- `botference blyg-home links` prints the count by kind.
+- WHAT A SITE'S COMMAND SHOULD LIST: every note that is public on the live site. The companion runs it in the owner's checkout,
+  which may hold drafts on a working branch, so the command must decide from what is live (the example site reads the git ref of
+  its live branch, never the working files).
+- REAL RUNS (2026-11-27, `test/tk-links-real.test.mjs`, a made-up catalogue of 121 notes, most of them pages, 37.5 KB in the
+  prompt with full first words): asked for "a backlink to my essay on tidal mills" (a page, dated 2016, near the end of the list),
+  Claude wrote `[[Tidal mills|my essay on tidal mills]]` in 3.3 s and Codex the same link in 6.2 s.
+

@@ -395,17 +395,19 @@ commands in "Where my blyg lives":
 posts it gave. The command prints JSON on stdout:
 
 ```json
-{ "posts": [ { "name": "Harbour cranes", "title": "Harbour cranes and tides",
+{ "posts": [ { "name": "Harbour cranes", "kind": "blyg", "title": "Harbour cranes and tides",
                "id": "<26-character Blygger id>", "date": "2026-03-01",
                "tags": ["essays"], "excerpt": "The first words of the post",
                "file": "_notes/Harbour cranes.md" } ],
   "truncated": false }
 ```
 
-`name` is what a wikilink names and `id` the post's Blygger id; both are
-required. `title`, `date`, `tags`, `excerpt` and `file` (the note's path
-inside the site's checkout) are optional. List only posts that are published
-now, newest first.
+`name` is what a wikilink names. `kind` is `blyg` (the note is also a Blygger
+item, and must carry its `id`) or `page` (a page of your site that is no
+Blygger item, such as an older essay: no `id`). `title`, `date`, `tags`,
+`excerpt` and `file` (the note's path inside the site's checkout) are
+optional. List every note that is public on your live site, and nothing that
+is only a draft in your checkout, newest first.
 
 What the companion does with it:
 
@@ -414,8 +416,9 @@ What the companion does with it:
   prints, and checks every field. A post without a usable name and id is
   dropped. No command, a failure, or nothing usable means no catalogue: the
   passage runs exactly as it did before.
-- The catalogue goes into the agent's prompt as quoted data (at most 200
-  posts and about 48 KB, the newest first), with the rule: link only when the
+- The catalogue goes into the agent's prompt as quoted data (at most 500
+  notes and about 48 KB, the newest first; when it is too big, each note's
+  first words are shortened before any note is left out), with the rule: link only when the
   line asks for a link, a backlink or a reference to your own writing; only to
   a post in the catalogue, by its exact name; never an invented name.
 - It is not notes reading. It needs neither `tk_read_roots` nor
