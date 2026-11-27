@@ -21,6 +21,11 @@ Botference is a personal project. One person builds it for their own work, and
 some parts assume that person's set-up. Each product below says how ready it
 is.
 
+**Here for the Blygger hackathon (20 to 27 November 2026)?** Read
+[BLYGGER-HACKATHON-2026.md](BLYGGER-HACKATHON-2026.md) first. It describes the
+entry: the Discuss browser plugin as a Blygger client, publishing to your own
+Jekyll site, and replying from a feed with an agent on your own subscription.
+
 ## The five products
 
 | Product | What it does | Start with | State |
@@ -128,7 +133,7 @@ start a post that answers nobody, and show clipped articles to read and reply
 to. [docs/blygger-setup.md](docs/blygger-setup.md) describes the parts, how a
 reply travels, what is in this repository and what is not, and what you need
 to copy it. For the Blygger hackathon entry, start with
-[HACKATHON.md](HACKATHON.md).
+[BLYGGER-HACKATHON-2026.md](BLYGGER-HACKATHON-2026.md).
 
 **Useful for:** people who write a Blygger blog, or want to follow some.
 

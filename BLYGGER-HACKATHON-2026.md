@@ -1,4 +1,4 @@
-# Botference at the Blygger hackathon
+# Botference at the Blygger hackathon, 20 to 27 November 2026
 
 This is an entry for the Blygger hackathon of 20 to 27 November 2026.
 [Blygger](https://blygger.org) is an open protocol for small blogs that quote
