@@ -1193,7 +1193,10 @@ folders you list in `"tk_read_roots"` (`botference tk-read check`; none by
 default). It can never write, edit or delete a file, run a command, or use
 MCP servers, and it runs inside a macOS sandbox that refuses writes. Codex
 searches the web but cannot read your notes. A line sent from your Hub reads
-notes only if `"hub_link_tk_notes": "on"`. The export writes what is stored and asks no
+notes only if `"hub_link_tk_notes": "on"` (decided by who wrote the
+instruction). A passage that read your notes fetches pages only from sites
+your line names, and its post always waits for your look before it is
+published. The export writes what is stored and asks no
 agent: a callout under an HTML comment with your instruction (default), or
 Blygger Studio's own `[TK] … [=] … [/TK]` with `"gap_style": "studio"`;
 `"gap_export": "omit"` leaves the agents' passages out of "My notes only".

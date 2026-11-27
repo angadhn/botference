@@ -267,10 +267,20 @@ and other programs. Codex can search the web but cannot read your notes (it
 reads files only through a shell, which it never gets). A line sent from your
 Hub may read notes only when `"hub_link_tk_notes": "on"` (off by default:
 anyone holding your Hub's link key could otherwise ask a passage to print your
-notes and read it back). A passage that used the web or your notes says so in
-the drawer, with the addresses and note paths it used; that list stays on your
-computer and never goes into a post. A passage with tools may take up to
-three minutes; past that it fails and says so.
+notes and read it back). Whether a passage may read notes depends on who wrote
+its `/tk` instruction: a line sent from your Hub stays a Hub line after you
+save the message on your computer, until you reword the instruction yourself.
+A passage that may read your notes can still search the web, but fetches pages
+only from sites your line names (for example `/tk compare my notes with
+https://www.example.com/article`); any other fetch is refused and listed. A
+post with a passage that read your notes always stops for your look on the
+computer before it is published, whoever pressed Publish (a press from your
+Hub waits there, and the Hub says so). A passage that used the web or your
+notes says so in the drawer, with the addresses and note paths it used (and
+any fetch that was refused); that list stays on your computer and never goes
+into a post. Search queries do go to the search provider, and can carry words
+from your notes. A passage with tools may take up to three minutes; past that
+it fails and says so.
 
 **The agent block.** Each gap is drawn where you typed it, inside your
 message: a robot mark, the word "agent" and the agent's name, what it wrote,
