@@ -14619,12 +14619,17 @@ reading notes safe enough to ship. Each is below; each has a test.
   could be trusted for it; that is not done.) A passage that used only the web forces nothing. The fact rides on the publish path only
   (`notes_read` on blyg-note's generated entry) and is never written into the note.
 - THE FETCH RULE (enforced by the CLI's permission rules, outside the model). A NOTES run may WebSearch, and may WebFetch ONLY from the
-  hosts its owner's own line names (`ownerHosts`: an address with its scheme, `www.…`, or a bare `host.tld/path`; IP addresses never;
-  at most 20; for `fill-gap`, the instruction): an allow rule `WebFetch(domain:<host>)` for each and never the bare `WebFetch`; under
+  hosts named in ITS INSTRUCTION'S OWN WORDS (`ownerHosts(gap.instruction)`: an address with its scheme, `www.…`, or a bare
+  `host.tld/path`; IP addresses never; at most 20; for `fill-gap`, the instruction), never in the rest of the message: on a
+  Hub-filed thread the rest was written by the link key's holder, and stays so after the owner rewords the instruction: an allow rule `WebFetch(domain:<host>)` for each and never the bare `WebFetch`; under
   `dontAsk` any other fetch is refused. The CLI also passes fetches from its own list of documentation sites without any rule
   ("Preapproved host", read after the allow rules); every one of those the owner did not name is denied by name
   (`CLAUDE_PREAPPROVED_FETCH_HOSTS`, the 93 hosts of that list in 2.1.330). A notes run whose line names no host has no WebFetch at
-  all. A WEB-ONLY run keeps an unrestricted WebFetch. "Pages its own search found" cannot be expressed: the rules are fixed before the
+  all. A WEB-ONLY run keeps an unrestricted WebFetch. THE VERSION: that list is 2.1.330's (`CLAUDE_FETCH_RULES_VERSION`); the companion
+  reads `claude --version` once per start (cached, `claudeVersion`), and a notes run on any other version (or one that cannot be told)
+  gets NO WebFetch at all, WebSearch still, with the plain note "page fetching is off for notes runs on this version of Claude Code"
+  in the gap's private record (`sources.note`, shown in the drawer); `botference tk-read check` says the same. Web-only runs are
+  unaffected. "Pages its own search found" cannot be expressed: the rules are fixed before the
   run starts. The syntax was read from the CLI's own rule check in the 2.1.330 binary, and the rule was run once through the real CLI
   under the wrapper against a local mock provider (no model; the sandbox let it reach only this machine): a fetch from an unnamed host
   was refused ("Permission to use WebFetch has been denied … don't ask mode"), one from github.com (pre-approved, unnamed) was refused
@@ -14635,7 +14640,9 @@ reading notes safe enough to ship. Each is below; each has a test.
   added to the CLI's list after 2.1.330, can be fetched with words from the notes in its address. The passage itself is the other way
   out, which the forced look covers.
 - THE DENY-LIST, tightened (`CLAUDE_PRIVATE_PLACES`, read and write refused, last in the profile): the earlier secret places, and
-  ~/.git-credentials, ~/.env, shell history (~/.zsh_history, ~/.zhistory, ~/.zsh_sessions, ~/.bash_history, ~/.bash_sessions,
+  ~/.git-credentials, ~/.env (only the one directly in the home folder: a `.env` in a project or repository elsewhere is not denied
+  by the OS rules; only the CLI's confinement keeps the file tools to the working folder and the roots, so a root that holds a
+  project's `.env` can read it), shell history (~/.zsh_history, ~/.zhistory, ~/.zsh_sessions, ~/.bash_history, ~/.bash_sessions,
   ~/.sh_history, ~/.history, ~/.python_history, ~/.node_repl_history, ~/.psql_history, ~/.mysql_history, ~/.sqlite_history,
   ~/.irb_history, ~/.lesshst, ~/.local/share/fish), browser profiles and cookies (~/Library/Cookies, ~/Library/Safari, ~/Library/Mail,
   ~/Library/Messages, and under ~/Library/Application Support: Google, Firefox, BraveSoftware, Microsoft Edge, Arc, Vivaldi, Chromium,

@@ -271,8 +271,13 @@ notes and read it back). Whether a passage may read notes depends on who wrote
 its `/tk` instruction: a line sent from your Hub stays a Hub line after you
 save the message on your computer, until you reword the instruction yourself.
 A passage that may read your notes can still search the web, but fetches pages
-only from sites your line names (for example `/tk compare my notes with
-https://www.example.com/article`); any other fetch is refused and listed. A
+only from sites named in the `/tk` instruction itself (for example `/tk
+compare my notes with https://www.example.com/article`); any other fetch is
+refused and listed. This rule is written for Claude Code 2.1.330: on another
+version a passage that may read your notes searches the web but fetches no
+page, and says so (`botference tk-read check` too). The sandbox's refusal of
+`~/.env` covers only the one in your home folder: a `.env` inside a folder
+you list as a root can be read. A
 post with a passage that read your notes always stops for your look on the
 computer before it is published, whoever pressed Publish (a press from your
 Hub waits there, and the Hub says so). A passage that used the web or your
