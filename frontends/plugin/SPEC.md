@@ -14784,3 +14784,53 @@ passage may read everything in the read roots and the web; "It should just not e
   under the same wrapper: "Operation not permitted"; asked to create a file in the notes folder, none was made (9.6 s), and a
   program writing there under the same wrapper: EPERM; a plain passage 3.7 s; a web search 8.3 to 10.4 s with a recorded query.
 
+## Amendment (2026-11-27, review of the two above): one named run for Codex, the version of the program that runs, tighter walls, one link rule
+
+Where this section and the two above differ, this one is what the code does.
+
+- A CODEX RUN IS HELD IN ONE NAMED VALUE. `CODEX_RUNS` = `plain` | `web-helper` | `notes`, chosen once by `codexRunFor` from the
+  capability set, the read roots, the version of the program that will be run, and whether its helper is installed. `runOneShot`
+  uses only that value (and the capability set and roots it really has); `codexJail({ run })` makes exactly the profile it names
+  and REFUSES what does not fit it (roots with a plain or web run, a notes run without roots or its reader, an unknown run).
+  There is no flag beside it (the earlier `codeMode`, `codexNotesOff` and `codexCodeMode` are gone).
+  - `plain`: the shipped profile, as before. A run without tools; and any run with tools on a CLI version that was not checked, or
+    whose helper is missing. Then the web search does not work, and THAT IS A STATED OUTCOME: the run's private record
+    (`sources.note`) says "web search is unavailable for Codex passages on this install of the Codex CLI: …" with the reason (and
+    "notes reading is off …" first, when notes were asked for). `botference tk-read check` says the same for this install.
+  - `web-helper`: the helper may start. `notes`: the helper and the notes reader, under the read roots.
+  - Asked for a run that needs the helper when the file is not there, `codexJail` answers `{ ok: false, "web search is unavailable
+    …" }`. Nothing falls back to the shipped profile unsaid.
+- THE VERSION IS THAT OF THE PROGRAM THAT IS RUN (`codexVersionOf`). `runOneShot` resolves the `codex` program's real path once per
+  run, asks THAT file's version, checks the helper beside THAT file, and hands the same path to the jail. The answer is kept per
+  program file (real path, size, time of change), so after an upgrade (a new real path, or a new file at the old path) the new
+  program is asked and never inherits the checked version's answer.
+- THE WALLS OF A WEB RUN WITH THE HELPER are the notes run's, less the roots and the reader: NO WRITE AT ALL but the CLI's own
+  folder and the run's two fresh folders (before, a web run could write outside `/Users` and `/Volumes`); no read of `/private/tmp`,
+  `/private/var/folders`, `/private/var/tmp` but the run's two; `TMPDIR` is the run's second folder; the private places under the
+  home folder closed last. Probed with a plain program under that exact profile (2026-11-27): a write beside the notes, to
+  `/opt/homebrew/bin` and to `/private/tmp` each failed with EPERM; a write to the run's own folder worked; reads of a file in
+  another temp folder and of a note: "Operation not permitted".
+- `~/.codex`, PLAINLY. The profile of every Codex run lets the CLI's own folder (`$CODEX_HOME`, else `~/.codex`) be READ AND
+  WRITTEN: the CLI signs in from it and refreshes its sign-in there. So the operating system does NOT keep the helper, which runs
+  under the same profile, out of that folder. What holds instead: this code never writes there and never reads it; the CLI is run
+  with `--ignore-user-config`, so `~/.codex/config.toml` is not loaded; the helper's scripts were seen to have no file interface
+  on 0.167.2 (the vendor's design); and the helper may start only on that exact version of the program that is run. A later
+  version that gave those scripts a file interface would not get the helper until someone checks it and changes
+  `CODEX_NOTES_VERSION`.
+- WHAT A NOTES RUN CAN CARRY OUT, PLAINLY (the review's F1). A Claude notes run fetches pages only from the sites the owner's
+  instruction names. A Codex notes run keeps its provider's web search with NO LIMIT BY SITE, because the CLI cannot limit it. So
+  text from a note could be carried to an outside site (in a search or a page address) by a page or a note that tells the agent to
+  do so. The behaviour is the owner's decision ("give them both access") and is unchanged; `botference tk-read check` prints this
+  whenever read roots are set. To keep Codex off the notes: take `codex` out of `NOTES_AGENTS` (tk-read.mjs).
+- ONE LINK RULE FOR EVERY DOOR. `botference fill-gap` now runs the same `checkLinks` on its answer (it gives no catalogue, so every
+  wikilink is its visible text).
+- WHAT COUNTS AS A WIKILINK is the example site's own pattern for an agent passage (`AgentMarkdown::WIKILINK`), the same on both
+  sides: `[[` + one line with no bracket in it + `]]`, optionally after `!`, not directly after a letter, a digit, `_` or `]`, and
+  not directly before `]`. So `matrix[[0]]`, `a[[i]][[j]]` and a nested `[[A|[[B]]]]` are prose, left as typed, with or without a
+  catalogue, and count as neither kept nor reduced. (A lone `[[0]]` after a space is a wikilink named `0`.)
+- THE CATALOGUE COMMAND'S LIFE is one named state (`CATALOGUE_RUN_STATES`: running, timing-out, flooding, not-started, ended),
+  moved by one function that refuses an unlisted move; its answer is made in one place, when the process is gone.
+- REAL RUNS AGAIN (2026-11-27, Codex CLI 0.167.2, after these changes, the companion's own code inside the wrapper): a plain
+  passage 4.7 s; a web search 9.2 s with its query recorded; a named note read and its fact quoted 7.9 s; two files outside the
+  roots asked for, both refused and neither's text shown, 13.9 s; asked to create a file in the notes folder, none made, 10.1 s.
+

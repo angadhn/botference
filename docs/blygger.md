@@ -267,7 +267,12 @@ and other programs. Codex reads the same folders, only through a small
 read-only notes reader the companion gives it (three tools: list a folder,
 read a file, find words; it never gets a shell), and only on the version of
 the Codex CLI this was checked on (0.167.2; on another version a Codex
-passage runs with the web only, and `botference tk-read check` says so). A line sent from your
+passage runs without notes and without a working web search, and
+`botference tk-read check` says so). One difference to know: a Claude notes
+passage fetches pages only from the sites your line names, while a Codex notes
+passage keeps its provider's web search with no limit by site, so a page or a
+note that tells the agent to do so could carry text from a note to an outside
+site. A line sent from your
 Hub may read notes only when `"hub_link_tk_notes": "on"` (off by default:
 anyone holding your Hub's link key could otherwise ask a passage to print your
 notes and read it back). Whether a passage may read notes depends on who wrote
