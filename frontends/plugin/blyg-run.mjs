@@ -188,25 +188,21 @@ export const ADD_GONE_SAY = 'Your earlier post from this page can no longer be a
  *    further      a whole-thread republish now includes messages a post "up to here" held back
  *    left-out     a new version would leave out a comment the post had (its thread is gone from the page)
  *    outside      a new version would replace a note changed outside the plugin (asked before anything is written: OUTSIDE_SAY)
- *    notes-read   a passage's agent read the owner's notes (tkgaps `used` notes or both; blyg-note generatedEntry `notes_read`)
  *  THE POLICY (the owner, 2026-11-25): with confirm 'never' a look is forced ONLY when something already published would be lost
- *  without the owner having asked for it: LOOK_FORCED (left-out, outside), and (2026-11-27) when a passage's agent read the owner's
- *  notes (notes-read: what it took from them is seen before it is public, whoever pressed and however). The other facts publish
- *  straight. A passage that used only the web forces nothing. With confirm
+ *  without the owner having asked for it: LOOK_FORCED (left-out, outside). The other facts publish straight. With confirm
  *  'always' every post is looked at, as before. `run.review` is the one reason the run stopped, one of REVIEW_REASONS:
  *    setting      the owner's setting is confirm 'always'
  *    left-out     (forced, above)
- *    notes-read   (forced, above)
  *    asked        the owner asked to look at a post the queue had set aside (blyg-queue)
  *    none         confirm 'never' and nothing forces a look: the run goes straight through
  *  (agent-text, further and link-stub stay in the list: a record written before 2026-11-25 may name them.) */
 //    outside-replaced  the owner answered Replace (or asked to look at a post set aside for it): recorded, never forcing a look
 //    drawer-text       another comment of the post is taken as it is in the drawer now (its published text could not be known): recorded
-export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside', 'outside-replaced', 'drawer-text', 'notes-read']);
-export const LOOK_FORCED = Object.freeze(['left-out', 'outside', 'notes-read']);
-export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'outside', 'notes-read', 'asked', 'none']);
-export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, outsideReplaced = false, drawerText = false, notesRead = false, asked = false } = {}) {
-  const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside, 'outside-replaced': outsideReplaced, 'drawer-text': drawerText, 'notes-read': notesRead };
+export const REVIEW_FACTS = Object.freeze(['agent-text', 'link-stub', 'further', 'left-out', 'outside', 'outside-replaced', 'drawer-text']);
+export const LOOK_FORCED = Object.freeze(['left-out', 'outside']);
+export const REVIEW_REASONS = Object.freeze(['setting', 'agent-text', 'left-out', 'further', 'link-stub', 'outside', 'asked', 'none']);
+export function reviewFor(setting, { agentText = false, leftOut = false, further = false, linkStub = false, outside = false, outsideReplaced = false, drawerText = false, asked = false } = {}) {
+  const has = { 'agent-text': agentText, 'link-stub': linkStub, further, 'left-out': leftOut, outside, 'outside-replaced': outsideReplaced, 'drawer-text': drawerText };
   const reasons = REVIEW_FACTS.filter(k => has[k]);
   const forced = LOOK_FORCED.find(k => has[k]);
   if (forced) return { confirm: 'always', review: forced, reasons };
@@ -214,8 +210,6 @@ export function reviewFor(setting, { agentText = false, leftOut = false, further
   if (asked) return { confirm: 'always', review: 'asked', reasons };
   return { confirm: 'never', review: 'none', reasons };
 }
-/** Did any passage of the post come from an agent that read the owner's notes (blyg-note generatedEntry `notes_read`)? */
-export const notesReadIn = generated => (generated || []).some(e => e && e.notes_read === true);
 /** How long the build-and-check step is: `quick` when the guard carries the site's quick flag, else `full`. */
 export const PACES = Object.freeze(['quick', 'full']);
 export const QUICK_FLAG = '--quick';
@@ -1100,7 +1094,7 @@ export function createPublisher(deps) {
     if (S.escape === 'liquid' && showsLiquid(first.text)) return fail(409, LIQUID_SAY);
     // EVERY REASON TO LOOK IS KNOWN HERE, before the note is written: a queued press whose look is forced writes nothing and is set
     // aside (a new post has none of LOOK_FORCED; the check stays so the one policy is read in one place)
-    { const ahead = reviewFor(S.confirm, { agentText: (first.generated || []).length > 0, notesRead: notesReadIn(first.generated), linkStub: !!linkStub, asked: presence === 'asked_to_look' });
+    { const ahead = reviewFor(S.confirm, { agentText: (first.generated || []).length > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
       if (presence === 'away' && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     const base = slugOf(first.title, { date });
     let rendered = null;
@@ -1202,7 +1196,7 @@ export function createPublisher(deps) {
     const promptsOnly = promptsOnlyChange(before, rendered.text);
     if (promptsOnly) changelog = choice === 'shown' ? 'Prompts shown.' : 'Prompts locked.';
     if (!changelog) return fail(409, 'Nothing has changed since you published this.');
-    { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, notesRead: notesReadIn(rendered.generated), leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
+    { const ahead = reviewFor(S.confirm, { agentText: (rendered.generated || []).length > 0, leftOut: leftOut > 0, further: further > 0, linkStub: !!linkStub, asked: presence === 'asked_to_look' });
       if (presence === 'away' && LOOK_FORCED.includes(ahead.review)) return parked(ahead.review); }
     try {
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW || 0));
@@ -1219,7 +1213,7 @@ export function createPublisher(deps) {
 
   function drafted({ id, page, picked, scope, rendered, slug, rel, S, date, kind, version, extra, presence = 'here' }) {
     const agentText = (rendered.generated || []).length > 0;
-    const look = reviewFor(S.confirm, { agentText, notesRead: notesReadIn(rendered.generated), leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub),
+    const look = reviewFor(S.confirm, { agentText, leftOut: !!(extra && extra.left_out), further: Number(extra && extra.further) > 0, linkStub: !!(extra && extra.link_stub),
       outsideReplaced: !!(extra && extra.outside_replaced), drawerText: !!(extra && extra.drawer_text), asked: presence === 'asked_to_look' });
     // WHAT EACH THREAD SAID in this version (the owner's included messages), kept in the post's record once published: a later queued
     // press of another thread of the post takes this thread's text from there, never from an older press or unpressed drawer text

@@ -515,10 +515,7 @@ export const generatedEntry = (g, format = NEW_PASSAGE_FORMAT) => ({ ...(g.model
   ...(['text', 'both'].includes(handOf(g)) ? { edited_by_author: true } : {}),
   ...(['prompt', 'both'].includes(handOf(g)) ? { prompt_reworded: true } : {}), ...(formatMove(format, format) === 'markdown' ? { format: 'markdown' } : {}),
   // (for the owner's view only: generatedLines writes model, at, edited_by_author and format, nothing else)
-  agent: g.agent === 'codex' ? 'codex' : 'claude',
-  // (the publish path's only: the passage's agent read the owner's notes (tkgaps `used`: notes or both), which forces a look before
-  // it is published, blyg-run LOOK_FORCED `notes-read`; never written into the note)
-  ...(['notes', 'both'].includes(g.used) ? { notes_read: true } : {}) });
+  agent: g.agent === 'codex' ? 'codex' : 'claude' });
 // a placeholder for a scope while the owner's own words around it are made safe (private-use characters, never in a placeholder twice)
 const HOLD_A = '\ue000';
 const HOLD_B = '\ue001';

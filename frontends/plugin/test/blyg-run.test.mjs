@@ -1344,42 +1344,12 @@ test('THE LOOK POLICY (2026-11-25): with confirm never an agent-written passage 
     [{ confirm: 'never', review: 'none', reasons: [] }, { confirm: 'always', review: 'setting', reasons: [] }, { confirm: 'never', review: 'none', reasons: ['agent-text'] },
       { confirm: 'always', review: 'setting', reasons: ['agent-text'] }]);
   // THE ONE POLICY: only what would lose something already published without the owner asking forces a look under one click
-  assert.deepEqual(R.LOOK_FORCED, ['left-out', 'outside', 'notes-read']);
+  assert.deepEqual(R.LOOK_FORCED, ['left-out', 'outside']);
   for (const f of ['agentText', 'linkStub', 'further']) assert.equal(R.reviewFor('never', { [f]: true }).review, 'none', f);
   assert.deepEqual(R.reviewFor('never', { leftOut: true, agentText: true }), { confirm: 'always', review: 'left-out', reasons: ['agent-text', 'left-out'] });
   assert.deepEqual(R.reviewFor('never', { outside: true }), { confirm: 'always', review: 'outside', reasons: ['outside'] });
   assert.deepEqual(R.reviewFor('never', { asked: true }), { confirm: 'always', review: 'asked', reasons: [] }, 'the owner asked to look at a set-aside post');
   assert.deepEqual([b.pub.current().pace, R.paceOf(['--only-note']), b.pub.current().full_minutes], ['quick', 'full', null], 'quick with the site\'s quick flag; no guess at minutes when none is recorded');
-});
-
-test('A PASSAGE WRITTEN FROM THE OWNER\'S NOTES forces a look whatever confirm says (notes-read); a queued press is set aside unwritten; a web-only passage does not', async t => {
-  const rig = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note', '--quick'] } }); t.after(rig.done);
-  const gapOf = used => ({ id: 'g0', kind: 'ask', agent: 'claude', instruction: 'say it', mode: 'filled-by-agent', text: 'Said.', model: 'claude-x', at: '2026-11-24T10:00:00Z', used });
-  const thread = used => ({ id: 't1', quote: 'q', blyg: stamp(), msgs: [mine('Mine. /tk(say it)', { gaps: [gapOf(used)] })] });
-  assert.deepEqual(R.reviewFor('never', { notesRead: true, agentText: true }), { confirm: 'always', review: 'notes-read', reasons: ['agent-text', 'notes-read'] });
-  assert.equal(R.reviewFor('always', { notesRead: true }).review, 'notes-read');
-  assert.equal(R.notesReadIn([{ agent: 'claude' }, { agent: 'claude', notes_read: true }]), true);
-  // at the dialog: it stops at planned for the look
-  const b = boot(rig, { page: blygPage([thread('both')]) });
-  const r = await b.start('t1', 'one', 'never');
-  assert.ok(r.ok, r.error);
-  assert.deepEqual([r.view.confirm, r.view.review], ['always', 'notes-read']);
-  assert.ok(r.view.reasons.includes('notes-read'));
-  await until(() => b.mode() === 'planned', 'planned');
-  assert.deepEqual(rig.calls().map(c => c.step), ['plan'], 'nothing published before the look');
-  assert.ok(!fs.readFileSync(noteOf(rig, r.view), 'utf8').includes('notes_read'), 'never written into the note');
-  // pressed and away (the queue, the Hub): set aside before anything is written
-  const rig2 = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note', '--quick'] } }); t.after(rig2.done);
-  const b2 = boot(rig2, { page: blygPage([thread('notes')]) });
-  const away = await b2.pub.start({ page: b2.pages.get(b2.page.url), threadId: 't1', scope: 'one', shown: 'never', presence: 'away' });
-  assert.deepEqual([away.ok, away.park], [false, 'notes-read']);
-  assert.deepEqual(rig2.calls(), []);
-  // a passage that used only the web publishes straight
-  const rig3 = makeRig({ confirm: 'never', extra: { plan_guard: ['--only-note', '--quick'] } }); t.after(rig3.done);
-  const b3 = boot(rig3, { page: blygPage([thread('web')]) });
-  const w = await b3.start('t1', 'one', 'never');
-  assert.deepEqual([w.view.confirm, w.view.review], ['never', 'none']);
-  await until(() => b3.mode() === 'published', 'published');
 });
 
 test('"this and the ones above" with one click counts only threads typed in the drawer', async t => {
