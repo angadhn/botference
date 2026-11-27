@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## 2026-11-27
+
+- **`/tk` passages can search the web and read your notes.** *Behaviour change.* When your `/tk` line asks for it, the agent may search the web and read pages, and (Claude) read, only read, the notes in the folders you list in `"tk_read_roots"` (`botference tk-read check`; none by default). It can never write, edit or delete a file, run a command or use MCP servers: Claude gets an explicit tool allow-list (web search, web fetch, Read, Glob, Grep) with everything else denied, `--restricted`, no MCP servers and no saved session, and runs in a macOS sandbox that refuses writes outside its own folders and any other program. Codex searches the web (its provider's own search) but cannot read notes. A passage records privately which addresses and notes it used. A line sent from your Hub reads notes only with `"hub_link_tk_notes": "on"` (off by default). The drawer's chat and @-mentions are unchanged. See SPEC "What a /tk passage may use".
+
 ## 2026-11-26
 
 - **A Reading list on your Hub from your clipped articles.** List clipped articles (Obsidian Web Clipper files) in a `clippings` setting on your computer (a folder and named collections of file names; `botference clippings check | list`). Your Hub can then show them and you can reply to a passage exactly as to a blyg post: the post responds to and quotes the original web page. Only the listed files are ever read through the hub link; the page is not fetched. See SPEC "Clippings".

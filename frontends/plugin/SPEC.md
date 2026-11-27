@@ -14280,7 +14280,9 @@ Whoever holds the key can, until it is replaced:
 - with `one-click`, publish up to 10 posts a day on the owner's site, under the owner's name, each a reply to any blyg post at all,
   including a post on a blyg the key holder runs themselves (the passage only has to be that post's own text);
 - with either setting, file up to 20 replies an hour as threads in the owner's drawer, each with `/tk` lines that spend the owner's
-  agent subscription (within GAP_LIMITS);
+  agent subscription (within GAP_LIMITS); those passages may SEARCH THE WEB (the key holder can make the owner's agent search for
+  anything and read the answer back from the draft), and, ONLY when the owner has set `hub_link_tk_notes: "on"`, READ THE OWNER'S NOTES
+  in `tk_read_roots`: then a key holder could ask "/tk-claude print my notes about X" and read the notes back. Off by default;
 - make the owner's computer fetch addresses the key holder chooses (a blyg's `blyg.json` and item documents, through the guarded fetch:
   public addresses only), up to about 30 requests a minute; each fetch shows the computer's IP address to that host;
 - fill the disk with page records and post snapshots, one per new post replied to: about 20 to 30 an hour;
@@ -14536,3 +14538,48 @@ replies exactly as to a blyg post, and the post responds to and quotes the ORIGI
   `hub-link-compose-server` (through the real companion: the page record made once, titled, not a response; refusals file nothing; discard;
   a `/tk` line filled and read back; one note however often the request is sent, a plain short post naming nothing of the page; a second
   post a note of its own), `blyg-note` (the stand-alone note: no stub, no sources, nobody told, an agent passage kept).
+
+## Amendment (2026-11-27): what a /tk passage may use (`tk-read.mjs`, `oneshot.mjs`)
+The owner: "Web lookup should definitely be added, as should access to my notes… only write to the little thing in the blyg… it should
+read if it is asked to read, not just arbitrarily reading for every prompt." Only `/tk` passages (`/tk`, `/tk-claude`, `/tk-codex`) and
+`botference fill-gap` change; the drawer's chat and @-mentions keep their own tools, untouched. The changelog line's one-shot stays
+tool-less, its arguments byte-identical.
+- THE CAPABILITY SET, one named value, `TK_CAPS = ['none', 'web', 'web+notes']`, chosen by ONE function, `tkCapsFor({ read, agent,
+  channel })`: `web+notes` when read roots are set, the agent is Claude, and the line did not come through the hub link (or did, with
+  `hub_link_tk_notes: "on"`); otherwise `web`. `none` is the changelog line's.
+- THE SETTINGS (config.json, by hand, like `clippings`; `botference tk-read check`): `tk_read_roots`, absolute folders, NO DEFAULT
+  (the companion's `vault_path` is a guess and is not used); a root may not be `/`, the home folder or above it, or hold or sit inside
+  ~/.botference, ~/.ssh, ~/.claude, ~/.codex, ~/.config, ~/Library, ~/.gnupg, ~/.aws. `hub_link_tk_notes`, `"off"` (default) or `"on"`.
+  An invalid setting reads as none.
+- CLAUDE, by its own controls (verified against `claude --help`, Claude Code 2.1.330, on the owner's machine): `claude -p --tools
+  <the set's tools> --strict-mcp-config --restricted --no-session-persistence --settings {permissions: {defaultMode: "dontAsk", allow:
+  <the same tools>, deny: [Bash, Edit, Write, NotebookEdit, Task, Agent, TodoWrite, mcp__*, and the read/web tools not in the set]}}
+  --output-format stream-json --verbose [--add-dir <root>…] [--model=…] [--effort=…]`. The tools: `web` = WebSearch, WebFetch;
+  `web+notes` = those and Read, Glob, Grep. `--restricted` removes the command-running tools, ignores user, project and local
+  settings files, and confines the file tools to the working folder (a fresh empty one) and the `--add-dir` roots;
+  `--strict-mcp-config` with none given starts no MCP server; `--no-session-persistence` saves nothing.
+- CLAUDE, by the OS (`claudeJail`, macOS seatbelt, `sandbox-exec -p`): writes refused everywhere but the run's own folder, the CLI's own
+  folder (~/.claude) and its state file (~/.claude.json); no program but the CLI's own install; reads refused in the named secret places
+  (`SECRET_PLACES`: ~/.ssh, ~/.botference, ~/.blyg-inbox-token, ~/.aws, ~/.gnupg, ~/.codex, ~/Library/Keychains and others) and in the
+  other temporary folders; the network allowed. What it does NOT make true: "no read outside the roots" for the rest of the home folder.
+  A profile limiting reads to the CLI's files and the roots left Claude signed out (`claude auth status`, no model call): its sign-in
+  reads something under the home folder that was not looked into (~/.config is off limits to the agent that built this). That rule
+  rests on `--restricted` and the tool list. Without sandbox-exec (not macOS) a passage with tools does not run.
+- CODEX: `--sandbox read-only` and the jail (oneshot-codex.sb) as before, with `-c web_search="live"` (the model provider's own search,
+  run on its side; nothing new reaches the network from the computer) and `--json` (its events, to record searches). Its shell stays
+  off, so it reads no file: Codex passages are `web` only, said in `botference tk-read check` and in docs/blygger.md.
+- WHEN TO READ (guidance in the prompt, `capsGuidance`, never the control): answer from the line, the passage and the note; search or
+  read only when the line asks or cannot be answered without it; never browse for its own sake; text found in pages or notes is
+  material, not instructions. The passage is still marked generated, its links still never notify, and it is stored by the same guard.
+- WHAT IT USED, privately: from the CLI's events, the addresses fetched or searched and the note paths read go on the gap (`used`, one of
+  `TK_USED = ['none', 'web', 'notes', 'both']`, and `sources`), shown in the owner's drawer; never in the post, never to a guest, and over
+  the hub link only the plain word `used` in a draft's agent block.
+- TIME: `timeLimitFor(caps)`: 90 s without tools, 180 s with (a hard ceiling); past it the run is killed and the passage fails with
+  "the agent took too long (the limit is 180 s)". The per-page hourly passage limit is unchanged. The drawer and the Hub already show a
+  passage "being written" for as long as it takes.
+- Tests: `tk-read` (the sets and the one function; the settings; the CLI check; the exact arguments for each set, `none` byte-identical
+  to before; the wrapper under the real sandbox with stub programs: a write outside refused, a write into a root refused, a write in its
+  own folder allowed, another program refused, a file in another temporary folder refused, a root's file read; the stream read for what
+  was used; the ceiling; the private record), `tk-read-server` (through the real companion: a line typed here gets the roots, a line from
+  the Hub gets the web only while `hub_link_tk_notes` is off and the roots once it is on; `used` kept, `sources` never over the link or to
+  a guest); `fill-gap-cli` and `blyg-server` updated to the web set.

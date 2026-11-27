@@ -248,6 +248,30 @@ message and 500 characters per instruction; an instruction longer than that
 is not sent and its block says why. `/tk` is in the composer's autocomplete
 and in `/help`.
 
+**What the agent may use.** `/tk`, `/tk-claude` and `/tk-codex` (and
+`botference fill-gap`) answer from your line and the page first. When the line
+asks for it, or cannot be answered otherwise, the agent may search the web and
+read web pages, and (Claude only) read your notes in the folders you name in
+the companion's `config.json`:
+
+```json
+"tk_read_roots": ["/absolute/path/to/your/notes"],
+"hub_link_tk_notes": "off"
+```
+
+`botference tk-read check` shows what is allowed. There is no default folder:
+with none set, passages search the web only. The agent can never write, edit,
+create or delete a file, run a command or a program, or use MCP servers: its
+text is its only output, and it runs in a macOS sandbox that refuses writes
+and other programs. Codex can search the web but cannot read your notes (it
+reads files only through a shell, which it never gets). A line sent from your
+Hub may read notes only when `"hub_link_tk_notes": "on"` (off by default:
+anyone holding your Hub's link key could otherwise ask a passage to print your
+notes and read it back). A passage that used the web or your notes says so in
+the drawer, with the addresses and note paths it used; that list stays on your
+computer and never goes into a post. A passage with tools may take up to
+three minutes; past that it fails and says so.
+
 **The agent block.** Each gap is drawn where you typed it, inside your
 message: a robot mark, the word "agent" and the agent's name, what it wrote,
 and your instruction underneath in small grey type. While it is being
