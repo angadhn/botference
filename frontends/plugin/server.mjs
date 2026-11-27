@@ -45,7 +45,7 @@ import { renderTarget, studioLeftOut } from './studio-paste.mjs';
 import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MODES, canRespond } from './note-quotes.mjs';
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
   GAP_LIMITS, forGuest } from './tkgaps.mjs';
-import { runOneShot, codexJail, claudeJail } from './oneshot.mjs';
+import { runOneShot, codexJail, claudeJail, CLAUDE_FETCH_RULES_VERSION } from './oneshot.mjs';
 import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
@@ -2278,7 +2278,9 @@ function oneshotOverride() {
   if (!override) return {};
   return { spawn: (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } }),
-  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }) };
+  jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }),
+  // (the stand-in has no version of its own: the one the fetch rules are for, unless a test names another)
+  cliVersion: async () => process.env.PLUGIN_ONESHOT_CLAUDE_VERSION || CLAUDE_FETCH_RULES_VERSION };
 }
 function agentSetting(agent) {
   const a = store.readConfig().agents || {};
@@ -3230,9 +3232,10 @@ async function fillEach(url, target, ts, ids, token) {
       // set when the instruction was born: never the message's last save; none → the web only) (tk-read.mjs)
       const read = validateTkRead(store.readConfig());
       const caps = tkCapsFor({ read, agent, channel: gap.from });
-      // (a notes run fetches only from the hosts the owner's own line names: tk-read.mjs ownerHosts)
+      // (a notes run fetches only from the hosts named in THIS INSTRUCTION's own words, tk-read.mjs ownerHosts: never the rest of the
+      // message, which on a Hub-filed thread the key holder wrote, even once the owner has reworded the instruction)
       r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent, caps, roots: caps === 'web+notes' ? read.roots : [],
-        fetchHosts: caps === 'web+notes' ? ownerHosts(msg.text) : [],
+        fetchHosts: caps === 'web+notes' ? ownerHosts(gap.instruction) : [],
         post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
         ask: (prompt, o) => askGap(page, prompt, o) });
     }
