@@ -46,7 +46,7 @@ import { quoteStyleOf, commentOrderOf, agentStyleOf, calloutTypeOf, RESPONSE_MOD
 import { gapAgentOf, gapStyleOf, gapExportOf, OWNER_TYPED, ownerTyped, buildGaps, MSG_CHANNELS, askForGap, gapMove, canGapMove,
   GAP_LIMITS, forGuest } from './tkgaps.mjs';
 import { runOneShot, codexJail, claudeJail } from './oneshot.mjs';
-import { validateTkRead, tkCapsFor } from './tk-read.mjs';
+import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
 import { spawn as spawnChild } from 'node:child_process';
 import { loadHostedAuth, createAccess, AccessConfigError, connectionRecord, connectionLive, verdictOfRequest } from './access.mjs';
 import { createHosted, hostedPeopleOf, isLocalDirect, sanitizeHandle, originVerdict, sourceRefusal, corsFor, hostVerdict, hostRefused, pageCsp, newNonce } from './hosted.mjs';
@@ -2264,12 +2264,12 @@ function tidyComment(page, { text, thread, quote, page_number, mark, model }) {
 // (tests: a JSON argv array) replaces the bot's CLI, as PLUGIN_BRIDGE_CMD
 // replaces the bridge.
 // (`caps`, `roots`: what the passage's agent may use, tk-read.mjs tkCapsFor; its time limit follows from the set, oneshot timeLimitFor)
-function askGap(page, prompt, { agent = 'claude', caps = 'none', roots = [] } = {}) {
+function askGap(page, prompt, { agent = 'claude', caps = 'none', roots = [], fetchHosts = [] } = {}) {
   if (NO_AGENTS) return Promise.resolve({ ok: false, error: AGENTS_OFF_REASON });
   // the model and effort the owner set for that agent in the companion's own settings (the chat's /model and /effort); the model is
   // not invented when none is set, the effort is medium then
   const { model, effort } = agentSetting(agent);
-  return runOneShot(agent, prompt, { model, effort, caps, roots, ...oneshotOverride() });
+  return runOneShot(agent, prompt, { model, effort, caps, roots, fetchHosts, ...oneshotOverride() });
 }
 // (tests: PLUGIN_ONESHOT_CMD replaces the CLI; the stand-in is told where to log, which is the one name added to the child's minimal
 // environment, and the jail is made with the CLI's name, since the stand-in runs in its place)
@@ -3191,7 +3191,7 @@ function gapBudget(url) {
 // what is stored on a message, from its text (an edit keeps unchanged fills)
 function attachGaps(req, msg) {
   if (!msg || !ownerTyped(msg)) { if (msg) delete msg.gaps; return []; }
-  const { gaps, fresh } = buildGaps(msg.text, msg.gaps, { modelOf: agent => agentSetting(agent).model });
+  const { gaps, fresh } = buildGaps(msg.text, msg.gaps, { modelOf: agent => agentSetting(agent).model, channel: msg.channel });
   if (gaps.length) msg.gaps = gaps; else delete msg.gaps;
   return fresh;
 }
@@ -3226,10 +3226,13 @@ async function fillEach(url, target, ts, ids, token) {
       budget.spend();
       const thread = target && target !== store.PAGE_CHAT ? store.findThread(page, target) : null;
       const item = page.blyg && page.blyg.status === 'blyg' ? page.blyg.item : null;
-      // WHAT THE PASSAGE'S AGENT MAY USE: one choice, from the settings, the agent and the door the line came through (tk-read.mjs)
+      // WHAT THE PASSAGE'S AGENT MAY USE: one choice, from the settings, the agent and WHO WROTE THIS INSTRUCTION (the gap's `from`,
+      // set when the instruction was born: never the message's last save; none → the web only) (tk-read.mjs)
       const read = validateTkRead(store.readConfig());
-      const caps = tkCapsFor({ read, agent, channel: msg.channel || 'api' });
+      const caps = tkCapsFor({ read, agent, channel: gap.from });
+      // (a notes run fetches only from the hosts the owner's own line names: tk-read.mjs ownerHosts)
       r = await askForGap({ gap, msgText: msg.text, quote: thread ? thread.quote : '', page, agent, caps, roots: caps === 'web+notes' ? read.roots : [],
+        fetchHosts: caps === 'web+notes' ? ownerHosts(msg.text) : [],
         post: item ? { id: item.id, version: item.version, origin: item.origin } : null,
         ask: (prompt, o) => askGap(page, prompt, o) });
     }

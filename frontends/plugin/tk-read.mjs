@@ -3,8 +3,9 @@
 // a program, read outside those folders, or use MCP servers or other tools. The passage text is its only output. The drawer's chat and
 // @-mentions are not touched by any of this: only `/tk` passages and `botference fill-gap`.
 //
-// THE CAPABILITY SET, one named value chosen by ONE function (tkCapsFor) from the settings, the agent and the channel the line came
-// through (tkgaps MSG_CHANNELS), never a pile of flags:
+// THE CAPABILITY SET, one named value chosen by ONE function (tkCapsFor) from the settings, the agent and WHO WROTE THE INSTRUCTION: the
+// gap's own `from` (tkgaps MSG_CHANNELS), set when the instruction is born and never from a later save of the message; never a pile
+// of flags:
 //   none        no tools at all (what a one-shot was before; still used for a post's changelog line, never for a passage now)
 //   web         web search and fetching pages
 //   web+notes   web, and reading (only reading) files under the read roots
@@ -27,10 +28,15 @@ export const TK_READ_LIMITS = Object.freeze({ roots: 20 });
 // folders a root may never be, or contain: the home folder itself (and what is above it), and the places secrets live
 const forbiddenInside = (home) => [secretsDir(), path.join(home, '.ssh'), path.join(home, '.claude'), path.join(home, '.codex'), path.join(home, '.config'),
   path.join(home, 'Library'), path.join(home, '.gnupg'), path.join(home, '.aws')];
-const realOr = p => { try { return fs.realpathSync(p); } catch { return ''; } };
+// the path as the disk has it (realpath.native: on macOS the names' own case, not the case they were typed in)
+const realOr = p => { try { return fs.realpathSync.native(p); } catch { return ''; } };
+// HOW TWO PATHS COMPARE on this system: on macOS the disk is case-insensitive and keeps names in either Unicode form, so `/Users/x/.SSH`
+// and `/users/x/.ssh` are one folder; the comparison is made on a key with the case folded and the form normalised (NFC)
+export const pathKey = (p, platform = process.platform) => (platform === 'darwin' ? String(p).normalize('NFC').toLowerCase() : String(p));
+const within = (inner, outer, platform) => { const a = pathKey(inner, platform), b = pathKey(outer, platform); return a === b || a.startsWith(`${b}/`); };
 
 /** The settings checked: → { ok, errors, roots (real paths), hubLinkNotes }. An invalid setting reads as none (no notes). */
-export function validateTkRead(config, { home = os.homedir() } = {}) {
+export function validateTkRead(config, { home = os.homedir(), platform = process.platform } = {}) {
   const errors = [];
   const raw = config && config.tk_read_roots;
   const roots = [];
@@ -45,11 +51,13 @@ export function validateTkRead(config, { home = os.homedir() } = {}) {
         let dir = false;
         try { dir = !!real && fs.statSync(real).isDirectory(); } catch { dir = false; }
         if (!dir) { errors.push(`${r} is not a folder on this computer`); continue; }
-        if (real === '/' || real === realHome || realHome.startsWith(`${real}/`)) { errors.push(`${r} is your home folder or above it: name the notes folder itself`); continue; }
-        const holds = forbiddenInside(realHome).map(realOr).filter(Boolean).find(f => f === real || f.startsWith(`${real}/`) || real.startsWith(`${f}/`));
+        if (real === '/' || within(realHome, real, platform)) { errors.push(`${r} is your home folder or above it: name the notes folder itself`); continue; }
+        // (the forbidden places by their own names and by the disk's, whether or not they exist: a case-folded spelling never slips by)
+        const places = forbiddenInside(realHome).flatMap(f => [f, realOr(f)]).filter(Boolean);
+        const holds = places.find(f => within(f, real, platform) || within(real, f, platform));
         if (holds) { errors.push(`${r} holds or is inside ${holds}, where secrets and settings live`); continue; }
         if (!/^\/[A-Za-z0-9 ._@+,()'&~/-]+$/.test(real) || /["\\]/.test(real)) { errors.push(`${r} has characters a sandbox rule cannot hold`); continue; }
-        if (!roots.includes(real)) roots.push(real);
+        if (!roots.some(x => pathKey(x, platform) === pathKey(real, platform))) roots.push(real);
       }
     }
   }
@@ -67,6 +75,28 @@ export function validateTkRead(config, { home = os.homedir() } = {}) {
 export function tkCapsFor({ read, agent, channel }) {
   const roots = (read && read.roots) || [];
   if (!roots.length || agent !== 'claude') return 'web';
-  if (channel === 'hub-link' && !(read && read.hubLinkNotes === 'on')) return 'web';
-  return 'web+notes';
+  if (channel === 'hub-link') return read && read.hubLinkNotes === 'on' ? 'web+notes' : 'web';
+  // FAIL CLOSED: only a door on this machine reads notes; a missing or unknown channel (a gap from before `from`, anything else) is web
+  return MACHINE_CHANNELS.includes(channel) ? 'web+notes' : 'web';
+}
+// the doors on this machine (tkgaps MSG_CHANNELS less the hub link): the drawer, the companion's own pages, a tool on the machine
+export const MACHINE_CHANNELS = Object.freeze(['drawer', 'reading-room', 'api']);
+
+// ---- WHERE A NOTES RUN MAY FETCH (oneshot.mjs): the hosts the owner's own line names, and no others -------------------------------
+// A run that can read notes could carry them out in the address of a page it fetches. So it fetches only from hosts that appear in the
+// owner's line (an address with its scheme, `www.…`, or a bare `host.tld/path`); a page it found by searching is not fetched unless
+// its host is one of those. Lower case, the port and anything after the host dropped; at most TK_FETCH_HOSTS_MAX.
+export const TK_FETCH_HOSTS_MAX = 20;
+const HOST_RE = /\b(?:https?:\/\/([^\s/?#<>"'`)\]]+)|(www\.[a-z0-9.-]+\.[a-z]{2,})|([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})(?=\/))/gi;
+export function ownerHosts(text) {
+  const out = [];
+  for (const m of String(text == null ? '' : text).matchAll(HOST_RE)) {
+    let host = '';
+    try { host = new URL(`https://${m[1] || m[2] || m[3]}`).hostname.toLowerCase(); } catch { continue; }
+    host = host.replace(/\.$/, '');
+    if (!/^[a-z0-9.-]+$/.test(host) || !host.includes('.') || /^[\d.]+$/.test(host)) continue;
+    if (!out.includes(host)) out.push(host);
+    if (out.length >= TK_FETCH_HOSTS_MAX) break;
+  }
+  return out;
 }

@@ -53,13 +53,16 @@ const URL1 = 'https://news.example.com/story';
 
 await test('A LINE TYPED ON THIS MACHINE may read the notes: the read roots as --add-dir, Read/Glob/Grep allowed; what it used kept on the gap', async () => {
   await POST(S, '/page', { url: URL1, title: 'A story' });
-  const r = await POST(S, '/thread', { url: URL1, quote: 'A passage of the story.', msg: { text: 'Mine.\n/tk look this up in my notes' } });
+  const r = await POST(S, '/thread', { url: URL1, quote: 'A passage of the story.', msg: { text: 'Mine.\n/tk look this up in my notes and at https://www.example.com/source' } });
   assert.equal(r.status, 200, r.body);
   const g = await waitFor(async () => { const p = await page(URL1); const x = p.threads[0].msgs[0].gaps[0]; return x.mode === 'filled-by-agent' ? x : null; }, 'filled');
   const a = argsOf(runs()[0]);
   assert.equal(a[a.indexOf('--tools') + 1], 'WebSearch,WebFetch,Read,Glob,Grep');
   assert.deepEqual(a.filter((x, i) => a[i - 1] === '--add-dir'), [notes]);
   assert.equal(runs()[0].argv[0], '/usr/bin/sandbox-exec', 'wrapped');
+  // a notes run fetches only from the host its line names
+  const perms = JSON.parse(a[a.indexOf('--settings') + 1]).permissions;
+  assert.ok(perms.allow.includes('WebFetch(domain:www.example.com)') && !perms.allow.includes('WebFetch'), JSON.stringify(perms.allow));
   assert.deepEqual([g.used, g.sources.web, g.sources.notes], ['both', ['https://www.example.com/source'], [path.join(notes, 'n.md')]]);
   assert.match(runs()[0].input, /read the reader's notes \(read only, in these folders: /);
   const guest = await GET(S, '/page?url=' + encodeURIComponent(URL1), { host: PUBLIC, authorization: 'Bearer guest-pw', 'x-plugin-handle': 'ada' });
@@ -88,6 +91,50 @@ await test('…and with hub_link_tk_notes on, a line from the Hub may read the n
   await waitFor(async () => runs().length > before, 'the run');
   const a = argsOf(runs()[before]);
   assert.deepEqual(a.filter((x, i) => a[i - 1] === '--add-dir'), [notes]);
+});
+
+// THE REVIEWER'S SEQUENCE: a thread filed over the hub link while hub_link_tk_notes is off, then saved by the owner on the computer with
+// the instruction's words unchanged (the message's channel is re-stamped), then asked again from the Hub and from the drawer: every
+// run is web only. Only the owner's rewording of the instruction makes it the owner's (and its run may read the notes).
+await test('A HUB-FILED INSTRUCTION STAYS THE HUB\'S through an owner\'s save on the computer: Redo from the Hub and refill in the drawer are web only', async () => {
+  setCfg({});
+  const before = runs().length;
+  const r = await send('reply', { rid: 'rid-tkread-0003', clipping: C.clippingId('a.md'), quote: 'Ships were built in yards', comment: 'Mine.\n/tk-claude what do my notes say about yards', intent: 'draft' });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  const v = await waitFor(async () => { const x = (await send('status', { rids: ['rid-tkread-0003'] })).json.replies[0]; return x.fill === 'ready' ? x : null; }, 'filled');
+  assert.equal(argsOf(runs()[before]).includes('--add-dir'), false, 'filed: web only');
+  // where it was filed, and the owner's save of the message with the instruction unchanged
+  const CLIP = 'https://www.example.com/p/a';
+  const rec = await waitFor(async () => { const t = ((await page(CLIP)).threads || []).find(x => (x.msgs[0].text || '').includes('about yards')); return t ? { url: CLIP, t } : null; }, 'the filed thread');
+  const m = rec.t.msgs[0];
+  assert.equal(m.gaps[0].from, 'hub-link');
+  const e = await POST(S, '/edit', { url: rec.url, thread_id: rec.t.id, ts: m.ts, author: m.author, text: 'Mine, and a word of my own.\n/tk-claude what do my notes say about yards' });
+  assert.equal(e.status, 200, e.body);
+  const saved = (await page(rec.url)).threads.find(x => x.id === rec.t.id).msgs[0];
+  assert.deepEqual([saved.gaps[0].from, saved.gaps[0].mode], ['hub-link', 'filled-by-agent'], 'kept: same words, same writer');
+  // asked again from the Hub
+  const n1 = runs().length;
+  const redo = await send('redo', { rid: 'rid-tkread-0003', gap: saved.gaps[0].id });
+  assert.equal(redo.status, 200, JSON.stringify(redo.json));
+  await waitFor(async () => runs().length > n1, 'the redo run');
+  assert.equal(argsOf(runs()[n1]).includes('--add-dir'), false, 'Redo from the Hub: web only');
+  await waitFor(async () => (await page(rec.url)).threads.find(x => x.id === rec.t.id).msgs[0].gaps[0].mode === 'filled-by-agent', 'refilled');
+  // asked again in the drawer
+  const n2 = runs().length;
+  const refill = await POST(S, '/gap', { url: rec.url, thread_id: rec.t.id, ts: m.ts, gap_id: saved.gaps[0].id, action: 'refill' });
+  assert.equal(refill.status, 200, refill.body);
+  await waitFor(async () => runs().length > n2, 'the refill run');
+  assert.equal(argsOf(runs()[n2]).includes('--add-dir'), false, 'refill in the drawer: web only');
+  await waitFor(async () => (await page(rec.url)).threads.find(x => x.id === rec.t.id).msgs[0].gaps[0].mode === 'filled-by-agent', 'refilled again');
+  // the owner rewords the instruction on the computer: now the owner's, and its run may read the notes
+  const n3 = runs().length;
+  const e2 = await POST(S, '/edit', { url: rec.url, thread_id: rec.t.id, ts: m.ts, author: m.author, text: 'Mine, and a word of my own.\n/tk-claude what do my notes say about the yards in winter' });
+  assert.equal(e2.status, 200, e2.body);
+  await waitFor(async () => runs().length > n3, 'the reworded run');
+  assert.deepEqual(argsOf(runs()[n3]).filter((x, i, a) => a[i - 1] === '--add-dir'), [notes], 'reworded by the owner: the owner\'s line');
+  const now = (await page(rec.url)).threads.find(x => x.id === rec.t.id).msgs[0].gaps[0];
+  assert.notEqual(now.from, 'hub-link');
+  void v;
 });
 
 cleanup();

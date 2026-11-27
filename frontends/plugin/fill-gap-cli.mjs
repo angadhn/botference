@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import { spawn } from 'node:child_process';
 import { runOneShot, codexJail, claudeJail, ONESHOT_AGENTS } from './oneshot.mjs';
-import { validateTkRead, tkCapsFor } from './tk-read.mjs';
+import { validateTkRead, tkCapsFor, ownerHosts } from './tk-read.mjs';
 import { draftPrompt, DRAFT_TASKS, GAP_LIMITS } from './tkgaps.mjs';
 import { CONFIG_PATH, MODEL_RE, EFFORT_RE } from './store.mjs';
 import { readJsonState } from './fsjson.mjs';
@@ -63,8 +63,10 @@ export async function fillGap(req, { env = process.env, config = CONFIG_PATH, no
   const read = validateTkRead(got.state === 'ok' ? got.value : {});
   const caps = tkCapsFor({ read, agent: req.agent, channel: 'api' });
   const roots = caps === 'web+notes' ? read.roots : [];
+  // (a notes run fetches only from the hosts the owner's instruction names)
+  const fetchHosts = caps === 'web+notes' ? ownerHosts(req.instruction) : [];
   const prompt = draftPrompt({ task: req.task, instruction: req.instruction, context: req.context, words: req.words, inline: req.inline, caps, roots });
-  const r = await runOneShot(req.agent, prompt, { model, effort, env, caps, roots, ...override(env) });
+  const r = await runOneShot(req.agent, prompt, { model, effort, env, caps, roots, fetchHosts, ...override(env) });
   let text = r && r.ok ? String(r.text || '').trim().slice(0, GAP_LIMITS.outputChars) : '';
   if (req.task === 'note') text = firstWords(text, NOTE_WORDS);
   if (!text) return { error: (r && r.error) || 'the agent wrote nothing' };
