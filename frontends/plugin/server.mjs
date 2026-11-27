@@ -2280,6 +2280,8 @@ function oneshotOverride() {
   return { spawn: (cmd, args, o) => spawnChild(override[0], [...override.slice(1), cmd, ...args],
     { ...o, env: { ...o.env, ...(process.env.ONESHOT_LOG ? { ONESHOT_LOG: process.env.ONESHOT_LOG } : {}) } }),
   jail: o => codexJail({ ...o, bin: 'codex' }), claudeJail: o => claudeJail({ ...o, bin: 'claude', install: '/usr/bin' }),
+  // (the stand-in is no Codex CLI: it has no version and no helper, so a Codex run is held `plain`, oneshot codexRunFor)
+  codexBin: 'codex', codexCliVersion: async () => '', codexHelper: () => false,
   // (the stand-in has no version of its own: the one the fetch rules are for, unless a test names another)
   cliVersion: async () => process.env.PLUGIN_ONESHOT_CLAUDE_VERSION || CLAUDE_FETCH_RULES_VERSION };
 }

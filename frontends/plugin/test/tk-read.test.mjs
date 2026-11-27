@@ -97,7 +97,7 @@ test('botference tk-read check: says the roots and the hub link setting, every p
   const { main } = await import('../tk-read-cli.mjs');
   const home = tmp();
   fs.mkdirSync(path.join(home, 'Notes'));
-  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => O.CLAUDE_FETCH_RULES_VERSION, codexVersion: () => O.CODEX_NOTES_VERSION }); return { code, text: out.join('\n') }; };
+  const run = cfg => { const out = []; const code = main(['check'], { config: () => cfg, configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => O.CLAUDE_FETCH_RULES_VERSION, codexInstall: () => ({ version: O.CODEX_NOTES_VERSION, helper: true }) }); return { code, text: out.join('\n') }; };
   const good = run({ tk_read_roots: [path.join(home, 'Notes')] });
   assert.equal(good.code, 0, good.text);
   assert.match(good.text, /Notes/);
@@ -198,10 +198,12 @@ test('Codex notes: under the real wrapper a program reads the roots and nothing 
   fs.writeFileSync(path.join(home, '.codex', 'auth.json'), '{}\n');
   fs.writeFileSync(path.join(home, '.ssh', 'id'), 'KEY\n');
   const node = fs.realpathSync(process.execPath);
+  const helper = path.join(base, 'stand-in-helper');
+  fs.writeFileSync(helper, '');
   try {
     // (the "CLI" is /bin/cat or node itself, run under exactly the argv a notes run is given)
     const under = (bin, args, extra = {}) => {
-      const j = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, roots: [root], reader: node, bin, ...extra });
+      const j = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, run: 'notes', roots: [root], reader: node, helper, bin, ...extra });
       assert.equal(j.ok, true, j.error);
       assert.equal(j.argv[1], '-p');
       return spawnSync(j.argv[0], [...j.argv.slice(1), ...args], { cwd: work, encoding: 'utf8', env: { HOME: home, PATH: process.env.PATH, TMPDIR: out } });
@@ -226,27 +228,61 @@ test('Codex notes: under the real wrapper a program reads the roots and nothing 
     const sh = under(node, ['-e', 'const r = require("child_process").spawnSync("/bin/sh", ["-c", "echo ran"]); process.stdout.write(String(r.stdout || "") + (r.error ? r.error.code : ""))']);
     assert.ok(!sh.stdout.includes('ran'), sh.stdout);
     // a root that is or holds a private place still cannot be read through it
-    const bad = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, roots: [home], reader: node, bin: '/bin/cat' });
+    const bad = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, run: 'notes', roots: [home], reader: node, helper, bin: '/bin/cat' });
     const viaRoot = spawnSync(bad.argv[0], [...bad.argv.slice(1), path.join(home, '.ssh', 'id')], { cwd: work, encoding: 'utf8' });
     assert.notEqual(viaRoot.status, 0);
-    // the profile without roots or the helper is the old one, argument for argument
-    assert.deepEqual(O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat' }).argv.slice(0, 3), [O.SANDBOX_EXEC, '-f', O.CODEX_JAIL_PROFILE]);
-    assert.equal(O.codexJail({ env: { HOME: home }, work, out, roots: [root], reader: '', bin: '/bin/cat' }).ok, false, 'a notes run without its reader is not made');
-    // the helper: allowed only when asked for, and only the file beside the CLI
-    const web = O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat', codeMode: true });
-    assert.deepEqual(web.argv.slice(0, 3), [O.SANDBOX_EXEC, '-f', O.CODEX_JAIL_PROFILE], 'no such file beside this stand-in: the profile as shipped');
-    const cliDir = path.join(base, 'cli');
-    fs.mkdirSync(cliDir);
-    fs.copyFileSync('/bin/cat', path.join(cliDir, 'codex'));
-    fs.writeFileSync(path.join(cliDir, O.CODEX_CODE_MODE_HOST), '');
-    const withHost = O.codexJail({ env: { HOME: home }, work, out, bin: path.join(cliDir, 'codex'), codeMode: true });
-    assert.equal(withHost.argv[1], '-p');
-    assert.ok(withHost.argv[2].endsWith(`(allow process-exec (literal "${path.join(cliDir, O.CODEX_CODE_MODE_HOST)}"))`), 'the one file beside the CLI, and nothing else added');
-    assert.ok(!O.codexJail({ env: { HOME: home }, work, out, bin: path.join(cliDir, 'codex') }).argv.join(' ').includes(O.CODEX_CODE_MODE_HOST), 'not unless asked for');
+    // A WEB RUN WITH THE HELPER gets the same walls, less the roots and the reader: no write outside the run's folders, no other temp
+    const webUnder = (bin, args) => {
+      const j = O.codexJail({ env: { HOME: home, PATH: process.env.PATH }, work, out, run: 'web-helper', helper, bin });
+      assert.equal(j.ok, true, j.error);
+      return spawnSync(j.argv[0], [...j.argv.slice(1), ...args], { cwd: work, encoding: 'utf8', env: { HOME: home, PATH: process.env.PATH, TMPDIR: out } });
+    };
+    const webWrite = f => webUnder(node, ['-e', 'require("fs").writeFileSync(process.argv[1], "x")', f]);
+    for (const f of [path.join(base, 'web-new.txt'), path.join(root, 'web-new.md'), path.join(home, 'web-new.txt')]) {
+      const r = webWrite(f);
+      assert.notEqual(r.status, 0, f);
+      assert.match(r.stderr, /EPERM/, f);
+      assert.ok(!fs.existsSync(f), f);
+    }
+    assert.equal(webWrite(path.join(out, 'web-last.txt')).status, 0, 'its own folder');
+    for (const f of [path.join(root, 'yard.md'), path.join(base, 'canary.txt'), path.join(home, 'secret.txt')]) assert.notEqual(webUnder('/bin/cat', [f]).status, 0, `${f}: a web run reads no notes and no other temp folder`);
+    assert.ok(webUnder('/bin/cat', [path.join(home, '.codex', 'auth.json')]).status === 0);
+    // THE RUN NAMES THE PROFILE, and what does not fit it is refused: never another profile unsaid
+    assert.deepEqual(O.CODEX_RUNS, ['plain', 'web-helper', 'notes']);
+    const plain = O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat' });
+    assert.deepEqual(plain.argv.slice(0, 3), [O.SANDBOX_EXEC, '-f', O.CODEX_JAIL_PROFILE], 'plain: the profile as shipped, argument for argument');
+    assert.throws(() => O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat', run: 'anything' }), /no such run/);
+    const jail = o => O.codexJail({ env: { HOME: home }, work, out, bin: '/bin/cat', ...o });
+    assert.deepEqual(jail({ run: 'web-helper' }), { ok: false, error: O.CODEX_SEARCH_OFF_SAY }, 'the helper is not beside this program: said, not a fall to the shipped profile');
+    assert.deepEqual(jail({ run: 'notes', roots: [root], reader: node }), { ok: false, error: O.CODEX_SEARCH_OFF_SAY });
+    assert.equal(jail({ run: 'notes', roots: [root], reader: '', helper }).ok, false, 'a notes run without its reader is not made');
+    assert.equal(jail({ run: 'notes', roots: [], reader: node, helper }).ok, false, '…or without roots');
+    assert.equal(jail({ run: 'plain', roots: [root] }).ok, false, 'roots do not fit a plain run');
+    assert.equal(jail({ run: 'web-helper', roots: [root], reader: node, helper }).ok, false, '…nor a web run');
+    const web = jail({ run: 'web-helper', helper });
+    assert.equal(web.argv[1], '-p');
+    assert.ok(web.argv[2].includes(`(allow process-exec (literal "${helper}"))`) && web.argv[2].includes('(deny file-write*)'));
+    assert.ok(!web.argv[2].includes(root), 'no root in a web run');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-test('Codex notes: only on the CLI version it was verified on; on another the run is a web run and says so', async () => {
+test('A CODEX RUN IS HELD IN ONE NAMED VALUE chosen by one function; less than was asked is said in the run\'s record', async () => {
+  const V = O.CODEX_NOTES_VERSION;
+  const f = o => O.codexRunFor(o);
+  assert.deepEqual(f({ caps: 'none', version: V, helper: true }), { run: 'plain', caps: 'none', roots: [], note: '' });
+  assert.deepEqual(f({ caps: 'web', version: V, helper: true }), { run: 'web-helper', caps: 'web', roots: [], note: '' });
+  assert.deepEqual(f({ caps: 'web+notes', roots: ['/r'], version: V, helper: true }), { run: 'notes', caps: 'web+notes', roots: ['/r'], note: '' });
+  assert.deepEqual(f({ caps: 'web+notes', roots: [], version: V, helper: true }), { run: 'web-helper', caps: 'web', roots: [], note: `${O.CODEX_NOTES_OFF_SAY}: no folder is set` });
+  // the helper is missing, or the version is not the checked one: the shipped profile, and the record says what is unavailable
+  const noHelper = f({ caps: 'web', version: V, helper: false });
+  assert.deepEqual([noHelper.run, noHelper.caps], ['plain', 'web']);
+  assert.equal(noHelper.note, `${O.CODEX_SEARCH_OFF_SAY}: its code-mode helper is not installed`);
+  const other = f({ caps: 'web+notes', roots: ['/r'], version: '0.168.0', helper: true });
+  assert.deepEqual([other.run, other.caps, other.roots], ['plain', 'web', []]);
+  assert.equal(other.note, `${O.CODEX_NOTES_OFF_SAY}; ${O.CODEX_SEARCH_OFF_SAY}: this version (0.168.0) is not the one checked (${V})`);
+  assert.match(f({ caps: 'web', version: '', helper: true }).note, /this version \(unknown\)/);
+  assert.throws(() => f({ caps: 'everything', version: V, helper: true }), /no such capability set/);
+  // runOneShot uses that one value: the jail is asked for exactly the run, with the program whose version was asked
   const seen = [];
   const spawnStub = (cmd, args) => {
     seen.push(args);
@@ -256,21 +292,64 @@ test('Codex notes: only on the CLI version it was verified on; on another the ru
     setImmediate(() => { fs.writeFileSync(outFile, 'answer'); child.stdout.end(); child.emit('close', 0); });
     return child;
   };
-  const jail = o => ({ ok: true, argv: ['/usr/bin/true', JSON.stringify({ roots: o.roots || [], reader: !!o.reader, codeMode: !!o.codeMode })] });
-  const run = v => O.runOneShot('codex', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: spawnStub, jail, codexCliVersion: async () => v, node: process.execPath });
-  const good = await run(O.CODEX_NOTES_VERSION);
+  const jail = o => ({ ok: true, argv: ['/usr/bin/true', JSON.stringify({ run: o.run, bin: o.bin, roots: o.roots || [], reader: !!o.reader })] });
+  const asked = [];
+  const run = (v, o = {}) => O.runOneShot('codex', 'p', { caps: 'web+notes', roots: ['/r/one'], spawn: spawnStub, jail, codexBin: '/opt/cli/codex',
+    codexCliVersion: async bin => { asked.push(bin); return v; }, codexHelper: () => true, node: process.execPath, ...o });
+  const good = await run(V);
   assert.equal(good.ok, true, good.error);
-  assert.deepEqual(JSON.parse(seen[0][0]), { roots: ['/r/one'], reader: true, codeMode: true });
+  assert.deepEqual(JSON.parse(seen[0][0]), { run: 'notes', bin: '/opt/cli/codex', roots: ['/r/one'], reader: true });
+  assert.deepEqual(asked, ['/opt/cli/codex'], 'the version asked is that of the program that is run');
   assert.ok(seen[0].some(a => a.startsWith('mcp_servers.notes=')));
   assert.equal(good.sources.note, undefined);
   for (const v of ['0.168.0', '']) {
-    const other = await run(v);
-    assert.equal(other.ok, true, other.error);
+    const r = await run(v);
+    assert.equal(r.ok, true, r.error);
     const args = seen[seen.length - 1];
-    assert.deepEqual(JSON.parse(args[0]), { roots: [], reader: false, codeMode: false }, 'no roots, no reader, no helper');
+    assert.deepEqual(JSON.parse(args[0]), { run: 'plain', bin: '/opt/cli/codex', roots: [], reader: false }, 'no roots, no reader, no helper');
     assert.ok(args.includes('mcp_servers={}'));
-    assert.equal(other.sources.note, O.CODEX_NOTES_OFF_SAY);
+    assert.match(r.sources.note, /^notes reading is off for Codex passages on this version of the Codex CLI; web search is unavailable for Codex passages on this install/);
   }
+  const web = await run(V, { caps: 'web', roots: [] });
+  assert.equal(JSON.parse(seen[seen.length - 1][0]).run, 'web-helper');
+  assert.equal(web.sources.note, undefined);
+  const lost = await run(V, { caps: 'web', roots: [], codexHelper: () => false });
+  assert.equal(JSON.parse(seen[seen.length - 1][0]).run, 'plain');
+  assert.equal(lost.sources.note, `${O.CODEX_SEARCH_OFF_SAY}: its code-mode helper is not installed`, 'a missing helper is a stated outcome');
+  const none = await run(V, { caps: 'none', roots: [] });
+  assert.equal(JSON.parse(seen[seen.length - 1][0]).run, 'plain');
+  assert.equal(none.ok, true);
+  assert.equal(asked.length, 5, 'a run without tools asks no version');
+});
+
+test('the Codex version is that of the program file that is run: asked again when the file changes (an upgrade), kept while it does not', async () => {
+  const d = tmp();
+  const bin = path.join(d, 'codex');
+  fs.writeFileSync(bin, 'one');
+  try {
+    const asks = [];
+    const ask = async b => { asks.push(b); return fs.readFileSync(b, 'utf8') === 'one' ? O.CODEX_NOTES_VERSION : '0.999.0'; };
+    assert.equal(await O.codexVersionOf(bin, { ask }), O.CODEX_NOTES_VERSION);
+    assert.equal(await O.codexVersionOf(bin, { ask }), O.CODEX_NOTES_VERSION);
+    assert.equal(asks.length, 1, 'kept while the file is the same');
+    // an upgrade in place: a new file at the same path
+    fs.writeFileSync(bin, 'two!');
+    fs.utimesSync(bin, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+    assert.equal(await O.codexVersionOf(bin, { ask }), '0.999.0', 'the new program is asked: it never inherits the checked version');
+    // an upgrade to a new real path (a versioned folder, as a package manager makes)
+    const next = path.join(d, 'codex-next');
+    fs.writeFileSync(next, 'three');
+    assert.equal(await O.codexVersionOf(next, { ask }), '0.999.0');
+    assert.deepEqual(asks, [bin, bin, next]);
+    assert.equal(await O.codexVersionOf(path.join(d, 'gone'), { ask }), '', 'no program: no version');
+    assert.equal(await O.codexVersionOf('', { ask }), '');
+    assert.equal(asks.length, 3);
+    // …and so the run of an upgraded CLI is held plain, with the reason
+    assert.equal(O.codexRunFor({ caps: 'web', version: await O.codexVersionOf(bin, { ask }), helper: true }).run, 'plain');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('what a Codex notes run read is recorded from the CLI\'s events', () => {
   // what a notes run read is recorded from the CLI's events: what was asked for, never what came back
   const ev = O.codexStream();
   ev.push(JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'notes', tool: 'read_note', arguments: { path: 'yard.md' }, result: { content: [{ type: 'text', text: 'NOTE TEXT' }] } } }));
@@ -553,16 +632,21 @@ test('THE PRE-APPROVED HOST LIST IS FOR ONE CLI VERSION: a notes run on another 
   // botference tk-read check says it
   const { main } = await import('../tk-read-cli.mjs');
   const home = tmp(); fs.mkdirSync(path.join(home, 'Notes'));
-  const say = v => { const out = []; main(['check'], { config: () => ({ tk_read_roots: [path.join(home, 'Notes')] }), configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => v, codexVersion: () => cv }); return out.join('\n'); };
+  const say = v => { const out = []; main(['check'], { config: () => ({ tk_read_roots: [path.join(home, 'Notes')] }), configPath: '/x/config.json', home, say: s => out.push(s), claudeVersion: () => v, codexInstall: () => ({ version: cv, helper }) }); return out.join('\n'); };
   let cv = O.CODEX_NOTES_VERSION;
+  let helper = true;
   assert.match(say('2.2.0'), /page fetching is off for notes runs on this version of Claude Code \(2\.2\.0/);
   assert.match(say('2.1.330'), /notes runs may fetch pages from the sites their line names/);
   // Codex: the same folders, on the version its reader was verified on; on another, the web only, said plainly
   assert.match(say('2.1.330'), /Codex CLI 0\.167\.2: Codex passages read \(only read\) the same folders, through the companion's notes reader/);
+  assert.match(say('2.1.330'), /a Claude notes passage fetches pages only from the sites your line names\. A Codex notes passage keeps its\n  provider's web search with no limit by site, so a page or a note that tells the agent to do so could carry text from a note to an\n  outside site/);
   cv = '0.170.0';
-  assert.match(say('2.1.330'), /notes reading is off for Codex passages on this version of the Codex CLI \(0\.170\.0; verified on 0\.167\.2\)/);
+  assert.match(say('2.1.330'), /Codex CLI 0\.170\.0: notes reading is off for Codex passages on this version of the Codex CLI; web search is unavailable for Codex passages on this install of the Codex CLI: this version \(0\.170\.0\) is not the one checked \(0\.167\.2\)\. Codex passages run without notes and without a working web search\./);
   cv = '';
-  assert.match(say('2.1.330'), /\(version unknown; verified on 0\.167\.2\)/);
-  const none = []; main(['check'], { config: () => ({}), configPath: '/x/config.json', home, say: s => none.push(s), claudeVersion: () => '2.1.330', codexVersion: () => O.CODEX_NOTES_VERSION });
-  assert.match(none.join('\n'), /Codex passages: the web only \(no folders are set\)/);
+  assert.match(say('2.1.330'), /Codex CLI \(version unknown\): .*this version \(unknown\) is not the one checked/);
+  cv = O.CODEX_NOTES_VERSION; helper = false;
+  assert.match(say('2.1.330'), /web search is unavailable for Codex passages on this install of the Codex CLI: its code-mode helper is not installed/);
+  const none = []; main(['check'], { config: () => ({}), configPath: '/x/config.json', home, say: s => none.push(s), claudeVersion: () => '2.1.330', codexInstall: () => ({ version: O.CODEX_NOTES_VERSION, helper: true }) });
+  assert.match(none.join('\n'), /Codex CLI 0\.167\.2: Codex passages search the web \(no folders are set\)\./);
+  assert.ok(!/A difference to know/.test(none.join('\n')), 'said only when notes are read');
 });

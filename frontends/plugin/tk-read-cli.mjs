@@ -9,10 +9,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readConfig, CONFIG_PATH } from './store.mjs';
 import { validateTkRead } from './tk-read.mjs';
-import { claudeVersionSync, CLAUDE_FETCH_RULES_VERSION, FETCH_OFF_SAY, codexVersionSync, CODEX_NOTES_VERSION, CODEX_NOTES_OFF_SAY } from './oneshot.mjs';
+import { claudeVersionSync, CLAUDE_FETCH_RULES_VERSION, FETCH_OFF_SAY, codexInstallSync, codexRunFor } from './oneshot.mjs';
 
 export function main(argv, { config = () => readConfig(), configPath = CONFIG_PATH, home = os.homedir(), say = s => process.stdout.write(`${s}\n`),
-  claudeVersion = () => claudeVersionSync(), codexVersion = () => codexVersionSync() } = {}) {
+  claudeVersion = () => claudeVersionSync(), codexInstall = () => codexInstallSync() } = {}) {
   if (argv.length !== 1 || argv[0] !== 'check') { say('Usage: botference tk-read check'); return 2; }
   const v = validateTkRead(config(), { home });
   say(`config file: ${configPath}`);
@@ -26,11 +26,20 @@ export function main(argv, { config = () => readConfig(), configPath = CONFIG_PA
       : `${FETCH_OFF_SAY} (${ver || 'version unknown'}; the rules are written for ${CLAUDE_FETCH_RULES_VERSION}): notes runs search the web but fetch no page. Web-only passages are unaffected.`);
   }
   say(v.hubLinkNotes === 'on' ? 'Passages asked through your Hub: web and these folders (hub_link_tk_notes is on).' : 'Passages asked through your Hub: web only (hub_link_tk_notes is off).');
-  // (Codex reads through the companion's read-only reader, verified on one version of its CLI: oneshot.mjs CODEX_NOTES_VERSION)
-  const cv = String(codexVersion() || '');
-  if (!v.roots.length) say('Codex passages: the web only (no folders are set).');
-  else if (cv === CODEX_NOTES_VERSION) say(`Codex CLI ${cv}: Codex passages read (only read) the same folders, through the companion's notes reader, and search the web.`);
-  else say(`${CODEX_NOTES_OFF_SAY} (${cv || 'version unknown'}; verified on ${CODEX_NOTES_VERSION}): Codex passages run with the web only, and their web search may not work.`);
+  // Codex: what its run would be held as on THIS install (oneshot.mjs codexRunFor: the version of the program PATH resolves to now,
+  // and whether its code-mode helper is beside it), in plain words
+  const install = codexInstall() || {};
+  const cv = String(install.version || '');
+  const held = codexRunFor({ caps: v.roots.length ? 'web+notes' : 'web', roots: v.roots, version: cv, helper: !!install.helper });
+  if (held.run === 'notes') say(`Codex CLI ${cv}: Codex passages read (only read) the same folders, through the companion's notes reader, and search the web.`);
+  else if (held.run === 'web-helper') say(`Codex CLI ${cv}: Codex passages search the web (no folders are set).`);
+  else say(`Codex CLI ${cv || '(version unknown)'}: ${held.note}. Codex passages run without notes and without a working web search.`);
+  if (v.roots.length) {
+    say('A difference to know: a Claude notes passage fetches pages only from the sites your line names. A Codex notes passage keeps its');
+    say('  provider\'s web search with no limit by site, so a page or a note that tells the agent to do so could carry text from a note to an');
+    say('  outside site. You asked for both agents to have the web and the notes; to keep Codex off the notes, take `codex` out of');
+    say('  NOTES_AGENTS (tk-read.mjs).');
+  }
   return 0;
 }
 

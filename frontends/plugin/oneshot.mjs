@@ -89,19 +89,47 @@ const realNative = p => { try { return fs.realpathSync.native(p); } catch { retu
  * The jail a Codex one-shot runs in: → { ok: true, argv } (what goes before the CLI's own argv: sandbox-exec, the profile and its
  * parameters, the CLI's real path) or { ok: false, error } when it cannot be made here. Nothing is run.
  */
-// A NOTES RUN (`roots` given: the capability set web+notes): the same profile with more rules AFTER it, so they decide (seatbelt: the
-// last matching rule wins). What they add, and nothing else:
-//   READ under each read root (and a look-up, never a listing, of the folders above it);
-//   START two more programs: `reader` (the Node binary that runs tk-notes-reader.mjs, the CLI's only tool for notes; the script itself
-//     is copied into the run's own fresh folder, so no folder of the companion's is opened to the run), and the CLI's own code-mode
-//     helper beside its binary (CODEX_CODE_MODE_HOST, below: without it the CLI cannot call a tool server at all);
-//   NO READ of other temporary folders (/private/tmp, /private/var/folders, /private/var/tmp) but the run's two and the roots;
-//   NO WRITE at all but the CLI's own folder and the run's two (the profile above refuses writes under /Users and /Volumes only);
-//   and LAST, no read or write of the private places under the home folder (CLAUDE_PRIVATE_PLACES, less the CLI's own folder), whatever
-//     a root or a link says.
-// There is still no shell and no write anywhere but the CLI's own folder and the run's two.
+// HOW A CODEX RUN IS HELD, one of CODEX_RUNS, in one value chosen by ONE function (codexRunFor) from the capability set, the read
+// roots, the CLI's version and whether its helper is installed; codexJail makes exactly the profile that value names and refuses
+// anything that does not fit it. Never a pile of flags:
+//   plain       the shipped profile (oneshot-codex.sb) and nothing more: a run without tools, and any run on a CLI whose tools were not
+//               verified or whose helper is missing (its web search then does not work, and the run's record says so: CODEX_RUN_SAYS)
+//   web-helper  a web run on the verified version: the CLI's own code-mode helper may start (CODEX_CODE_MODE_HOST: the search needs it)
+//   notes       a notes run on the verified version: the helper, and the companion's read-only notes reader under the read roots
+// For web-helper and notes the profile is the shipped one with rules AFTER it, so they decide (seatbelt: the last matching rule wins):
+//   NO WRITE AT ALL but the CLI's own folder and the run's two fresh folders (the shipped profile refuses writes under /Users and
+//     /Volumes only; the helper runs scripts the model writes, so it is given nowhere else to write);
+//   NO READ of other temporary folders (/private/tmp, /private/var/folders, /private/var/tmp) but the run's two (a path there may be
+//     looked up, never listed or read);
+//   START the helper beside the CLI's binary, and nothing else;
+//   notes only: READ under each read root (and a look-up of the folders above it), and START `reader` (the Node binary that runs
+//     tk-notes-reader.mjs; the script itself is copied into the run's own folder, so no folder of the companion's is opened);
+//   and LAST, no read or write of the private places under the home folder (CLAUDE_PRIVATE_PLACES, less the CLI's own folder).
+// There is no shell in any of them.
+export const CODEX_RUNS = Object.freeze(['plain', 'web-helper', 'notes']);
+export const CODEX_SEARCH_OFF_SAY = 'web search is unavailable for Codex passages on this install of the Codex CLI';
+/** The helper's path for a CLI binary (its real path), whether or not it is there. */
+export const codexHelperOf = cli => (cli ? path.join(path.dirname(cli), CODEX_CODE_MODE_HOST) : '');
+/**
+ * THE ONE FUNCTION that says how a Codex run is held. → { run (CODEX_RUNS), caps and roots the run really has, note (one plain
+ * sentence for the run's private record when it gets less than was asked, else '') }. `version`: the version of the program that
+ * will be run; `helper`: is its code-mode helper installed beside it. Refuses a capability set it does not know.
+ */
+export function codexRunFor({ caps = 'none', roots = [], version = '', helper = false } = {}) {
+  if (!Object.prototype.hasOwnProperty.call(TK_CAPS_TIME_MS, caps)) throw new Error(`codex: no such capability set ${JSON.stringify(String(caps)).slice(0, 40)}`);
+  if (caps === 'none') return { run: 'plain', caps: 'none', roots: [], note: '' };
+  const verified = version === CODEX_NOTES_VERSION;
+  // (tools were asked for but this install cannot give them: the shipped profile, and the record says what is missing)
+  if (!verified || !helper) {
+    const why = !verified ? `this version (${version || 'unknown'}) is not the one checked (${CODEX_NOTES_VERSION})` : 'its code-mode helper is not installed';
+    return { run: 'plain', caps: 'web', roots: [], note: `${caps === 'web+notes' ? `${CODEX_NOTES_OFF_SAY}; ` : ''}${CODEX_SEARCH_OFF_SAY}: ${why}` };
+  }
+  if (caps === 'web+notes' && roots.length) return { run: 'notes', caps: 'web+notes', roots: roots.slice(), note: '' };
+  return { run: 'web-helper', caps: 'web', roots: [], note: caps === 'web+notes' ? `${CODEX_NOTES_OFF_SAY}: no folder is set` : '' };
+}
 export function codexJail({ env = process.env, work, out, platform = process.platform, sandboxExec = SANDBOX_EXEC, profile = CODEX_JAIL_PROFILE,
-  bin = '', roots = [], reader = '', codeMode = false } = {}) {
+  bin = '', run = 'plain', roots = [], reader = '', helper = '' } = {}) {
+  if (!CODEX_RUNS.includes(run)) throw new Error(`codex: no such run ${JSON.stringify(String(run)).slice(0, 40)} (one of ${CODEX_RUNS.join(', ')})`);
   if (platform !== 'darwin' || !fs.existsSync(sandboxExec) || !fs.existsSync(profile)) return { ok: false, error: CODEX_UNCONTAINED };
   const home = env.HOME ? realOr(env.HOME) : '';
   if (!home || !path.isAbsolute(home)) return { ok: false, error: CODEX_UNCONTAINED };
@@ -109,38 +137,32 @@ export function codexJail({ env = process.env, work, out, platform = process.pla
   const cli = bin || whichReal('codex', env);
   if (!cli) return { ok: false, error: 'could not start codex' };
   const params = ['-D', `HOME=${home}`, '-D', `CLI_HOME=${cliHome}`, '-D', `WORK=${realOr(work)}`, '-D', `OUT=${realOr(out)}`, '-D', `CLI_BIN=${cli}`];
-  if (!roots.length && !codeMode) return { ok: true, argv: [sandboxExec, '-f', profile, ...params, cli] };
-  // (`codeMode`: the run may start the CLI's own code-mode helper, CODEX_CODE_MODE_HOST below; a web run needs it to search, a notes
-  // run to call its reader)
-  const host = path.join(path.dirname(cli), CODEX_CODE_MODE_HOST);
-  let hostRule;
-  try { hostRule = codeMode && fs.existsSync(host) ? `(allow process-exec (literal ${q(realNative(host))}))` : ''; } catch { return { ok: false, error: CODEX_UNCONTAINED }; }
-  if (!roots.length && !hostRule) return { ok: true, argv: [sandboxExec, '-f', profile, ...params, cli] };
-  if (!roots.length) {
-    let base;
-    try { base = fs.readFileSync(profile, 'utf8'); } catch { return { ok: false, error: CODEX_UNCONTAINED }; }
-    return { ok: true, argv: [sandboxExec, '-p', [base, '; oneshot.mjs codexJail: the CLI\'s own code-mode helper may start', hostRule].join('\n'), ...params, cli] };
-  }
+  // what does not fit the run that was named is refused, never made into another run
+  if (run !== 'notes' && (roots.length || reader)) return { ok: false, error: CODEX_UNCONTAINED };
+  if (run === 'plain') return { ok: true, argv: [sandboxExec, '-f', profile, ...params, cli] };
+  // (`helper`: tests name a stand-in's; otherwise the file beside the CLI. A run that needs it and has none is REFUSED here, in
+  // plain words: codexRunFor never asks for such a run, and nothing falls back to the shipped profile unsaid)
+  const host = helper || codexHelperOf(cli);
+  if (!fs.existsSync(host)) return { ok: false, error: CODEX_SEARCH_OFF_SAY };
+  if (run === 'notes' && (!roots.length || !reader || !path.isAbsolute(reader))) return { ok: false, error: CODEX_UNCONTAINED };
   let text;
   try {
-    if (!reader || !path.isAbsolute(reader)) throw new Error('no reader');
     const real = roots.map(r => realNative(r));
-    const node = realNative(reader);
+    const node = run === 'notes' ? realNative(reader) : '';
     const priv = CLAUDE_PRIVATE_PLACES.filter(s => realNative(path.join(home, s)) !== realNative(cliHome)).map(s => `(subpath ${q(path.join(realNative(home), s))})`).join(' ');
     text = [fs.readFileSync(profile, 'utf8'),
-      '; oneshot.mjs codexJail, a notes run: the rules below come after the profile above and decide',
+      `; oneshot.mjs codexJail, run ${run}: the rules below come after the profile above and decide`,
       '(deny file-read* (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))',
-      // (a path there may be looked up, never listed or read: the run's own folders are found one name at a time)
       '(allow file-read-metadata (subpath "/private/tmp") (subpath "/private/var/folders") (subpath "/private/var/tmp"))',
       '(allow file-read* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")))',
-      `(allow file-read* ${real.map(r => `(subpath ${q(r)})`).join(' ')})`,
-      `(allow file-read-metadata ${[...new Set(real.flatMap(r => ancestorsOf(r)))].map(a => `(literal ${q(a)})`).join(' ')})`,
-      // (a Node installed under the home folder: its own install may be read; one outside /Users is readable already)
-      ...(/^\/(Users|Volumes)\//.test(node) ? [`(allow file-read* (subpath ${q(path.dirname(path.dirname(node)))}))`,
-        `(allow file-read-metadata ${ancestorsOf(node).map(a => `(literal ${q(a)})`).join(' ')})`] : []),
-      `(allow process-exec (literal ${q(node)}))`,
-      hostRule,
-      // NO WRITE ANYWHERE (not only under /Users and /Volumes: a root may be on any path) but the CLI's own folder and the run's two
+      ...(run === 'notes' ? [
+        `(allow file-read* ${real.map(r => `(subpath ${q(r)})`).join(' ')})`,
+        `(allow file-read-metadata ${[...new Set(real.flatMap(r => ancestorsOf(r)))].map(a => `(literal ${q(a)})`).join(' ')})`,
+        // (a Node installed under the home folder: its own install may be read; one outside /Users is readable already)
+        ...(/^\/(Users|Volumes)\//.test(node) ? [`(allow file-read* (subpath ${q(path.dirname(path.dirname(node)))}))`,
+          `(allow file-read-metadata ${ancestorsOf(node).map(a => `(literal ${q(a)})`).join(' ')})`] : []),
+        `(allow process-exec (literal ${q(node)}))`] : []),
+      `(allow process-exec (literal ${q(realNative(host))}))`,
       '(deny file-write*)',
       '(allow file-write* (subpath (param "CLI_HOME")) (subpath (param "WORK")) (subpath (param "OUT")) (literal "/dev/null") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
       `(deny file-read* file-write* ${priv})`,
@@ -167,27 +189,38 @@ export const CODEX_NOTES_OFF_SAY = 'notes reading is off for Codex passages on t
 export const CODEX_READER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'tk-notes-reader.mjs');
 export const CODEX_READER_TOOLS = Object.freeze(['list_notes', 'read_note', 'search_notes']);
 export const parseCodexVersion = out => { const m = String(out || '').trim().match(/(?:^|\s)(\d+\.\d+\.\d+)\b/); return m ? m[1] : ''; };
-let codexVersionOnce = null;
-/** The installed Codex CLI's version ('' when it cannot be told), asked once per process and kept. */
-export function codexVersion(env = process.env) {
-  if (!codexVersionOnce) {
-    codexVersionOnce = new Promise(resolve => {
-      const e = oneshotEnv('codex', env);
-      const bin = whichReal('codex', e);
-      if (!bin) { resolve(''); return; }
-      execFile(bin, ['--version'], { env: e, timeout: 15000, maxBuffer: 4096 }, (err, out) => resolve(err ? '' : parseCodexVersion(out)));
-    });
+// THE VERSION IS THAT OF THE PROGRAM THAT IS RUN: asked of the CLI's resolved real path, and kept per program file (its real path, size
+// and time of change), so a CLI upgraded while the companion runs (a new real path, or a new file at the old one) is asked again and
+// an unchecked version never inherits the checked one's answer.
+const codexVersions = new Map();   // program key → Promise<version>
+const programKey = bin => { try { const st = fs.statSync(bin); return `${bin}\0${st.size}\0${st.mtimeMs}`; } catch { return ''; } };
+const askCodexVersion = (bin, env) => new Promise(resolve => {
+  execFile(bin, ['--version'], { env, timeout: 15000, maxBuffer: 4096 }, (err, out) => resolve(err ? '' : parseCodexVersion(out)));
+});
+/** The version of the Codex CLI at `bin` (a real path; '' when it cannot be told). `ask` is injectable for the tests. */
+export function codexVersionOf(bin, { env = process.env, ask = askCodexVersion } = {}) {
+  const key = bin ? programKey(bin) : '';
+  if (!key) return Promise.resolve('');
+  if (!codexVersions.has(key)) {
+    if (codexVersions.size > 16) codexVersions.clear();
+    codexVersions.set(key, Promise.resolve().then(() => ask(bin, env)).then(v => String(v || ''), () => ''));
   }
-  return codexVersionOnce;
+  return codexVersions.get(key);
 }
-/** The same, at once (for `botference tk-read check`). */
-export function codexVersionSync(env = process.env) {
+/** The installed Codex CLI's version: the program PATH resolves to now. */
+export function codexVersion(env = process.env) {
+  const e = oneshotEnv('codex', env);
+  return codexVersionOf(whichReal('codex', e), { env: e });
+}
+/** The same, at once (for `botference tk-read check`): → { version, helper } of the program PATH resolves to now. */
+export function codexInstallSync(env = process.env) {
   const e = oneshotEnv('codex', env);
   const bin = whichReal('codex', e);
-  if (!bin) return '';
+  if (!bin) return { version: '', helper: false };
   const r = spawnSync(bin, ['--version'], { env: e, timeout: 15000, encoding: 'utf8' });
-  return r.status === 0 ? parseCodexVersion(r.stdout) : '';
+  return { version: r.status === 0 ? parseCodexVersion(r.stdout) : '', helper: fs.existsSync(codexHelperOf(bin)) };
 }
+export const codexVersionSync = (env = process.env) => codexInstallSync(env).version;
 const tomlString = v => JSON.stringify(String(v));
 /** The `-c` value that gives a Codex run its notes reader: `node`, the reader's copy in the run's folder, the roots. */
 export const codexReaderConfig = ({ node, script, roots }) => `mcp_servers.notes={command=${tomlString(node)},args=[${tomlString(script)},${tomlString(JSON.stringify(roots))}],`
@@ -445,19 +478,27 @@ const RUN_MOVES = Object.freeze({ running: Object.freeze(['flooded', 'done']), f
  * CLI and anything it started.
  */
 export async function runOneShot(agent, prompt, { model = '', effort = '', timeoutMs = 0, maxBytes = 64 * 1024, spawn = realSpawn,
-  env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps = 'none', roots = [], fetchHosts = [],
-  cliVersion: versionOf = () => claudeVersion(fromEnv), codexCliVersion: codexVersionOf = () => codexVersion(fromEnv), node = process.execPath } = {}) {
-  // A CODEX RUN WITH TOOLS needs the CLI version its tools were verified on (CODEX_NOTES_VERSION): only there may the CLI's code-mode
-  // helper start (codexJail `codeMode`), and only there does a notes run read notes; on any other version a notes run is a web run and
-  // its private record says so (and its search, which needs the helper, will not work). Chosen here once for the whole run.
-  let codexNotesOff = false;
-  let codexCodeMode = false;
-  if (agent === 'codex' && caps !== 'none') {
-    let v = '';
-    try { v = String((await codexVersionOf()) || ''); } catch { v = ''; }
-    codexCodeMode = v === CODEX_NOTES_VERSION;
-    if (caps === 'web+notes' && (!codexCodeMode || !roots.length)) { caps = 'web'; roots = []; codexNotesOff = true; }
+  env: fromEnv = process.env, jail = codexJail, claudeJail: jailClaude = claudeJail, caps: askedCaps = 'none', roots: askedRoots = [], fetchHosts = [],
+  cliVersion: versionOf = () => claudeVersion(fromEnv), codexBin = null, codexCliVersion = null, codexHelper = null, node = process.execPath } = {}) {
+  // A CODEX RUN is held in ONE value (CODEX_RUNS), chosen once here by codexRunFor from what was asked and from the program that will
+  // really be run: its resolved real path, THAT program's version, and whether its helper is beside it. `asked` is what the caller
+  // wanted; from here on the run uses only `held` (its run, and the capability set and roots that run really has).
+  // (tests: `codexBin` names the program, `codexCliVersion(bin)` and `codexHelper(bin)` answer for it)
+  const asked = Object.freeze({ caps: askedCaps, roots: askedRoots });
+  let held = null;
+  if (agent === 'codex') {
+    const cliEnv = oneshotEnv('codex', fromEnv);
+    const bin = codexBin === null ? whichReal('codex', cliEnv) : String(codexBin);
+    let version = '';
+    if (asked.caps !== 'none') { try { version = String((await (codexCliVersion ? codexCliVersion(bin) : codexVersionOf(bin, { env: cliEnv }))) || ''); } catch { version = ''; } }
+    let helper = false;
+    try { helper = codexHelper ? !!codexHelper(bin) : !!bin && fs.existsSync(codexHelperOf(bin)); } catch { helper = false; }
+    try { held = { ...codexRunFor({ caps: asked.caps, roots: asked.roots, version, helper }), bin }; }
+    catch (e) { return { ok: false, error: String((e && e.message) || 'codex cannot be run') }; }
   }
+  // (what the run really has: a Codex run's from its held value, any other run's as asked)
+  const caps = held ? held.caps : asked.caps;
+  const roots = held ? held.roots : asked.roots;
   const limit = timeLimitFor(caps, timeoutMs || 0);
   if (!ONESHOT_AGENTS.includes(agent)) return { ok: false, error: `${agent} cannot fill gaps here` };
   // a model name is one argument and never a flag (store.mjs MODEL_RE says the same for what is stored)
@@ -473,7 +514,7 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
     try { outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bfp-oneshot-out-')); } catch { outDir = ''; }
     // (a Codex notes run: the reader, copied into the run's own second folder, and the Node that runs it)
     let reader = null;
-    if (agent === 'codex' && caps === 'web+notes' && outDir) {
+    if (held && held.run === 'notes' && outDir) {
       try { const script = path.join(realOr(outDir), 'tk-notes-reader.mjs'); fs.copyFileSync(CODEX_READER, script); reader = { node: realNative(node), script }; }
       catch { reader = null; }
     }
@@ -483,9 +524,9 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
     const env = oneshotEnv(agent, fromEnv);
     if (agent === 'codex') {
       // jailed, or not run at all (a notes run without its reader is not run: it would only be a web run that says it read notes)
-      if (caps === 'web+notes' && !reader) { drop(CODEX_UNCONTAINED); return; }
-      if (caps === 'web+notes') env.TMPDIR = realOr(outDir);   // (other temporary folders are closed to a notes run)
-      const j = jail({ env, work: dir, out: outDir, ...(caps === 'web+notes' ? { roots, reader: reader.node } : {}), ...(codexCodeMode ? { codeMode: true } : {}) });
+      if (held.run === 'notes' && !reader) { drop(CODEX_UNCONTAINED); return; }
+      if (held.run !== 'plain') { if (!outDir) { drop(CODEX_UNCONTAINED); return; } env.TMPDIR = realOr(outDir); }   // (other temporary folders are closed to it)
+      const j = jail({ env, work: dir, out: outDir, run: held.run, ...(held.bin ? { bin: held.bin } : {}), ...(held.run === 'notes' ? { roots, reader: reader.node } : {}) });
       if (!j || !j.ok) { drop((j && j.error) || CODEX_UNCONTAINED); return; }
       c.args = [...j.argv.slice(1), ...c.args];
       c.cmd = j.argv[0];
@@ -560,7 +601,7 @@ export async function runOneShot(agent, prompt, { model = '', effort = '', timeo
         text = s.text; usedOf = s.used;
       } else { text = out.toString('utf8').trim(); full = out.length >= maxBytes; }
       if (usedOf && fetchOff) usedOf.sources.note = FETCH_OFF_SAY;
-      if (usedOf && codexNotesOff) usedOf.sources.note = CODEX_NOTES_OFF_SAY;
+      if (usedOf && held && held.note) usedOf.sources.note = held.note;
       const extra = usedOf ? { used: usedOf.used, sources: usedOf.sources } : {};
       if (code === 0 || (text && full)) { done(text ? { ok: true, text, ...(model ? { model } : {}), ...extra } : { ok: false, error: 'the agent wrote nothing' }); return; }
       done({ ok: false, error: `the agent stopped (exit ${code})` });
